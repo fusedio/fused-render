@@ -6,7 +6,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   createScheduleWatcher,
-  NOTE_FOREIGN,
   NOTE_OURS,
   SB_STATES,
   SCHEDULE_IMMINENT_MS,
@@ -325,13 +324,14 @@ describe("pollScheduledRuns", () => {
     expect(h.resumed).toEqual(["r-new"]);
   });
 
-  test("a foreign run is noted ONCE and never marked attached", async () => {
+  test("a foreign run is SILENT here (owner E2E R1, F9) and never marked attached", async () => {
     const rows = [fired({ id: "theirs", session_id: "s2" })];
     const h = harness({ entries: [[], rows, rows] });
     await h.watcher.tick();
     await h.watcher.tick();
     await h.watcher.tick();
-    expect(h.notes).toEqual([NOTE_FOREIGN]);
+    // Another conversation's scheduled run is not this chat's business.
+    expect(h.notes).toEqual([]);
     expect(h.resumed).toEqual([]);
     // NOT in `attached`: switching to that session must still restore the turn
     // from history rather than being written off as already handled.

@@ -704,7 +704,11 @@
   border-color: var(--c-border);
 }
 .chat-root .perm.ask .qscroll {
-  max-height: 46vh;
+  /* Owner E2E R1 (2026-09-10, screenshot): "too big … 70–80% max". Was 46vh,
+     which with the old 50px option rows meant a five-option card scrolled
+     inside itself on a laptop. The rows are half that height now (below), so
+     most cards never reach this; the cap is for the long tail. */
+  max-height: 75vh;
   overflow: auto;
 }
 /* While an "Other" row is open there is exactly ONE scroller inside the card,
@@ -732,14 +736,22 @@
 }
 .chat-root .perm .qtext {
   font-size: 14px;
-  line-height: 1.45;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--c-fg-strong);
   word-break: break-word;
 }
+/* THE LIST, not a stack of cards (owner E2E R1, 2026-09-10, reference: the
+   Claude desktop question sheet). Rows with no border of their own, a hairline
+   between them, a numbered badge at the left instead of a radio, the
+   description in line after the label. Half the height of the boxed rows this
+   replaced, so a five-option question is a glance and not a scroll. */
 .chat-root .perm .qopts {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 0;
+  margin-top: 8px;
+  counter-reset: qn;
 }
 /* AN OPTION ROW (#19/#21). It is a row of [tick | label over description],
    left-aligned, and every one of those words had to be said again here because
@@ -753,15 +765,17 @@
 .chat-root .perm .qopt {
   display: flex;
   justify-content: flex-start;
-  gap: 12px;
-  align-items: flex-start;
+  gap: 10px;
+  align-items: center;
   text-align: left;
   width: 100%;
   height: auto;
   min-height: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  /* The hidden control below is positioned against the row. */
+  position: relative;
   background: transparent;
   color: var(--c-fg);
   font: inherit;
@@ -777,14 +791,61 @@
 /* The label column, so a two-line description wraps inside the row instead of
    shoving the tick around. `.qbody` (the Other row) is the same box by another
    name; both are the row's one growing child. */
-.chat-root .perm .qopt > span:not(.qtick),
+.chat-root .perm .qopt > span:not(.qtick):not(.qnum),
 .chat-root .perm .qopt .qbody {
   flex: 1 1 auto;
   min-width: 0;
 }
+.chat-root .perm .qopt + .qopt {
+  /* A hairline between rows, drawn as a shadow so the radius on hover is not
+     cut through by a border. */
+  box-shadow: inset 0 1px 0 var(--c-border);
+}
 .chat-root .perm .qopt:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
   background: var(--c-card-bg-2);
+}
+/* THE BADGE: the row's number, in the place the radio stood. The reference
+   sheet reads its options by number; a radio said "pick one" and a checkbox
+   said "pick many" but neither said WHICH row this is. Checked = accent fill.
+   The Other row wears a pencil: it is written, not picked. */
+.chat-root .perm .qopt .qnum {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--c-card-bg-2);
+  color: var(--c-dim);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition:
+    background 0.12s ease-out,
+    color 0.12s ease-out;
+}
+.chat-root .perm .qopt:not(.qother) .qnum::before {
+  counter-increment: qn;
+  content: counter(qn);
+}
+.chat-root .perm .qopt.qother .qnum::before {
+  content: "✎";
+  font-size: 12px;
+}
+.chat-root .perm .qopt:hover:not(:disabled) .qnum {
+  color: var(--c-fg);
+}
+/* THE KEYBOARD'S CUE lands on the row, since the control itself is unseen
+   (Bugbot #1099): the same ring the tick used to wear, drawn around the row. */
+.chat-root .perm .qopt:has(.qtick:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: -2px;
+}
+.chat-root .perm .qopt:has(.qtick[data-checked]) .qnum,
+.chat-root .perm .qopt.qother.typing .qnum {
+  background: var(--c-accent);
+  color: var(--c-on-accent);
 }
 /* THE SELECTED ROW, not just the selected tick. A 14px dot is not enough of an
    answer to "which one did I pick?" in a list of five; the row itself carries
@@ -792,19 +853,20 @@
    row is its parent — there is no class on the row to key off. */
 .chat-root .perm .qopt:has(.qtick[data-checked]),
 .chat-root .perm .qopt.qother.typing {
-  border-color: color-mix(in srgb, var(--c-accent) 70%, transparent);
   background: color-mix(in srgb, var(--c-accent) 12%, transparent);
 }
 .chat-root .perm .qopt:has(.qtick[data-checked]) .lbl {
   color: var(--c-fg-strong);
 }
 .chat-root .perm .qopt .lbl {
-  font-weight: 600;
-  display: block;
+  font-weight: 500;
+  display: inline;
 }
+/* In line after the label, dim, so a row is one line unless the words need
+   two. */
 .chat-root .perm .qopt .desc {
-  display: block;
-  margin-top: 2px;
+  display: inline;
+  margin-left: 8px;
   color: var(--c-dim);
   font-size: 12px;
   line-height: 1.4;
@@ -815,12 +877,18 @@
    middle out. Selected by TYPE, never as "any input in a .qopt" — the Other
    row puts a text field inside one. */
 .chat-root .perm .qopt .qtick {
+  /* The control stays for the keyboard, the screen reader and the `:has()`
+     rules above; the badge is its face. Sized to nothing rather than
+     `display: none`, which would take it out of the tab order. */
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
   appearance: none;
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  min-width: 14px;
-  margin: 3px 0 0;
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  margin: 0;
   flex-shrink: 0;
   border: 1.5px solid var(--c-border-strong);
   background: var(--c-bg);
@@ -882,8 +950,12 @@
   overflow: visible;
 }
 .chat-root .perm .qopt.qother.typing {
-  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  /* The field grows under the caption; the badge stays on the first line. */
+  align-items: flex-start;
   cursor: default;
+}
+.chat-root .perm .qopt.qother.typing .qnum {
+  margin-top: 1px;
 }
 /* By CLASS only, never `textarea.qtype`, so it cannot lose a specificity race
    to a rule that selects on the row's contents. */
@@ -923,9 +995,9 @@
   border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
 }
 .chat-root .perm .qsend {
-  margin-top: 12px;
+  margin-top: 8px;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 /* Why Send is still off, said next to Send. A disabled primary button with no
    explanation is a dead end; "1 of 3 answered" is the instruction. */
@@ -962,7 +1034,7 @@
   display: flex;
   flex-wrap: nowrap;
   gap: 0;
-  margin: 10px 0 2px;
+  margin: 8px 0 2px;
   padding: 0;
   width: 100%;
   height: auto;
@@ -976,7 +1048,7 @@
   flex: 1 1 0;
   min-width: 0;
   height: auto;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border: 0;
   border-radius: 0;
   margin: 0;

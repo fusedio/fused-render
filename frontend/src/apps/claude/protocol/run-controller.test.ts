@@ -191,7 +191,8 @@ describe("start → poll → done", () => {
       read_dirs: "[]",
     });
     // The poll rides `file` so the agent can refuse another target's run.
-    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py" });
+    // `native: "1"`: app-state reads come back as in-stream notices (agent.py `app_reads`).
+    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py", native: "1" });
 
     const s = controller.getState();
     expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
@@ -767,6 +768,81 @@ describe("follow-ups (T:16024, D687)", () => {
     // B survived: the last reply did not land on top of it.
     expect(reply[2]!.text).toBe(C1.text);
     expect(reply.map((t) => !!t.streaming)).toEqual([false, false, false]);
+  });
+
+  // Owner E2E R1, F6 (2026-09-10). "I queued a message, it streamed the response
+  // for 1, then the response for 2, and the response for 1 vanished" — with
+  // reply 2 sitting ABOVE its own user bubble. Both replies were ONE short text
+  // segment, the echo and the `result` landed inside one poll gap, and
+  // agent.py reported no seam: seam count 0→0, segment count 1→1, so neither
+  // the lost-seam test nor the shrink test fired and reply 2 was written into
+  // reply 1's slot. The text is the remaining signal: a window only grows, so
+  // a payload that does not start with the last one is a window that moved.
+  test("a same-size unseamed step still opens its own bubble (continuity)", async () => {
+    let controller!: ChatController;
+    const A = text("Markdown was made by John Gruber.");
+    const B = text("Done again.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "" });
+        }
+        // Echo and A's `result` both landed in the gap: B alone, no seam, same
+        // segment count, not shorter.
+        if (n === 2) return poll({ segments: [B], text: B.text });
+        return poll({ done: true, segments: [B], text: B.text });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("who is markdown made by");
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A.text], [B.text]]);
+    expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
+  });
+
+  // Bugbot #1099. The continuity read cannot see a follow-up reply that merely
+  // EXTENDS the previous one: "OK" then "OK, done" keeps the seam count, the
+  // segment count and the prefix. agent.py now reports where the window starts
+  // (`window`, the poll cursor); that offset moving is the step itself.
+  test("a follow-up reply that extends the previous text still opens its own bubble (window)", async () => {
+    let controller!: ChatController;
+    const A = text("OK");
+    const B = text("OK, done");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text, window: 0 });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "", window: 0 });
+        }
+        // Echo and A's `result` landed in the gap; the cursor stepped to B.
+        if (n === 2) return poll({ segments: [B], text: B.text, window: 480 });
+        return poll({ done: true, segments: [B], text: B.text, window: 480 });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("say OK");
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A.text], [B.text]]);
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
   });
 
   // ── owner feedback R4-3 ──────────────────────────────────────────────────
@@ -1502,29 +1578,28 @@ describe("stop (T:15901)", () => {
     expect(agent.calls.length).toBe(0);
   });
 
-  // QA round 3a, defect 2. The CLI answers `{"still_queued": []}` for anything
-  // fed through the held-open stdin — it echoes the follow-up into `out.jsonl`
-  // the moment the inbox drains, so by the time the interrupt lands it no longer
-  // counts the message as queued. T has nothing else to consult and drops the
-  // text; the controller keeps its own record and does not have to.
-  // ── feedback #11: WHEN a stop owes the composer the queued text back ────────
-  test("an empty `still_queued` means Claude read it — the bubble stays put", async () => {
-    // The measured behaviour of the held-open stdin: a follow-up is echoed into
-    // `out.jsonl` the moment the inbox drains, so an interrupt landing after
-    // that finds nothing queued and answers `{"still_queued": []}`. Claude READ
-    // the message (Surya's mid-response drain), so yanking it out of the
-    // transcript and back into the box would deny a turn the reader watched
-    // happen. This used to hand the whole queue back on exactly this response.
+  // Owner E2E R1, F7 (2026-09-10), reversing QA round 3a / feedback #11. The
+  // CLI answers `{"still_queued": []}` for a follow-up it has drained — and was
+  // then seen answering that very message AFTER the interrupt, with no poll
+  // loop watching (the live watch called it "Running outside this app…"). So an
+  // empty list is not "Claude read it": Stop hands EVERY queued entry back to
+  // the box, drops its bubble, and tells agent.py the turn had a queue so the
+  // session tree ends with the interrupt. Claude Code's own Esc does the same:
+  // the queue returns to the input, editable.
+  test("an empty `still_queued` still hands a queued follow-up back (Stop means stop)", async () => {
     let controller!: ChatController;
+    const cancels: Record<string, unknown>[] = [];
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
-      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      cancel: (fields) => {
+        cancels.push(fields);
+        return { cancelled: "r1", still_queued: [] };
+      },
       poll: async (_f, n) => {
         if (n === 0) return poll({ segments: [text("working on it")] });
         if (n === 1) {
           await controller.sendFollowUp("Claude already read this");
-          // The bubble is up and the hint is showing, both BEFORE the stop.
           expect(users(controller).map((t) => t.text)).toEqual([
             "go",
             "Claude already read this",
@@ -1542,11 +1617,13 @@ describe("stop (T:15901)", () => {
     });
     controller = made.controller;
     await controller.sendMessage("go");
-    // Nothing owed back…
-    expect(made.stranded).toEqual([]);
-    // …and the bubble is still a turn of the conversation.
-    expect(users(controller).map((t) => t.text)).toEqual(["go", "Claude already read this"]);
-    // Nothing is "queued for this turn" once the turn is over, either way.
+    // The words come back to the box…
+    expect(made.stranded).toEqual([["Claude already read this"]]);
+    // …the bubble goes with them…
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    // …agent.py was told the turn had a queue…
+    expect(cancels[0]?.queued).toBe("1");
+    // …and nothing is "queued for this turn" once the turn is over.
     expect(controller.getState().queued).toEqual([]);
     expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
   });
@@ -2162,7 +2239,9 @@ describe("skills and app_state rows (T:15771-15837)", () => {
       state: '{"url":"/x"}',
     });
     expect(controller.getState().appState).toEqual([]);
-    expect(notes(controller).map((n) => n.text)).toEqual(["read app state — check the console"]);
+    // The page writes NO line of its own any more: agent.py puts the read in
+    // the stream as a notice segment, where it happened (owner E2E R1).
+    expect(notes(controller).map((n) => n.text)).toEqual([]);
   });
 
   test("`waitedOut` flips once the pane has had ~2 s (5 polls) to answer", async () => {
@@ -2203,8 +2282,9 @@ describe("skills and app_state rows (T:15771-15837)", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(made.agent.of("app_state").length).toBe(2);
-    // …and only ONE note, however many attempts it took (T:15797).
-    expect(notes(controller).map((n) => n.text)).toEqual(["read app state"]);
+    // …and no note from the page, however many attempts it took: the read is
+    // agent.py's notice segment now, once, where it happened.
+    expect(notes(controller).map((n) => n.text)).toEqual([]);
   });
 });
 

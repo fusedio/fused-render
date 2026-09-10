@@ -119,7 +119,10 @@ export const Transcript = memo(function Transcript({
   const log = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
   const [flare, setFlare] = useState<string | null>(null);
-  const anchorSpent = useRef(false);
+  // Keyed by the anchor it was spent on, not a boolean: the chat does not
+  // remount between two task-list clicks, and a latch that never re-armed made
+  // the second message link a no-op (owner E2E R1, F2).
+  const anchorSpent = useRef<string | null>(null);
   const stopSettle = useRef<(() => void) | null>(null);
 
   // ── the follow flag and the gestures that move it ────────────────────────
@@ -403,11 +406,23 @@ export const Transcript = memo(function Transcript({
   const spend = useRef(onAnchorSpent);
   spend.current = onAnchorSpent;
   useEffect(() => {
-    if (!msgAnchor || anchorSpent.current || state.historyLoading) return;
+    // AN EMPTY LOG THAT HAS NOT LOADED YET IS NOT A TRANSCRIPT TO SPEND ON.
+    // `transcriptGen === 0` with no turns is the first render, before the
+    // host's boot effect flips `historyLoading` on: spending the anchor there
+    // landed it on an empty log every time a task page opened from a message
+    // link (owner E2E R1, F2). A conversation started with Send never bumps
+    // the generation but HAS turns, so it is not held back (Bugbot #1099).
+    if (
+      !msgAnchor ||
+      anchorSpent.current === msgAnchor ||
+      state.historyLoading ||
+      (state.transcriptGen === 0 && state.turns.length === 0)
+    )
+      return;
     // Spent on the first transcript it is offered, landed or not: left armed, a
     // uuid that matched nothing here would flare whichever turn of a DIFFERENT
     // conversation happened to carry that id.
-    anchorSpent.current = true;
+    anchorSpent.current = msgAnchor;
     const wrap = port.current;
     const el = findTurn(log.current, msgAnchor);
     spend.current?.();
@@ -417,7 +432,7 @@ export const Transcript = memo(function Transcript({
     scrollToAnchor(el, still);
     stopSettle.current = settleAnchor(wrap, el, still);
     setFlare(msgAnchor);
-  }, [msgAnchor, state.historyLoading]);
+  }, [msgAnchor, state.historyLoading, state.transcriptGen, state.turns.length]);
   // The flare's own effect, keyed on the flare: one timer per halo, torn down
   // only when the halo it belongs to goes.
   useEffect(() => {

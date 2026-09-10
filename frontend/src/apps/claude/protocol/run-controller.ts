@@ -799,6 +799,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- working line (T:14774-14926 — the VERBS are the UI's) -------------
 
   let workingStartedAt = 0;
+  /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
+   *  working line's "(10s)" restarted from 0 on F5 because the start was a
+   *  controller-local `now()`. The frame that starts a turn stamps the run
+   *  in sessionStorage; a frame that re-attaches to the same run reads the
+   *  stamp back. Same tab only, which is the reload case; a new tab starts
+   *  its clock at attach, as before. Cleared when the loop ends so an
+   *  idle-time send into the same host does not inherit the last turn's
+   *  clock. */
+  const turnStartKey = (runId: string) => `fused-render:claude-turn-start:${runId}`;
+  const turnStartedAt = (runId: string): number => {
+    try {
+      const saved = Number(sessionStorage.getItem(turnStartKey(runId)) || 0);
+      if (saved > 0 && saved <= now()) return saved;
+      const at = now();
+      sessionStorage.setItem(turnStartKey(runId), String(at));
+      return at;
+    } catch {
+      return now();
+    }
+  };
+  const forgetTurnStart = (runId: string) => {
+    try {
+      sessionStorage.removeItem(turnStartKey(runId));
+    } catch {
+      /* storage refused; nothing to forget */
+    }
+  };
 
   const setStats = (
     tokens: number,
@@ -838,7 +865,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // the visible conversation WITHOUT bumping the generation (it holds the
     // `sending` gate instead), so this counter is the only thing that moves.
     const tGen = state.transcriptGen;
-    workingStartedAt = now();
+    workingStartedAt = turnStartedAt(runId);
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -903,6 +930,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let prevSegLen = 0;
     let prevTextLen = 0;
     let prevBreaks = 0;
+    /** The previous non-blank poll's whole window text, for the continuity
+     *  test: a window only ever GROWS, so a payload that does not start with
+     *  the last one is a window that moved. */
+    let prevFullText = "";
+    /** The previous non-blank poll's window start (`poll.window`), when the
+     *  agent reports one: the cursor itself, and the one read that needs no
+     *  inference. */
+    let prevWindow: number | null = null;
     let seenFollowupSeq = followupSeq;
     /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
@@ -961,7 +996,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const data = (await run(
           dir,
           "poll",
-          { run_id: runId, file: FILE || "" },
+          { run_id: runId, file: FILE || "", native: "1" },
           // The controller's own lifetime: `dispose` aborts, so an unmounted
           // chat's last poll does not run to completion on its own.
           { key: null, ...(life ? { signal: life.signal } : {}) },
@@ -1046,7 +1081,26 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const shrank = prevSegLen
             ? segs.length < prevSegLen
             : !poll.done && fullText.length < prevTextLen;
-          if (lost > 0 || shrank) {
+          // THE CONTINUITY READ (owner E2E R1, F6): two short single-segment
+          // replies leave the seam count AND the segment count unchanged
+          // across a step the loop never saw the seam for — reply 1 `[A]`,
+          // then reply 2 `[B]`, one segment each — so neither test above
+          // fires, slot 0 is re-used, and reply 1 is overwritten with reply 2
+          // (which then sits ABOVE its own user bubble). A window only ever
+          // grows in place, so a payload whose text does not continue the
+          // last one is the window having moved, whatever its size. Same
+          // trick `baseText` already relies on below. A false positive costs
+          // an extra bubble; a miss costs a reply.
+          const moved =
+            prevFullText.length > 0 && fullText.length > 0 && !fullText.startsWith(prevFullText);
+          // THE CURSOR ITSELF, when agent.py says where the window starts
+          // (Bugbot #1099): a follow-up reply that merely EXTENDS the one
+          // before it ("OK" → "OK, done") keeps the seam count, the segment
+          // count AND the prefix, so none of the three reads above can see
+          // the step. The offset moving is the step, no inference needed.
+          const slid =
+            typeof poll.window === "number" && prevWindow !== null && poll.window !== prevWindow;
+          if (lost > 0 || shrank || moved || slid) {
             // A LOST seam count is how many steps happened, so it settles that
             // many of the outstanding ones; a bare shrink is one step, and the
             // rest stay owed. Never below zero: a shrink for an unrelated
@@ -1063,6 +1117,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           prevSegLen = segs.length;
           prevTextLen = fullText.length;
           prevBreaks = reported.length;
+          prevFullText = fullText;
+          if (typeof poll.window === "number") prevWindow = poll.window;
         }
 
         // THE SPANS THIS LOOP DID NOT SEND, taken as the base — see
@@ -1309,6 +1365,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `followDecision`'s own-echo rule reads somebody else's rows in the NEW
       // chat as this page's own and suppresses the refresh they should trigger.
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
+      forgetTurnStart(runId);
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -1775,7 +1832,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     stoppedSeat = seat;
     emit({ status: "stopping" });
     try {
-      const result = (await run(dir, "cancel", { run_id: runId as string }, { key: null })) as CancelResponse;
+      const result = (await run(
+        dir,
+        "cancel",
+        { run_id: runId as string, ...(queued.length ? { queued: "1" } : {}) },
+        { key: null },
+      )) as CancelResponse;
       // WHAT COMES BACK TO THE COMPOSER, and the rule is deliberately narrow
       // (feedback #11).
       //
@@ -1819,8 +1881,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the user owns and would edit — handing back the composed wire payload
         // would put the app-state and attachment markers into their box.
         const at = named.indexOf(entry.wire);
-        const back = at >= 0 || !entry.landed;
-        if (!back) continue;
+        // EVERY entry comes back (owner E2E R1, F7). A landed follow-up the
+        // CLI did not name used to keep its bubble and leave the queue hint
+        // — a message the reader apparently sent, with no reply, forever: the
+        // backend ends the session tree the moment anything was queued, so
+        // nothing was ever going to answer it. Claude Code's own Esc does the
+        // same thing — the queued messages return to the input, editable.
+        // Losing a bubble is recoverable; a bubble with no reply is not.
         stranded.push(entry.typed || entry.wire);
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
         // words go back through `onStranded`; the attachments are parked in
@@ -2023,15 +2090,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (!runId || answeredStates.has(id)) return;
     answeredStates.add(id); // claimed before the await: polls overlap
     trim(answeredStates);
-    // Once per REQUEST, not once per attempt: the claim above is released again
-    // when an attempt fails, and a retry appending another line would make the
-    // log read as several reads of the app for one tool call.
-    if (!notedStates.has(id)) {
-      notedStates.add(id);
-      trim(notedStates);
-      const reason = state.appState.find((r) => r.id === id)?.reason || "";
-      addNote(reason ? "read app state — " + reason : "read app state", "◍");
-    }
+    // NO LINE OF THIS PAGE'S OWN (owner E2E R1, 2026-09-10). T appended a
+    // "read app state" note at the end of the log when it answered — and the
+    // reply kept streaming ABOVE it, so the note trailed the finished answer
+    // like a stuck status, and a reload lost it. agent.py now emits the read
+    // as a notice segment where it happened (`native=1` on poll/history →
+    // `app_reads`), so it streams and restores in place.
     emit({ appState: state.appState.filter((r) => r.id !== id) });
     let res: AppStateResponse | null = null;
     try {
@@ -2115,12 +2179,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       ownRunEndedAt: 0,
     });
     try {
-      const res = (await run(
-        dir,
-        "history",
-        { file: FILE || "", session_id: sessionId },
-        { key: null },
-      )) as HistoryResponse & { error?: string };
+      const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       if (res.error) throw new Error(res.error);
       emit({
@@ -2356,7 +2415,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
+      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -2371,7 +2430,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
+        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -2695,21 +2754,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * Gated on the same two facts every follower read is: a live run owns the
    * transcript, and a send in flight is about to add to it.
    */
+  /** The transcript restore's transport: the host's in-process road when it
+   *  gave one (`deps.history`, owner E2E R1, F5), else agent.py through
+   *  `/api/run` — the tests' fake agent, and the pre-F5 behaviour. */
+  const fetchHistoryVia = (sessionId: string): Promise<HistoryResponse & { error?: string }> =>
+    deps.history
+      ? deps.history(FILE || "", sessionId)
+      : (run(
+          dir,
+          "history",
+          { file: FILE || "", session_id: sessionId, native: "1" },
+          { key: null },
+        ) as Promise<HistoryResponse & { error?: string }>);
+
   async function refreshHistory(sessionId: string): Promise<void> {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
     const gen = logGen;
+    // WHAT THE LOG LOOKED LIKE WHEN THIS WAS ASKED (Bugbot 3977975835). A
+    // scheduled or adopted repair that starts AND finishes inside the round
+    // trip leaves `activeRun`/`sending` clear again — but it has drawn rows
+    // this payload predates, and stamped `ownRunEndedAt` doing so. Either
+    // stamp moving means the answer is about an older conversation than the
+    // one on screen: drop it, the watch will ask again.
+    const endBefore = state.ownRunEndedAt;
+    const tGen = state.transcriptGen;
     try {
-      const res = (await run(
-        dir,
-        "history",
-        { file: FILE || "", session_id: sessionId },
-        { key: null },
-      )) as HistoryResponse & { error?: string };
+      const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       // A run that attached across the await owns the log now; its stream is
       // fresher than this answer.
       if (activeRun || sending) return;
+      if (state.ownRunEndedAt !== endBefore || state.transcriptGen !== tGen) return;
       if (res.error) throw new Error(res.error);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a

@@ -35,6 +35,7 @@ import { currentUrl, navigateUrl } from "@platform/lib/router";
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { resolveAgentDir } from "./protocol/agent";
+import { fetchHistory } from "./protocol/history";
 import type { SendOptions, UserTurn } from "./protocol/controller-api";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -801,6 +802,10 @@ function ChatBody(props: ChatBodyProps) {
         file,
         agentDir,
         params,
+        // The transcript restore takes the in-process road (owner E2E R1, F5):
+        // `/api/claude-sessions/history`, with agent.py through `/api/run`
+        // behind it. See `fetchHistory`.
+        history: (f, s) => fetchHistory(agentDir, f, s),
         model: () => liveModel.current,
         effort: () => liveEffort.current,
         hasPane: () => paneAnswer.current(),
@@ -2494,6 +2499,12 @@ function ChatBody(props: ChatBodyProps) {
       // typed meanwhile. Sending it there uploaded an empty note and the
       // transcript then wrote words onto it after it was stamped `sent`
       // (Bugbot, PR #1074).
+      // The scheduler handoff's two directions (owner E2E R1, F4): what the
+      // tray holds when Continue is pressed, and the paths that come back with
+      // "Back to chat" (task-shots copies, registered as real paths — no
+      // upload, `useAttachments.addPaths`).
+      attachments: () => attach.items,
+      onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
       hasAttachments:
         attach.items.length > 0 ||
         ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),

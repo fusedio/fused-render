@@ -83,6 +83,35 @@ import { useCallback, useRef } from "react";
 
 import { measureRowNeed } from "./fit";
 
+/**
+ * THE STRIP'S NATURAL WIDTH, measured as the row's own `max-content` — every
+ * child at the width it asks for, growers included at THEIR content size.
+ *
+ * `measureRowNeed` sums the children's boxes as laid out, and one of this
+ * row's children grows (`.c-anncta` carries the slack, `flex: 1 1 auto`). Laid
+ * out, that child's box IS the slack, so the sum came out equal to the row's
+ * width at the moment it was read — and that moment was the first paint, at
+ * the widest the pane would ever be. Cached, "natural" then exceeded every
+ * narrower box by construction, and the strip folded on the first few pixels
+ * of shrink while the words still had a hundred to spare (owner E2E R1, F1,
+ * measured live: `tight` at a 379px box for a 373px labelled row).
+ *
+ * Read with the words ON (the caller strips `.tight` first). `max-content` on
+ * a flex row is the sum of its children's max-content, growers at their
+ * content width, gaps and padding included — the number the fold is about.
+ * The inline width is put back exactly as found, so a row that had none has
+ * none. Synchronous: one forced layout, on the same tick, invisible.
+ */
+export function measureStripNeed(row: HTMLElement): number {
+  const prev = row.style.width;
+  row.style.width = "max-content";
+  const w = row.getBoundingClientRect().width;
+  row.style.width = prev;
+  // A shim with no layout answers 0; fall back to the box sum so tests that
+  // drive `createStripFit` through a fake `need` keep meaning what they say.
+  return w > 0 ? Math.ceil(w) : measureRowNeed(row);
+}
+
 /** The px of overflow a strip is allowed to carry before it folds. Spent on the
  *  FOLD only — see the note above. */
 export const FIT_HYSTERESIS = 3;
@@ -102,7 +131,7 @@ export interface StripFit {
  * injected so a test can prove the verdict without a layout engine.
  */
 export function createStripFit(
-  need: (row: HTMLElement) => number = measureRowNeed,
+  need: (row: HTMLElement) => number = measureStripNeed,
 ): StripFit {
   let natural: number | null = null;
   return {
@@ -150,7 +179,7 @@ export function createStripFit(
 /** The one-shot verdict, for a caller with no generation to track. */
 export function fitStrip(
   row: HTMLElement | null | undefined,
-  need: (row: HTMLElement) => number = measureRowNeed,
+  need: (row: HTMLElement) => number = measureStripNeed,
 ): void {
   createStripFit(need).run(row);
 }

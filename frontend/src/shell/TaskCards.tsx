@@ -483,7 +483,19 @@ function TaskCard({
   const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
 
   return (
-    <section className="task-card" aria-label={`${task.task_id} ${title}`}>
+    <section
+      className="task-card task-card--door"
+      aria-label={`${task.task_id} ${title}`}
+      // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
+      // used to be the live chat with its own scroll and its own clicks —
+      // collapsible chips, thumbnails, links — and a wall of tiles each
+      // fighting for the wheel. Now the body is a picture (task-cards.css
+      // `.task-card--door .task-card-body`: no pointer events, no scroll) and a
+      // press anywhere on the card opens the same popup the head did. The head
+      // keeps its own handler for the keyboard; the doors strip inside it still
+      // stops its presses, so a door never also opens the popup.
+      onClick={() => onPeek(task)}
+    >
       {/* THE HEAD IS THE DOOR (Akshil, 2026-09-05: "when I click on the heading
           of the card ... it should open the preview"). The whole strip — ring,
           id, time, title — is one button that opens the task's popup; the body
@@ -495,7 +507,10 @@ function TaskCard({
         role="button"
         tabIndex={0}
         aria-label={`Preview ${task.task_id}`}
-        onClick={() => onPeek(task)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPeek(task);
+        }}
         onKeyDown={(e) => {
           // Only a key pressed ON THE HEAD. The folder chip inside it is a real
           // button of its own; its Enter and Space bubble here, and answering

@@ -63,6 +63,9 @@ export interface PollRequest {
   run_id: string;
   /** Rides along so a poll can refuse another target's run (agent.py:5199-5203). */
   file: string;
+  /** `"1"` from the React page: app-state reads come back as in-stream
+   *  notice segments instead of being stripped (agent.py `app_reads`). */
+  native?: string;
 }
 
 /** `decide` for a permission card (T:13979-13996). */
@@ -125,9 +128,18 @@ export interface FileSessionRequest {
   file: string;
   /** Optional for `live_run` (target as a whole), required for the rest. */
   session_id: string;
+  /** `"1"` from the React page (history): app-state reads come back as
+   *  in-stream notice segments (agent.py `app_reads`). */
+  native?: string;
 }
 export interface RunIdRequest {
   run_id: string;
+}
+/** `cancel` — `queued: "1"` when this page had a follow-up in flight for the
+ *  turn, so agent.py ends the session tree after the interrupt rather than
+ *  letting the CLI answer the queue with nobody watching. */
+export interface CancelRequest extends RunIdRequest {
+  queued?: string;
 }
 export interface SnapshotsRequest {
   file: string;
@@ -166,7 +178,7 @@ export interface AgentRequests {
   shots_dir: Record<string, never>;
   image_to_png: ImageToPngRequest;
   terminal_command: FileSessionRequest;
-  cancel: RunIdRequest;
+  cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
 }
@@ -377,6 +389,11 @@ export interface PollResponse {
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
+  /** Byte offset in out.jsonl where this payload's window starts — the poll
+   *  cursor. A change while a follow-up is outstanding IS the cursor stepping
+   *  past its seam (agent.py `_poll`, Bugbot #1099). Absent on an older
+   *  agent.py. */
+  window?: number;
   /**
    * Where a mid-stream follow-up was ABSORBED into the reply already streaming
    * (agent.py `_absorbed_turn_breaks`). One entry per seam, in file order,

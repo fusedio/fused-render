@@ -378,10 +378,12 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
                     disabled={posting || resolved}
                     onClick={() => void sendOne(q, option.label)}
                   >
+                    <span className="qnum" aria-hidden="true" />
                     <OptionText option={option} />
                   </Button>
                 ) : (
                   <label key={oi} className="qopt">
+                    <span className="qnum" aria-hidden="true" />
                     {multi ? (
                       <Checkbox
                         className="qtick"
@@ -414,6 +416,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
               {oneShot ? (
                 otherOpen[i] ? (
                   <div className="qopt qother typing">
+                    <span className="qnum" aria-hidden="true" />
                     {/* The SAME body the button carries, not a bare field: an
                         unlabelled input left a grey box the user could not
                         tell what they were answering (T:14346-14351).
@@ -458,11 +461,13 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
                     }}
                     onClick={() => openOther(i)}
                   >
+                    <span className="qnum" aria-hidden="true" />
                     <OptionText option={OTHER} />
                   </button>
                 )
               ) : (
                 <label className={cn("qopt", "qother", otherOpen[i] && "typing")}>
+                  <span className="qnum" aria-hidden="true" />
                   {multi ? (
                     <Checkbox
                       className="qtick"

@@ -566,10 +566,13 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
         continue;
       }
       if (!scheduledRunIsOurs(entry, mine)) {
-        if (!noted.has(runId)) {
-          noted.add(runId);
-          deps.addNote(NOTE_FOREIGN);
-        }
+        // SILENT (owner E2E R1, F9). T posted "a scheduled message for this
+        // folder just ran in another session" into EVERY open chat on the
+        // folder — a chat that never scheduled anything got a warning about
+        // work it has nothing to do with. The run is someone else's
+        // conversation; it shows up there, and on the tasks page. The id is
+        // still remembered so a later tick does not re-evaluate it.
+        noted.add(runId);
         continue;
       }
       // The live-turn guard sits HERE, adjacent to the call with nothing awaited

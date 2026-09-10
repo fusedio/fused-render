@@ -6800,7 +6800,9 @@ describe("cardsForTasks", () => {
     ];
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
     // "e" — archived — is drawn too, in the bottom lane.
-    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b", "e"]);
+    // Upcoming ("c") is not a card (Akshil, 2026-09-10): a run that has not
+    // happened has no chat to show. It keeps its lane on the List and Calendar.
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "a", "b", "e"]);
   });
 
   it("is the List's order, exactly — sortByLane, not a second opinion", () => {
@@ -6858,7 +6860,7 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
   });
 
-  it("runs Upcoming soonest first, overdue at the very top — the List's rule", () => {
+  it("does not draw Upcoming at all — a run that has not happened has no chat to show", () => {
     // The old clock ran every lane newest-created first, which on Upcoming put
     // the run due in ten minutes under one due in October if it was scheduled
     // later. The List sorts that lane by the run ahead, ascending; so does this.
@@ -6872,7 +6874,12 @@ describe("cardsForTasks", () => {
         messages: [msg({ at, ran_at: 0, state: "pending" })],
       });
     const rows = [soon("october", NOW_S + 30 * 86_400), soon("tenmin", NOW_S + 600), soon("late", NOW_S - 600)];
-    expect(cardsForTasks(rows, CARD_PAGE, NOW).cards.map((t) => t.key)).toEqual(["late", "tenmin", "october"]);
+    expect(cardsForTasks(rows, CARD_PAGE, NOW)).toEqual({ cards: [], hidden: 0 });
+    // Nor does a hidden Upcoming count toward "Show more".
+    expect(cardsForTasks([...rows, running("a", 100)], 1, NOW)).toEqual({
+      cards: [expect.objectContaining({ key: "a" })],
+      hidden: 0,
+    });
   });
 
   it("does not re-sort when a run merely writes", () => {
@@ -7376,7 +7383,17 @@ describe("the Cards view's frame", () => {
     // type into, with buttons for the List, the Explorer and Archive.
     const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
     expect(head).toContain('role="button"');
-    expect(head).toContain("onClick={() => onPeek(task)}");
+    // The head still opens the popup, and stops the press there — the CARD is
+    // the door now too (Akshil, 2026-09-10, E2E R1 F3), so a head press must
+    // not open it twice.
+    expect(head).toContain("e.stopPropagation();");
+    expect(head).toContain("onPeek(task);");
+    // THE WHOLE CARD IS THE DOOR: the body is a picture of the chat — no
+    // pointer events, no scroll — and any press on the card opens the popup.
+    expect(CARDS).toContain('className="task-card task-card--door"');
+    expect(CARDS).toContain("onClick={() => onPeek(task)}");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
     // ...for keys pressed on the head itself: the folder chip inside it is a
     // button whose Enter/Space bubble up (Bugbot, #1011).
