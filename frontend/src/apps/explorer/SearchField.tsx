@@ -68,7 +68,7 @@ import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 // aligned two-column grid, so the `\n`s and the em dashes below are both
 // load-bearing: they are the row and column separators.
 const SEARCH_GRAMMAR_HINT =
-  "report — names containing it, here and below\n" +
+  "report — names containing it, at any depth below\n" +
   "*.pdf — a pattern, at any depth below\n" +
   "/*.pdf — a pattern, in this folder only\n" +
   "~/Work/*.md — start from another folder";
