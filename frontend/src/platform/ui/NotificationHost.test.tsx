@@ -107,6 +107,15 @@ test(
     });
     tree = renderer!.toJSON() as ReactTestRendererJSON;
     expect(findAll(tree, "leaving").length).toBe(1);
+
+    // `NotificationHost` mounts `ServerStatusBanner`, which arms a real
+    // `window.setInterval` polling `/api/config` every 5s. Left running past
+    // this test it keeps calling whatever `fetch` a LATER file's suite has
+    // stubbed, for the rest of the process — so the renderer comes down here,
+    // the same way every other suite in this repo tears itself down.
+    await act(() => {
+      renderer!.unmount();
+    });
   },
   JOB_POPUP_VISIBLE_MS * 2 + 3000,
 );
