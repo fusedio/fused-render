@@ -52,6 +52,7 @@ import {
   createRecorder,
   isSendableNow,
   NAV_LOCKED_REASON,
+  pathOf,
   recClockText,
   RecControls,
   transcribe,
@@ -69,7 +70,11 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
-import { getStream, isNativeOff, noteSourcesProbe } from "./shots";
+import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
+import {
+  CHAT_FRAME_FALLBACK_MS,
+  ChatFramePlaceholder,
+} from "@platform/ui/ChatFrame";
 import {
   AppPane,
   createAppStateWatcher,
@@ -83,6 +88,7 @@ import {
   usePaneState,
   useSplit,
   ViewToggle,
+  type PaneNoun,
   type PaneSrcFlags,
 } from "./pane";
 import {
@@ -284,11 +290,25 @@ export function ClaudeChat(props: ClaudeChatProps) {
     }
     let live = true;
     setAgentDir(undefined);
+    // AND A BACKSTOP, which legacy had as `CHAT_FRAME_FALLBACK_MS` (8 s) on the
+    // frame's own cover: a `statPath` that never settles — a stalled server, a
+    // request the browser never answers — left the box blank FOR EVER, with no
+    // road to the `TroubleView` branch below that exists to explain exactly
+    // this. Losing the race resolves to `null`, which is that branch.
+    //
+    // The same 8 s, and the same constant, so the two waits cannot drift apart.
+    const backstop = setTimeout(() => {
+      if (live) setAgentDir(null);
+    }, CHAT_FRAME_FALLBACK_MS);
     void resolveAgentDir(file).then((dir) => {
-      if (live) setAgentDir(dir);
+      if (live) {
+        clearTimeout(backstop);
+        setAgentDir(dir);
+      }
     });
     return () => {
       live = false;
+      clearTimeout(backstop);
     };
   }, [file]);
 
@@ -317,10 +337,22 @@ export function ClaudeChat(props: ClaudeChatProps) {
   const params: ParamsStore = props.params === "url" ? urlStore! : props.params;
 
   if (agentDir === undefined) {
-    // The template lookup is in flight. The host is still holding its own cover
-    // over this box (ChatFrame's skeleton), so a second skeleton on a second
-    // clock is exactly what 00 §1e's "one wait, one look" forbids.
-    return <div className={rootClass(props)} data-variant={variantOf(props)} />;
+    // THE TEMPLATE LOOKUP IS IN FLIGHT, and this branch used to be an EMPTY BOX
+    // on the argument that "the host is still holding its own cover over this
+    // box (ChatFrame's skeleton)". That is true flag-OFF, where the host really
+    // does frame a booting document — but flag-on there is no frame and no
+    // cover: `ChatMount`'s `Suspense` fallback covers only the CHUNK LOAD, and
+    // it has already resolved by the time this component is running its own
+    // stat. So a first mount for a folder drew a bare `.chat-root` on the host
+    // background for the length of one `/api/fs/stat`, and a cold cards wall of
+    // six drew six empty tiles where legacy drew six skeletons.
+    //
+    // `placeholderFor`'s node — the SAME `ChatFramePlaceholder` that
+    // `Suspense` shows and that `ChatFrame` holds over a booting frame — so the
+    // two waits look like one wait, which is what 00 §1e's "one wait, one look"
+    // actually asks for. The reader sees the chunk's skeleton become the stat's
+    // skeleton with no flash of an empty box between them.
+    return <ChatFramePlaceholder className={rootClass(props)} />;
   }
   if (agentDir === null) {
     return (
@@ -419,7 +451,38 @@ function ChatBody(props: ChatBodyProps) {
     () => paneFrame.current ?? hostFrame(),
     [hostFrame],
   );
-  const [watcher] = useState(() => createAppStateWatcher(appFrame));
+  /** The pane's noun, for the app-state block. A REF because `usePaneState` is
+   *  called below this line and the watcher outlives every render — and because
+   *  the noun RESOLVES late anyway (the `app.py` decision is a round trip), so
+   *  even an ordering that allowed a value would be reading a stale one. The
+   *  watcher asks at block time (`appState.ts:231`, `:533`), which is what makes
+   *  a lazy read the right shape here. */
+  const paneNounRef = useRef<PaneNoun>("preview");
+  const [watcher] = useState(() =>
+    createAppStateWatcher(appFrame, {
+      // THE THREE OPTIONS THIS WAS ALWAYS MEANT TO CARRY. `createAppStateWatcher`
+      // has taken them since it was written; the call site passed none, so all
+      // three defaults were quietly in force.
+      //
+      // "app", not "preview", for an app folder (T:5352-5411, T:5160-5173): the
+      // block was telling the model the user's running app was "the preview".
+      paneNoun: () => paneNounRef.current,
+      // THE OUTLINE'S NODES CARRY A `path` (T:4977-4990, T:5065-5082). The
+      // block's own preamble tells the model `path` is the same anchorPath the
+      // pins use (`appState.ts:549-551`) and no node had one — so a pin could
+      // not be joined to an outline node, and D146's single-identifier promise
+      // was broken from the outline side. `ann/geometry`'s `pathOf` is the
+      // builder the pins themselves use, which is what makes the two the same
+      // identifier rather than two spellings that happen to agree.
+      pathOf,
+      // AND THE OUTLINE GOES TO A FILE (T:5177-5218). Without a shots dir the
+      // watcher keeps it inline and warns `app-state outline kept inline: no
+      // screenshot directory` on EVERY send — so the CLI re-read the whole
+      // outline on every later turn, which is the exact cost T:5177-5218 exists
+      // to avoid.
+      shotsDir: () => shotsDir(agentDir),
+    }),
+  );
   // The framed document's console stays the app's own once we are gone.
   useEffect(() => () => watcher.dispose(), [watcher]);
   // A thumbnail's pane must neither pull the keyboard nor be recorded as the
@@ -475,6 +538,11 @@ function ChatBody(props: ChatBodyProps) {
     onArriveChat: () => annRef.current?.arriveNarrowChat(),
     onRemeasure: () => annRef.current?.remeasure(),
   });
+  // The noun the app-state block reads (see `paneNounRef`'s own note). Written
+  // on every render rather than in an effect: the watcher pulls it lazily at
+  // BLOCK time, so what matters is that the ref is current whenever a send
+  // happens, not that a commit has been observed.
+  paneNounRef.current = pane.paneNoun;
   const split = useSplit({
     params,
     narrow: narrowView.narrow,
@@ -1164,6 +1232,17 @@ function ChatBody(props: ChatBodyProps) {
     rows: state.appState,
     watcher: hasPane.current ? watcher : null,
     answerAppState: controller.answerAppState,
+    // NO `onNote` HERE, DELIBERATELY (audit A's GAP-B1 adjacency / P3-21 reads
+    // this as a missing wire; it is not one at this tip). T:15806's one-line
+    // "read app state" row is already written by the controller, inside
+    // `answerAppState` itself (`run-controller.ts:1905-1909`), under its own
+    // once-per-REQUEST latch — and `answerAppState` is what the line above
+    // hands this hook. The responder's `onNote` is a second, equivalent seam
+    // for a host that answers app state WITHOUT the controller; passing it here
+    // would put two identical ◍ rows in the transcript for one tool call.
+    //
+    // Both paths are pinned: `run-controller.test.ts` for the live one,
+    // `useAppStateResponder.test.tsx` for the seam.
   });
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
@@ -1944,7 +2023,29 @@ function ChatBody(props: ChatBodyProps) {
   const kebabBtn = useRef<HTMLElement | null>(null);
   // The page must not stay on a transcript that no longer exists
   // (T:13348-13366); the menu has already dropped every cache keyed by it.
-  const onErased = useCallback(() => onBack(), [onBack]);
+  const onErased = useCallback(() => {
+    // THE MODE GOES BEFORE THE NAVIGATION (T:13371-13375), and T's own comment
+    // says why: back-to-chats "REFUSES while a comment mode holds the reader
+    // here (annNavLocked) — and a page must not stay on a transcript that no
+    // longer exists (Bugbot, PR #1049). The notes were about a conversation
+    // that is gone, so the mode is dropped first, the way its own discard path
+    // drops it."
+    //
+    // T spells this as three lines — `if (annOn) annSetMode(false);
+    // annBusyHold = false; annNavLock();` — and `machine.set(false)` is all
+    // three here: it drops the settle's hold on its first line ("a disarm,
+    // whoever asks […] releases the settle's hold") and ends in
+    // `deps.onLock(locked())`, which is `annNavLock`. Unconditional, unlike
+    // T's `if (annOn)`, because the lock can also be held by a settle the
+    // reader has already left, and `set(false)` is the one door that clears
+    // both.
+    //
+    // Without it, deleting the task left the mode running against a session
+    // that no longer existed — pins over a pane whose conversation is gone,
+    // and a nav lock refusing the very navigation that was meant to follow.
+    ann.setMode(false);
+    onBack();
+  }, [ann, onBack]);
 
   // MEMOIZED, like the two callbacks below it: a fresh object per render defeats
   // every `React.memo` in the tree it is handed to, and this one is handed to

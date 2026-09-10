@@ -542,7 +542,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   });
 
   return (
-    <div className={cn("turn", "perm", "ask", resolved && "resolved")}>
+    <div className={cn("turn", "perm", "ask", resolved && "resolved")} data-perm-id={row.id}>
       <div className="perm-head">{resolved ? "Claude asked you" : "Claude is asking you"}</div>
       {answerable ? (
         <div className={cn("qscroll", tabbed && "is-tabbed")}>

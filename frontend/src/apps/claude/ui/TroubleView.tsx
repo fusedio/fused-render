@@ -10,11 +10,10 @@
 // `platform/ui/TroubleCard` — one card, one set of words, one copy block.
 import { useState } from "react";
 
-import { CLAUDE_INSTALL_COMMAND } from "@platform/lib/trouble";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 
 import type { Trouble, TroubleKind } from "../protocol/controller-api";
-import { splitTroubleMessage, troubleExplain } from "../protocol/trouble";
+import { platformKindOf, splitTroubleMessage, troubleExplain } from "../protocol/trouble";
 
 /** The kinds the chat's controller reports that the message classifier cannot
  *  infer on its own — a run id the server has forgotten says nothing about
@@ -87,6 +86,13 @@ export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
            CLI had said them. `raw` is the part that is genuinely verbatim, and
            the part `troubleKind` classifies on either way. */
         error={lines.raw ?? trouble.message}
+        /* THE CLASSIFICATION WE ALREADY MADE. `protocol/trouble.ts` decided
+           this when the failure arrived and `platformKindOf` translates our
+           vocabulary back to the card's — so the card no longer re-derives it
+           from the sliced `raw` above, which need not still match the regex the
+           whole message did. That is what makes the card the ONE drawer of the
+           install box below. */
+        kind={platformKindOf(trouble.kind)}
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
@@ -97,13 +103,21 @@ export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
             reworded into the report. */}
         {trouble.detail ? <CopyDetail text={trouble.detail} /> : null}
       </TroubleCard>
-      {trouble.detail ? <pre className="trouble-error">{trouble.detail}</pre> : null}
-      {trouble.kind === "cli-missing" ? (
-        <div className="trouble-cmd">
-          <code>{CLAUDE_INSTALL_COMMAND}</code>
-          <CopyDetail text={CLAUDE_INSTALL_COMMAND} label="Copy" />
-        </div>
+      {/* ONE VERBATIM BLOCK PER CARD, which is all T:13676-13679 draws. The card
+          above already prints a `.trouble-error` (the CLI's own words), so a
+          second one here was a duplicate whenever `detail` and `message` carry
+          the same text — the usual case for a failure whose whole message IS
+          the traceback. Shown only when it genuinely adds something the card is
+          not already showing; the Copy button inside the card carries it
+          either way. */}
+      {trouble.detail && trouble.detail.trim() !== (lines.raw ?? trouble.message).trim() ? (
+        <pre className="trouble-error">{trouble.detail}</pre>
       ) : null}
+      {/* NO INSTALL BOX HERE. T:13681-13691 draws exactly one, inside the card,
+          and `platform/ui/TroubleCard.tsx` is that one — complete with the "Run
+          it in a terminal, then quit Fused Render and open it again" hint this
+          copy never had. Drawing our own as well put the same `curl … | bash`
+          box with its own Copy button on screen TWICE in a single card. */}
     </div>
   );
 }

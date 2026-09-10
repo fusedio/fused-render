@@ -419,3 +419,177 @@ test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () =>
   expect(params.get("session_id")).toBe(sessionAfterAsk);
   expect(params.get("session_id")).toBeTruthy();
 });
+
+// ---- the cover over the agentDir stat, and its 8 s backstop (P3-13) --------
+
+test("the template lookup shows the SKELETON, not an empty box", async () => {
+  // This branch used to return a bare `.chat-root` on the argument that "the
+  // host is still holding its own cover over this box (ChatFrame's skeleton)".
+  // True flag-OFF, where the host frames a booting document — but flag-on there
+  // is no frame: `ChatMount`'s `Suspense` fallback covers the CHUNK LOAD and has
+  // already resolved by the time this component runs its own stat. So a first
+  // mount drew an empty box on the host background for the length of one
+  // `/api/fs/stat`, and a cold wall of six cards drew six empty tiles where
+  // legacy drew six skeletons.
+  let release!: (r: Response) => void;
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url.startsWith("/api/fs/stat")) {
+      return new Promise<Response>((res) => {
+        release = res;
+      });
+    }
+    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    return jsonRes({});
+  };
+
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} />);
+  });
+  mounted.push(r);
+
+  // The SAME node `Suspense` shows and `ChatFrame` holds over a booting frame,
+  // so the two waits read as one wait rather than a skeleton flashing to an
+  // empty box.
+  const roots = r.root.findAll(
+    (n) => typeof n.type === "string" && String((n.props as { className?: string }).className ?? "").includes("chat-frame"),
+  );
+  expect(roots.length).toBeGreaterThan(0);
+  // A skeleton, not a bare plate: the shimmer bars are what makes it a wait.
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("skel"),
+    ).length,
+  ).toBeGreaterThan(0);
+
+  await act(async () => {
+    release(
+      jsonRes({
+        path: "/w/p",
+        is_dir: true,
+        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+      }),
+    );
+  });
+});
+
+test("a stat that never settles gets an 8 s backstop to the TroubleView", async () => {
+  // Legacy revealed at `CHAT_FRAME_FALLBACK_MS`; without a backstop a stalled
+  // server — or a request the browser never answers — left the box covered for
+  // ever, with no road to the branch that exists to explain exactly this.
+  //
+  // The TIMER is asserted rather than waited out: the real duration is 8 s, and
+  // a suite that actually sleeps it pays that on every run. The firing is then
+  // driven by hand, which also proves the branch it lands on.
+  const { CHAT_FRAME_FALLBACK_MS } = await import("@platform/ui/ChatFrame");
+
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url.startsWith("/api/fs/stat")) return new Promise<Response>(() => {});
+    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    return jsonRes({});
+  };
+
+  const G = globalThis as Record<string, unknown>;
+  const realTimeout = G.setTimeout as typeof setTimeout;
+  const armed: Array<{ ms: number; fn: () => void }> = [];
+  G.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms === CHAT_FRAME_FALLBACK_MS) {
+      armed.push({ ms, fn });
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realTimeout(fn, ms);
+  }) as typeof setTimeout;
+
+  let r!: ReturnType<typeof create>;
+  try {
+    const params = createMemoryParamsStore();
+    await act(async () => {
+      r = create(<ClaudeChat {...baseProps} params={params} />);
+    });
+    mounted.push(r);
+
+    // Exactly one backstop, at legacy's own number — one constant, so the two
+    // waits cannot drift apart.
+    expect(armed).toHaveLength(1);
+    expect(armed[0]!.ms).toBe(8000);
+  } finally {
+    G.setTimeout = realTimeout;
+  }
+
+  const trouble = () =>
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-card"),
+    );
+  // Covered until it fires...
+  expect(trouble()).toHaveLength(0);
+  // ...and the reader is told, instead of watching a skeleton for ever.
+  await act(async () => {
+    armed[0]!.fn();
+  });
+  expect(trouble().length).toBeGreaterThan(0);
+});
+
+
+// ---- the three options the watcher was never handed (P3-19/20/37) ---------
+
+test("the block says APP, the outline goes to a FILE, and its nodes carry a path", async () => {
+  // `createAppStateWatcher` has taken all three options since it was written;
+  // the call site passed NONE, so every default was quietly in force:
+  //
+  //   * P3-20 — the block called the user's running app "the preview" (T:5352-
+  //     5411);
+  //   * P3-37 — the whole outline was INLINED on every send, so the CLI re-read
+  //     it on every later turn (the exact cost T:5177-5218 exists to avoid) and
+  //     it warned `app-state outline kept inline: no screenshot directory` each
+  //     time;
+  //   * P3-19 — no outline node carried a `path`, while the block's own preamble
+  //     tells the model `path` is the same anchorPath the pins use — so a pin
+  //     could not be joined to a node, and D146's single-identifier promise was
+  //     broken from the outline side.
+  const uploads: Array<{ path: string; body: string }> = [];
+  const base = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (
+    input: unknown,
+    init?: { body?: unknown },
+  ): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url === "/api/run") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        py: string;
+        params: Record<string, string>;
+      };
+      // The shots dir the outline is offloaded into — the one answer the boot
+      // stub does not give, and the only reason it stayed inline in tests.
+      if (String(body.params?.action) === "shots_dir") {
+        return jsonRes({ ok: true, result: { dir: "/w/p/.fused/shots" } });
+      }
+    }
+    if (url.startsWith("/api/fs/upload")) {
+      uploads.push({ path: url, body: "" });
+      return jsonRes({ ok: true });
+    }
+    return base(input as RequestInfo, init as RequestInit);
+  };
+
+  await mountChat({ initialAsk: "what can you see?", annotateTarget: hostFrameStub() });
+  await settle(30);
+
+  expect(started().length).toBe(1);
+  const message = started()[0].params.message;
+  // The NOUN. A hosted target resolved through `app.py` is an app, and the
+  // preamble now says so.
+  expect(message).toContain("app");
+  expect(message).not.toContain("the preview pane the reader is looking at");
+  // OFFLOADED: a path instead of the outline, and the preamble that tells the
+  // model where to read it.
+  expect(message).toContain("dom_path");
+  expect(message).toContain("The DOM outline is the JSON file at `dom_path`");
+  expect(uploads.length).toBeGreaterThan(0);
+});

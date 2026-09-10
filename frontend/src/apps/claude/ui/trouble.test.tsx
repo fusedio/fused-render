@@ -173,3 +173,76 @@ test("no new innerHTML site: the error row and the card are text nodes", () => {
     expect(readFileSync(join(HERE, name), "utf8")).not.toContain("dangerouslySetInnerHTML");
   }
 });
+
+// ---- ONE install box, one verbatim block (P3-01, T:13675-13691) -----------
+
+/** agent.py's CLI-missing branch, verbatim — the message that classifies as
+ *  `notfound` on the platform side and `cli-missing` on the chat's. */
+const MISSING =
+  "Claude Code isn't installed. Install it, then start a new chat here. " +
+  "Help: https://render.fused.io/#troubleshooting-notfound (claude: command not found)";
+
+test("a cli-missing card draws the install command ONCE", () => {
+  // It was on screen TWICE in one card — once as `TroubleCard`'s
+  // `.trouble-install` (with the "Run it in a terminal…" hint) and once as
+  // `TroubleView`'s own `.trouble-cmd`, each with its own Copy button. T:13681-
+  // 13691 draws exactly one, inside the card.
+  const r = mount(
+    <TroubleView trouble={{ kind: "cli-missing", message: MISSING }} what="using the chat" />,
+  );
+  expect(all(r, "trouble-cmd")).toHaveLength(0);
+  expect(all(r, "trouble-install")).toHaveLength(1);
+  // One `curl … | bash`, not two.
+  const text = textOf(r.toJSON() as Json);
+  const shown = text.split("claude.ai/install.sh").length - 1;
+  expect(shown).toBe(1);
+  // And the card's version is the one with the hint the chat's copy never had.
+  expect(text).toContain("Run it in a terminal");
+});
+
+test("the install box follows the kind WE classified, not a re-read of the slice", () => {
+  // `TroubleCard` used to re-derive the classification from the `error` string
+  // it was handed — which is the SLICED verbatim part (`lines.raw`) and need not
+  // still match the regex the whole message did. `platformKindOf(trouble.kind)`
+  // is now passed instead, which is what makes the card the one drawer.
+  const r = mount(
+    <TroubleView
+      trouble={{ kind: "cli-missing", message: "the CLI is not where we left it" }}
+      what="using the chat"
+    />,
+  );
+  expect(all(r, "trouble-install")).toHaveLength(1);
+});
+
+test("a kind with no install box does not grow one", () => {
+  const r = mount(<TroubleView trouble={{ kind: "login", message: LOGIN }} />);
+  expect(all(r, "trouble-install")).toHaveLength(0);
+  expect(all(r, "trouble-cmd")).toHaveLength(0);
+});
+
+test("the verbatim block is drawn once when the detail is what the card already prints", () => {
+  // The same double-draw risk for `<pre class="trouble-error">`: the card
+  // prints one from the `error` it is handed, and `TroubleView` printed a second
+  // from `detail`. The test is against what the CARD shows — `lines.raw`, the
+  // sliced verbatim part — because that, not the whole message, is the string a
+  // second block would be repeating.
+  const raw = splitTroubleMessage(MISSING).raw ?? MISSING;
+  expect(raw).toBeTruthy();
+  const same = mount(<TroubleView trouble={{ kind: "generic", message: MISSING, detail: raw }} />);
+  expect(all(same, "trouble-error")).toHaveLength(1);
+});
+
+test("…and twice only when the detail genuinely says something else", () => {
+  // A traceback IS worth its own block — it is the thing a reader pastes
+  // somewhere and gets an answer from, and it is not the one-line message.
+  const r = mount(
+    <TroubleView
+      trouble={{
+        kind: "generic",
+        message: "the run failed",
+        detail: "Traceback (most recent call last):\n  File \"agent.py\", line 1",
+      }}
+    />,
+  );
+  expect(all(r, "trouble-error")).toHaveLength(2);
+});

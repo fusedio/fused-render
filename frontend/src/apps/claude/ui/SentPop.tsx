@@ -183,6 +183,13 @@ export function SentPop({ open, onClose, ...body }: SentPopProps) {
   return (
     <Modal
       title="What was sent"
+      // T:4405 names the dialog in FULL — `aria-label="What was sent to the
+      // agent"` — while the visible bar says the shorter "What was sent"
+      // (T:4407). The short form is right on screen, where the receipt the
+      // reader just clicked supplies the rest; spoken on its own it drops the
+      // half that says WHOSE record this is. The receipt rows that open it were
+      // already saying it in full (`ui/Receipts.tsx`).
+      ariaLabel="What was sent to the agent"
       onClose={onClose}
       footer={
         <button type="button" className="btn btn-secondary" onClick={onClose}>

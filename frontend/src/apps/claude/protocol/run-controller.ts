@@ -49,7 +49,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
-import { pollBody } from "./segments";
+import { pollBody, type SegmentView } from "./segments";
 import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -207,11 +207,19 @@ function emptyState(file: string | null): ChatState {
 // ---- the controller --------------------------------------------------------
 
 export function createChatController(deps: ControllerDeps): ChatController {
-  const run = deps.run || runAgent;
   const sleep = deps.sleep || nativeSleep;
   const now = deps.now || Date.now;
   const dir = deps.agentDir;
   const FILE = deps.file;
+  // Every `agent.py` call this controller makes carries the chat's own target
+  // as `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
+  // conversation is about (SPEC CL-5; `protocol/agent.ts` derives the PAGE half
+  // from the script's own dir). A wrapper rather than a change at each of the
+  // ~17 call sites, and it leaves `deps.run` — the tests' seam — untouched.
+  const run =
+    deps.run ||
+    ((d, action, fields, opts = {}) =>
+      runAgent(d, action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
 
   let state = emptyState(FILE);
   const listeners = new Set<() => void>();
@@ -799,12 +807,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
        *  apart from the segment tail so a `done` poll with an empty body
        *  cannot wipe the bubble it already filled. */
       flatText: string;
+      /** THE LAST VIEW THIS SLOT PRODUCED, handed back to `pollBody` so a tool
+       *  row whose status/output/images have not moved keeps its `seg` OBJECT
+       *  and `ToolChip`'s `memo` hits (T:15549-15554). Per slot, because the
+       *  carry-over is keyed by `cardKey`, which is per container. */
+      view: SegmentView | null;
     }
     const chunks = new Map<number, Chunk>();
     const chunkAt = (slot: number): Chunk => {
       let c = chunks.get(slot);
       if (!c) {
-        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "" };
+        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null };
         chunks.set(slot, c);
       }
       return c;
@@ -1037,7 +1050,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // The container number is allocated only once there is something to
           // number, as T does inside `renderSegments` (T:15642) — a turn whose
           // first polls are empty used to burn one per tick.
-          const body = pollBody(mySegs, myText, chunk.seq || cardSeq + 1);
+          // `chunk.view` is the same slot's previous view: this is the 2.5×/s
+          // path, and the one a streaming `Write` chip's uncapped `content` was
+          // being re-serialised on every tick of.
+          const body = pollBody(mySegs, myText, chunk.seq || cardSeq + 1, chunk.view);
+          if (body.mode === "segments") chunk.view = body.view;
           // The flat body as of THIS poll, whatever mode it came in — T keeps
           // `fullText.slice(textBase)` per poll (T:16288). Read outside the
           // `mode === "text"` branch so a reply that flipped
@@ -1832,7 +1849,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // the CLI is in the new mode from this decision on, and the next card must
     // not offer the escalation this one just granted.
     if (res && "mode" in res && res.mode) {
-      setParam({ permission: res.mode });
+      // "replace", for the reason T:14574-14581 gives at its twin below: this
+      // write is a CONSEQUENCE of a decision, not a place anyone navigated to,
+      // and it lands behind an await — so the store's first-change push would
+      // mint a history entry whose whole content is the mode the session has
+      // already switched into, and the Back that undid it would do nothing
+      // visible except put the picker back into a mode the CLI has left. The
+      // picker's own dropdown still pushes: choosing a mode by hand IS a step.
+      setParam({ permission: res.mode }, "replace");
       setPermissionMode(res.mode);
     }
   }
@@ -1871,7 +1895,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // (T:14548-14580).
     if (res && "decision" in res && res.decision === "allow") {
       const landed: PermissionMode = ("mode" in res && res.mode) || "prompt";
-      setParam({ permission: landed });
+      // T:14580 writes this one with `{history:"replace"}` and spends six lines
+      // on why: "The write is a CONSEQUENCE of approving a plan, not a place
+      // anyone navigated to, and it lands behind `await runPython` — so the
+      // first-change-push rule (D8/PR-3) would otherwise mint a history entry
+      // whose whole content is the mode the session already switched into, and
+      // the Back that undid it would do nothing visible."
+      //
+      // Worse than cosmetic here: Back landing on that entry put "plan" back in
+      // the picker for a session that had already left plan mode, so the next
+      // per-turn spawn re-entered it — the loop T's approval write exists to
+      // break, re-created by the history entry.
+      setParam({ permission: landed }, "replace");
       // The CLI leaves plan mode the instant it sees the plain allow, so the live
       // mode has to leave it too — otherwise every card for the rest of the run
       // still thinks it is mid-plan and withholds the escalation (T:14548-14580).

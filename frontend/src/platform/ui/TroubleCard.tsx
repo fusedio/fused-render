@@ -20,6 +20,7 @@ import {
   troubleHelpUrl,
   troubleInstructions,
   troubleKind,
+  type TroubleKind,
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
@@ -85,6 +86,7 @@ export function TroubleCard({
   compact,
   title,
   explain,
+  kind: kindProp,
   children,
 }: {
   /** What the app was doing, in the user's terms — goes in the report. */
@@ -107,10 +109,24 @@ export function TroubleCard({
       classification, because `raw` is genuinely the right tab for it. */
   title?: string;
   explain?: string;
+  /**
+   * The classification, for a caller that has ALREADY made it. Optional and
+   * defaulting to `troubleKind(error)`, so every existing caller behaves
+   * exactly as before.
+   *
+   * The chat is the case: `protocol/trouble.ts` classifies the failure when it
+   * arrives and keeps its own vocabulary (`cli-missing` for `notfound`), and
+   * `platformKindOf` already exists to translate back — but the string it hands
+   * this component as `error` is the SLICED verbatim part (`lines.raw`), which
+   * need not still match the regex the whole message did. Re-deriving from it
+   * meant the install box could turn up for one rendering of a failure and not
+   * for another, which is the wrong thing to hang a duplicate-detection fix on.
+   */
+  kind?: TroubleKind;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
 }) {
-  const kind = troubleKind(error);
+  const kind = kindProp ?? troubleKind(error);
   const fallback = SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
   const ctx = { what, error, ...(facts ?? {}) };
