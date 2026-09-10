@@ -62,13 +62,26 @@ export const SCHEDULE_POLL_MS = 15000;
  * finished, which reads as "a done entry still blocks" (diagnosis §2.3,
  * measured on legacy identically).
  *
- * So the poll asks oftener for exactly as long as this chat is unusable, and
- * goes back to 15 s the moment it is not. Bounded by construction: the fast
- * rate only ever runs while there IS a blocker, which is a state the reader is
- * waiting to leave — and an open composer's column still re-renders four times
- * a minute at most, which is the whole point of `absorb`'s dedupe.
+ * So the poll asks oftener for exactly as long as this chat is unusable AND the
+ * thing it is waiting for is about to happen — see `SCHEDULE_IMMINENT_MS` and
+ * `schedImminent`. "While there is a blocker" is NOT bounded by construction:
+ * a message scheduled for next Tuesday is a pending blocker for six days, and
+ * gating on its mere existence left the page asking twenty times a minute for
+ * the life of the tab (M1, R1 review). The 8-16 s dead composer this rate buys
+ * back only exists in the minute the entry FIRES, so that is the only minute
+ * that pays for it — an open composer, and a chat waiting on next week, both
+ * still re-render four times a minute at most, which is the whole point of
+ * `absorb`'s dedupe.
  */
 export const SCHEDULE_POLL_BLOCKED_MS = 3000;
+/**
+ * HOW CLOSE "ABOUT TO FIRE" IS. Two minutes, not seconds: the poll it arms is
+ * the thing that NOTICES the fire, so the window has to open comfortably before
+ * the due stamp or the fast rate arrives after the event it was for. One slow
+ * interval (15 s) plus the server's own claim tick fits inside it several times
+ * over, and being early costs at most eight extra requests.
+ */
+export const SCHEDULE_IMMINENT_MS = 120000;
 /** T:17038 — the shell's own remembered-view row, written so the Tasks page
  *  opens on the calendar. `Scheduled.tsx` reads this preference on mount and
  *  has no URL param for it, so writing it is the same gesture as pressing that
@@ -144,6 +157,39 @@ export function schedPendingHere(
   // ISO stamps with one offset spelling, so a string sort is a time sort.
   ours.sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
   return ours;
+}
+
+/**
+ * IS THE SOONEST OF THESE BLOCKERS ABOUT TO FIRE — the question the poll's rate
+ * is allowed to ask, and the only one (M1).
+ *
+ * `schedPendingHere` has no due filter, by design: a pending entry blocks this
+ * composer whenever it is due, and a chat holding next Tuesday's message is
+ * every bit as blocked as one holding the next thirty seconds'. The RATE is a
+ * different question. The fast rate exists to shorten the gap between a run
+ * finishing and the composer noticing, which is a gap that only exists around
+ * the due stamp — so a far-future blocker keeps the composer shut and the poll
+ * slow, and only the approach of the due time buys the fast one.
+ *
+ * PAST DUE COUNTS. An overdue pending is the ordinary shape here (scheduling
+ * into the past is allowed, and the server's claim sweep is what clears it), and
+ * that is precisely the state where the release is imminent.
+ *
+ * A row with a `due` this cannot read is treated as imminent: it is a stamp we
+ * cannot reason about, and one that reads as far-future by accident would be the
+ * one bug worth avoiding — a composer stuck shut with a slow poll behind it.
+ */
+export function schedImminent(
+  rows: readonly SchedEntry[] | null | undefined,
+  now: number,
+): boolean {
+  for (const r of rows || []) {
+    if (!r) continue;
+    const at = Date.parse(String(r.due || ""));
+    if (!Number.isFinite(at)) return true;
+    if (at - now <= SCHEDULE_IMMINENT_MS) return true;
+  }
+  return false;
 }
 
 /** T:17057 — a pending OCCURRENCE of a repeat carries `template_id`; a template
@@ -424,6 +470,8 @@ export interface ScheduleWatcherDeps {
   /** Injectable for tests. */
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
+  /** Injectable for tests — the wall clock the imminence gate reads. */
+  now?: () => number;
 }
 
 export interface ScheduleWatcher {
@@ -462,7 +510,12 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
    */
   function publish(rows: SchedEntry[]): void {
     deps.onBlockers(rows);
-    rearm?.(rows.length ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
+    // The list and the rate are two questions. Any pending blocker shuts the
+    // composer; only an IMMINENT one earns the fast poll (M1) — so the rate can
+    // come up as a far-future entry's due time approaches, and go back down on
+    // the tick after it clears, without the blocker list changing shape.
+    const fast = schedImminent(rows, (deps.now || Date.now)());
+    rearm?.(fast ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
   }
 
   async function tick(): Promise<void> {

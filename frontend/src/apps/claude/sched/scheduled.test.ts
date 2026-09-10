@@ -9,10 +9,12 @@ import {
   NOTE_FOREIGN,
   NOTE_OURS,
   SB_STATES,
+  SCHEDULE_IMMINENT_MS,
   SCHEDULE_POLL_BLOCKED_MS,
   SCHEDULE_POLL_MS,
   schedDayGap,
   schedFindTask,
+  schedImminent,
   schedIsRepeat,
   schedMsgLine,
   schedPendingHere,
@@ -439,6 +441,9 @@ describe("the poll's two rates (FIX-D)", () => {
     const cleared: unknown[] = [];
     const live: { fn: (() => void) | null } = { fn: null };
     let pass = 0;
+    // A held clock, so "is this blocker imminent" is a fact about the fixture
+    // and not about the minute the suite happens to run in.
+    const clock = { now: T0 };
     const watcher = createScheduleWatcher({
       file: "/proj",
       fetchSchedule: () =>
@@ -459,14 +464,22 @@ describe("the poll's two rates (FIX-D)", () => {
         return armed.length;
       },
       clearInterval: (h) => cleared.push(h),
+      now: () => clock.now,
     });
-    return { watcher, armed, cleared, fire: () => live.fn?.() };
+    return { watcher, armed, cleared, clock, fire: () => live.fn?.() };
   }
 
   const settle = async () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
   };
-  const blocker = (id: string) => entry({ id, session_id: "s1", due: "2099-01-01T09:00:00Z" });
+  const T0 = Date.parse("2026-09-10T12:00:00Z");
+  /** A pending blocker for THIS session, due `ms` from the held clock. */
+  const blocker = (id: string, ms: number) =>
+    entry({ id, session_id: "s1", due: new Date(T0 + ms).toISOString() });
+  /** Due next century — a real blocker, and nothing to hurry for. */
+  const far = (id: string) => blocker(id, 40 * 365 * 24 * 3600_000);
+  /** Due in a minute — inside SCHEDULE_IMMINENT_MS. */
+  const soon = (id: string) => blocker(id, 60_000);
 
   test("the SLOW rate is armed first, so an open composer never pays for the fast one", async () => {
     const t = timed([[]]);
@@ -477,9 +490,9 @@ describe("the poll's two rates (FIX-D)", () => {
     expect(t.cleared).toEqual([]);
   });
 
-  test("a blocker switches the interval to the fast rate, and letting go switches it back", async () => {
+  test("an IMMINENT blocker switches the interval to the fast rate, and letting go switches it back", async () => {
     // Blocked, then blocked again (same shape — no churn), then clear.
-    const t = timed([[blocker("e1")], [blocker("e1")], []]);
+    const t = timed([[soon("e1")], [soon("e1")], []]);
     t.watcher.start();
     await settle();
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
@@ -501,7 +514,7 @@ describe("the poll's two rates (FIX-D)", () => {
 
   test("A SCHEDULE THAT CANNOT BE READ BLOCKS NOTHING, and does not leave the fast rate on", async () => {
     let fail = false;
-    const t = timed([[blocker("e1")]], () => fail);
+    const t = timed([[soon("e1")]], () => fail);
     t.watcher.start();
     await settle();
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
@@ -520,7 +533,7 @@ describe("the poll's two rates (FIX-D)", () => {
   test("a bare tick arms nothing at all, and the stop stops the switching too", async () => {
     // `tick` is public and `resetForNewTranscript` calls it; neither may put a
     // timer up behind a watcher nobody started, or after the stop.
-    const t = timed([[blocker("e1")]]);
+    const t = timed([[soon("e1")]]);
     await t.watcher.tick();
     await settle();
     expect(t.armed).toEqual([]);
@@ -531,5 +544,59 @@ describe("the poll's two rates (FIX-D)", () => {
     await t.watcher.tick();
     await settle();
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+  });
+
+  test("A BLOCKER DUE NEXT CENTURY KEEPS THE SLOW RATE (M1)", async () => {
+    // The composer is shut either way — but a chat holding a message scheduled
+    // days out must not ask twenty times a minute for the life of the tab. The
+    // fast rate buys back the 8-16 s dead composer AFTER a run, and that gap
+    // does not exist until the entry is about to fire.
+    const t = timed([[far("e1")], [far("e1")]]);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    t.fire();
+    await settle();
+    // Still one interval, still 15 s, and nothing torn down.
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    expect(t.cleared).toEqual([]);
+  });
+
+  test("...and it EARNS the fast rate as its due time comes round", async () => {
+    // Same entry, same list shape, three laps: far → imminent → past due. The
+    // rate is a fact about the clock, so it moves without the blockers moving.
+    const t = timed([[blocker("e1", 10 * 60_000)]]);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    // Nine minutes on: one minute out, inside the window.
+    t.clock.now = T0 + 9 * 60_000;
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    // Past due and still pending (the claim sweep has not run): that is the
+    // state the fast poll exists for, so it stays fast rather than churning.
+    t.clock.now = T0 + 11 * 60_000;
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    expect(t.cleared.length).toBe(1);
+  });
+
+  test("the imminence rule itself: soonest wins, past due counts, unreadable hurries", () => {
+    const at = (ms: number) => new Date(T0 + ms).toISOString();
+    expect(schedImminent([], T0)).toBe(false);
+    expect(schedImminent(null, T0)).toBe(false);
+    // Exactly on the boundary is imminent; one ms past it is not.
+    expect(schedImminent([entry({ due: at(SCHEDULE_IMMINENT_MS) })], T0)).toBe(true);
+    expect(schedImminent([entry({ due: at(SCHEDULE_IMMINENT_MS + 1) })], T0)).toBe(false);
+    // Overdue is the ordinary shape here, and the one the release is nearest in.
+    expect(schedImminent([entry({ due: at(-3600_000) })], T0)).toBe(true);
+    // A far-future entry beside an imminent one is still an imminent list.
+    expect(schedImminent([far("a"), soon("b")], T0)).toBe(true);
+    // A stamp we cannot read hurries rather than stranding a shut composer
+    // behind a slow poll.
+    expect(schedImminent([entry({ due: "not a date" })], T0)).toBe(true);
+    expect(schedImminent([entry({})], T0)).toBe(true);
   });
 });

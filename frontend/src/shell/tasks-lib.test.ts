@@ -7000,7 +7000,7 @@ describe("the Cards view's frame", () => {
     // A task with no session yet: "Starting…" only for a run in flight, and the
     // honest phrase for a scheduled one that is simply not due — or for one that
     // has already settled without ever recording a chat (FIX-A, below).
-    expect(LIB).toContain('if (col === "upcoming") return "Not started yet";');
+    expect(LIB).toContain('if (task.status === "upcoming") return "Not started yet";');
     expect(LIB).toContain('return "Starting…";');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
@@ -7214,6 +7214,73 @@ describe("the Cards view's frame", () => {
     expect(emptyPaneFailed(task({ status: "in_progress", failed: true }), false)).toBe(false);
     expect(emptyPaneFailed(task({ status: "upcoming", failed: true }), false)).toBe(false);
     expect(emptyPaneFailed(task({ status: "done", failed: false }), true)).toBe(true);
+  });
+
+  it("asks the ROW, not only the lane: a filed task whose message has not run has not started", () => {
+    // L1. `tasks.py:_status` ranks `if filed: return "archived"` ABOVE
+    // `_waiting`'s `upcoming`, so filing a task whose only message is next
+    // Tuesday's pending entry takes it out of the lane the settled test keys
+    // on — and the tile then said "No chat was recorded for this run" about a
+    // message that has not been sent yet. Both the old and the new sentence
+    // were wrong; this one is not.
+    const pending = [msg({ state: "pending", turn: "", ran_at: 0 })];
+    expect(emptyPaneText(task({ status: "archived", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    expect(emptyPaneText(task({ status: "done", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    expect(emptyPaneText(task({ status: "blocked", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    // The verdict still wins over the promise: a row that broke says so.
+    expect(
+      emptyPaneText(task({ status: "archived", failed: true, messages: pending }), false),
+    ).toBe("The run failed before it started a chat");
+    expect(
+      emptyPaneFailed(task({ status: "archived", failed: true, messages: pending }), false),
+    ).toBe(true);
+    // ...and a missing folder still outranks everything.
+    expect(emptyPaneText(task({ status: "archived", messages: pending }), true)).toBe(
+      "Folder no longer exists",
+    );
+    // A settled row whose messages all RAN keeps the settled sentence — the
+    // pending read must not swallow the case FIX-A was for.
+    expect(emptyPaneText(task({ status: "archived" }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    expect(emptyPaneText(task({ status: "archived", messages: [] }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+  });
+
+  it("names the settled lanes, so a lane this bundle has never heard of is not called settled", () => {
+    // L2. `statusColumn` floors every unknown status into "done", so the old
+    // exclusion (`!== "in_progress" && !== "needs_attention"`) filed a future
+    // server lane that MEANS in-flight into the settled bucket and told the
+    // reader no chat was ever recorded for a run happening as they read it.
+    // Unknown falls back to "Starting…" — optimistic, which is the safe way to
+    // be wrong here, and what this card said before FIX-A.
+    const unknown = { status: "resuming", failed: false } as unknown as Task;
+    expect(emptyPaneText(unknown, false)).toBe("Starting…");
+    expect(emptyPaneFailed(unknown, false)).toBe(false);
+    const brokeUnknown = { status: "resuming", failed: true } as unknown as Task;
+    expect(emptyPaneText(brokeUnknown, false)).toBe("Starting…");
+    expect(emptyPaneFailed(brokeUnknown, false)).toBe(false);
+    // ...but a missing folder is still a fact about the folder, whatever lane.
+    expect(emptyPaneText(unknown, true)).toBe("Folder no longer exists");
+    expect(emptyPaneFailed(unknown, true)).toBe(true);
+    // The whitelist is exactly three, and the source says them by name in one
+    // place both readings share.
+    expect(LIB).toContain('new Set<string>(["blocked", "done", "archived"])');
+    expect(LIB).not.toContain('col !== "in_progress" && col !== "needs_attention"');
+    // ...and it is asked of the RAW status, not of `taskColumn`, which floors
+    // every lane this bundle does not know into "done" — the flooring is why
+    // the exclusion was wrong in both halves.
+    expect(LIB).toContain("if (isSettledLane(task.status))");
+    expect(LIB).toContain("return !!task.failed && isSettledLane(task.status);");
+    // Both readings ask the same list: two call sites, one declaration.
+    expect(LIB.split("isSettledLane").length).toBe(4);
   });
 
   it("says 'Folder missing' on the List row and the Board card, and its press prints the sentence instead of leaving", () => {
