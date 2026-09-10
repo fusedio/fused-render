@@ -10,18 +10,19 @@
 // in jobs.ts) is untouched either way: this card is a second, temporary way
 // to see the SAME notification, never a second copy of it.
 //
-// OPENING THE CARD CLOSES IT EARLY. `JobRow`'s own `open()` (commit
-// ba64d03f9, "opening a row always dismisses it") already calls `dismiss()`
-// on click — reused as-is rather than reimplemented, per item 7 of the
-// brief this shipped against. `JobRow` has no "I was dismissed" callback of
-// its own, so `onPatch` is read as that signal instead: cancel is never
-// offered here (`JobRow`'s `canCancel` requires `running`, and every job
-// this card ever holds is terminal), so the only patch `JobRow` can ever
-// invoke on a card mounted here is dismiss's own `filter`. A `transient`
-// job's dismiss still succeeds server-side (`fused_render/jobs.py`'s
-// `dismiss` takes any terminal record regardless of tier) even though it
-// never had a panel row to clear — the click closes the popup exactly the
-// same way either way, no special-casing needed for tier here.
+// CLICKING THE ROW opens `job.page` and dismisses it, exactly as `JobRow`'s
+// own click handler always does — going to look is the acknowledgement, the
+// same rule Notifications itself uses, so the panel row (if this job has
+// one) really does clear.
+//
+// THE ✕ ONLY CLOSES THE CARD. It does not touch the panel: swatting away a
+// pop-up is "I saw this, stop showing it to me", not "delete the
+// Notifications row for it", so `onDismissClick` overrides `JobRow`'s
+// ordinary ✕ to skip the real, server-side dismiss and just start this
+// card's own exit animation instead. A job with nothing kept in the panel
+// (a `transient` tier) loses nothing either way; a job that IS kept (an
+// `attention`/`trail` row) stays there for the user to act on later — the
+// one thing "they still stay in the list" requires.
 import { useEffect, useRef, useState } from "react";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { JOB_POPUP_VISIBLE_MS, type Job } from "@platform/lib/jobs";
@@ -55,15 +56,21 @@ export default function JobPopupCard({
   // job is always a fresh instance of this component — this effect runs
   // exactly once per card's whole life, never restarting mid-flight for the
   // same job.
+  //
+  // `globalThis.setTimeout`/`globalThis.clearTimeout`, not `window`'s — this
+  // is the same exit-timing shape `lib/toast.ts` already documents at length:
+  // a timer scheduled here through `window` fired inside a later bun test
+  // file with no DOM shim installed, and `window is not defined` aborted the
+  // whole run between files rather than failing the one test that owned it.
   useEffect(() => {
-    const t = window.setTimeout(() => setLeaving(true), JOB_POPUP_VISIBLE_MS);
-    return () => window.clearTimeout(t);
+    const t = globalThis.setTimeout(() => setLeaving(true), JOB_POPUP_VISIBLE_MS);
+    return () => globalThis.clearTimeout(t);
   }, []);
 
   useEffect(() => {
     if (!leaving) return;
-    const t = window.setTimeout(() => goneRef.current(), TOAST_EXIT_MS);
-    return () => window.clearTimeout(t);
+    const t = globalThis.setTimeout(() => goneRef.current(), TOAST_EXIT_MS);
+    return () => globalThis.clearTimeout(t);
   }, [leaving]);
 
   return (
@@ -72,6 +79,7 @@ export default function JobPopupCard({
         job={job}
         onChanged={NOOP}
         onPatch={() => setLeaving(true)}
+        onDismissClick={() => setLeaving(true)}
         cancelFn={cancelFn}
         dismissFn={dismissFn}
       />

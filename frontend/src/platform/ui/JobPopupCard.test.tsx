@@ -109,3 +109,46 @@ test("clicking the card (opening it) closes it early, through JobRow's own dismi
   const json = renderer!.toJSON() as ReactTestRendererJSON;
   expect(json.props.className).toContain("leaving");
 }, 5000);
+
+function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
+  if (node === null || typeof node === "string") return [];
+  const hits: ReactTestRendererJSON[] = [];
+  if (typeof node.props?.className === "string" && node.props.className.split(" ").includes(className)) {
+    hits.push(node);
+  }
+  for (const child of node.children ?? []) {
+    if (typeof child !== "string") hits.push(...findAll(child, className));
+  }
+  return hits;
+}
+
+test("the ✕ only closes the card — it never calls the real, server-side dismiss", async () => {
+  let dismissCalls = 0;
+  const job: Job = { ...JOB, page: "/tmp/out.png", tier: "trail" };
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(
+      <JobPopupCard
+        job={job}
+        onGone={() => {}}
+        dismissFn={async (id) => {
+          dismissCalls++;
+          return { dismissed: id };
+        }}
+      />,
+    );
+  });
+
+  const before = renderer!.toJSON() as ReactTestRendererJSON;
+  const x = findAll(before, "dl-x")[0];
+  expect(x).toBeDefined();
+  act(() => {
+    (x.props as { onClick: () => void }).onClick();
+  });
+
+  // The card starts leaving on its own — no network dismiss behind it, and
+  // no wait needed for one to settle.
+  expect(dismissCalls).toBe(0);
+  const after = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(after.props.className).toContain("leaving");
+});
