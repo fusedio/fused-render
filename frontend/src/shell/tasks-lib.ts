@@ -2934,13 +2934,59 @@ export interface TaskCardSet {
   hidden: number;
 }
 
-/** What a Cards-view pane says when there is no frame to draw (TaskCards).
- *  `folderMissing` is a folder the server answered 404 for: nothing will ever
- *  be framed for it, and "Starting…" would be a promise the card cannot keep
- *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
-export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+/**
+ * What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *
+ * `folderMissing` is a folder the server answered 404 for: nothing will ever be
+ * framed for it, and "Starting…" would be a promise the card cannot keep
+ * (Akshil, 2026-09-06: "some cards are stuck at starting").
+ *
+ * AND THE SAME PROMISE IS BROKEN FROM THE OTHER SIDE. "Starting…" is only
+ * honest while a run is IN FLIGHT — the window between "claimed and sent" and
+ * "we know which chat that is", which the card's own comment calls "a few
+ * seconds to a few minutes long". A task that has SETTLED (blocked / done /
+ * archived) with no session never recorded one and never will: `schedule.py`'s
+ * `_turn_tick` writes `claude_session_id` on the first watcher tick that
+ * reports one, so a child that dies before its first status line leaves it
+ * empty for good. That row is then unreachable from every session-keyed
+ * surface, the explorer does not list it (it lists transcripts), and the card
+ * spun on "Starting…" for a run that ended a day earlier (P4R1-1, diagnosis
+ * FIX-A). Nothing will ever be framed here — the same fact `folderMissing`
+ * carries, arrived at from the other side — so it says so instead.
+ *
+ * `failed` picks WHICH sentence: a run that broke says it broke, and the card
+ * paints it in the error colour. A settled row that simply has no chat on file
+ * (a done entry whose session was never written) is not an error and does not
+ * wear one.
+ */
+export function emptyPaneText(
+  task: Pick<Task, "status" | "failed">,
+  folderMissing: boolean,
+): string {
   if (folderMissing) return "Folder no longer exists";
-  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
+  const col = taskColumn(task);
+  if (col === "upcoming") return "Not started yet";
+  if (col !== "in_progress" && col !== "needs_attention") {
+    return task.failed
+      ? "The run failed before it started a chat"
+      : "No chat was recorded for this run";
+  }
+  return "Starting…";
+}
+
+/** Whether the sentence `emptyPaneText` answers with is a FAILURE — the one the
+ *  card draws in the error colour, beside "Folder no longer exists". Kept here,
+ *  next to the sentence it describes, so the class and the words cannot drift:
+ *  the view asks one question of one module rather than re-deriving the lane. */
+export function emptyPaneFailed(
+  task: Pick<Task, "status" | "failed">,
+  folderMissing: boolean,
+): boolean {
+  if (folderMissing) return true;
+  const col = taskColumn(task);
+  return (
+    !!task.failed && col !== "upcoming" && col !== "in_progress" && col !== "needs_attention"
+  );
 }
 
 /**

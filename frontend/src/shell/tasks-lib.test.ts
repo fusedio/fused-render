@@ -111,6 +111,7 @@ import {
   viewUrl,
   mergeTaskChanges,
   provisionalTasks,
+  emptyPaneFailed,
   emptyPaneText,
 } from "./tasks-lib";
 
@@ -6996,9 +6997,11 @@ describe("the Cards view's frame", () => {
 
   it("says the empty state in the Board's own words and styling", () => {
     expect(CARDS).toContain('"Nothing to show here."');
-    // A task with no session yet: "Starting…" for a run in flight, and the
-    // honest phrase for a scheduled one that is simply not due.
-    expect(LIB).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
+    // A task with no session yet: "Starting…" only for a run in flight, and the
+    // honest phrase for a scheduled one that is simply not due — or for one that
+    // has already settled without ever recording a chat (FIX-A, below).
+    expect(LIB).toContain('if (col === "upcoming") return "Not started yet";');
+    expect(LIB).toContain('return "Starting…";');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
@@ -7174,14 +7177,43 @@ describe("the Cards view's frame", () => {
     expect(fade).toContain("pointer-events: none");
     expect(CARDS).not.toContain("export function emptyPaneText");
     expect(emptyPaneText(task({ status: "done" }), true)).toBe("Folder no longer exists");
-    expect(emptyPaneText(task({ status: "done" }), false)).toBe("Starting…");
     expect(emptyPaneText(task({ status: "upcoming" }), false)).toBe("Not started yet");
     expect(CARDS.split("{emptyPaneText(task, gone)}").length).toBe(3);
-    // ...in the error colour every other view gives the same fact.
-    expect(CARDS.split('className={"task-card-starting" + (gone ? " is-missing" : "")}').length).toBe(3);
+    // ...in the error colour every other view gives the same fact, and the view
+    // ASKS which sentence is a failure rather than re-deriving the lane.
+    expect(
+      CARDS.split('"task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")').length,
+    ).toBe(3);
     expect(block(CARDS_CSS, ".task-card-starting.is-missing")).toContain("color: var(--error)");
     // ...on the card's own ground, not the page's darker one (screenshot).
     expect(CARDS_CSS).toContain(".task-card-body:has(> .task-card-starting),\n.task-peek > .modal-body:has(> .task-card-starting) {\n  background: var(--tasks-card-bg);");
+  });
+
+  it("never promises 'Starting…' for a task that has already settled with no chat", () => {
+    // P4R1-1: a scheduled entry whose child died before its first status line
+    // records no `claude_session_id`, so nothing will ever be framed for its
+    // card — and the tile spun on "Starting…" for a run that had ended a day
+    // earlier. Only a run actually IN FLIGHT may make that promise.
+    expect(emptyPaneText(task({ status: "blocked", failed: true }), false)).toBe(
+      "The run failed before it started a chat",
+    );
+    expect(emptyPaneText(task({ status: "done", failed: false }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    expect(emptyPaneText(task({ status: "archived", failed: false }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    // ...and the two lanes where a session really is still on its way keep it.
+    expect(emptyPaneText(task({ status: "in_progress" }), false)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "needs_attention" }), false)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "upcoming" }), false)).toBe("Not started yet");
+    // The failed sentence wears the error colour; the merely-empty one does not,
+    // and a missing folder still does whatever its lane says.
+    expect(emptyPaneFailed(task({ status: "blocked", failed: true }), false)).toBe(true);
+    expect(emptyPaneFailed(task({ status: "done", failed: false }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "in_progress", failed: true }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "upcoming", failed: true }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "done", failed: false }), true)).toBe(true);
   });
 
   it("says 'Folder missing' on the List row and the Board card, and its press prints the sentence instead of leaving", () => {

@@ -51,6 +51,7 @@ import {
   cardKey,
   cardsForTasks,
   ERASE_BLOCKED_HINT,
+  emptyPaneFailed,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
@@ -662,7 +663,14 @@ function TaskCard({
           // "we know which chat that is" (schedule-lib, above `folderHref`) — a
           // real state, a few seconds to a few minutes long. Either way the card
           // says which rather than framing the wrong thing or an empty box.
-          <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+          // ...and the error colour is asked for, not re-derived: a settled
+          // task with no session is a broken promise of the same kind as a
+          // missing folder (`emptyPaneFailed`, FIX-A).
+          <p
+            className={
+              "task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")
+            }
+          >
             {emptyPaneText(task, gone)}
           </p>
         )}
@@ -937,7 +945,11 @@ function TaskPeek({
       ) : resolving ? (
         <ChatFramePlaceholder />
       ) : (
-        <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+        <p
+          className={
+            "task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")
+          }
+        >
           {emptyPaneText(task, gone)}
         </p>
       )}
