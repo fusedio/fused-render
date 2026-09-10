@@ -2054,17 +2054,44 @@ table.listing-table tr.skel-row:hover {
    above) with 4px of air on top of that ring, not just 4px off the field's
    own edge — 7px total, so the ring's outer edge doesn't visually touch the
    panel. */
+/* ITEM 4 (running-screen review, 2026-09-10): `right: 0` alone stretches
+   this panel to the full width of the search FIELD, which is often
+   1100px+ while its own content — one sentence, or a name/hint pair — only
+   ever needs a few hundred. A short row against a field-wide card leaves
+   its own affordance (the `↵`, or the "folder"/size hint) stranded far
+   from the label it belongs to, reading as a rendering fault rather than
+   one row. `max-width` (not `width`) so a field narrower than the cap
+   still governs it — the same reasoning the examples panel's own cap used
+   to carry alone (`.listing-completion.listing-completion-examples`,
+   removed below now that this rule covers it for every row kind); a name
+   or a label longer than the cap degrades through
+   `.listing-completion-name`'s own `text-overflow: ellipsis` rather than
+   forcing the panel wide again. Left-aligned for free — `left: 0` on the
+   box already puts this at the input's own text edge. */
+/* ITEM 5 (running-screen review, 2026-09-10): `--completion-panel-pad`
+   insets the rows from this card's own rounded (8px) border. Before this,
+   a highlighted row's background ran full-bleed to the card's edges and
+   got clipped square by them (`overflow: hidden` here, radius 8px) — a
+   fill crossing a rounded corner reads as escaping the container the
+   corner defines. Read by `.listing-completion-row`'s own left padding,
+   below, to keep the query-text alignment `--chip-inset` exists to
+   protect: subtracting this inset from `--chip-inset` there cancels this
+   padding back out, so a row's TEXT still starts exactly `--chip-inset`
+   from the FIELD's own left edge, same as before this padding existed. */
 .listing-completion {
   position: absolute;
   top: calc(100% + 7px);
   left: 0;
   right: 0;
+  max-width: 460px;
   z-index: 5;
   overflow: hidden;
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 28px var(--shadow-lg);
+  --completion-panel-pad: 4px;
+  padding: var(--completion-panel-pad);
 }
 
 /* The rows scroll once there are more than fit at rest. `max-height` is set
@@ -2106,14 +2133,27 @@ table.listing-table tr.skel-row:hover {
    examples rows below (`.listing-completion-example`) render through, so
    there was never a second rule set to drift; the token exists so the
    number itself can't silently diverge from `--chip-inset`'s own pattern
-   the next time either surface changes. */
+   the next time either surface changes.
+
+   ITEM 5: `calc(var(--chip-inset) - var(--completion-panel-pad))`, not a
+   bare `var(--chip-inset)`, now that the panel itself carries
+   `--completion-panel-pad` (above) — the panel's own padding already moves
+   this row's box `--completion-panel-pad` to the right of the field's
+   edge, so the row's own left padding gives back exactly that much to land
+   the TEXT at the same `--chip-inset` offset it always has. `border-radius`
+   matches the panel's own corner family (smaller, since this sits INSIDE
+   it) so a painted background (`.highlight`, `:hover`) reads as an inset
+   pill rather than a square fill butting against the panel's rounded
+   corner. */
 .listing-completion-row {
   display: flex;
   align-items: baseline;
   gap: 9px;
-  padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y) var(--chip-inset);
+  padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y)
+    calc(var(--chip-inset) - var(--completion-panel-pad));
   font-size: 12.5px;
   cursor: default;
+  border-radius: 6px;
 }
 
 .listing-completion-row:last-child {
@@ -2173,21 +2213,6 @@ table.listing-table tr.skel-row:hover {
   align-items: flex-start;
   gap: 2px;
   cursor: pointer;
-}
-
-/* The examples panel's own surface (background/border/shadow, all painted by
-   `.listing-completion`) capped to its content: three short pattern/hint
-   pairs only need ~300px, far short of the dropdown's own width (which
-   tracks the field, itself often 1000px+). The cap has to sit on THIS
-   element — the row above is a block box inside it, and capping a child's
-   width cannot shrink the parent that paints the surface around it.
-   `max-width`, not `width`, so a field narrower than the cap still governs
-   it (the row's normal block-width fallback). Left-aligned for free — the
-   panel is `left: 0` on the box and the row's own 10px left padding matches
-   the input's own text edge, so the cap changes nothing about where the
-   content starts. */
-.listing-completion.listing-completion-examples {
-  max-width: 460px;
 }
 
 .listing-completion-example .listing-completion-name {
