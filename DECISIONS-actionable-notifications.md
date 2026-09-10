@@ -590,19 +590,19 @@ failed.
   what it was. This is a genuine behavior change: an unload's own success no
   longer draws a Notification.
 
-- **A failed scheduled run becomes visible, which was not obviously the
-  spec's intent.** `sys:schedule:*` was previously "explicitly out of scope,
-  unchanged" (see the out-of-scope list below, now stale on this one point).
-  `schedule.py`'s `_report` now sets `tier=jobs.TRANSIENT` on every call —
-  nobody asked for a scheduled tick's own row, and a send that worked leaves
-  nothing behind to open. But `effective_tier`'s override still applies: a
-  scheduled run that ends in `error` or is `cancelled` reads as `attention`
-  and survives `_sweep`'s transient-ageing clock, the same as any other
-  terminal row. This reopens a case the brief's own out-of-scope list said
-  was closed. Read as a deliberate consequence of the override being
-  unconditional (item 1 states no per-producer exemption from it), not as a
-  fix regression — flagging it here rather than silently deciding it either
-  way.
+- **A scheduled run's own row never reaches Notifications, in any state —
+  this was checked, not just assumed.** `schedule.py`'s `_report` sets
+  `tier=jobs.TRANSIENT` on every call, but that tier is never what keeps a
+  failed or cancelled scheduled tick out of the panel: `jobRows`
+  (`frontend/src/platform/lib/jobs.ts`) excludes every `sys:schedule:*` id
+  unconditionally, before `effectiveTier`'s error/cancelled override is even
+  consulted, and `terminalNotifications` is built on top of `jobRows`. A
+  scheduled run ending in `error`/`cancelled` reads as `attention` under
+  `effectiveTier` — that part is real — but reading as `attention` and
+  reaching Notifications are different questions, and only the second one
+  is out of scope. An earlier pass through this section (superseded, see the
+  out-of-scope entry below) conflated the two and claimed a failed scheduled
+  run "becomes visible"; it does not, on either surface `jobRows` feeds.
 
 - **`_apple_wait_row` (`fused_render/server/ai.py`) is untouched, on
   purpose.** It builds its own id (`supervisor.JOB_PREFIX + model`,
@@ -651,13 +651,19 @@ Needs you precedes Worth keeping") rather than left broken or worked around.
 
 ## Explicitly out of scope (per spec, unchanged) — UPDATE
 
-The line below, from the previous increment's log, is now stale on one
-point: a scheduled run's own tick is still never a row (`tier: transient`
-covers that), but a scheduled run that ends in `error`/`cancelled` now DOES
-draw a row, via `effective_tier`'s unconditional override — see this
-section's own entry above. Toasts, `fused.trackJob` API/no new `Job` field,
-native OS notifications, whole-row clicks on repo rows and per-producer
-status-text changes remain out of scope, unchanged.
+Corrected: the entry this heading originally introduced claimed a scheduled
+run that ends in `error`/`cancelled` draws a row in Notifications via
+`effectiveTier`'s override. It does not — `jobRows` excludes every
+`sys:schedule:*` id unconditionally, in every state, independent of tier
+(see this file's "Three-tier model" section above, corrected in place).
+`sys:schedule:*` rows stay exactly where the spec's own out-of-scope list
+put them: never in the panel, on the same read-gated `FINISHED_TTL_S` age-out
+they always had. A scheduled run that fails is not lost — `scheduleEvents.ts`
+already pushes a persistent, server-acked "Task failed" toast that survives a
+reload, independent of the job row's own fate. Toasts, `fused.trackJob`
+API/no new `Job` field, native OS notifications, whole-row clicks on repo
+rows, per-producer status-text changes, and `sys:schedule:*` rows all remain
+out of scope, unchanged.
 
 ## Fourth fix-review round
 
