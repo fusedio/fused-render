@@ -7370,7 +7370,17 @@ describe("the Cards view's frame", () => {
     // type into, with buttons for the List, the Explorer and Archive.
     const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
     expect(head).toContain('role="button"');
-    expect(head).toContain("onClick={() => onPeek(task)}");
+    // The head still opens the popup, and stops the press there — the CARD is
+    // the door now too (Akshil, 2026-09-10, E2E R1 F3), so a head press must
+    // not open it twice.
+    expect(head).toContain("e.stopPropagation();");
+    expect(head).toContain("onPeek(task);");
+    // THE WHOLE CARD IS THE DOOR: the body is a picture of the chat — no
+    // pointer events, no scroll — and any press on the card opens the popup.
+    expect(CARDS).toContain('className="task-card task-card--door"');
+    expect(CARDS).toContain("onClick={() => onPeek(task)}");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
     // ...for keys pressed on the head itself: the folder chip inside it is a
     // button whose Enter/Space bubble up (Bugbot, #1011).

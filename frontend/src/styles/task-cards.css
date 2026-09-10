@@ -367,6 +367,25 @@
   background: var(--bg);
 }
 
+/* THE CARD IS ONE DOOR (Akshil, 2026-09-10, E2E R1 F3). The body is a picture of
+   the chat, not the chat: nothing in it takes the pointer, and the transcript's
+   own scroller is clipped instead of scrolled — the live tail still pins to the
+   bottom, because that is a scrollTop the chat sets, not a wheel. Same size, same
+   type scale, same layout; only the mini scrollbar and the in-card clicks go.
+   The head's hover doors are outside the body and keep working. */
+.task-card--door {
+  cursor: pointer;
+}
+.task-card--door .task-card-body {
+  pointer-events: none;
+  overflow: hidden;
+}
+.task-card--door .task-card-body .chat-root .chat-logwrap,
+.task-card--door .task-card-body .chat-root .chat-log {
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
 /* SCALED, not shrunk. Six cards across a laptop leave each frame ~380px wide,
    and the chat template lays itself out for a pane twice that: at 1:1 its text
    was too big to read as a wall (Akshil, 2026-09-04). The template's type is in
