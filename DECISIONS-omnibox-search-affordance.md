@@ -423,14 +423,96 @@ eyes on the actual running screen to confirm 6px is the right amount** —
 it was chosen without one, since the two surfaces' padding was never
 actually divergent in the committed CSS to begin with.
 
+## Items 7-11, running-screen review continued (2026-09-10)
+
+**Item 7 — the dropdown covering the table's NAME/SIZE/MODIFIED header.**
+Instructed to check this AFTER item 4's cap landed, since a content-width
+panel no longer spans the table. Reasoned through the numbers rather than
+rendering: `.listing-completion` is now capped at 460px, left-aligned to
+the field's own left edge; the table's SIZE column is a fixed 96px and
+MODIFIED a fixed 172px, both anchored at the table's right edge, while
+NAME takes the flexible remainder. On any listing wide enough to be
+interesting, 460px from the left edge lands well short of where SIZE/
+MODIFIED start, so those two headers are clear and only part of NAME's
+own header sits behind the panel — which the task's own framing already
+calls "normal behavior... rather than a defect" once it's partial, not the
+full-row occlusion the report described. Made NO further change for this
+item (no offset/shadow tweak) — that fallback was explicitly conditional
+on "if it still reads as headerless," a judgment only a running screen can
+make, and this reasoning cannot rule out a narrow pane where NAME alone
+IS the visible header. **Needs a human on a running screen at typical AND
+narrow widths** to confirm nothing needs the fallback after all.
+
+**Item 9 — the offer row survived its own commit.** See the code's own
+comments (`search-action-rows.ts`, `SearchField.tsx`) for the full
+reasoning: `gated` (a fact about the query TEXT, `escapesFsPath`) became
+`awaitingCommit` (a fact about STATE, `!gateOpen` — useListingSearch.ts's
+own commit-gate flag, already computed, just not previously threaded to
+Listing.tsx). This was the third regression traced to the same
+text-vs-state confusion (defect 1, FINDING 5, this one) — the rename and
+the switch to a real hook value close the whole class, not just this
+instance. `escapes` itself, now dead once `awaitingCommit` took over its
+one real job, was removed from SearchFieldProps and both hosts'
+plumbing — grep confirmed no test asserted on the prop's presence.
+
+**Item 10 — the same screenshot's other half: pressing the offer searched
+without opening.** `commitInPlace: true` called `commitSearch()`, which
+runs the search but never navigates — the breadcrumb, the URL, and the
+search rows' own relative paths (built against the server's actual base)
+disagreed about where the search ran. Added `resolveFolderToOpen`
+(enter-prompt.ts, alongside `folderToOpen`) to turn the row's own display
+text into a real fsPath (expanding a leading `~` via `home`, the same way
+`escapesFsPath` already does), and switched both the action row's press
+and a bare gated Enter to `navigate(folder, { isDir: true, q: query })` —
+the exact mechanism FileSearchField.tsx's own file-to-folder hand-off
+already uses (`navHintQCommitted`), so the destination's gate opens
+immediately with the query text intact. A path-shaped query's bare Enter
+(the PR #1091 hard constraint) is untouched — this only changed the
+NON-path, gated (`commitInPlace: true`) branch.
+
+**A consequence worth naming**: after item 10, pressing a `commitInPlace`
+row or a gated Enter always NAVIGATES to a different fsPath (never merely
+updates state on the same one, unless `home` hasn't resolved yet, the one
+fallback branch that still calls `commitSearch()` in place). Item 9's own
+before/after test therefore had to be a PURE-FUNCTION test (the same query
+text with `awaitingCommit` true then false, synthetically), not a driven
+render test staying on one mount — a real navigation would remount the
+component entirely, and this test suite has no harness for simulating a
+second page's mount with the first's `history.state` carried over. The
+driven tests in `search-dropdown-actions.render.test.tsx` instead confirm
+the NAVIGATION CALL itself is correct (right folder, right query, `~`
+expanded); closing the loop end-to-end (mount the destination, confirm no
+offer row) is left as something **a human on a running screen** can
+confirm faster than building that harness.
+
+**Item 11 — the match count was reported twice, and folds item 6 into
+itself.** The footer's own "N matches" line duplicated the search box's
+own pinned chip verbatim, with none of the chip's own caveat/elapsed-time
+detail (confirmed by reading both — the footer's old branch used its
+`truncated` parameter for NOTHING, and the box's chip already owns
+truncation, the index-scan caveat, and the latency figure). Division of
+labour: `statusLine`'s `searching` branch now returns `null` (no line) when
+nothing is selected, keeping `"N of M selected"` for when something is.
+Once that's the only distinction, `showsSearchFooter` (item 6's own
+one-line alias) was a pure rename of `showsSearchHits` with nothing left
+to say for itself — deleted; both of its call sites (the byte-sum gate,
+`statusLine`'s `searching` input) now read `showsSearchHits` directly,
+per the task's own instruction to "leave one clear reason for it to
+exist, not two half-reasons." Item 6's own fix (fall back to the folder's
+honest item count while gated) is now just a consequence of `statusLine`
+never being asked to report a search count in that state at all.
+
 ## Cannot be verified headlessly
 
 See SPEC-omnibox-search-affordance.md's own "Cannot be verified headlessly"
 section (kept up to date there, not duplicated here) - the two-magnifiers
 risk it originally flagged is resolved by item 3's revision, but the
-button's own narrow-width collapse point, the teaching panel's real-world
-examples, and its precedence over completions on a pristine path all still
-need a human on a running screen.
+button's own narrow-width collapse point and the teaching panel's
+precedence over completions on a pristine path both still need a human on
+a running screen. (The panel's own real-world EXAMPLES are moot as of
+item 8 below - it is fixed prose now, not folder-derived content - but
+whether that prose reads well at the panel's 460px cap is itself an item
+4/8 visual question, not yet confirmed on a screen.)
 
 ## Finding 7's fix was itself the CI failure - corrected (2026-09-10)
 
