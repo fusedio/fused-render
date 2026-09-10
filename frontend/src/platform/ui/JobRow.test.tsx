@@ -358,11 +358,7 @@ test("a done job's row opens its page and dismisses itself, the same way its own
   expect(patched[0]).toEqual([]); // the same onPatch filter dismiss() always applies
 });
 
-test("a done job whose page is an fs path navigates but does NOT dismiss itself — a page may still be watching it", () => {
-  // A page-raised render's destination IS that page, and the page re-attaches
-  // to its job by id on mount — clearing the row here would race that
-  // re-attachment. Only a shell-route destination (the previous test) clears
-  // on open; an fs path never does.
+test("a done job whose page is an fs path navigates AND dismisses itself, same as a shell route", async () => {
   let dismissCalls = 0;
   const dismissFn = () => {
     dismissCalls += 1;
@@ -380,8 +376,11 @@ test("a done job whose page is an fs path navigates but does NOT dismiss itself 
   const row = findAll(root, "dl-row")[0];
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
   expect(url).toBe("/explorer/view/Users/me/Desktop/render.png");
-  expect(dismissCalls).toBe(0);
+  expect(dismissCalls).toBe(1);
 });
 
 test("a done job's row navigates to its page", () => {
@@ -400,9 +399,7 @@ test("a done job's row navigates to its page", () => {
   expect(url).toBe("/ai-models/local");
 });
 
-test("an error job's row navigates too, but does NOT dismiss itself — only the ✕ can", () => {
-  // D663's own reversal (the deleted 3s TTL): a failure stays until an
-  // explicit dismiss, regardless of the fact that it now has a destination.
+test("an error job's row navigates AND dismisses itself — opening it is the acknowledgement", async () => {
   let dismissCalls = 0;
   const dismissFn = () => {
     dismissCalls += 1;
@@ -420,11 +417,14 @@ test("an error job's row navigates too, but does NOT dismiss itself — only the
   const row = findAll(root, "dl-row")[0];
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
   expect(url).toBe("/ai-models/benchmark");
-  expect(dismissCalls).toBe(0);
+  expect(dismissCalls).toBe(1);
 });
 
-test("a cancelled job's row navigates too, but does NOT dismiss itself either", () => {
+test("a cancelled job's row navigates AND dismisses itself too", async () => {
   let dismissCalls = 0;
   const dismissFn = () => {
     dismissCalls += 1;
@@ -442,8 +442,11 @@ test("a cancelled job's row navigates too, but does NOT dismiss itself either", 
   const row = findAll(root, "dl-row")[0];
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
   expect(url).toBe("/claude-config");
-  expect(dismissCalls).toBe(0);
+  expect(dismissCalls).toBe(1);
 });
 
 test("a terminal job with no page at all draws no rowClick — nothing to open", () => {
