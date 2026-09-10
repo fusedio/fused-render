@@ -525,18 +525,24 @@ def test_a_transient_row_ages_out_on_the_read_gated_clock_instead_of_staying_for
     assert later == set(), "a transient row ages out, unlike an ordinary terminal row"
 
 
-def test_a_transient_row_that_ends_in_error_is_kept_not_swept():
-    """`_sweep` checks `effective_tier`, not the stored `tier` — a producer
-    that declared `transient` but ended in `error` is `attention` by the
-    override, and an attention row reaches a surface and needs a dismiss.
-    Sweeping it on the transient clock would drop it out from under the
-    very reader it is supposed to be shown to."""
+def test_a_transient_row_that_ends_in_error_still_ages_out_on_the_read_gated_clock():
+    """`_sweep` gates retention on the STORED `tier`, not `effective_tier` — a
+    producer that declared `transient` still ages out on the read-gated clock
+    even when the run ends in `error`. `effective_tier`'s override makes the
+    row `attention` for VISIBILITY (it is shown, and shown as needing the
+    user, while it exists — see `jobRows`/`effectiveTier` in the frontend),
+    but a failed transient run still has no surface able to dismiss it, so a
+    failure nobody opens must not be retained forever any more than a success
+    is: RETENTION reads the producer's own declared disposability, not what
+    the terminal state happened to turn it into for display."""
     jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "error",
                  "tier": jobs.TRANSIENT}, now=1000.0, server=True)
 
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}, "still shown while it exists"
+
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
-    assert later == {"sys:ai-model:x"}, \
-        "an errored row is kept until dismissed even if declared transient"
+    assert later == set(), "a failed transient row ages out same as a successful one"
 
 
 def test_a_wait_job_poll_still_observes_a_transient_row_go_done_before_it_ages_out():

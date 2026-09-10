@@ -802,32 +802,42 @@ def _sweep(now: float) -> None:
     `cancelled` get the same unconditional exemption `error`/`WAITING`
     already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
 
-    **A row whose `effective_tier` is `TRANSIENT` does NOT get this
+    **A row whose STORED `job.tier` is `TRANSIENT` does NOT get this
     exemption, even though it is terminal.** The exemption's whole premise is
     "a human still needs to SEE this row, so do not sweep it out from under
-    them" — but `jobRows` (frontend) drops every `transient` row from what
-    Activity draws, and `ActivityDock.tsx` applies `jobRows` before
-    `terminalJobs`, so a transient row never reaches Notifications at all. No
-    surface shows it or can dismiss it, so it has no claim on a "kept until
-    dismissed" rule — kept that way regardless, a scheduled run declaring
-    itself transient on every tick is one permanent row per turn on a
-    schedule (a 5-minute schedule saturates `MAX_JOBS` within hours), and a
-    resident model load's own success is one permanent row per distinct model
-    ever loaded, with only eviction pressure to shed either. A scheduled run
-    already gets `schedule-toast.ts`'s own toast and its own row on the
-    Scheduled page, and a load already showed itself as the "resident" row
-    while it ran, so nothing is lost by letting the registry row age out on
-    the ORIGINAL read-gated `FINISHED_TTL_S` clock every terminal row had
-    before D663 — the readers that clock exists for (`fused.watchJob`, the
-    Scheduled page's own poll, `fused.ai.models.load(wait=True)`'s own poll)
-    are exactly the ones still reading these rows.
+    them" — but a producer that declared `transient` is stating it has
+    nothing left to show once its run is over, success or failure alike, and
+    it has no claim on a "kept until dismissed" rule regardless of how the
+    run ended: a scheduled run declaring itself transient on every tick is
+    one permanent row per turn on a schedule (a 5-minute schedule saturates
+    `MAX_JOBS` within hours) if a failed one lingered forever waiting on a
+    dismiss nothing will ever send, and a resident model load's own outcome
+    is one permanent row per distinct model ever loaded, with only eviction
+    pressure to shed either. A scheduled run already gets
+    `schedule-toast.ts`'s own toast and its own row on the Scheduled page,
+    and a load already showed itself as the "resident" row while it ran, so
+    nothing is lost by letting the registry row age out on the ORIGINAL
+    read-gated `FINISHED_TTL_S` clock every terminal row had before D663 —
+    the readers that clock exists for (`fused.watchJob`, the Scheduled
+    page's own poll, `fused.ai.models.load(wait=True)`'s own poll) are
+    exactly the ones still reading these rows.
 
-    `effective_tier`, not the stored `job.tier`, is what decides this: a
-    producer that declares `transient` but ends in `error`/`cancelled` is
-    `attention` instead (SPEC actionable-notifications' one override), and an
-    `attention` row DOES reach a surface and DOES need a dismiss — sweeping
-    it on this clock would drop it out from under the very reader it is
-    supposed to be shown to.
+    The STORED `job.tier`, not `effective_tier`, is what decides RETENTION —
+    a separate question from VISIBILITY, which does read `effective_tier`
+    (`jobRows`, `frontend/src/platform/lib/jobs.ts`): a failed transient run
+    is still worth SHOWING while its row exists (`effective_tier`'s
+    error/cancelled override turns it `attention` for exactly that reason),
+    but whether the row EXISTS AT ALL past this clock is the producer's own
+    declared tier, unaffected by how the run ended. Reading `effective_tier`
+    here instead would keep every failed/cancelled transient row forever —
+    the override makes it `attention`, this branch would then treat it as
+    "some surface can dismiss it" and fall to the keep-until-dismissed rule
+    below, and no surface ever does, because nothing here changed what
+    `jobRows` filters on. That was the actual bug this comment used to
+    describe as the intended behavior: a scheduled run's own failed tick
+    (`tier=TRANSIENT` on every report, per `schedule.py`'s `_report`) was
+    kept by this exemption forever instead of ageing out, silently
+    overriding `schedule.py`'s own scoped-out retention.
 
     `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
     place rather than deleted for this reason — `list_jobs`'s `mark_read`
@@ -858,18 +868,26 @@ def _sweep(now: float) -> None:
             # is still exactly as open as when it appeared.
             continue
         elif job.state in TERMINAL_STATES:
-            if effective_tier(job) == TRANSIENT:
+            if job.tier == TRANSIENT:
                 # No surface shows this row or lets it be dismissed — see
                 # this function's own docstring — so it ages out on the
                 # ORIGINAL read-gated clock every terminal row had before
                 # D663, instead of the keep-until-dismissed rule below.
-                # `effective_tier`, not the raw stored `tier`: a producer
-                # that declares itself `transient` (a scheduled run, an
-                # index scan, a resident model load, a finished text
-                # generation) but then ends in `error`/`cancelled` becomes
-                # `attention` instead, and an `attention` row IS shown and
-                # IS dismissable — ageing it out on this clock would drop
-                # the very row the frontend now draws as needing the user.
+                #
+                # The STORED `job.tier`, not `effective_tier`: retention and
+                # visibility ask two different questions. Visibility asks
+                # "what does this row mean right now" — a failed transient
+                # run is still worth SHOWING while it exists, which is
+                # exactly what `effective_tier`'s error/cancelled override is
+                # for. Retention asks "did the producer declare this
+                # disposable" — a producer that declared `transient` ages
+                # out on this clock regardless of how the run ended, because
+                # a failure nobody opens must not accumulate forever with no
+                # surface able to dismiss it. Reading `effective_tier` here
+                # would keep every failed/cancelled transient row (a
+                # scheduled run, an index scan, a resident model load) until
+                # an explicit dismiss that can never come — the opposite of
+                # what this branch exists to do.
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)
