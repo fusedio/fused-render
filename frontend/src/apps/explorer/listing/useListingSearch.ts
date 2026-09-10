@@ -633,7 +633,20 @@ export function useListingSearch(
   // `q` trails the input by a commit under load, so there is a render where
   // the rows answer a query the user has already typed past while nothing is
   // in flight at all.
-  const rowsAnswerQuery = !runsSearch || (!staleRows && !deferredStale);
+  //
+  // `!searching`, NOT `!runsSearch`: an empty box is the one case where
+  // "rows" (the folder's own, via `navRows`/`showsSearchHits` in Listing.tsx)
+  // are trivially the answer — there is no query to answer. A path-shaped
+  // query is `searching` (there IS a query) but `runsSearch` is false (no
+  // rank request is ever issued for it), and its rows are the same folder
+  // listing, which does NOT answer an arbitrary typed path. Folding that case
+  // into the `!runsSearch` shortcut (as an earlier version of this did) made
+  // `rowsAnswerQuery` true for every path-shaped query, and the document
+  // Enter handler (useListingSelection.ts) reads exactly this flag to decide
+  // whether opening `rows[0]` with nothing selected is a safe guess — so it
+  // opened an arbitrary, unrelated folder row on Enter (code review finding
+  // 1). `runsSearch` is still what decides staleness for an actual search.
+  const rowsAnswerQuery = !searching || (runsSearch && !staleRows && !deferredStale);
 
   // The mode the LAST settled answer actually ran under — "substring" once
   // nothing has searched yet, since that is the cap capHits already defaults

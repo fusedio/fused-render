@@ -552,6 +552,38 @@ describe("a path-shaped query never asks the index (path-shaped-query.ts)", () =
     expect(rankCalls).toHaveLength(1);
     box.unmount();
   });
+
+  // Finding 1 (code review): a path-shaped query never gets a rank answer, so
+  // `navRows` in Listing.tsx falls back to the FOLDER's own rows (per
+  // `showsSearchHits`) rather than search hits. With no lead selected, the
+  // document Enter handler (useListingSelection.ts) opens `rows[0]` unless
+  // `rowsAnswerQuery` says not to — and those folder rows never answer a
+  // path-shaped query typed in the box, existing or not. Before this fix
+  // `rowsAnswerQuery` was `!runsSearch || …`, which read `true` for every
+  // path-shaped query (runsSearch is false for all of them), so Enter with
+  // nothing selected would open an arbitrary unrelated folder row.
+  //
+  // The original repro (code review) used a RELATIVE path-shaped query
+  // ("docs/rea") — relative slash-bearing queries no longer count as
+  // path-shaped after finding 2's narrowing (see the "Path means
+  // absolute-ish shape" describe block below), so this uses an absolute one
+  // instead; the underlying `rowsAnswerQuery` bug is the same either way.
+  test("rowsAnswerQuery is false for a path-shaped query — Enter must not open an arbitrary folder row", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("/other/fol"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(box.current().searching).toBe(true);
+    expect(box.current().isPathQuery).toBe(true);
+    expect(box.current().rowsAnswerQuery).toBe(false);
+    box.unmount();
+  });
+
+  test("rowsAnswerQuery stays true for an empty box — plain folder browsing is unaffected", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    expect(box.current().searching).toBe(false);
+    expect(box.current().rowsAnswerQuery).toBe(true);
+    box.unmount();
+  });
 });
 
 describe("closing the box mid-scan", () => {

@@ -15,9 +15,16 @@ import { Clock, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import type { RowCtx } from "@apps/explorer/listing/types";
 
 const navigated: string[] = [];
+// `navHintQCommitted` included even though this file never mounts
+// `useListingSearch`: `mock.module` replaces the module process-wide (bun
+// runs every test file in one process), so a mock here missing an export
+// another file's `mock.module("@platform/lib/router", …)` DOES provide can
+// still break that file if this one's mock wins the race — see
+// useListingSearch.render.test.ts's own comment on this same export.
 mock.module("@platform/lib/router", () => ({
   navigate: (p: string) => void navigated.push(p),
   replaceSearch: () => {},
+  navHintQCommitted: () => false,
 }));
 mock.module("@platform/lib/ui-overlay", () => ({ isOverlayOpen: () => false }));
 
