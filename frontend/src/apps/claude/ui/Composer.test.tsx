@@ -255,6 +255,9 @@ test("but a capture in flight DOES hold the door — in the handler", () => {
   const c = mount({ sendBusy: true, hasAttachments: true });
   const send = c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
   expect(send.props.disabled).toBeUndefined();
+  // …and the `title` is what says why, since the attribute no longer can
+  // (Bugbot, PR #1074): this window can run to seconds on a large pane.
+  expect(send.props.title).toBe("Taking the picture…");
   c.type("with this shot");
   c.press("Enter");
   expect(c.sent).toEqual([]);

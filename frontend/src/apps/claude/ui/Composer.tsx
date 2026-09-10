@@ -577,7 +577,21 @@ export function ComposerCard({
             className="c-send"
             type="submit"
             aria-label={running ? "Stop" : "Send"}
-            title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
+            // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
+      // `disabled` attribute gone (T:4187), the `title` is the only thing left
+      // that can tell the reader why a press does nothing — and `sendBusy` is
+      // the window that can run to SECONDS on a large pane, where `attaching`
+      // is usually a blink. A control that looks ready and silently refuses is
+      // the one outcome dropping the dim must not buy.
+      title={
+        running
+          ? "Stop"
+          : attaching
+            ? "Attaching…"
+            : sendBusy
+              ? "Taking the picture…"
+              : "Send"
+      }
             // T NEVER DISABLES SEND — not for an empty box, not for a pending
             // scheduled message, not for anything. There is no `.send:disabled`
             // rule in the whole of T (T:2956-2981), the markup carries no
