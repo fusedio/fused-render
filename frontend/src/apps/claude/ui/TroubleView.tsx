@@ -82,7 +82,10 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
    * (`ClaudeChat` passes `message: ""`, and `TroubleCard` draws no box for it).
    * "Reload" rather than "retry" because a stalled stat is usually a server that
    * has gone away, and a button that re-runs the same request would answer the
-   * reader with the same wait.
+   * reader with the same wait — and the card DRAWS that button (R1-4):
+   * `ClaudeChat` passes `onRetry` plus the label this sentence names, so the
+   * one action the copy asks for is one press away rather than a thing the
+   * reader is told to go and do.
    */
   boot: {
     title: "This chat couldn't load.",
@@ -96,12 +99,21 @@ export interface TroubleViewProps {
    *  T:13757 spells it "using the chat on <FILE|this folder>". */
   what?: string;
   onRetry?: () => void;
+  /** Passed through to the card: what the retry button says when "Try again" is
+   *  the wrong promise (the boot failure asks for a reload). */
+  retryLabel?: string;
   /** Words for a caller that knows more than the kind does — the boot failure's
    *  two shapes share one kind and differ only in these (P3R1-8). */
   said?: { title: string; explain: string };
 }
 
-export function TroubleView({ trouble, what, onRetry, said: saidProp }: TroubleViewProps) {
+export function TroubleView({
+  trouble,
+  what,
+  onRetry,
+  retryLabel,
+  said: saidProp,
+}: TroubleViewProps) {
   const said = saidProp ?? SAID[trouble.kind];
   const lines = splitTroubleMessage(trouble.message);
   // Our own words when we have them, else the action sentence out of the
@@ -130,6 +142,7 @@ export function TroubleView({ trouble, what, onRetry, said: saidProp }: TroubleV
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
+        {...(retryLabel ? { retryLabel } : {})}
       >
         {/* The verbatim traceback is the thing a user pastes somewhere and gets
             an actual answer from, and it is not part of the one-line message

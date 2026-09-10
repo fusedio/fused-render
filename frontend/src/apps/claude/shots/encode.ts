@@ -217,6 +217,11 @@ async function ladder(
   return { blob: null, dead: false };
 }
 
+/** The burned badge's disc, and the on-screen pin's background — one value, so
+ *  the mark the reader drops and the mark the agent receives are the same mark
+ *  (P3R1-6). */
+export const ANN_BADGE_FILL = "#d97757";
+
 /**
  * A labeled badge in CANVAS pixel space — legible however small the picture ends
  * up, unlike an overlay the picture cannot carry. White ring around the disc so
@@ -234,11 +239,6 @@ async function ladder(
  * this is a canvas in someone else's document and there is no token here to
  * read. The ring and the white letter are unchanged.
  */
-/** The burned badge's disc, and the on-screen pin's background — one value, so
- *  the mark the reader drops and the mark the agent receives are the same mark
- *  (P3R1-6). */
-export const ANN_BADGE_FILL = "#d97757";
-
 export function drawBadge(
   ctx: CanvasRenderingContext2D,
   x: number,

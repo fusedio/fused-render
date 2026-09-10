@@ -83,6 +83,7 @@ export function TroubleCard({
   error,
   facts,
   onRetry,
+  retryLabel,
   compact,
   title,
   explain,
@@ -97,6 +98,12 @@ export function TroubleCard({
       because the boot failure is exactly the case that knows none of it. */
   facts?: TroubleFacts;
   onRetry?: () => void;
+  /** What the retry button SAYS, when "Try again" is the wrong promise. The
+      chat's boot failure is usually a server that has gone away, so its own
+      sentence asks the reader to reload the page — and a button labelled "Try
+      again" beside it reads as a second, different action. Defaults to "Try
+      again", which is right wherever re-running the same request can work. */
+  retryLabel?: string;
   /** The notification-stack variant: 340px wide, stacked under a failed row.
       Says WHICH failure and where to go, and leaves the explaining to the
       Preferences tab — a full card in a corner popup is a wall, and the
@@ -208,7 +215,7 @@ export function TroubleCard({
         </a>
         {onRetry && (
           <button type="button" className="version-panel-link" onClick={onRetry}>
-            Try again
+            {retryLabel ?? "Try again"}
           </button>
         )}
         {children}

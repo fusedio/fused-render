@@ -10,6 +10,14 @@
 // labels measured 308.3px with its right edge 8px past the viewport — legacy has
 // rendered the same row icon-only since 2026-08-19.
 //
+// THAT EXACT PAIR NO LONGER FOLDS HERE, and the divergence is deliberate (R1-6):
+// 308.3 against 308 is over by 0.3px, which `FIT_HYSTERESIS` (3px) absorbs — the
+// band the owner asked for is what stops a strip sitting a fraction inside its
+// own boundary from flipping on every jitter of a divider drag, and 0.3px of
+// overflow is paid by the ⋮'s own 16px of row padding. So legacy folds at this
+// width and native does not; anything past the band folds in both. The case is
+// pinned rather than moved, in `useFitStrip.test.ts`.
+//
 // ── THE NATURAL WIDTH IS MEASURED ONCE AND CACHED (P3R1-1) ──────────────────
 //
 // The first port re-derived the verdict from scratch on every delivery: take
@@ -58,7 +66,7 @@
 // every jitter. A couple of px of tolerated overflow is paid by the ⋮'s own 16px
 // of row padding; a strip that folds and unfolds under the reader's hand is not.
 //
-// TWO OBSERVERS, ONE VERDICT, and the split is the load-bearing part:
+// THREE OBSERVERS, ONE VERDICT, and the split is the load-bearing part:
 //   * ResizeObserver on the row — the box changes (the divider drags, the window
 //     resizes, a narrow layout flips).
 //   * MutationObserver on the row's CHILDREN — the content changes width with
@@ -67,6 +75,10 @@
 //     the node it writes would make every verdict schedule the next one, forever
 //     (T:7551). A second childList-only observer on the row re-seats the child
 //     observers when React adds or removes one.
+//   * MutationObserver on `.chat-root`'s CLASS — the content's width changes
+//     with both the box and the children standing still, because an ancestor
+//     rule (`narrow` + `view-preview`) hides a seat outright. See the note at
+//     the seating.
 import { useCallback, useRef } from "react";
 
 import { measureRowNeed } from "./fit";
@@ -190,12 +202,32 @@ export function useFitStrip(): (row: HTMLElement | null) => void {
         : null;
     // childList ONLY: the row's own attributes are what this writes.
     self?.observe(row, { childList: true });
+    // A THIRD OBSERVER, ON THE ROOT'S CLASS LIST (R1-6). The row's natural width
+    // does not depend only on the row: `chat.css`'s
+    // `.chat-root.narrow.view-preview .c-back { display: none }` takes a seat
+    // OUT of `readRow`'s sum (`fit.ts` — a `display: none` child pays neither
+    // width nor gap), so a generation first measured in that state is ~78px
+    // short (66px seat + 12px gap) and, cached, stays short for the life of the
+    // node. Neither observer above can see that flip: `kids` watches the
+    // children's own attributes, `self` watches the row's `childList`, and the
+    // class that changed belongs to an ANCESTOR.
+    //
+    // Today it is rescued by accident — `commentShown` and `ViewToggle` mount
+    // and unmount on the same flip, which does produce a child record — so this
+    // is the accident made into the rule. Safe to watch, because this hook
+    // writes the ROW's class list and never the root's, so no verdict here can
+    // schedule the next one.
+    const root = typeof row.closest === "function" ? row.closest(".chat-root") : null;
+    const ancestor =
+      root && typeof MutationObserver === "function" ? new MutationObserver(recheck) : null;
+    if (root) ancestor?.observe(root, { attributes: true, attributeFilter: ["class"] });
     seat();
     run();
     off.current = () => {
       ro?.disconnect();
       kids?.disconnect();
       self?.disconnect();
+      ancestor?.disconnect();
     };
   }, []);
 }

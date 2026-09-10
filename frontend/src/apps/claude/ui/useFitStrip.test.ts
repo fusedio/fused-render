@@ -39,11 +39,17 @@ class Row {
   classes = new Set<string>();
   clientWidth = 0;
   kids: unknown[] = [];
+  /** The `.chat-root` ancestor the third observer sits on, or null for a row
+   *  that is not in a chat at all (the hook must seat nothing then). */
+  root: unknown = { tag: "chat-root" };
   classList = {
     add: (c: string): void => void this.classes.add(c),
     remove: (c: string): void => void this.classes.delete(c),
     contains: (c: string): boolean => this.classes.has(c),
   };
+  closest(sel: string): unknown {
+    return sel === ".chat-root" ? this.root : null;
+  }
   get children(): unknown[] {
     return this.kids;
   }
@@ -84,6 +90,39 @@ describe("fitStrip — the verdict (T:7566)", () => {
     row.classes.add("tight");
     fitStrip(el(row), () => 308.3);
     expect(row.tight).toBe(false);
+  });
+
+  test("QA #2's OWN PAIR — 308.3px of words in a 308px row (R1-6)", () => {
+    // The example the file header is written around, and the one the hysteresis
+    // changed the answer to: over by 0.3px, which the 3px band absorbs. Legacy
+    // folds here and native does not, deliberately — a strip sitting a fraction
+    // inside its own boundary flipping on every jitter of a divider drag is the
+    // fault the band was added for, and 0.3px of overflow is paid by the ⋮'s own
+    // 16px of row padding. The case was edited out (308 → 300) rather than
+    // re-pinned when the band landed; this is it back, asserting the NEW answer
+    // so the divergence is recorded instead of lost.
+    const row = new Row();
+    row.clientWidth = 308;
+    fitStrip(el(row), () => 308.3);
+    expect(row.tight).toBe(false);
+    // A row that arrives FOLDED at that width stays folded, and that is the
+    // one-way band being honest rather than inconsistent: 308.3 genuinely does
+    // not fit in 308, so `.tight` is not outliving any overflow. It comes off
+    // at the first width that fits the words outright.
+    const back = new Row();
+    back.clientWidth = 308;
+    back.classes.add("tight");
+    fitStrip(el(back), () => 308.3);
+    expect(back.tight).toBe(true);
+    back.clientWidth = 309;
+    fitStrip(el(back), () => 308.3);
+    expect(back.tight).toBe(false);
+    // One more px of words and it is past the band, which is where legacy and
+    // native agree again.
+    const over = new Row();
+    over.clientWidth = 308;
+    fitStrip(el(over), () => 311.3);
+    expect(over.tight).toBe(true);
   });
 
   test("exactly the width available FITS: the compare is `>` and not `>=`", () => {
@@ -262,7 +301,7 @@ afterAll(() => {
 
 interface Seen {
   ro: { targets: unknown[]; disconnects: number; fire: () => void };
-  mo: { observed: { target: unknown; opts: unknown }[]; disconnects: number };
+  mo: { observed: { target: unknown; opts: unknown; cb: () => void }[]; disconnects: number };
 }
 
 /** Both observer constructors, counted. `fire` is the ResizeObserver's delivery
@@ -284,8 +323,15 @@ function observers(): Seen {
     }
   };
   G.MutationObserver = class {
+    cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+    }
     observe(target: unknown, opts: unknown): void {
-      seen.mo.observed.push({ target, opts });
+      // The CALLBACK is recorded with the target: which of the hook's two
+      // callbacks a node was handed is the difference between a re-decide and a
+      // cache invalidation (R1-6).
+      seen.mo.observed.push({ target, opts, cb: this.cb });
     }
     disconnect(): void {
       seen.mo.disconnects++;
@@ -327,7 +373,62 @@ describe("useFitStrip — the wiring", () => {
     const onRow = seen.mo.observed.filter((o) => o.target === row);
     expect(onRow).toHaveLength(1);
     expect(onRow[0]!.opts).toEqual({ childList: true });
-    expect(seen.mo.observed.filter((o) => o.target !== row).map((o) => o.target)).toEqual(row.kids);
+    expect(
+      seen.mo.observed
+        .filter((o) => o.target !== row && o.target !== row.root)
+        .map((o) => o.target),
+    ).toEqual(row.kids);
+  });
+
+  test("…and the `.chat-root` ANCESTOR gets one for its class list (R1-6)", () => {
+    // The row's natural width depends on CSS state outside the row:
+    // `.chat-root.narrow.view-preview .c-back { display: none }` drops a seat
+    // out of the measurement entirely, so a generation first measured there is
+    // ~78px short and stays short. Neither of the other two observers can see
+    // that flip — the class belongs to an ancestor — and the rescue was
+    // incidental (the seats that mount on the same flip happen to produce a
+    // child record).
+    const row = new Row();
+    row.kids = [{ tag: "a" }];
+    row.clientWidth = 0;
+    mountHook()(el(row));
+    const onRoot = seen.mo.observed.filter((o) => o.target === row.root);
+    expect(onRoot).toHaveLength(1);
+    // CLASS ONLY, and no subtree: this is a question about one attribute on one
+    // node, and the hook writes the ROW's class list — never the root's — so no
+    // verdict it makes can schedule the next one.
+    expect(onRoot[0]!.opts).toEqual({ attributes: true, attributeFilter: ["class"] });
+  });
+
+  test("a row with no `.chat-root` above it seats no ancestor observer (R1-6)", () => {
+    // `closest` answers null in the flag-off shells and in any test that mounts
+    // the strip on its own; the hook must simply skip the third observer rather
+    // than observe `null`.
+    const row = new Row();
+    row.root = null;
+    row.kids = [{ tag: "a" }];
+    expect(() => mountHook()(el(row))).not.toThrow();
+    expect(seen.mo.observed.filter((o) => o.target === null)).toHaveLength(0);
+    // Still exactly the two it always had: the row's childList and its one kid.
+    expect(seen.mo.observed).toHaveLength(2);
+  });
+
+  test("the ROOT observer's callback IS the invalidating one (R1-6)", () => {
+    // The property, not just the wiring: a root class flip has to throw the
+    // cached natural width away, not merely re-run the comparison against it —
+    // the whole fault is a cache taken while a seat was hidden. `recheck` is the
+    // invalidating callback (the children share it) and `run` is the plain
+    // re-decide the ResizeObserver gets, so the proof is which of the two the
+    // root was handed.
+    const row = new Row();
+    row.kids = [{ tag: "a" }];
+    row.clientWidth = 0;
+    mountHook()(el(row));
+    const cbFor = (target: unknown) => seen.mo.observed.find((o) => o.target === target)?.cb;
+    expect(cbFor(row.root)).toBe(cbFor(row.kids[0]));
+    // …and NOT the row's own childList callback, which re-seats the child
+    // observers before rechecking — the root gains and loses no children here.
+    expect(cbFor(row.root)).not.toBe(cbFor(row));
   });
 
   test("re-seating the SAME row leaves one set of observers behind, not two", () => {

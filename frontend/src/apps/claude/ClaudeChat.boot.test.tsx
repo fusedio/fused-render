@@ -14,6 +14,7 @@ import { act, create } from "react-test-renderer";
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
+const { troubleReport } = await import("@platform/lib/trouble");
 
 /** One `/api/run` call: the script and the action, plus the fields. */
 interface RunCall {
@@ -589,6 +590,33 @@ test("a stat that never settles gets an 8 s backstop to the TroubleView", async 
   for (const term of ["agentDir", "template.html", "claude template", "stat", "controller"]) {
     expect(words).not.toContain(term);
   }
+
+  // R1-4: THE ACTION THE SENTENCE NAMES IS A BUTTON. The explanation asks the
+  // reader to reload the page, and without `onRetry` the card drew no button at
+  // all — so the copy named an action the card did not offer, while the other
+  // boot card (`main.tsx`) has always passed one.
+  const buttons = r.root
+    .findAll((n) => n.type === "button")
+    .map((n) => String((n.props as { children?: unknown }).children ?? ""));
+  expect(buttons).toContain("Reload the page");
+  // The label is the sentence's own word, not the shared "Try again": a stalled
+  // stat is usually a server that has gone away, and re-running the same
+  // request would answer the reader with the same wait.
+  expect(buttons).not.toContain("Try again");
+
+  // R1-3: AND THE CLIPBOARD DOES NOT SAY WHAT THE SCREEN STOPPED SAYING.
+  // `troubleReport` printed `Error:` over "(no message)" for a blank error, so
+  // "Copy the details" handed on the one string P3R1-8 removed — as the only
+  // machine fact in it. A failure with nothing verbatim behind it now reports
+  // no error section at all.
+  const report = troubleReport({ what: "opening the chat on /a/b.py", error: "" });
+  expect(report).not.toContain("(no message)");
+  expect(report).not.toContain("Error:");
+  // What it does carry is what it actually knows.
+  expect(report).toContain("What the app was doing: opening the chat on /a/b.py");
+  expect(report).toContain("Help: ");
+  // A caller WITH bytes is untouched.
+  expect(troubleReport({ what: "x", error: "ENOTFOUND api" })).toContain("Error:\nENOTFOUND api");
 });
 
 // ---- P3R1-8: the OTHER way into the boot card -----------------------------
@@ -614,6 +642,15 @@ test("no target at all gets its own two sentences, not the stalled-load ones", a
         String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
     ),
   ).toHaveLength(0);
+  // AND NO RETRY BUTTON HERE (R1-4). The stalled load gets one, because
+  // reloading is the thing to do about it; this card's own next move is opening
+  // a file, so a button back to the same empty room would be the same fault the
+  // other card had in reverse — an action the copy never asked for.
+  expect(
+    r.root
+      .findAll((n) => n.type === "button")
+      .map((n) => String((n.props as { children?: unknown }).children ?? "")),
+  ).not.toContain("Reload the page");
 });
 
 

@@ -372,11 +372,25 @@ export function ClaudeChat(props: ClaudeChatProps) {
                 copy lives in `ui/TroubleView`'s table with every other trouble
                 sentence; `message: ""` is what takes the verbatim box away,
                 because there are no machine words behind this failure to
-                quote. The card's own Copy buttons still carry the details for
-                anyone who needs to hand them on. */}
+                quote — and the Copy buttons no longer invent any either
+                (R1-3): `troubleReport` used to print `Error:` over
+                "(no message)", so this card's clipboard handed on the exact
+                string the screen had just stopped saying. It now carries what
+                it actually knows — what the app was doing, and where to read
+                more.
+
+                AND THE ACTION THE COPY NAMES IS A BUTTON (R1-4). The sentence
+                asks the reader to reload the page; without `onRetry` the card
+                drew no button at all, so it named an action it did not offer
+                (`main.tsx`'s boot card, the other one, has always passed one).
+                Only when there IS a target: "there's nothing to open a chat
+                on" is answered by opening a file, and a Reload button under
+                that sentence would be a door back to the same empty room. */}
             <TroubleView
               trouble={{ kind: "boot", message: "" }}
-              {...(file ? {} : { said: NO_TARGET_SAID })}
+              {...(file
+                ? { onRetry: () => location.reload(), retryLabel: "Reload the page" }
+                : { said: NO_TARGET_SAID })}
               what={file ? "opening the chat on " + file : "opening the chat"}
             />
           </div>
