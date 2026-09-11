@@ -1087,24 +1087,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // some later turn instead.
     landedWindow = null;
     /**
-     * ONE TICK'S GRACE for `baseSegTrusted` to resolve on its own (a reported
-     * seam confirms it, or the prefix retires because it no longer applies)
-     * before this loop stops waiting for either and trusts `segs` regardless.
-     *
-     * NOT a guess: agent.py's cursor write is synchronous inside the very
-     * `_read_current_turn` call that hands back an unconfirmed, combined
-     * window (see `priorReply`'s note above) — so the NEXT poll's `segs` is
-     * already clean whether or not this loop's own heuristics noticed. A
-     * bug report (Bugbot, PR #1119) is why this exists as an explicit,
-     * unconditionally-spent allowance rather than "keep waiting until the
-     * text stops matching": a short reply that happens to share a prefix with
-     * the one before it ("OK" answering into "OK, done") never makes that
-     * text stop matching, and skipping every poll until it did — this loop's
-     * first attempt — left `poll.done` unhandled right along with the
-     * segments, `sending` stuck, and the composer dead.
-     */
-    let baseSegGrace = true;
-    /**
      * A LOOP STARTED BY A SEND OWNS ONLY THE TURN IT SENT.
      *
      * `landedWindow` (or, on the reload road, `priorReply` above) covers the
@@ -1294,29 +1276,28 @@ export function createChatController(deps: ControllerDeps): ChatController {
           baseText = "";
           baseSegTrusted = true;
         }
-        // `baseSegGrace` is spent here — UNCONDITIONALLY, the one poll this
-        // loop first has anything to render at all with `baseSegTrusted`
-        // still down — never only on the poll where suppression actually
-        // fires. That is what keeps it a ONE-TIME allowance rather than a
-        // wait for a condition that might not arrive (see its own note): by
-        // the poll after the one it is spent on, agent.py's cursor is
-        // provably already past the old turn, so `segs` needs no more
-        // protecting whether or not `baseSegTrusted` itself ever flips.
-        if (!baseSegTrusted && anyBody) {
-          if (baseSegGrace) baseSegGrace = false;
-          else baseSegTrusted = true;
-        }
         // AN UNCONFIRMED TEXT BASE WITH SEGMENTS STILL IN THE PAYLOAD IS NOT
         // SAFE TO SLICE — see `baseSegTrusted`'s note. `baseText` is exact
         // either way, so `bodyText` below is unaffected: only `bodySegs` is
-        // held back, for exactly the one poll `baseSegGrace` just spent, so
-        // this reply still renders (as plain text, not segments, for that one
-        // poll) rather than showing nothing, and every poll still reaches
-        // `poll.done`/`syncPermissions` below whether or not this fires
-        // (Bugbot, PR #1119 — the previous shape `continue`d past all of
-        // that, and a short reply sharing a prefix with the one before it,
-        // "OK" answering into "OK, done", never made the OLDER retirement
-        // check below fire, so `sending` never cleared at all).
+        // held back, and for as long as this stays true rather than for a
+        // fixed one poll (Bugbot, PR #1119, second pass): a `continue` here
+        // used to skip `poll.done`/`syncPermissions` outright, and the first
+        // fix for THAT swapped it for a one-poll allowance, spent on
+        // whichever poll first had anything to render at all — which is
+        // provably safe only when the FIRST such poll is the cursor-advancing
+        // one, true after an idle host's `pending_echo` blanks every payload
+        // before it. A D415 wake leaves the host busy, not idle: the payloads
+        // before the echo lands still carry the old reply, non-blank, and
+        // spent the allowance on a poll that was never the dangerous one —
+        // so the actually-ambiguous combined poll landed with the grace
+        // already gone and `baseSegTrusted` wrongly true. Trusting `segs`
+        // only once EARNED (a reported seam, or the prefix retiring — never a
+        // countdown) has no such window: every poll still reaches
+        // `poll.done` either way, so the worst case of never earning it (a
+        // reply that happens to share the one before it's own prefix start to
+        // finish, "OK" answering into "OK, done") is a turn that renders as
+        // plain text for its own duration rather than segments — never a
+        // duplicate, never a stuck `sending`.
         const segSliceUnsafe = !baseSegTrusted && segs.length > 0;
         const bodySegs = segSliceUnsafe ? [] : baseSeg ? segs.slice(baseSeg) : segs;
         const bodyText = baseText ? fullText.slice(baseText.length) : fullText;

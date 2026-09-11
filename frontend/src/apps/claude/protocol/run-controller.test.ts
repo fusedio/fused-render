@@ -1136,13 +1136,26 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.length).toBe(2);
   });
 
-  // BUGBOT, PR #1119: the fix above's first shape `continue`d past every poll
-  // for as long as `baseSegTrusted` stayed down, waiting for the "already
-  // landed prefix retires" check to notice `fullText` no longer starts with
-  // the old reply. A short new reply that happens to share the old one's own
-  // prefix ("OK" answering into "OK, done.") never makes that true — so that
-  // shape skipped `poll.done` forever, never cleared `sending`, and left the
-  // composer stuck. This is that exact shape, and it must still terminate.
+  // BUGBOT, PR #1119: a `continue` here used to skip every poll for as long as
+  // `baseSegTrusted` stayed down, waiting for the "already landed prefix
+  // retires" check to notice `fullText` no longer starts with the old reply.
+  // A short new reply that happens to share the old one's own prefix ("OK"
+  // answering into "OK, done.") never makes that true — so that shape skipped
+  // `poll.done` forever, never cleared `sending`, and left the composer stuck.
+  // This is that exact shape, and it must still terminate.
+  //
+  // What it must NOT do is trust `segs` just because time (or polls) passed
+  // (Bugbot, PR #1119, second pass): earlier attempts spent a one-poll
+  // allowance unconditionally, which — on a payload where the FIRST body
+  // this loop ever sees is not yet the cursor-advancing one (a busy host, not
+  // an idle one — see `baseSegTrusted`'s own note) — burns it on the wrong
+  // poll and trusts an unsliced `segs` on the poll that actually needed
+  // protecting. So trust here is never time-based: it is earned (a reported
+  // seam, or the prefix genuinely retiring) or not earned at all, and NOT
+  // earning it for this reply's whole duration renders it as plain text
+  // rather than segments — losing the shared "OK" out of the display (an
+  // accepted, cosmetic cost of `baseText` never being disprovable here), but
+  // never duplicating anything and never leaving a poll unhandled.
   test("a short reply sharing the old reply's own prefix still finishes and clears `sending` (no seam)", async () => {
     const A = text("OK");
     const Bgrowing = text("OK, d");
@@ -1164,7 +1177,8 @@ describe("follow-ups (T:16024, D687)", () => {
         },
         poll: (_f, n) => {
           if (n === 0) return poll({ segments: [], text: "" });
-          // No `turn_breaks` — the ambiguous poll `baseSegGrace` is spent on.
+          // No `turn_breaks` reported, ever — `baseSegTrusted` has nothing to
+          // earn it with, on this poll or any later one.
           if (n === 1) return poll({ segments: [A, Bgrowing], text: A.text + Bgrowing.text });
           // The cursor has advanced (a clean window, B alone) — but B's own
           // full text STILL starts with "OK", so a check keyed on the prefix
@@ -1183,13 +1197,80 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(controller.getState().working).toBeNull();
     const reply = assistants(controller);
     expect(reply[0]!.text).toBe(A.text);
-    expect(reply[1]!.text).toBe(Bfull.text);
+    // NEVER a duplicate: the new turn's own segments array stays empty the
+    // whole time (never earned), so it falls back to plain text — the tail
+    // beyond the shared "OK" prefix, not "OK, done." in full (see the test's
+    // own note above) and never `A.text` alongside it.
+    expect((reply[1] as { segments?: unknown[] }).segments || []).toEqual([]);
+    expect(reply[1]!.text).toBe(Bfull.text.slice(A.text.length));
     expect(reply.length).toBe(2);
 
     // `sending` itself cleared: a second send is accepted, not refused.
     const returnedBefore = returned.length;
     await controller.sendMessage("one more");
     expect(returned.length).toBe(returnedBefore);
+  });
+
+  // BUGBOT, PR #1119, second pass: a BUSY host (a D415 wake in progress, not
+  // an idle one) means `pending_echo` never blanks the polls before the
+  // combined window lands — those earlier polls carry the OLD reply alone,
+  // non-blank, same as every ordinary poll of a settled turn. A one-poll
+  // "grace" spent unconditionally on the first non-blank poll — this loop's
+  // earlier fix — burns itself on one of THESE, and the actually-ambiguous
+  // combined poll (old + new, no seam) then lands with the allowance already
+  // gone, `baseSegTrusted` wrongly flipped, and `segs` sliced from 0 as if it
+  // were clean. Two non-blank, old-reply-only polls stand in for the busy
+  // host here, before the combined one arrives.
+  test("a busy host's non-blank polls before the echo lands do not spend the same allowance a hang fix once relied on", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // NOT blank: the host is busy (a wake in flight), so `pending_echo`
+          // never applies. Both of these are the OLD reply alone — nothing
+          // of this send is in the window yet.
+          if (n === 0 || n === 1) return poll({ segments: [A], text: A.text });
+          // The echo has landed. Old + new, combined, no `turn_breaks` — the
+          // one poll this whole mechanism exists to protect.
+          if (n === 2) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
   });
 
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
