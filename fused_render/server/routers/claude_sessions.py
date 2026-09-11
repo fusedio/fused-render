@@ -739,6 +739,20 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
     `haiku` because the job is small, the reader is waiting, and this fires on
     every return.
 
+    The tail travels over stdin as a `--input-format stream-json` message,
+    never as an argv element — same rule as every other prompt this template
+    sends (`_write_inbox_entry`, `ai.py`'s `_ai_cmd`), and load-bearing here
+    for a reason unique to this one caller: a transcript tail is the only
+    prompt in the app built out of the CONVERSATION rather than typed by a
+    person, so it is the one guaranteed to contain embedded newlines. On the
+    Windows `.bat`/`.cmd` shim an npm install of the CLI commonly resolves to,
+    CreateProcess reroutes the whole argv through `cmd.exe /c`, which reads
+    its command line ONE LINE AT A TIME — a raw newline inside a quoted argv
+    string ends that line as far as cmd.exe is concerned, silently
+    truncating the prompt at the first turn break no matter how it was
+    quoted. Passed over stdin instead, the tail never touches the command
+    line cmd.exe parses, on any platform.
+
     `cwd` is the target's own working directory when there is one, and a temp
     directory otherwise. It genuinely does not matter — a fresh session with no
     tools cannot look at the filesystem — but a cwd that does not exist fails
@@ -751,16 +765,19 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
     workdir = agent._workdir(file)
     if not os.path.isdir(workdir):
         workdir = tempfile.gettempdir()
+    message = json.dumps({"type": "user", "message": {
+        "role": "user",
+        "content": [{"type": "text", "text": _RECAP_PROMPT % tail}]}})
     proc = subprocess.Popen(
         [agent._claude_bin(), "-p", "--no-session-persistence",
+         "--input-format", "stream-json",
          "--max-turns", "1", "--tools", "", "--model", "haiku",
-         "--output-format", "json", "--system-prompt", _RECAP_SYSTEM,
-         _RECAP_PROMPT % tail],
-        cwd=workdir, env=agent._spawn_env(), stdin=subprocess.DEVNULL,
+         "--output-format", "json", "--system-prompt", _RECAP_SYSTEM],
+        cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         encoding="utf-8", errors="replace")
     try:
-        stdout, _ = proc.communicate(timeout=_RECAP_TIMEOUT)
+        stdout, _ = proc.communicate(input=message + "\n", timeout=_RECAP_TIMEOUT)
     except subprocess.TimeoutExpired:
         # Killed rather than left to finish: the answer is already unwanted, and
         # an abandoned `claude` would keep burning tokens for nobody.

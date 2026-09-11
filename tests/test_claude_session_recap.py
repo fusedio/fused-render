@@ -29,17 +29,21 @@ from _claude_stub_cli import write_stub_cli
 SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 FOR_UUID = "u-1"
 
-# Records argv, optionally stalls (the single-flight test needs the first run to
-# still be in flight when the second reader arrives), then prints whatever JSON
-# the test asked for on stdout — which is all `--output-format json` is to us.
+# Records argv AND stdin (the prompt travels on stdin — see D-recap's
+# `--input-format stream-json` fix), optionally stalls (the single-flight test
+# needs the first run to still be in flight when the second reader arrives),
+# then prints whatever JSON the test asked for on stdout — which is all
+# `--output-format json` is to us.
 _STUB = """#!{python}
 import json
 import os
 import sys
 import time
 
+stdin_data = sys.stdin.read()
+record = dict(argv=sys.argv[1:], stdin=stdin_data)
 with open(os.environ["RECAP_STUB_CALLS"], "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+    fh.write(json.dumps(record) + "\\n")
 time.sleep(float(os.environ.get("RECAP_STUB_DELAY") or 0))
 sys.stdout.write(os.environ["RECAP_STUB_OUT"])
 """
@@ -78,7 +82,8 @@ def agent(tmp_path, monkeypatch):
 
 @pytest.fixture
 def calls(tmp_path, monkeypatch):
-    """Path of the stub's argv log. Reading it is how the tests count spawns."""
+    """Path of the stub's call log (argv + stdin). Reading it is how the
+    tests count spawns."""
     log = tmp_path / "stub-calls.jsonl"
     monkeypatch.setenv("RECAP_STUB_CALLS", str(log))
     monkeypatch.setenv("RECAP_STUB_OUT", _ok("the recap, long enough to count as one"))
@@ -93,6 +98,14 @@ def _spawns(log):
         return []
     return [json.loads(line) for line in
             log.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _prompt(call):
+    """The prompt text out of one spawn's stdin — a single `--input-format
+    stream-json` user-message line, the one place the tail actually travels
+    now that it no longer rides in argv."""
+    message = json.loads(call["stdin"].strip())
+    return message["message"]["content"][0]["text"]
 
 
 @pytest.fixture
@@ -143,16 +156,21 @@ def test_recap_comes_back_capped_with_the_turn_it_is_about(
     assert body["for_uuid"] == FOR_UUID
     assert body["at"]
 
-    argv, = _spawns(calls)
+    call, = _spawns(calls)
+    argv = call["argv"]
     # The flags that make this safe: no JSONL written, no tools, one turn, and
-    # the tail passed as the prompt rather than the live session resumed.
+    # the tail passed as a stream-json message over stdin — never an argv
+    # element, or a Windows .bat/.cmd shim's cmd.exe would truncate it at its
+    # first newline — rather than the live session resumed.
     assert "--no-session-persistence" in argv
     assert "--resume" not in argv and "--fork-session" not in argv
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--max-turns") + 1] == "1"
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
     tail = "User: make the tests pass\n\nAssistant: " + "x" * 900
-    assert argv[-1] == recap_mod._RECAP_PROMPT % tail
-    assert "<transcript>\n" + tail + "\n</transcript>" in argv[-1]
+    prompt = _prompt(call)
+    assert prompt == recap_mod._RECAP_PROMPT % tail
+    assert "<transcript>\n" + tail + "\n</transcript>" in prompt
 
 
 def test_a_failed_cli_run_is_empty_text_not_an_error(
@@ -278,10 +296,11 @@ def test_an_interrupted_reply_still_gets_a_recap(client, project, calls):
 
     assert _get(client, target).json()["text"] == (
         "the recap, long enough to count as one")
-    argv, = _spawns(calls)
+    call, = _spawns(calls)
+    prompt = _prompt(call)
     # …and the marker is not in what the model was asked to summarize.
-    assert recap_mod._INTERRUPT_MARK not in argv[-1]
-    assert "Assistant: Reading the tree now" in argv[-1]
+    assert recap_mod._INTERRUPT_MARK not in prompt
+    assert "Assistant: Reading the tree now" in prompt
 
 
 def test_two_copies_of_a_folder_do_not_share_one_recap(
@@ -305,6 +324,7 @@ def test_two_copies_of_a_folder_do_not_share_one_recap(
     assert _get(client, str(other)).status_code == 200
 
     first, second = _spawns(calls)
-    assert "in the original" in first[-1] and "in the copy" not in first[-1]
-    assert "in the copy" in second[-1], (
+    first_prompt, second_prompt = _prompt(first), _prompt(second)
+    assert "in the original" in first_prompt and "in the copy" not in first_prompt
+    assert "in the copy" in second_prompt, (
         "the second file must not be answered out of the first file's cache")
