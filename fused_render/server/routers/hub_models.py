@@ -605,7 +605,21 @@ def _score_breakdown(row: dict, ram_gb: float | None,
                 round(footprint_bytes / fit.GB_BYTES, 2)
                 if isinstance(footprint_bytes, (int, float)) else None
             )
-            entry["poolGb"] = round(pool_gb, 2) if isinstance(pool_gb, (int, float)) else None
+            # C4: prefer the pool `fit.verdict()` actually selected for THIS
+            # row (`poolBytes`, e.g. VRAM alone for a row that fits on the
+            # GPU) over the caller's combined-budget `pool_gb` reading — the
+            # two can disagree whenever a discrete GPU is present, since
+            # `available_budget_bytes()` always reports the bigger combined
+            # VRAM+RAM figure regardless of which pool this row was actually
+            # judged against. Fall back to `pool_gb` only when this row has
+            # no verdict (`fit` is None) to read a pool from.
+            row_pool_bytes = (
+                fit_verdict.get("poolBytes") if isinstance(fit_verdict, dict) else None
+            )
+            if isinstance(row_pool_bytes, (int, float)):
+                entry["poolGb"] = round(row_pool_bytes / fit.GB_BYTES, 2)
+            else:
+                entry["poolGb"] = round(pool_gb, 2) if isinstance(pool_gb, (int, float)) else None
         entries.append(entry)
     if axes["on_disk"]:
         entries.append({"axis": "onDisk", "gained": _ON_DISK_BONUS, "lost": 0.0})

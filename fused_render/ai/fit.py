@@ -985,8 +985,16 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
         result = "tight"
     else:
         result = "no"
+    # C4: the pool `_select_pool` actually judged this footprint against —
+    # VRAM alone, a combined VRAM+RAM offload budget, or plain system RAM —
+    # exposed alongside the verdict so a caller building a per-row "how much
+    # room is left" tooltip (`_score_breakdown`'s `poolGb`) reports the SAME
+    # pool the verdict itself used, rather than the machine's overall
+    # `available_budget_bytes()` ceiling, which can disagree whenever this
+    # row was actually judged against a smaller VRAM-only pool.
     return {"verdict": result, "basis": basis, "footprintBytes": footprint,
-            "score": score, "runMode": run_mode}
+            "score": score, "runMode": run_mode,
+            "poolBytes": pool, "poolName": run_mode}
 
 
 # ---------------------------------------------------------- item 14 wiring

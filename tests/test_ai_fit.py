@@ -583,6 +583,33 @@ def test_run_mode_is_cpu_offload_when_the_footprint_exceeds_vram_but_fits_combin
     assert result["verdict"] in ("easy", "tight")
 
 
+def test_verdict_exposes_the_selected_pool_bytes_and_name(monkeypatch):
+    """C4: `verdict()` must expose which pool `_select_pool` actually judged
+    the footprint against, not leave a caller re-deriving it (or worse,
+    reading a different, combined-budget figure that can disagree)."""
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)],
+        total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=0.0)
+    monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
+    result = fit.verdict("text-generation", "org/m", size_gb=10.0)
+    assert result is not None
+    assert result["poolName"] == "gpu"
+    assert result["poolBytes"] == pytest.approx(24.0 * fit.GB_BYTES)
+
+
+def test_verdict_pool_bytes_is_the_combined_offload_budget_in_cpu_offload_mode(monkeypatch):
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 3060", vram_gb=8.0)],
+        total_vram_gb=8.0, bandwidth_gb_s=360.0, detected_at=0.0)
+    monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
+    result = fit.verdict("text-generation", "org/m", size_gb=19.5)
+    assert result is not None
+    assert result["poolName"] == "cpu-offload"
+    # 32GB RAM - reserve = usable; combined pool = 8GB VRAM + usable RAM,
+    # strictly more than VRAM alone.
+    assert result["poolBytes"] > 8.0 * fit.GB_BYTES
+
+
 def test_run_mode_is_gpu_for_a_non_apple_unified_memory_device(monkeypatch):
     """A Strix Halo / Grace-class APU draws from system RAM exactly like
     Apple Silicon — `hw_detect._apply_unified_override`'s own case — so the

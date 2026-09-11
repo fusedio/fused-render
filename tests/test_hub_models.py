@@ -1247,7 +1247,7 @@ def test_a_row_with_params_carries_fit_speed_and_created(client, hub_cache, monk
     row = _search(client).json()["models"][0]
     assert row["created"] == "2026-08-01T00:00:00.000Z"
     assert row["fit"] is not None
-    assert set(row["fit"]) == {"verdict", "basis", "footprintBytes", "score", "runMode"}
+    assert set(row["fit"]) == {"verdict", "basis", "footprintBytes", "score", "runMode", "poolBytes", "poolName"}
     assert row["speedEstimate"] is not None
     assert "tokensPerSecond" in row["speedEstimate"]
 
@@ -3078,3 +3078,27 @@ def test_score_breakdown_omits_pool_gb_when_not_supplied():
     entries = hub._score_breakdown(row, 32.0)
     fit_entry = next(e for e in entries if e["axis"] == "fit")
     assert fit_entry["poolGb"] is None
+
+
+def test_score_breakdown_pool_gb_prefers_the_rows_own_selected_pool(monkeypatch):
+    """C4: a row selected onto VRAM (a smaller pool than the machine's
+    combined VRAM+RAM offload budget) must report ITS OWN pool in the
+    tooltip, not the caller's `pool_gb` reading of the bigger combined
+    figure — the two disagree whenever a discrete GPU is present."""
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES,
+                   "poolBytes": 24 * hub.fit.GB_BYTES, "poolName": "gpu"},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    # The caller's own combined-budget reading (e.g. VRAM + system RAM) —
+    # deliberately a different, larger figure than the row's own VRAM pool.
+    entries = hub._score_breakdown(row, 32.0, pool_gb=48.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] == pytest.approx(24.0)
+
+
+def test_score_breakdown_pool_gb_falls_back_when_row_has_no_verdict():
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+           "downloads": None, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0, pool_gb=22.4)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] == pytest.approx(22.4)
