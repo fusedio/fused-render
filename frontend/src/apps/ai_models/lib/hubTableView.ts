@@ -18,7 +18,7 @@
 // and `hubFamilies.ts`: the two-pane port's search screen (`HubSearchScreen`)
 // draws one row per repo with no family grouping and no dense `<table>`, so
 // there is nothing left to hoist a column out of or collapse a family into.
-import type { AiFitVerdict } from "@platform/lib/api";
+import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 import { formatParams, timeAgo } from "@platform/lib/format";
 
 /** The dash every absent cell in this table shows — one glyph, so a reader's
@@ -137,6 +137,112 @@ export function matchTitle(
         ? " This fit is judged from this repo's own reported size — not yet measured by an actual run here."
         : "";
   return `${scoreText} Number colour: ${verdictText}.${modeText}${basisText}`;
+}
+
+// ---------------------------------------------------------------------------
+// D1245/D1246 — the search hit row's own short `data-tip` popover.
+//
+// `matchTitle` above is a full paragraph meant for a native `title=`; this is
+// the terse replacement `HubSearchScreen.tsx`'s hit row actually shows (see
+// its own comment on why: a 60-word tooltip in a small unstyled native
+// popup read as ugly noise). It answers the user's two real complaints
+// (D1246): "why did THIS row lose points" (the loss list, biggest first,
+// capped at three, each with its own number — never a repeat of the axes
+// this row scored full marks on), and "why do two 84s look different"
+// (the closing sentence ALWAYS separates colour from score in plain words,
+// regardless of whether fit made the loss list).
+
+/** "3y old"/"2mo old"/"18d old" — the same coarse-bucket rounding `ageLabel`
+ *  reads off a full ISO date, but starting from the already-computed
+ *  `ageDays` a `HubMatchAxis` breakdown entry carries (D1245) so this tip
+ *  never has to re-parse `created` itself. */
+function agePhrase(ageDays: number): string {
+  if (ageDays < 30) return `${Math.max(1, Math.round(ageDays))}d old`;
+  if (ageDays < 365) return `${Math.max(1, Math.round(ageDays / 30))}mo old`;
+  return `${Math.max(1, Math.round(ageDays / 365))}y old`;
+}
+
+/** One short phrase naming an axis and the raw number behind it — the
+ *  vocabulary `matchRowTip`'s loss list draws from. Never invents a number
+ *  the axis entry did not carry (e.g. a speed axis with no real tok/s
+ *  estimate says so honestly rather than printing one). */
+function axisLossPhrase(entry: HubMatchAxis): string {
+  switch (entry.axis) {
+    case "popularity":
+      return `popularity (${popLabel(entry.downloads ?? null)} downloads)`;
+    case "recency":
+      return `recency (${entry.ageDays != null ? agePhrase(entry.ageDays) : "age unknown"})`;
+    case "capability":
+      return `model size (${paramsLabel(entry.params ?? null)} — this machine could run more)`;
+    case "speed":
+      return entry.tokensPerSecond != null
+        ? `speed (~${Math.round(entry.tokensPerSecond)} tok/s)`
+        : "speed (no reliable estimate for this size)";
+    case "runMode":
+      return entry.runMode === "cpu-offload"
+        ? "runs via CPU offload"
+        : "runs on the CPU only";
+    case "fit":
+    default:
+      return "memory fit";
+  }
+}
+
+/** "a" / "a and b" / "a, b and c" — the loss list's own join rule, never an
+ *  Oxford comma since the list is capped at three. */
+function joinWithAnd(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** The search hit row's `data-tip` text (D1245/D1246) — leads with the
+ *  score, names only the axes that actually cost THIS row points (biggest
+ *  loss first, capped at three, silent about any axis that scored full
+ *  marks), mentions the on-disk bonus when it applied, and ALWAYS closes
+ *  by separating the row's colour (memory fit alone) from its score,
+ *  with fit's own footprint-vs-pool numbers — the fix for two rows both
+ *  scoring 84 with different bar colours reading as a bug rather than
+ *  two independent facts that happen to total the same. `breakdown`
+ *  absent or empty (an older response, or nothing to explain) still
+ *  renders a short, honest tip rather than an empty one. */
+export function matchRowTip(
+  fit: AiFitVerdict | null,
+  matchScore: number | null | undefined,
+  breakdown: HubMatchAxis[] | null | undefined,
+): string {
+  const scoreText = typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
+  const entries = breakdown ?? [];
+
+  const bonus = entries.find((e) => e.axis === "onDisk" && e.gained > 0);
+  const losses = entries
+    .filter((e) => e.axis !== "onDisk" && e.lost > 0.05)
+    .sort((a, b) => b.lost - a.lost)
+    .slice(0, 3)
+    .map(axisLossPhrase);
+
+  let tip = `Match ${scoreText}/100`;
+  if (losses.length > 0) {
+    tip += ` — lost points on ${joinWithAnd(losses)}.`;
+  } else if (entries.length > 0) {
+    tip += " — full marks on every axis.";
+  } else {
+    tip += ".";
+  }
+  if (bonus) {
+    tip += ` +${Math.round(bonus.gained)} for already being on disk.`;
+  }
+
+  const verdictText = fit?.verdict ? VERDICT_SENTENCE[fit.verdict] : "unknown — nothing to judge fit by yet";
+  const fitEntry = entries.find((e) => e.axis === "fit");
+  const footprintGb = fitEntry?.footprintGb ?? null;
+  const poolGb = fitEntry?.poolGb ?? null;
+  const fitNumbers =
+    footprintGb != null
+      ? ` (needs ~${footprintGb}GB${poolGb != null ? ` of this machine's ~${poolGb}GB` : ""})`
+      : "";
+  tip += ` Colour shows memory fit, not this score: ${verdictText}${fitNumbers}.`;
+  return tip;
 }
 
 /** "18d ago", or the dash when the Hub did not say (or said something this

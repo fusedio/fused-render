@@ -31,6 +31,7 @@ import { hubSizeBytes, knownTotalSize, lookupTotalSize } from "@apps/ai_models/l
 import {
   ageLabel,
   matchCell,
+  matchRowTip,
   paramsLabel,
   popLabel,
   quantLabel,
@@ -272,9 +273,12 @@ function HitRow({
   // short `data-tip` for a real (CSS-only) popover — see `.tp .match[data-tip]`
   // in ai-models.css — that keeps the score and the colour legend and drops
   // the rest.
-  const matchTip =
-    `Match ${cell.scoreText}/100 — memory fit, size vs this machine, speed, recency, popularity ` +
-    `(+bonus if already downloaded). Colour = memory fit: ${cell.verdict}.`;
+  //
+  // D1245/D1246: `matchRowTip` (not a generic ingredients list any more)
+  // names only the axes that cost THIS row points, and always separates the
+  // bar's colour (memory fit alone) from its score — the fix for two rows
+  // that both show "84" with a different colour reading as a bug.
+  const matchTip = matchRowTip(model.fit, model.matchScore, model.matchBreakdown);
   const glyph = verdictGlyph(cell.verdict);
   const have = disk.state === "downloaded";
   const gate = have ? null : gateChrome(model.gated, authenticated);

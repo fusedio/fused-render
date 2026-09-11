@@ -3668,8 +3668,49 @@ export interface HubModel {
    *  every axis has an honest default for missing evidence, so this is
    *  never null the way `fit`/`speedEstimate` can be. */
   matchScore: number;
+  /** D1245: the per-axis story behind `matchScore` — one entry per weighted
+   *  axis (`fit`/`capability`/`speed`/`recency`/`popularity`), plus an
+   *  `onDisk` entry when the on-disk bonus applied and a `runMode` entry
+   *  when the CPU-offload/CPU-only penalty did. The weights and axis
+   *  curves live only in `hub_models.py` (`_axis_scores`/`_score_
+   *  breakdown`), so this is the one way a tooltip can say why a row lost
+   *  points without re-deriving them. Optional: absent on a response from
+   *  a server that predates this field. */
+  matchBreakdown?: HubMatchAxis[];
   local: HubModelLocal;
   url: string;
+}
+
+/** One line of `HubModel.matchBreakdown` — see that field's own doc.
+ *  `gained`/`lost` are already in BLENDED points (weight applied), not the
+ *  axis's own raw 0-100, so they can be summed or compared directly
+ *  against `matchScore` itself. `gained + lost` is that axis's full
+ *  weight in blended points for every weighted axis; `onDisk`/`runMode`
+ *  are flat (never both nonzero) and only appear when they actually
+ *  applied. The remaining fields are the raw fact that drove ONE axis —
+ *  only the ones relevant to `axis` are set. */
+export interface HubMatchAxis {
+  axis: "fit" | "capability" | "speed" | "recency" | "popularity" | "onDisk" | "runMode";
+  /** Blended points this axis contributed toward `matchScore`. */
+  gained: number;
+  /** Blended points this axis cost versus a perfect score on it (0 for
+   *  `onDisk`; the flat penalty itself for `runMode`). */
+  lost: number;
+  /** `popularity` only — the raw download count (or null) behind it. */
+  downloads?: number | null;
+  /** `recency` only — how old `created` is, in days (or null). */
+  ageDays?: number | null;
+  /** `capability` only — the raw `params` (or null) behind it. */
+  params?: number | null;
+  /** `speed` only — the raw `tokensPerSecond`, or null when there was no
+   *  real estimate to score (same gate `speedLabel` prints a dash for). */
+  tokensPerSecond?: number | null;
+  /** `fit` only — this repo's own footprint, and the machine's available
+   *  pool, both in GB (or null when unknown). */
+  footprintGb?: number | null;
+  poolGb?: number | null;
+  /** `runMode` only — which penalty this entry is. */
+  runMode?: "cpu-offload" | "cpu-only";
 }
 
 /** One facet option — `HubSearchResult.facets`'s own row shape (fix round 6,

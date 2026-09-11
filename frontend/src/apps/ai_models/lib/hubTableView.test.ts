@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, matchCell, matchTitle, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
-import type { AiFitVerdict } from "@platform/lib/api";
+import { ageLabel, matchCell, matchRowTip, matchTitle, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
+import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
 // function — a wrong number reads as a real measurement, so every cell whose
@@ -130,6 +130,115 @@ describe("matchTitle", () => {
   it("adds no basis sentence at all when there is no basis to report", () => {
     const title = matchTitle(null, null, false, null);
     expect(title).not.toContain("This fit is");
+  });
+});
+
+describe("matchRowTip", () => {
+  // D1245/D1246: the row's own short `data-tip` popover — unlike `matchTitle`
+  // above (a 60-word paragraph), this leads with the score then names ONLY
+  // the axes that actually cost THIS row points, biggest loss first, and
+  // always separates "the score" from "the colour" in plain words — the
+  // fix for the "two rows both score 84 but one is yellow and one is
+  // green" complaint (D1246).
+  const tight = (footprintGb: number, poolGb: number): AiFitVerdict => ({
+    verdict: "tight",
+    basis: "declared",
+    footprintBytes: footprintGb * 1e9,
+    score: 60,
+    runMode: "gpu",
+  });
+
+  const axis = (partial: Partial<HubMatchAxis> & Pick<HubMatchAxis, "axis" | "gained" | "lost">): HubMatchAxis =>
+    partial as HubMatchAxis;
+
+  it("leads with the score out of 100", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+    ]);
+    expect(tip.startsWith("Match 84/100")).toBe(true);
+  });
+
+  it("names the biggest losers first, capped at three, each with its own number", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+      axis({ axis: "popularity", gained: 0.5, lost: 9.5, downloads: 120 }),
+      axis({ axis: "recency", gained: 4.5, lost: 10.5, ageDays: 1095 }),
+      axis({ axis: "speed", gained: 15, lost: 0, tokensPerSecond: 40 }),
+      axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
+    ];
+    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
+    // Sorted by `lost` descending (14, 10.5, 9.5): fit, recency, popularity —
+    // all three fit within the top-three cap, so all three are named.
+    expect(tip).toContain("popularity (120 downloads)");
+    expect(tip).toContain("3y"); // recency phrased as an age
+    // Full-marks axes never named.
+    expect(tip).not.toContain("speed");
+    expect(tip).not.toContain("capability");
+  });
+
+  it("says nothing lost when every axis scored full marks", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
+      axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
+      axis({ axis: "speed", gained: 15, lost: 0, tokensPerSecond: 40 }),
+      axis({ axis: "recency", gained: 15, lost: 0, ageDays: 1 }),
+      axis({ axis: "popularity", gained: 10, lost: 0, downloads: 6_000_000 }),
+    ];
+    const tip = matchRowTip(tight(2, 22.4), 100, breakdown);
+    expect(tip).not.toContain("lost");
+  });
+
+  it("mentions the already-downloaded bonus when it applied", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+      axis({ axis: "onDisk", gained: 6, lost: 0 }),
+    ];
+    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
+    expect(tip.toLowerCase()).toContain("already");
+    expect(tip).toContain("+6");
+  });
+
+  it("names a run-mode penalty as its own loss when it applied", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
+      axis({ axis: "runMode", gained: 0, lost: 10, runMode: "cpu-offload" }),
+    ];
+    const tip = matchRowTip(tight(2, 22.4), 90, breakdown);
+    expect(tip.toLowerCase()).toContain("cpu offload");
+  });
+
+  it("always separates colour from score, and gives the fit its own numbers", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+    ]);
+    expect(tip.toLowerCase()).toContain("colour");
+    expect(tip.toLowerCase()).toContain("not this score");
+    expect(tip).toContain("17");
+    expect(tip).toContain("22.4");
+  });
+
+  it("explains the same colour sentence even when fit itself lost no points", () => {
+    // Two rows can both score 84 with different colours precisely because
+    // fit is independent of the total — the colour sentence must appear
+    // regardless of whether fit made the top-three loss list.
+    const easy: AiFitVerdict = { verdict: "easy", basis: "declared", footprintBytes: 8.7e9, score: 100, runMode: "gpu" };
+    const tip = matchRowTip(easy, 84, [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 8.7, poolGb: 22.4 }),
+      axis({ axis: "popularity", gained: 0, lost: 10, downloads: 0 }),
+    ]);
+    expect(tip.toLowerCase()).toContain("colour");
+    expect(tip).toContain("8.7");
+  });
+
+  it("reads unknown fit honestly rather than inventing a footprint", () => {
+    const tip = matchRowTip(null, 40, []);
+    expect(tip.toLowerCase()).toContain("unknown");
+  });
+
+  it("is a dash-safe, terse fallback when there is no breakdown at all", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84, undefined);
+    expect(tip.startsWith("Match 84/100")).toBe(true);
+    expect(tip.toLowerCase()).toContain("colour");
   });
 });
 
