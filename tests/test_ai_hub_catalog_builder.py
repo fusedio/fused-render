@@ -77,7 +77,16 @@ def test_pagination_follows_link_next_header(monkeypatch):
     assert ids == {"org/page1", "org/page2"}
 
 
-def test_429_persists_blocked_until_and_keeps_partial_rows(monkeypatch):
+def test_429_partway_through_never_writes_a_partial_pool(monkeypatch):
+    """C1 (bugbot): a 429 that lands AFTER some rows were already merged from
+    earlier pages must not be allowed to commit those rows as a served pool
+    — `write_pool` must be skipped entirely whenever a rate limit was hit
+    anywhere in this build, exactly like the already-empty case below. A
+    partial pool being servable is worse than no pool: `pool_exists` would
+    read True forever after, and `ensure_build_started` refuses to ever
+    start a fresh build for a capability whose pool already "exists" — so a
+    429 on page 3 of a real build used to permanently truncate that
+    capability's catalog to whatever page 1-2 happened to contain."""
     calls = []
 
     def fake_get(url, *a, **k):
@@ -94,13 +103,19 @@ def test_429_persists_blocked_until_and_keeps_partial_rows(monkeypatch):
     result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
 
     assert result["rateLimited"] is True
-    assert result["rows"] == 1
+    assert result["rows"] == 1  # reports what was seen, but does NOT persist it
     cfg = load_config()
-    assert hub_catalog.pool_exists(cfg, "automatic-speech-recognition")
+    assert not hub_catalog.pool_exists(cfg, "automatic-speech-recognition")
     assert hub_catalog.is_blocked(cfg, "automatic-speech-recognition")
     entry = hub_catalog.pool_entry(cfg, "automatic-speech-recognition")
     # roughly "now + 120s", not the fallback default
     assert before + 110 < entry["blockedUntil"] < before + 130
+    assert "file" not in entry
+
+    # Once the block clears, a fresh build is not permanently refused (the
+    # old bug: `ensure_build_started` sees `pool_exists() == True` forever).
+    monkeypatch.setattr(hub_catalog, "is_blocked", lambda *a, **k: False)
+    assert builder.ensure_build_started("automatic-speech-recognition", cfg=cfg) is True
 
 
 def test_429_with_no_rows_yet_leaves_no_pool_but_sets_the_block(monkeypatch):

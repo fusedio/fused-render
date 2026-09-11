@@ -277,10 +277,24 @@ def _build_capability_pool_inner(cfg: HubCatalogConfig, capability: str,
         if rate_limit_reset_s is not None:
             break
 
-    if rate_limit_reset_s is not None and not merged:
-        # Nothing to write a pool for yet — just persist the backoff.
+    if rate_limit_reset_s is not None:
+        # C1 (bugbot): a 429 mid-build must NEVER produce a servable pool,
+        # whether or not any rows were accumulated before it hit. Writing a
+        # partial pool here (the old rule only skipped `write_pool` when
+        # `merged` was still completely EMPTY) made `pool_exists` accept a
+        # truncated pool built from however many (tag, format) pairs happened
+        # to complete before the rate limit landed — the search route would
+        # then serve that partial pool FOREVER once the block window passed,
+        # since `ensure_build_started` refuses to start a new build while
+        # `pool_exists` is already true. Persist only the backoff; the next
+        # trigger, once `is_blocked` clears, restarts the WHOLE build from
+        # page 1 of the first (tag, format) pair (this function has no
+        # partial-resume state to pick back up from) — a real request-cost
+        # trade-off (a machine that keeps getting rate-limited partway
+        # re-fetches the same early pages every retry) accepted deliberately
+        # over ever serving a truncated pool as if it were complete.
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
-        return {"rows": 0, "rateLimited": True}
+        return {"rows": len(merged), "rateLimited": True}
 
     build_seconds = time.time() - started_at
     # `write_pool` writes a fresh manifest entry (clearing any prior
