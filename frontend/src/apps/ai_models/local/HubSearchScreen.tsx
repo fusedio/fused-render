@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
+import { formatToken } from "@apps/ai_models/lib/formatToken";
 import { type DiskCard, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
@@ -283,19 +284,10 @@ function HitRow({
   // Filtered out here rather than in `paramsLabel`/`quantLabel` themselves,
   // which the drawer's own `<dd>` cells still call directly and still want
   // the dash for.
-  // Item 9a (fix round 5): a short upper-case format token — from `format`
-  // when the Hub said "gguf" outright, else a guess off `library` for the
-  // other two names worth calling out (MLX, Safetensors); anything else
-  // (diffusers, transformers, ...) is not distinctive enough to earn a slot
-  // on an already-crowded line, so it is skipped rather than spelled out.
-  const formatLabel =
-    model.format === "gguf"
-      ? "GGUF"
-      : model.library === "mlx"
-        ? "MLX"
-        : model.library === "safetensors"
-          ? "Safetensors"
-          : null;
+  // Item 9a (fix round 5), widened by fix round 6 item 2: a short format
+  // token — see `formatToken`'s own docstring for why "gguf"/mlx/safetensors
+  // alone left every embeddings row blank.
+  const formatLabel = formatToken(model);
   // Item 9a: only worth a mention once there is more than one to count —
   // "1 variant" would be true of nearly every row and add noise, not signal.
   const variantsLabel = model.variants && model.variants > 1 ? `${model.variants} variants` : null;
