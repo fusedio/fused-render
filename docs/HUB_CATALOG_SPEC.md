@@ -100,3 +100,59 @@ Tests:
 Decisions:
 
 - Log every decision as a new D-number in `DECISIONS.md` (grep the highest existing number first; main may have taken more since). Note in the log where this spec was wrong.
+
+## Builder notes (resume from here)
+
+Progress as of this session (see git log on `worktree-hub-catalog` for commits):
+
+1. **Done**: `image-to-image` → `IMAGE_GENERATION` in `fused_render/ai/tasks.py`,
+   plus the `hub_cache.py` format-override gate fix and the cascading test
+   updates. Logged as D1235. `tests/test_ai_tasks.py`,
+   `tests/test_ai_models_api.py`, `tests/test_hub_models.py` all green;
+   confirmed no other cascades via `pytest tests/ -k "ai_ or hub_ or task" -n auto`
+   (3 unrelated pre-existing flaky failures: `test_ai_metrics.py`'s claude-binary
+   test and two `test_ai_worker_base.py` socket-framing tests — reproduce with
+   no hub_catalog changes present, unrelated to this feature, do not touch).
+
+2. **Not started** (highest-value remaining, roughly in dependency order):
+   - `fused_render/index/hub_catalog_store.py` (name TBD): parquet pool
+     schema + write-then-swap-manifest, modeled on `fused_render/index/store.py`
+     and `fused_render/index/config.py`. One file per capability pool,
+     generation-numbered, manifest.json written last, under
+     `os.path.join(storage.home_dir(), "hub_catalog")`. Do NOT import
+     `index/store.py`'s schema — only its patterns (`store_lock`, atomic
+     swap, fresh connection per query).
+   - The bulk builder: reuses `_EXPAND`/`_fetch`/`_get` shapes from
+     `hub_models.py` but paginates via the `Link: rel="next"` header (not the
+     live path's single-page `_OVERFETCH`/`_MAX_FETCH`), across every
+     `(pipeline_tag, format)` pair a capability's runners resolve to. 429
+     handling: read the `RateLimit` header, persist a "blocked until"
+     timestamp in the catalog dir, resume lazily on the next trigger — no
+     retry loop.
+   - `api_hub_search` (hub_models.py ~1683): branch on pool-exists-for-
+     capability; catalog path queries via DuckDB (fresh connection per
+     query), covers filters/ILIKE/D780 scoring/sort/facets over the WHOLE
+     pool, zero Hub calls; else today's live path unchanged + fire-and-forget
+     "ensure build started".
+   - `start_hub_catalog_refresh` in `fused_render/ai/supervisor.py`, modeled
+     on `start_hardware_refresh`/`start_hub_metadata_refresh`; wire into
+     `fused_render/server/app.py` beside the other two (~537-551). One
+     `lastModified` delta per BUILT pool per day; unbuilt pools untouched.
+   - `hub_metadata.py` JSON → parquet table migration (own file,
+     `metadata-<gen>.parquet`, in the same catalog dir): keep `get()`/
+     `cached()` and `_fetch_raw` untouched from the caller's point of view;
+     drop `MAX_REPOS`; TTL replaced by re-harvest-on-lastModified-change for
+     rows in a built pool, TTL fallback otherwise; one-time JSON import.
+
+3. **Test coverage still needed for #2**: a builder test under the
+   no-egress guard (fake paginated Hub responses, assert parquet pool
+   written + manifest swap), a 429/backoff test, a catalog-path search test
+   (zero `httpx.get` calls once a pool exists), a facets/family-pull-in test
+   over a pool bigger than the old 200-row window (this is the regression
+   test for the "missing-publisher facet" bug the spec cites), and a
+   supervisor delta-refresh test parallel to
+   `test_ai_supervisor_hub_metadata_refresh.py`.
+
+This session ran out of budget before starting #2. A fresh builder can pick
+up directly at "not started" above — the D1235 unit is self-contained and
+already committed, so there's no partial state to reconcile there.
