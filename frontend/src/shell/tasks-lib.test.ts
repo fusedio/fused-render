@@ -75,6 +75,7 @@ import {
   messageWhenTitle,
   nextRunChip,
   nextRunRepeats,
+  repeatMark,
   outcomeTag,
   nextRunAt,
   openMessageHref,
@@ -7691,8 +7692,17 @@ describe("nextRunChip", () => {
     expect(chip.text).toBe("in 1h");
     expect(chip.repeats).toBe(true);
     expect(chip.title).toContain("repeats");
-    // The list row and the board card both draw the glyph off the same flag.
-    expect((VIEWS.match(/\{soon\.repeats && ICON_REPEAT\}/g) ?? []).length).toBe(2);
+    // The chip stays words-only; the glyph is the title's (repeatMark, below).
+    expect(VIEWS).not.toContain("soon.repeats");
+    expect(repeatMark(t, NOW)?.at).toBe(AHEAD);
+    expect(repeatMark(t, NOW)?.title).toContain("Repeats");
+    expect(repeatMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)).toBe(null);
+    // Drawn after the file mark, with the file mark's three press handlers.
+    const ROW = VIEWS.slice(VIEWS.indexOf('className={"tasks-row"'), VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')));
+    expect(ROW).toContain('className="tasks-row-repeat"');
+    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(ROW.indexOf('className="tasks-row-repeat"'));
+    expect(ROW.indexOf('className="tasks-row-repeat"')).toBeLessThan(ROW.indexOf('className="tasks-grow"'));
+    expect(TASKS_CSS).toContain(".tasks-row-file,\n.tasks-row-repeat {");
   });
 
   it("reads the repeat off the window when an older server names none", () => {
@@ -8250,7 +8260,7 @@ describe("the folder chip as a filter tag", () => {
     expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
     // The scope glyph carries it too, with its margin-left left alone — that is a
     // deliberate pull toward the title and a shorthand would drop it.
-    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
     const fileBody = file.slice(0, file.indexOf("}"));
     expect(fileBody).toContain("align-self: stretch");
     expect(fileBody).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
@@ -8310,7 +8320,7 @@ describe("the file mark after a task's title", () => {
     // `.tasks-rowlink` is an <a> over the whole row at z-index 1. An element
     // that does not lift out of the way never receives the pointer — and this
     // one exists only to be pointed at. Same lesson as the folder tag.
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("position: relative");
     expect(body).toContain("z-index: 2");
@@ -8324,7 +8334,7 @@ describe("the file mark after a task's title", () => {
     // cursor over one glyph inside it announces a different kind of thing to
     // press and looks broken beside the row's own pointer (Akshil,
     // 2026-08-23).
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
     // Comments stripped first — the rule's own headstone names the property it
     // no longer sets, and a substring search would find that instead.
     const body = rest.slice(0, rest.indexOf("}")).replace(/\/\*[\s\S]*?\*\//g, "");
@@ -8335,7 +8345,7 @@ describe("the file mark after a task's title", () => {
     // The row's flex `gap` is 10px and applies between every pair of children,
     // so the mark shipped with 10px on both sides plus a margin of its own. It
     // belongs to the title, so the gap is pulled back on that side only.
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
   });

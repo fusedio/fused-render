@@ -3319,6 +3319,23 @@ export function scheduledMark(task: Task, now: number = Date.now()): ScheduledMa
   };
 }
 
+/**
+ * The circle arrows after a title: this task has a REPEATING run ahead of it
+ * (Akshil, 2026-09-11). scheduledMark's test — a run strictly ahead — and then
+ * nextRunRepeats over the same run, so the mark cannot claim a repeat the chip
+ * is not timing. Null for a one-off, and for a repeat whose runs are all spent.
+ */
+export function repeatMark(task: Task, now: number = Date.now()): ScheduledMark | null {
+  const mark = scheduledMark(task, now);
+  if (!mark || !nextRunRepeats(task)) return null;
+  const stamp = messageStamp(mark.at);
+  return {
+    at: mark.at,
+    title: `Repeats · next run ${stamp}`,
+    label: `Repeats, next run ${stamp}`,
+  };
+}
+
 // ---- "and that one was stopped" ----------------------------------------------
 // A run the user STOPPED settles in Done, which is the right lane — the stop was
 // asked for, so it is an outcome and not a fault, and a red mark would ask the

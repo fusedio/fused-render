@@ -653,7 +653,8 @@ button.tasks-caret,
    `flex: 0 0 auto` beside a title that is the row's only shrinking element:
    the mark must not be what disappears when a long title runs out of room,
    because then it would say "about a folder" by being absent. */
-.tasks-row-file {
+.tasks-row-file,
+.tasks-row-repeat {
   position: relative;
   z-index: 2;
   display: inline-flex;
@@ -697,7 +698,7 @@ button.tasks-caret,
    press does not make. The row's own hover is the only hover here. */
 
 /* OPTICALLY CENTRED ON THE WORDS, NOT THE BOX (Akshil, 2026-09-10: "make sure
-   the clock icon is center aligned with the text"). The title mark is
+   the clock icon is center aligned with the text"). Both title marks are
    centred on the row's 36px by flex, and the title's 16px line box is too — so
    glyph centre, box centre and row centre all measure 156px on the same row.
    But a 13px mixed-case title has its ink below the box's middle: ascenders
@@ -707,7 +708,8 @@ button.tasks-caret,
    pixel down puts the clock's face and the file's page on the words' own
    middle. `transform`, not margin: it moves the ink and nothing else — the hit
    zone, the row height and the flex maths are untouched. */
-.tasks-row-file svg {
+.tasks-row-file svg,
+.tasks-row-repeat svg {
   transform: translateY(1px);
 }
 
@@ -1715,12 +1717,6 @@ button.tasks-caret,
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   opacity: 0.85;
-}
-/* The repeat glyph after a repeating run's time (ScheduleTaskViews ICON_REPEAT):
-   the chip's own colour, so "in 1h ⟳" reads as one caption. */
-.tasks-row-next svg {
-  flex: 0 0 auto;
-  color: inherit;
 }
 
 /* ---- "and that one was stopped" --------------------------------------------

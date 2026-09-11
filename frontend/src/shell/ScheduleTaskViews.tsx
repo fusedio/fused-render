@@ -86,6 +86,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  repeatMark,
   outcomeTag,
   openMessageHref,
   openThreadIntent,
@@ -222,15 +223,19 @@ const ICON_FILE = icon(
 // TASK row (2026-09-10, "this task has a run booked") followed it out the next
 // day (Akshil, 2026-09-11: "remove that icon").
 //
-/** A REPEATING run, inside the next-run chip (Akshil, 2026-09-11: "for repeating
- *  tasks we say 'in 1h [repeat icon, arrow circle]'"). lucide `repeat`, at the
- *  chip's own 11px type so it reads as part of the word rather than as a mark
- *  beside it. Drawn only when tasks-lib.nextRunChip says the run ahead is an
- *  occurrence of a template; a one-off says the time alone. */
+/** A REPEATING task — circle arrows after the title (Akshil, 2026-09-11: "can
+ *  we have circle arrows icons? … let's have it after the title field"). lucide
+ *  `refresh-cw`, at the file mark's 12px and drawn beside it: the two are the
+ *  same kind of caption on the title — what the task is about, and that it runs
+ *  again by itself. Drawn only while a repeating run is ahead
+ *  (tasks-lib.nextRunRepeats over scheduledMark's test); the chip beside the
+ *  time says WHEN and stays words-only. */
 const ICON_REPEAT = icon(
-  <><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" />
-    <path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>,
-  11,
+  <><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+    <path d="M8 16H3v5" /></>,
+  12,
 );
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
@@ -1710,6 +1715,9 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and whether the task REPEATS — the circle arrows after the title. Null
+  // unless a run is ahead AND it is a template's occurrence (tasks-lib.repeatMark).
+  const repeating = repeatMark(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2339,6 +2347,38 @@ function TaskNode({
           </span>
         ) : null}
 
+        {/* THE REPEAT MARK, after the file mark and for the reason that one is
+            there: both caption the title — what the task is about, and that it
+            runs again on its own (Akshil, 2026-09-11). Drawn while a repeating
+            run is ahead; the chip at the row's end says when. Same three press
+            handlers as the file mark: the mark sits over the stretched link and
+            would otherwise be a dead run of pixels (Akshil, 2026-08-27). */}
+        {repeating ? (
+          <span
+            className="tasks-row-repeat"
+            data-hint={repeating.title}
+            aria-label={repeating.label}
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
+          >
+            {ICON_REPEAT}
+          </span>
+        ) : null}
+
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
@@ -2612,7 +2652,6 @@ function TaskNode({
         {soon && (
           <span className="tasks-row-next" data-hint={soon.title}>
             {soon.text}
-            {soon.repeats && ICON_REPEAT}
           </span>
         )}
         {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
@@ -3623,7 +3662,6 @@ function TaskCard({
             {soon && (
               <span className="tasks-row-next" title={soon.title}>
                 {soon.text}
-                {soon.repeats && ICON_REPEAT}
               </span>
             )}
           </span>
