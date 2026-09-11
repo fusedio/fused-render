@@ -1731,7 +1731,25 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # nobody asked for.
     if fit_level != "any":
         allowed = {"easy"} if fit_level == "easy" else {"easy", "tight"}
-        models = [row for row in models if (row.get("fit") or {}).get("verdict") in allowed]
+        # D806: a row with NO verdict (`fit` missing, or present with
+        # `verdict: None` — the Hub never said how big the file is, so
+        # `fit.verdict` had nothing to judge) now PASSES this filter instead
+        # of being dropped. Before this fix an unknown-fit row read
+        # identically to a `verdict: "no"` row here — both failed `in
+        # allowed` — so "Easy fit only" silently hid every unmeasured repo
+        # alongside the ones that actually would not fit, with no count and
+        # no way to ask for them back (the unfit-hidden counter below only
+        # ever watched `verdict == "no"`). Unknown is not a claim that the
+        # model will not fit; it is the absence of a claim, and the two-pane
+        # search screen renders it with its own `?` glyph specifically so a
+        # reader can tell "measured, and it's bad" from "not measured yet"
+        # apart — a filter that conflated them upstream would make that
+        # on-screen distinction a lie about what was even offered.
+        models = [
+            row for row in models
+            if (row.get("fit") or {}).get("verdict") in allowed
+            or (row.get("fit") or {}).get("verdict") is None
+        ]
     if quant_filter:
         models = [row for row in models if (row.get("quant") or "").upper() == quant_filter]
     if params_band != "any":

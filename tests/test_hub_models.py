@@ -2068,6 +2068,29 @@ def test_fit_level_any_leaves_the_unfit_default_untouched(client, hub_cache, mon
     assert [m["id"] for m in body["models"]] == ["org/no"]
 
 
+def test_fit_level_easy_still_shows_an_unknown_verdict_row(client, hub_cache, monkeypatch):
+    # D806: an unmeasured row (no verdict at all) is not the same claim as
+    # "will not fit" and must pass the Fit filter — dropped before, alongside
+    # the `no` rows it does not resemble.
+    _stub_verdicts(monkeypatch, {
+        "org/easy": {"verdict": "easy", "basis": "declared", "footprintBytes": 1, "score": 100.0},
+        "org/no": {"verdict": "no", "basis": "declared", "footprintBytes": 1, "score": 0.0},
+    })
+    monkeypatch.setattr(httpx, "get", _reply(
+        [_hit("org/easy"), _hit("org/no"), _hit("org/unmeasured")]))
+    body = _search(client, {"fitLevel": "easy", "includeUnfit": True}).json()
+    assert {m["id"] for m in body["models"]} == {"org/easy", "org/unmeasured"}
+
+
+def test_fit_level_tight_still_shows_an_unknown_verdict_row(client, hub_cache, monkeypatch):
+    _stub_verdicts(monkeypatch, {
+        "org/no": {"verdict": "no", "basis": "declared", "footprintBytes": 1, "score": 0.0},
+    })
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/no"), _hit("org/unmeasured")]))
+    body = _search(client, {"fitLevel": "tight", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/unmeasured"]
+
+
 def test_an_unknown_fit_level_is_refused(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", _reply([]))
     assert _search(client, {"fitLevel": "bogus"}).status_code == 400
