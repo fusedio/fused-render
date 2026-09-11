@@ -327,6 +327,21 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
       // that races the hosted pane's arrival. The audio was already stopped and
       // KEPT on `pagehide`, so nothing spoken is lost.
       set(deps.store.modeParam() === "1");
+      // A RELOAD CONTINUES THE ROUND, IT DOES NOT START ONE (Akshil, 2026-09-11:
+      // "on reload it remembers the content, but not the pin or the element").
+      // `set(true)` stamps the round at `now`, which is the pin gate — a note
+      // older than the round draws a chip and no pin, by design, so the pins of
+      // a finished round do not litter the next one. But the notes the URL just
+      // handed back are THIS round's: unsent, and the reader is mid-thought. So
+      // the round opens where the oldest of them was made, and the pins come
+      // back with the chips. Only when armed: an unarmed boot paints no pins.
+      if (on) {
+        const pending = deps.store.pending();
+        if (pending.length) {
+          deps.store.startRound(Math.min(...pending.map((c) => c.createdAt || 0)));
+          deps.render();
+        }
+      }
     },
     async done() {
       // NOT THE WALKTHROUGH'S TO FINISH (Bugbot, PR #1074). Done is Comment

@@ -654,7 +654,7 @@ button.tasks-caret,
    the mark must not be what disappears when a long title runs out of room,
    because then it would say "about a folder" by being absent. */
 .tasks-row-file,
-.tasks-row-repeat {
+.tasks-row-sched {
   position: relative;
   z-index: 2;
   display: inline-flex;
@@ -709,7 +709,7 @@ button.tasks-caret,
    middle. `transform`, not margin: it moves the ink and nothing else — the hit
    zone, the row height and the flex maths are untouched. */
 .tasks-row-file svg,
-.tasks-row-repeat svg {
+.tasks-row-sched svg {
   transform: translateY(1px);
 }
 
@@ -1717,6 +1717,18 @@ button.tasks-caret,
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   opacity: 0.85;
+}
+/* THE CARD'S SCHEDULE MARK (Akshil, 2026-09-11): the List row's clock or circle
+   arrows, after the card's title in the same muted register. Inline with the
+   title's last line rather than a foot row of its own — the foot went with the
+   "in 1h" chip, and a glyph is a caption on the title, not a second fact. */
+.tasks-card-sched {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -1px;
+  margin-left: 6px;
+  color: var(--fg-muted);
+  opacity: 0.75;
 }
 
 /* ---- "and that one was stopped" --------------------------------------------

@@ -85,8 +85,7 @@ import {
   taskFile,
   threadTone,
   messageWhenTitle,
-  nextRunChip,
-  repeatMark,
+  scheduledMark,
   outcomeTag,
   openMessageHref,
   openThreadIntent,
@@ -224,18 +223,24 @@ const ICON_FILE = icon(
 // TASK row (2026-09-10, "this task has a run booked") followed it out the next
 // day (Akshil, 2026-09-11: "remove that icon").
 //
-/** A REPEATING task — circle arrows after the title (Akshil, 2026-09-11: "can
- *  we have circle arrows icons? … let's have it after the title field"). lucide
- *  `refresh-cw`, at the file mark's 12px and drawn beside it: the two are the
- *  same kind of caption on the title — what the task is about, and that it runs
- *  again by itself. Drawn only while a repeating run is ahead
- *  (tasks-lib.nextRunRepeats over scheduledMark's test); the chip beside the
- *  time says WHEN and stays words-only. */
+/** THE SCHEDULE MARK after the title (Akshil, 2026-09-11: "for done/blocked/
+ *  archive tasks with schedule message let's show a schedule icon [clock] after
+ *  the title rather than 'in 1h' … if it is repeating we show repeat icon, if
+ *  scheduled once we show clock icon, we don't show both"). One glyph, chosen
+ *  by tasks-lib.scheduledMark: circle arrows (lucide `refresh-cw`) for an
+ *  occurrence of a template, a clock (lucide `clock`) for a one-off. Both at
+ *  the file mark's 12px and drawn beside it — the same kind of caption on the
+ *  title: what the task is about, and that it runs by itself. The instant is
+ *  in the tooltip; the row's one time column stays the row's. */
 const ICON_REPEAT = icon(
   <><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
     <path d="M21 3v5h-5" />
     <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
     <path d="M8 16H3v5" /></>,
+  12,
+);
+const ICON_CLOCK = icon(
+  <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 16 14" /></>,
   12,
 );
 const ICON_OPEN = icon(
@@ -1714,11 +1719,10 @@ function TaskNode({
   // reads LANE_SORTS, the same map the Board's lanes are ordered by), and null when
   // the task has neither, in which case nothing is drawn.
   const when = taskWhen(task);
-  // The run still to come, when the row's own time is not already it.
-  const soon = nextRunChip(task);
-  // ...and whether the task REPEATS — the circle arrows after the title. Null
-  // unless a run is ahead AND it is a template's occurrence (tasks-lib.repeatMark).
-  const repeating = repeatMark(task);
+  // A run still ahead — the mark after the title, clock or circle arrows
+  // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
+  // 2026-09-11: "we don't need to show time 2 times on the right side").
+  const sched = scheduledMark(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2348,17 +2352,18 @@ function TaskNode({
           </span>
         ) : null}
 
-        {/* THE REPEAT MARK, after the file mark and for the reason that one is
+        {/* THE SCHEDULE MARK, after the file mark and for the reason that one is
             there: both caption the title — what the task is about, and that it
-            runs again on its own (Akshil, 2026-09-11). Drawn while a repeating
-            run is ahead; the chip at the row's end says when. Same three press
-            handlers as the file mark: the mark sits over the stretched link and
-            would otherwise be a dead run of pixels (Akshil, 2026-08-27). */}
-        {repeating ? (
+            runs by itself (Akshil, 2026-09-11). Circle arrows for a repeat, a
+            clock for a one-off, never both; the instant is in the tooltip. Same
+            three press handlers as the file mark: the mark sits over the
+            stretched link and would otherwise be a dead run of pixels (Akshil,
+            2026-08-27). */}
+        {sched ? (
           <span
-            className="tasks-row-repeat"
-            data-hint={repeating.title}
-            aria-label={repeating.label}
+            className="tasks-row-sched"
+            data-hint={sched.title}
+            aria-label={sched.label}
             onClick={(e) => {
               if (!href) return;
               if (opensElsewhere(e)) {
@@ -2376,7 +2381,7 @@ function TaskNode({
               if (e.button === 1 && href) e.preventDefault();
             }}
           >
-            {ICON_REPEAT}
+            {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
           </span>
         ) : null}
 
@@ -2636,25 +2641,6 @@ function TaskNode({
             dash belongs in exactly the register the times beside it are in — it IS
             one of the column's values, not a different kind of thing — and
             `.tasks-row-time` already sizes, colours and aligns it. */}
-        {/* AND THE RUN THAT IS STILL COMING, when the time beside it is not
-            already that (tasks-lib.nextRunChip).
-
-            A recurring task whose last run finished sits in DONE now, not
-            Upcoming — the output nobody has read is what needs eyes, and a
-            promise is not a verdict (server `_message_verdict`). That is the
-            right lane and it drops one true fact off the row: the task is not
-            over. So the row says it, once, in the vocabulary every other time
-            here speaks (relativeWhen, absolute instant in the tooltip).
-
-            A CHIP and not a second time column: `.tasks-row-time` is the row's
-            one time slot and this is a different question, so it is marked
-            rather than aligned. Nothing is drawn on an Upcoming row, where the
-            time IS the next run and the chip would say it twice. */}
-        {soon && (
-          <span className="tasks-row-next" data-hint={soon.title}>
-            {soon.text}
-          </span>
-        )}
         {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
             run off the three-message window, and pulse carries no window, so it
             falls through to `last_active` — the session's clock, which on a live
@@ -3041,18 +3027,22 @@ export function TaskBoard({
         const said = await performRun({ kind: "resend", entryId: action.entryId });
         if (said) setNote(said);
       } else if (action.kind === "resay") {
-        // Same drop, typed message: no entry to copy, so the words travel as an
-        // immediate message into the session. `delay_seconds: 1` because the
-        // endpoint wants exactly one of due/delay and "now" is the smallest
-        // positive delay it takes; `immediate` keeps it off the calendar
-        // (schedule-lib.taskChips) — nobody planned this for a time.
-        await scheduleMessage({
+        // Same drop, typed message: no entry to copy, so the words travel as a
+        // message into the session — created, then FIRED (Akshil, 2026-09-11:
+        // "it shouldn't schedule it, it should rerun instantly"). run-now
+        // spawns before it answers, the same road `resend` takes, so the
+        // reload below already finds the task In progress. `delay_seconds: 1`
+        // only because the endpoint wants exactly one of due/delay; `immediate`
+        // keeps it off the calendar (schedule-lib.taskChips) — nobody planned
+        // this for a time.
+        const made = await scheduleMessage({
           target: action.target,
           message: action.body,
           session_id: action.sessionId,
           delay_seconds: 1,
           immediate: true,
         });
+        await performRun({ kind: "run-now", entryId: made.entry.id });
       } else if (action.kind === "unarchive") {
         // Archive → anywhere else. ONE meaning whatever `lane` is: the filing is
         // dropped and the task lands in whatever lane it DERIVES to, which is
@@ -3453,7 +3443,9 @@ function TaskCard({
   // still in Archive, so Unarchive is the only button it grows.
   const run = showsRowActions(task) ? taskRunIntent(task) : null;
   // The run still to come, when this card's lane does not already order by it.
-  const soon = nextRunChip(task);
+  // The mark after the title — clock or circle arrows (tasks-lib.scheduledMark),
+  // the List row's own, so the two views say "this runs by itself" alike.
+  const sched = scheduledMark(task);
   // ...and the one word the Done lane cannot say on its own: that this card's
   // last run was STOPPED rather than finished (tasks-lib.outcomeTag). Same
   // function the List row asks, so the two views cannot describe one run
@@ -3639,11 +3631,16 @@ function TaskCard({
             <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
           )}
         </span>
+        {sched && (
+          <span className="tasks-card-sched" title={sched.title} aria-label={sched.label}>
+            {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
+          </span>
+        )}
         {/* The foot is the folder and the run ahead, so when neither says
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
             goes rather than leaving an empty row of padding. */}
-        {(showProject || soon || folderMissing) && (
+        {(showProject || folderMissing) && (
           <span className="schedule-tv-card-foot">
             {/* The List row's own mark, same words, same colour (see the row). */}
             {folderMissing && (
@@ -3656,14 +3653,6 @@ function TaskCard({
             )}
             {showProject && (
               <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
-            )}
-            {/* Same fact, same function, same words as the List row's
-                (tasks-lib.nextRunChip): a settled card whose task is due again
-                would otherwise show nothing about the run ahead. */}
-            {soon && (
-              <span className="tasks-row-next" title={soon.title}>
-                {soon.text}
-              </span>
             )}
           </span>
         )}

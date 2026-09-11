@@ -3326,6 +3326,10 @@ export interface ScheduledMark {
    *  splits its two strings the same way (path in the hint, sentence in the
    *  label). */
   label: string;
+  /** Whether that run is a template's occurrence — circle arrows rather than a
+   *  clock (Akshil, 2026-09-11: "if it is repeating we show repeat icon, if
+   *  scheduled once we show clock icon, we don't show both"). */
+  repeats: boolean;
 }
 
 /**
@@ -3339,27 +3343,26 @@ export function scheduledMark(task: Task, now: number = Date.now()): ScheduledMa
   const at = nextRunAt(task);
   if (at === null || at * 1000 <= now) return null;
   const stamp = messageStamp(at);
+  const repeats = nextRunRepeats(task);
+  const word = repeats ? "Repeats" : "Scheduled";
+  // ON A BLOCKED ROW THE TOOLTIP SAYS THE LANE'S RULE (Akshil, 2026-09-11: "it
+  // should remain blocked because we don't know why it is blocked, but we
+  // should show that there is a scheduled message here"). The task stays in
+  // Blocked — a pending message has no verdict, so the failure still speaks —
+  // and this mark is where the row says a retry is booked.
+  if (taskColumn(task) === "blocked") {
+    return {
+      at,
+      title: `${word} · stays Blocked until this runs · ${stamp}`,
+      label: `${word}, stays Blocked until this runs, ${stamp}`,
+      repeats,
+    };
+  }
   return {
     at,
-    title: `Scheduled · next run ${stamp}`,
-    label: `Scheduled, next run ${stamp}`,
-  };
-}
-
-/**
- * The circle arrows after a title: this task has a REPEATING run ahead of it
- * (Akshil, 2026-09-11). scheduledMark's test — a run strictly ahead — and then
- * nextRunRepeats over the same run, so the mark cannot claim a repeat the chip
- * is not timing. Null for a one-off, and for a repeat whose runs are all spent.
- */
-export function repeatMark(task: Task, now: number = Date.now()): ScheduledMark | null {
-  const mark = scheduledMark(task, now);
-  if (!mark || !nextRunRepeats(task)) return null;
-  const stamp = messageStamp(mark.at);
-  return {
-    at: mark.at,
-    title: `Repeats · next run ${stamp}`,
-    label: `Repeats, next run ${stamp}`,
+    title: `${word} · next run ${stamp}`,
+    label: `${word}, next run ${stamp}`,
+    repeats,
   };
 }
 

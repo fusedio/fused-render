@@ -75,7 +75,6 @@ import {
   messageWhenTitle,
   nextRunChip,
   nextRunRepeats,
-  repeatMark,
   ringFailed,
   outcomeTag,
   nextRunAt,
@@ -2370,7 +2369,6 @@ describe("the unread mark", () => {
     // ICON_CLOCK at all now.
     const msgRow = thread.slice(0, thread.indexOf("{why && <p"));
     expect(msgRow).not.toContain("{ICON_CLOCK}");
-    expect(VIEWS).not.toContain("const ICON_CLOCK");
     // The body is the row's ink and carries the row's caption (`data-hint`), so
     // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
@@ -4563,7 +4561,7 @@ describe("the folder chip on a row and a card", () => {
     // the id, where marks about the task live — in the foot it read as part of
     // the folder's name (Akshil, 2026-08-21).
     expect(CARD).toMatch(
-      /\{\(showProject \|\| soon \|\| folderMissing\) && \(\s*<span className="schedule-tv-card-foot">/,
+      /\{\(showProject \|\| folderMissing\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The task's own name is still captioned — on the TITLE now, not the row
     // (Akshil: "the tooltip of title should only show up if I am on title
@@ -7716,17 +7714,10 @@ describe("nextRunChip", () => {
     expect(chip.text).toBe("in 1h");
     expect(chip.repeats).toBe(true);
     expect(chip.title).toContain("repeats");
-    // The chip stays words-only; the glyph is the title's (repeatMark, below).
+    // The chip itself is no longer drawn anywhere — the fact moved to the title
+    // mark (scheduledMark, tested below); this stays as the lib's own answer.
+    expect(VIEWS).not.toContain("nextRunChip(");
     expect(VIEWS).not.toContain("soon.repeats");
-    expect(repeatMark(t, NOW)?.at).toBe(AHEAD);
-    expect(repeatMark(t, NOW)?.title).toContain("Repeats");
-    expect(repeatMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)).toBe(null);
-    // Drawn after the file mark, with the file mark's three press handlers.
-    const ROW = VIEWS.slice(VIEWS.indexOf('className={"tasks-row"'), VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')));
-    expect(ROW).toContain('className="tasks-row-repeat"');
-    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(ROW.indexOf('className="tasks-row-repeat"'));
-    expect(ROW.indexOf('className="tasks-row-repeat"')).toBeLessThan(ROW.indexOf('className="tasks-grow"'));
-    expect(TASKS_CSS).toContain(".tasks-row-file,\n.tasks-row-repeat {");
   });
 
   it("reads the repeat off the window when an older server names none", () => {
@@ -7761,8 +7752,8 @@ describe("nextRunChip", () => {
     expect(chip.title).toContain(messageStamp(AHEAD));
     // The row's own time is still the last run — the rank did not move.
     expect(taskWhen(t, NOW).kind).toBe("last");
-    // Every row that draws the chip draws it off this one function.
-    expect((VIEWS.match(/nextRunChip\(task\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // The same sentence rides the title mark, which is what the row now draws.
+    expect(scheduledMark(t, NOW)?.title).toContain("stays Blocked until this runs");
   });
 
   it("says nothing on an Upcoming row, whose own time is already that run", () => {
@@ -8303,7 +8294,7 @@ describe("the folder chip as a filter tag", () => {
     expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
     // The scope glyph carries it too, with its margin-left left alone — that is a
     // deliberate pull toward the title and a shorthand would drop it.
-    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
+    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-sched {"));
     const fileBody = file.slice(0, file.indexOf("}"));
     expect(fileBody).toContain("align-self: stretch");
     expect(fileBody).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
@@ -8363,7 +8354,7 @@ describe("the file mark after a task's title", () => {
     // `.tasks-rowlink` is an <a> over the whole row at z-index 1. An element
     // that does not lift out of the way never receives the pointer — and this
     // one exists only to be pointed at. Same lesson as the folder tag.
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-sched {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("position: relative");
     expect(body).toContain("z-index: 2");
@@ -8377,7 +8368,7 @@ describe("the file mark after a task's title", () => {
     // cursor over one glyph inside it announces a different kind of thing to
     // press and looks broken beside the row's own pointer (Akshil,
     // 2026-08-23).
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-sched {"));
     // Comments stripped first — the rule's own headstone names the property it
     // no longer sets, and a substring search would find that instead.
     const body = rest.slice(0, rest.indexOf("}")).replace(/\/\*[\s\S]*?\*\//g, "");
@@ -8388,7 +8379,7 @@ describe("the file mark after a task's title", () => {
     // The row's flex `gap` is 10px and applies between every pair of children,
     // so the mark shipped with 10px on both sides plus a margin of its own. It
     // belongs to the title, so the gap is pulled back on that side only.
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-repeat {"));
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file,\n.tasks-row-sched {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
   });
@@ -8396,28 +8387,32 @@ describe("the file mark after a task's title", () => {
 
 describe("the schedule mark on a List row", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
 
-  // The glyph is GONE (Akshil, 2026-09-11: "we had a hidden icon after title for
-  // scheduled tasks, remove that icon"). It was built on 2026-09-10, hidden the
-  // next morning behind SHOW_SCHEDULE_MARK, and removed the same day — the row
-  // wears the file mark alone again, and the fact it carried ("a run is booked")
-  // is the next-run chip's, which now also says whether that run repeats.
-  it("is not drawn, and has no flag left to flip", () => {
+  // Third answer in a day (Akshil, 2026-09-11). A clock after the title, then
+  // hidden, then removed for a chip beside the time — and back, because "we
+  // don't need to show time 2 times on the right side": the glyph says a run is
+  // booked and the tooltip says when; the row's one time column stays the row's.
+  it("is ONE glyph: circle arrows for a repeat, a clock for a one-off", () => {
+    const once = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
+    const mark = scheduledMark(once, NOW)!;
+    expect(mark.at).toBe(AHEAD);
+    expect(mark.repeats).toBe(false);
+    expect(mark.title).toBe(`Scheduled · next run ${messageStamp(AHEAD)}`);
+    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
+    const again = task({ status: "done", next_run: AHEAD, next_run_entry: "occ", next_run_repeats: true });
+    expect(scheduledMark(again, NOW)).toMatchObject({ repeats: true });
+    expect(scheduledMark(again, NOW)?.title).toBe(`Repeats · next run ${messageStamp(AHEAD)}`);
+    // Never both: the row picks by the flag.
+    expect(ROW).toContain("{sched.repeats ? ICON_REPEAT : ICON_CLOCK}");
+    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(1);
     expect(VIEWS).not.toContain("SHOW_SCHEDULE_MARK");
-    expect(VIEWS).not.toContain("tasks-row-sched");
-    expect(VIEWS).not.toContain("scheduledMark(");
-    expect(TASKS_CSS).not.toContain("tasks-row-sched");
   });
 
-  // The predicate stays, for the tooltip text and because nextRunChip's test is
-  // the same one: two answers to "is a run coming" must not drift apart.
-  it("still knows which tasks have a run ahead, and names the instant", () => {
-    const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
-    const mark = scheduledMark(t, NOW)!;
-    expect(mark.at).toBe(AHEAD);
-    expect(mark.title).toContain("Scheduled");
-    expect(mark.title).toContain(messageStamp(AHEAD));
-    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
+  it("says nothing about a task with no run ahead, or one already due", () => {
     expect(scheduledMark(task({ status: "done" }), NOW)).toBe(null);
     const past = task({
       status: "done",
@@ -8425,6 +8420,38 @@ describe("the schedule mark on a List row", () => {
       next_run_entry: "e2",
     });
     expect(scheduledMark(past, NOW)).toBe(null);
+  });
+
+  it("on a Blocked row, says the lane's rule in the tooltip", () => {
+    // Stays Blocked — a pending message has no verdict — and the mark is where
+    // the row says a retry is booked (Akshil, 2026-09-11).
+    const t = task({ status: FAILED, next_run: AHEAD, next_run_entry: "e2" });
+    expect(scheduledMark(t, NOW)?.title).toBe(
+      `Scheduled · stays Blocked until this runs · ${messageStamp(AHEAD)}`,
+    );
+    expect(scheduledMark(t, NOW)?.label).not.toContain("·");
+  });
+
+  it("sits after the file mark, in the file mark's box, spending the row's gesture", () => {
+    expect(ROW).toContain('className="tasks-row-sched"');
+    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(
+      ROW.indexOf('className="tasks-row-sched"'),
+    );
+    expect(ROW.indexOf('className="tasks-row-sched"')).toBeLessThan(
+      ROW.indexOf('className="tasks-grow"'),
+    );
+    const mark = ROW.slice(ROW.indexOf('className="tasks-row-sched"'));
+    const body = mark.slice(0, mark.indexOf("{sched.repeats"));
+    expect(body).toContain("if (opensElsewhere(e)) {");
+    expect(body).toContain("activate();");
+    expect(body).toContain("onAuxClick");
+    // One selector list, so the two captions cannot drift apart.
+    expect(TASKS_CSS).toContain(".tasks-row-file,\n.tasks-row-sched {");
+    // The chip beside the time is gone from both views.
+    expect(VIEWS).not.toContain('className="tasks-row-next"');
+    // …and the Board card wears the same mark after its title.
+    expect(VIEWS).toContain('className="tasks-card-sched"');
+    expect(TASKS_CSS).toContain(".tasks-card-sched {");
   });
 });
 
