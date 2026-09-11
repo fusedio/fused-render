@@ -15,6 +15,7 @@ are pinned here and they need different kinds of test:
   doubting.
 """
 import os
+import sys
 
 import pytest
 
@@ -77,6 +78,17 @@ def test_parse_porcelain_skips_malformed_chunks():
     assert git_status.parse_porcelain(out) == [("??", "ok.txt")]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a raw non-UTF-8 filename is a POSIX-only possibility — Windows "
+    "filenames are UTF-16, so git-for-Windows only ever emits well-formed "
+    "UTF-8 for a real path. os.fsdecode's error handler there is "
+    "'surrogatepass', not POSIX's 'surrogateescape', and surrogatepass can't "
+    "decode an arbitrary invalid byte at all — the expected value on the "
+    "line below, os.fsdecode(raw), would raise the exact same "
+    "UnicodeDecodeError this test is otherwise checking parse_porcelain does "
+    "NOT raise, so there is no platform-appropriate assertion left to make.",
+)
 def test_parse_porcelain_decodes_a_non_utf8_name_like_scandir_would():
     """A name git can't render as UTF-8 (a latin-1 checkout, say) must decode
     the same way `os.scandir` decodes the identical bytes off disk —
