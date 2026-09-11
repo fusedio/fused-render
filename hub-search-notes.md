@@ -2021,6 +2021,34 @@ rationale on each.
   — none found, nothing to update.
 - `bun run --cwd frontend typecheck` — clean.
 
+### Fix round 10 (2026-09-11)
+
+- Item 1: cut every `SORTS[].title` hover sentence in `hubSearchView.ts`
+  to one line, ≤60 chars, no em-dashes, no cross-references to other
+  columns — best/fit/size/trending changed; downloads/likes/updated/
+  created were already short and left alone. Grepped the old sentences
+  across `frontend/src`/`tests/` — no literal assertion existed.
+- Item 2: `_pull_in_family_members` (`hub_models.py`) used to reinsert a
+  pulled-in base immediately before the kept variant that named it — a
+  placement rule for `HubResults.tsx`'s deleted family grouping.
+  `HubSearchScreen.tsx` draws rows flat with no grouping, so that
+  placement visibly broke the sort (a lower-scored base above its
+  higher-scored variant). Fixed by having the function decide membership
+  only, and re-sorting the union it returns in `api_hub_search` by
+  `matchScore` desc (`best`/`fit` sort) or `sort_field`/`direction`
+  (a Hub sort) — the same nulls-last convention `_sort_key` already used.
+  Docstring's "Placement" paragraph rewritten. Updated one existing
+  test's ordering expectation (with a comment) and added a new test
+  asserting `matchScore` is non-increasing across a pull-in.
+
+### Round 10 test results
+
+- `pytest tests/test_hub_models.py -k "pulled_in_base_never_outranks or
+  below_boundary_base_is_pulled_up or below_boundary_variant_is_pulled_in
+  or untagged_mirror_signal or per_family_cap"` — 5 pass, 0 fail.
+- `pytest tests/test_hub_models.py` (whole file) — 209 pass, 0 fail.
+- `bun run --cwd frontend typecheck` — clean.
+
 ### Fix round 9 (2026-09-11)
 
 - Item 1: dropped the downloaded-vs-not row background colour. The

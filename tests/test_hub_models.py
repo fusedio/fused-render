@@ -1190,9 +1190,12 @@ def test_a_below_boundary_base_is_pulled_up_by_its_kept_variant(
     body = _search(client, {"sort": "downloads", "limit": 1}).json()
     ids = [m["id"] for m in body["models"]]
     assert set(ids) == {"org/quant", "org/original"}
-    # Reinserted immediately beside the variant that named it, not appended
-    # off in the payload wherever — see `_pull_in_family_members`'s docstring.
-    assert ids == ["org/original", "org/quant"]
+    # D859: `_pull_in_family_members` decides membership only — the caller
+    # now re-sorts the union by the same key (`downloads` desc) the page was
+    # already ranked on, so the pulled-in base lands at ITS OWN rank (last,
+    # since it has the lower download count), not adjacent to the variant
+    # that named it.
+    assert ids == ["org/quant", "org/original"]
 
 
 def test_the_untagged_mirror_signal_pulls_in_a_republish_too(
@@ -1299,6 +1302,31 @@ def test_sort_fit_orders_by_descending_score_and_still_asks_the_hub_for_download
     assert [m["id"] for m in body["models"]] == ["org/tiny", "org/huge"]
     url = fake.calls[0][0]
     assert "sort=downloads" in url
+
+
+def test_a_pulled_in_base_never_outranks_the_variant_that_named_it(
+        client, hub_cache, monkeypatch):
+    """D859: `_pull_in_family_members` used to reinsert a pulled-in base
+    immediately BEFORE the kept variant that named it, regardless of score —
+    a placement rule for `HubResults.tsx`'s family grouping, which
+    `HubSearchScreen.tsx` (flat rows, no grouping) never honoured. With
+    `limit=1` the low-scoring base is cut, then pulled back in by the
+    variant's `baseModel` tag (case (c)); the response must still be
+    non-increasing in `matchScore`, with the base AFTER the variant, not
+    before it.
+    """
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    fake = _reply([
+        _fitted("org/variant", score=100, safetensors_gb=1,
+                tags=["base_model:quantized:org/base"]),
+        _fitted("org/base", score=0, safetensors_gb=4000),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client, {"sort": "fit", "limit": 1, "includeUnfit": True}).json()
+    ids = [m["id"] for m in body["models"]]
+    scores = [m["matchScore"] for m in body["models"]]
+    assert ids == ["org/variant", "org/base"]
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_sort_trending_reaches_the_wire_as_trendingscore(client, hub_cache, monkeypatch):

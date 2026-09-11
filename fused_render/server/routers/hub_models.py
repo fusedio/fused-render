@@ -1577,16 +1577,20 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     already-built list, so a reader cannot tell a pulled-in row from one that
     was never in danger of being cut.
 
-    **Placement.** `HubResults.tsx` positions a whole family at its PRIMARY
-    member's index in the response list, and deletes every other member from
-    the drawn order — so where a NON-primary pulled-in row lands barely
-    matters, but where a pulled-in BASE lands matters a great deal, since
-    D802 makes it the primary the instant it is present. A base is therefore
-    reinserted immediately BEFORE the kept variant that named it, and every
-    other pulled-in row immediately AFTER the kept row it matched — both
-    keep the family at essentially the rank its strongest kept member already
-    earned, rather than sinking the whole family to wherever a flat append
-    would land.
+    **Placement.** This function decides MEMBERSHIP only — it never decides
+    where a pulled-in row is drawn. It used to reinsert a pulled-in base
+    immediately before the kept variant that named it (and every other
+    pulled-in row immediately after its match), on the theory that
+    `HubResults.tsx` would draw a whole family at its primary member's index
+    and delete every other member from the drawn order. That table is gone:
+    `HubSearchScreen.tsx` draws every row flat, in payload order, with no
+    family grouping (see that file's own header comment) — so a placement
+    rule tuned for a grouping consumer that no longer exists just meant a
+    pulled-in base could land ahead of a variant that outranks it, visibly
+    breaking the sort (D859). The caller now re-sorts the union this
+    function returns by the same key the page was already ranked on, so
+    this function is free to return members in whatever order it finds
+    them.
 
     **Ranking within the pull-in.** `remaining` arrives already in the same
     rank order `kept` was truncated from, so scanning it in order and
@@ -2019,7 +2023,27 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # see `_pull_in_family_members`'s own docstring for the full reasoning.
     # Reordering the response over rows already fetched, so this costs
     # nothing beyond the loop itself: no second Hub call, no extra join.
+    #
+    # `_pull_in_family_members` decides membership only, never placement
+    # (D859) — so the union it returns is re-sorted here by the identical key
+    # `models` was already ranked on before truncation, the same
+    # `(value is not None, value)`-with-nulls-last convention `_sort_key`
+    # uses for a Hub sort. `HubSearchScreen.tsx` draws every row flat in
+    # payload order with no family grouping, so this is the only ordering
+    # rule left that the page actually honours.
+    if sort in (_BEST_SORT, _FIT_SORT):
+        def _rank_key(row: dict) -> tuple[bool, float]:
+            value = row.get("matchScore")
+            return (value is not None, value if value is not None else 0.0)
+        rank_reverse = True
+    else:
+        def _rank_key(row: dict) -> tuple[bool, object]:
+            value = row.get(sort_field)
+            return (value is not None, value if value is not None else 0)
+        rank_reverse = direction == -1
+
     models = _pull_in_family_members(models[:count], models[count:])
+    models.sort(key=_rank_key, reverse=rank_reverse)
     return {
         "models": models,
         "query": {"q": query, "task": task_filter, "capability": capability_filter,
