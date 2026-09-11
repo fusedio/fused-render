@@ -779,6 +779,28 @@
   margin: 0 0 var(--am-gap-section);
 }
 
+/* An empty spacer, not a control: it soaks up the row's slack so whatever
+   comes after it (the Sort menu on the controls row, the unfit toggle on the
+   result line) sits flush against the row's own right edge instead of
+   drifting with however much text sits before it. */
+.am-hub-controls-push {
+  margin-left: auto;
+}
+
+/* Match count and the unfit toggle, on their own line under the controls row
+   — one line, not part of the controls' own flex-wrap, so a narrow window
+   wraps the FILTERS before it starts stealing room from the sentence that
+   says how many results they produced. */
+.am-hub-resultline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 var(--am-gap-head);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
 /* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
    with a min is what makes the row collapse to a stacked search-then-menus
    layout on a narrow window instead of squeezing a search field to nothing.
@@ -2861,4 +2883,615 @@ button.am-bench-model:focus-visible {
 .am-bench-forget:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* ============================================================
+   THE TWO-PANE LOCAL TAB — ported from the approved mockup verbatim: a
+   capability column (`CapabilityNav.tsx`) on the left, and on the right
+   whichever capability's own pane is selected (`CapabilityPane.tsx`,
+   `EngineFilesPane`, or `HubSearchScreen.tsx`'s full search). Markup, class
+   names and copy match the mockup byte for byte — only the data source
+   changed — so most of the selectors below are the mockup's OWN bare names
+   (`.row`, `.chip`, `.drawer`, `.mono`, …), not this file's usual `am-`
+   prefix.
+
+   Those bare names are exactly the risk a shared, unscoped stylesheet runs:
+   `.row`/`.chip`/`.mono` are generic enough that some other app's markup
+   could reuse them by coincidence. So every one of them is written under the
+   page's own `.tp` ancestor below, the same isolation an `am-` prefix buys
+   elsewhere in this file — a stray `.row` anywhere else in the app must never
+   pick up a rule meant for this tab. `.tp`, `.tp-nav`, `.tp-pane`, `.tp-head`
+   and `.tp-group` are left unscoped since the `tp-` prefix is already
+   distinctive; `.hubdoor` and `.hits` are likewise distinctive enough on
+   their own.
+   ============================================================ */
+.tp {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  min-height: 560px;
+}
+
+@media (max-width: 760px) {
+  .tp {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -- left: the capability list, the only global navigation ----------------- */
+.tp-nav {
+  /* Transparent on purpose. The app already has a filled sidebar 232px to the
+     left; a second filled panel beside it reads as two chromes, so this one
+     is an index INSIDE the page — a rule, not a slab. */
+  background: transparent;
+  border-right: 1px solid var(--border);
+  padding: 2px 10px 10px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tp-nav h5 {
+  margin: 2px 8px 6px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.tp-nav button {
+  /* One line, 28px tall. The count sits at the right edge as a quiet number:
+     a status dot on every row said nothing, since every capability had one. */
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tp-nav button:hover {
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+/* Selected is a fill and a weight, never a border — a bordered box here reads
+   as a card, and the pane to the right is full of actual cards. */
+.tp-nav button.on {
+  background: var(--ctl-quiet-bg-hover);
+  color: var(--fg);
+}
+
+.tp-nav button.on .n {
+  font-weight: 600;
+}
+
+.tp-nav .capicon {
+  width: 15px;
+  height: 15px;
+  opacity: 0.75;
+}
+
+.tp-nav .n {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-nav .c {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.tp-nav .c.none {
+  opacity: 0.45;
+}
+
+/* No engine for this device: the row stays readable and stays a button — a
+   greyed thing that cannot say WHY is worse than a plain sentence — but it
+   carries no count, and its pane offers nothing to download. */
+.tp-nav button.off {
+  color: var(--fg-muted);
+  opacity: 0.6;
+}
+
+.tp-nav button.off .capicon {
+  opacity: 0.5;
+}
+
+.tp-nav button.off .c {
+  font-size: 10px;
+  opacity: 1;
+}
+
+.tp-nav button.off.on {
+  opacity: 0.85;
+}
+
+.tp-nav .rule {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 8px;
+}
+
+.offpane {
+  margin-top: 6px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  max-width: 70ch;
+}
+
+.offpane b {
+  color: var(--fg);
+}
+
+.offpane .mono {
+  font-size: 11px;
+}
+
+.tp-head .chip.off-chip {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
+}
+
+/* -- right: one capability, everything about it ----------------------------- */
+.tp-pane {
+  padding: 16px 18px 20px;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.tp-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: var(--am-gap-subgroup);
+}
+
+.tp-head .capicon {
+  width: 26px;
+  height: 26px;
+  margin-top: 2px;
+  color: var(--fg-muted);
+}
+
+.tp-head h4 {
+  margin: 0 0 3px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.tp-head p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.tp-head .act {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.tp-head .act .mono {
+  font-size: 10.5px;
+}
+
+.tp-group {
+  margin-bottom: var(--am-gap-subgroup);
+}
+
+.tp-group h5 {
+  margin: 0 0 var(--am-gap-tight);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tp-group h5 .note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+/* -- shared chrome a row (this Mac's own, or a Hub hit) draws on ------------ */
+.tp .capicon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.tp .capicon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.tp .chip {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.tp .chip.rec-chip {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--accent-soft);
+}
+
+.tp .chip.last-chip {
+  border-color: var(--ctl-quiet-border-hover);
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+}
+
+.tp .chip.warn-chip {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
+}
+
+.tp .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.tp .iconbtn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.tp .iconbtn:hover {
+  border-color: var(--ctl-quiet-border);
+  color: var(--fg);
+}
+
+.tp .row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--am-gap-head);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--am-surface-none);
+}
+
+.tp .row + .row {
+  margin-top: 6px;
+}
+
+.tp .row.have {
+  background: var(--am-surface-have);
+}
+
+.tp .row-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.tp .row-name b {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tp .row-note {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  max-width: 68ch;
+}
+
+.tp .row-note.mono {
+  font-size: 11px;
+}
+
+.tp .tick {
+  color: var(--success-bright);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tp .row-facts {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.tp .row-act {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The (i) drawer. Opens IN PLACE under its row — not a modal, not a side
+   panel — so the identity facts stay attached to the thing they describe and
+   closing it costs nothing. */
+.tp .rowwrap + .rowwrap {
+  margin-top: 6px;
+}
+
+.tp .rowwrap.open .row {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+}
+
+.tp .drawer {
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--bg-alt);
+  padding: 12px 14px;
+}
+
+.tp .drawer dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 16px;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.tp .drawer dt {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.tp .drawer dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.tp .drawer dd.plain {
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.tp .drawer dd .unknown {
+  font-family: inherit;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.tp .drawer .why {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+.tp .drawer .why b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.tp .drawer .acts {
+  margin-top: 12px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.tp .bar-prog {
+  height: 4px;
+  border-radius: 3px;
+  background: var(--ctl-quiet-bg-hover);
+  overflow: hidden;
+  margin-top: 7px;
+  max-width: 320px;
+}
+
+.tp .bar-prog i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* The quiet door to the full search screen, at the foot of a capability pane
+   (`CapabilityPane.tsx`'s own `.hubdoor`). */
+.hubdoor {
+  margin: 22px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.hubdoor .why {
+  color: var(--fg-muted);
+  font-size: 11.5px;
+}
+
+.hubdoor .btn-link {
+  font-size: 12px;
+}
+
+/* The Engine files pane's own closing note — no search here on purpose. */
+.tp .scoped {
+  margin: 14px 2px 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  max-width: 70ch;
+}
+
+/* -- the full Hub search screen, as one of the two-pane's own panes -------- */
+.adv-head h4 {
+  margin: 0 0 3px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.adv-head p {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+  max-width: 64ch;
+}
+
+.bigsearch {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.bigsearch input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--ctl-quiet-border-hover);
+}
+
+.bigsearch input:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.4);
+  outline-offset: -1px;
+}
+
+.sorthint {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  max-width: 96ch;
+}
+
+.advfoot {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* One row per repo, not per family (D426's own note in HubSearchScreen.tsx
+   about what this screen does NOT port). */
+.hits {
+  margin-top: 10px;
+}
+
+/* A Hub hit is named by its repo id, whole — nobody curated a friendly name
+   for it — so its row gets one extra cell up front for the match score;
+   everything else is the same `.row` the Local pane's own rows use. */
+.tp .row.hit {
+  grid-template-columns: 84px minmax(0, 1fr) auto auto;
+}
+
+.tp .row-owner {
+  margin-left: 2px;
+}
+
+.tp .row.unfit {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+}
+
+.tp .row-reason {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.tp .row-reason.danger {
+  color: var(--error);
+}
+
+.tp .row-reason.mono {
+  font-style: italic;
+}
+
+.tp .match {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.tp .match .mbar {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--ctl-quiet-bg);
+  overflow: hidden;
+}
+
+.tp .match .mbar i {
+  display: block;
+  height: 100%;
+  background: currentColor;
+}
+
+.tp .match .mnum {
+  color: var(--fg-muted);
+  min-width: 2ch;
+  text-align: right;
+}
+
+.tp .match[data-verdict="easy"] {
+  color: var(--success);
+}
+
+.tp .match[data-verdict="tight"] {
+  color: var(--warning);
+}
+
+.tp .match[data-verdict="no"] {
+  color: var(--error);
+}
+
+.tp .match[data-verdict="unknown"] {
+  color: var(--fg-muted);
 }

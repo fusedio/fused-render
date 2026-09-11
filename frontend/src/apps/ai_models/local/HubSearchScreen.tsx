@@ -208,7 +208,7 @@ function HitRow({
             {[model.task, paramsLabel(model.params), quantLabel(model.quant), sizeLabel].filter(Boolean).join(" · ")}
           </p>
           {model.fit?.verdict === "no" && (
-            <p className="row-reason" style={{ color: "var(--danger, #c0392b)" }}>
+            <p className="row-reason danger">
               Will not fit — needs about {formatSize(model.fit.footprintBytes)} of memory.
             </p>
           )}
