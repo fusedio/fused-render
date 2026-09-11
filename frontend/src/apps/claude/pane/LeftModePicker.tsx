@@ -27,6 +27,7 @@ import {
 } from "@platform/shadcn/ui/dropdown-menu";
 import type { TemplateEntry } from "@platform/lib/api";
 import type { ParamsStore } from "../params/store";
+import { AppStar } from "@platform/ui/AppStar";
 import { curLeftEntry, paneModeIconUrl, paneModeLabel, paneModeLetter } from "./paneUrl";
 
 /**
@@ -81,6 +82,13 @@ export interface LeftModePickerProps {
 }
 
 function ModeIcon({ entry }: { entry: Pick<TemplateEntry, "mode" | "icon"> }) {
+  // The `_render` sentinel has no folder and so no icon.svg; it wears the brand
+  // star, the same mark the explorer's mode dropdown gives it
+  // (RENDER_SENTINEL_ICON, ModeSwitcher.tsx) — one glyph for "Preview" in both
+  // pickers, rather than a star there and a lettered "P" here.
+  if (entry.mode === "_render") {
+    return <AppStar className="c-mode-ic c-mode-ic-star" aria-hidden="true" />;
+  }
   const url = paneModeIconUrl(entry.icon);
   // The template's own icon.svg, drawn the way the shell draws it
   // (`mode-icon-mask`): a MASK filled with currentColor, so one flat glyph

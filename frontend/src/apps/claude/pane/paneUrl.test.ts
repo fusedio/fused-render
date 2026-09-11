@@ -222,7 +222,7 @@ describe("the nouns: ONE writer for every piece of chrome", () => {
 
 describe("the picker's labels and icons", () => {
   test("the surface names, not the registry keys", () => {
-    expect(paneModeLabel("_render")).toBe("Render");
+    expect(paneModeLabel("_render")).toBe("Preview");
     expect(paneModeLabel("git")).toBe("Source Control");
     expect(paneModeLabel("app")).toBe("Preview");
     expect(paneModeLabel("_app")).toBe("Preview");

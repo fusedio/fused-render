@@ -259,6 +259,8 @@ export function SideReopenEdge({ onOpen }: { onOpen: () => void }) {
 // own icon.svg, but `preview` is not a template — it is "whatever this row's
 // default view is" — so the shell bakes one, in the same 16px currentColor stroke
 // as every other glyph in these bars. A play button in a frame: render the row.
+// (The `_render` mode's own icon in the mode dropdown used to share this glyph;
+// it is the brand star now — see RENDER_SENTINEL_ICON, ModeSwitcher.tsx.)
 const PREVIEW_SIDE_ICON = (
   <svg
     viewBox="0 0 24 24"
