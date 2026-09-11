@@ -1273,6 +1273,72 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.length).toBe(2);
   });
 
+  // …AND THE SEAM THAT ARRIVES A POLL LATE IS STILL ADOPTED. Same busy host,
+  // but agent.py DOES name the boundary once the echo lands (it does now, for
+  // every genuine boundary — `_absorbed_turn_breaks` no longer requires the
+  // `result` to be the row immediately before the echo). `adoptFirstSeam` used
+  // to be spent on the first payload carrying any body at all, which here is a
+  // pre-echo one with no seam in it, so the real seam was thrown away and the
+  // reply rendered without its segments for the rest of the turn.
+  test("a seam reported after the first non-blank poll is still adopted as the base", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // Busy host: the old reply alone, non-blank, before the echo lands.
+          if (n === 0) return poll({ segments: [A], text: A.text });
+          // The echo landed and agent.py names the boundary.
+          if (n === 1) {
+            return poll({
+              segments: [A, B],
+              text: A.text + B.text,
+              turn_breaks: [{ segments: 1, text: A.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    const newBubbleFrames = seen.map((t) => t[t.length - 1] || []);
+    expect(
+      newBubbleFrames.filter(
+        (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+      ),
+    ).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    // The seam WAS adopted, so the reply keeps its segments rather than being
+    // held back to plain text for the whole turn.
+    expect((reply[1]!.segments || []).map(bodyOf)).toEqual([B.text]);
+    expect(reply.length).toBe(2);
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and

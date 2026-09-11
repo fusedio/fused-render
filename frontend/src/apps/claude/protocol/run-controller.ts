@@ -1240,10 +1240,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
 
         // THE SPANS THIS LOOP DID NOT SEND, taken as the base — see
-        // `adoptFirstSeam`. Once only, off the first payload that carries a
-        // body: after that, a seam is this turn's own and belongs to a bubble.
+        // `adoptFirstSeam`. Once only: after this turn has visibly started, a
+        // seam is this turn's OWN (a follow-up folded into it) and belongs to a
+        // bubble of its own rather than to the base.
+        //
+        // "Visibly started" is the gate, NOT "the payload has any body at all".
+        // Those are the same thing only for an idle host, where `pending_echo`
+        // blanks every payload until the echo lands. A busy one (a D415 wake in
+        // flight) never blanks them: the polls before the echo carry the
+        // already-on-screen reply, in full, and spending the adoption on one of
+        // THOSE — which has no seam in it, because the echo that makes the seam
+        // has not landed — threw away the real seam when it arrived a poll
+        // later, leaving `baseSegTrusted` down for the whole reply and its
+        // segments suppressed with it.
         if (adoptFirstSeam && anyBody) {
-          adoptFirstSeam = false;
           const last = reported[reported.length - 1];
           if (last && (last.segments > baseSeg || last.text > baseText.length)) {
             baseSeg = last.segments;
@@ -1252,6 +1262,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // very payload's segmentation — unlike `priorReply`'s, it needs no
             // reconciliation.
             baseSegTrusted = true;
+            adoptFirstSeam = false;
+          } else if (!baseText || !fullText.startsWith(baseText) || fullText.length > baseText.length) {
+            // Nothing to keep waiting behind: either there is no base at all
+            // (every body is this turn's), or the payload has moved past the
+            // one there is. Any seam from here on is this turn's own.
+            adoptFirstSeam = false;
           }
         }
 

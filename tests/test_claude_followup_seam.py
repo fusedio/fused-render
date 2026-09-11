@@ -245,12 +245,24 @@ def test_a_genuinely_new_turn_IS_a_seam(agent):
         "and the seam falls between the segments, never inside one")
 
 
-def test_a_wake_continued_turn_reports_no_seam(agent):
-    """Bugbot, PR #1061. A D415 wake appends more rows of the SAME displayed
-    turn after that turn's `result` — a `notice` divider and its continuation —
-    and when a genuinely new turn then opens there is no `result` adjacent to
-    the echo to cut at. Cutting at the earlier `result` anyway filed the wake's
-    own text under the turn that had not started yet."""
+def test_a_wake_continued_turn_reports_its_seam_too(agent):
+    """Bugbot, PR #1061, reopened by PR #1119. A D415 wake appends more rows of
+    the SAME displayed turn after that turn's `result` — a `notice` divider and
+    its continuation — so when a genuinely new turn then opens there is no
+    `result` adjacent to the echo.
+
+    This reported NOTHING, because a seam is only safe at a segment edge and
+    `_segments_from_rows` broke at a `result` and nowhere else: the wake's
+    continuation consumed that break, the next turn's prose grew onto the
+    continuation's own segment, and any offset would have filed the wake's text
+    under the turn that had not started yet.
+
+    Withholding it has its own cost, and it is the one a second window on a
+    conversation kept paying: with no seam the page has nothing to place the
+    new reply against, so it re-rendered the PREVIOUS reply into the new turn's
+    bubble. `_segments_from_rows` breaks at a genuine new turn now — the merge
+    that made the seam unsafe cannot happen — so the honest answer is the seam,
+    and the wake's text stays where it belongs."""
     rows = [
         _user_row("q1"), _text_row("A."), _result_row("A."),
         {"type": "system", "subtype": "task_notification",
@@ -258,16 +270,47 @@ def test_a_wake_continued_turn_reports_no_seam(agent):
         _text_row("And the task is done."),
         _user_row("q2"), _text_row("B."),
     ]
-    # NOTHING, and that is the only honest answer. A seam is safe only at a
-    # `hard_break`, which `_segments_from_rows` puts at a `result` and nowhere
-    # else — with a wake in between, its continuation and the next reply are one
-    # merged text segment, so any offset here either files the wake's text under
-    # the turn that had not started yet or swallows the new reply whole. The
-    # page's shrink test still covers this shape, as it did before genuine
-    # boundaries were reported at all.
-    assert agent._absorbed_turn_breaks(rows) == []
+    breaks = agent._absorbed_turn_breaks(rows)
     segs = agent._segments_from_rows(rows)
-    assert [sg.get("kind") for sg in segs].count("text") >= 1
+    texts = [sg["text"] for sg in segs if sg["kind"] == "text"]
+    # The new reply is a segment of its own — never grown onto the wake's.
+    assert texts == ["A.", "And the task is done.", "B."]
+    assert len(breaks) == 1
+    seam = breaks[0]
+    # AND IT FALLS BETWEEN SEGMENTS, never inside one: everything up to it is
+    # the previous displayed turn, wake continuation included, and everything
+    # after it is the reply to `q2` alone.
+    assert [sg["text"] for sg in segs[:seam["segments"]] if sg["kind"] == "text"] \
+        == ["A.", "And the task is done."]
+    assert [sg["text"] for sg in segs[seam["segments"]:] if sg["kind"] == "text"] \
+        == ["B."]
+    assert seam["text"] == len("A.") + len("And the task is done.")
+
+
+def test_any_row_between_the_result_and_the_echo_still_leaves_a_seam(agent):
+    """The shape a SECOND WINDOW on one conversation hits (PR #1119).
+
+    Every send carries `model` and `permission_mode`, and `_send` queues a
+    control request ahead of the message whenever either differs from what the
+    host was spawned with — which a second window, with its own defaults, can
+    easily make true. Whatever the CLI writes for that lands between the
+    previous turn's `result` and this send's echo, and while the seam required
+    the two to be ADJACENT, a single row in between was enough to withhold it —
+    leaving the page to render the previous reply into the new turn's bubble.
+
+    Nothing about a row in between makes the boundary less real, and nothing
+    about it makes the cut less safe: `_segments_from_rows` breaks at the echo
+    itself now, so the edge is there either way."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _user_row("q2"), _text_row("B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    segs = agent._segments_from_rows(rows)
+    assert breaks == [{"segments": 1, "text": len("A.")}]
+    assert [sg["text"] for sg in segs if sg["kind"] == "text"] == ["A.", "B."], (
+        "and the seam still falls between the segments, never inside one")
 
 
 def test_a_wake_with_nothing_after_it_is_not_a_seam(agent):

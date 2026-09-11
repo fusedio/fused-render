@@ -3661,6 +3661,28 @@ def _segments_from_rows(rows: list, shape: tuple = (),
             # See `hard_break`. Nothing is emitted for a `result` row itself.
             hard_break = True
         elif t == "user" and isinstance(content, list):
+            # A GENUINE NEW TURN ENDS THE SEGMENT BEFORE IT, exactly as a
+            # `result` does and for the same reason: the prose after a message
+            # the user actually sent is a different answer to a different
+            # question, and merging the two into one segment leaves a caller
+            # splitting the payload (`_absorbed_turn_breaks`) no place to cut.
+            #
+            # `result` alone did not cover it. A D415 wake appends more rows of
+            # the SAME displayed turn after that `result` — a `notice` divider
+            # and its continuation — and the continuation consumes the
+            # `result`'s break, so the NEXT turn's text grew onto the wake's own
+            # segment: "\n\nWake continuation.\n\nReply B." as one segment,
+            # the exact shape `_absorbed_turn_breaks` used to refuse to report
+            # a seam for (and the refusal is what left the previous reply
+            # duplicated into the new bubble on a second window — PR #1119).
+            # Breaking here instead makes the boundary a segment edge in EVERY
+            # shape, so the seam is always safe to place.
+            #
+            # `_starts_new_turn` is what tells this row apart from the far
+            # commoner `tool_result` row below, which is a `user` row too and
+            # must NOT break: it belongs to the reply that called the tool.
+            if _starts_new_turn(row):
+                hard_break = True
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
@@ -3873,11 +3895,9 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # WITH one before it is a genuinely new turn (the cursor is about to advance
     # past it), an echo WITHOUT one was folded into the reply still in flight.
     seen_result = False
-    # A main-turn `result` this scan has not turned into a seam yet, and the
-    # index of the row before the one being looked at (subagent rows skipped) —
-    # see the genuine-boundary branch below for why the ADJACENCY matters.
+    # A main-turn `result` this scan has not turned into a seam yet. How FAR
+    # back it is no longer matters — see the genuine-boundary branch below.
     last_result = None
-    last_main = None
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -3885,7 +3905,6 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
         # `_read_current_turn`'s cursor and `_segments_from_rows` both make.
         if row.get("parent_tool_use_id"):
             continue
-        prev_main, last_main = last_main, i
         if row.get("type") == "result":
             seen_result = True
             if outstanding:
@@ -3925,24 +3944,24 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 # (`_segments_from_rows` joins it with a `notice` divider), so
                 # it never reaches this branch: only an echo can, and an echo
                 # is a new message by definition.
-                # ONLY WHEN THE `result` IS THE ROW RIGHT BEFORE THIS ECHO.
                 #
-                # A D415 wake appends more rows of the SAME displayed turn after
-                # that `result` — a `notice` divider and its continuation — and
-                # a seam is only ever safe at a `hard_break`, which is what
-                # `_segments_from_rows` puts at a `result` and nowhere else. Cut
-                # anywhere else and the seam falls INSIDE a segment: with a wake
-                # in between, its continuation and the next reply are one merged
-                # text segment, so the offset either files the wake's text under
-                # the turn that had not started yet or swallows the new reply
-                # whole (Bugbot, PR #1061).
+                # WHATEVER SITS BETWEEN THE `result` AND THIS ECHO, the seam is
+                # this echo. It used to be reported only when the `result` was
+                # the row IMMEDIATELY before, because a seam is only safe at a
+                # segment edge and `_segments_from_rows` broke at a `result` and
+                # nowhere else — so anything in between (a D415 wake and its
+                # continuation, a `system` row, a control-request answer to the
+                # `model`/`permission_mode` every send carries) consumed that
+                # break and left the next turn's prose merged onto the previous
+                # segment, with no edge to cut at (Bugbot, PR #1061).
                 #
-                # So a wake-continued turn reports nothing here, exactly as it
-                # did before genuine boundaries were reported at all — the page
-                # still has its shrink test for that one, and the shape this
-                # branch exists for (a follow-up the CLI drained straight after
-                # the reply's `result`) has no wake in it by construction.
-                if last_result is not None and prev_main == last_result:
+                # `_segments_from_rows` now breaks at a genuine new turn TOO, so
+                # that merge cannot happen any more and the edge is always
+                # there. Requiring adjacency on top of it only withheld a seam
+                # the page needs: without one it re-renders the previous reply
+                # into the new turn's own bubble, which is exactly the duplicate
+                # a second window on one conversation was showing (PR #1119).
+                if last_result is not None:
                     _seam(breaks, rows, i, shape, app_reads)
                     last_result = None
             else:
