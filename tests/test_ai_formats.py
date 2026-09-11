@@ -618,6 +618,16 @@ def test_gguf_file_is_downloadable_refuses_a_shard_part_but_allows_a_whole_file(
     assert formats.gguf_file_is_downloadable("m-Q4_K_M.gguf") is True
 
 
+def test_gguf_repo_for_resolves_a_curated_key_and_passes_through_a_bare_repo():
+    """Item 1 (code review): `gguf_repo_for` is the one shared mapping both
+    `llama_text.download` and `ai_runtime._repo_gguf_siblings` must use so a
+    curated `GGUF_RECIPES` filename key and an uncurated bare repo id cannot
+    resolve to different answers in the two call sites."""
+    entry_id, recipe = next(iter(formats.GGUF_RECIPES.items()))
+    assert formats.gguf_repo_for(entry_id) == recipe["repo"]
+    assert formats.gguf_repo_for("some/uncurated-repo") == "some/uncurated-repo"
+
+
 def test_pick_gguf_file_ranks_unsloth_dynamic_quants_below_plain_quants():
     """Eligible, per the branch's own curated `UD-Q3_K_XL` entry — but ranked
     below every plain quant of a named family, since a plain quant needs no

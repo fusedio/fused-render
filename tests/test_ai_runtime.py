@@ -11858,6 +11858,62 @@ def test_repo_gguf_siblings_passes_token_and_endpoint(client, hub, dispatched, m
     assert captured["endpoint"] == "https://mirror.test"
 
 
+def test_a_curated_key_plus_file_reaches_the_supervisor(client, hub, dispatched, monkeypatch):
+    """Item 1 (code review): a curated `GGUF_RECIPES` key (a bare filename, not a
+    Hub repo id) plus a `file` override must resolve through the SAME
+    curated-key -> repo mapping `llama_text.download` uses, so
+    `_repo_gguf_siblings` lists the real repo instead of 400ing on the
+    filename key itself.
+
+    The fake `list_repo_files` here asserts it is called with the RESOLVED
+    repo id, not the curated filename key verbatim — a fake that ignored its
+    argument (as `_mock_repo_files` does) would pass even without the fix,
+    since the route would still 400 or 200 independent of what the fake
+    returns for a wrong id. Asserting the argument makes this a real
+    regression test for the resolution step itself."""
+    entry_id = "gemma-4-E4B-it-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo_dir = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo_dir / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(_gguf_bytes("gemma4"))
+    import huggingface_hub
+
+    def fake_list_repo_files(model_id, **kw):
+        assert model_id == recipe["repo"], (
+            f"expected the resolved repo {recipe['repo']!r}, got {model_id!r}")
+        return [recipe["file"], "gemma-4-E4B-it-Q8_0.gguf"]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": entry_id, "file": "gemma-4-E4B-it-Q8_0.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched[0]["file"] == "gemma-4-E4B-it-Q8_0.gguf"
+
+
+def test_a_curated_key_plus_a_file_not_in_its_repo_is_refused(client, hub, dispatched, monkeypatch):
+    """The other half: a curated key whose `file` is NOT among the resolved
+    repo's real siblings still 400s, proving the mapping is used for
+    validation and not merely accepted verbatim."""
+    entry_id = "gemma-4-E4B-it-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo_dir = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo_dir / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(_gguf_bytes("gemma4"))
+    import huggingface_hub
+
+    def fake_list_repo_files(model_id, **kw):
+        assert model_id == recipe["repo"]
+        return [recipe["file"]]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": entry_id, "file": "not-a-real-variant.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
 def test_repo_gguf_siblings_logs_a_warning_with_the_repo_id_on_failure(
         client, hub, dispatched, monkeypatch, caplog):
     """Item 4 (code review): a lookup failure must be logged at WARNING

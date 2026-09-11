@@ -576,8 +576,7 @@ def download(model_id, file=None):
     override actually able to rescue it, rather than failing before `file`
     is ever consulted."""
     if file:
-        repo = _GGUF_RECIPES[model_id]["repo"] if model_id in _GGUF_RECIPES else model_id
-        recipe = {"repo": repo, "file": file}
+        recipe = {"repo": formats.gguf_repo_for(model_id), "file": file}
     else:
         _key, recipe = _resolve_model_id(model_id)
     filename = recipe["file"]

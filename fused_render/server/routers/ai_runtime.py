@@ -1502,16 +1502,27 @@ def _repo_gguf_siblings(model_id: str) -> list[str] | None:
     silently went out anonymous, against the real Hub only, ignoring both a
     logged-in user's token and an `HF_ENDPOINT` mirror override every OTHER
     Hub request already honours. A failure is logged at WARNING with the
-    repo id (previously swallowed with no trace at all) rather than raised."""
+    repo id (previously swallowed with no trace at all) rather than raised.
+
+    Item 1 (code review): `model_id` is resolved through
+    `formats.gguf_repo_for` before being listed — a curated `GGUF_RECIPES`
+    key (e.g. `"Qwen3.5-4B-Q4_K_M.gguf"`) is never itself a Hub repo id, so
+    listing it verbatim always 400'd here, making a curated key + a `file`
+    override structurally unable to validate even though
+    `llama_text.download` resolves the very same key to a real repo just
+    fine. This is the same mapping `download` uses, so the two cannot
+    disagree about which repo a curated key means."""
     import logging
 
     import huggingface_hub
 
+    from fused_render.ai.runners import formats
     from fused_render.server.routers.hub_models import _token, hub_endpoint
 
+    repo = formats.gguf_repo_for(model_id)
     try:
         return list(huggingface_hub.list_repo_files(
-            model_id, token=_token(), endpoint=hub_endpoint()))
+            repo, token=_token(), endpoint=hub_endpoint()))
     except Exception:  # noqa: BLE001 - a Hub lookup failure here must refuse
         # the override, not 500 the whole download request.
         logging.getLogger(__name__).warning(

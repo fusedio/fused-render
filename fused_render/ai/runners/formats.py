@@ -1038,6 +1038,26 @@ GGUF_RECIPES = {
 }
 
 
+def gguf_repo_for(model_id: str) -> str:
+    """The Hub repo id `model_id` actually names, resolving a curated
+    filename key (a `GGUF_RECIPES` key such as `"Qwen3.5-4B-Q4_K_M.gguf"`) to
+    its `repo`; any other `model_id` is already a bare repo id and is
+    returned unchanged.
+
+    Item 1 (code review): `llama_text.download`'s `file`-override branch
+    inlined exactly this `model_id in GGUF_RECIPES` check to find the repo a
+    curated key means, but the route that VALIDATES `file` before ever
+    calling `download`
+    (`ai_runtime._validate_download_file` -> `_repo_gguf_siblings`) passed
+    `model_id` to `huggingface_hub.list_repo_files` verbatim — a curated key
+    is never a real Hub repo id, so that lookup 400'd before `download` was
+    ever reached, and a curated key + a valid `file` could never actually
+    work end to end. Both call sites now share this one mapping so they
+    cannot drift apart again."""
+    recipe = GGUF_RECIPES.get(model_id)
+    return recipe["repo"] if recipe is not None else model_id
+
+
 # ---------------------------------------------------------------------------
 # Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
