@@ -1062,6 +1062,80 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.length).toBe(2);
   });
 
+  // THE REAL SEND ROAD, not the bare `sendMessage()` every other test in this
+  // file uses. `dispatchSend` (ClaudeChat.tsx) calls `postOptimisticUser` —
+  // which posts this send's OWN user bubble — synchronously, BEFORE
+  // `sendMessage` ever runs, so by the time `sendMessage` reads `state.turns`
+  // for `priorReply` the last turn is usually this message's own words, not
+  // the reply before it (`addUser` only ADOPTS that row in place; it never
+  // pushes a second one). Every test above called `sendMessage` bare, with no
+  // optimistic bubble first, which is exactly why none of them could catch
+  // this: `priorReply` silently read back nothing, `baseText` never seeded,
+  // and the reload's old reply rendered in full inside the new bubble anyway
+  // (user recording, PR #1119, reproduced on 0af2328 too — the hang fix
+  // changed nothing about this).
+  test("a send into a restored session still finds the prior reply behind its own optimistic bubble", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          if (n === 1) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    // Exactly what `dispatchSend` does: post the optimistic bubble FIRST,
+    // then send with its key so `addUser` adopts that same row.
+    const optimisticKey = controller.postOptimisticUser("and now this");
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this", { optimisticKey });
+    off();
+
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
+  });
+
   // BUGBOT, PR #1119: the fix above's first shape `continue`d past every poll
   // for as long as `baseSegTrusted` stayed down, waiting for the "already
   // landed prefix retires" check to notice `fullText` no longer starts with

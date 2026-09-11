@@ -1703,12 +1703,29 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // count: `_history` segments a turn with no stream deltas at all, which
     // can disagree with a live poll's reconstruction of the very same rows
     // once a newer turn's deltas are in the same window (`pollLoop`'s
-    // `baseSegTrusted` is what makes that safe to seed anyway). Only a SETTLED
-    // assistant turn counts: a streaming one is either impossible here
-    // (`sending` is one-at-a-time) or, if seen anyway, not a safe prefix to
-    // assume closed.
+    // `baseSegTrusted` is what makes that safe to seed anyway).
+    //
+    // SKIP THIS SEND'S OWN OPTIMISTIC BUBBLE FIRST. `dispatchSend`
+    // (ClaudeChat.tsx) calls `postOptimisticUser` — which is `addUser` under
+    // another name — SYNCHRONOUSLY, before this function's caller ever runs,
+    // so by the time this line executes `state.turns` usually already ends
+    // with THIS message's own user turn: `addUser` below only adopts that row
+    // in place (see its own docstring — "the optimistic row is already the
+    // last bubble in the log"), it does not push a second one. Reading
+    // `state.turns[state.turns.length - 1]` without skipping past it read this
+    // send's own words back as "the reply already on screen", found no
+    // assistant turn, and seeded nothing at all — every real send through the
+    // composer takes this road, since a bare `sendMessage()` call with no
+    // optimistic bubble first (every one of this file's own tests) is the
+    // exception, not the rule (Bugbot report + user recording, PR #1119).
+    //
+    // Only a SETTLED assistant turn counts once that skip lands on one: a
+    // streaming one is either impossible here (`sending` is one-at-a-time) or,
+    // if seen anyway, not a safe prefix to assume closed.
     const priorReply = (() => {
-      const last = state.turns[state.turns.length - 1];
+      let i = state.turns.length - 1;
+      while (i >= 0 && state.turns[i]!.role === "user") i--;
+      const last = state.turns[i];
       if (!last || last.role !== "assistant" || last.streaming) return null;
       return { text: last.text || "" };
     })();
