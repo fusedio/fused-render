@@ -32,7 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -469,7 +469,7 @@ function TaskCard({
       // stays on the door's hint for the next attempt.
       const said = (e as Error).message;
       setNote(said);
-      pushToast({ msg: said, tone: "error" });
+      notify({ title: said, tone: "error" });
     } finally {
       setActing(false);
     }
@@ -683,7 +683,7 @@ function TaskCard({
             setErasing(false);
             // The card is about to leave the wall, so the receipt goes to the
             // page's toast rather than onto the card's own note line.
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
             onReload?.();
           }}
         />
@@ -960,7 +960,7 @@ function TaskPeek({
           onClose={() => setErasing(false)}
           onDone={() => {
             setErasing(false);
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
             onReload?.();
             onClose();
           }}

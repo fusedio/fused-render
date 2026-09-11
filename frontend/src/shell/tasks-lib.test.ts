@@ -4136,7 +4136,9 @@ describe("the delete affordance", () => {
     expect(MODAL).toContain('className="deploy-error"');
     // The receipt is the PAGE's, because the row it is about has just gone.
     for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
-      expect(src).toContain("pushToast({ msg: `Deleted ${task.task_id}`, tone: \"info\" });");
+      expect(src).toContain(
+        'notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });',
+      );
     }
   });
 
@@ -7293,7 +7295,7 @@ describe("the Cards view's frame", () => {
     expect(HOOK).toContain("if (e?.status === 404) {");
     expect(HOOK).toContain("settled.current.delete(dir);");
     expect(HOOK).toContain("This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.");
-    expect(HOOK).toContain('pushToast({ msg: MISSING_FOLDER_TOAST, tone: "error" });');
+    expect(HOOK).toContain('notify({ title: MISSING_FOLDER_TOAST, tone: "error" });');
     expect(SCHEDULED).toContain("const missing = useMissingFolders(shown);");
     const board = SCHEDULED.slice(SCHEDULED.indexOf("<TaskBoard"));
     expect(board.slice(0, board.indexOf("/>"))).toContain("missing={missing}");
@@ -7317,7 +7319,9 @@ describe("the Cards view's frame", () => {
     expect(SCHEDULED).toContain("pinnedProjects={filters.projects}\n              missing={missing}");
     expect(CARDS.split("folderMissing={missing?.has(taskFolder(peekLive)) ?? false}").length).toBe(2);
     expect(CARDS.split("folderMissing={missing?.has(taskFolder(task)) ?? false}").length).toBe(2);
-    expect(HOOK).toContain("if (getToasts().some((t) => t.msg === MISSING_FOLDER_TOAST && !t.leaving)) return;");
+    expect(HOOK).toContain(
+      "if (getRetainedNotifications().some((n) => n.title === MISSING_FOLDER_TOAST)) return;",
+    );
     // ...and the in-flight stats survive a retry tick: an unmount-only flag, not
     // a per-run `cancelled` (Bugbot, round two).
     // ...and a gone folder frames nothing even when the module-level template

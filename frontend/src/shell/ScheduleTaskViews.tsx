@@ -42,7 +42,7 @@ import {
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { EraseTaskModal } from "./EraseTaskModal";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
@@ -2848,7 +2848,7 @@ function TaskNode({
             // The page, not the row: the row this was pressed on is the thing
             // that just went, so the receipt cannot live on it (the same reason
             // Unarchive's sentence goes to the page).
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
             onReload?.();
           }}
         />
@@ -3586,7 +3586,7 @@ function TaskCard({
           onClose={() => setErasing(false)}
           onDone={() => {
             setErasing(false);
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
             onErased();
           }}
         />

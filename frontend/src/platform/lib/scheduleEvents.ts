@@ -21,7 +21,7 @@
 import { useEffect, useRef } from "react";
 import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
-import { dismissToast, pushToast } from "@platform/lib/toast";
+import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { toastForEvent } from "@platform/lib/schedule-toast";
 import type { ScheduleToast } from "@platform/lib/schedule-toast";
 
@@ -101,13 +101,14 @@ export function useScheduleEvents(onOutcome?: () => void): void {
     // persists until acted on, with an "Open" action onto the page whose row
     // carries the reason, the target, and the transcript's run id.
     const push = (t: ScheduleToast) => {
-      const id = pushToast({
-        msg: t.msg,
+      const id = notify({
+        title: t.msg,
         tone: "error",
         action: {
           label: "Open",
           onClick: () => {
-            dismissToast(id);
+            dismissPopup();
+            dismissNotification(id);
             navigateUrl("/tasks");
           },
         },
