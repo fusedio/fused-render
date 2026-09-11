@@ -212,7 +212,13 @@ export function useFileOps({
             break;
           }
           if (showProgress) {
-            notify(
+            // Reassign: once the popup has already auto-expired (a prior file
+            // ran longer than JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS), notify()
+            // mints a FRESH id rather than replacing a card that's gone — if
+            // progressToastId stayed frozen at the original (dead) id, every
+            // remaining iteration would repeat that same miss and pop a new
+            // card each time instead of updating the one now on screen.
+            progressToastId = notify(
               { title: `Copying ${i + 1} of ${paths.length}…`, tone: "info", action: progressAction },
               progressToastId,
             );
