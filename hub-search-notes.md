@@ -1914,3 +1914,59 @@ rationale on each.
   and an "N variants" count after size, when applicable; the "from X"
   line reads "quantized from"/"fine-tuned from"/"adapter for"/"merge of"
   when the repo has a known relation to its base model.
+
+## Fix round 6
+
+- Item 1: a `capability`-scoped search now drops any row whose
+  `_model_row`-classified `capability` disagrees with the filter, before
+  count/limit truncation — the Hub's own `filter=<tag>` over-matches (it
+  matches any tag in a repo's tag list, not just its `pipeline_tag`). The
+  legacy `task` path is unaffected.
+- Item 2: `formatToken` (new `lib/formatToken.ts`) now names any Hub
+  library, not just gguf/mlx/safetensors — falls back to a capitalized
+  library name instead of showing nothing.
+- Item 3: the stats cell's downloads/likes/updated are one right-aligned
+  column now (`.counts` inline wrapper from round 5 removed) — three
+  direct children of `.row-facts.pop`, no grouping span.
+- Item 4: the drawer's Close control moved from a footer link to a
+  top-right `×` button (`aria-label="Close details"`); the footer row is
+  gone since Close was its only child.
+- Item 5: the search response now carries `facets: { publishers, quants }`
+  (each `{id, count}`), computed pre-narrowing — before the post-join
+  `quant` filter, and (since `publisher` narrows the Hub-side wire request
+  itself) from a second, cache-shared fetch with `author` dropped whenever
+  `publisher` is set. The Publisher/Quant free-text inputs are now
+  searchable dropdowns (`SearchMenu` in `SearchControls.tsx`) fed by these
+  facets, with a filter input, Enter-applies-free-text fallback, and a
+  click-to-select option list — same `.dd`/`.menubtn` markup as the other
+  menus.
+- Item 6 (addendum to D849): the Sort menu's dropdown was clipped by the
+  round-5 scrolling pane's `overflow-x: hidden` — it's the row's
+  right-most trigger and its options ran past the pane's edge. Added
+  `ControlMenu`'s `align="right"` prop (`.dd.right`, anchors to the
+  trigger's right edge) and a hard `.dd` max-width
+  (`min(360px, calc(100vw - 48px))`) regardless of anchor. Publisher/Quant
+  menus (item 5) sit before the `.push` spacer and stay left-anchored.
+
+### Round 6 test results
+
+- `.venv/bin/python -m pytest tests/test_hub_models.py -q` — 208 pass.
+- `bun test frontend/src/apps/ai_models/local/` — 53 pass (5 new
+  SearchMenu-behavior tests, 3 ControlMenu-anchor assertions updated).
+- `bun test frontend/src/apps/ai_models/lib/formatToken.test.ts` — 5 pass.
+- Items 3, 4, 6 are CSS/markup-only; no tests, per this round's own rule.
+
+### To verify in the browser (round 6)
+
+- A capability-scoped Hub search (e.g. embeddings) never shows a row
+  whose own capability badge disagrees with the pane it was opened from.
+- A `transformers`/`diffusers`/`sentence-transformers` repo's hit row now
+  shows a format token instead of nothing.
+- The stats cell is one right-aligned column (downloads, likes, updated
+  each on their own line).
+- The drawer's Close is a `×` in the top-right corner, not a footer link.
+- Publisher and Quant are dropdown menus now (not free-text inputs),
+  populated with the current search's actual values and counts; typing an
+  unlisted value and pressing Enter still applies it.
+- The Sort menu's dropdown opens fully on screen, anchored to its own
+  right edge, never clipped by the scrolling pane.
