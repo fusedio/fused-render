@@ -463,6 +463,29 @@ def _popularity_score(downloads: int | None) -> float:
     return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
 
 
+def _axis_scores(row: dict, ram_gb: float | None) -> dict:
+    """The five raw 0-100 axis scores plus the flat-adjustment facts, read
+    off `row` exactly once — the single source both `_composite_raw_score`
+    (the blend) and `_score_breakdown` (the per-axis explanation, D1245)
+    read from, so the two can never disagree about what one row's axes
+    actually are."""
+    fit_verdict = row.get("fit")
+    fit_axis = (
+        float(fit_verdict["score"])
+        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
+        else _FIT_DEFAULT
+    )
+    return {
+        "fit": fit_axis,
+        "capability": _capability_score(row.get("params"), ram_gb),
+        "speed": _speed_score(row.get("speedEstimate"), row.get("params")),
+        "recency": _recency_score(row.get("created")),
+        "popularity": _popularity_score(row.get("downloads")),
+        "on_disk": (row.get("local") or {}).get("state", "none") != "none",
+        "run_mode": fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None,
+    }
+
+
 def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     """The composite blend BEFORE the `[0, 100]` clamp `_composite_score`
     applies for display — see that function for the full description of the
@@ -480,31 +503,118 @@ def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     downloads order for every tied-at-zero row. `_ON_DISK_BONUS` does the
     same at the ceiling. The fix is to compare on THIS unclamped figure and
     only clamp the number actually shown."""
-    fit_verdict = row.get("fit")
-    fit_axis = (
-        float(fit_verdict["score"])
-        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
-        else _FIT_DEFAULT
-    )
-    capability_axis = _capability_score(row.get("params"), ram_gb)
-    speed_axis = _speed_score(row.get("speedEstimate"), row.get("params"))
-    recency_axis = _recency_score(row.get("created"))
-    popularity_axis = _popularity_score(row.get("downloads"))
+    axes = _axis_scores(row, ram_gb)
     blended = (
-        _WEIGHT_FIT * fit_axis
-        + _WEIGHT_CAPABILITY * capability_axis
-        + _WEIGHT_SPEED * speed_axis
-        + _WEIGHT_RECENCY * recency_axis
-        + _WEIGHT_POPULARITY * popularity_axis
+        _WEIGHT_FIT * axes["fit"]
+        + _WEIGHT_CAPABILITY * axes["capability"]
+        + _WEIGHT_SPEED * axes["speed"]
+        + _WEIGHT_RECENCY * axes["recency"]
+        + _WEIGHT_POPULARITY * axes["popularity"]
     )
-    if (row.get("local") or {}).get("state", "none") != "none":
+    if axes["on_disk"]:
         blended += _ON_DISK_BONUS
-    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
-    if run_mode == "cpu-offload":
+    if axes["run_mode"] == "cpu-offload":
         blended -= _CPU_OFFLOAD_PENALTY
-    elif run_mode == "cpu-only":
+    elif axes["run_mode"] == "cpu-only":
         blended -= _CPU_ONLY_PENALTY
     return blended
+
+
+# The weight each axis in `_score_breakdown`'s output carries — read off the
+# same five constants `_composite_raw_score` blends with, so the two can
+# never drift apart.
+_AXIS_WEIGHTS = {
+    "fit": _WEIGHT_FIT,
+    "capability": _WEIGHT_CAPABILITY,
+    "speed": _WEIGHT_SPEED,
+    "recency": _WEIGHT_RECENCY,
+    "popularity": _WEIGHT_POPULARITY,
+}
+
+
+def _age_days(created: str | None) -> float | None:
+    """The same age-in-days `_recency_score` decays on, exposed on its own
+    for the breakdown's `ageDays` fact — a reader/tooltip wants "2 years
+    old", not the 0-100 recency score that number was folded into."""
+    if not created:
+        return None
+    try:
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+
+
+def _score_breakdown(row: dict, ram_gb: float | None,
+                      pool_gb: float | None = None) -> list[dict]:
+    """D1245/D1246: `row["matchBreakdown"]` — one entry per axis (plus the
+    on-disk bonus and any run-mode penalty) explaining, in the SAME blended
+    points `matchScore` is made of, what this row gained and lost.
+
+    Each of the five weighted axes reports `gained` (`weight * axis`, the
+    blended points this row actually earned) and `lost` (`weight * (100 -
+    axis)`, the blended points a perfect score on that one axis would have
+    added) — the two always sum to that axis's full weight in blended
+    points, so a reader can see exactly how much of the 100-point ceiling
+    one weak axis cost without re-deriving the weights or anchors, which
+    live only in this module (frontend cannot reconstruct them, see D1245).
+
+    Each axis also carries the raw fact that drove it — `downloads`,
+    `ageDays`, `params`, `tokensPerSecond`, or `footprintGb`/`poolGb` for
+    fit — so a tooltip can name a number ("12 downloads", "2 years old")
+    instead of only a 0-100 axis score nobody outside this module can
+    interpret. `poolGb` is the caller's own machine-pool reading (`fit.
+    available_budget_bytes`, threaded through rather than computed per row
+    here) — `None` when the caller does not have one, matching `fit.verdict`
+    itself returning no pool when RAM cannot be read.
+
+    The on-disk bonus and run-mode penalty are flat, not scaled off an
+    0-100 axis, so they report only `gained`/`lost` (never both nonzero)
+    and are OMITTED entirely when they do not apply — a row that runs on
+    the GPU has no run-mode entry at all, rather than a zero-cost one a
+    frontend would have to know to ignore."""
+    axes = _axis_scores(row, ram_gb)
+    entries: list[dict] = []
+    for axis, weight in _AXIS_WEIGHTS.items():
+        score = axes[axis]
+        gained = round(weight * score, 2)
+        lost = round(weight * (100.0 - score), 2)
+        entry = {"axis": axis, "gained": gained, "lost": lost}
+        if axis == "popularity":
+            entry["downloads"] = row.get("downloads")
+        elif axis == "recency":
+            entry["ageDays"] = _age_days(row.get("created"))
+        elif axis == "capability":
+            entry["params"] = row.get("params")
+        elif axis == "speed":
+            speed_estimate = row.get("speedEstimate")
+            tok_s = speed_estimate.get("tokensPerSecond") if isinstance(speed_estimate, dict) else None
+            params = row.get("params")
+            below_anchor = isinstance(params, (int, float)) and params < _SPEED_ANCHOR_PARAMS
+            entry["tokensPerSecond"] = None if below_anchor else tok_s
+        elif axis == "fit":
+            fit_verdict = row.get("fit")
+            footprint_bytes = (
+                fit_verdict.get("footprintBytes")
+                if isinstance(fit_verdict, dict) else None
+            )
+            entry["footprintGb"] = (
+                round(footprint_bytes / fit.GB_BYTES, 2)
+                if isinstance(footprint_bytes, (int, float)) else None
+            )
+            entry["poolGb"] = round(pool_gb, 2) if isinstance(pool_gb, (int, float)) else None
+        entries.append(entry)
+    if axes["on_disk"]:
+        entries.append({"axis": "onDisk", "gained": _ON_DISK_BONUS, "lost": 0.0})
+    if axes["run_mode"] == "cpu-offload":
+        entries.append({"axis": "runMode", "gained": 0.0, "lost": _CPU_OFFLOAD_PENALTY,
+                         "runMode": "cpu-offload"})
+    elif axes["run_mode"] == "cpu-only":
+        entries.append({"axis": "runMode", "gained": 0.0, "lost": _CPU_ONLY_PENALTY,
+                         "runMode": "cpu-only"})
+    return entries
 
 
 def _composite_score(row: dict, ram_gb: float | None) -> float:
@@ -1744,11 +1854,18 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     _pin_publisher_facets(facets, models, capability_filter, hardware)
 
     ram_gb = fit.machine_ram_gb()
+    # D1245: one `available_budget_bytes` reading per REQUEST (not per row —
+    # it is the same machine for every row `_score_breakdown` explains), the
+    # same `hardware` reading already threaded through `_model_row` above
+    # rather than a second `hw_detect.cached_hardware()` call.
+    pool_bytes = fit.available_budget_bytes(hardware=hardware)
+    pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
     raw_scores: dict[int, float] = {}
     for row in models:
         raw_score = _composite_raw_score(row, ram_gb)
         raw_scores[id(row)] = raw_score
         row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
 
     sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
     if sort == _BEST_SORT:
@@ -2115,11 +2232,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # own docstring for why sorting on the clamped number ties a real slice
     # of a GPU-less machine's tail at exactly 0.0.
     ram_gb = fit.machine_ram_gb()
+    pool_bytes = fit.available_budget_bytes(hardware=hardware)
+    pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
     raw_scores: dict[int, float] = {}
     for row in models:
         raw_score = _composite_raw_score(row, ram_gb)
         raw_scores[id(row)] = raw_score
         row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
 
     if sort == _BEST_SORT:
         # Descending composite score, on the UNCLAMPED figure (finding 8) —

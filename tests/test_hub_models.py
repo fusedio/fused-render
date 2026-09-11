@@ -2809,3 +2809,105 @@ def test_a_gpu_less_machines_tail_keeps_a_strict_ordering():
     # clamp floor even though the raw blends plainly do not.
     displayed = [hub._composite_score(r, 32.0) for r in (high, mid, low)]
     assert displayed[0] == displayed[1] == displayed[2] == 0.0
+
+
+# ---- D1245/D1246: per-axis breakdown for the row-level tooltip -----------
+
+
+def test_score_breakdown_gained_plus_lost_accounts_for_every_axis_weight():
+    # Each of the five weighted axes must reconcile: `gained` (blended points
+    # earned) plus `lost` (blended points short of a perfect 100 on that
+    # axis) always equals that axis's own full weight in blended points —
+    # nothing invented, nothing dropped.
+    row = {"fit": {"score": 62, "runMode": "gpu"}, "params": 3_000_000_000,
+           "speedEstimate": {"tokensPerSecond": 9}, "created": "2024-01-01T00:00:00Z",
+           "downloads": 1200, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    by_axis = {e["axis"]: e for e in entries}
+    weights = {"fit": hub._WEIGHT_FIT, "capability": hub._WEIGHT_CAPABILITY,
+               "speed": hub._WEIGHT_SPEED, "recency": hub._WEIGHT_RECENCY,
+               "popularity": hub._WEIGHT_POPULARITY}
+    for axis, weight in weights.items():
+        entry = by_axis[axis]
+        assert entry["gained"] + entry["lost"] == pytest.approx(weight * 100.0, abs=0.15)
+
+
+def test_score_breakdown_axis_gains_sum_to_the_raw_score_with_bonus_and_penalty():
+    have_offload = {"fit": {"score": 90, "runMode": "cpu-offload"}, "params": 7_000_000_000,
+                     "speedEstimate": {"tokensPerSecond": 20}, "created": "2026-01-01T00:00:00Z",
+                     "downloads": 900_000, "local": {"state": "downloaded"}}
+    entries = hub._score_breakdown(have_offload, 32.0)
+    total = sum(e["gained"] for e in entries) - sum(
+        e["lost"] for e in entries if e["axis"] == "runMode")
+    assert total == pytest.approx(hub._composite_raw_score(have_offload, 32.0), abs=0.15)
+
+
+def test_score_breakdown_perfect_axis_loses_nothing():
+    row = {"fit": {"score": 100, "runMode": "gpu"}, "params": None,
+           "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["lost"] == 0.0
+    assert fit_entry["gained"] == pytest.approx(hub._WEIGHT_FIT * 100.0)
+
+
+def test_score_breakdown_reports_the_raw_downloads_behind_the_popularity_axis():
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+           "downloads": 42, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    popularity = next(e for e in entries if e["axis"] == "popularity")
+    assert popularity["downloads"] == 42
+
+
+def test_score_breakdown_reports_age_days_behind_the_recency_axis():
+    from datetime import datetime, timedelta, timezone
+    created = (datetime.now(timezone.utc) - timedelta(days=730)).isoformat()
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": created,
+           "downloads": None, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    recency = next(e for e in entries if e["axis"] == "recency")
+    assert recency["ageDays"] == pytest.approx(730.0, abs=1.0)
+
+
+def test_score_breakdown_only_includes_on_disk_bonus_when_actually_on_disk():
+    absent = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+              "downloads": None, "local": {"state": "none"}}
+    have = dict(absent, local={"state": "downloaded"})
+    assert not any(e["axis"] == "onDisk" for e in hub._score_breakdown(absent, 32.0))
+    bonus = next(e for e in hub._score_breakdown(have, 32.0) if e["axis"] == "onDisk")
+    assert bonus["gained"] == hub._ON_DISK_BONUS
+    assert bonus["lost"] == 0.0
+
+
+def test_score_breakdown_reports_run_mode_penalty_matching_the_composite():
+    base = {"params": None, "speedEstimate": None, "created": None, "downloads": None,
+            "local": {"state": "none"}}
+    offload = dict(base, fit={"score": 80, "runMode": "cpu-offload"})
+    cpu_only = dict(base, fit={"score": 80, "runMode": "cpu-only"})
+    gpu = dict(base, fit={"score": 80, "runMode": "gpu"})
+    offload_entry = next(e for e in hub._score_breakdown(offload, 32.0) if e["axis"] == "runMode")
+    cpu_only_entry = next(e for e in hub._score_breakdown(cpu_only, 32.0) if e["axis"] == "runMode")
+    assert offload_entry["lost"] == hub._CPU_OFFLOAD_PENALTY
+    assert offload_entry["runMode"] == "cpu-offload"
+    assert cpu_only_entry["lost"] == hub._CPU_ONLY_PENALTY
+    assert not any(e["axis"] == "runMode" for e in hub._score_breakdown(gpu, 32.0))
+
+
+def test_score_breakdown_reports_footprint_and_pool_gb_for_the_fit_axis():
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0, pool_gb=22.4)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["footprintGb"] == pytest.approx(17.0, abs=0.1)
+    assert fit_entry["poolGb"] == pytest.approx(22.4)
+
+
+def test_score_breakdown_omits_pool_gb_when_not_supplied():
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] is None
