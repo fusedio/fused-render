@@ -2233,10 +2233,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // only adds and updates by id, so a cache paint's card would survive an
       // answer that says the run is over (`live_run: ""`, no rows) and sit
       // there answerable, posting `decide` to a run that has ended (Bugbot, PR
-      // #1112). Nothing else has written a card yet — `openSession` cleared
-      // them and holds `sending` until this lands — so this only drops the
-      // cache's own rows.
-      if (!fromCache) permCards.clear();
+      // #1112). Only the UNDECIDED cards the answer no longer names go: the
+      // warm paint's gate is down, so a click can land while the fetch is out,
+      // and a verdict that already reached the server must not come back as an
+      // open card because this answer was built a moment before it (Bugbot,
+      // round 2). `syncPermissions` keeps a landed decision over an incoming
+      // row without one, so the decided card survives either way.
+      if (!fromCache) {
+        const named = new Set((res.permissions || []).map((p) => p && p.id));
+        for (const [id, row] of permCards) {
+          if (!named.has(id) && !row.decision) permCards.delete(id);
+        }
+      }
       syncPermissions(
         res.permissions,
         res.live_run || "",

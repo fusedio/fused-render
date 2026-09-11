@@ -3160,6 +3160,40 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     expect(made.controller.getState().permissions).toEqual([]); // the fetch took it away
   });
 
+  test("a card answered on the warm paint keeps its verdict when the fetch lands (Bugbot round 2)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    store.set("/proj/app.py|s-abc", liveHistory("q1") as unknown as HistoryResponse);
+    let release: (() => void) | null = null;
+    const made = makeController(
+      {
+        // The answer was built BEFORE the click: q1 still open on the wire.
+        history: () =>
+          new Promise((r) => {
+            release = () => r(liveHistory("q1"));
+          }),
+        decide: () => ({ decision: "allow", scope: "once", answers: { Which: "A" } }),
+        live_run: () => ({ run_id: "r9" }),
+        poll: () => poll({ done: true, permissions: [question("q1")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    const opening = made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.controller.getState().permissions[0]!.decision).toBe("");
+    await made.controller.answerQuestion("q1", { Which: ["A"] });
+    expect(made.controller.getState().permissions[0]!.decision).toBe("allow");
+    release!();
+    await opening;
+    const card = made.controller.getState().permissions.find((p) => p.id === "q1")!;
+    expect(card.decision).toBe("allow");
+    expect(card.placement).toBe("parked");
+  });
+
   test("a new chat stops writing into the previous session's cache entry (Bugbot)", async () => {
     const store = new Map<string, HistoryResponse>();
     const historyCache = {
