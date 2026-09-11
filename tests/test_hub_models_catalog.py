@@ -152,6 +152,26 @@ def test_catalog_path_facets_and_best_sort_cover_the_whole_pool(client, hub_cach
     assert body["models"][0]["id"] == "pub24/model-8"
 
 
+def test_catalog_path_publisher_facet_does_not_collapse_on_filter(client, hub_cache, monkeypatch):
+    """C2: the publisher facet must be computed over the slice WITHOUT the
+    publisher filter (matching D853's live-path behaviour) or picking one
+    publisher would collapse the facet menu down to just that publisher,
+    with no way back to "any" without reloading."""
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("catalog path must not call the Hub")))
+    _build_big_pool(n_publishers=5, per_publisher=3)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads",
+                            "limit": 24, "publisher": "pub0"})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Every row returned is scoped to the chosen publisher...
+    assert all(m["id"].startswith("pub0/") for m in body["models"])
+    # ...but the facet list must still show every publisher in the pool.
+    publisher_ids = {p["id"] for p in body["facets"]["publishers"]}
+    assert {f"pub{p}" for p in range(5)} <= publisher_ids
+
+
 def test_catalog_ilike_escape_neutralizes_percent_and_underscore_wildcards():
     """Finding: `_catalog_ilike_escape` only doubled a literal quote, leaving
     `%`/`_` as live LIKE/ILIKE wildcards in caller-controlled search text —

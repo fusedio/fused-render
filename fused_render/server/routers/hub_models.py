@@ -1897,10 +1897,11 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     that would need its own invalidation story once the daily delta lands.
     """
     cfg = hub_catalog.load_config()
-    conditions = []
+    query_conditions = []
     if query:
-        conditions.append(
+        query_conditions.append(
             f"id ILIKE '%{_catalog_ilike_escape(query)}%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
+    conditions = list(query_conditions)
     if publisher:
         conditions.append(
             f"id ILIKE '{_catalog_ilike_escape(publisher)}/%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
@@ -1920,8 +1921,27 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     # list, not only its classified `pipeline_tag`.
     models = [row for row in models if row.get("capability") == capability_filter]
 
-    facets = _facets(models)
-    _pin_publisher_facets(facets, models, capability_filter, hardware)
+    # D853's live-path behaviour, mirrored here: the publisher facet must be
+    # computed over the slice WITHOUT the publisher filter (all other filters
+    # still applied) or picking a publisher collapses the dropdown to just
+    # that one entry with no way back to "any". Unlike the live path there is
+    # no Hub round-trip to save — a second local pool query is cheap — so
+    # this simply re-runs `query_pool` with the publisher condition dropped
+    # rather than caching a second fetch.
+    if publisher:
+        facet_where = " AND ".join(query_conditions) if query_conditions else None
+        facet_raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=facet_where)
+        facet_models = [row
+                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                                    for r in facet_raw_rows if isinstance(r, dict))
+                        if row is not None]
+        facet_models = [row for row in facet_models
+                        if row.get("capability") == capability_filter]
+    else:
+        facet_models = models
+
+    facets = _facets(facet_models)
+    _pin_publisher_facets(facets, facet_models, capability_filter, hardware)
 
     ram_gb = fit.machine_ram_gb()
     # D1245: one `available_budget_bytes` reading per REQUEST (not per row —
