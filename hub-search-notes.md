@@ -2136,3 +2136,32 @@ rationale on each.
 - `bun test frontend/src/apps/ai_models/local/ModelRow.test.ts` — 12
   pass, 0 fail.
 - `bun run --cwd frontend typecheck` — clean.
+
+### Fix round 13 (2026-09-11)
+
+- User, after round 12 made Try match Download's plain style: "can we
+  have accent bordered buttons?" New `.tp .btn-accent` (`ai-models.css`,
+  right after `.tp .btn-primary:hover`) — quiet background
+  (`--ctl-quiet-bg`), `--accent-soft` text, an accent/border color-mix
+  border, weight 600; hover deepens the mix and solidifies the border to
+  `--accent`. Same accent mix the active filter chip (`.tp
+  .menubtn.active`) already uses. Tokens only, no literal colours; reads
+  olive-on-light and lime-on-dark via the existing `--accent-soft`/
+  `--accent` token pair.
+- `ModelRow.tsx`: both the Try `<a>` and the Download `<button>` in the
+  row action column are now `btn btn-accent`. Download's old
+  `opts.primary`-conditional `btn-primary` path is superseded — Download
+  is always `btn btn-accent` now (D865). `.tp .btn` and `.tp .btn-primary`
+  themselves untouched; `.tp .btn-primary` still backs the search
+  screen's own "Search" button (`HubSearchScreen.tsx`, explicitly out of
+  scope) and stays a live rule either way.
+- `ModelRow.test.ts` updated: the Try-link class-pinning test now expects
+  `className="btn btn-accent"`, and the old `opts.primary ? " btn-primary"
+  : ""` pin replaced with a test asserting Download's `<button>` always
+  gets `className="btn btn-accent"`.
+
+### Round 13 test results
+
+- `bun test frontend/src/apps/ai_models/local/ModelRow.test.ts` — 12
+  pass, 0 fail.
+- `bun run --cwd frontend typecheck` — clean.

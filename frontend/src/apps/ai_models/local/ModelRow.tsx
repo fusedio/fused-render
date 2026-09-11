@@ -264,7 +264,7 @@ function Actions({
     return (
       <>
         <a
-          className="btn"
+          className="btn btn-accent"
           href={tryHref}
           onClick={(e) => {
             if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -294,7 +294,7 @@ function Actions({
     <>
       <button
         type="button"
-        className={`btn${opts.primary ? " btn-primary" : ""}`}
+        className="btn btn-accent"
         onClick={() => handlers.onDownload?.(model.id)}
       >
         Download

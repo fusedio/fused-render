@@ -22,8 +22,8 @@ describe("ModelRow action slot", () => {
     expect(ROW).toContain('title="No engine on this device can run it"');
   });
 
-  it("uses a plain (Download-matching) Try link only for a model this Mac actually has", () => {
-    expect(ROW).toContain('className="btn"');
+  it("uses an accent-bordered (Download-matching) Try link only for a model this Mac actually has", () => {
+    expect(ROW).toContain('className="btn btn-accent"');
     expect(ROW).toContain("href={tryHref}");
   });
 
@@ -33,8 +33,8 @@ describe("ModelRow action slot", () => {
     expect(ROW).toContain("handlers.onTry?.(model.id)");
   });
 
-  it("gives Download the primary class only when opts.primary is set", () => {
-    expect(ROW).toContain('`btn${opts.primary ? " btn-primary" : ""}`');
+  it("Download is always accent-bordered, regardless of opts.primary (D865)", () => {
+    expect(ROW).toContain('className="btn btn-accent"\n        onClick={() => handlers.onDownload?.(model.id)}');
   });
 
   it("never offers a delete button for a row this Mac does not have", () => {

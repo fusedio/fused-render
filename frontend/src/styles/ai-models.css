@@ -3682,6 +3682,21 @@ button.am-bench-model:focus-visible {
   filter: brightness(1.06);
 }
 
+/* D865: row actions (Try / Download) read as the row's call to action without
+   a filled accent pill — the filled version's dark-on-lime text read oddly
+   beside the quiet Download (round 12). Same accent mix the active filter
+   chip uses (`.tp .menubtn.active`). Tokens only; both themes. */
+.tp .btn-accent {
+  background: var(--ctl-quiet-bg);
+  color: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  font-weight: 600;
+}
+.tp .btn-accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--ctl-quiet-bg));
+  border-color: var(--accent);
+}
+
 /* The Engine files pane's own closing note — no search here on purpose. */
 .tp .scoped {
   margin: 14px 2px 0;
