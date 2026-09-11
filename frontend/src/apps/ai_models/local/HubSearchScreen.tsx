@@ -37,6 +37,7 @@ import {
   poolBuildBanner,
   popLabel,
   quantLabel,
+  variantIsDownloadable,
   verdictGlyph,
 } from "@apps/ai_models/lib/hubTableView";
 import {
@@ -262,7 +263,7 @@ function HitDrawer({
                       {v.quant ? ` — ${v.quant}` : ""}
                       {v.file === model.file ? " (default)" : ""}
                       {onDisk ? " (on disk)" : ""}
-                      {v.downloadable ? (
+                      {variantIsDownloadable(v) ? (
                         <button
                           type="button"
                           className="btn variant-download"

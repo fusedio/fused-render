@@ -298,6 +298,22 @@ export function downloadedVariantLabel(model: {
     : `${model.variantCount} variants downloaded`;
 }
 
+/** Whether a variant row's Download button should show at all.
+ *
+ *  Item 2 (code review): `HubModel.variants[].downloadable` is documented on
+ *  `api.ts` as absent for a response shape that PREDATES the field (a
+ *  replayed cached search response) — so it must be treated as optional,
+ *  never as a required boolean. Treating `undefined` the same as `false`
+ *  (which a bare truthiness check on the field does, since `undefined` is
+ *  falsy) would hide the Download button on EVERY variant of a stale cached
+ *  response, not just the sharded ones `downloadable: false` is meant to
+ *  flag. The correct read is "downloadable unless the server said
+ *  otherwise": only an explicit `false` (a shard the server actually
+ *  checked and rejected) hides the button. */
+export function variantIsDownloadable(v: { downloadable?: boolean }): boolean {
+  return v.downloadable !== false;
+}
+
 /** Downloads, compacted the same way the rest of the page counts things
  *  (`formatParams`'s own K/M/B steps) — or the dash for a repo the Hub
  *  reported no count for. Never a bare `0`: an uncounted repo is not

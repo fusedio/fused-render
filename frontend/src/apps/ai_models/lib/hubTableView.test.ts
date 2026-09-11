@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
+import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -454,5 +454,19 @@ describe("downloadedVariantLabel", () => {
         localFile: "model-Q8_0.gguf",
       }),
     ).toBe("2 variants downloaded");
+  });
+});
+
+describe("variantIsDownloadable", () => {
+  it("is downloadable when the server says true", () => {
+    expect(variantIsDownloadable({ downloadable: true })).toBe(true);
+  });
+
+  it("is not downloadable when the server says false (a sharded quant)", () => {
+    expect(variantIsDownloadable({ downloadable: false })).toBe(false);
+  });
+
+  it("is downloadable when the field is absent (a cached response predating it)", () => {
+    expect(variantIsDownloadable({})).toBe(true);
   });
 });
