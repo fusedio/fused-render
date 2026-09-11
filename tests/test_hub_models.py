@@ -939,12 +939,29 @@ def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypa
 
 
 def test_a_capability_with_one_tag_behaves_like_the_old_task_filter(client, hub_cache, monkeypatch):
+    # D1235: IMAGE_GENERATION stopped being a one-tag capability once
+    # `image-to-image` joined `text-to-image` under it (tasks.py), so
+    # SPEECH_TO_TEXT (still one tag: `automatic-speech-recognition`) is the
+    # example here now; the two-tag case is covered just below.
+    fake = _reply([_hit("org/m", pipeline_tag="automatic-speech-recognition")])
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.SPEECH_TO_TEXT})
+    assert resp.status_code == 200
+    assert len(fake.calls) == 1
+    assert "filter=automatic-speech-recognition" in fake.calls[0][0]
+
+
+def test_image_generation_now_reaches_two_tags(client, hub_cache, monkeypatch):
+    """D1235: `image-to-image` joined `text-to-image` under IMAGE_GENERATION,
+    so a capability search over it fetches both tags — one Hub request per
+    tag, same as any other multi-tag capability."""
     fake = _reply([_hit("org/m", pipeline_tag="text-to-image")])
     monkeypatch.setattr(httpx, "get", fake)
     resp = _search(client, {"capability": registry.IMAGE_GENERATION})
     assert resp.status_code == 200
-    assert len(fake.calls) == 1
-    assert "filter=text-to-image" in fake.calls[0][0]
+    assert len(fake.calls) == 2
+    assert any("filter=text-to-image" in c[0] for c in fake.calls)
+    assert any("filter=image-to-image" in c[0] for c in fake.calls)
 
 
 def test_an_unrecognised_capability_400s(client, hub_cache):
