@@ -47,6 +47,45 @@
 # platform with a real, statically-linked executable inside, no source build,
 # no compiler — this folder's "wheels-only" rule.
 #
+# **`[tool.fused-render.runner] allow_build = true` — this folder's opt-out of
+# the wheels-only default, and why it is safe here specifically.**
+# `ai/supervisor.py._ensure_venv` builds every bundled runner's environment
+# through `envinstall.start`, which leaves `allow_build` at its default False —
+# `_env_install_worker.py` then appends `--no-build` to `uv sync`, refusing
+# anything that is not resolvable to a wheel (PY-18, the wheels-only rule:
+# a random runner's PyPI dependency must not silently start compiling a
+# C/C++/Rust extension on a user's machine, minutes and a working compiler
+# toolchain they may not have). A git source can ONLY be satisfied by BUILDING
+# the checkout uv makes of it — there is no wheel to fetch instead, ever — so
+# under that default this folder's own two sources above are structurally
+# uninstallable: every automatic build dies before it starts, for every
+# packaged-app user, with no consent-and-retry prompt in this code path to
+# recover with (that flow exists only behind the explicit `/api/env/install`
+# retry a user clicks after a real no-wheel failure, never from this
+# supervisor-driven bring-up). That was exactly the shipped bug this table
+# fixes.
+#
+# The table is the ONE declared, per-folder exception to that default, read by
+# `projectenv.runner_allows_build` and passed through as `allow_build=True` for
+# this runner alone — every other bundled runner keeps `--no-build` unchanged.
+# It earns the exception on the two facts the wheels-only rule actually exists
+# to guard against, both false here:
+#
+# 1. **No PyPI release, no wheels, upstream tags or releases at all** (checked
+#    2026-08-22 against `xocialize/ltx-2-mlx`) — so "wheels-only" cannot mean
+#    "prefer a wheel" for this dependency, there is categorically no wheel to
+#    prefer. `--no-build` does not make this install safer; it makes it
+#    impossible.
+# 2. **Both packages are pure Python — no compiler needed.** Verified against
+#    the pinned commit's own tree, not asserted from memory: neither
+#    `packages/ltx-core-mlx` nor `packages/ltx-pipelines-mlx` ships a `.c`,
+#    `.pyx`, `.cpp`, `.h` or prebuilt `.so`, and each declares
+#    `build-backend = "hatchling.build"` — a pure-Python wheel builder with no
+#    compiler invocation of its own. "Building from source" for this pair
+#    means uv copying `.py` files into a wheel, the same operation `pip
+#    install .` would do for any pure-Python project; it is not the arbitrary
+#    native compilation PY-18 exists to keep off a user's machine.
+#
 # Bounded per this folder's own rule: the floor is the version installed when
 # this folder was written, the ceiling is the next major.
 [project]
@@ -76,3 +115,8 @@ package = false
 [tool.uv.sources]
 ltx-core-mlx = { git = "https://github.com/xocialize/ltx-2-mlx", rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc", subdirectory = "packages/ltx-core-mlx" }
 ltx-pipelines-mlx = { git = "https://github.com/xocialize/ltx-2-mlx", rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc", subdirectory = "packages/ltx-pipelines-mlx" }
+
+# See the header comment above for the full account of why this folder, and
+# only this folder, needs it.
+[tool.fused-render.runner]
+allow_build = true

@@ -678,6 +678,37 @@ def has_project_env(project_dir: str) -> bool:
     return bool(applicable_dependencies_of(project_dir))
 
 
+def runner_allows_build(project_dir: str) -> bool:
+    """Does this folder's own manifest opt into a source build?
+
+    `[tool.fused-render.runner]` follows the same shape `background_apps.py`'s
+    `[tool.fused-render.app]` already uses: a declarative table the FOLDER
+    carries next to the dependency that needs it, rather than a hardcoded name
+    list in Python that a new runner's author would have no reason to know
+    about. Every bundled AI runner installs through `envinstall.start` with
+    `allow_build` defaulting to False (PY-18's wheels-only rule) — this is the
+    one, folder-declared way a runner can ask for the opposite, for the one
+    reason that ever justifies it: a dependency with no PyPI release and no
+    wheels, where `--no-build` cannot possibly succeed (see
+    `ai/runners/ltx_video/pyproject.toml`'s header for the worked example).
+
+    Absent, not a table, or `allow_build` missing/falsy all read as False —
+    the safe default for the hundred-odd folders that never touch this table
+    at all. Only `allow_build = true` (a literal bool; `"true"` the string
+    does not count, same discipline `background_apps.py` applies to its own
+    flags) opts in.
+    """
+    meta = _load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return False
+    tool = meta.get("tool")
+    table = tool.get("fused-render") if isinstance(tool, dict) else None
+    runner = table.get("runner") if isinstance(table, dict) else None
+    if not isinstance(runner, dict):
+        return False
+    return runner.get("allow_build") is True
+
+
 def dependencies_of(project_dir: str) -> list[str]:
     """`[project].dependencies` verbatim, markers included.
 
