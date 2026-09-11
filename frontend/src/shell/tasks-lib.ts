@@ -3058,6 +3058,23 @@ function isSettledLane(status: string): boolean {
   return SETTLED_LANES.has(status);
 }
 
+/**
+ * Whether the task's RING paints red off `failed`.
+ *
+ * `failed` is history — the newest SETTLED run broke — and `status` is now.
+ * They part in one direction: a blocked task the user just spoke to is
+ * `in_progress` with `failed` still true (the new turn has no verdict yet).
+ * Painting that row red and captioning it "Blocked" put a "just now" row under
+ * every real Blocked row — it sat in the In progress rank, where it belongs,
+ * wearing the wrong ring (Akshil, 2026-09-11, TASK-017). So the flag repaints
+ * SETTLED lanes only: a Done ring gone red says "finished badly", which is the
+ * one thing `status` alone cannot; a live ring says what is happening. Same
+ * gate `emptyPaneFailed` applies to the card's empty pane, for the same reason.
+ */
+export function ringFailed(task: Pick<Task, "status" | "failed">): boolean {
+  return !!task.failed && isSettledLane(task.status);
+}
+
 /** What the two empty-pane readings need of a row: its status, its verdict, and
  *  whether anything on it has yet to run. */
 type EmptyPaneTask = Pick<Task, "status" | "failed"> & Pick<Partial<Task>, "messages">;
@@ -3259,10 +3276,20 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
   const at = nextRunAt(task);
   if (at === null || at * 1000 <= now) return null;
   const repeats = nextRunRepeats(task);
+  // ON A BLOCKED ROW THE CHIP SAYS THE WORD (Akshil, 2026-09-11: "it should
+  // remain blocked because we don't know why it is blocked, but we should show
+  // that there is a scheduled message here"). The task stays in Blocked — a
+  // pending message has no verdict, so the failure still speaks — and the chip
+  // is where the row says a retry is booked. Elsewhere the time alone is
+  // enough; the lane already says the task is not over.
+  const blocked = taskColumn(task) === "blocked";
+  const when = relativeWhen(at, now);
   return {
     at,
-    text: relativeWhen(at, now),
-    title: `Next run ${messageStamp(at)}${repeats ? " · repeats" : ""}`,
+    text: blocked ? `scheduled ${when}` : when,
+    title: blocked
+      ? `Stays Blocked until this runs · ${messageStamp(at)}${repeats ? " · repeats" : ""}`
+      : `Next run ${messageStamp(at)}${repeats ? " · repeats" : ""}`,
     repeats,
   };
 }

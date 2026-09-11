@@ -76,6 +76,7 @@ import {
   nextRunChip,
   nextRunRepeats,
   repeatMark,
+  ringFailed,
   outcomeTag,
   nextRunAt,
   openMessageHref,
@@ -2057,7 +2058,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{task\.failed\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -2582,9 +2583,10 @@ describe("the board card's status ring", () => {
   it("stays UNconditional on a List row and in the Calendar, which have no lane", () => {
     const from = VIEWS.indexOf('className={"tasks-row"');
     const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
-    // Not gated on anything: a flat row and a day cell have no header above them, so
-    // the ring is the only thing that files them at all.
-    expect(row).toMatch(/<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{task\.failed\}/);
+    // Not gated on the LANE: a flat row and a day cell have no header above them,
+    // so the ring is the only thing that files them at all. The `failed` half is
+    // gated on the row being SETTLED (ringFailed), which is a different question.
+    expect(row).toMatch(/<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}/);
     expect(VIEWS.slice(VIEWS.indexOf('className={"tasks-msg"'))).toContain("<StatusIcon");
     expect(SCHEDULE_CSS).toContain(".schedule-cal-popover .schedule-ring");
   });
@@ -7353,8 +7355,9 @@ describe("the Cards view's frame", () => {
     // the exclusion was wrong in both halves.
     expect(LIB).toContain("if (isSettledLane(task.status))");
     expect(LIB).toContain("return !!task.failed && isSettledLane(task.status);");
-    // Both readings ask the same list: two call sites, one declaration.
-    expect(LIB.split("isSettledLane").length).toBe(4);
+    // Three readings ask the same list — the empty pane's two and the task
+    // ring's (ringFailed) — one declaration.
+    expect(LIB.split("isSettledLane").length).toBe(5);
   });
 
   it("says 'Folder missing' on the List row and the Board card, and its press prints the sentence instead of leaving", () => {
@@ -7659,6 +7662,27 @@ describe("outcomeTag: the word the Done lane cannot say", () => {
   });
 });
 
+describe("ringFailed", () => {
+  it("repaints SETTLED lanes only: a live row wears its status, not its history", () => {
+    // TASK-017 (Akshil, 2026-09-11): blocked, then spoken to. The new turn made
+    // it `in_progress` while `failed` stayed true off the last settled run, and
+    // the red ring captioned "Blocked" sat in the In progress rank — under every
+    // real Blocked row, looking mis-sorted. The rank was right; the ring lied.
+    expect(ringFailed({ status: "in_progress", failed: true })).toBe(false);
+    expect(ringFailed({ status: "upcoming", failed: true })).toBe(false);
+    expect(ringFailed({ status: "needs_attention", failed: true })).toBe(false);
+    expect(ringFailed({ status: "done", failed: true })).toBe(true);
+    expect(ringFailed({ status: "blocked", failed: true })).toBe(true);
+    expect(ringFailed({ status: "archived", failed: true })).toBe(true);
+    expect(ringFailed({ status: "done", failed: false })).toBe(false);
+    // The task-level rings all read it; message-level tones keep their own.
+    expect(VIEWS).toContain("failed={ringFailed(task)}");
+    expect(VIEWS).not.toContain("failed={task.failed}");
+    expect(CARDS).toContain("failed={ringFailed(task)}");
+    expect(CARDS).not.toContain("failed={task.failed}");
+  });
+});
+
 describe("nextRunChip", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
 
@@ -7725,6 +7749,20 @@ describe("nextRunChip", () => {
       ],
     });
     expect(nextRunChip(once, NOW)?.repeats).toBe(false);
+  });
+
+  it("says the WORD on a Blocked row, where the lane cannot (Akshil, 2026-09-11)", () => {
+    // A pending message has no verdict, so a blocked task with a retry booked
+    // stays Blocked — and the chip is where the row says the retry exists.
+    const t = task({ status: FAILED, next_run: AHEAD, next_run_entry: "e2" });
+    const chip = nextRunChip(t, NOW)!;
+    expect(chip.text).toBe("scheduled in 1h");
+    expect(chip.title).toContain("Stays Blocked until this runs");
+    expect(chip.title).toContain(messageStamp(AHEAD));
+    // The row's own time is still the last run — the rank did not move.
+    expect(taskWhen(t, NOW).kind).toBe("last");
+    // Every row that draws the chip draws it off this one function.
+    expect((VIEWS.match(/nextRunChip\(task\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
   it("says nothing on an Upcoming row, whose own time is already that run", () => {

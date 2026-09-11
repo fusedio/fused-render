@@ -58,6 +58,7 @@ import {
   firstLine,
   opensElsewhere,
   spansProjects,
+  ringFailed,
   taskColumn,
   taskHref,
   taskWhen,
@@ -533,7 +534,7 @@ function TaskCard({
               view sits under no lane header, so nothing else on it says what
               state the run is in — the same argument that keeps the ring on
               every List row and every Calendar chip. */}
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -827,7 +828,7 @@ function TaskPeek({
     <Modal
       title={
         <span className="task-peek-title">
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}

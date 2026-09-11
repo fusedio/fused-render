@@ -97,6 +97,7 @@ import {
   relativeWhen,
   settleMarkAllRead,
   spansProjects,
+  ringFailed,
   taskColumn,
   taskRunIntent,
   taskUnread,
@@ -2211,7 +2212,7 @@ function TaskNode({
         <span className="tasks-rowmark">
           <StatusIcon
             status={taskColumn(task)}
-            failed={task.failed}
+            failed={ringFailed(task)}
             unread={unread > 0}
             count={unread}
           />
