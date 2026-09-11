@@ -697,6 +697,23 @@ def runner_allows_build(project_dir: str) -> bool:
     at all. Only `allow_build = true` (a literal bool; `"true"` the string
     does not count, same discipline `background_apps.py` applies to its own
     flags) opts in.
+
+    **Coupling a caller must not miss:** `_env_install_worker._build` appends
+    `--no-build` and `--no-install-project` TOGETHER, only when `allow_build`
+    is False (see that function's own docstring for why they ride together —
+    `--no-build` alone would also refuse to build the local project the
+    instant it declares `[build-system]`, which a bare `uv init` scaffold
+    does by default). So opting in here also drops `--no-install-project`,
+    which re-enables installing the RUNNER'S OWN FOLDER as a project into its
+    venv. That is harmless only when the folder also declares
+    `[tool.uv] package = false` (a folder of scripts, not a distribution) —
+    true of `ai/runners/ltx_video/pyproject.toml` today, but for an unrelated
+    reason nothing here enforces. A runner that opts into `allow_build`
+    without also declaring `package = false` gets its own folder built and
+    installed, and in a packaged app that folder is read-only.
+    `tests/test_ai_runner_deps.py`'s
+    `test_an_opted_in_runner_also_declares_package_false` checks this pairing
+    for every runner folder; this function only reads `allow_build` itself.
     """
     meta = _load_manifest(project_dir)
     if not isinstance(meta, dict):

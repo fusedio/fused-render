@@ -86,6 +86,15 @@
 #    install .` would do for any pure-Python project; it is not the arbitrary
 #    native compilation PY-18 exists to keep off a user's machine.
 #
+# **Accepted requirement: a working `git` executable on PATH.** uv satisfies
+# a `git = "..."` source by shelling out to `git`, not by any pure-Python
+# means. In a packaged macOS app launched from Finder, PATH is minimal and
+# `/usr/bin/git` is the Command Line Tools shim — on a machine with no CLT
+# installed, that shim fails (or pops the CLT installer) rather than
+# cloning, so this install can still die for exactly the "every packaged-app
+# user" audience this opt-in exists for. Not detected or worked around here;
+# accepted as a real, if narrow, gap rather than silently assumed away.
+#
 # Bounded per this folder's own rule: the floor is the version installed when
 # this folder was written, the ceiling is the next major.
 [project]
