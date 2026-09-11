@@ -37,7 +37,7 @@ from fused_render.ai import hub_catalog
 from fused_render.ai import hub_metadata
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.hub_catalog_config import HubCatalogConfig, load_config
-from fused_render.ai.registry import for_capability
+from fused_render.ai.registry import available_runners, for_capability
 
 #: Same field list `hub_models._EXPAND` requests — the pool needs to feed
 #: `_model_row` exactly the rows a live search would have, so a query over a
@@ -98,16 +98,30 @@ def _hub_endpoint() -> str:
 
 
 def _formats_for_capability(capability: str) -> tuple[str, ...]:
-    """The Hub `filter=` format tags this machine's installed/active runner
-    for `capability` declares (`Runner.hub_filter_tags`) — e.g. `("mlx",)` or
-    `("gguf",)`. Empty when the active runner declares none, in which case
-    the build pages the tag with no format filter at all (every format the
-    Hub returns for that pipeline tag), matching what `hub_filter_tags`'s own
-    docstring says an empty tuple means for the live path."""
-    runner = for_capability(capability)
-    if runner is None:
-        return ()
-    return tuple(runner.hub_filter_tags)
+    """The Hub `filter=` format tags to page for `capability` on THIS
+    machine — the UNION of `Runner.hub_filter_tags` across every runner that
+    serves `capability` and can actually run here (`registry.available_runners`),
+    not just the one `for_capability` currently prefers.
+
+    C3 (bugbot): the pool is a shared, capability-wide cache — a search
+    result asks "could ANYTHING on this machine load this repo", the exact
+    question `available_runners` (not `for_capability`) answers (its own
+    docstring: `for_capability` names the ACTIVE engine, which is the wrong
+    question for search). Restricting the build to only the active runner's
+    formats meant a repo servable by a second installed-but-not-preferred
+    runner (`llamacpp-text`'s GGUF alongside an active `mlx-text`, D412's own
+    example) was silently missing from the catalog pool, even though the
+    live path (which already calls `available_runners`) would have shown it.
+
+    Empty when no available runner declares any filter tag at all, in which
+    case the build pages the tag with no format filter (every format the Hub
+    returns for that pipeline tag) — same "empty means unfiltered" contract
+    `hub_filter_tags`'s own docstring documents for the live path."""
+    seen: dict[str, None] = {}
+    for runner in available_runners(capability):
+        for tag in runner.hub_filter_tags:
+            seen.setdefault(tag, None)
+    return tuple(seen)
 
 
 def _parse_ratelimit_reset(value: str | None) -> float | None:
@@ -303,7 +317,7 @@ def _build_capability_pool_inner(cfg: HubCatalogConfig, capability: str,
     # itself supposed to be recording.
     hub_catalog.write_pool(cfg, capability, list(merged.values()),
                            build_seconds=build_seconds, pages=page_counter[0],
-                           started_at=started_at)
+                           started_at=started_at, formats=formats)
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
     _log.info(
@@ -453,7 +467,8 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     # is no "empty pool would be worse than no pool" case here, only "no
     # widening happened this round".
     hub_catalog.write_pool(cfg, capability, merged, build_seconds=build_seconds,
-                           pages=page_counter[0], started_at=started_at)
+                           pages=page_counter[0], started_at=started_at,
+                           formats=formats)
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
     _log.info(
@@ -525,6 +540,29 @@ def build_status(capability: str, *, cfg: HubCatalogConfig | None = None) -> dic
             "blockedUntil": blocked_until}
 
 
+def _formats_are_stale(cfg: HubCatalogConfig, capability: str) -> bool:
+    """C3 (bugbot): whether `capability`'s BUILT pool covers strictly fewer
+    Hub format tags than this machine can serve right now — e.g. a pool
+    built while only `mlx-text` was installed, on a machine that has since
+    gained `llamacpp-text` too. A strict SUBSET (not merely "different"):
+    a machine that LOST a runner since the last build has a pool that is
+    now too WIDE, not too narrow, and narrowing it back down is the daily
+    delta/rebuild's job, not something worth forcing early — only a pool
+    that is missing formats it could now cover is stale in the sense this
+    function exists to catch. An entry from before this field existed
+    (`formats` absent) is never treated as stale — there is nothing to
+    compare against, and re-triggering every pre-existing pool's build on
+    the next search would defeat the whole point of the on-device pool."""
+    entry = hub_catalog.pool_entry(cfg, capability)
+    if not entry:
+        return False
+    stored = entry.get("formats")
+    if stored is None:
+        return False
+    current = set(_formats_for_capability(capability))
+    return set(stored) < current
+
+
 def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None) -> bool:
     """Kick off a background build for `capability` if one is not already
     running, blocked on a 429 backoff, or already built. Non-blocking —
@@ -537,7 +575,7 @@ def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None
     FORCE a rebuild, e.g. the daily delta, calls `build_capability_pool`
     directly instead)."""
     cfg = cfg or load_config()
-    if hub_catalog.pool_exists(cfg, capability):
+    if hub_catalog.pool_exists(cfg, capability) and not _formats_are_stale(cfg, capability):
         return False
     if hub_catalog.is_blocked(cfg, capability):
         return False

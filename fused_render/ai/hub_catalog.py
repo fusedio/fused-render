@@ -190,7 +190,8 @@ def _row_columns(rows: list[dict]) -> dict:
 
 def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
                build_seconds: float | None = None, pages: int | None = None,
-               started_at: float | None = None) -> dict:
+               started_at: float | None = None,
+               formats: tuple[str, ...] | None = None) -> dict:
     """Write a fresh generation of `capability`'s pool and swap the manifest
     in — the whole operation under `store_lock`, so two writers (two dev
     servers on the same home dir, or a retriggered build racing the daily
@@ -250,6 +251,13 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
             entry["pages"] = pages
         if started_at is not None:
             entry["startedAt"] = started_at
+        if formats is not None:
+            # C3 (bugbot): the exact set of Hub `filter=` format tags this
+            # build paged, so a later `ensure_build_started` can tell a pool
+            # built before a second runner/format became available on this
+            # machine from one that already covers it, and trigger a rebuild
+            # rather than serving a permanently narrower pool forever.
+            entry["formats"] = list(formats)
         manifest["capabilities"][capability] = entry
         _write_manifest(cfg, manifest)
 

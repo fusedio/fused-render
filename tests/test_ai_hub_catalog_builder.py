@@ -43,7 +43,7 @@ def _resp(rows, status=200, headers=None):
 
 def test_single_page_build_writes_a_pool(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/a"), _hit("org/b")]))
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     result = builder.build_capability_pool(load_config(), "text-generation")
 
@@ -65,7 +65,7 @@ def test_pagination_follows_link_next_header(monkeypatch):
         return _resp([_hit("org/page2")])
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
 
@@ -97,7 +97,7 @@ def test_429_partway_through_never_writes_a_partial_pool(monkeypatch):
         return _resp([], status=429, headers={"RateLimit": "limit=100, remaining=0, reset=120"})
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     before = time.time()
     result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
@@ -121,7 +121,7 @@ def test_429_partway_through_never_writes_a_partial_pool(monkeypatch):
 def test_429_with_no_rows_yet_leaves_no_pool_but_sets_the_block(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
         [], status=429, headers={"RateLimit": "limit=100, remaining=0, reset=30"}))
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
 
@@ -134,7 +134,7 @@ def test_429_with_no_rows_yet_leaves_no_pool_but_sets_the_block(monkeypatch):
 def test_unparseable_ratelimit_header_falls_back_to_default_backoff(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
         [], status=429, headers={"RateLimit": "not-a-real-header"}))
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     before = time.time()
     builder.build_capability_pool(load_config(), "automatic-speech-recognition")
@@ -157,7 +157,7 @@ def test_format_filter_pages_each_runner_format_separately(monkeypatch):
         return _resp([_hit("org/gguf-model")])
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: FakeRunner())
+    monkeypatch.setattr(builder, "available_runners", lambda cap: (FakeRunner(),))
 
     result = builder.build_capability_pool(load_config(), "text-generation")
 
@@ -187,7 +187,7 @@ def test_fetch_error_aborts_build_without_writing_a_truncated_pool(monkeypatch):
         return _resp([], status=500)
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
     # TEXT_GENERATION resolves to more than one tag so a second pair exists
     # to fail on.
     monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
@@ -209,7 +209,7 @@ def test_fetch_error_leaves_an_existing_pool_untouched_on_delta_refresh(monkeypa
         {"capability": "text-generation", "format": "",
          "raw": _hit("org/existing", lastModified="2026-01-01T00:00:00.000Z")},
     ])
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
     monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
                          lambda cap: ("text-generation",))
 
@@ -243,7 +243,7 @@ def test_ensure_build_started_skips_while_blocked(monkeypatch):
 
 def test_ensure_build_started_builds_in_background(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/bg")]))
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
     cfg = load_config()
 
     started = builder.ensure_build_started("text-generation", cfg=cfg)
@@ -285,7 +285,7 @@ def test_delta_refresh_widens_the_pool_with_newer_rows_only(monkeypatch):
         {"capability": "text-generation", "format": "",
          "raw": _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")},
     ])
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     new_row = _hit("org/new", lastModified="2026-01-05T00:00:00.000Z")
     old_row_again = _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")
@@ -309,7 +309,7 @@ def test_delta_refresh_invalidates_hub_metadata_for_changed_repos_only(monkeypat
         {"capability": "text-generation", "format": "",
          "raw": _hit("org/untouched", lastModified="2026-01-01T00:00:00.000Z")},
     ])
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     # Seed hub_metadata entries for both repos so invalidate() has something
     # to act on (a no-entry repo is a documented no-op, not useful here).
@@ -332,7 +332,7 @@ def test_delta_refresh_invalidates_hub_metadata_for_changed_repos_only(monkeypat
 
 def test_build_records_started_at_pages_and_build_seconds_on_manifest(monkeypatch, caplog):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/a"), _hit("org/b")]))
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     before = time.time()
     with caplog.at_level("INFO", logger="fused_render.ai.hub_catalog_builder"):
@@ -361,7 +361,7 @@ def test_multi_page_build_counts_pages_across_tag_format_pairs(monkeypatch):
         return _resp([_hit("org/page2")])
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
 
     builder.build_capability_pool(load_config(), "automatic-speech-recognition")
 
@@ -376,7 +376,7 @@ def test_delta_refresh_also_records_instrumentation(monkeypatch):
         {"capability": "text-generation", "format": "",
          "raw": _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")},
     ])
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
         [_hit("org/new", lastModified="2026-01-05T00:00:00.000Z")]))
 
@@ -423,7 +423,7 @@ def test_build_status_building_reports_live_pages_done(monkeypatch):
                                    request=httpx.Request("GET", url)), None
 
     monkeypatch.setattr(builder, "_page", fake_page)
-    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
     monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
                          lambda cap: ("text-generation",))
 
@@ -441,3 +441,119 @@ def test_build_status_building_reports_live_pages_done(monkeypatch):
 
     status_after = builder.build_status("text-generation", cfg=cfg)
     assert status_after["state"] == "none"
+
+
+# -- format union across runners (C3) -----------------------------------------
+
+
+def test_formats_for_capability_unions_all_available_runners_not_just_active(monkeypatch):
+    """C3 (bugbot): the pool build must page every format tag ANY runner
+    that can run here declares for this capability, not only the one
+    `for_capability`/`available_runners`'s first entry prefers — otherwise a
+    repo servable by a second installed runner (e.g. `llamacpp-text`'s GGUF
+    alongside an active `mlx-text`) never enters the catalog pool at all."""
+    class MlxRunner:
+        hub_filter_tags = ("mlx",)
+
+    class GgufRunner:
+        hub_filter_tags = ("gguf",)
+
+    monkeypatch.setattr(builder, "available_runners",
+                         lambda cap: (MlxRunner(), GgufRunner()))
+
+    assert builder._formats_for_capability("text-generation") == ("mlx", "gguf")
+
+
+def test_formats_for_capability_dedupes_a_shared_tag_across_runners(monkeypatch):
+    class RunnerA:
+        hub_filter_tags = ("gguf",)
+
+    class RunnerB:
+        hub_filter_tags = ("gguf", "safetensors")
+
+    monkeypatch.setattr(builder, "available_runners",
+                         lambda cap: (RunnerA(), RunnerB()))
+
+    assert builder._formats_for_capability("text-generation") == ("gguf", "safetensors")
+
+
+def test_build_records_formats_on_the_manifest_entry(monkeypatch):
+    class GgufRunner:
+        hub_filter_tags = ("gguf",)
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/a")]))
+    monkeypatch.setattr(builder, "available_runners", lambda cap: (GgufRunner(),))
+
+    builder.build_capability_pool(load_config(), "text-generation")
+
+    cfg = load_config()
+    entry = hub_catalog.pool_entry(cfg, "text-generation")
+    assert entry["formats"] == ["gguf"]
+
+
+def test_ensure_build_started_rebuilds_when_stored_formats_are_a_strict_subset(monkeypatch):
+    """C3 (bugbot): a pool built while this machine could only serve `mlx`
+    must not stay stuck there forever once a second runner (e.g. GGUF) also
+    becomes available — `ensure_build_started` treats a strict-subset
+    `formats` entry as stale and starts a rebuild rather than skipping."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ], formats=("mlx",))
+
+    class MlxRunner:
+        hub_filter_tags = ("mlx",)
+
+    class GgufRunner:
+        hub_filter_tags = ("gguf",)
+
+    monkeypatch.setattr(builder, "available_runners",
+                         lambda cap: (MlxRunner(), GgufRunner()))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/existing")]))
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is True
+
+    thread = builder._building["text-generation"]
+    thread.join(timeout=5)
+    entry = hub_catalog.pool_entry(cfg, "text-generation")
+    assert set(entry["formats"]) == {"mlx", "gguf"}
+
+
+def test_ensure_build_started_does_not_rebuild_when_formats_are_not_a_subset(monkeypatch):
+    """A pool whose recorded formats are NOT a strict subset of the current
+    set (equal, or a superset because a runner disappeared) is not stale —
+    narrowing back down is the rebuild/delta's job, not something forced
+    early just because the machine's available runners changed at all."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ], formats=("mlx", "gguf"))
+
+    class MlxRunner:
+        hub_filter_tags = ("mlx",)
+
+    monkeypatch.setattr(builder, "available_runners", lambda cap: (MlxRunner(),))
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is False
+
+
+def test_ensure_build_started_does_not_rebuild_an_entry_with_no_formats_recorded(monkeypatch):
+    """A pool written before this field existed (`formats` absent) must not
+    be treated as stale — there is nothing to compare against, and treating
+    absence as "stale" would force every pre-existing pool to rebuild on its
+    very next search."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ])
+    assert "formats" not in hub_catalog.pool_entry(cfg, "text-generation")
+
+    class GgufRunner:
+        hub_filter_tags = ("gguf",)
+
+    monkeypatch.setattr(builder, "available_runners", lambda cap: (GgufRunner(),))
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is False
