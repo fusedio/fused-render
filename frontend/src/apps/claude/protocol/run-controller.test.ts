@@ -1346,6 +1346,71 @@ describe("follow-ups (T:16024, D687)", () => {
   // arming on one of those polls, and the real seam — which lands with the
   // echo a poll later — was then read as this send's own follow-up instead of
   // as the base, putting the old reply back in the new bubble.
+  // …BUT A FOLLOW-UP LANDING IN THIS LOOP DOES SPEND IT (Bugbot, PR #1119).
+  // Once one has, a seam can be the `result` closing the reply that follow-up
+  // was folded into — this send's OWN boundary, which belongs to a bubble.
+  // Adopting it as the base instead would swallow this send's reply whole. The
+  // gate for that was first written against `seenFollowupSeq`, which the top of
+  // every poll has already synced to `followupSeq`, so it could never fire.
+  test("a follow-up landing in this loop stops a later seam being taken as the base", async () => {
+    let controller!: ChatController;
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const C = text("And the follow-up's answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const made = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: async (_f, n) => {
+          // Still the old reply alone — the echo has not landed, so the wait
+          // for the base seam is still armed and nothing is ours yet.
+          if (n === 0) return poll({ segments: [A], text: A.text });
+          // A follow-up is typed into this very loop while that is still true.
+          if (n === 1) {
+            await controller.sendFollowUp("and one more thing");
+            return poll({ segments: [A], text: A.text });
+          }
+          // Now a seam arrives — but this one closes the reply the follow-up
+          // was folded into, so it is OURS, not the base.
+          if (n === 2) {
+            return poll({
+              segments: [A, B, C],
+              text: A.text + B.text + C.text,
+              turn_breaks: [{ segments: 2, text: A.text.length + B.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [A, B, C], text: A.text + B.text + C.text,
+                        turn_breaks: [{ segments: 2, text: A.text.length + B.text.length }] });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.openSession("s1");
+    await controller.sendMessage("and now this");
+
+    // This send's own reply survives: it is NOT swallowed into the base.
+    // Read through whichever mode it rendered in — with the adoption refused
+    // there is no confirmed segment count, so it falls back to plain text.
+    const bodies = assistants(controller).map(
+      (t) => (t.segments || []).map(bodyOf).join("") + (t.text || ""),
+    );
+    expect(bodies.some((b) => b.includes(B.text))).toBe(true);
+    // …and the reply already on screen is still not duplicated into it.
+    expect(bodies.slice(1).some((b) => b.includes(A.text))).toBe(false);
+  });
+
   test("a wake growing the previous turn does not spend the wait for the seam", async () => {
     const A = text("The answer from before the reload.");
     const WAKE = text(" And the background task finished.");

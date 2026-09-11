@@ -1029,6 +1029,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let prevWindow: number | null = null;
     let seenFollowupSeq = followupSeq;
     /**
+     * The same counter as this loop ENTERED on, never advanced — so
+     * "has a follow-up landed since this loop started" stays answerable after
+     * `seenFollowupSeq` has caught up to it (which it does at the top of every
+     * poll that saw one). `adoptFirstSeam` below is the reader, and comparing
+     * against `seenFollowupSeq` there was dead code: the two are already equal
+     * by the time it runs (Bugbot, PR #1119).
+     */
+    const followupSeqAtStart = followupSeq;
+    /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
      *
      * One per follow-up that landed and whose reply this loop has not yet seen
@@ -1255,24 +1264,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // segments suppressed with it.
         if (adoptFirstSeam && anyBody) {
           const last = reported[reported.length - 1];
-          if (last && (last.segments > baseSeg || last.text > baseText.length)) {
+          if (followupSeq !== followupSeqAtStart) {
+            // A FOLLOW-UP LANDED IN THIS LOOP, so STOP WAITING WITHOUT
+            // ADOPTING — checked ahead of the adoption, not beside it. From
+            // here a payload can carry two seams, the pre-send boundary AND
+            // the `result` closing the reply this loop's own follow-up was
+            // folded into, and the adoption below takes the LAST one: it would
+            // take that second seam and swallow this send's whole reply into
+            // the base (Bugbot, PR #1119 — where this gate first sat in the
+            // `else` and so could not stop the adoption at all, on top of
+            // being written against `seenFollowupSeq`, which the top of every
+            // poll has already caught up to `followupSeq`).
+            adoptFirstSeam = false;
+          } else if (last && (last.segments > baseSeg || last.text > baseText.length)) {
             baseSeg = last.segments;
             baseText = fullText.slice(0, last.text);
             // A REPORTED SEAM IS agent.py's OWN COUNT, measured against THIS
             // very payload's segmentation — unlike `priorReply`'s, it needs no
-            // reconciliation.
+            // reconciliation. Taking the LAST seam is safe only because of the
+            // branch above: with no follow-up of this loop's own in the
+            // payload, every seam in it closes a turn that ended before this
+            // send, and the last of them is where this turn begins.
             baseSegTrusted = true;
             adoptFirstSeam = false;
-          } else if (!baseText || !fullText.startsWith(baseText) || followupSeq !== seenFollowupSeq) {
-            // Nothing left to wait behind, or waiting is no longer safe:
-            //
-            //   * no base at all — every body is this turn's (a fresh chat);
-            //   * the window no longer OPENS on the base — the cursor stepped
-            //     past it, so the payload is this turn alone and a later seam
-            //     would be its own;
-            //   * a follow-up landed in THIS loop — from here a seam can be
-            //     the `result` closing a reply that follow-up was folded
-            //     into, which belongs to a bubble, not to the base.
+          } else if (!baseText || !fullText.startsWith(baseText)) {
+            // Nothing left to wait behind: no base at all (every body is this
+            // turn's — a fresh chat), or the window no longer OPENS on the
+            // base, so the cursor stepped past it and the payload is this turn
+            // alone.
             //
             // GROWTH ALONE IS NOT ON THAT LIST (Bugbot, PR #1119). A D415 wake
             // appends to the turn ALREADY on screen, so the payload grows past
