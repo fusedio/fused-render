@@ -2076,3 +2076,42 @@ rationale on each.
   frontend/src/apps/ai_models/local/CapabilityPane.test.ts` — 23 pass,
   0 fail.
 - `bun run --cwd frontend typecheck` — clean.
+
+### Fix round 11 (2026-09-11)
+
+- Item 1: `SearchMenu` (Publisher/Quant dropdown, `SearchControls.tsx`)
+  now renders one extra option row at the top — `Search publisher
+  "<typed>"` / `Search quant "<typed>"` — whenever the typed filter has
+  no exact case-insensitive match among `options`. Clicking it calls
+  the same `apply()` path Enter already used. Fixes the "mlx-community
+  shows nothing" report: that publisher has exactly one row in the
+  ~200-row window `_facets` counts over, so it sorts behind the top-40
+  cutoff and the dropdown had no option to show, even though Enter
+  already sent it and got a full page back — now there is a visible
+  affordance for that case.
+- Item 2: `hub_models.py`'s `_pin_publisher_facets` pins a small,
+  machine-dependent publisher set to the FRONT of `facets.publishers`
+  for text-generation searches (or no capability filter): Metal
+  (`speed.backend_bucket` says `metal-mlx`) gets `mlx-community` then
+  `lmstudio-community`; everything else gets `bartowski`, `unsloth`,
+  `lmstudio-community`. A pinned id already present in the unpinned list
+  is moved to the front rather than duplicated, keeping its real count;
+  one absent from this fetch's rows gets `count: 0`. List stays capped
+  at 40. Extra copy fix (coordinator request, own commit): `SORTS[0]`'s
+  title shortened from "Ranked for this Mac: fit, speed, size, recency,
+  popularity" (wrapped to two lines in the live Sort menu) to "Ranked
+  for what runs well on this Mac".
+
+### Round 11 test results
+
+- `bun test frontend/src/apps/ai_models/local/SearchControls.test.ts` —
+  20 pass, 0 fail (new cases for the no-match search row).
+- `pytest tests/test_hub_models.py -k facets` — 4 pass, then
+  `pytest tests/test_hub_models.py` (whole file) — 211 pass, 0 fail.
+  Two pre-existing facet tests needed updating: `_pin_publisher_facets`
+  fires by default (no `capability` sent = the common case), so
+  `test_search_reports_publisher_and_quant_facets` and
+  `test_publisher_facets_do_not_collapse_once_a_publisher_is_picked`
+  now also pin `hub.fit.is_apple_silicon` and assert the pinned entries
+  alongside their original rows.
+- `bun run --cwd frontend typecheck` — clean.
