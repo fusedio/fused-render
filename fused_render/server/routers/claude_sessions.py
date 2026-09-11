@@ -684,19 +684,35 @@ def _recap_tail(turns: list) -> str:
 
 
 def _recap_result(stdout: str) -> str:
-    """The recap out of `--output-format json`'s single result object, capped.
+    """The recap out of `--output-format stream-json`'s terminal `result`
+    event, capped.
+
+    `--output-format json` (a single result object on its own) is not on offer
+    here: the CLI refuses `--input-format stream-json` — load-bearing for the
+    tail, see `_recap_generate` — paired with anything but
+    `--output-format stream-json` ("--input-format=stream-json requires
+    output-format=stream-json", verified live against 2.1.269). So `stdout` is
+    one JSON object PER LINE (init/system/assistant events, then the terminal
+    one), and the `result` event is found by scanning from the END rather than
+    assumed to be the literal last line — a trailing `rate_limit_event` or
+    `post_turn_summary` housekeeping line after it is ordinary, not an error.
 
     BOTH of `is_error` and `subtype` are checked because they fail differently:
     a refusal or a hit turn limit comes back with `is_error` false and a subtype
     like `error_max_turns`, and its `result` is then a machine message rather
-    than a recap. Anything that is not a clean success — unparseable stdout, a
-    non-success subtype, a `result` that is not a string — is "", which the
-    caller shows as no recap at all."""
-    try:
-        payload = json.loads(stdout.strip() or "{}")
-    except ValueError:
-        return ""
-    if not isinstance(payload, dict):
+    than a recap. Anything that is not a clean success — no `result` event at
+    all, a non-success subtype, a `result` that is not a string — is "", which
+    the caller shows as no recap at all."""
+    payload = None
+    for line in reversed(stdout.splitlines()):
+        try:
+            candidate = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(candidate, dict) and candidate.get("type") == "result":
+            payload = candidate
+            break
+    if payload is None:
         return ""
     if payload.get("is_error") or payload.get("subtype") != "success":
         return ""
@@ -753,6 +769,15 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
     quoted. Passed over stdin instead, the tail never touches the command
     line cmd.exe parses, on any platform.
 
+    `--output-format stream-json` is not a choice: the CLI rejects
+    `--input-format stream-json` paired with anything else
+    ("--input-format=stream-json requires output-format=stream-json"), so the
+    single-JSON-object reply `--output-format json` gave us is gone too —
+    `_recap_result` reads the terminal `result` event back out of the
+    line-per-event stream instead. `--verbose` rides along because the CLI
+    requires it whenever `--output-format stream-json` is used (exits 1
+    without it, same rule `ai.py`'s `_ai_cmd` documents).
+
     `cwd` is the target's own working directory when there is one, and a temp
     directory otherwise. It genuinely does not matter — a fresh session with no
     tools cannot look at the filesystem — but a cwd that does not exist fails
@@ -772,7 +797,8 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
         [agent._claude_bin(), "-p", "--no-session-persistence",
          "--input-format", "stream-json",
          "--max-turns", "1", "--tools", "", "--model", "haiku",
-         "--output-format", "json", "--system-prompt", _RECAP_SYSTEM],
+         "--output-format", "stream-json", "--verbose",
+         "--system-prompt", _RECAP_SYSTEM],
         cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         encoding="utf-8", errors="replace")

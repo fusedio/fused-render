@@ -30,10 +30,11 @@ SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 FOR_UUID = "u-1"
 
 # Records argv AND stdin (the prompt travels on stdin — see D-recap's
-# `--input-format stream-json` fix), optionally stalls (the single-flight test
-# needs the first run to still be in flight when the second reader arrives),
-# then prints whatever JSON the test asked for on stdout — which is all
-# `--output-format json` is to us.
+# `--input-format stream-json` fix, which forces `--output-format stream-json`
+# too: the CLI refuses the two paired with anything else), optionally stalls
+# (the single-flight test needs the first run to still be in flight when the
+# second reader arrives), then prints one `result` event line — the only line
+# of the stream `_recap_result` actually reads — on stdout.
 _STUB = """#!{python}
 import json
 import os
@@ -167,6 +168,11 @@ def test_recap_comes_back_capped_with_the_turn_it_is_about(
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--max-turns") + 1] == "1"
     assert argv[argv.index("--input-format") + 1] == "stream-json"
+    # Not a free choice: the CLI rejects --input-format stream-json paired
+    # with anything but --output-format stream-json, which in turn requires
+    # --verbose or the CLI exits 1.
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
     tail = "User: make the tests pass\n\nAssistant: " + "x" * 900
     prompt = _prompt(call)
     assert prompt == recap_mod._RECAP_PROMPT % tail
@@ -257,6 +263,32 @@ def test_blank_parameters_are_a_400(client, project, calls):
     assert _get(client, target, session_id="").status_code == 400
     assert _get(client, target, for_uuid="").status_code == 400
     assert _spawns(calls) == []
+
+
+def test_recap_result_scans_a_stream_json_reply_for_the_result_event():
+    """`--output-format stream-json` (forced by `--input-format stream-json`,
+    which the tail's newlines require — see `_recap_generate`) is a line per
+    event, not one object: the terminal `result` line is found by scanning
+    from the end, not by assuming it is the literal last line — a
+    `rate_limit_event`/`post_turn_summary` housekeeping line trailing it is
+    ordinary (observed live), not a parse failure."""
+    from fused_render.server.routers.claude_sessions import _recap_result
+
+    stream = "\n".join([
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "stream_event", "event": {"type": "message_stop"}}),
+        _ok("the model's actual recap, long enough to count as one"),
+        json.dumps({"type": "rate_limit_event", "rate_limit_info": {}}),
+    ])
+    assert _recap_result(stream) == "the model's actual recap, long enough to count as one"
+
+    # No `result` event anywhere (a process killed mid-stream, or a CLI
+    # version that never got that far) is the same "no recap" as empty stdout.
+    assert _recap_result("\n".join([
+        json.dumps({"type": "system", "subtype": "init"}),
+        "not even json",
+    ])) == ""
+    assert _recap_result("") == ""
 
 
 def test_recap_plain_strips_markdown_and_refuses_one_word_answers():
