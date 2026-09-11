@@ -85,8 +85,6 @@ export interface ModelRowModel {
   fileCount: number | null;
   /** Cache path, for the drawer's "Path" line. Null when `!have`. */
   path: string | null;
-  /** Why we suggest it — curated rows only. */
-  note: string | null;
 }
 
 export interface ModelRowProgress {
@@ -131,7 +129,35 @@ function fact(value: string | null): ReactNode {
   return value ? value : <Unknown />;
 }
 
-function Drawer({ model, handlers }: { model: ModelRowModel; handlers: ModelRowHandlers }) {
+/** D817 (item T): the drawer's "Why we suggest it" sentence, generated only
+ *  from data the row already carries — never the catalog's hand-written
+ *  `note` (`fused_render/ai/catalog.py`), which names a fact about ONE
+ *  machine (a RAM figure, "this swaps rather than runs") baked into prose
+ *  that then read as universal on every other Mac the app runs on. The
+ *  catalog note itself is untouched — the Playground still reads it — this
+ *  is only the two-pane drawer switching to its own, always-true sentence. */
+function suggestionSentence(model: ModelRowModel, paneLabel: string): string {
+  const lead = model.ourPick ? `Our pick for ${paneLabel}` : `One of our suggestions for ${paneLabel}`;
+  const clauses: string[] = [lead];
+  if (model.fit === "easy") clauses.push("fits comfortably in this Mac's memory");
+  else if (model.fit === "tight") clauses.push("fits, but tightly");
+  else if (model.fit === "no" && model.warnChip) {
+    const footprint = model.warnChip.replace(/^Needs /, "");
+    clauses.push(`needs ${footprint} — more than this Mac has`);
+  }
+  if (model.engine) clauses.push(`runs on ${model.engine}`);
+  return clauses.join(" · ");
+}
+
+function Drawer({
+  model,
+  paneLabel,
+  handlers,
+}: {
+  model: ModelRowModel;
+  paneLabel: string;
+  handlers: ModelRowHandlers;
+}) {
   return (
     <div className="drawer" data-part="row.drawer">
       <dl>
@@ -161,7 +187,7 @@ function Drawer({ model, handlers }: { model: ModelRowModel; handlers: ModelRowH
       </dl>
       {model.curated ? (
         <p className="why">
-          <b>Why we suggest it.</b> {model.note}
+          <b>Why we suggest it.</b> {suggestionSentence(model, paneLabel)}
         </p>
       ) : (
         <p className="why">
@@ -268,10 +294,17 @@ function Actions({
 
 export function ModelRow({
   model,
+  paneLabel = "",
   opts = {},
   handlers = {},
 }: {
   model: ModelRowModel;
+  /** The pane's own title, lowercased (e.g. "chat & writing") — the caller
+   *  (`CapabilityPane`) already computes this via `capabilityLabel` for its
+   *  own heading; threaded through here only for the drawer's generated
+   *  sentence (item T), so it defaults to "" for the handful of call sites
+   *  (a no-engine pane's `have` list) that never open a curated drawer. */
+  paneLabel?: string;
   opts?: ModelRowOptions;
   handlers?: ModelRowHandlers;
 }) {
@@ -345,7 +378,7 @@ export function ModelRow({
           <Actions model={model} opts={opts} handlers={handlers} />
         </span>
       </div>
-      {opts.info && <Drawer model={model} handlers={handlers} />}
+      {opts.info && <Drawer model={model} paneLabel={paneLabel} handlers={handlers} />}
     </div>
   );
 }

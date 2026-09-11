@@ -62,6 +62,10 @@ export function CapabilityPane({
 }: CapabilityPaneProps) {
   const [expanded, setExpanded] = useState(false);
   const meta = capabilityMeta(capabilityKey);
+  // The pane's own title, lowercased — threaded to every `ModelRow` below so
+  // the drawer's generated "Why we suggest it" sentence (item T) can say
+  // "Our pick for chat & writing" without re-deriving the label itself.
+  const paneLabel = capabilityLabel(capabilityKey).toLowerCase();
 
   const head = (
     <div className="tp-head" data-part="pane.head">
@@ -108,7 +112,7 @@ export function CapabilityPane({
               </span>
             </h5>
             {have.map((m) => (
-              <ModelRow key={m.id} model={m} opts={{ noEngine: true }} handlers={handlers} />
+              <ModelRow key={m.id} model={m} paneLabel={paneLabel} opts={{ noEngine: true }} handlers={handlers} />
             ))}
           </div>
         )}
@@ -136,6 +140,7 @@ export function CapabilityPane({
             <ModelRow
               key={m.id}
               model={m}
+              paneLabel={paneLabel}
               opts={{ last: m.id === lastUsedId, info: openInfoId === m.id }}
               handlers={handlers}
             />
@@ -148,12 +153,13 @@ export function CapabilityPane({
             {have.length ? "Also worth having" : "Start with one of these"} <span className="note">chosen by us, for this Mac</span>
           </h5>
           {downloadingRow && (
-            <ModelRow model={downloadingRow} opts={{ downloading: true, progress: downloadProgress ?? undefined }} handlers={handlers} />
+            <ModelRow model={downloadingRow} paneLabel={paneLabel} opts={{ downloading: true, progress: downloadProgress ?? undefined }} handlers={handlers} />
           )}
           {shown.map((m, i) => (
             <ModelRow
               key={m.id}
               model={m}
+              paneLabel={paneLabel}
               opts={{ primary: !have.length && !downloadingRow && i === 0, info: openInfoId === m.id }}
               handlers={handlers}
             />

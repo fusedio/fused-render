@@ -154,7 +154,6 @@ function diskRow(
     format: "safetensors",
     fileCount: repo.files,
     path: repo.path,
-    note: cat?.note ?? null,
   };
 }
 
@@ -178,7 +177,6 @@ function catalogRow(m: AiCatalogModel, engine: string | null): ModelRowModel {
     format: "safetensors",
     fileCount: null,
     path: null,
-    note: m.note,
   };
 }
 
