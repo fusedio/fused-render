@@ -199,7 +199,6 @@ function emptyState(file: string | null): ChatState {
     skills: [],
     working: null,
     trouble: null,
-    quota: null,
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
     historyLoading: false,
@@ -1090,10 +1089,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
-        // The plan window rides on every poll that saw a `rate_limit_event`;
-        // a poll without one (the turn's first, an older agent.py) keeps the
-        // last known rather than blanking the pill.
-        if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
 
@@ -2533,11 +2528,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // road can be added later that forgets to.
       if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
-      // THE PLAN WINDOW OFF A PROBE TOO. A scheduled comeback that finishes
-      // before the 15 s watch attaches never reaches `pollLoop` — the repair
-      // branch below appends its turns and returns — so the warning the CLI
-      // raised on that turn has to be taken here or the pill never shows.
-      if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
       if (poll.session_id) noteSessionId(String(poll.session_id));
       const probeMsg = stripBlocks(poll.message || "");
       const users = state.turns.filter((t): t is UserTurn => t.role === "user");

@@ -7,8 +7,6 @@ import {
   continueNote,
   limitExplain,
   limitHit,
-  quotaPill,
-  quotaTitle,
   untilText,
 } from "./quota";
 import type { Quota } from "./types";
@@ -95,33 +93,5 @@ describe("continueNote", () => {
     expect(continueNote(q())).toBe(
       "Usage limit reached · continuing automatically at " + clockText(RESET),
     );
-  });
-});
-
-describe("quotaPill", () => {
-  test("nothing on an ordinary or a rejected window — the pill is the CLI's warning only", () => {
-    expect(quotaPill(q())).toBe("");
-    expect(quotaPill(q({ status: "rejected" }))).toBe("");
-    expect(quotaPill(null)).toBe("");
-  });
-  test("the warning's own utilization, rounded, with the window's short name", () => {
-    expect(quotaPill(q({ status: "allowed_warning", utilization: 0.934 }))).toBe(
-      "5h 93% · resets " + clockText(RESET),
-    );
-    expect(
-      quotaPill(q({ status: "allowed_warning", type: "seven_day", utilization: 0.52 })),
-    ).toBe("7d 52% · resets " + clockText(RESET));
-  });
-  test("falls back to the window's utilization when the top-level one is missing", () => {
-    expect(quotaPill(q({ status: "allowed_warning" }))).toBe("5h 17% · resets " + clockText(RESET));
-  });
-});
-
-describe("quotaTitle", () => {
-  test("one line per window", () => {
-    const lines = quotaTitle(q()).split("\n");
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toBe("5h window: 17% used · resets " + clockText(RESET));
-    expect(lines[1]).toStartWith("7d window: 6% used · resets ");
   });
 });

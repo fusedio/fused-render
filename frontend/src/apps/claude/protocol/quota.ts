@@ -78,35 +78,3 @@ export function limitExplain(quota: Quota, nowMs: number, scheduled: boolean): s
 export function continueNote(quota: Quota): string {
   return "Usage limit reached · continuing automatically at " + clockText(quota.resets_at);
 }
-
-/** "5h" / "7d" — a window's short name for the pill. Unknown names pass through. */
-export function windowShort(name: string): string {
-  if (name === "five_hour") return "5h";
-  if (name === "seven_day") return "7d";
-  return name;
-}
-
-/**
- * The topbar pill, or "" when there is nothing to say. Shown ONLY on the CLI's
- * own `allowed_warning` — its threshold, not ours — so the header stays empty
- * for every ordinary turn. "5h 93% · resets 3:45pm".
- */
-export function quotaPill(quota: Quota | null | undefined): string {
-  if (!quota || quota.status !== "allowed_warning") return "";
-  const win = quota.windows[quota.type];
-  const util = quota.utilization ?? win?.utilization ?? null;
-  if (util === null) return "";
-  return (
-    windowShort(quota.type) + " " + Math.round(util * 100) + "% · resets " + clockText(quota.resets_at)
-  );
-}
-
-/** The pill's hover: every window the CLI reported, one per line. */
-export function quotaTitle(quota: Quota): string {
-  return Object.entries(quota.windows)
-    .map(
-      ([name, w]) =>
-        windowShort(name) + " window: " + Math.round(w.utilization * 100) + "% used · resets " + clockText(w.resets_at),
-    )
-    .join("\n");
-}

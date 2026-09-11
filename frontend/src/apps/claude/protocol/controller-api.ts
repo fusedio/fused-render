@@ -184,12 +184,6 @@ export interface ChatState {
   working: Working | null;
   trouble: Trouble | null;
   /**
-   * The plan window as of the newest poll (`PollResponse.quota`), kept across
-   * the run's end so the topbar's warning pill outlives the turn that raised
-   * it. Null until a poll carries one.
-   */
-  quota: import("./types").Quota | null;
-  /**
    * The permission mode the RUN is actually in — never the picker's param, which
    * applies to the next spawn (T:13884-13886). Seeded from the mode the run was
    * started with, replaced by `poll`'s own `mode`, and moved forward by the two
