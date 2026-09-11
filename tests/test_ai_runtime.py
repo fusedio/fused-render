@@ -11825,3 +11825,25 @@ def test_download_refuses_a_file_when_siblings_cannot_be_verified(
         headers={"X-Fused": "1"})
     assert response.status_code == 400
     assert dispatched == []
+
+
+def test_download_refuses_a_sharded_quants_first_part(
+        client, hub, dispatched, monkeypatch):
+    """Item 3 (code review): shard part 1 IS one of `gguf_candidate_files`'s
+    own entries (kept there to count the shard set as one variant), but it
+    is not fetchable on its own — the route must refuse it exactly as it
+    refuses a filename that is not a candidate at all."""
+    repo_dir = _cached_repo(hub, "org/gguf-sharded", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, [
+        "model-Q8_0-00001-of-00003.gguf",
+        "model-Q8_0-00002-of-00003.gguf",
+        "model-Q8_0-00003-of-00003.gguf",
+        "model-Q4_K_M.gguf",
+    ])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-sharded", "file": "model-Q8_0-00001-of-00003.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []

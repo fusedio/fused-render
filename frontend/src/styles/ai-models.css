@@ -3567,6 +3567,14 @@ button.am-bench-model:focus-visible {
   font-family: inherit;
 }
 
+/* Item 3 (code review): a sharded quant's variant row has no Download
+ * button at all (server refuses the fetch — see `_validate_download_file`)
+ * — this caption fills the same slot so the row's layout doesn't shift. */
+.tp .drawer .variant-unsupported {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
 .tp .drawer .why {
   margin: 12px 0 0;
   padding-top: 10px;

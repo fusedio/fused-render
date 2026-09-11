@@ -1518,7 +1518,8 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # gguf_quant_token`'s read of the file's OWN name — the same real,
         # published fact `_quant` itself prefers over a repo-name guess.
         "variants": (
-            [{"file": f, "quant": formats.gguf_quant_token(f)}
+            [{"file": f, "quant": formats.gguf_quant_token(f),
+              "downloadable": formats.gguf_file_is_downloadable(f)}
              for f in formats.gguf_candidate_files(raw.get("siblings") or [])]
             if weight_format == "gguf" else None),
         # "gguf" or None — the other half of that grouping key. See

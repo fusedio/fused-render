@@ -1530,6 +1530,13 @@ def _validate_download_file(model_id: str, file: object) -> tuple[str | None, JS
     candidates = set(formats.gguf_candidate_files(siblings))
     if file not in candidates:
         return None, _error(f"{file!r} is not one of {model_id}'s GGUF files", status=400)
+    # Item 3 (code review): `gguf_candidate_files` keeps shard part 1 of a
+    # multi-part `-00001-of-0000N.gguf` set (correct for counting distinct
+    # weight variants), but that single file is not on its own servable —
+    # `pick_gguf_file` refuses every shard. Reject here too, so a sharded
+    # quant can never be fetched as if it were a whole download.
+    if not formats.gguf_file_is_downloadable(file):
+        return None, _error(f"{file!r} is a multi-part file and cannot be downloaded on its own", status=400)
     return file, None
 
 

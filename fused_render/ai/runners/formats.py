@@ -1299,6 +1299,24 @@ def gguf_candidate_files(siblings) -> list[str]:
     return candidates
 
 
+def gguf_file_is_downloadable(filename: str) -> bool:
+    """Whether `filename` (one entry out of `gguf_candidate_files`) names a
+    file a per-variant download can actually fetch and use on its own.
+
+    `gguf_candidate_files` deliberately keeps ONE entry — shard part 1 —
+    per multi-part `-00001-of-0000N.gguf` set, because that is correct for
+    COUNTING distinct weight variants a repo ships. But shard part 1 alone
+    is not a servable model: `pick_gguf_file` itself refuses every shard
+    (`GGUF_SPLIT_RE`), so a download of just that file leaves a runner
+    unable to load anything. This is the one-line test every caller that
+    turns a candidate into an offered Download action must run first —
+    `hub_models._model_row`'s `variants` array, and `ai_runtime.
+    _validate_download_file`'s server-side gate — so the two can never
+    quietly disagree about which files are actually fetchable.
+    """
+    return not GGUF_SPLIT_RE.search(filename)
+
+
 def gguf_quant_token(filename: str) -> str | None:
     """The quantization token literally in `filename`'s own name — e.g.
     `Q4_K_M` out of `...-Q4_K_M.gguf`, or `UD-Q3_K_XL` out of unsloth's

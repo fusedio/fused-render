@@ -896,6 +896,31 @@ def test_a_gguf_repos_variants_array_lists_each_file_and_its_quant(
         "model-Q4_K_M.gguf": "Q4_K_M",
         "model-Q8_0.gguf": "Q8_0",
     }
+    assert all(v["downloadable"] for v in model["variants"])
+
+
+def test_a_sharded_quants_variant_entry_is_marked_not_downloadable(
+        client, hub_cache, monkeypatch):
+    """Item 3 (code review): a multi-part shard set's collapsed entry (shard
+    part 1) must be flagged `downloadable: False` — offering it for download
+    would fetch one unusable shard, since `pick_gguf_file` refuses the same
+    file as non-servable."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/sharded",
+        gguf={"total": 4_000_000_000},
+        siblings=[
+            {"rfilename": "model-Q8_0-00001-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00002-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00003-of-00003.gguf"},
+            {"rfilename": "model-Q4_K_M.gguf"},
+        ],
+    )]))
+    model = _search(client).json()["models"][0]
+    by_file = {v["file"]: v["downloadable"] for v in model["variants"]}
+    assert by_file == {
+        "model-Q8_0-00001-of-00003.gguf": False,
+        "model-Q4_K_M.gguf": True,
+    }
 
 
 def test_a_non_gguf_repos_variants_array_is_null(client, hub_cache, monkeypatch):

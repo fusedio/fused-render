@@ -262,14 +262,20 @@ function HitDrawer({
                       {v.quant ? ` — ${v.quant}` : ""}
                       {v.file === model.file ? " (default)" : ""}
                       {onDisk ? " (on disk)" : ""}
-                      <button
-                        type="button"
-                        className="btn variant-download"
-                        disabled={busy || onDisk}
-                        onClick={() => onDownloadFile(v.file)}
-                      >
-                        {onDisk ? "On disk" : "Download"}
-                      </button>
+                      {v.downloadable ? (
+                        <button
+                          type="button"
+                          className="btn variant-download"
+                          disabled={busy || onDisk}
+                          onClick={() => onDownloadFile(v.file)}
+                        >
+                          {onDisk ? "On disk" : "Download"}
+                        </button>
+                      ) : (
+                        <span className="variant-download variant-unsupported">
+                          multi-part, not supported
+                        </span>
+                      )}
                     </li>
                   );
                 })}

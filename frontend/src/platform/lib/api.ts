@@ -3671,7 +3671,7 @@ export interface HubModel {
    *  token`, or null for an unsuffixed/full-precision file). `null` for
    *  every non-GGUF row (no per-file listing to offer one for) and for a
    *  response shape that predates this field. */
-  variants?: { file: string; quant: string | null }[] | null;
+  variants?: { file: string; quant: string | null; downloadable: boolean }[] | null;
   /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
    *  for every other row (D412's own field). Threaded back into
    *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask

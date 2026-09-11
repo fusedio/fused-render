@@ -609,6 +609,15 @@ def test_gguf_candidate_files_ignores_subdirectory_entries():
     assert formats.gguf_candidate_files(names) == ["m-Q4_K_M.gguf"]
 
 
+def test_gguf_file_is_downloadable_refuses_a_shard_part_but_allows_a_whole_file():
+    """Item 3 (code review): `gguf_candidate_files` keeps shard part 1 to
+    COUNT a multi-part quant as one variant, but that single file is not
+    fetchable on its own — `gguf_file_is_downloadable` is the one-line test
+    every caller that turns a candidate into an offered download must run."""
+    assert formats.gguf_file_is_downloadable("m-Q8_0-00001-of-00003.gguf") is False
+    assert formats.gguf_file_is_downloadable("m-Q4_K_M.gguf") is True
+
+
 def test_pick_gguf_file_ranks_unsloth_dynamic_quants_below_plain_quants():
     """Eligible, per the branch's own curated `UD-Q3_K_XL` entry — but ranked
     below every plain quant of a named family, since a plain quant needs no
