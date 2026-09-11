@@ -708,6 +708,63 @@ def test_a_safetensors_only_repo_carries_no_format(client, hub_cache, monkeypatc
     assert _search(client).json()["models"][0]["format"] is None
 
 
+# -- item 9c: in-repo weight variants ----------------------------------------
+
+
+def test_a_multi_quant_gguf_repo_counts_each_quant_as_a_variant(client, hub_cache, monkeypatch):
+    """A GGUF repo shipping several quantizations of the same checkpoint —
+    `Q4_K_M`, `Q5_K_M`, `Q8_0` — is three variants, one per `.gguf` sibling."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/multi-quant",
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q5_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 3
+
+
+def test_an_mmproj_sibling_is_not_counted_as_its_own_variant(client, hub_cache, monkeypatch):
+    """A vision-projector `mmproj` GGUF shipped alongside a multimodal repo's
+    real quantizations is a helper file, not a weight variant of its own."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/vlm-gguf",
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+            {"rfilename": "mmproj-model-f16.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 2
+
+
+def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch):
+    """The overwhelming default: no `.gguf` siblings and no bit-width/dtype
+    subfolder convention, so this reads as the one weight set it plainly is."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/plain-st",
+        safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
+        siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "config.json"}],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 1
+
+
+def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub_cache, monkeypatch):
+    """`mlx-community`'s own convention: several bit-width subfolders under
+    one repo, each a distinct weight variant."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "mlx-community/some-model",
+        siblings=[
+            {"rfilename": "4bit/model.safetensors"},
+            {"rfilename": "4bit/config.json"},
+            {"rfilename": "8bit/model.safetensors"},
+            {"rfilename": "8bit/config.json"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 2
+
+
 # -- the request ------------------------------------------------------------
 
 

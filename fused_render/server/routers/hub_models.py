@@ -113,6 +113,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -964,6 +965,53 @@ def _gate(raw) -> str | None:
     return "auto" if raw == "auto" else "manual"
 
 
+#: Substrings that mark a GGUF sibling as a helper file rather than a weight
+#: variant of its own — a vision projector ("mmproj") shipped alongside a
+#: multimodal GGUF repo. Counted separately would inflate "N variants" by
+#: one for every repo that ships one, which is every popular VLM GGUF repo.
+_GGUF_HELPER_MARKERS = ("mmproj", "vision")
+
+
+def _count_variants(raw: dict) -> int:
+    """Item 9c (fix round 5): how many distinct weight variants this repo
+    ships, best-effort and from data already in `raw` (`siblings`, `gguf`,
+    `safetensors` — all already in `_EXPAND`, so this costs no extra
+    request). 1 when nothing suggests more than one, never 0 — a repo the
+    rest of this row exists to describe always has at least the one weight
+    set the Download button would fetch.
+
+    GGUF repos: one `.gguf` sibling is one quantization of the SAME
+    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted directly, minus any
+    helper file (`_GGUF_HELPER_MARKERS`) that is not a weight variant at all.
+
+    Safetensors/MLX repos: no per-file quant list to count the same way (a
+    dtype conversion is usually one subfolder, not one file) — counted only
+    when the repo obviously carries more than one, via a Hub-name convention
+    a handful of publishers use (`mlx-community`'s own `4bit/`, `8bit/`,
+    `bf16/` subfolders being the common case): distinct top-level directories
+    among `siblings` whose name looks like a bit-width or dtype token.
+    Anything else (the overwhelming majority of repos) reads as 1 rather
+    than guessing.
+    """
+    siblings = raw.get("siblings")
+    names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
+              if isinstance(siblings, list) else [])
+    names = [n for n in names if isinstance(n, str)]
+    gguf_files = [n for n in names
+                  if n.lower().endswith(".gguf")
+                  and not any(marker in n.lower() for marker in _GGUF_HELPER_MARKERS)]
+    if gguf_files:
+        return max(1, len(gguf_files))
+    dtype_dirs = {
+        n.split("/", 1)[0].lower()
+        for n in names
+        if "/" in n and re.fullmatch(r"(?:[1248]bit|fp16|bf16|f16|f32|int8|int4)", n.split("/", 1)[0].lower())
+    }
+    if len(dtype_dirs) > 1:
+        return len(dtype_dirs)
+    return 1
+
+
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
                footprint_store: dict | None, hardware) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
@@ -1219,6 +1267,10 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # (`hubFamilies.ts`) — this is the raw fact, not the judgement.
         "baseModel": base_model,
         "relation": relation,
+        # Item 9c (fix round 5): how many weight variants this repo ships —
+        # `_count_variants`'s own docstring for the (best-effort, no extra
+        # request) rule.
+        "variants": _count_variants(raw),
         # "gguf" or None — the other half of that grouping key. See
         # `weight_format` above.
         "format": weight_format,
