@@ -1,10 +1,10 @@
 // The floating job pop-up's own lifecycle: it must stay up for
 // `JOB_POPUP_VISIBLE_MS`, then play the same `TOAST_EXIT_MS` collapse
-// `lib/toast` uses before telling its parent it is gone — real timers, the
-// same `sleep`/`afterExit` idiom `toast.test.ts` already uses for the
-// identical shape of test, rather than mocked ones (this module reads
-// `window.setTimeout` directly, and bun:test has no fake-timer harness wired
-// up for it).
+// `lib/notifications` uses before telling its parent it is gone — real
+// timers, the same `sleep`/`afterExit` idiom `notifications.test.ts` uses for
+// the identical shape of test, rather than mocked ones (this module reads
+// `globalThis.setTimeout` directly, and bun:test has no fake-timer harness
+// wired up for it).
 import { expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
@@ -12,10 +12,16 @@ import type { ReactTestRendererJSON } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
 import type { Job } from "@platform/lib/jobs";
 import { JOB_POPUP_VISIBLE_MS, subscribeJobDismissed } from "@platform/lib/jobs";
-import { TOAST_EXIT_MS } from "@platform/lib/toast";
 
+// `lib/notifications` imports `router.ts`, which reads `location` at module
+// scope — the shim must be installed before that import EVALUATES, not
+// merely before this file's own statements run (static imports are
+// evaluated before a module's own top-level code, regardless of where the
+// `import` keyword sits in the file — see notifications.test.ts's identical
+// comment and router.test.ts's own precedent for this pattern).
 installDomShim();
 const { default: JobPopupCard } = await import("@platform/ui/JobPopupCard");
+const { TOAST_EXIT_MS } = await import("@platform/lib/notifications");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

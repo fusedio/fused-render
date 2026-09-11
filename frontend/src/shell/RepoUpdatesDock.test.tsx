@@ -72,6 +72,18 @@ const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUp
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
 import type { AttentionRow } from "@shell/tasks-lib";
+// notifications.ts (and its router.ts import) is already evaluated by the
+// dynamic import above — RepoUpdatesDock.tsx imports it — so this second
+// `await import` just reads the cached module; it does NOT re-run
+// router.ts's module-init `location` read, and is safe after the
+// `location`/`window`/`history` globals above are deleted. Used only by the
+// "messages" tests below, to drive the real store the way `MessageRowView`'s
+// dismiss button does (it calls `dismissNotification` directly, not through
+// a prop — see RepoUpdatesDock.tsx's own header comment on that row kind).
+const { notify, getRetainedNotifications, _resetNotificationsForTest } = await import(
+  "@platform/lib/notifications"
+);
+import type { StoredNotification } from "@platform/lib/notifications";
 
 // The globals above exist only to get router.ts's module-init code through
 // ITS one-time evaluation above (triggered by the dynamic import) — nothing
@@ -180,6 +192,7 @@ function renderInstance(
       attention={props.attention ?? []}
       attentionDismissed={props.attentionDismissed ?? {}}
       onAttentionDismiss={props.onAttentionDismiss}
+      messages={props.messages ?? []}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
@@ -1119,4 +1132,167 @@ test("a done (trail-tier) job alone never turns the label loud — only attentio
   const tree = renderView({ rows: [], terminal: [doneJob()] });
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
   expect(toggleClasses(tree)).not.toContain("is-failure");
+});
+
+// ---- messages (SPEC-toasts-become-notifications.md §3) ---------------------
+//
+// A 5th row source: client-raised notifications retained by
+// `@platform/lib/notifications`, split the same way `terminal` already is —
+// `attention` into "Needs you", everything else that made it into `messages`
+// into "Worth keeping". Retention narrowed (user: "don't keep this in the
+// list. just show popup. anything non actionable or error doesn't belong in
+// the list") from "attention or trail" to "attention, or carries an
+// action/page" — `trail` is no longer even a type a client call site can
+// pass (`ClientNotificationTier` in notifications.ts), so a real
+// "Worth keeping" message today resolves to `tier: "transient"` while still
+// being retained, because it carries an action/page. These tests still build
+// mock `StoredNotification`s with `tier: "trail"` for the "not attention"
+// half of the split — that continues to work (the dock's own split is just
+// "attention vs. not"), but the more important, more regression-prone case
+// is the plain-transient-but-actionable one, covered separately below with a
+// message built by the REAL store rather than a hand-built mock. A message
+// the store would never retain (no tone: "error", no action, no page) never
+// reaches this component at all — the store itself refuses to retain it
+// (notifications.ts) — so there is nothing to test here for that case.
+let messageId = 0;
+const message = (over: Partial<StoredNotification> = {}): StoredNotification => ({
+  id: ++messageId,
+  title: "Could not save",
+  tier: "attention",
+  leaving: false,
+  ...over,
+});
+
+test("an attention-tier message fills the numeral and the needs-you count, like a failure does", () => {
+  const tree = renderView({ rows: [], messages: [message({ tier: "attention" })] });
+  expect(numeral(tree)).toBe("1");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
+test("a trail-tier message fills the numeral but not the needs-you count", () => {
+  const tree = renderView({ rows: [], messages: [message({ tier: "trail", title: "Moved 3 items" })] });
+  expect(numeral(tree)).toBe("1");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+});
+
+test("an attention message draws in 'Needs you', a trail message in 'Worth keeping'", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [
+      message({ tier: "attention", title: "Could not save" }),
+      message({ tier: "trail", title: "Moved 3 items" }),
+    ],
+  });
+  const headings = findAll(tree, "dl-section-head").map((h) => text(h));
+  expect(headings).toEqual(["Needs you", "Worth keeping"]);
+  const rows = findAll(tree, "dl-row").map((r) => text(r));
+  expect(rows[0]).toContain("Could not save");
+  expect(rows[1]).toContain("Moved 3 items");
+});
+
+// The half most likely to regress: a `tone: "info"` message with NO error
+// and NO explicit `tier` at all — it resolves to `tier: "transient"` — is
+// still retained (and lands in "Worth keeping") purely because it carries a
+// `page`. Built through the REAL store (`notify`), not the hand-rolled
+// `message()` mock above, so this exercises `isRetained` end to end rather
+// than assuming the dock trusts whatever mock tier a test hands it.
+test("a tone: info, non-error message with a page is retained and drawn in 'Worth keeping', not dropped", () => {
+  _resetNotificationsForTest();
+  try {
+    notify({ title: "Could not save", tone: "error" }); // gives "Needs you" a row too
+    notify({ title: "Export ready", tone: "info", page: "/tasks/42" });
+    const stored = getRetainedNotifications();
+    expect(stored.map((n) => n.tier)).toEqual(["attention", "transient"]);
+
+    const tree = renderView({ rows: [], messages: stored });
+    const headings = findAll(tree, "dl-section-head").map((h) => text(h));
+    expect(headings).toEqual(["Needs you", "Worth keeping"]);
+    const rows = findAll(tree, "dl-row").map((r) => text(r));
+    expect(rows[0]).toContain("Could not save");
+    expect(rows[1]).toContain("Export ready");
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
+
+test("a message row draws with its detail, like a terminal job's failure message", () => {
+  const tree = renderView({ rows: [], messages: [message({ title: "Could not save", detail: "Disk full" })] });
+  const row = findAll(tree, "dl-row")[0];
+  expect(text(row)).toContain("Could not save");
+  expect(text(row)).toContain("Disk full");
+});
+
+// Code review finding on PR #1104: `terminal` was passed off `tone` with no
+// `status`, which (pre-fix) never rendered the glyph, and this row also
+// carried no `role`, losing the deleted `Toast.tsx`'s own
+// `role={tone === "info" ? "status" : "alert"}` distinction.
+test("an error-tone message row gets role=alert and the terminal glyph; a non-error one gets role=status and no glyph", () => {
+  const errorTree = renderView({
+    rows: [],
+    messages: [message({ title: "Could not save", tone: "error" })],
+  });
+  const errorRow = findAll(errorTree, "dl-row")[0];
+  expect(errorRow.props.role).toBe("alert");
+  expect(findAll(errorTree, "dl-status")).toHaveLength(1);
+
+  const infoTree = renderView({
+    rows: [],
+    messages: [message({ title: "Moved 3 items", tier: "trail", tone: "info" })],
+  });
+  const infoRow = findAll(infoTree, "dl-row")[0];
+  expect(infoRow.props.role).toBe("status");
+  expect(findAll(infoTree, "dl-status")).toHaveLength(0);
+});
+
+test("a message with a page is a click target that navigates", () => {
+  withNav((pushed) => {
+    const m = message({ page: "/tasks/42", title: "Export ready" });
+    const tree = renderView({ rows: [], messages: [m] });
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/tasks/42");
+  });
+});
+
+test("a message with no page draws no row-open marker — nothing to click through to", () => {
+  const tree = renderView({ rows: [], messages: [message({ title: "Could not save" })] });
+  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+});
+
+// `MessageRowView` calls the real `dismissNotification` directly (it is not
+// plumbed through a prop, unlike every other row kind's dismiss — see
+// RepoUpdatesDock.tsx's header comment on this row), so this test drives the
+// real store instead of a mock: seed it with a real retained notification,
+// render that SAME `StoredNotification`, press its ✕, and check the store's
+// own retained list rather than a callback.
+test("pressing a message row's ✕ dismisses it from the real notification store", () => {
+  _resetNotificationsForTest();
+  try {
+    const id = notify({ title: "Could not save", tone: "error" });
+    const [stored] = getRetainedNotifications();
+    const tree = renderView({ rows: [], messages: [stored] });
+    const x = findAll(tree, "dl-x")[0];
+    expect(x).toBeDefined();
+    act(() => {
+      (x.props as { onClick: () => void }).onClick();
+    });
+    expect(getRetainedNotifications().map((n) => n.id)).not.toContain(id);
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
+
+test("Clear all's threshold and count include messages alongside repo rows and terminal jobs", () => {
+  const one = renderView({ rows: [], terminal: [], messages: [message({ tier: "trail" })] });
+  expect(findAll(one, "dl-clear")).toHaveLength(0);
+
+  const two = renderView({
+    rows: [],
+    terminal: [doneJob()],
+    messages: [message({ tier: "trail" })],
+  });
+  expect(findAll(two, "dl-clear")).toHaveLength(1);
 });

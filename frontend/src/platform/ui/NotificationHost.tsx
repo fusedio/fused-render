@@ -1,14 +1,19 @@
 // The floating notification column: one fixed, bottom-right stack holding
-// every transient toast (lib/toast), the FDA nudge and the server-health
-// card. Mounted once by App, alongside `StatusBar` (platform/ui/StatusBar.tsx).
+// the message pop-up (lib/notifications), the job pop-up and the
+// server-health card. Mounted once by App, alongside `StatusBar`
+// (platform/ui/StatusBar.tsx).
 //
 // It replaced three competing surfaces — a bottom-centre global toast stack, a
 // per-pane toast each of Listing and Preview positioned and expired itself,
 // and this bottom-right card — which between them meant the same "Path copied"
 // appeared in two different places depending on which view raised it, and a
 // toast could sit next to (or under) an unrelated card in the other corner.
-// One stack, one set of stacking rules, no auto-dismiss — a toast stays until
-// the ✕ or the code that raised it clears it (lib/toast).
+// One stack, one set of stacking rules. Unlike the old toast stack, a
+// message pop-up now auto-dismisses on its own after `JOB_POPUP_VISIBLE_MS`
+// (SPEC-toasts-become-notifications.md, reversing D663 for client-raised
+// messages only — see that spec and DECISIONS-actionable-notifications.md
+// for why the job-row rule itself is unchanged) and, if its tier is
+// `attention`/`trail`, is retained in the Notifications panel below.
 //
 // Order is oldest → newest top to bottom, so the newest message is nearest the
 // bottom edge where the eye already is, and the server card sits below all of
@@ -45,9 +50,8 @@
 // `ActivityDock` already keeps a pane from ever producing one, and the guard
 // here is belt-and-suspenders against that changing out from under it).
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
-import Toast from "@platform/ui/Toast";
+import MessagePopupCard from "@platform/ui/MessagePopupCard";
 import JobPopupCard from "@platform/ui/JobPopupCard";
-import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
 import type { Job } from "@platform/lib/jobs";
 
@@ -62,24 +66,13 @@ export default function NotificationHost({
   jobPopup?: Job | null;
   onJobPopupGone?: () => void;
 } = {}) {
-  const toasts = useToasts();
   return (
     <div className="notif-host">
-      {/* Each toast rides in a grid-row wrapper (.toast-slot) whose row
-          collapses 1fr → 0fr on the way out, so the cards below it GLIDE up
-          instead of snapping the moment one is dismissed. The wrapper is what
-          animates height; the card itself only fades and slides (shell.css). */}
-      {toasts.map((t) => (
-        <div key={t.id} className={"toast-slot" + (t.leaving ? " leaving" : "")}>
-          <Toast
-            msg={t.msg}
-            tone={t.tone}
-            action={t.action}
-            leaving={t.leaving}
-            onClose={() => dismissToast(t.id)}
-          />
-        </div>
-      ))}
+      {/* Rides in a grid-row wrapper (.toast-slot) whose row collapses
+          1fr → 0fr on the way out, so a card below it GLIDES up instead of
+          snapping the moment one is dismissed. The wrapper is what animates
+          height; the card itself only fades and slides (shell.css). */}
+      <MessagePopupCard />
       {/* Keyed on id + `finished_at` — `jobs.ts`'s own `popupTick` keys ITS
           "have I popped this?" decision the identical way, on a terminal
           EVENT rather than a job id, because one id CAN go terminal more

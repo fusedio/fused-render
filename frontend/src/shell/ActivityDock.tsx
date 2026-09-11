@@ -42,7 +42,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
 import { isRunning, popupTick, terminalNotifications, type Job } from "@platform/lib/jobs";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 import { noteProgressMayHaveMoved } from "./onboarding/progress";
@@ -141,7 +141,7 @@ function useRunningEngines(): {
           // told a user just stopped themselves.
           if (sawFirst.current) {
             for (const prev of retiredEngines(prevEnginesRef.current, next, stoppingRef.current, Date.now())) {
-              pushToast({ msg: `${engineLabel(prev)} retired (idle)`, tone: "info" });
+              notify({ title: `${engineLabel(prev)} retired (idle)`, tone: "info" });
             }
           }
           sawFirst.current = true;

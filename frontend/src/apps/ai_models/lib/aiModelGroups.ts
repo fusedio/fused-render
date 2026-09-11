@@ -468,10 +468,21 @@ export function diskCards(repos: AiModelRepo[]): Map<string, DiskCard> {
  *  the point: the seal says "this card is one of ours" and the de-duplication
  *  says "so do not recommend it again below". Disagreeing means a card wearing
  *  no seal while a sealed recommendation for the same model sits under it.
+ *
+ *  **`source === "curated"`, because `models[]` is not only the curation.**
+ *  `_catalog_with_downloads` appends every repo already on this disk to the
+ *  shortlist it serves, tagged `cached` — the fix for a Hub download appearing
+ *  in no picker. Marking the whole array therefore handed the curation's seal to
+ *  models the curation has never heard of: a disk holding six hand-fetched text
+ *  models drew eleven cards under Text generation and every one of them claimed
+ *  to be one this app suggests. The recommendation filter below already asks
+ *  this exact question, and the two have to ask it the same way.
  */
 export function curatedRepoIds(catalog: AiCatalogCapability[] | null): Set<string> {
   return new Set(
-    (catalog ?? []).flatMap((entry) => entry.models.map((m) => m.repo ?? m.id)),
+    (catalog ?? []).flatMap((entry) =>
+      entry.models.filter((m) => m.source === "curated").map((m) => m.repo ?? m.id),
+    ),
   );
 }
 

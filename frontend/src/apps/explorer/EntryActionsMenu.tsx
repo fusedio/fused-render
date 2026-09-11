@@ -44,7 +44,7 @@ import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigateUrl, encodeFsPathSegments } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -196,7 +196,7 @@ export function EntryActionsMenu({
         isLive ? document.querySelector(".preview-frame.is-shown") : null,
       );
     } catch (e) {
-      pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
+      notify({ title: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
     } finally {
       setExporting(false);
     }

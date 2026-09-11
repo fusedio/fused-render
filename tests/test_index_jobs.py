@@ -112,6 +112,34 @@ def test_run_going_done_writes_terminal_state(monkeypatch):
     assert row["state"] == "done"
 
 
+def test_the_row_declares_silent_so_a_finished_scan_pops_no_card(monkeypatch):
+    """User: "similarly remove notification for file indexing completion" —
+    same reasoning as the delete-toast reversal (see
+    DECISIONS-toasts-become-notifications.md). SILENT is the tier that skips
+    the pop entirely; TRANSIENT still pops for ~2.5s before leaving nowhere,
+    which is exactly the card the user asked to stop seeing."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    row = jobs.list_jobs()[0]
+    assert row["tier"] == jobs.SILENT
+
+
+def test_a_running_scan_still_shows_in_the_activity_list_despite_silent_tier(
+    monkeypatch,
+):
+    """`tier` governs retention/popping of a TERMINAL row only
+    (`jobs.py`'s own `_sweep`/`effective_tier` docs) — a still-RUNNING scan
+    must keep reporting progress in the Activity dock regardless of which
+    tier it declares. Frontend-side, `jobRows` (platform/lib/jobs.ts) only
+    filters a row by tier once `isTerminal(j)` is true, so a non-terminal
+    SILENT row is unaffected by construction; this pins the server-side half
+    of that contract — the row exists and reads RUNNING while the tier is
+    already SILENT."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == jobs.RUNNING
+    assert row["tier"] == jobs.SILENT
+
+
 def test_run_going_error_writes_terminal_state(monkeypatch):
     _tick(monkeypatch, [_run("r1", running=True)])
     _tick(monkeypatch, [_run(
@@ -119,6 +147,20 @@ def test_run_going_error_writes_terminal_state(monkeypatch):
     row = jobs.list_jobs()[0]
     assert row["state"] == "error"
     assert row["message"] == "disk full"
+
+
+def test_a_failed_scan_is_still_attention_despite_the_silent_tier(monkeypatch):
+    """The whole point of `effective_tier`'s error/cancelled override: a
+    producer that declares SILENT because success leaves nothing worth
+    keeping is wrong the moment the run fails — the user's own request
+    (stop notifying on a CLEAN finish) must not also silence a genuine
+    failure. Reads `job.state`, not the stored tier, so this promotion is
+    identical for SILENT and TRANSIENT rows alike."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    _tick(monkeypatch, [_run("r1", running=False, error="disk full")])
+    job = jobs._jobs["sys:index:r1"]
+    assert job.tier == jobs.SILENT
+    assert jobs.effective_tier(job) == jobs.ATTENTION
 
 
 def test_run_going_cancelled_writes_terminal_state(monkeypatch):

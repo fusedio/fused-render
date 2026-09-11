@@ -17,7 +17,7 @@
 // next poll; those folders simply stay un-asked and are asked again next time.
 import { useEffect, useRef, useState } from "react";
 import { statPath } from "@platform/lib/api";
-import { getToasts, pushToast } from "@platform/lib/toast";
+import { getRetainedNotifications, notify } from "@platform/lib/notifications";
 import type { HttpError, Task } from "@platform/lib/api";
 
 /** The folder a task's conversation lives in — the same field every href on
@@ -40,10 +40,17 @@ export const MISSING_FOLDER_TOAST =
   "This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.";
 
 export function toastMissingFolder(): void {
-  // One at a time: a dead row is now the most clickable thing on the page, and
-  // three quick presses must not stack three copies of the same sentence.
-  if (getToasts().some((t) => t.msg === MISSING_FOLDER_TOAST && !t.leaving)) return;
-  pushToast({ msg: MISSING_FOLDER_TOAST, tone: "error" });
+  // One at a time — but the thing worth deduplicating against changed with
+  // the move to notifications.ts: the old toast queue could hold up to
+  // MAX_TOASTS live copies, so this checked the queue. The new store's
+  // popup is "latest wins, one at a time" by construction (notify() always
+  // replaces it), so a second press can no longer stack a second POPUP —
+  // but tone: "error" retains an attention row in the panel on every call,
+  // and three quick presses would otherwise leave three identical rows
+  // sitting in "Needs you" forever (nothing there auto-expires). Dedup
+  // against the RETAINED list instead of the popup for that reason.
+  if (getRetainedNotifications().some((n) => n.title === MISSING_FOLDER_TOAST)) return;
+  notify({ title: MISSING_FOLDER_TOAST, tone: "error" });
 }
 
 /** How long a folder whose stat failed for a reason other than 404 waits before

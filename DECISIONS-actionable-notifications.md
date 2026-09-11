@@ -1689,3 +1689,44 @@ src/platform/ui/JobPopupCard.test.tsx src/platform/ui/DownloadManager.test.tsx
 src/shell/ActivityDock.test.tsx src/shell/RepoUpdatesDock.test.tsx` — 125
 pass, 0 fail. `bunx tsc --noEmit -p .` and `node scripts/check-boundaries.mjs`
 both clean.
+
+## Fifteenth round — D663's no-auto-dismiss rule is reversed for client-raised messages only
+
+SPEC-toasts-become-notifications.md retires `toast.ts`/`pushToast` and
+routes every client-raised message through `notify()`, reusing this
+panel's `attention`/`trail` retention tiers for the ones worth keeping.
+That put D663's "no auto-dismiss timer, anywhere" rule and the toast
+stack's own always-had-a-TTL design directly at odds for the first
+time — one had to give.
+
+**The distinction the two kinds of row do not share:** a job row is a
+server-side fact with a watcher. `fused.watchJob` polls a specific row by
+id and gives up the moment that row disappears — a page that is still
+watching its own job depends on the row staying put until dismissed, which
+is exactly what D663 protects. A client-raised message has no server-side
+row and nothing watches it that way; it is a local, ephemeral fact about
+something that already finished (a copy, a rename, a delete), created and
+owned entirely by the browser tab that raised it. Nothing breaks if its
+POPUP times out — only if the retained COPY of the ones worth keeping
+(`attention`/`trail`) were also silently swept, which is precisely what
+does NOT happen: `notify()`'s popup auto-expires after
+`JOB_POPUP_VISIBLE_MS`, but a message that stepped down into the panel's
+retained list is governed by the same no-timer rule as every other
+retained row from that point on — D663 still applies to it, just one step
+later than it applies to a job.
+
+**So the rule is not repealed, it is narrowed by WHERE a row lives:** no
+row in the retained panel — job, repo, message — ever ages out on a
+clock. The only thing gaining a fixed-length life is the transient POPUP
+card itself, and only for the tiers (`transient`, `silent`) that were
+never going to reach the panel in the first place, or after an
+`attention`/`trail` message has already been copied into the panel
+before its popup's clock runs out.
+
+This is why SPEC-actionable-notifications.md's Constraints section was
+edited to a top-level rule ("no auto-dismiss timer on job/repo rows")
+plus an explicit sub-bullet naming the client-message exception, rather
+than being left to read as if D663 no longer holds anywhere. See
+SPEC-toasts-become-notifications.md and
+DECISIONS-toasts-become-notifications.md for the full tier-assignment
+rationale this decision enables.

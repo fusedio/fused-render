@@ -80,7 +80,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
@@ -333,8 +333,8 @@ export default function AppPage({
       // Louder than the sidebar's silent swallow: this mark is a deliberate
       // click on a page-level action, and a header that simply doesn't change
       // reads as the page being broken rather than the write having failed.
-      pushToast({
-        msg: "Could not change the icon: " + (e as Error).message,
+      notify({
+        title: "Could not change the icon: " + (e as Error).message,
         tone: "error",
       });
     }
@@ -487,8 +487,8 @@ export default function AppPage({
         null,
       );
     } catch (e) {
-      pushToast({
-        msg: "Could not export " + slug + ": " + (e as Error).message,
+      notify({
+        title: "Could not export " + slug + ": " + (e as Error).message,
         tone: "error",
       });
     } finally {

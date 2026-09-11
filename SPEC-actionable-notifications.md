@@ -39,7 +39,8 @@ DESIRED
 
 ## Constraints
 
-- **No auto-dismiss timer, anywhere.** D663 (`fused_render/jobs.py:731-743`) reverted a 3-second post-read TTL on `done`/`cancelled` rows after finding it deleted "the very entry Notifications exists to keep, out from under a user who had not yet looked." `toast.ts:7-10` records the same decision for the toast stack. Both stand.
+- **No auto-dismiss timer on job/repo rows.** D663 (`fused_render/jobs.py:731-743`) reverted a 3-second post-read TTL on `done`/`cancelled` rows after finding it deleted "the very entry Notifications exists to keep, out from under a user who had not yet looked." That rule still stands for these server-backed rows.
+  - **Reversed for client-raised messages only** (SPEC-toasts-become-notifications.md, DECISIONS-actionable-notifications.md's newest entry): a message has no server-side row and nothing watches it the way `fused.watchJob` watches a job, so its popup is allowed a fixed-length visible window (`JOB_POPUP_VISIBLE_MS`) before it either drops (`transient`/`silent`) or steps down into the panel's own no-auto-dismiss retained list (`attention`/`trail`) — the retained copy is still governed by the original no-timer rule once it lands there. `toast.ts`'s old TTL-per-item queue is gone; see `platform/lib/notifications.ts`.
 - **Failures persist until dismissed.** An `error` or `cancelled` row is never cleared on a clock regardless of whether it has a target.
 - A 5s auto-clear on job rows would fire the permanent server-side `dismiss()`, and `fused.watchJob` gives up the moment a row disappears — so a timer would break a page still watching its own job, not merely tidy the panel.
 - **`page`'s spoof-proofing is preserved.** A page-raised job's value continues to come from the `X-Fused-Page` header rather than the request body (`server/routers/jobs.py:61-64`), so a reporter still cannot claim a destination it does not own.
@@ -48,7 +49,7 @@ DESIRED
 
 ## Out of Scope
 
-- **Toasts.** The ~60 `pushToast` call sites, the `MAX_TOASTS` cap, and the no-TTL rule are untouched.
+- **Toasts.** Superseded by SPEC-toasts-become-notifications.md: `pushToast`/`toast.ts`/`Toast.tsx` are gone, replaced by `platform/lib/notifications.ts`'s `notify()`, which reuses this panel as the retained home for `attention`/`trail`-tier messages. The `MAX_TOASTS` cap is gone with them (the popup is "latest wins, one at a time" by construction); the retained list has no cap of its own beyond `TERMINAL_VISIBLE_CAP`'s existing fold.
 - **Job output-file paths.** No job row opens a file; no new field and no `fused.trackJob` API change to let a producer name a result file.
 - **Native OS notifications.** None exist in the codebase, and `fused_render/app.py:362-363` records that as a deliberate decision.
 - **Whole-row clicks on repo rows.** Their buttons already satisfy the actionability rule.
