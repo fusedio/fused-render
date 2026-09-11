@@ -12,7 +12,17 @@
    floor while a long title stretched toward the 360px ceiling, so the stack
    read as a ragged pile of different-sized cards rather than one system. A
    real `width` plus `align-items: stretch` makes every entry the same size
-   regardless of what it says, which is what "one surface" actually requires. */
+   regardless of what it says, which is what "one surface" actually requires.
+
+   300px, not 360 (user: "reduce the card width for notifications. it is too
+   wide"): comfortably above `.dl-row`'s own 238px floor (the empty-state
+   floor two comments below, which every row here shares) with room to
+   spare, and every title in this column already wraps or ellipsizes rather
+   than forcing width — `NotificationCard`'s `titleMode: "id"` clips a long
+   model/engine id to one line, its default `"wrap"` mode clamps a sentence
+   to two, and `.server-status-body` is ordinary wrapping text — so
+   narrowing the column costs no content, only the wasted air a short
+   card like "Path copied" used to sit in. */
 .notif-host {
   position: fixed;
   right: 16px;
@@ -22,7 +32,7 @@
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  width: min(360px, calc(100vw - 32px));
+  width: min(300px, calc(100vw - 32px));
   pointer-events: none;
 }
 
@@ -30,15 +40,15 @@
   pointer-events: auto;
 }
 
-/* ---- Transient toast ----------------------------------------------------- */
-/* Default is the error variant (red border); .toast-info is the neutral
-   confirmation variant (e.g. "Path copied"). Capped at the column's width so
-   the stack reads as one system rather than a ragged pile. */
-/* One row of the stack. The card fades/slides; the SLOT is what collapses its
-   height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
-   column's 8px gap), so dismissing a toast makes the ones below it glide up
-   instead of snapping. lib/toast keeps a dismissed toast in the queue for
-   TOAST_EXIT_MS — the same --dur-med these transitions run for. */
+/* ---- Transient toast slot ------------------------------------------------- */
+/* The SLOT is what collapses a popping card's height (grid row 1fr → 0fr,
+   plus a negative bottom margin that eats the column's 8px gap), so
+   dismissing one makes the ones below it glide up instead of snapping.
+   `lib/notifications.ts` keeps a dismissed popup around for TOAST_EXIT_MS —
+   the same --dur-med these transitions run for. (The old `Toast`/`.toast`
+   card this slot used to wrap is gone — SPEC-toasts-become-notifications.md
+   — but the slot itself, and this collapse mechanics, are still what
+   `JobPopupCard.tsx`/`MessagePopupCard.tsx` both ride below.) */
 .toast-slot {
   display: grid;
   grid-template-rows: 1fr;
@@ -46,11 +56,6 @@
   transition:
     grid-template-rows var(--dur-med) var(--ease-out),
     margin-bottom var(--dur-med) var(--ease-out);
-}
-
-.toast-slot > .toast {
-  min-height: 0;
-  overflow: hidden;
 }
 
 /* The job pop-up card (platform/ui/JobPopupCard.tsx) rides the same
@@ -79,84 +84,11 @@
   margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
 }
 
-.toast {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  max-width: 100%;
-  padding: 8px 10px 8px 12px;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--error);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px var(--shadow-lg);
-  animation: toast-in var(--dur-med) var(--ease-out);
-}
-
 @keyframes toast-in {
   from {
     opacity: 0;
     transform: translateY(8px);
   }
-}
-
-.toast.toast-leaving {
-  /* A toast dismissed inside its own enter window would otherwise keep being
-     driven by the animation above, which wins over a transition. */
-  animation: none;
-  opacity: 0;
-  transform: translateY(4px);
-  transition:
-    opacity var(--dur-med) var(--ease-out),
-    transform var(--dur-med) var(--ease-out);
-}
-
-.toast-info {
-  border-color: var(--border);
-}
-
-/* Wraps instead of ellipsising to one line. These messages are sentences —
-   "no mount covers s3://<bucket> — add one from the Mounts page in the
-   sidebar" — and a single-line clip cuts exactly the half that says what to
-   do, which was already true at the old 520px and is worse in a 360px column.
-   Clamped so a pathological message still can't own the screen. */
-.toast-msg {
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-height: 1.45;
-}
-
-.toast-close {
-  flex: 0 0 auto;
-  background: none;
-  border: none;
-  color: var(--fg-muted);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
-.toast-close:hover {
-  color: var(--fg);
-}
-
-/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
-.toast-action {
-  flex: 0 0 auto;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--fg);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 3px 8px;
-}
-
-.toast-action:hover {
-  border-color: var(--fg-muted);
 }
 
 /* ---- Status bar (SPEC §36, D563, redesigned D565, D573, status-bar merge) - */

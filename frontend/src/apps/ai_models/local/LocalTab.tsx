@@ -68,7 +68,7 @@ import {
 } from "@platform/lib/api";
 import { formatParams, formatSize, repoName, timeAgo } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 /** What a confirmation is about. Every destructive action becomes one of these
@@ -385,8 +385,21 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
           (f) => `${f.dir ?? "target"}${f.revision ? ` @ ${shortCommit(f.revision)}` : ""}: ${f.error}`,
         ),
       );
-      pushToast({
-        msg: result.freed ? `Freed ${formatSize(result.freed)} — ${label}` : `Nothing deleted — ${label}`,
+      // A deletion that freed nothing is worth saying out loud too — it means
+      // every target failed, and the banner beside it says why.
+      //
+      // "Freed 1.4 GB — deleted…" was this migration's own named motivating
+      // example for destructive-but-successful trail-tier retention — now
+      // reversed (user: "don't keep this in the list ... anything non
+      // actionable or error doesn't belong in the list", see
+      // DECISIONS-toasts-become-notifications.md): a clean run only pops,
+      // via the plain tone: "info" default (transient). A failed run stays
+      // attention — tone: "error" already promotes it there regardless of
+      // tier, so no explicit override is needed on that branch.
+      notify({
+        title: result.freed
+          ? `Freed ${formatSize(result.freed)} — ${label}`
+          : `Nothing deleted — ${label}`,
         tone: result.failures.length ? "error" : "info",
       });
       setPending(null);

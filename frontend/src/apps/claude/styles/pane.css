@@ -154,6 +154,13 @@
 /* A template folder with no icon.svg (and the `_render` sentinel, which is not a
    folder at all) gets the shell's own fallback: a lettered box, so the column of
    icons never goes ragged (T:473-482). */
+/* The `_render` row's star is an inline SVG on currentColor, not a mask: no
+   ground to paint, or the mask rule's currentColor square shows behind it. */
+.chat-root .c-mode-ic-star {
+  background: none;
+  fill: currentColor;
+}
+
 .chat-root .c-mode-ic-letter {
   display: flex;
   align-items: center;

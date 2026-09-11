@@ -32,7 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -58,6 +58,7 @@ import {
   firstLine,
   opensElsewhere,
   spansProjects,
+  ringFailed,
   taskColumn,
   taskHref,
   taskWhen,
@@ -469,7 +470,7 @@ function TaskCard({
       // stays on the door's hint for the next attempt.
       const said = (e as Error).message;
       setNote(said);
-      pushToast({ msg: said, tone: "error" });
+      notify({ title: said, tone: "error" });
     } finally {
       setActing(false);
     }
@@ -533,7 +534,7 @@ function TaskCard({
               view sits under no lane header, so nothing else on it says what
               state the run is in — the same argument that keeps the ring on
               every List row and every Calendar chip. */}
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -697,8 +698,11 @@ function TaskCard({
           onDone={() => {
             setErasing(false);
             // The card is about to leave the wall, so the receipt goes to the
-            // page's toast rather than onto the card's own note line.
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            // page's toast rather than onto the card's own note line. A
+            // clean delete now only pops (tone: "info" default) rather than
+            // staying in the panel — see DECISIONS-toasts-become-
+            // notifications.md's retention-narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -827,7 +831,7 @@ function TaskPeek({
     <Modal
       title={
         <span className="task-peek-title">
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
@@ -975,7 +979,10 @@ function TaskPeek({
           onClose={() => setErasing(false)}
           onDone={() => {
             setErasing(false);
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            // A clean delete now only pops (tone: "info" default) rather
+            // than staying in the panel — see DECISIONS-toasts-become-
+            // notifications.md's retention-narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
             onClose();
           }}

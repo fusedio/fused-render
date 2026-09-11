@@ -37,7 +37,7 @@ import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFile } from "@platform/lib/appShot";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
@@ -450,8 +450,8 @@ export function AppPreviewCard({
           // artifact's permanent thumbnail. Offer nothing instead and
           // appShot stages the app full-screen for the shot.
           exportAppFile(app, bodyLive ? thumbRef.current : null).catch((err: Error) =>
-            pushToast({
-              msg: "Could not export " + app.name + ": " + err.message,
+            notify({
+              title: "Could not export " + app.name + ": " + err.message,
               tone: "error",
             }),
           );

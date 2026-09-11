@@ -3161,6 +3161,43 @@ def _retry_info(row: dict):
         return None
 
 
+def _quota_info(row: dict):
+    """One `rate_limit_event` row as the page's view of it, or None if unreadable.
+
+    The CLI emits one after EVERY API response (verified on CLI 2.1.267/268):
+    `rate_limit_info` carries the plan window that gated the request — its
+    `status` (`allowed`, `allowed_warning`, `rejected`), the epoch second the
+    window resets, which window it is (`five_hour`, `seven_day`), and under
+    `unifiedWindows` the utilization of every window at once. The page used to
+    throw all of it away and then parse "resets 12:30am" back out of the
+    failure TEXT, which is a worse copy of a number the CLI had just handed
+    over. `resets_at` is what a comeback is scheduled on; `windows` is what a
+    warning pill shows before it comes to that.
+
+    Field names are re-spelled to the payload's own snake_case so the TS type
+    reads like every other poll field; the CLI's camelCase stays on the wire."""
+    info = row.get("rate_limit_info")
+    if not isinstance(info, dict):
+        return None
+    try:
+        windows = {}
+        for name, win in (info.get("unifiedWindows") or {}).items():
+            if not isinstance(win, dict):
+                continue
+            windows[str(name)] = {
+                "utilization": float(win.get("utilization") or 0),
+                "resets_at": int(win.get("resetsAt") or 0)}
+        util = info.get("utilization")
+        return {"status": str(info.get("status") or ""),
+                "type": str(info.get("rateLimitType") or ""),
+                "resets_at": int(info.get("resetsAt") or 0),
+                "utilization": (float(util) if isinstance(util, (int, float))
+                                else None),
+                "windows": windows}
+    except (TypeError, ValueError):
+        return None
+
+
 def _overload_error(error: str, info) -> str:
     """`error` rewritten to say what actually happened, for a run that died with a
     retry still in flight.
@@ -4211,6 +4248,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    quota = None         # the latest `rate_limit_event` — plan window + reset time
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
     # thing the CLI already writes to out.jsonl and the page used to ignore, so
     # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
@@ -4379,6 +4417,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                         "id": tid, "name": str(cb.get("name") or "tool"),
                         "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
                     tool_input_bytes = 0
+        elif t == "rate_limit_event":
+            # Latest wins: the CLI writes one per API response and the newest
+            # is the current state of the plan window, warning or not.
+            info = _quota_info(row)
+            if info is not None:
+                quota = info
         elif t == "result":
             saw_result = True
             idle = True
@@ -4651,6 +4695,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
+            # The plan window as of the last API response (`_quota_info`).
+            # Beside `error`, not folded into it: a `rejected` status with a
+            # `resets_at` is what lets the page schedule the comeback at the
+            # actual reset instead of telling the user to wait.
+            "quota": quota,
             # The page's own stop button sets a variable and can swallow the
             # resulting error itself, but a stop from anywhere else (the
             # tasks queue card's ✕, which goes through schedule.py) needs
@@ -5019,8 +5068,17 @@ def _sessions(file: str) -> dict:
     """
     file = os.path.abspath(file)
     sessions = _cli_sessions(file)
+    # RUNNING FIRST, THEN RECENCY — the Tasks list's own rule (shell/tasks-lib
+    # LIST_ORDER: the ranks that are still doing something sit above the ones
+    # that are over, and time orders WITHIN a rank). The clock here is the
+    # transcript's mtime, and a turn writes its records in one burst when it
+    # ENDS, so a chat ten minutes into a long turn carries an older stamp than
+    # one that finished four minutes ago — sorted by time alone it sat under it
+    # while saying "running" (Akshil, 2026-09-11). A stable sort, so two running
+    # chats still order by when each last wrote.
     sessions.sort(key=lambda s: s.get("last_used") or s.get("created_at") or 0,
                   reverse=True)
+    sessions.sort(key=lambda s: not s.get("running"))
     return {"sessions": sessions}
 
 
@@ -5429,12 +5487,21 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
                 # into a text segment and print the failure twice.
                 close_stretch()
                 message = text.strip() or "the API call failed"
-                turns.append({"role": "error",
-                              # The same rewrite the live path applies to
-                              # `_poll`'s `error` (see `_account_error`), so a
-                              # usage limit reads with the same help line
-                              # whether it is live or restored.
-                              "text": _account_error(message)})
+                err_turn = {"role": "error",
+                            # The same rewrite the live path applies to
+                            # `_poll`'s `error` (see `_account_error`), so a
+                            # usage limit reads with the same help line
+                            # whether it is live or restored.
+                            "text": _account_error(message)}
+                # The transcript's own copy of the plan window (`quotaLimits`,
+                # camelCase, only on the failed row) — so a restored limit
+                # card can still say when the window resets.
+                limits = row.get("quotaLimits")
+                if isinstance(limits, dict):
+                    info = _quota_info({"rate_limit_info": limits})
+                    if info is not None:
+                        err_turn["quota"] = info
+                turns.append(err_turn)
                 continue
             stretch.append(row)
             if text.strip():

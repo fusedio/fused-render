@@ -379,7 +379,7 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
         "task_id", "title", "target", "session_id", "happened_at", "next_run",
-        "next_run_entry",
+        "next_run_entry", "next_run_repeats",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -1134,6 +1134,7 @@ def test_the_next_run_is_zero_with_nothing_pending(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["next_run"] == 0
     assert task["next_run_entry"] == ""
+    assert task["next_run_repeats"] is False
 
     # And a task with no schedule anywhere near it reads the same way.
     _write_transcript(projects_dir, "sess-b", "/p", [_user("typed", T10)])
@@ -1160,6 +1161,8 @@ def test_only_pending_entries_name_the_next_run(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["next_run"] == tasks_store.epoch(T11)
     assert task["next_run_entry"] == "waiting"
+    # A one-off: no template behind it, so no repeat glyph.
+    assert task["next_run_repeats"] is False
 
 
 def test_a_recurring_occurrence_can_be_the_next_run(client, projects_dir):
@@ -1175,6 +1178,9 @@ def test_a_recurring_occurrence_can_be_the_next_run(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["next_run"] == tasks_store.epoch(T12)
     assert task["next_run_entry"] == "occ"
+    # ...and the row says so: an occurrence carries its template's id, which is
+    # what puts the repeat glyph on the chip (2026-09-11).
+    assert task["next_run_repeats"] is True
 
 
 def test_a_pending_entry_with_no_id_or_no_due_names_nothing(client,

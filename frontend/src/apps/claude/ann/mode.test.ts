@@ -162,6 +162,28 @@ describe("§D — off → comment", () => {
     expect(modeOf(off)).toBe("off");
   });
 
+  test("the boot arm CONTINUES the round the URL's notes belong to (Akshil, 2026-09-11)", () => {
+    // Pins are gated on `roundStart`; a boot that stamped `now` hid every pin
+    // the reload had just restored while their chips still showed.
+    const seed = JSON.stringify([
+      { id: "a", content: "first", anchorPath: "div:nth-of-type(1)", createdAt: 42 },
+      { id: "b", content: "second", anchorPath: "div:nth-of-type(2)", createdAt: 77 },
+    ]);
+    const r = rig({ params: { annmode: "1", annotations: seed } });
+    r.machine.bootFromParam();
+    expect(modeOf(r)).toBe("comment");
+    expect(r.store.roundStart()).toBe(42);
+    // With nothing to restore, the round is simply now — the old behaviour.
+    const fresh = rig({ params: { annmode: "1" } });
+    fresh.machine.bootFromParam();
+    expect(fresh.store.roundStart()).toBe(5000);
+    // And a user re-arming later still starts a NEW round, so a finished
+    // round's pins do not follow into the next.
+    r.machine.set(false);
+    r.machine.set(true);
+    expect(r.store.roundStart()).toBeGreaterThan(42);
+  });
+
   test('§D last row — `annmode=2` on boot ENDS the walkthrough, it does not resume it', () => {
     const r = rig({ params: { annmode: "2" } });
     r.machine.bootFromParam();

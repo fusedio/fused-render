@@ -27,7 +27,7 @@
 // name against a listing, and two in flight would both pick the same one.
 import { renameEntry, statPath } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import {
   freePastePath,
   friendlyFsError,
@@ -108,8 +108,8 @@ export async function moveEntriesInto(
     }
   }
   if (report.failed) {
-    pushToast({
-      msg: friendlyFsError(report.failed.error, {
+    notify({
+      title: friendlyFsError(report.failed.error, {
         verb: "move",
         name: basename(report.failed.path),
       }),
@@ -117,7 +117,12 @@ export async function moveEntriesInto(
     });
   } else if (announce && report.moved.length) {
     const what = report.moved.length === 1 ? basename(report.moved[0]) : `${report.moved.length} items`;
-    pushToast({ msg: `Moved ${what} to ${basename(dir)}`, tone: "info" });
+    // Reversed (user: "don't keep this in the list ... anything non
+    // actionable or error doesn't belong in the list" — see
+    // DECISIONS-toasts-become-notifications.md): a completed, successful
+    // move no longer stays around as a "trail" record. It still pops for
+    // JOB_POPUP_VISIBLE_MS via the plain tone: "info" default (transient).
+    notify({ title: `Moved ${what} to ${basename(dir)}`, tone: "info" });
   }
   return report;
 }

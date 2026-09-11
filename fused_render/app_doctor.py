@@ -243,10 +243,12 @@ def _generated_paths(app_dir: str) -> list[str]:
 # ------------------------------------------------------------------ git state
 
 
-def _git_pending(app_dir: str) -> tuple[str, list[str]]:
-    """`(state, paths)` for the folder's version control: FAIL with the
-    uncommitted paths, PASS when the folder is clean, SKIP when git cannot
-    answer (not a repo, git missing, a repo that will not read).
+def _git_pending(app_dir: str) -> tuple[str, list[tuple[str, str]]]:
+    """`(state, records)` for the folder's version control: FAIL with the
+    uncommitted `(code, rest)` porcelain records (app-relative, prefix
+    already stripped — see `_git_findings` for what each shape means), PASS
+    when the folder is clean, SKIP when git cannot answer (not a repo, git
+    missing, a repo that will not read).
 
     Status is scoped to the app folder itself — sibling apps share one `local`
     repo (D626), and a neighbour's work in progress is not this app's finding.
@@ -265,18 +267,71 @@ def _git_pending(app_dir: str) -> tuple[str, list[str]]:
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
     if not lines:
         return PASS, []
-    # `git status` reports paths relative to the REPO root, which for an app in
-    # the shared repo is one level up from the folder being reviewed. Strip that
-    # prefix so a row reads like every other finding's path — app-relative.
-    prefix = os.path.basename(app_dir.rstrip("/\\")) + "/"
+    # `git status` reports paths relative to the REPO root. For an app living
+    # in the shared `local` repo (D626) that root is one level up from the
+    # folder being reviewed, so a prefix strip is needed to read app-relative,
+    # the same as every other finding's path. But an app that IS its own repo
+    # root (`_repo_scope`'s other supported layout — an unmigrated app with
+    # its own `.git`) has paths already relative to app_dir with nothing to
+    # strip: stripping there would wrongly collapse a same-named untracked
+    # SUBdirectory (`?? demo/` inside app `demo/`) down to the empty string,
+    # over-claiming the whole app as untracked when only that subdirectory
+    # is (review finding: string-compare alone can't tell the two apart).
+    scope = app_git._repo_scope(app_dir)
+    is_own_repo_root = scope is not None and scope[1] == "."
+    prefix = "" if is_own_repo_root else os.path.basename(app_dir.rstrip("/\\")) + "/"
     out = []
     for ln in lines:
         code, _, rest = ln[:2], ln[2:3], ln[3:]
         rest = rest.strip().strip('"')
-        if rest.startswith(prefix):
+        code = code.strip() or "??"
+        if prefix and rest.startswith(prefix):
             rest = rest[len(prefix):]
-        out.append(f"{code.strip() or '??'} {rest}")
+        # `(code, rest)` — NOT a formatted string. `rest` strips to "" when
+        # the WHOLE app folder is untracked (git collapses that to one `??
+        # myapp/` line, and `rest == prefix` exactly), and stays non-empty
+        # but directory-shaped (`"sub/"`) for a nested untracked directory
+        # git also collapses. `_git_findings` below turns each shape into a
+        # readable finding — this function only parses porcelain output, it
+        # does not decide how a shape reads.
+        out.append((code, rest))
     return FAIL, out
+
+
+def _git_findings(pending: list[tuple[str, str]]) -> list[dict]:
+    """One finding per `(code, rest)` pair from `_git_pending`, in the shape
+    `_git_check` hands to the modal and the fix prompt.
+
+    Three shapes, by what `rest` looks like after `_git_pending`'s prefix
+    strip:
+
+    * EMPTY — the whole app folder is untracked (git's `?? myapp/` collapse,
+      stripped down to nothing). `path` is `.` (there is no more specific
+      path to give) and the excerpt says so in words, ending in a period so
+      the modal's `excerpt.includes(path)` dedup guard still fires on the
+      literal `.` — the same trick every other shape below relies on, just
+      earned differently.
+    * A DIRECTORY — `rest` still ends in `/` (git's `?? sub/` collapse for a
+      nested untracked directory: nothing inside was walked, so there is
+      nothing more specific to report). Reads as the directory itself, not
+      the bare porcelain line.
+    * ORDINARY — a real file entry (`M app.py`, `?? notes.txt`). Unchanged
+      from before this fix: `path` and `excerpt` are both `"{code} {rest}"`,
+      which is what existing tests pin and what the modal's dedup guard
+      already handles.
+    """
+    out = []
+    for code, rest in pending:
+        if not rest:
+            out.append({"rule": "git:uncommitted", "path": ".", "line": 0,
+                       "excerpt": "the whole app folder is untracked."})
+        elif rest.endswith("/"):
+            out.append({"rule": "git:uncommitted", "path": rest, "line": 0,
+                       "excerpt": f"{rest} (untracked directory)"})
+        else:
+            p = f"{code} {rest}"
+            out.append({"rule": "git:uncommitted", "path": p, "line": 0, "excerpt": p})
+    return out
 
 
 # `_pushed_pending`'s SKIP reasons — distinct enough that `_pushed_check` can
@@ -517,8 +572,7 @@ def _git_check(app_dir: str) -> dict:
         else f"{len(pending)} uncommitted path{'' if len(pending) == 1 else 's'} — "
              "commit them so what you share is what you tested" if state == FAIL
         else "the working tree is clean",
-        [{"rule": "git:uncommitted", "path": p, "line": 0, "excerpt": p}
-         for p in pending],
+        _git_findings(pending),
     )
 
 
@@ -672,18 +726,30 @@ def doctor_task_check_id(message: str) -> str | None:
 ALL = "all"
 
 
-def _findings_block(findings: list[dict]) -> str:
-    """`findings` as the lines a fix session reads, one per line: where it
-    is and what fired. Shared by `doctor_prompt` and `doctor_prompt_all` so
-    the two prompts describe a finding identically."""
-    if not findings:
-        return "- (no findings listed — the row's own detail already explains why it failed)"
-    return "\n".join(
+def _findings_block(detail: str, findings: list[dict]) -> str:
+    """`detail` and `findings` as the lines a fix session reads. Shared by
+    `doctor_prompt` and `doctor_prompt_all` so the two prompts describe a
+    row identically.
+
+    `detail` is the row's own one-line diagnosis (`_check`'s `detail`) — for
+    a `kind="fact"` row (`api-version`, `readme`, `git`, ...) it is the WHOLE
+    diagnosis, findings is always `[]` for those, and there used to be a
+    fallback line here pointing at a `detail` the prompt never actually
+    included. That fallback is gone: `detail` always goes in, first, so
+    there is no longer a row with nothing to say. For a `kind="candidate"`
+    row (`secrets`, `device-paths`) `detail` is a one-line count ("2 lines
+    to look at") and the findings below it are the substance — both go in,
+    detail first."""
+    lines = []
+    if detail:
+        lines.append(f"- {detail}")
+    lines.extend(
         "- " + (f"{f.get('path', '.')}:{f['line']}" if f.get("line") else
                 str(f.get('path', '.')))
         + f": {f.get('rule', '')}: {f.get('excerpt', '')}"
         for f in findings
     )
+    return "\n".join(lines)
 
 
 def _triage_ask(kind: str) -> str:
@@ -711,8 +777,67 @@ _CREDENTIAL_NOTE = (
     "ask about alone."
 )
 
+# R3: App Doctor itself never writes — the fix SESSION does, and until now no
+# prompt told it to leave its own edits committed, so a reopened report saw
+# the `git` row FAIL right after a fix landed, reading as if the fix broke
+# something. Two wordings, not one, because "fix all" makes ONE commit for
+# the whole run rather than one per row (`doctor_prompt_all` already says
+# "one row at a time in the order given" — this is the trailing step after
+# that, not a per-row addition).
+#
+# `_COMMIT_STEP` is deliberately conditional ("only if you changed something")
+# so an advisory-only outcome — every `secrets` row that follows
+# `_CREDENTIAL_NOTE` above: report the leak, don't touch the file — never
+# produces an empty or spurious commit. And it never says "commit the fix",
+# which for `secrets` could be misread as license to commit a value merely
+# relocated rather than left alone; the wording instead says plainly that a
+# still-live or relocated credential must never end up in the commit.
+#
+# Review findings 1 & 2, one root cause: `_COMMIT_STEP` is only right for a
+# row whose fix EDITS FILES. `git` and `pushed` don't — their fix IS a git
+# action, already spelled out in their own SKILL.md section ("Commit the
+# listed paths" / "Push the branch"). Appending `_COMMIT_STEP` on top of
+# those two contradicts them: its "never push" fights `pushed`'s only real
+# fix, and its "no edit at all -> no commit" fights `git`'s fix, which
+# commits paths that are already uncommitted with no edit required. So
+# `doctor_prompt` skips `_COMMIT_STEP` entirely for `git` and `pushed` —
+# those rows' own SKILL.md sections are the whole instruction, untouched.
+_COMMIT_STEP = (
+    "If you edited any files to address this, commit them now in this repo — never "
+    "push. Say what changed in the commit message. If you made no edit at all (an "
+    "advisory-only outcome, including a secrets finding where the right move was "
+    "reporting it rather than touching the file), make no commit — not an empty one, "
+    "and never one that commits a still-live or merely relocated credential."
+)
 
-def doctor_prompt(entry_html: str, check_id: str, findings: list[dict]) -> str:
+# The `_COMMIT_STEP` per-row rows this trailing step must not be appended
+# after (see the note above `_COMMIT_STEP`) — their own SKILL.md sections
+# already cover committing/pushing, and a blanket "never push" or
+# edit-conditioned commit instruction here would contradict them exactly the
+# same way `_COMMIT_STEP` would on their own per-row prompts.
+_COMMIT_STEP_EXEMPT = frozenset({"git", "pushed"})
+
+# Fix-all's trailing step covers a run that may include a `git` and/or a
+# `pushed` row alongside ordinary file-editing rows, so — unlike
+# `_COMMIT_STEP` — it must not blanket-forbid push or restrict the commit to
+# only files edited THIS run: it explicitly defers to those two rows' own
+# sections above when one of them is present (review findings 1 & 2 applied
+# to the fix-all case).
+_COMMIT_STEP_ALL = (
+    "When every row above is done: make ONE commit — not one per row — covering every "
+    "file you actually edited across the whole run, plus any pre-existing uncommitted "
+    "paths a `git` row above asked you to commit even though you didn't edit them. This "
+    "step itself does not include pushing — except if a `pushed` row is one of the rows "
+    "above, in which case follow through on push exactly as that row's own section says; "
+    "this step does not forbid it. If nothing needed changing anywhere (every row was "
+    "advisory only, or already passed) and no row above asked for a commit or push of "
+    "its own, make no commit at all — and never commit a still-live or merely relocated "
+    "credential from a secrets row."
+)
+
+
+def doctor_prompt(entry_html: str, check_id: str, findings: list[dict],
+                  detail: str = "") -> str:
     """The fix task's text for ONE row: names the check, points at the
     skill's section for it by id (SKILL.md's section names match check ids
     exactly, see its own module note), and carries that row's findings
@@ -726,18 +851,34 @@ def doctor_prompt(entry_html: str, check_id: str, findings: list[dict]) -> str:
     direct `_CHECK_META` read would keep asking for a triage-first fix (or a
     fix-outright one) based on this module's fallback copy even after the
     engine reclassified an id — fix-outright where triage-first was needed
-    is exactly the failure the candidate/fact split exists to prevent."""
+    is exactly the failure the candidate/fact split exists to prevent.
+
+    `detail` is the row's own diagnosis (`report_one(...)["detail"]`) — R1:
+    every prompt has to carry it, not just the findings list, since most
+    checks (every `kind="fact"` row) never populate `findings` at all and
+    `detail` is their whole story.
+
+    Review finding 3: `router` (`apps.py`) passes `findings=[]`, `detail=""`
+    whenever `report_one()` returns `None` — `_findings_block` then returns
+    `""` and the "Findings for this row:" header is omitted rather than left
+    dangling over nothing.
+
+    Review findings 1 & 2: `git` and `pushed` are excluded from the trailing
+    `_COMMIT_STEP` (see the note above that constant) — their own SKILL.md
+    sections are the whole instruction for those two rows."""
     entry_name = os.path.basename(entry_html)
     _section, _severity, kind = _meta(check_id)
-    lines = _findings_block(findings)
+    lines = _findings_block(detail, findings)
     ask = _triage_ask(kind)
+    findings_section = f"Findings for this row:\n{lines}\n\n" if lines else ""
+    commit_step = "" if check_id in _COMMIT_STEP_EXEMPT else _COMMIT_STEP
 
     return (
         f"{DOCTOR_PROMPT_PREFIX} — check `{check_id}` (`{entry_name}` is its entry page). "
         f"Invoke the `{SKILL_QUALIFIED}` skill and read its `{check_id}` section end to "
         f"end. {ask} {_CREDENTIAL_NOTE}\n\n"
-        f"Findings for this row:\n{lines}"
-    )
+        f"{findings_section}{commit_step}"
+    ).rstrip()
 
 
 def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
@@ -748,24 +889,36 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     difference is how many rows are in the prompt and that this one names no
     single check by id (`ALL` fills that slot in the stored prompt instead,
     so `is_doctor_prompt` and the one-live-task-per-app gate still work
-    unchanged)."""
+    unchanged).
+
+    R1: each row's own `detail` is included alongside its findings, same as
+    `doctor_prompt` — every check dict already carries `detail` (`_check`),
+    so no re-derivation needed here. R3: ONE trailing commit step covers the
+    whole run, appended after every row's block — never one per row, and
+    only when there was at least one failing row to maybe act on."""
     entry_name = os.path.basename(entry_html)
     failing = [c for c in checks if c["state"] == FAIL]
     if not failing:
-        body = "Every check passed — say so and stop; there is nothing to fix."
-    else:
-        blocks = []
-        for c in failing:
-            blocks.append(
-                f"## `{c['id']}` — {c['label']}\n"
-                f"{_triage_ask(c['kind'])}\n"
-                f"{_findings_block(c['findings'])}"
-            )
-        body = "\n\n".join(blocks)
+        return (
+            f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "
+            f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and "
+            f"follow it end to end, one row at a time in the order given. "
+            f"{_CREDENTIAL_NOTE}\n\n"
+            "Every check passed — say so and stop; there is nothing to fix."
+        )
+
+    blocks = []
+    for c in failing:
+        blocks.append(
+            f"## `{c['id']}` — {c['label']}\n"
+            f"{_triage_ask(c['kind'])}\n"
+            f"{_findings_block(c['detail'], c['findings'])}"
+        )
+    body = "\n\n".join(blocks)
 
     return (
         f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
-        f"{body}"
+        f"{body}\n\n{_COMMIT_STEP_ALL}"
     )
