@@ -124,6 +124,7 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
+from fused_render.ai import hub_catalog, hub_catalog_builder
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.runners import formats
@@ -1679,6 +1680,112 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     return result
 
 
+def _catalog_ilike_escape(value: str) -> str:
+    """Quote a value for embedding inside a DuckDB SQL string literal used in
+    an ILIKE/LIKE clause — the only escaping this needs is doubling a literal
+    single quote, the standard SQL-string escape. `query_pool`'s `where`
+    fragment is plain SQL text, so this is the one seam that turns caller-
+    controlled input (a search box, a publisher filter) into it safely."""
+    return value.replace("'", "''")
+
+
+def _catalog_search(capability_filter: str, query: str, publisher: str | None,
+                     count: int, sort: str, fit_level: str, quant_filter: str,
+                     params_band: str, task_filter: str) -> dict:
+    """The whole-pool search path (SPEC docs/HUB_CATALOG_SPEC.md, item 3):
+    every row of `capability_filter`'s on-device pool, run through the exact
+    same `_model_row` drop rules and D780 scoring the live path uses, then the
+    same post-join filters/sort/facets/pull-in/pagination — but over the
+    WHOLE pool rather than one overfetched Hub page, and with zero Hub
+    requests. No `_MAX_FETCH`/`_OVERFETCH`, no 90s `_cache`: the pool query
+    itself is the only "fetch", and it is cheap enough (a local DuckDB scan)
+    that recomputing it every request is simpler than caching a second thing
+    that would need its own invalidation story once the daily delta lands.
+    """
+    cfg = hub_catalog.load_config()
+    conditions = []
+    if query:
+        conditions.append(f"id ILIKE '%{_catalog_ilike_escape(query)}%'")
+    if publisher:
+        conditions.append(f"id ILIKE '{_catalog_ilike_escape(publisher)}/%'")
+    where = " AND ".join(conditions) if conditions else None
+    raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=where)
+
+    cache_dir = hub_cache_dir()
+    dirs = _cached_dirs()
+    footprint_store = footprints.load_store()
+    hardware = hw_detect.cached_hardware()
+    models = [row
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                          for r in raw_rows if isinstance(r, dict))
+              if row is not None]
+    # Same over-match guard the live path applies (D851): the pool was built
+    # from a `filter=<tag>` request too, which matches ANY tag in a repo's
+    # list, not only its classified `pipeline_tag`.
+    models = [row for row in models if row.get("capability") == capability_filter]
+
+    facets = _facets(models)
+    _pin_publisher_facets(facets, models, capability_filter, hardware)
+
+    ram_gb = fit.machine_ram_gb()
+    raw_scores: dict[int, float] = {}
+    for row in models:
+        raw_score = _composite_raw_score(row, ram_gb)
+        raw_scores[id(row)] = raw_score
+        row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+
+    sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
+    if sort == _BEST_SORT:
+        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
+    elif sort == _FIT_SORT:
+        models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
+                    reverse=True)
+    else:
+        models.sort(key=lambda row: (row.get(sort_field) is not None,
+                                     row.get(sort_field) if row.get(sort_field) is not None else 0),
+                    reverse=(direction == -1))
+
+    if fit_level != "any":
+        allowed = {"easy"} if fit_level == "easy" else {"easy", "tight"}
+        models = [
+            row for row in models
+            if (row.get("fit") or {}).get("verdict") in allowed
+            or (row.get("fit") or {}).get("verdict") is None
+        ]
+    if quant_filter:
+        models = [row for row in models if (row.get("quant") or "").upper() == quant_filter]
+    if params_band != "any":
+        models = [row for row in models if _params_band(row.get("params")) == params_band]
+
+    # `includeUnfit` is unconditionally True today (see the live path's own
+    # comment) — the unfit-hide-by-default block never runs there either, so
+    # `hiddenUnfit` is always 0 on both paths.
+    hidden_unfit = 0
+
+    if sort in (_BEST_SORT, _FIT_SORT):
+        def _rank_key(row: dict) -> tuple[bool, float]:
+            value = row.get("matchScore")
+            return (value is not None, value if value is not None else 0.0)
+        rank_reverse = True
+    else:
+        def _rank_key(row: dict) -> tuple[bool, object]:
+            value = row.get(sort_field)
+            return (value is not None, value if value is not None else 0)
+        rank_reverse = direction == -1
+
+    models = _pull_in_family_members(models[:count], models[count:])
+    models.sort(key=_rank_key, reverse=rank_reverse)
+    return {
+        "models": models,
+        "query": {"q": query, "task": task_filter, "capability": capability_filter,
+                  "sort": sort, "limit": count},
+        "endpoint": hub_endpoint(),
+        "authenticated": bool(_token()),
+        "hiddenUnfit": hidden_unfit,
+        "facets": facets,
+    }
+
+
 @router.post("/api/ai-models/hub/search")
 def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
     """Hub models matching a query, each told apart from the local cache.
@@ -1780,6 +1887,21 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
+
+    # SPEC docs/HUB_CATALOG_SPEC.md item 3: a BUILT on-device pool for this
+    # capability serves the whole request locally, zero Hub calls, ranked
+    # over the whole pool rather than one overfetched page. Only reachable
+    # via `capability` (the pool is keyed by capability, not by a bare Hub
+    # tag) — a request that only sends the legacy `task` param always takes
+    # the live path below.
+    if capability_filter and hub_catalog.pool_exists(hub_catalog.load_config(), capability_filter):
+        return _catalog_search(capability_filter, query, publisher, count, sort,
+                                fit_level, quant_filter, params_band, task_filter)
+    if capability_filter:
+        # Non-blocking: kicks off a background build if none is running,
+        # blocked on a 429 backoff, or already built. The pane stays on the
+        # live path below for this and every request until the build lands.
+        hub_catalog_builder.ensure_build_started(capability_filter)
 
     # "fit" is not a Hub field: the candidate set the Hub is asked for is the
     # same honest default `size` uses on the frontend — most-downloaded — and
