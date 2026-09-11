@@ -3526,11 +3526,28 @@ button.am-bench-model:focus-visible {
   background: var(--ctl-quiet-bg);
   color: var(--fg);
   border: 1px solid var(--ctl-quiet-border);
+  /* Item 9 (fix round 3): `.btn` also renders as a real `<a>` for a gated
+     row's "Accept terms" action (`hit.act` when `!have && gate`) — an
+     anchor's UA-default underline isn't reset by anything above it, so
+     without this it showed permanently while the sibling `Download`
+     `<button>` never did, making the two look like different widths in the
+     row-act column. */
+  text-decoration: none;
 }
 
 .tp .btn:hover:not(:disabled) {
   background: var(--ctl-quiet-bg-hover);
   border-color: var(--ctl-quiet-border-hover);
+}
+
+/* Item 9: every row's action button is the same box regardless of whether
+   it reads "Download" or "Accept terms" — Try/Download in the pane rows
+   share `.row-act` too (already flex-end, per the mockup), so this aligns
+   those as a side effect. */
+.tp .row-act .btn {
+  min-width: 108px;
+  justify-content: center;
+  text-align: center;
 }
 
 .tp .btn-primary {
