@@ -469,8 +469,7 @@ export function HubSearchScreen({
     };
   }, [models, settled.sort]);
 
-  const hostUrl = endpoint || "https://huggingface.co";
-  const host = hostUrl.replace(/^https?:\/\//, "");
+  const host = (endpoint || "https://huggingface.co").replace(/^https?:\/\//, "");
   const shown =
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
@@ -529,7 +528,6 @@ export function HubSearchScreen({
         small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will not fit ? not
         measured yet.
       </p>
-      {chromeNote(settled, host, hostUrl)}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
       {models !== null && models.length === 0 && !error && (
@@ -570,20 +568,5 @@ export function HubSearchScreen({
         </div>
       )}
     </div>
-  );
-}
-
-/** The one place this screen asks a third party a question, stated plainly —
- *  ported from `HubResults.tsx`'s own note. */
-function chromeNote(settled: SettledQuery, host: string, hostUrl: string) {
-  if (!settled.q.trim() && !settled.task.trim()) return null;
-  return (
-    <p className="cc-caption am-hub-note">
-      Searching{" "}
-      <a className="am-hub-host" href={hostUrl} target="_blank" rel="noopener noreferrer" title={`Open ${host} in a new tab`}>
-        {host}
-      </a>
-      , limited to models an engine here can load.
-    </p>
   );
 }

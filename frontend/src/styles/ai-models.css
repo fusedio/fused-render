@@ -340,7 +340,6 @@
    below — because it belongs to the heading, and equidistant prose between two
    headings belongs to neither. */
 .am-section-head:has(+ .am-group-note),
-.am-section-head:has(+ .am-hub-note),
 .am-subgroup-head:has(+ .am-group-note) {
   margin-bottom: var(--am-gap-tight);
 }
@@ -378,29 +377,26 @@
 
 /* The two destinations named in the page's captions: the cache directory this
    machine fills (the page caption) and the host a search queries (the results
-   note). One rule, because they are the same idea in either place — a caption
-   states WHERE, and where should be reachable rather than copied out by hand.
-
-   Underlined only on hover: each sits in a line of plain facts ("8 cached ·
-   43 GB total", "Searching huggingface.co, limited to…") and a permanently
-   underlined run of text would read as the whole caption being a link rather
-   than as one word in it being one. The path wraps, because a hub path under a
-   long username is longer than the page head. */
-.am-cache-dir,
-.am-hub-host {
+   note). Underlined only on hover: it sits in a line of plain facts ("8
+   cached · 43 GB total") and a permanently underlined run of text would read
+   as the whole caption being a link rather than as one word in it being one.
+   The path wraps, because a hub path under a long username is longer than
+   the page head.
+   Fix round 3 item 4 dropped its sibling `.am-hub-host` (the "Searching
+   huggingface.co…" caption this rule used to also style, removed with the
+   caption itself — see `HubSearchScreen.tsx`'s deleted `chromeNote`). */
+.am-cache-dir {
   color: inherit;
   text-decoration: none;
   overflow-wrap: anywhere;
 }
 
-.am-cache-dir:hover,
-.am-hub-host:hover {
+.am-cache-dir:hover {
   color: var(--fg);
   text-decoration: underline;
 }
 
-.am-cache-dir:focus-visible,
-.am-hub-host:focus-visible {
+.am-cache-dir:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 3px;
@@ -1039,12 +1035,6 @@
   outline-offset: -1px;
 }
 
-/* The host disclosure, under the "Search results" heading. It rides
-   .am-group-note's spacing (the `:has` rule above binds it to its heading) and
-   adds nothing. */
-.am-hub-note {
-  margin: 0 0 var(--am-gap-head);
-}
 
 /* A refetch in flight dims the results that are still on screen rather than
    replacing them with a spinner: the old answer is still the best one we have
