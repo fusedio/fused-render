@@ -147,36 +147,62 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
    `tests/test_hub_models.py` (245 total) to confirm zero interaction with
    the live path so far — it isn't wired in yet.
 
-4. **Not started** (highest-value remaining, roughly in dependency order):
-   - `api_hub_search` (hub_models.py ~1683): branch on pool-exists-for-
-     capability; catalog path queries via DuckDB (fresh connection per
-     query), covers filters/ILIKE/D780 scoring/sort/facets over the WHOLE
-     pool, zero Hub calls; else today's live path unchanged + fire-and-forget
-     "ensure build started".
-   - `start_hub_catalog_refresh` in `fused_render/ai/supervisor.py`, modeled
-     on `start_hardware_refresh`/`start_hub_metadata_refresh`; wire into
-     `fused_render/server/app.py` beside the other two (~537-551). One
-     `lastModified` delta per BUILT pool per day; unbuilt pools untouched.
-   - `hub_metadata.py` JSON → parquet table migration (own file,
-     `metadata-<gen>.parquet`, in the same catalog dir): keep `get()`/
-     `cached()` and `_fetch_raw` untouched from the caller's point of view;
-     drop `MAX_REPOS`; TTL replaced by re-harvest-on-lastModified-change for
-     rows in a built pool, TTL fallback otherwise; one-time JSON import.
+4. **Done**: `api_hub_search` (hub_models.py) branches early on
+   `hub_catalog.pool_exists(capability)`: catalog path runs the D780
+   scoring/filters/ILIKE/facets/family-pull-in over the whole pool via
+   `hub_catalog.query_pool` (fresh DuckDB connection per query), zero Hub
+   requests; else the live path is unchanged, plus a fire-and-forget
+   `hub_catalog_builder.ensure_build_started(capability)`. Logged as D1238.
+   Tests: `tests/test_hub_models_catalog.py` (new), `tests/test_hub_models.py`
+   re-run to confirm the live path is untouched when no pool exists.
 
-5. **Test coverage still needed for #4**: a catalog-path search test (zero
-   `httpx.get` calls once a pool exists), a facets/family-pull-in test over
-   a pool bigger than the old 200-row window (this is the regression test
-   for the "missing-publisher facet" bug the spec cites), and a supervisor
-   delta-refresh test parallel to `test_ai_supervisor_hub_metadata_refresh.py`.
-   The builder unit's own coverage (paginated fetch, 429/backoff) is done —
-   see #2 above.
+5. **Done**: `start_hub_catalog_refresh` in `fused_render/ai/supervisor.py`,
+   modeled on `start_hardware_refresh`/`start_hub_metadata_refresh`: a daily
+   tick walks the manifest, and for each capability with a BUILT pool that
+   isn't currently blocked and hasn't been refreshed in the last 24h, calls
+   `hub_catalog_builder.refresh_capability_pool_delta`. One
+   `try`/`except Exception` per capability so one failure can't kill the
+   sweep or the loop. Wired into `fused_render/server/app.py` as a third
+   `@on_startup` hook beside the hardware/hub-metadata ones. Logged as
+   D1239. Tests: `tests/test_ai_supervisor_hub_catalog_refresh.py` (new, 7
+   tests, drives `_hub_catalog_refresh_tick()` directly plus thread-start
+   idempotency), `tests/test_app_lifespan.py` updated for the new startup
+   handler in `EXPECTED_STARTUP`.
 
-A fresh builder can pick up directly at "not started" (#4) above — #1 and #2
-are self-contained and already committed, so there's no partial state to
-reconcile there. Suggested next step inside #4: read `api_hub_search`
-(hub_models.py ~1683-1970, through the response-building tail past line
-1962 that this session did not read yet) to find exactly where to insert the
-pool-exists branch and where facets/family-pull-in/hiddenUnfit are computed,
-since the catalog path has to run those same computations over
-`hub_catalog.query_pool(...)` results (each `json.loads`'d raw row still goes
-through `_model_row` unchanged) instead of the live `models` list.
+6. **Done**: `hub_metadata.py`'s store moved off `ai_hub_metadata.json` to a
+   repo-keyed parquet table (`repos.parquet`) + append log
+   (`repos_log.parquet`) in the catalog dir, written under
+   `hub_catalog.store_lock`, read with a fresh DuckDB connection each time.
+   `get()`/`cached()`'s public API and the `_fetch_raw` seam are unchanged;
+   `get()`'s two write sites now go through a cheap log-append (`_upsert`)
+   instead of a full-store rewrite, with the log folding into the table past
+   `_LOG_COMPACT_THRESHOLD = 50` rows. `MAX_REPOS`/`_bounded` are dropped.
+   New `invalidate(repo_id)` resets `fetchedAt` to `0.0` (reusing `get()`'s
+   existing stale-fallback logic unchanged) and is called from
+   `hub_catalog_builder.refresh_capability_pool_delta` for every repo id the
+   delta actually saw move, so a built pool's repos re-harvest on
+   `lastModified` change instead of waiting out the 13-day TTL; repos in no
+   pool keep the TTL as a fallback. A one-time import folds the old JSON
+   file in if present (double-checked-locking, renamed to `.imported`
+   after). Logged as D1240. Tests: `tests/test_ai_hub_metadata.py` (7 new
+   tests alongside the 23 pre-existing, all passing unmodified against the
+   new backend since `_load()`/`_write()` preserve the old dict shape),
+   `tests/test_ai_hub_catalog_builder.py` (4 new tests covering the delta →
+   invalidate hook).
+
+   **Deviation from this doc's wording** (see DECISIONS.md D1240 for full
+   reasoning): "write the shallow config fields the bulk list returns into
+   pool rows and let `cached()` answer from those" was scoped OUT.
+   `cached(repo_id)` has no capability/pool context to know which pool row
+   to consult, so building a safe repo-id → capability reverse index was
+   judged too large/risky for the remaining budget. `cached()` still always
+   goes through `hub_metadata`'s own store as before; this is a missed
+   optimization, not a correctness gap.
+
+A fresh builder resuming this doc would find items 3-6 (spec section
+headings) all committed as of D1240; nothing is left "not started." The
+combined targeted-test run at the end of this build (`test_ai_hub_metadata.py
+test_ai_supervisor_hub_metadata_refresh.py test_ai_hub_catalog_builder.py
+test_ai_supervisor_hub_catalog_refresh.py test_ai_hub_catalog.py
+test_hub_models.py test_hub_models_catalog.py test_app_lifespan.py
+test_ai_supervisor_hardware_refresh.py`) passed 289/289.
