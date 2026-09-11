@@ -16188,6 +16188,24 @@ let loopSeq = 0;
 // NEW assistant bubble after the follow-up rather than keep growing the one
 // already positioned before it (see the reset check inside pollLoop).
 let followupSeq = 0;
+// THE WINDOW THAT IS ALREADY ON SCREEN, so a follow-up never re-types the
+// reply before it.
+//
+// agent.py's cursor only advances past a turn boundary it has PROVEN — a
+// `_starts_new_turn` echo with a `result` before it — so a message sent into
+// a live host reopens the window on the PREVIOUS reply and keeps it there
+// until the new turn's echo lands. That is several polls, and `sendMessage`'s
+// live-host road starts a FRESH pollLoop for them with `segBase`/`textBase` at
+// zero: the previous answer was typed into the new bubble, in full, and then
+// replaced by the real reply once the cursor finally moved — the duplicate a
+// reader sees "before the new response starts streaming".
+//
+// Recorded by the loop that SETTLED that reply (the only reader that knows
+// what it settled), consumed by the next loop on the SAME run, and retired the
+// moment the window stops opening on it — see both sites in pollLoop. The
+// landed PROSE is what it anchors to rather than a pair of lengths, because
+// the newer reply is not reliably longer or shorter than the one it replaces.
+let landedWindow = null;   // {run_id, segs, text}
 // The generation of the visible log. The back button bumps it when it wipes
 // the transcript, and a streaming pollLoop that wakes to a bumped number
 // bails before touching the DOM or the URL params — the run itself keeps
@@ -16228,6 +16246,19 @@ async function pollLoop(run_id, gen = logGen) {
   // the follow-up landed below — see the reset check inside the loop below.
   let segBase = 0;
   let textBase = 0;
+  // What the previous loop on THIS run left on screen — see `landedWindow`.
+  // The text is kept whole so the retire check below can ask whether the
+  // window still opens on it, rather than trusting a length.
+  let baseText = "";
+  if (landedWindow && landedWindow.run_id === run_id) {
+    segBase = landedWindow.segs;
+    textBase = landedWindow.text.length;
+    baseText = landedWindow.text;
+  }
+  // Consumed either way: one settled reply, one loop that may skip it. A base
+  // left standing past the loop that could use it would hide the opening of
+  // some later turn instead.
+  landedWindow = null;
   // `data.segments.length`/`data.text.length` as of the PREVIOUS iteration —
   // what the reset check freezes into `segBase`/`textBase` on a follow-up,
   // not this poll's own (already possibly grown) lengths. See the reset
@@ -16281,9 +16312,21 @@ async function pollLoop(run_id, gen = logGen) {
         // time underneath the follow-up.
         segBase = lastSegLen;
         textBase = lastTextLen;
+        baseText = "";   // not a landed-window prefix — see the retire check
       }
       const fullSegs = Array.isArray(data.segments) ? data.segments : [];
       const fullText = data.text || "";
+      // THE ALREADY-LANDED PREFIX RETIRES ITSELF the moment the window stops
+      // OPENING on it, because that is the cursor having stepped over the
+      // boundary: from that poll on the payload is the new turn ALONE, and
+      // slicing it against the old reply's length would cut the new answer's
+      // head off (or blank it entirely). Anchored on the prose, not the
+      // lengths — a newer reply can be any size. Only the `landedWindow` seed
+      // is retired here; `followupSeq`'s base is about a window that provably
+      // has not advanced, and it sets `baseText` to "" so this never fires.
+      if (baseText && !fullText.startsWith(baseText)) {
+        segBase = 0; textBase = 0; baseText = "";
+      }
       const segs = fullSegs.slice(segBase);
       const flatText = fullText.slice(textBase);
       lastSegLen = fullSegs.length;
@@ -16366,6 +16409,12 @@ async function pollLoop(run_id, gen = logGen) {
           // that carried segments here rendered its flat text instead of them.
           attachCodeCopy(addAssistantTurn(data.text, data.segments));
         }
+        // AND THE WINDOW IS NOW ON SCREEN, so the next send's loop does not
+        // type it a second time (see `landedWindow`). Only where the text
+        // STAYS: a dropped bubble is not a prefix of anything.
+        landedWindow = end.keepText
+          ? { run_id, segs: fullSegs.length, text: fullText }
+          : null;
         if (end.error) addError(end.error);
         // Same guard: a superseded loop's own "Stopped." note (the respawn's
         // `_cancel` is what actually stopped it) must not land in the log
