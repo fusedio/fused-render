@@ -114,14 +114,26 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
    test and two `test_ai_worker_base.py` socket-framing tests — reproduce with
    no hub_catalog changes present, unrelated to this feature, do not touch).
 
-2. **Not started** (highest-value remaining, roughly in dependency order):
-   - `fused_render/index/hub_catalog_store.py` (name TBD): parquet pool
-     schema + write-then-swap-manifest, modeled on `fused_render/index/store.py`
-     and `fused_render/index/config.py`. One file per capability pool,
-     generation-numbered, manifest.json written last, under
-     `os.path.join(storage.home_dir(), "hub_catalog")`. Do NOT import
-     `index/store.py`'s schema — only its patterns (`store_lock`, atomic
-     swap, fresh connection per query).
+2. **Done this session**: `fused_render/ai/hub_catalog_config.py` +
+   `fused_render/ai/hub_catalog.py` — the store primitives. `HubCatalogConfig`
+   (dir = `storage.home_dir()/hub_catalog`, `pools_dir`/`metadata_dir`/
+   `manifest_json`), `store_lock` (OS flock/msvcrt over an open fd, ported
+   pattern not code from `index/store.py`), `read_manifest`/`pool_entry`/
+   `pool_exists`/`is_blocked`/`set_blocked_until`/`write_pool`/`query_pool`/
+   `delete_catalog`. Row shape: a few DuckDB-filterable columns (id,
+   capability, format, downloads, likes, lastModified, createdAt,
+   libraryName, gated, private) + the WHOLE raw Hub row as a `raw` JSON
+   string column, so `_model_row` (unchanged) does the real parsing at query
+   time instead of a second schema shadowing `_EXPAND`. `write_pool` bumps
+   the generation, writes the manifest last, then reclaims the previous
+   generation's file. `query_pool(cfg, capability, where=...)` opens a fresh
+   DuckDB connection, runs an optional WHERE over the indexed columns, and
+   returns the matching rows' `raw` dicts already `json.loads`'d.
+   `set_blocked_until`/`is_blocked` share the manifest entry with the pool
+   file, settable even before a pool exists. Logged as D1236. Tests:
+   `tests/test_ai_hub_catalog.py`, 9 passing.
+
+3. **Not started** (highest-value remaining, roughly in dependency order):
    - The bulk builder: reuses `_EXPAND`/`_fetch`/`_get` shapes from
      `hub_models.py` but paginates via the `Link: rel="next"` header (not the
      live path's single-page `_OVERFETCH`/`_MAX_FETCH`), across every
@@ -144,7 +156,7 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
      drop `MAX_REPOS`; TTL replaced by re-harvest-on-lastModified-change for
      rows in a built pool, TTL fallback otherwise; one-time JSON import.
 
-3. **Test coverage still needed for #2**: a builder test under the
+4. **Test coverage still needed for #3**: a builder test under the
    no-egress guard (fake paginated Hub responses, assert parquet pool
    written + manifest swap), a 429/backoff test, a catalog-path search test
    (zero `httpx.get` calls once a pool exists), a facets/family-pull-in test
