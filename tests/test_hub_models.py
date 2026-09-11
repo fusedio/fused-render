@@ -1001,6 +1001,39 @@ def test_embeddings_search_dedupes_a_repo_seen_through_more_than_one_tag(
     assert ids.count("org/dupe") == 1
 
 
+def test_capability_search_drops_a_row_whose_classified_capability_differs(
+        client, hub_cache, monkeypatch):
+    """D851 (fix round 6, item 1): the Hub's `filter=<tag>` matches ANY tag in
+    a repo's tag list, so a `capability: "embeddings"` search (which resolves
+    to `feature-extraction`/`sentence-similarity`/
+    `zero-shot-image-classification`) also pulls back a text-generation repo
+    that merely carries `feature-extraction` among its other tags. The row's
+    own classified capability (`pipeline_tag: "text-generation"`) is the
+    ground truth and must exclude it, even though the Hub's tag filter let it
+    through."""
+    def fake(url, **kwargs):
+        fake.calls.append((url, kwargs))
+        q = parse_qs(urlsplit(url).query)
+        tag = q["filter"][0]
+        rows = {
+            "feature-extraction": [
+                _hit("org/real-embeddings", pipeline_tag="feature-extraction"),
+                _hit("org/off-capability", pipeline_tag="text-generation",
+                     tags=["feature-extraction"]),
+            ],
+            "sentence-similarity": [],
+            "zero-shot-image-classification": [],
+        }[tag]
+        return httpx.Response(200, content=json.dumps(rows).encode(),
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.EMBEDDINGS})
+    assert resp.status_code == 200
+    ids = {m["id"] for m in resp.json()["models"]}
+    assert ids == {"org/real-embeddings"}
+
+
 def test_speech_to_text_capability_resolves_its_one_tag(client, hub_cache, monkeypatch):
     fake = _reply([_hit("org/whisper", pipeline_tag="automatic-speech-recognition")])
     monkeypatch.setattr(httpx, "get", fake)

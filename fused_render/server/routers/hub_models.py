@@ -1674,7 +1674,12 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # a `quant=Q4_K_M` filter over a page of mostly-BF16 results, say. Any of
     # them being active forces the full overfetch multiplier, the same as an
     # unfiltered query already gets by default.
-    extra_filters_active = fit_level != "any" or bool(quant_filter) or params_band != "any"
+    # D851: a `capability_filter` also throws away rows now (the per-row
+    # capability check just above), so it forces the same full overfetch the
+    # other three explicit filters already get — otherwise a page under a
+    # capability scope would under-fill exactly like the unfit drop used to.
+    extra_filters_active = (fit_level != "any" or bool(quant_filter)
+                             or params_band != "any" or bool(capability_filter))
     single_tag_task = task_filter or (capability_tags[0] if len(capability_tags) == 1 else "")
     fetch = (count if single_tag_task and include_unfit and not extra_filters_active
              else min(count * _OVERFETCH, _MAX_FETCH))
@@ -1823,6 +1828,21 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
               for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
+
+    # D851 (fix round 6, item 1): the Hub's own `filter=<tag>` matches ANY tag
+    # in a repo's tag list, not only its `pipeline_tag` — a repo classified as
+    # text-generation or image-text-to-image that merely CARRIES
+    # `feature-extraction` among its other tags still comes back from a
+    # `filter=feature-extraction` request. `_model_row`'s classified
+    # `capability` (the same ground truth the Local tab's own Load button
+    # reads) is authoritative, so a mismatch here means the Hub's tag match
+    # over-matched — drop it BEFORE count/limit truncation (`extra_filters_active`
+    # above already forces the full overfetch multiplier whenever
+    # `capability_filter` is set, so a filtered page still fills). The legacy
+    # `task` path is untouched: `task` names one Hub tag directly and never
+    # goes through this extra check.
+    if capability_filter:
+        models = [row for row in models if row.get("capability") == capability_filter]
 
     # D780: every row gets a `matchScore` regardless of which sort was asked
     # for — the merged Fit+Score cell renders it on every row, not only when
