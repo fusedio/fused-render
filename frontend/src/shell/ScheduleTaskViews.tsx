@@ -2955,14 +2955,27 @@ export function TaskBoard({
 
   // The one lane whose drop is not a filing decision. It is named while the
   // card is still in the air because "run this now" is not undoable and the
-  // dashed legal-drop outline says nothing about which of the two it is.
-  const runLane = useMemo(() => {
+  // dashed legal-drop outline says nothing about which of the two it is. A
+  // Blocked card's re-run (`resend`/`resay`, tasks-lib.rerunAction) is the same
+  // kind of drop — a NEW message goes out — so it carries the same warning,
+  // worded for what it does: the last message again, not the next one early.
+  const runDrop = useMemo(() => {
     if (!dragging) return null;
     for (const col of BOARD_LANES) {
-      if (dropAction(dragging, col.key)?.kind === "run") return col.key;
+      const kind = dropAction(dragging, col.key)?.kind;
+      if (kind === "run" || kind === "resend" || kind === "resay") {
+        return { lane: col.key, rerun: kind !== "run" };
+      }
     }
     return null;
   }, [dragging]);
+  const runLane = runDrop?.lane ?? null;
+  const runTitle = runDrop?.rerun
+    ? "Send the last message again"
+    : "Run the next scheduled message now";
+  const runHint = runDrop?.rerun
+    ? "Re-run — the last message goes again"
+    : "Run now — the time stays put";
 
   const drop = async (lane: BoardLane) => {
     const task = dragging;
@@ -3218,7 +3231,7 @@ export function TaskBoard({
                 }
                 title={
                   runLane === col.key
-                    ? "Run the next scheduled message now"
+                    ? runTitle
                     : empty
                       ? `${col.label}: nothing yet`
                       : `${col.label}: ${lane.length}`
@@ -3266,7 +3279,7 @@ export function TaskBoard({
                 {...dropProps(col.key)}
               >
                 {runLane === col.key && (
-                  <p className="tasks-run-hint">Run now — the time stays put</p>
+                  <p className="tasks-run-hint">{runHint}</p>
                 )}
                 {cards.map((task) => (
                   <TaskCard
