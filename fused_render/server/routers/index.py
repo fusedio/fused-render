@@ -758,17 +758,28 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         # bridge does not special-case it into a separate concept.
         "message": str(run.get("phase") or ""),
         "cancellable": True,
-        # A finished scan's success has no destination worth keeping — the
-        # index itself isn't a file a click could open — so nobody asked for
-        # this row to stick around (SPEC actionable-notifications), and
-        # `_sweep` ages a `done` transient row like this one out on the
-        # read-gated clock rather than waiting on a dismiss. A failed or
-        # cancelled run is different on both counts: `effective_tier`'s
-        # override turns it `attention` for VISIBILITY, and `_sweep` only
-        # ages a transient row out once its state is `done` — an
-        # error/cancelled row here is kept until dismissed, same as any
-        # other row a surface can show and let the user clear.
-        "tier": jobs.TRANSIENT,
+        # SILENT, not TRANSIENT (user: "similarly remove notification for
+        # file indexing completion" — same reasoning as the delete-toast
+        # reversal, see DECISIONS-toasts-become-notifications.md: a scan
+        # finishing carries nothing the user needs to be told). TRANSIENT
+        # still pops a card for ~2.5s before leaving nowhere; SILENT is the
+        # one tier that skips the pop entirely (jobs.py's own tier table).
+        # A finished scan's success has no destination worth keeping either
+        # way — the index itself isn't a file a click could open — so
+        # nobody asked for this row to stick around (SPEC
+        # actionable-notifications), and `_sweep` ages a `done` silent row
+        # like this one out on the read-gated clock rather than waiting on
+        # a dismiss. A failed or cancelled run is unaffected by this change
+        # on either axis: `effective_tier`'s error/cancelled override to
+        # `attention` reads `job.state`, not the stored tier, so it promotes
+        # a SILENT row exactly as it always promoted a TRANSIENT one — a
+        # failed scan still pops and is kept until dismissed, same as any
+        # other row a surface can show and let the user clear. The
+        # still-RUNNING row is unaffected too: `jobRows`/`jobs.py`'s own
+        # activity-list filter only ever drops a row by tier once it is
+        # terminal, so a live scan keeps showing progress in the Activity
+        # dock regardless of which of these two tiers it declares.
+        "tier": jobs.SILENT,
         # This row is the Explorer's own indexing scan, never anything a
         # different feature raises against the same id.
         "origin": "Explorer",
