@@ -1742,3 +1742,34 @@ To verify in the browser (extension): open the Playground tab and the
 Home page's "AI Playground" strip — both should read "Speech to text"
 and "Video generation" (not "Transcription"/"Video"), matching the
 Local tab's nav exactly.
+
+### Additions to round 3: items 13-14
+
+- Item 13: the Local tab's nav rows now draw the exact same icon
+  components the Playground sidebar uses per capability, instead of a
+  private, differently-drawn set. The shared map moved to
+  `lib/capabilityIcons.tsx` (next to `engines.ts`'s `capabilityLabel()`),
+  kept out of `playground/groups.ts`'s import graph (Home's own eager
+  path) so no JSX reaches the front door. `capabilityMeta.ts` became
+  `.tsx`; its `icon` field is a `ReactNode` now, not a raw SVG string.
+- Item 14: model ids are clickable links to huggingface.co again, in
+  both the search hit rows (`.mono-name`) and the capability pane's
+  rows for downloaded/suggested models — restoring `origin/main`'s
+  `RepoCard.tsx` behavior. No colour change; underline appears on
+  hover/focus only.
+- Amendment to item 11: embeddings specifically keeps "Search &
+  similarity" (not "Embeddings") everywhere, while the other four
+  capabilities keep their standard names — a one-line change to
+  `engines.ts`'s `CAPABILITY_LABELS` table since every surface already
+  reads through it.
+
+To verify in the browser:
+- The Local tab's capability nav icons (Text generation, Image
+  generation, Speech to text, Search & similarity, Video generation)
+  look identical to the Playground sidebar's icons for the same
+  capabilities.
+- Clicking a model's name/id in a search hit row or in a capability
+  pane's "On this Mac"/suggestion list opens huggingface.co in a new
+  tab, without also opening that row's info drawer.
+- The embeddings capability reads "Search & similarity" in the nav,
+  pane heading, Task menu, and Playground — not "Embeddings".
