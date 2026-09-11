@@ -547,6 +547,12 @@ export interface TranscriptStat {
 export interface HistoryResponse {
   turns: HistoryTurn[];
   transcript: TranscriptStat;
+  /** agent.py `_history_live`: the run still going for this chat, with its
+   *  cards, so transcript and card paint in one frame. `""` = nothing live (an
+   *  answer too); absent = an older server, and the page discovers as before. */
+  live_run?: string;
+  permissions?: PermissionRow[];
+  mode?: PermissionMode | "";
 }
 
 /** agent.py:904 / 868,883. */

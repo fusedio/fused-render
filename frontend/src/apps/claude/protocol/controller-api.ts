@@ -483,6 +483,15 @@ export interface ControllerDeps {
     file: string,
     sessionId: string,
   ) => Promise<import("./types").HistoryResponse & { error?: string }>;
+  /** ADDED (Akshil 2026-09-11, Tasks cards → Peek): the last history answer
+   *  per conversation, shared across every controller on the page. `openSession`
+   *  paints from it synchronously — transcript AND cards — before the fetch
+   *  lands, so a modal opened on a card the wall already loaded is instant, and
+   *  the fetch that follows replaces it. Absent (tests): no cache. */
+  historyCache?: {
+    get(file: string, sessionId: string): import("./types").HistoryResponse | undefined;
+    set(file: string, sessionId: string, res: import("./types").HistoryResponse): void;
+  };
   /** ADDED: the comeback after a usage limit. Injectable so bun tests see the
    *  body without a server; defaults to `@platform/lib/api`'s `scheduleMessage`
    *  (POST /api/schedule). */

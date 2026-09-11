@@ -5396,7 +5396,9 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     # folder this chat is open on), and the endpoint refuses to do it.
     stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": [], "transcript": stat}
+        # A run can be live before its transcript exists (the CLI writes the
+        # first row after `system/init`), and its card must not wait on that.
+        return {"turns": [], "transcript": stat, **_history_live(file, session_id)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
@@ -5527,7 +5529,41 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat}
+    return {"turns": turns, "transcript": stat, **_history_live(file, session_id)}
+
+
+def _history_live(file: str, session_id: str) -> dict:
+    """The run still going for this chat, WITH its cards, riding on the
+    history response.
+
+    Until this existed a restored conversation learned about its live run in
+    three more round trips after the transcript landed: `live_run`, then the
+    re-attach probe, then the first poll — and only that poll carried the
+    permission rows a question card is built from. The page held the
+    transcript invisible (`adopting`) the whole way so it would not paint once
+    without its card, which on the Tasks cards wall read as "chat in 3 s, card
+    in 5". The same three answers are one `listdir` and a few small reads, so
+    the history call now returns them and the page paints transcript and card
+    in the same frame (Akshil, 2026-09-11).
+
+    Same rows `_poll` returns, through the same `_permissions` / `_live_mode`,
+    so the page's dedupe-by-id contract holds when the first poll replays them.
+    `live_run: ""` when nothing is going — an answer too, and the page drops
+    the gate on it the way the first adopt lap always has."""
+    run_id = str(_live_run(file, session_id).get("run_id") or "")
+    if not run_id:
+        return {"live_run": "", "permissions": [], "mode": ""}
+    run_dir = os.path.join(RUNS, run_id)
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    permissions = _permissions(run_dir)
+    return {"live_run": run_id, "permissions": permissions,
+            "mode": _live_mode(meta, permissions)}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True,

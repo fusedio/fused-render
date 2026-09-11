@@ -978,3 +978,66 @@ def test_the_widening_needs_a_session_id(agent, target, tmp_path):
     _run_dir(agent, "20260908-120000-ccc", file=folder)
     assert agent._live_run(target) == {"run_id": ""}
     assert agent._live_run(folder) == {"run_id": "20260908-120000-ccc"}
+
+
+# ---------------------------------------------------------------------------
+# `_history_live`: the live run and its cards ride on the history answer, so a
+# restored conversation paints transcript and question card in ONE frame
+# instead of learning about the run three round trips later (Akshil,
+# 2026-09-11 — the Tasks cards wall showed the chat in ~3 s and the card in ~5).
+# ---------------------------------------------------------------------------
+
+def _park_question(run_dir, request_id="q1"):
+    perm = os.path.join(run_dir, "perm")
+    os.makedirs(perm, exist_ok=True)
+    with open(os.path.join(perm, request_id + ".req.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"id": request_id, "tool": "AskUserQuestion",
+                   "tool_use_id": "toolu_1",
+                   "input": {"questions": [{"question": "Which?",
+                                            "options": [{"label": "A"}]}]},
+                   "created_at": 1}, f)
+
+
+@pytest.fixture()
+def projects(agent, tmp_path, monkeypatch):
+    p = tmp_path / "projects"
+    p.mkdir()
+    monkeypatch.setattr(agent, "PROJECTS", str(p))
+    return p
+
+
+def test_history_carries_the_live_run_and_its_cards(agent, target, projects):
+    d = _run_dir(agent, "20260911-180000-aaa", file=target, resumed_from="sess-A")
+    _park_question(d)
+    out = agent._history(target, "sess-A")
+    assert out["live_run"] == "20260911-180000-aaa"
+    assert [p["id"] for p in out["permissions"]] == ["q1"]
+    assert out["permissions"][0]["tool"] == "AskUserQuestion"
+    assert out["permissions"][0]["decision"] == ""
+    # `_live_mode` off the run's meta — the picker is right on first paint.
+    assert out["mode"] == "prompt"
+    # A run can be live before its transcript exists: the card must not wait.
+    assert out["turns"] == []
+
+
+def test_history_says_nothing_is_live_as_an_answer(agent, target, projects):
+    """`""` is the page's cue to drop the adoption gate right away, exactly as
+    the first `live_run` lap always did."""
+    _run_dir(agent, "20260911-180000-aaa", file=target, resumed_from="sess-A",
+             alive=False)
+    out = agent._history(target, "sess-A")
+    assert out["live_run"] == ""
+    assert out["permissions"] == []
+    assert out["mode"] == ""
+
+
+def test_history_live_block_matches_what_poll_returns(agent, target, projects):
+    """Same rows through the same `_permissions`, so the first poll of the
+    adopted run replays them and the page's dedupe-by-id holds."""
+    d = _run_dir(agent, "20260911-180000-aaa", file=target, resumed_from="sess-A")
+    _park_question(d, "q7")
+    hist = agent._history(target, "sess-A")
+    polled = agent._poll("20260911-180000-aaa", target)
+    assert hist["permissions"] == polled["permissions"]
+    assert hist["mode"] == polled["mode"]

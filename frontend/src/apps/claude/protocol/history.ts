@@ -187,6 +187,38 @@ export { ANN_TAG };
  * `/api/run` road, byte-for-byte the same answer, so the page never loses the
  * conversation to the optimisation.
  */
+/**
+ * THE LAST HISTORY ANSWER PER CONVERSATION, page-wide (controller-api
+ * `historyCache`). Keyed by target + session because the same session id can
+ * exist under several project dirs with divergent content (`_history`'s own
+ * rule). Small and bounded: a wall of 30 cards is 30 entries; the eldest goes
+ * when the cap is hit. Module state on purpose — the Tasks wall's tile and the
+ * Peek modal opened on it are two controllers that must see one cache.
+ */
+const HISTORY_CACHE_CAP = 64;
+const historyCache = new Map<string, HistoryResponse>();
+const historyKey = (file: string, sessionId: string) => `${file}\u0000${sessionId}`;
+
+export const sharedHistoryCache = {
+  get(file: string, sessionId: string): HistoryResponse | undefined {
+    return historyCache.get(historyKey(file, sessionId));
+  },
+  set(file: string, sessionId: string, res: HistoryResponse): void {
+    const key = historyKey(file, sessionId);
+    historyCache.delete(key); // re-insert so the Map's order is recency
+    historyCache.set(key, res);
+    while (historyCache.size > HISTORY_CACHE_CAP) {
+      const eldest = historyCache.keys().next().value;
+      if (eldest === undefined) break;
+      historyCache.delete(eldest);
+    }
+  },
+  /** Tests. */
+  clear(): void {
+    historyCache.clear();
+  },
+};
+
 export async function fetchHistory(
   agentDir: string,
   file: string,
