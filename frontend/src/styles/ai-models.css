@@ -3701,6 +3701,32 @@ button.am-bench-model:focus-visible {
   letter-spacing: -0.01em;
 }
 
+/* Item 14 (fix round 3): `.mono-name` is now an `<a>` to the model's Hub
+   page — same look as plain text, no colour change, underline on hover/
+   focus only (same pattern as `.tp .btn-link`) so the row stays quiet. */
+.tp a.mono-name {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.tp a.mono-name:hover,
+.tp a.mono-name:focus-visible {
+  text-decoration: underline;
+}
+
+/* The pane rows' own (smaller, muted) id line gets the same link treatment,
+   inheriting its existing colour/size rather than `.mono-name`'s 13px/600 —
+   the pane's id line was never that size to begin with. */
+.tp .row-note.mono a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tp .row-note.mono a:hover,
+.tp .row-note.mono a:focus-visible {
+  text-decoration: underline;
+}
+
 .tp .row-meta {
   margin: 3px 0 0;
   font-size: 11px;

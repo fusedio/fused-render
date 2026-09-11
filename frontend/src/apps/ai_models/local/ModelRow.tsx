@@ -376,7 +376,25 @@ export function ModelRow({
             {model.curated && <CuratedMark />}
             {chips}
           </div>
-          <p className="row-note mono">{model.id}</p>
+          {/* Item 14 (fix round 3): the model id is a real Hub repo id — link
+           *  it to the model's page, as `origin/main`'s `RepoCard.tsx` did
+           *  before this PR's port. `stopPropagation` because this label
+           *  sits inside the same row as the (i) button toggling the
+           *  drawer; nothing above actually listens for a click on the row
+           *  itself today, but the row's own click surface has moved
+           *  before and a link firing that toggle too would be a real
+           *  regression to guard against, not a hypothetical one. */}
+          <p className="row-note mono">
+            <a
+              href={hubModelUrl(model.id)}
+              target="_blank"
+              rel="noreferrer"
+              title="Open on huggingface.co"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {model.id}
+            </a>
+          </p>
           {opts.downloading && opts.progress && (
             <>
               <div className="bar-prog">

@@ -290,7 +290,23 @@ function HitRow({
         </span>
         <div>
           <div className="row-name">
-            <b className="mono-name">{model.id}</b>
+            {/* Item 14 (fix round 3): a real Hub repo id — link it to the
+             *  model's page, as `origin/main`'s `RepoCard.tsx` did before
+             *  this PR's port. `stopPropagation` because this heading sits
+             *  in the same row as the (i) button that opens the drawer
+             *  below — nothing on `.row.hit.rich` itself listens for a
+             *  click today, but a link firing that toggle too would be a
+             *  real regression, not a hypothetical one. */}
+            <a
+              className="mono-name"
+              href={hubModelUrl(model.id)}
+              target="_blank"
+              rel="noreferrer"
+              title="Open on huggingface.co"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {model.id}
+            </a>
             {gate && (
               <span className="chip warn-chip" title={gate.title}>
                 Gated
