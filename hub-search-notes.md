@@ -1725,3 +1725,20 @@ To verify in the browser:
   it, and hovering the cell still shows the memory/speed/freshness
   explanation; the legend line below the list now opens by naming the
   score.
+
+Extension to item 11: the same standard capability names now also show
+up outside the Local tab — Playground's mode picker/headings and the
+Home page's "AI Playground" strip both pulled two labels of their own
+("Transcription", "Video") that disagreed with the Local tab's ("Speech
+to text", "Video generation") for the exact same capability;
+`playground/groups.ts` now derives every label from `capabilityLabel()`
+instead of hand-picking it, so Playground/Home/Local/Benchmark/Engines
+all read off the one table. Benchmark and Engines already called
+`capabilityLabel()` directly and needed no change; Usage shows no
+capability names. No test asserted the old strings, so no test changes
+were needed here.
+
+To verify in the browser (extension): open the Playground tab and the
+Home page's "AI Playground" strip — both should read "Speech to text"
+and "Video generation" (not "Transcription"/"Video"), matching the
+Local tab's nav exactly.
