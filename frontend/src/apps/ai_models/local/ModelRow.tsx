@@ -13,6 +13,8 @@
 // twice.
 import type { ReactNode } from "react";
 
+import type { AiFitVerdict } from "@platform/lib/api";
+
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 
 /** D813 (item P): the pre-port curated mark, restored verbatim from
@@ -61,6 +63,12 @@ export interface ModelRowModel {
   ourPick: boolean;
   /** A warning chip's text (e.g. "needs 32GB"), or null for none. */
   warnChip: string | null;
+  /** D814 (item Q): this Mac's fit verdict for the row, or null when the
+   *  catalog has no fit data for it (a repo the curation never heard of).
+   *  Drives the fit chip in the row header — distinct from `warnChip`, which
+   *  is reused for the "partially downloaded" state and no longer carries
+   *  the fit-verdict text. */
+  fit: AiFitVerdict["verdict"] | null;
   have: boolean;
   /** Formatted size, or "size not checked yet" when nothing is known. */
   sizeLabel: string;
@@ -278,11 +286,36 @@ export function ModelRow({
       Our pick
     </span>,
   );
-  if (model.warnChip) chips.push(
-    <span key="warn" className="chip warn-chip">
-      {model.warnChip}
-    </span>,
-  );
+  // D814 (item Q): a fit chip for every row that carries a verdict — absent
+  // for a repo the catalog has no fit data for (no "?" on the pane; that
+  // glyph is reserved for search hits per the mockup). `warnChip` still
+  // covers the partial-download case (PARTIAL_TAG) but no longer duplicates
+  // the "needs N GB" text now that the fit chip owns it.
+  if (model.fit === "easy") {
+    chips.push(
+      <span key="fit" className="chip fit-chip fit-easy" title="Fits comfortably in this Mac's memory">
+        ● Fits
+      </span>,
+    );
+  } else if (model.fit === "tight") {
+    chips.push(
+      <span key="fit" className="chip fit-chip fit-tight" title="Fits, but tightly">
+        ▲ Tight fit
+      </span>,
+    );
+  } else if (model.fit === "no") {
+    chips.push(
+      <span key="fit" className="chip fit-chip fit-no" title="Will not fit in this Mac's memory">
+        ■ {model.warnChip}
+      </span>,
+    );
+  } else if (model.warnChip) {
+    chips.push(
+      <span key="warn" className="chip warn-chip">
+        {model.warnChip}
+      </span>,
+    );
+  }
 
   return (
     <div className={`rowwrap${opts.info ? " open" : ""}`}>

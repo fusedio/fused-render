@@ -142,8 +142,9 @@ function diskRow(
     warnChip: resumable(repo)
       ? PARTIAL_TAG
       : cat?.fit?.verdict === "no"
-        ? `needs ${formatSize(cat.fit.footprintBytes)}`
+        ? `Needs ${formatSize(cat.fit.footprintBytes)}`
         : null,
+    fit: resumable(repo) ? null : (cat?.fit?.verdict ?? null),
     have: true,
     sizeLabel: formatSize(repo.size),
     usedLabel: timeAgo(repo.lastUsed),
@@ -166,7 +167,8 @@ function catalogRow(m: AiCatalogModel, engine: string | null): ModelRowModel {
     name: m.nickname || m.label,
     curated: true,
     ourPick: m.recommended,
-    warnChip: m.fit?.verdict === "no" ? `needs ${formatSize(m.fit.footprintBytes)}` : null,
+    warnChip: m.fit?.verdict === "no" ? `Needs ${formatSize(m.fit.footprintBytes)}` : null,
+    fit: m.fit?.verdict ?? null,
     have: false,
     sizeLabel: m.size_gb ? formatSize(m.size_gb * 1024 ** 3) : "size not checked yet",
     usedLabel: null,

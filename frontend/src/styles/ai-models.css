@@ -3188,6 +3188,24 @@ button.am-bench-model:focus-visible {
   color: var(--warning);
 }
 
+/* D814 (item Q): a fit chip on every row that carries a verdict, mirroring
+   the mockup's .fit-easy/.fit-tight/.fit-no (ai-models-two-pane.html) —
+   border follows the same color-mix pattern as .chip.warn-chip above. */
+.tp .chip.fit-easy {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  color: var(--success);
+}
+
+.tp .chip.fit-tight {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
+}
+
+.tp .chip.fit-no {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+  color: var(--error);
+}
+
 .tp .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
