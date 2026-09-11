@@ -236,6 +236,121 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
 
 
+def _fetch_delta_pages(tag: str, fmt: str | None,
+                        watermark: str) -> tuple[list[dict], float | None, str | None]:
+    """Rows newer than `watermark` (a `lastModified` ISO8601 string, or `""`
+    for "everything") for one (tag, format) pair — the daily refresh's
+    fetch, paged the identical way `_fetch_all_pages` is, but STOPPING as
+    soon as a page's rows fall at or below the watermark rather than always
+    walking every page: the Hub returns pages sorted `lastModified` desc, so
+    once one row in a page is not newer than the watermark, nothing after it
+    in the whole ordering can be either. The spec's own measured fact (a 24h
+    delta over the MLX slice is ~166 rows / 1 request) is exactly this
+    shape: almost always a single page.
+
+    Returns `(rows, rate_limit_reset_s, error)`, the same three-way shape
+    `_fetch_all_pages` returns, for the identical reason: a 429 mid-page
+    still keeps whatever newer rows were already seen on earlier pages."""
+    params: dict[str, object] = {
+        "sort": "lastModified", "direction": -1, "limit": _PAGE_LIMIT,
+        "expand[]": list(_EXPAND),
+    }
+    params["filter"] = [tag, fmt] if fmt else tag
+    headers = {"Accept": "application/json"}
+    token = _token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{_hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
+    rows: list[dict] = []
+    for _ in range(_MAX_PAGES):
+        page_rows, response, error = _page(url, headers)
+        if error == "429":
+            reset_s = _parse_ratelimit_reset(
+                response.headers.get("RateLimit") if response is not None else None)
+            return rows, (reset_s if reset_s is not None else _DEFAULT_BACKOFF_S), None
+        if error is not None:
+            return rows, None, error
+        reached_watermark = False
+        for raw in page_rows:
+            if not isinstance(raw, dict):
+                continue
+            last_modified = raw.get("lastModified")
+            if watermark and isinstance(last_modified, str) and last_modified <= watermark:
+                # Everything from here on, in this page and every later one,
+                # is at least as old — the Hub's own sort guarantees it.
+                reached_watermark = True
+                continue
+            rows.append(raw)
+        if reached_watermark:
+            break
+        next_link = response.links.get("next") if response is not None else None
+        if not next_link:
+            break
+        url = next_link["url"]
+    return rows, None, None
+
+
+def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dict:
+    """One `lastModified` delta for an ALREADY-BUILT pool (SPEC "Affected
+    Flows": "daily thread -> Hub (1 lastModified delta per built pool)").
+
+    Unlike `build_capability_pool`, this NEVER refetches the whole slice: it
+    reads the existing pool, works out the newest `lastModified` it already
+    holds, and asks the Hub only for rows newer than that — merging any
+    match (new repo, or an existing repo whose metadata changed) into the
+    existing set by id before writing a fresh generation. A capability with
+    no pool yet is a no-op (`{"skipped": "no-pool"}` — the daily thread must
+    never build one from scratch, only widen one that already exists,
+    exactly as the spec's own line "unbuilt pools are never refreshed"
+    requires) and so is one still sitting inside a 429 backoff window
+    (`{"skipped": "blocked"}`).
+    """
+    if not hub_catalog.pool_exists(cfg, capability):
+        return {"skipped": "no-pool"}
+    if hub_catalog.is_blocked(cfg, capability):
+        return {"skipped": "blocked"}
+
+    existing_rows = hub_catalog.query_pool(cfg, capability)
+    watermark = ""
+    by_id: dict[str, dict] = {}
+    for raw in existing_rows:
+        repo_id = raw.get("id") if isinstance(raw, dict) else None
+        if isinstance(repo_id, str):
+            by_id[repo_id] = raw
+        last_modified = raw.get("lastModified") if isinstance(raw, dict) else None
+        if isinstance(last_modified, str) and last_modified > watermark:
+            watermark = last_modified
+
+    tags = ai_tasks.tags_for_capability(capability)
+    formats = _formats_for_capability(capability)
+    format_list: tuple[str | None, ...] = formats if formats else (None,)
+
+    rate_limit_reset_s: float | None = None
+    for tag in tags:
+        for fmt in format_list:
+            new_rows, reset_s, _error = _fetch_delta_pages(tag, fmt, watermark)
+            for raw in new_rows:
+                repo_id = raw.get("id") if isinstance(raw, dict) else None
+                if isinstance(repo_id, str):
+                    by_id[repo_id] = raw
+            if reset_s is not None:
+                rate_limit_reset_s = reset_s
+                break
+        if rate_limit_reset_s is not None:
+            break
+
+    merged = [{"capability": capability, "format": "", "raw": raw} for raw in by_id.values()]
+    # Unlike `build_capability_pool`, a delta always has the EXISTING rows to
+    # write even when a 429 lands before a single new one comes back — there
+    # is no "empty pool would be worse than no pool" case here, only "no
+    # widening happened this round".
+    hub_catalog.write_pool(cfg, capability, merged)
+    if rate_limit_reset_s is not None:
+        hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+    return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
+
+
 def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None) -> bool:
     """Kick off a background build for `capability` if one is not already
     running, blocked on a 429 backoff, or already built. Non-blocking —

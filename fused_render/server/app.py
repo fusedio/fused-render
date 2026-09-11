@@ -550,6 +550,17 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.start_hub_metadata_refresh()
 
+    # Hub-catalog daily delta refresh (SPEC docs/HUB_CATALOG_SPEC.md item 4):
+    # a BUILT capability pool (`api_hub_search`'s `ensure_build_started` path)
+    # goes stale as new repos land on the Hub between builds; this widens
+    # each built pool by one `lastModified` delta per day, same background-
+    # thread shape as the two hooks immediately above.
+    @on_startup
+    async def _startup_ai_hub_catalog_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_catalog_refresh()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.

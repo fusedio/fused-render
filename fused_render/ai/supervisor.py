@@ -56,7 +56,8 @@ from dataclasses import dataclass, field
 
 from fused_render import jobs
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
+from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
+from fused_render.ai import hub_catalog_builder
 
 logger = logging.getLogger(__name__)
 
@@ -2289,6 +2290,82 @@ def start_hub_metadata_refresh() -> None:
     _hub_metadata_refresh_thread = threading.Thread(
         target=run, name="ai-hub-metadata-refresh", daemon=True)
     _hub_metadata_refresh_thread.start()
+
+
+#: One delta per BUILT hub-catalog pool per day (SPEC docs/HUB_CATALOG_SPEC.md,
+#: "Affected Flows"). A day, not `_HUB_METADATA_REFRESH_INTERVAL_S`'s 20
+#: minutes: the spec's own measured fact is "24h delta = ~166 rows / 1
+#: request" for the biggest pool (MLX text-generation), so a tighter tick
+#: would cost real Hub requests for no benefit — nothing in a capability's
+#: pool needs to be fresher than a day for a search's ranking to be useful.
+#: Unbuilt pools are never touched by this thread at all (`_hub_catalog_
+#: refresh_tick`'s own per-capability check) — this only ever WIDENS a pool
+#: that already exists, never builds one from scratch (that is `api_hub_
+#: search`'s `ensure_build_started`, on a cache miss).
+_HUB_CATALOG_REFRESH_INTERVAL_S = 24 * 60 * 60  # 1 day
+
+_hub_catalog_refresh_thread: threading.Thread | None = None
+
+
+def _hub_catalog_refresh_tick() -> None:
+    """One sweep of every BUILT capability pool's manifest entry, refreshing
+    whichever ones are due — split out for the same testability reason
+    `_hardware_refresh_tick`/`_hub_metadata_refresh_tick` are (a test drives
+    this directly, without ever starting the thread).
+
+    "Due" is read off the pool's own manifest entry (`entry["updated"]`, the
+    timestamp `hub_catalog.write_pool` stamps on every write, including a
+    delta's own write) rather than a separate per-capability clock this
+    module would have to keep in sync — the manifest is already the single
+    source of truth for when a pool last changed, on disk, shared across
+    however many processes point at this home dir. A capability with no
+    `"updated"` entry (should not happen for a built pool, but the same
+    defensive read `pool_exists`/`is_blocked` already apply) is treated as
+    due immediately, same as a stale one.
+
+    A capability's own `refresh_capability_pool_delta` call already no-ops
+    for a missing pool or an active 429 backoff, so this sweep does not need
+    to duplicate either check — it only adds the THIRD gate, "not due yet",
+    on top."""
+    cfg = hub_catalog.load_config()
+    manifest = hub_catalog.read_manifest(cfg)
+    now = time.time()
+    for capability, entry in manifest.get("capabilities", {}).items():
+        if not isinstance(entry, dict) or not entry.get("file"):
+            continue  # never built — the daily thread never builds one
+        if hub_catalog.is_blocked(cfg, capability):
+            continue
+        updated = entry.get("updated")
+        if isinstance(updated, (int, float)) and now - updated < _HUB_CATALOG_REFRESH_INTERVAL_S:
+            continue
+        try:
+            hub_catalog_builder.refresh_capability_pool_delta(cfg, capability)
+        except Exception:  # noqa: BLE001 - one capability's failure must not stop the sweep
+            logger.exception("hub-catalog refresh failed for %s", capability)
+
+
+def start_hub_catalog_refresh() -> None:
+    """Start the daily hub-catalog delta-refresh thread, once per process —
+    modeled directly on `start_hardware_refresh`/`start_hub_metadata_refresh`
+    above (idempotent module-level handle, one sweep fires immediately so a
+    pool built in a previous run is not stuck a full day behind, then the
+    thread sleeps and re-sweeps forever). A failed sweep is logged and never
+    kills the loop, same as its two siblings."""
+    global _hub_catalog_refresh_thread
+    if _hub_catalog_refresh_thread is not None and _hub_catalog_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hub_catalog_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hub-catalog refresh tick failed")
+            time.sleep(_HUB_CATALOG_REFRESH_INTERVAL_S)
+
+    _hub_catalog_refresh_thread = threading.Thread(
+        target=run, name="ai-hub-catalog-refresh", daemon=True)
+    _hub_catalog_refresh_thread.start()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to

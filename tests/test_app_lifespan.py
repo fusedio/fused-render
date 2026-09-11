@@ -122,6 +122,7 @@ EXPECTED_STARTUP = [
     "_startup_ai_idle_reaper",
     "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
+    "_startup_ai_hub_catalog_refresh",
     "_startup_gc_project_venvs",
     "_startup_index_scan",
     "_startup_update_dev_manager",

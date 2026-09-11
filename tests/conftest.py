@@ -647,6 +647,27 @@ def _no_ai_hub_metadata_refresh_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_ai_hub_catalog_refresh_thread(monkeypatch):
+    """`create_app` also starts the daily hub-catalog delta-refresh thread
+    (`supervisor.start_hub_catalog_refresh`, SPEC docs/HUB_CATALOG_SPEC.md
+    item 4); no test may let it run.
+
+    Same hazard, same fix, as its two siblings immediately above: the thread
+    fires one sweep immediately, and a sweep can call
+    `hub_catalog_builder.refresh_capability_pool_delta`, which makes REAL
+    `httpx.get` calls against the Hub, under whatever `FUSED_RENDER_HOME`
+    happens to be current when the daemon thread gets scheduled — the same
+    race the hardware/hub-metadata fixtures already guard against.
+
+    No test asserts `start_hub_catalog_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_catalog_refresh.py`)
+    drives `_hub_catalog_refresh_tick()` directly, never the thread."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_catalog_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_hub_catalog_background_build(monkeypatch):
     """`api_hub_search` (hub_models.py, SPEC docs/HUB_CATALOG_SPEC.md item 3)
     fires `hub_catalog_builder.ensure_build_started(capability)` on every
