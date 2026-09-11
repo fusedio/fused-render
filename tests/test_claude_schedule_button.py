@@ -369,8 +369,18 @@ def test_the_link_beats_the_guess_and_an_edit_beats_the_link(modal):
     """Three sources for one field, in order: a stored target (Edit), the folder
     a link named, and only then defaultTargetOf() — the server's resolved
     workspace, which is what you offer when nobody said."""
-    assert modal.count('editing?.target ?? initialTarget ?? ""') == 2, \
-        "the state and the dirty baseline must be the same expression"
+    # ONE const, read twice — not the same expression written out twice
+    # (Akshil, 2026-09-11). It used to be the literal in both seats and this
+    # counted them; the draft work added a fourth source in front of the three
+    # (a re-opened draft's own stored target), and repeating a four-term
+    # precedence chain in two places is exactly the drift the count was guarding
+    # against. The guarantee is unchanged and now structural: there is one
+    # expression, so the state and the dirty baseline cannot disagree.
+    assert modal.count('const initialTargetValue = ') == 1
+    assert 'editing?.target ?? initialTarget ?? ""' in modal, \
+        "Edit beats the link beats the guess"
+    assert modal.count("initialTargetValue") == 3, \
+        "the const, the state seed, and the dirty baseline"
     # the async default only fills a still-EMPTY field, which is what keeps it
     # from clobbering the link's target when getConfig resolves
     effect = modal[modal.index("getConfig().then("):]

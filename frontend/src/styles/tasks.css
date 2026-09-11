@@ -811,6 +811,20 @@ button.tasks-caret,
   cursor: default;
 }
 
+/* THE SHIELD ON A BOARD CARD'S FOOT, which is where the Draft chip is a tag as
+   well (design.md, Round 2). Only the layout half: the rule above stretches the
+   shield to the ROW's height so it can cover the row's own padding band, and a
+   card's foot has no such band to cover — there is no stretched link under it,
+   so the press needs no shielding, only the same box model as the pill beside
+   it. Without this the shield is a plain inline span and the pill inside it sat
+   on the foot's text baseline instead of centred with the folder chip. */
+.schedule-tv-card-foot .schedule-tv-id-shield {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  cursor: default;
+}
+
 .tasks-row .schedule-tv-id-shield::after {
   content: "";
   position: absolute;
@@ -1776,6 +1790,73 @@ button.tasks-caret,
   font-size: 10px;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* -- the Draft chip (design.md, Round 2) ---------------------------------------
+   `[✎ Draft]` — the one mark for words nobody has sent, and on the List and the
+   Board the control that filters the page down to them. It IS the outcome pill
+   above: same height, same radius, same muted hairline, because it is the same
+   kind of object — a correction to what the row otherwise implies — and a second
+   pill shape for a second kind of note is how a row grows marks nobody can tell
+   apart. Only two things are added here.
+
+   The GLYPH, which the outcome pill never has: a 3px gap and a mark that does
+   not shrink. `line-height: 0` on the holder is what keeps an 11px SVG from
+   pushing the 14px pill taller — an inline svg sits on the text baseline and
+   carries the line box's descender with it.
+
+   And the PRESS, on the arm that has one. `button` in the selector rather than a
+   modifier class: the pressable and the inert chip differ by which element they
+   are, so the skin cannot be asked for on the wrong one. Everything in it is the
+   folder tag's, verbatim (`.schedule-tv-id--tag`, above) — the quiet wash on
+   hover, the accent fill when the filter is on, the hairline that gives the fill
+   an edge — because the two chips sit side by side at the row's right end and
+   read as one group of controls. Two nearly-identical pills with two different
+   pressed states would be the one thing this seat was chosen to avoid. */
+.tasks-draft-pill {
+  gap: 3px;
+}
+
+.tasks-draft-pill-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+button.tasks-draft-pill {
+  appearance: none;
+  font: inherit;
+  font-size: 10px;
+  background: none;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+button.tasks-draft-pill:hover,
+button.tasks-draft-pill:focus-visible {
+  background: var(--ctl-quiet-bg-hover);
+}
+
+button.tasks-draft-pill:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* ON: the filter is running, and the chip that set it says so at rest — the
+   folder chip's own argument (see `.schedule-tv-id--tag.is-on`), and it matters
+   more here because this filter has NO other control. There is no popover
+   holding a count for it and no entry in the Status menu; if the chip did not
+   wear the state, a filtered page would be one a reader could not explain. */
+button.tasks-draft-pill.is-on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--fg);
+}
+
+button.tasks-draft-pill.is-on:hover,
+button.tasks-draft-pill.is-on:focus-visible {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
 /* -- dropping ONE filter, from the control that set it (D448) -----------------

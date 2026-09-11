@@ -132,6 +132,7 @@ import { useChatRecapEnabled } from "./feature-flag";
 import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness } from "@platform/lib/api";
+import { chatDraftKey, rekeyChatDraft } from "@platform/lib/drafts";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -2446,6 +2447,38 @@ function ChatBody(props: ChatBodyProps) {
     });
     return watch.start();
   }, [controller, inChat, state.sessionId]);
+
+  /**
+   * THE DRAFT'S TASK NUMBER FOLLOWS THE SESSION THE CHAT TURNS OUT TO BE
+   * (design.md, Round 2: "Every draft has a TASK number").
+   *
+   * A brand-new conversation has no session id, so its composer autosaves under
+   * `new:<file>` and the server gives THAT key a TASK-NNN and a row on the List.
+   * The first send creates the session; from the next render the composer keys
+   * on the session id instead (Composer's `draftKey`), and without this the
+   * number — and the row wearing it — would be stranded on a key nothing reads
+   * again. One POST moves both, the same way `pending:<entry>` is walked onto a
+   * session when a scheduled run reports one.
+   *
+   * ONCE, AND ONLY FOR A CHAT THAT STARTED WITHOUT ONE. `started` latches what
+   * the very first render saw: a chat opened ON a session (a recent row, a deep
+   * link, the Tasks page) never had a `new:<file>` key, and telling the server to
+   * rename one would at best be a no-op and at worst claim a key belonging to a
+   * different, still-unsent chat in the same folder.
+   *
+   * Fire and forget, like every other write in platform/lib/drafts: a refusal
+   * costs the number's continuity and nothing the reader is doing — and the
+   * draft this renames is one the send is about to delete anyway.
+   */
+  const rekeyed = useRef(false);
+  const startedWithoutSession = useRef<boolean | null>(null);
+  useEffect(() => {
+    const id = state.sessionId ?? "";
+    if (startedWithoutSession.current === null) startedWithoutSession.current = !id;
+    if (!startedWithoutSession.current || rekeyed.current || !id) return;
+    rekeyed.current = true;
+    void rekeyChatDraft(chatDraftKey(null, file), id);
+  }, [file, state.sessionId]);
 
   const card = useMemo(
     () => ({

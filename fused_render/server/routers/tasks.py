@@ -45,6 +45,15 @@ this file is written around:
   Nothing survives to revive, which is the whole difference from delete (D307).
   Same section.
 
+**Drafts ride on this listing** (fused_render/drafts.py, routers/drafts.py).
+Two joins, no new list endpoint: every session row gains `draft` — the one-line
+preview of whatever is sitting unsent in that conversation's composer, or None
+— and every TASK draft is emitted as a row of its own (`kind:"draft"`,
+`state:"draft"`, key `draft:<id>`, no number). Both travel down
+`/api/tasks/changes` like any other change to a row, which is what makes the
+`✎ Draft` chip appear and a new draft land in Upcoming without a reload. Both
+are absent from the pulse, deliberately — see `api_tasks_pulse`.
+
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
 (`_send` hands `entry["message"]` over verbatim), so listing both would show it
@@ -99,7 +108,8 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import current_apps, schedule, tasks_store, tasks_watch
+from fused_render import (current_apps, drafts, schedule, tasks_store,
+                          tasks_watch)
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -1715,7 +1725,8 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str], revived: list[str], parked: dict | None = None) -> dict:
+         busy: set[str], revived: list[str], parked: dict | None = None,
+         chat_drafts: dict | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -1729,6 +1740,14 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     own entries because a resume that forked is filed under the session it RAN
     in (`_entry_session` reads the answer first) while it still holds the
     session it NAMED busy, and that one is another row.
+
+    `chat_drafts` is `drafts.list_chat()`, read once by the caller for the same
+    reason `read` and the numbers are: it is one file, and asking it per row
+    would open it once per task on the machine. Joined on the SESSION ID rather
+    than the key, because that is what the composer keys on — a `pending:` row
+    has no conversation to have been typed into, and a `new:<file>` draft has no
+    row at all until its first send makes the session (design.md, "Chat draft
+    key").
 
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
@@ -1872,6 +1891,16 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "attention": ({"tool": waiting["tool"], "summary": waiting["summary"]}
                       if waiting is not None else None),
         "live": live,
+        # UNSENT TEXT SITTING IN THIS TASK'S COMPOSER — `{preview, updated_at}`
+        # or None, which is what the `✎ Draft` chip and its tooltip are drawn
+        # from. A join and not a second poll: the chip has to appear and vanish
+        # live, and this row already travels down the changes long-poll every
+        # time anything about the task moves (design.md, "Joins"). Only the
+        # PREVIEW rides along — one line — because the draft itself belongs in
+        # the composer the user left it in, and a listing that carried every
+        # unsent message on the machine would be paying transcript-sized costs
+        # for a badge.
+        "draft": _chat_draft(task["session_id"], chat_drafts),
         "unread": _unread_count(task, total, unfired, read),
         # WHEN THIS TASK BEGAN — the EARLIEST clock it has (`_place`, which
         # explains the choice at length): the scheduled entry's `created`, else
@@ -1898,6 +1927,308 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
+
+
+def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
+    """One row's `draft` field: the preview of the unsent text in its composer,
+    or None. `None` and "an empty draft" are the same thing — the store never
+    keeps an empty one — so the client has exactly one question to ask."""
+    if not session_id or not chat_drafts:
+        return None
+    record = chat_drafts.get(session_id)
+    if not record:
+        return None
+    line = drafts.preview(record.get("text"))
+    rows = record.get("attachments") or []
+    if not line and not rows:
+        return None
+    return {"preview": line, "updated_at": float(record.get("updated_at") or 0.0)}
+
+
+# What a task draft's row calls itself where a real task names its lane. A
+# draft has no derived status — nothing has run, nothing is booked — and
+# `upcoming` is the honest one of the six: design.md puts drafts in the Board's
+# Upcoming lane ("an unfinished thing is the most upcoming thing") and the
+# List's when-column reads `Draft` off `state`, not off this. `kind` and
+# `state` are what tell the two apart; `status` is what keeps every view that
+# already switches on the six lanes working without learning a seventh
+# (Akshil, 2026-09-11).
+_DRAFT_STATUS = "upcoming"
+
+#: What a draft with nothing to call itself is called. A draft row has to be
+#: clickable — it is the ONLY way back into the modal (design.md, "Reopen
+#: path") — so it can never render as a blank line.
+_UNTITLED_DRAFT = "Untitled draft"
+
+#: ...and the same for a chat nobody has sent yet. Different word because it is
+#: a different way back in: a task draft reopens the modal, an unsent chat
+#: opens the folder's conversation with the composer already holding the text.
+_UNTITLED_CHAT = "Untitled chat"
+
+#: How long a draft row's title may be. Shorter than `drafts.PREVIEW_MAX` (the
+#: chip's tooltip, which is allowed a whole line) because this is a TITLE, and
+#: it sits in the same column as a task's — a draft that printed 120 characters
+#: there would be the one row on the page setting its own width
+#: (Akshil, 2026-09-11).
+_DRAFT_TITLE_MAX = 80
+
+
+def _draft_title(text, fallback: str) -> str:
+    """A draft row's title: the first non-empty line of what was typed, clipped
+    to `_DRAFT_TITLE_MAX`, else `fallback`. `drafts.preview` already answers the
+    first half of that (and clips to its own, larger, bound), so this only has
+    the tighter cut to make."""
+    line = drafts.preview(text)
+    if len(line) > _DRAFT_TITLE_MAX:
+        line = line[:_DRAFT_TITLE_MAX - 1].rstrip() + "…"
+    return line or fallback
+
+
+def _draft_row(ident: str, record: dict, number: str = "") -> dict:
+    """One task draft as a listing row.
+
+    THE SAME FIELD SET AS `_row`, deliberately and in full: the List, the Board
+    and the changes long-poll all read one row shape, and a row missing half of
+    it would make every one of them test for a kind before touching a field.
+    What differs is what a draft actually is — no session, no messages, and
+    nothing that has happened (`happened_at` 0.0 — the desk must not read an
+    unfinished form as work that finished under an app).
+
+    IT DOES HAVE A NUMBER. Round 1 printed `task_id: ""` here on the reasoning
+    that a number is minted when a task becomes real; round 2 reversed that,
+    because the number is how a person NAMES the thing ("what happened to
+    TASK-118?") and a draft they have been typing into for ten minutes is
+    already a thing they can name. `draft:<id>` is allocated through exactly
+    the path `pending:<entry-id>` uses and is rekeyed forward onto
+    `pending:<entry-id>` when the draft is scheduled, so the number the row
+    showed while it was a form is the number it keeps once it is a task
+    (design.md, "Round 2"; Akshil, 2026-09-11).
+
+    The three fields `_row` has no use for — `draft_kind`, `cwd` and `file` —
+    are carried by BOTH draft kinds rather than by whichever needs them, for
+    the same reason the rest of the set is: one row shape, tested once.
+
+    `form` is the WHOLE stored draft, which is the one field here that is not
+    about drawing the row: clicking a draft row reopens the modal on it, and
+    the modal needs every field back, not a summary. It is small — one form —
+    and fetching it separately would mean a request between the click and the
+    modal, which is exactly the pause the feature exists to remove.
+    """
+    title = str(record.get("title") or "").strip()
+    if not title:
+        title = _draft_title(record.get("description"), "")
+    target = str(record.get("target") or "")
+    project = tasks_store.project_of(_workdir(target))
+    created = float(record.get("created_at") or 0.0)
+    updated = float(record.get("updated_at") or 0.0)
+    return {
+        "key": drafts.task_key(ident),
+        # ALLOCATED, and allocated under `draft:<id>` so it can be moved onto
+        # `pending:<entry-id>` by one `tasks_store.rekey` the moment the form
+        # is scheduled. "" only when the state dir is unwritable, which is the
+        # same "" every other row falls back to.
+        "task_id": number,
+        "draft_id": ident,
+        "kind": "draft",
+        # WHICH composer this draft belongs to. The two are opened by different
+        # clicks — a task draft reopens the New task modal, a chat draft opens
+        # the folder's conversation — and the row is the only thing that knows
+        # which (Akshil, 2026-09-11).
+        "draft_kind": "task",
+        "state": "draft",
+        "project": canonical_fs_path(project),
+        "cwd": canonical_fs_path(project),
+        "target": canonical_fs_path(target),
+        # The raw thing the draft was pointed at, file or folder, BEFORE
+        # `_workdir` resolved it to a project. The modal reopens on this.
+        "file": canonical_fs_path(target),
+        "session_id": "",
+        "title": title or _UNTITLED_DRAFT,
+        "title_source": "draft",
+        "description": str(record.get("description") or ""),
+        "status": _DRAFT_STATUS,
+        "failed": False,
+        "blocked_reason": "",
+        "attention": None,
+        "live": False,
+        # The chat half of the store keys on a session, and a draft has none.
+        # Present anyway so one row shape answers one question.
+        "draft": None,
+        "unread": 0,
+        # WHEN: a draft has none, and null is the difference between "runs at
+        # no particular time" (an immediate task, which has a time) and "has
+        # not been given one yet". The List's when-column prints `Draft` here.
+        "when": None,
+        # The row's clock, and there is only one honest source for it: when the
+        # form was started. `at` alongside `started` because the two names are
+        # already both in use on this page's rows and a draft answers the same
+        # for each.
+        "at": created,
+        "started": created,
+        "created_at": created,
+        "updated_at": updated,
+        # THE NEWEST EDIT, so the Upcoming lane sorts a draft by when it was
+        # last touched. `_row_order` reads this and nothing else once the
+        # status ranks tie, which is what puts a draft being typed at the top
+        # of the lane where the person who is typing it can see it.
+        "last_active": updated or created,
+        # Nothing has HAPPENED — see the docstring. `current_apps.observe`
+        # reads this field and must not put an app on the desk over a form.
+        "happened_at": 0.0,
+        "message_count": 0,
+        "next_run": 0.0,
+        "next_run_entry": "",
+        "next_run_repeats": False,
+        "messages": [],
+        # The modal's way back in. See the docstring.
+        "form": dict(record),
+    }
+
+
+def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
+    """One UNSENT CHAT as a listing row — a draft keyed `new:<file>`.
+
+    Round 1 gave this key no row: it names no session, so there was nothing for
+    the `✎ Draft` chip to hang off. That was the wrong way round. A person who
+    has typed half a message into a folder they have never chatted in has
+    exactly the same unfinished thing as one who has half-filled the New task
+    modal, and the only surface that remembered it was the composer they would
+    have to find again. So it is a row, with the folder as its project and its
+    first line as its title, and clicking it opens that folder's chat with the
+    composer already holding the text (design.md, "Round 2").
+
+    THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
+    session (there is none until the first send — that send is what
+    `POST /api/drafts/chat/rekey` reports, and it carries this number forward),
+    no messages, nothing that has happened. `form` is null rather than a dict:
+    a chat draft is text and attachments, which is what `draft` already
+    carries, and there is no form to reopen.
+    """
+    raw = drafts.new_chat_file(key)
+    folder = _workdir(raw)
+    project = tasks_store.project_of(folder)
+    updated = float(record.get("updated_at") or 0.0)
+    line = drafts.preview(record.get("text"))
+    rows = record.get("attachments") or []
+    return {
+        "key": key,
+        "task_id": number,
+        # There is no `draft:<id>` behind this one — the store keys it on the
+        # folder. "" rather than the key so a client testing `draft_id` cannot
+        # send this to the task-draft routes, which would 400 on the shape.
+        "draft_id": "",
+        "kind": "draft",
+        "draft_kind": "chat",
+        "state": "draft",
+        "project": canonical_fs_path(project),
+        "cwd": canonical_fs_path(project),
+        # A chat opens on the FILE when the key named one — that is where the
+        # person was looking — and the project is still the folder above it,
+        # which is the rule every other row's target follows (`_place`).
+        "target": canonical_fs_path(raw or project),
+        "file": canonical_fs_path(raw),
+        "session_id": "",
+        "title": _draft_title(record.get("text"), _UNTITLED_CHAT),
+        "title_source": "draft",
+        "description": "",
+        "status": _DRAFT_STATUS,
+        "failed": False,
+        "blocked_reason": "",
+        "attention": None,
+        "live": False,
+        # THIS row's chip is about itself. Every other row joins its draft off
+        # the session id; this one IS the draft, so the join is the identity.
+        "draft": ({"preview": line, "updated_at": updated}
+                  if (line or rows) else None),
+        "unread": 0,
+        "when": None,
+        # One clock, because the store keeps one: a chat draft has no
+        # `created_at` (it is a single upsert keyed on the folder, not a form
+        # with a birth), so `updated_at` answers every time on this row. That
+        # also puts it at the top of Upcoming while it is being typed, which is
+        # where the person typing it can see it.
+        "at": updated,
+        "started": updated,
+        "created_at": updated,
+        "updated_at": updated,
+        "last_active": updated,
+        "happened_at": 0.0,
+        "message_count": 0,
+        "next_run": 0.0,
+        "next_run_entry": "",
+        "next_run_repeats": False,
+        "messages": [],
+        # Nothing to reopen a modal on — see the docstring.
+        "form": None,
+    }
+
+
+def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
+    """TASK numbers for every draft, allocating what is missing.
+
+    `tasks_store.ensure_ids` and nothing else — the same call, the same file
+    and the same allocate-once promise the listing's `_numbers` uses, because
+    the whole point is that the number a draft shows is the number its task
+    will keep. The project each draft is numbered in is the FOLDER it is
+    pointed at, which is what `_workdir` resolves and what both row builders
+    above print.
+
+    Over EVERY draft, never the `only` subset: `ensure_ids` hands numbers out
+    in the order it is given them, so numbering a narrowed set would let the
+    changes endpoint allocate in a different order than the listing does.
+
+    Sorted by when the draft was started, the same `order` the listing passes,
+    so a backfill over a store that predates numbering reads in the order the
+    drafts were actually typed. Degrades to no numbers on an unwritable state
+    dir, exactly like `_numbers`: blank numbers, never a lost page.
+    """
+    items = []
+    for ident, record in task_drafts.items():
+        target = str(record.get("target") or "")
+        items.append((drafts.task_key(ident),
+                      tasks_store.project_of(_workdir(target)),
+                      float(record.get("created_at") or 0.0)))
+    for key, record in chat_drafts.items():
+        if not drafts.is_new_chat_key(key):
+            continue  # a chat draft on a real session is a chip, not a row
+        items.append((key,
+                      tasks_store.project_of(_workdir(drafts.new_chat_file(key))),
+                      float(record.get("updated_at") or 0.0)))
+    if not items:
+        return {}
+    try:
+        return tasks_store.ensure_ids(items)
+    except OSError:
+        return {}
+
+
+def _draft_rows(only: frozenset | set | None = None,
+                chat_drafts: dict | None = None) -> list[dict]:
+    """Every draft as a row — task drafts AND unsent new chats — narrowed to
+    `only` when the caller is the changes endpoint.
+
+    `chat_drafts` is `drafts.list_chat()`, read once by the caller for the same
+    reason the row join reads it once: it is one file, and this is the second
+    question asked of it. Read here when the caller has no copy, so the
+    function still answers on its own.
+    """
+    task_drafts = drafts.list_task()
+    if chat_drafts is None:
+        chat_drafts = drafts.list_chat()
+    numbers = _draft_numbers(task_drafts, chat_drafts)
+    rows = []
+    for ident, record in task_drafts.items():
+        key = drafts.task_key(ident)
+        if only is not None and key not in only:
+            continue
+        rows.append(_draft_row(ident, record, numbers.get(key, "")))
+    for key, record in chat_drafts.items():
+        if not drafts.is_new_chat_key(key):
+            continue
+        if only is not None and key not in only:
+            continue
+        rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
+    return rows
 
 
 def _description(task: dict) -> str:
@@ -2040,6 +2371,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # One scan of the runs tree for every row: which conversations are parked on
     # a card nobody has answered. See `_parked_runs`.
     parked = _parked_runs()
+    # One read of the drafts store for every row, for the same reason `read`
+    # and `busy` are read once: it is one small file, and the join below asks
+    # it per session.
+    chat_drafts = drafts.list_chat()
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)
@@ -2051,7 +2386,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in tasks.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived, parked)
+                       busy, revived, parked, chat_drafts)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -2071,6 +2406,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # one extra pass on exactly one request in the store's lifetime.
     if only is None and not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
+    # DRAFTS ARE ROWS TOO — the New task modal's half-filled forms AND the
+    # chats that have been typed into but never sent (`new:<file>`) — added
+    # here, AFTER the day-one read baseline and BEFORE the sort. After, because
+    # a draft has no messages and nothing to have read; before, because the
+    # Board orders Upcoming off this list and a draft has to arrive already in
+    # its place rather than appended past the end of the lane.
+    rows.extend(_draft_rows(only, chat_drafts))
     rows.sort(key=_row_order)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
@@ -2080,7 +2422,11 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # task and prunes what it does not see (bugbot, PR #892).
     if only is None:
         try:
-            current_apps.observe(rows)
+            # WITHOUT THE DRAFTS. `observe` reads a row as a task that exists
+            # and puts its folder on the desk; a half-typed form is not a task
+            # under an app yet, and a draft that was discarded would leave an
+            # app behind that nothing ever ran in.
+            current_apps.observe([r for r in rows if r.get("kind") != "draft"])
         except OSError:
             pass
     return rows
@@ -2174,11 +2520,18 @@ _PULSE_FIELDS = (
 
 @router.get("/api/tasks/pulse")
 def api_tasks_pulse():
-    """The compact task facts used by the global sidebar's status pulse."""
+    """The compact task facts used by the global sidebar's status pulse.
+
+    NO DRAFTS. The sidebar's dot, its unread count and its Notifications
+    section are about work that is happening; a form somebody has not finished
+    is not news, and design.md puts task drafts in the List and the Board only
+    — never the Cards wall, never the Calendar, and by the same reasoning never
+    here (Akshil, 2026-09-11)."""
     return {
         "tasks": [
             {field: row[field] for field in _PULSE_FIELDS}
             for row in _task_rows()
+            if row.get("kind") != "draft"
         ]
     }
 
@@ -2455,6 +2808,12 @@ def api_task_archive(patch: ArchivePatch):
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed = archive_task(task)
+    # AND THE UNSENT TEXT GOES WITH IT. A draft is a promise that the composer
+    # will still hold it when you come back; filing the task away is saying you
+    # are not coming back, and a `✎ Draft` chip on an archived row would be a
+    # badge pointing at a conversation the user just put down (design.md,
+    # "Joins": archive/delete/erase drop the chat draft).
+    drafts.delete_chat(task["session_id"])
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
@@ -2621,6 +2980,10 @@ def api_task_delete(patch: DeletePatch):
             cancelled += 1
 
     tasks_store.mark_deleted(key)
+    # The chat draft goes with the row, for archive's reason and one more: the
+    # row is the only place the chip could have been drawn, so a draft left
+    # behind is bytes nothing can ever show or reach.
+    drafts.delete_chat(task["session_id"])
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
@@ -2728,6 +3091,10 @@ def api_task_erase(patch: ErasePatch):
                         "see the server log"))
         sessions.forget_triage(session_id)
         tasks_store.forget_session(session_id)
+        # Nothing about this session survives an erase, and unsent text is
+        # emphatically something about it — there is no conversation left for
+        # it to be typed into.
+        drafts.delete_chat(session_id)
 
     tasks_store.mark_deleted(key)
     tasks_watch.notify({key})
