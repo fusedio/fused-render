@@ -1495,12 +1495,28 @@ def _repo_gguf_siblings(model_id: str) -> list[str] | None:
     have needed a second, parallel "did we already see this repo's siblings
     somewhere" plumbing for a call this rare, for no accuracy this simple
     version lacks. Returns None (never raises) on any failure — the caller
-    then refuses the override rather than guessing."""
+    then refuses the override rather than guessing.
+
+    Item 4 (code review): threaded through the SAME `_token()`/`hub_endpoint()`
+    helpers every other Hub call in `hub_models.py` uses — a bare call here
+    silently went out anonymous, against the real Hub only, ignoring both a
+    logged-in user's token and an `HF_ENDPOINT` mirror override every OTHER
+    Hub request already honours. A failure is logged at WARNING with the
+    repo id (previously swallowed with no trace at all) rather than raised."""
+    import logging
+
     import huggingface_hub
+
+    from fused_render.server.routers.hub_models import _token, hub_endpoint
+
     try:
-        return list(huggingface_hub.list_repo_files(model_id))
+        return list(huggingface_hub.list_repo_files(
+            model_id, token=_token(), endpoint=hub_endpoint()))
     except Exception:  # noqa: BLE001 - a Hub lookup failure here must refuse
         # the override, not 500 the whole download request.
+        logging.getLogger(__name__).warning(
+            "could not list %s's files for a download 'file' override", model_id,
+            exc_info=True)
         return None
 
 

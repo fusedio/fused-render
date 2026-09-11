@@ -11827,6 +11827,60 @@ def test_download_refuses_a_file_when_siblings_cannot_be_verified(
     assert dispatched == []
 
 
+def test_repo_gguf_siblings_passes_token_and_endpoint(client, hub, dispatched, monkeypatch):
+    """Item 4 (code review): `_repo_gguf_siblings` must use the SAME
+    `_token()`/`hub_endpoint()` helpers every other Hub call in
+    `hub_models.py` uses — a bare `list_repo_files(model_id)` call silently
+    went out anonymous against the real Hub only."""
+    import huggingface_hub
+
+    from fused_render.server.routers import hub_models
+
+    monkeypatch.setattr(hub_models, "_token", lambda: "fake-token-xyz")
+    monkeypatch.setattr(hub_models, "hub_endpoint", lambda: "https://mirror.test")
+    captured = {}
+
+    def fake_list_repo_files(model_id, **kwargs):
+        captured["model_id"] = model_id
+        captured.update(kwargs)
+        return ["model-Q4_K_M.gguf"]
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", fake_list_repo_files)
+    repo_dir = _cached_repo(hub, "org/gguf-tokened", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-tokened", "file": "model-Q4_K_M.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert captured["model_id"] == "org/gguf-tokened"
+    assert captured["token"] == "fake-token-xyz"
+    assert captured["endpoint"] == "https://mirror.test"
+
+
+def test_repo_gguf_siblings_logs_a_warning_with_the_repo_id_on_failure(
+        client, hub, dispatched, monkeypatch, caplog):
+    """Item 4 (code review): a lookup failure must be logged at WARNING
+    (with the repo id) rather than swallowed silently."""
+    import logging
+
+    import huggingface_hub
+
+    def raise_lookup(model_id, **kw):
+        raise RuntimeError("network is down")
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", raise_lookup)
+    repo_dir = _cached_repo(hub, "org/gguf-logtest", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/api/ai/runtime/download",
+            json={"model": "org/gguf-logtest", "file": "model-Q4_K_M.gguf"},
+            headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert any("org/gguf-logtest" in r.message for r in caplog.records)
+
+
 def test_download_refuses_a_sharded_quants_first_part(
         client, hub, dispatched, monkeypatch):
     """Item 3 (code review): shard part 1 IS one of `gguf_candidate_files`'s
