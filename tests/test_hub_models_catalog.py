@@ -152,6 +152,43 @@ def test_catalog_path_facets_and_best_sort_cover_the_whole_pool(client, hub_cach
     assert body["models"][0]["id"] == "pub24/model-8"
 
 
+def test_catalog_ilike_escape_neutralizes_percent_and_underscore_wildcards():
+    """Finding: `_catalog_ilike_escape` only doubled a literal quote, leaving
+    `%`/`_` as live LIKE/ILIKE wildcards in caller-controlled search text —
+    so a query for the literal substring `llama_3` would also match
+    `llama-3`/`llama33` (any char in place of `_`), and a bare `%` would
+    match the entire pool. Escaped text run through `ESCAPE '\\'` must match
+    ONLY the literal substring."""
+    escaped = hub._catalog_ilike_escape("llama_3")
+    assert escaped == "llama\\_3"
+
+    escaped_percent = hub._catalog_ilike_escape("100%")
+    assert escaped_percent == "100\\%"
+
+    # A literal backslash in the input must itself be doubled first, or it
+    # would start escaping the character that follows it.
+    escaped_backslash = hub._catalog_ilike_escape("a\\b")
+    assert escaped_backslash == "a\\\\b"
+
+
+def test_catalog_search_underscore_does_not_match_as_a_wildcard(client, hub_cache, monkeypatch):
+    """End-to-end: a pool containing both `org/llama_3` (the literal query)
+    and `org/llamaX3` (what `_` would ALSO match as an unescaped LIKE
+    wildcard) must return only the literal match for a `llama_3` query."""
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("catalog path must not call the Hub")))
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION, [
+        _pool_row("org/llama_3", downloads=10),
+        _pool_row("org/llamaX3", downloads=20),
+    ])
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "q": "llama_3", "limit": 24})
+    assert resp.status_code == 200
+    ids = {m["id"] for m in resp.json()["models"]}
+    assert ids == {"org/llama_3"}
+
+
 def test_live_path_still_used_and_fires_hub_request_when_no_pool_exists(client, hub_cache, monkeypatch):
     """No pool built for this capability (fresh, empty catalog dir from
     `_isolated_home`) — the search must take the live Hub path exactly as

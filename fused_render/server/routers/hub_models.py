@@ -1680,12 +1680,26 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     return result
 
 
+#: The escape character used by every `_catalog_ilike_escape`d clause's own
+#: `ESCAPE '\'` — a literal backslash must be doubled FIRST (before `%`/`_`
+#: are prefixed with one), or a caller-supplied backslash would itself start
+#: escaping the following character.
+_CATALOG_LIKE_ESCAPE = "\\"
+
+
 def _catalog_ilike_escape(value: str) -> str:
     """Quote a value for embedding inside a DuckDB SQL string literal used in
-    an ILIKE/LIKE clause — the only escaping this needs is doubling a literal
-    single quote, the standard SQL-string escape. `query_pool`'s `where`
-    fragment is plain SQL text, so this is the one seam that turns caller-
-    controlled input (a search box, a publisher filter) into it safely."""
+    an ILIKE/LIKE clause. Three things need escaping, not one: a literal
+    single quote (the standard SQL-string escape, doubled), and `%`/`_` —
+    LIKE/ILIKE wildcards (any-substring / any-single-char) DuckDB otherwise
+    honours even inside caller-supplied search text, so `llama_3` would also
+    match `llama-3`/`llama33` and a bare `%` would match the whole pool,
+    silently widening the substring match every caller of this function
+    assumes. Every clause built from this escaped value MUST append
+    `ESCAPE '\\'` (see `_CATALOG_LIKE_ESCAPE`) so DuckDB treats the inserted
+    backslashes as the escape character rather than literal text."""
+    value = value.replace("\\", "\\\\")
+    value = value.replace("%", "\\%").replace("_", "\\_")
     return value.replace("'", "''")
 
 
@@ -1705,9 +1719,11 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     cfg = hub_catalog.load_config()
     conditions = []
     if query:
-        conditions.append(f"id ILIKE '%{_catalog_ilike_escape(query)}%'")
+        conditions.append(
+            f"id ILIKE '%{_catalog_ilike_escape(query)}%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
     if publisher:
-        conditions.append(f"id ILIKE '{_catalog_ilike_escape(publisher)}/%'")
+        conditions.append(
+            f"id ILIKE '{_catalog_ilike_escape(publisher)}/%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
     where = " AND ".join(conditions) if conditions else None
     raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=where)
 
