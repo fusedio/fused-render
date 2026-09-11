@@ -1355,3 +1355,37 @@ and `frontend/src/styles/tokens.css`.
    plus any other Python files touched by the deletions.
 6. HEAD at handoff: `12bc1210d` (branch `worktree-hub-search-discovery`,
    tree clean).
+
+### Continuation builder update (2026-09-11) — CAPABILITY_ORDER reorder done
+
+The order question left open above is now resolved by explicit instruction
+(not by me): the mockup's order wins everywhere, not just on the Local tab.
+Changed `CAPABILITY_ORDER` in `frontend/src/apps/ai_models/lib/aiModelGroups.ts`
+to `["text-generation", "text-to-image", "automatic-speech-recognition",
+"embeddings", "text-to-video"]` (was image-generation-first). Also swapped
+the head two entries of `PLAYGROUND_GROUPS` (`frontend/src/apps/ai_models/
+playground/groups.ts`) to match, per that file's own "edited together"
+comment, and rewrote both files' header comments so they no longer describe
+the now-superseded 2026-08-25 "image generation leads" decision as current.
+Logged as D807 in `DECISIONS.md`.
+
+Fixed the order-dependent test assertions this broke: four `sections.map(s
+=> s.key)`/`g.models.groups.map(s => s.label)` arrays and one runner-order
+array in `aiModelGroups.test.ts`, plus `orderCapabilities`'s test in
+`benchmark.test.ts`. Checked (and left alone, correctly) several other
+`sections[0]`/`groups[0]`-indexed assertions in `aiModelGroups.test.ts` that
+turned out to be order-agnostic (single-capability inputs). Grepped `tests/`
+(Python) for a literal order assertion — none exists. `bun test
+src/apps/ai_models` (673 tests) is green after the fix.
+
+`Availability.reason` confirmed on the wire already (prior builder's D806
+notes) — no server change needed for the no-engine capability state; I will
+read it straight off `catalog.capabilities[...].reason` client-side.
+
+Status: still PARTIAL — this is only the capability-order prerequisite.
+Next: read `frontend/src/styles/ai-models.css` + `tokens.css`, then build
+the plain-language capability metadata module, `CapabilityNav`, capability
+pane, row/drawer components, full search screen, rewire `LocalTab.tsx`, and
+delete dead code, per the builder brief's full scope list. HEAD at this
+checkpoint: commit "Reorder CAPABILITY_ORDER to the mockup's order" (see
+git log), tree otherwise clean.

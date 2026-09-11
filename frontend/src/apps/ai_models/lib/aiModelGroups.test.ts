@@ -146,8 +146,8 @@ describe("the four buckets", () => {
   it("sub-groups models by capability, in the reading order", () => {
     const g = groupRepos(ALL);
     expect(g.models.groups.map((s) => s.label)).toEqual([
-      "Image generation",
       "Text generation",
+      "Image generation",
       "Speech to text",
       "Unrecognised",
     ]);
@@ -407,8 +407,8 @@ describe("a capability's row is disk then recommended", () => {
     expect(sections.flatMap((s) => s.recommended)).toEqual([]);
     // …and the disk half is untouched by that: what is here is here.
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       UNRECOGNISED,
     ]);
@@ -436,8 +436,8 @@ describe("video generation's place in the reading order", () => {
       groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
     );
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       "text-to-video",
     ]);
@@ -493,8 +493,8 @@ describe("which rows exist at all", () => {
   it("renders a capability with no disk models but something to recommend", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
     ]);
     expect(sections.every((s) => s.disk.length === 0)).toBe(true);
@@ -529,8 +529,8 @@ describe("which rows exist at all", () => {
       WHISPER,
     ]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       "text-ranking",
       UNRECOGNISED,
@@ -671,8 +671,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
   it("carries the catalog's runner so a recommended card can wear its engine tag", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.runner?.shortLabel)).toEqual([
-      "MLX FLUX",
       "MLX LM",
+      "MLX FLUX",
       "MLX Whisper",
     ]);
     expect(sections.every((s) => s.runner?.available)).toBe(true);
@@ -699,8 +699,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
 
   it("labels a recommended-only capability the way every other heading is labelled", () => {
     expect(sectionsOf([]).map((s) => s.label)).toEqual([
-      "Image generation",
       "Text generation",
+      "Image generation",
       "Speech to text",
     ]);
   });

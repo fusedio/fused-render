@@ -37,13 +37,13 @@ export const UNRECOGNISED = "unrecognised";
  *  below — the fix was never about WHICH order won, only that there is
  *  exactly one.
  *
- *  **IMAGE GENERATION LEADS** (2026-08-25), swapped back above text: it is
- *  the capability that SHOWS what a local model does — a picture on the page
- *  is the demonstration, where a paragraph of text reads like every other
- *  text box — so it is what a reader should meet first. This reverses the
- *  2026-08-24 promotion of text generation, which had argued the opposite
- *  case (text is what a reader arrives for); the two are a judgement call
- *  about the first impression, not a fact one of them got wrong.
+ *  **TEXT GENERATION LEADS** (D807), swapped back above image generation to
+ *  match the AI Models two-pane mockup's reading order, which the Local tab's
+ *  redesign must follow exactly. This reverses the 2026-08-25 promotion of
+ *  image generation (argued there on the strength of a picture being the more
+ *  legible demonstration); the two are a judgement call about the first
+ *  impression, not a fact one of them got wrong — this round it is settled by
+ *  the approved mockup, not re-litigated on its own merits.
  *
  *  It changes what Playground opens on by default, which capability's card
  *  is first on the Models tab, and which section the Benchmark tab draws
@@ -72,8 +72,8 @@ export const UNRECOGNISED = "unrecognised";
  *  reading order are two reading orders one edit apart.
  */
 export const CAPABILITY_ORDER = [
-  "text-to-image",
   "text-generation",
+  "text-to-image",
   "automatic-speech-recognition",
   "embeddings",
   "text-to-video",
