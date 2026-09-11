@@ -772,6 +772,18 @@ def test_report_one_returning_none_behaves_as_today(monkeypatch):
     assert "readme" in prompt
 
 
+def test_empty_detail_and_findings_omit_the_dangling_header(workspace):
+    """Review finding 3: `apps.py`'s router passes `findings=[]`, `detail=""`
+    whenever `report_one` returns `None` (an unknown check id slipping past
+    validation). With no fallback line left, `_findings_block("", [])`
+    returns `""` — the "Findings for this row:" header must not be emitted
+    over nothing, or the prompt reads as a dangling, empty section."""
+    prompt = app_doctor.doctor_prompt(str(_app(workspace) / "index.html"),
+                                     "readme", [], "")
+    assert "Findings for this row:" not in prompt
+    assert "\n\n\n" not in prompt
+
+
 # --------------------------------------------------- R1 grep: no dead fallback
 
 def test_the_deleted_fallback_string_is_gone_from_the_module():
@@ -785,6 +797,16 @@ def test_the_deleted_fallback_string_is_gone_from_the_module():
 
 
 def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(workspace):
+    """This covers a row whose fix EDITS FILES (`readme`) — the shape
+    `_COMMIT_STEP` is right for. It deliberately does NOT stand in for every
+    row: `git` and `pushed` don't edit files, their fix IS a git action
+    spelled out in their own SKILL.md section, and appending this same
+    "never push" / edit-conditioned step to THOSE rows is exactly what
+    review findings 1 & 2 caught (a `pushed` row's only real fix is
+    forbidden by "never push"; a `git` row's fix needs no edit, so "no edit
+    -> no commit" disables it). Those two rows are covered separately below
+    by `test_the_pushed_rows_own_prompt_carries_no_never_push_step` and
+    `test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step`."""
     d = _app(workspace)
     prompt = app_doctor.doctor_prompt(str(d / "index.html"), "readme", [], "no README")
     assert "commit" in prompt.lower()
@@ -793,6 +815,62 @@ def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(wor
     assert "never push" in prompt.lower()
     assert "push the branch" not in prompt.lower()
     assert "push it" not in prompt.lower()
+
+
+def test_the_pushed_rows_own_prompt_carries_no_never_push_step(workspace):
+    """Review finding 1: the trailing commit step's "never push" contradicts
+    SKILL.md's `pushed` section ("Push the branch") — the row's only real
+    fix. The `pushed` row's own prompt must not carry the generic commit/
+    no-push step at all; its own SKILL.md section is the whole instruction."""
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pushed", [],
+                                     "1 commit ahead of upstream")
+    assert "never push" not in prompt.lower()
+    assert app_doctor._COMMIT_STEP not in prompt
+
+
+def test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step(workspace):
+    """Review finding 2: `_COMMIT_STEP`'s "if you made no edit at all ...
+    make no commit" disables the `git` row's own fix, which is exactly to
+    commit pre-existing uncommitted paths with no file edit required. The
+    `git` row's own prompt must not carry the generic commit step; SKILL.md's
+    `git` section ("Commit the listed paths, or .gitignore them") is the
+    whole instruction."""
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "git",
+                                     [{"rule": "git:uncommitted", "path": "?? a.py",
+                                       "line": 0, "excerpt": "?? a.py"}],
+                                     "1 uncommitted path")
+    assert app_doctor._COMMIT_STEP not in prompt
+
+
+def test_fix_all_containing_a_pushed_row_can_still_push_for_that_row(workspace):
+    """Review finding 1 in `doctor_prompt_all`: a Fix-all run that includes a
+    `pushed` row must still be able to push for that row — the trailing
+    `_COMMIT_STEP_ALL` step must not be phrased as a blanket "never push"
+    that overrides the `pushed` row's own SKILL.md instruction."""
+    checks = [
+        {"id": "pushed", "label": "Every commit is pushed", "kind": "fact",
+         "state": "fail", "detail": "1 commit ahead of upstream", "findings": []},
+    ]
+    prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
+    assert "never push" not in prompt.lower()
+
+
+def test_fix_all_containing_a_git_row_can_still_commit_pre_existing_paths(workspace):
+    """Review finding 2 in `doctor_prompt_all`: a Fix-all run that includes a
+    `git` row must still be able to commit paths that were already
+    uncommitted before the run — not only "files you actually edited"."""
+    checks = [
+        {"id": "git", "label": "Every change is committed", "kind": "fact",
+         "state": "fail", "detail": "1 uncommitted path",
+         "findings": [{"rule": "git:uncommitted", "path": "?? a.py", "line": 0,
+                       "excerpt": "?? a.py"}]},
+    ]
+    prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
+    # The trailing step must not read as forbidding a commit of pre-existing
+    # uncommitted paths that the git row itself asked for.
+    assert "pre-existing" in prompt.lower()
 
 
 def test_fix_all_makes_one_trailing_commit_not_one_per_row(workspace):

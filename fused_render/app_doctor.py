@@ -785,13 +785,23 @@ _CREDENTIAL_NOTE = (
 # "one row at a time in the order given" — this is the trailing step after
 # that, not a per-row addition).
 #
-# Both are deliberately conditional ("only if you changed something") so an
-# advisory-only outcome — every `secrets` row that follows `_CREDENTIAL_NOTE`
-# above: report the leak, don't touch the file — never produces an empty or
-# spurious commit. And neither says "commit the fix", which for `secrets`
-# could be misread as license to commit a value merely relocated rather than
-# left alone; the wording instead says plainly that a still-live or
-# relocated credential must never end up in the commit.
+# `_COMMIT_STEP` is deliberately conditional ("only if you changed something")
+# so an advisory-only outcome — every `secrets` row that follows
+# `_CREDENTIAL_NOTE` above: report the leak, don't touch the file — never
+# produces an empty or spurious commit. And it never says "commit the fix",
+# which for `secrets` could be misread as license to commit a value merely
+# relocated rather than left alone; the wording instead says plainly that a
+# still-live or relocated credential must never end up in the commit.
+#
+# Review findings 1 & 2, one root cause: `_COMMIT_STEP` is only right for a
+# row whose fix EDITS FILES. `git` and `pushed` don't — their fix IS a git
+# action, already spelled out in their own SKILL.md section ("Commit the
+# listed paths" / "Push the branch"). Appending `_COMMIT_STEP` on top of
+# those two contradicts them: its "never push" fights `pushed`'s only real
+# fix, and its "no edit at all -> no commit" fights `git`'s fix, which
+# commits paths that are already uncommitted with no edit required. So
+# `doctor_prompt` skips `_COMMIT_STEP` entirely for `git` and `pushed` —
+# those rows' own SKILL.md sections are the whole instruction, untouched.
 _COMMIT_STEP = (
     "If you edited any files to address this, commit them now in this repo — never "
     "push. Say what changed in the commit message. If you made no edit at all (an "
@@ -800,12 +810,29 @@ _COMMIT_STEP = (
     "and never one that commits a still-live or merely relocated credential."
 )
 
+# The `_COMMIT_STEP` per-row rows this trailing step must not be appended
+# after (see the note above `_COMMIT_STEP`) — their own SKILL.md sections
+# already cover committing/pushing, and a blanket "never push" or
+# edit-conditioned commit instruction here would contradict them exactly the
+# same way `_COMMIT_STEP` would on their own per-row prompts.
+_COMMIT_STEP_EXEMPT = frozenset({"git", "pushed"})
+
+# Fix-all's trailing step covers a run that may include a `git` and/or a
+# `pushed` row alongside ordinary file-editing rows, so — unlike
+# `_COMMIT_STEP` — it must not blanket-forbid push or restrict the commit to
+# only files edited THIS run: it explicitly defers to those two rows' own
+# sections above when one of them is present (review findings 1 & 2 applied
+# to the fix-all case).
 _COMMIT_STEP_ALL = (
     "When every row above is done: make ONE commit — not one per row — covering every "
-    "file you actually edited across the whole run. Never push. If nothing needed "
-    "changing anywhere (every row was advisory only, or already passed), make no "
-    "commit at all — and never commit a still-live or merely relocated credential from "
-    "a secrets row."
+    "file you actually edited across the whole run, plus any pre-existing uncommitted "
+    "paths a `git` row above asked you to commit even though you didn't edit them. This "
+    "step itself does not include pushing — except if a `pushed` row is one of the rows "
+    "above, in which case follow through on push exactly as that row's own section says; "
+    "this step does not forbid it. If nothing needed changing anywhere (every row was "
+    "advisory only, or already passed) and no row above asked for a commit or push of "
+    "its own, make no commit at all — and never commit a still-live or merely relocated "
+    "credential from a secrets row."
 )
 
 
@@ -829,18 +856,29 @@ def doctor_prompt(entry_html: str, check_id: str, findings: list[dict],
     `detail` is the row's own diagnosis (`report_one(...)["detail"]`) — R1:
     every prompt has to carry it, not just the findings list, since most
     checks (every `kind="fact"` row) never populate `findings` at all and
-    `detail` is their whole story."""
+    `detail` is their whole story.
+
+    Review finding 3: `router` (`apps.py`) passes `findings=[]`, `detail=""`
+    whenever `report_one()` returns `None` — `_findings_block` then returns
+    `""` and the "Findings for this row:" header is omitted rather than left
+    dangling over nothing.
+
+    Review findings 1 & 2: `git` and `pushed` are excluded from the trailing
+    `_COMMIT_STEP` (see the note above that constant) — their own SKILL.md
+    sections are the whole instruction for those two rows."""
     entry_name = os.path.basename(entry_html)
     _section, _severity, kind = _meta(check_id)
     lines = _findings_block(detail, findings)
     ask = _triage_ask(kind)
+    findings_section = f"Findings for this row:\n{lines}\n\n" if lines else ""
+    commit_step = "" if check_id in _COMMIT_STEP_EXEMPT else _COMMIT_STEP
 
     return (
         f"{DOCTOR_PROMPT_PREFIX} — check `{check_id}` (`{entry_name}` is its entry page). "
         f"Invoke the `{SKILL_QUALIFIED}` skill and read its `{check_id}` section end to "
         f"end. {ask} {_CREDENTIAL_NOTE}\n\n"
-        f"Findings for this row:\n{lines}\n\n{_COMMIT_STEP}"
-    )
+        f"{findings_section}{commit_step}"
+    ).rstrip()
 
 
 def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
