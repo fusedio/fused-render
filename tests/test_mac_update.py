@@ -169,6 +169,117 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
+def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypatch):
+    """`_latest` is set by whichever periodic check last ran and can be up to
+    CHECK_INTERVAL_S (5 min) stale. If a newer release was published in that
+    window, silently installing it instead of the version that was on
+    screen when Install was clicked would retarget the button out from
+    under the user — its own kind of dishonest wire status. install() must
+    instead surface the refreshed version and wait for a fresh click before
+    starting anything. `expected_version` is what the caller (the client)
+    had on screen — here, "9.9.9", the version found by the check() below."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.9", "9.9.10", "9.9.10"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.9"
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.9")
+    assert manager._install_thread is None
+    assert done == []
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.10"
+
+    # The refreshed version is what a second click (now expecting "9.9.10")
+    # commits to — it matches what the recheck now finds, so this proceeds.
+    manager.install(expected_version="9.9.10")
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
+
+
+def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypatch):
+    """The app can sit open with nothing happening for a while (backgrounded,
+    machine asleep) between one check finding an update and the user actually
+    clicking Install — long enough that the 5-minute auto loop should have
+    ticked again but, for whatever reason, hasn't. install()'s recheck must
+    not depend on that next tick ever landing: it forces its own fetch, which
+    ignores both the "only recheck from idle" rule and the MIN_CHECK_GAP_S
+    throttle that a plain check() would respect."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.9", "9.9.10"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.9"
+    # No auto-tick has actually happened since — back-date the throttle clock
+    # well past both gaps so a non-forced check would have refused to fetch.
+    manager._last_check_at = time.monotonic() - 10 * common.CHECK_INTERVAL_S
+
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    status = manager.install(expected_version="9.9.9")
+    # The overdue recheck still ran and found a newer version — surfaced,
+    # not installed outright, same as the deferred case above.
+    assert manager._install_thread is None
+    assert status["latest_version"] == "9.9.10"
+
+
+def test_install_defers_when_the_background_loop_already_moved_past_what_the_client_saw(
+        monkeypatch):
+    """The background loop force-checks on its own five-minute cadence,
+    independent of any click. If it already advanced `_latest` to a newer
+    version before the client's last poll caught up, the screen the user
+    clicked on still names the OLD version — and install()'s own recheck
+    finds nothing new, because the server had already moved before this
+    call even started. A snapshot of `_latest` taken at call-start would
+    equal the post-recheck value in this case (both already "9.9.10") and
+    miss the mismatch entirely; only comparing against what the CLIENT says
+    it saw (`expected_version`) catches it."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    manifest_version = {"v": "9.9.9"}
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": manifest_version["v"], "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.9"
+
+    # The background loop ticks on its own, finds a newer release. The
+    # client hasn't polled again yet, so its screen still says "9.9.9".
+    manifest_version["v"] = "9.9.10"
+    manager.check(force=True)
+    assert manager.status()["latest_version"] == "9.9.10"
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.9")  # what the client's screen said
+    assert manager._install_thread is None
+    assert done == []
+    assert status["latest_version"] == "9.9.10"
+
+
+def test_install_does_not_hit_the_network_when_there_is_nothing_to_install(monkeypatch):
+    """The re-check in install() is only worth it when an install might
+    actually proceed — an idle manager (no known update) must not fetch."""
+    manager = _manager(monkeypatch)  # no `available`: common.fetch_manifest is left unpatched
+    assert manager.install()["state"] == "idle"
+
+
 # ---- brew path: one install path, and never a brew command anywhere ----------
 
 
@@ -458,6 +569,33 @@ def test_config_carries_update_with_manager(client, monkeypatch):
     body = client.get("/api/config").json()
     assert body["update"]["state"] == "idle"
     assert body["update"]["method"] == "dmg"
+
+
+def test_install_endpoint_passes_expected_version_through(client, monkeypatch):
+    """The router forwards the request body's `expected_version` straight to
+    UpdateManager.install() — the whole point of the endpoint change: the
+    client tells the server what it had on screen. A request with no body
+    at all (an older client, or a direct caller) must still be valid,
+    falling back to None."""
+    manager = mac.UpdateManager(bundle="/x.app", method="dmg")
+    monkeypatch.setattr(mac, "_manager", manager)
+    recorded: dict = {}
+
+    def fake_install(expected_version=None):
+        recorded["expected_version"] = expected_version
+        return {"state": "idle"}
+
+    monkeypatch.setattr(manager, "install", fake_install)
+
+    resp = client.post("/api/update/install", headers={"X-Fused": "1"},
+                       json={"expected_version": "9.9.9"})
+    assert resp.status_code == 200
+    assert recorded["expected_version"] == "9.9.9"
+
+    recorded.clear()
+    resp = client.post("/api/update/install", headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert recorded["expected_version"] is None
 
 
 def test_start_noop_when_unbundled(monkeypatch):

@@ -495,7 +495,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // answers, so the poll it arms sees "installing" and runs at the busy
     // interval — poked first it would still read "available" and arm the 60s
     // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
-    void updateInstall()
+    // Send what THIS row actually shows — `updateStatus.latest_version` —
+    // not just "install whatever's latest": see UpdateBadge.install and
+    // UpdateManager.install's docstring for why a version the caller didn't
+    // pass can't be trusted to match what was on screen.
+    void updateInstall(updateStatus.latest_version)
       .then(setUpdateStatus)
       .catch(() => {
         // Fall through — the re-armed poll picks up the real state.

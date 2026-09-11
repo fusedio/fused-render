@@ -172,7 +172,12 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
   const install = async () => {
     setOpen(true);
     try {
-      setUpdateStatus(await updateInstall());
+      // Send what THIS render actually shows — `status.latest_version` —
+      // not just "install whatever's latest": the server's own background
+      // loop can move `_latest` on its own five-minute cadence, so without
+      // this the button could silently install a version the user never
+      // saw on screen (see UpdateManager.install's docstring).
+      setUpdateStatus(await updateInstall(status.latest_version));
     } catch {
       // Fall through — the re-armed poll picks up the real state.
     }

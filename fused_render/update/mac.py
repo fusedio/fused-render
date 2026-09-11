@@ -455,14 +455,61 @@ class UpdateManager:
 
     # -- installing -----------------------------------------------------------
 
-    def install(self) -> dict:
+    def install(self, expected_version: str | None = None) -> dict:
         """Kick the install on a worker thread. One at a time; re-POSTing
         while installing just reports current state. Allowed from "available"
-        and from "error" (retry)."""
+        and from "error" (retry).
+
+        `expected_version` is what the CALLER had on screen — the client
+        sends the `latest_version` its last poll showed. That is not the
+        same thing as this manager's own `_latest` at the moment install()
+        starts: the background loop force-checks every CHECK_INTERVAL_S (5
+        min) independent of any click, so `_latest` can already have moved
+        — silently, from the caller's point of view — before the click even
+        lands. Comparing against a snapshot of `_latest` taken at call-start
+        would miss exactly that race, since both the snapshot and the
+        post-recheck value would already agree on the NEW version while the
+        screen the user clicked on still showed the old one. `expected_version`
+        is the only thing that actually pins down what the user saw.
+
+        Also force a fresh check before proceeding, so a version published
+        between the caller's last poll and this call — but not yet picked up
+        by the background loop either — still gets caught: a failed fetch
+        falls back to the last known-good `_latest` (see check()), so this
+        never makes an install worse, only fresher when it can be. Only
+        worth the round trip when there is something to install at all —
+        skipped from "idle"/"checking"/"installing", which refuse below
+        regardless of what a re-check would say.
+
+        If `_latest` (after that recheck) does not match `expected_version`,
+        do not install it out from under the click: the button the user
+        pressed said "Update to v<expected>", and quietly swapping in a
+        different version — even a newer one — is its own kind of dishonest
+        wire status, the same family of bug the manager otherwise goes out
+        of its way to avoid (`_check_error`, `check_only`, etc. all exist so
+        this state machine never tells the UI something that isn't true).
+        Instead this leaves `_latest`/state exactly as they are ("available"
+        with whatever is actually current) and returns without installing —
+        the badge now shows that version, and a second click commits to it.
+        `expected_version=None` (an older client with no such field, or a
+        direct caller) skips this check entirely and trusts `_latest`
+        as-is, same as before this parameter existed."""
+        with self._lock:
+            worth_rechecking = (self._latest is not None
+                               and self._state in ("available", "error"))
+        if worth_rechecking:
+            self.check(force=True)
         with self._lock:
             if self._state == "installing":
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
+                return self.status()
+            if (expected_version is not None
+                    and self._latest["version"] != expected_version):
+                logger.info(
+                    "update install deferred: v%s is current, not the v%s "
+                    "the caller had on screen",
+                    self._latest["version"], expected_version)
                 return self.status()
             # The dev-run manager (DEV_MANAGER_ENV) has no bundle to swap.
             # Refused here rather than left to fail inside the worker thread,
