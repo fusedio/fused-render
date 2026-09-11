@@ -388,10 +388,8 @@ function HitRow({
           )}
         </div>
         <span className="row-facts pop">
-          <span className="counts">
-            <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
-            <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
-          </span>
+          <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
+          <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
           <span title="Last updated">{ageLabel(model.updated ?? model.created)}</span>
         </span>
         <span className="row-act">

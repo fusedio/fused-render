@@ -3776,9 +3776,13 @@ button.am-bench-model:focus-visible {
 /* Item 4 (fix round 5): was a 2-col grid (downloads, likes, date each their
    own cell) — with only three cells it read lopsided, and the lone `date`
    cell got an ad hoc `span:nth-child(3)` spanning rule to fill the second
-   column. A right-aligned flex column reads as two lines instead: downloads
-   + likes together on one line (`<span class="counts">` in HubSearchScreen.tsx),
-   the date underneath — no spanning rule needed. */
+   column. A right-aligned flex column instead.
+   Fix round 6 item 3: user — "maybe it would make more sense to have these
+   3 in the same column?" — round 5's fix still paired downloads+likes on
+   one line via a `.counts` inline wrapper, with only the date on its own
+   line underneath. Downloads, likes and updated are now three direct
+   children, each its own line (73px row min-height comfortably fits three
+   11px lines), so the `.counts` wrapper is gone. */
 .tp .row-facts.pop {
   display: flex;
   flex-direction: column;
@@ -3788,11 +3792,6 @@ button.am-bench-model:focus-visible {
   font-size: 11px;
   color: var(--fg-muted);
   white-space: nowrap;
-}
-
-.tp .row-facts.pop .counts {
-  display: flex;
-  gap: 10px;
 }
 
 .tp .row.unfit {
