@@ -157,8 +157,8 @@ def _declared_uv_sources(folder):
 
 def _names_needing_build_opt_in(sources):
     """Distribution names whose `[tool.uv.sources]` entry can ONLY be
-    satisfied by uv BUILDING a checkout — never by fetching a wheel — and so
-    require the declared `allow_build` opt-in.
+    satisfied by uv BUILDING something — never by fetching or reusing a
+    prebuilt wheel — and so require the declared `allow_build` opt-in.
 
     Two shapes, normalized identically, the same way
     `projectenv.nonstandard_dependencies_of` already has to (see that
@@ -170,13 +170,29 @@ def _names_needing_build_opt_in(sources):
     `pkg = [{ git = "...", marker = "sys_platform == 'darwin'" }]` sailed
     through with no opt-in required at all.
 
-    A `git` key always qualifies — there is never a wheel for a git
-    checkout. A `url` key qualifies only when it does NOT name a `.whl`
-    directly: `{ url = "https://.../foo-1.0-py3-none-any.whl" }` install
-    fine under `--no-build` (it fetches a real wheel file), so requiring the
-    opt-in for it would grant a runner a blanket build exception it does not
-    need — weakening this guard rather than enforcing it. Case-insensitive
-    on the extension since a URL's path segment is not guaranteed lowercase.
+    Four keys, each checked against uv's own documented behavior rather than
+    assumed from its name:
+
+    * `git` always qualifies — there is never a wheel for a git checkout.
+    * `url` qualifies only when it does NOT name a `.whl` directly:
+      `{ url = "https://.../foo-1.0-py3-none-any.whl" }` installs fine under
+      `--no-build` (it fetches a real wheel file), so requiring the opt-in
+      for it would grant a runner a blanket build exception it does not
+      need — weakening this guard rather than enforcing it. Case-insensitive
+      on the extension since a URL's path segment is not guaranteed
+      lowercase.
+    * `path` is the same split as `url`, for the same reason: uv's own docs
+      say a path source may name a wheel file, a source distribution
+      archive, or a directory carrying a `pyproject.toml` — only the wheel
+      form skips the build. A directory is also what `_sync_root`'s own
+      docstring calls out as resolving relative to the wrong place from a
+      read-only runner's mirror (`{path = ...}` resolves against the
+      mirror, i.e. nowhere), which is a second, independent reason a runner
+      shipping one needs eyes on it beyond this guard — but the guard only
+      speaks to buildability, so only the non-`.whl` case is flagged here.
+    * `workspace` always qualifies: a workspace member is, by uv's own
+      documentation, always installed editable from its local source tree —
+      there is no wheel form for it to fall back to, unlike `url`/`path`.
     """
     names = set()
     for name, source in sources.items():
@@ -190,8 +206,16 @@ def _names_needing_build_opt_in(sources):
             if "git" in entry:
                 names.add(name)
                 break
-            url = entry.get("url")
-            if isinstance(url, str) and not url.lower().endswith(".whl"):
+            if entry.get("workspace"):
+                names.add(name)
+                break
+            non_wheel_file = False
+            for key in ("url", "path"):
+                value = entry.get(key)
+                if isinstance(value, str) and not value.lower().endswith(".whl"):
+                    non_wheel_file = True
+                    break
+            if non_wheel_file:
                 names.add(name)
                 break
     return names
@@ -449,6 +473,42 @@ def test_a_non_wheel_url_source_still_requires_the_opt_in():
     same as a `git` source."""
     sources = {
         "some-pkg": {"url": "https://example.com/dist/foo-1.0.tar.gz"},
+    }
+    assert _names_needing_build_opt_in(sources) == {"some-pkg"}
+
+
+def test_a_direct_wheel_path_source_does_not_require_the_opt_in():
+    """The same split `url` gets, for `path`: uv's own docs say a `path`
+    source may name a wheel file directly, and that form skips the build
+    exactly like a `url` one does."""
+    sources = {
+        "some-pkg": {"path": "../dist/foo-1.0-py3-none-any.whl"},
+    }
+    assert _names_needing_build_opt_in(sources) == set()
+
+
+def test_a_directory_path_source_requires_the_opt_in():
+    """The hole this file's guard used to have (finding C): a `path` source
+    naming a DIRECTORY (or a non-wheel archive) can only be satisfied by uv
+    building it, same as `git` and a non-wheel `url` — and, per `_sync_root`'s
+    own docstring, a relative one also resolves against a read-only runner's
+    MIRROR rather than the project dir, i.e. nowhere. Either way it is not a
+    shape `--no-build` can ever satisfy, so it needs the same declared
+    opt-in."""
+    sources = {
+        "some-pkg": {"path": "../vendored/some-pkg"},
+    }
+    assert _names_needing_build_opt_in(sources) == {"some-pkg"}
+
+
+def test_a_workspace_source_requires_the_opt_in():
+    """The other hole this file's guard used to have: `{ workspace = true }`
+    has no wheel form at all — uv's own docs say a workspace member is
+    always installed editable from its local source tree — so it needs the
+    opt-in unconditionally, unlike `url`/`path` which both have a wheel
+    escape hatch."""
+    sources = {
+        "some-pkg": {"workspace": True},
     }
     assert _names_needing_build_opt_in(sources) == {"some-pkg"}
 
