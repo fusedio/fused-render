@@ -3378,10 +3378,6 @@ button.am-bench-model:focus-visible {
   margin-top: 6px;
 }
 
-.tp .row.have {
-  background: var(--am-surface-have);
-}
-
 .tp .row-name {
   display: flex;
   align-items: center;
