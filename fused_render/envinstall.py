@@ -2027,8 +2027,11 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True,
     the same event. `ai/supervisor.py._ensure_venv` sets only `allow_build`
     (from the runner's manifest) and leaves `user_confirmed_build` at its
     default False — a folder's own `pyproject.toml` declaring it wants to
-    build is not a click, and must not silently answer for one on every
-    single automatic load.
+    build is a standing declaration, not a one-time click, and the two must
+    not be conflated even though a run with `allow_build=True` can never
+    actually reach the record this parameter guards (see that guard's own
+    comment below for why, and for the honest account of what this
+    parameter does and does not prevent).
 
     Idempotent in the two ways that matter: already installed is a no-op, and an
     install already running is joined rather than duplicated. Two workers running
@@ -2074,15 +2077,38 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True,
     #
     # This is deliberately NOT `allow_build`: `ai/supervisor.py._ensure_venv`
     # passes `allow_build=True` automatically, on every load, for a runner
-    # that DECLARES the opt-in table (ltx_video) — no click, ever. If that
-    # alone bypassed the poison record, a user whose install
-    # fails for a repeatable reason would get a fresh detached `uv sync`
-    # worker spawned on every single model load, forever, with no
-    # short-circuit — where every other runner would have stopped retrying.
-    # A human clicking "install anyway" is a one-time event that justifies
-    # distrusting a stale verdict; a folder's manifest saying it wants to
-    # build is a standing fact that is true on every call, and must not
-    # unpoison a key forever.
+    # that DECLARES the opt-in table (ltx_video) — no click, ever. What this
+    # guard actually keeps `allow_build=True` from doing is standing in for a
+    # human's one-time "install anyway" consent: a folder's manifest saying
+    # it wants to build is a standing fact, true on every call, and must not
+    # be treated as the click this parameter is reserved for.
+    #
+    # It is NOT, and cannot be, what stops a poisoned `allow_build=True`
+    # runner from respawning forever — that scenario is unreachable by
+    # construction, not prevented by this check. `_env_install_worker.install`
+    # only computes `needs_build` (and, downstream of it, the
+    # `platform_incompatible` verdict `_permanent_failure` looks for) when
+    # `allow_build` is False; a run made with `allow_build=True` can never
+    # write a poisonable record in the first place, so there is nothing here
+    # for `user_confirmed_build` to have bypassed. An ordinary resolver
+    # failure (network, a bad pin, no `git` on PATH) never poisons for ANY
+    # runner, opted in or not — `_permanent_failure`'s own docstring explains
+    # why that is deliberately narrow — so "a failed automatic build is
+    # retried on the next load" is the existing norm every runner already
+    # gets, not a new exposure this opt-in introduces.
+    #
+    # The real, narrow residual case (not what this parameter addresses):
+    # a runner folder has no user-facing "install anyway" retry at all
+    # (`/api/env/install` derives its project from a page, never from
+    # `ai/runners/*`), so a `platform_incompatible` record that somehow
+    # predated a runner's `allow_build` opt-in, and whose `manifest_digest`
+    # still matched, would have no in-app recovery path. In practice this is
+    # mostly defused by the opt-in itself: adding the
+    # `[tool.fused-render.runner]` table changes the manifest bytes
+    # `projectenv.state_digest` hashes, which is exactly what
+    # `_permanent_failure` compares — so the commit that opts a runner into
+    # building invalidates any pre-existing poison record for it as a side
+    # effect, `ltx_video` included.
     if not user_confirmed_build:
         poisoned = _permanent_failure(key, project_dir)
         if poisoned is not None:
