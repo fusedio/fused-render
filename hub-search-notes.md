@@ -1450,3 +1450,115 @@ followed).
 
 Status: DONE. HEAD: `f74f5975e` (branch `worktree-hub-search-discovery`),
 tree clean after the Unit 8 commit. All 9 build-order units complete.
+
+## Fix round 1 (2026-09-11) — live-vs-mockup polish pass
+
+A separate orchestrator/coordinator round after Unit 9's "done", driven by
+`fix-brief-1.md` (items A-N, then O added mid-round; L was revised twice
+and F/M/C were re-emphasized by direct user screenshot feedback). This
+builder session completed items **N, J, L (revised), M, F, H, O** across
+four commits before running out of round budget. Items **A, B, C, D, E, I,
+K remain open** — see "Resume point" below.
+
+Commits this round (newest first):
+- `86a30d6c8` — item O: `.tp .btn`/`.tp .btn-primary` scoped mockup colours
+  (supersedes the brief's original "do not touch `.btn`" rule per a later
+  coordinator message).
+- `bec5be256` — items L (revised)/M/F/H: dropped `.tp`'s outer frame for a
+  single top hairline; fixed the hubdoor link and back button (both were
+  bare `<button>`s catching native browser chrome instead of the intended
+  plain-text/quiet styling); fixed a specificity bug that let the shared
+  `.tp .capicon` (18×18) rule beat the intended `.tp-nav .capicon` (15×15).
+- `1381195e0` — item J: removed `HubSearchScreen`'s unused `runners` prop
+  and its `LocalTab.tsx` pass-through/import. (The brief's other J claim,
+  `ModelRow.tsx`'s `ReactNode` import being unused, is wrong — it's used
+  twice — left untouched.)
+- `4c3c10e56` — item N: pinned hardware to 32GB in
+  `test_the_untagged_mirror_signal_pulls_in_a_republish_too`, which was red
+  on every CI lane and green only on this Mac (see D811).
+
+Full decision writeups: D810 (L/M/F/H/O bundle), D811 (N), D812 (J).
+
+### Resume point for items A, B, C, D, E, I, K
+
+Everything below was read but not yet implemented; picking this up should
+start from here rather than re-reading the brief and mockup from scratch.
+
+- **C (hit row rewrite) — highest priority, reinforced twice by direct user
+  screenshot feedback ("cards are empty and cramped... follow the
+  mockup!").** Current `HitRow` in `HubSearchScreen.tsx` (function starts
+  ~line 171) uses grid order name→match→facts→actions with a separate
+  `.row-owner` span and a `row-note mono` line that can end in a dangling
+  "—". Mockup wants: match cell FIRST, full repo id in mono bold (no
+  separate owner span), `from <base>` line only when a base model is known,
+  one `row-meta` line with no dangling dash, popularity as a 2-col grid
+  (`row-facts pop`), Download+ⓘ actions, `.row.hit.rich` grid
+  `112px minmax(0,1fr) 150px 152px`, 73px row height. CSS for `.row.hit`
+  (`84px minmax(0,1fr) auto auto` — needs replacing with the `rich` track
+  spec), `.row-owner`, `.row-reason*` all live around
+  `frontend/src/styles/ai-models.css:3428-3497` (line numbers will have
+  shifted after this round's edits — search for `.tp .row.hit`). No
+  existing helper maps a fit verdict to a glyph (●/▲/■/?) —
+  `frontend/src/apps/ai_models/lib/hubTableView.ts` is the right home for a
+  small exported `verdictGlyph()` alongside `matchCell`/`matchTitle`, with
+  its own test in `hubTableView.test.ts` (add/adjust per the Verification
+  section). Needs a `.downloaded` chip class distinct from the generic
+  `.chip`, and an ⓘ `iconbtn` opening the same drawer pattern
+  `ModelRow.tsx`'s `Drawer` component uses (read that component before
+  wiring it in — it is NOT currently shared by `HitRow`).
+- **B (menu buttons/dropdown)** — real architectural tension, documented at
+  the top of `SearchControls.tsx`: the file deliberately avoids
+  reproducing the mockup's per-option `<p class="h">` hover sentence
+  because `@platform/ui/ContextMenu`'s `MenuEntry` has no slot for it,
+  riding the sentence on the trigger's own `title` instead. The brief
+  explicitly wants the mockup's `.dd`/`.l`/`.h`/`.chk` markup with a hover
+  line under EVERY option. Needs a decision: extend `MenuEntry`/`ContextMenu`
+  with an optional hint string (more portable, but touches a `@platform`
+  shared surface), or accept the drift and give the four hub menus their
+  own dropdown scoped under `.tp` (bigger diff, but keeps `ContextMenu`
+  alone). Also needs: `Key:` prefix (`<span class="k">Fit:</span>`) inside
+  the trigger, `.menubtn`/`.dd` CSS per the brief's exact block (fontSize
+  12px not 13px, radius 7px not 6px, active state with `×` remover).
+- **A (seed Task filter from capability)** — `LocalTab.tsx`'s
+  `onOpenSearch={() => setSearching(true)}` (around line 549, shifted since
+  this round's edit near line 520-ish) needs to also seed
+  `settled.task`/URL `hubTask` with the capability's pipeline tag before
+  opening search; `CapabilityPane.tsx`'s `onOpenSearch: () => void` prop
+  needs a signature change to pass the tag through. Need to find the
+  capability→pipeline-tag mapping (likely in `capabilityMeta.ts` or
+  `aiModelGroups.ts` — not yet located precisely).
+- **D (gated rows)** — move the chip to `.row-name` (`Gated`, `warn-chip`
+  class already exists in CSS), change the action to `<a class="btn">Accept
+  terms</a>` (not `btn-link`), remove `.am-hub-login` banner from the
+  search screen entirely (currently rendered via `needsHubLogin(...)` in
+  `HubSearchScreen.tsx` ~line 429).
+- **E (result line)** — mostly already implemented in
+  `SearchControls.tsx`'s `.am-hub-resultline` block (hidden-unfit count
+  logic already exists); still needs the count wrapped in `<b>` per the
+  mockup and a check of whether `hub_models.py`'s response already carries
+  the exact fields used (`hiddenUnfit` already exists on `HubModel`
+  search response per `HubSearchScreen.tsx`'s `data.hiddenUnfit`) — likely
+  no server change needed, just JSX/CSS.
+- **I (Try as link)** — find the Try button (likely in `ModelRow.tsx`'s
+  `Actions` component, not yet located precisely) and convert
+  `<button class="btn btn-primary" onClick>` to an `<a>`/router-link to the
+  Playground route with `?model=<encoded repo id>`; add a test asserting
+  the href contains the encoded id.
+- **K (narrow width)** — no code change believed needed: confirmed via full
+  mockup scan that no real `[data-w=narrow]` CSS rule exists (it's a JS
+  demo-toggle attribute only); the only real breakpoints are
+  `@media (max-width:760px){.tp{grid-template-columns:1fr}}` and
+  `@media (max-width:720px){.row-facts.pop{display:none}}`. Once item C's
+  `.row-facts.pop` class exists, just confirm it wraps/hides reasonably at
+  narrow widths rather than overflowing — no new breakpoint to invent.
+
+Verification run this round: `.venv/bin/python -m pytest
+tests/test_hub_models.py -q` → 195 passed (includes the fixed item-N test).
+`bun run --cwd frontend typecheck` → clean, three times (after J, after
+L/M/F/H, after O). `bun test src/apps/ai_models` (frontend/, item O check)
+→ 597 pass, 0 fail. `grep -rn` in `tests/` for `runners={runners}`,
+`runnersByCapability`, `SectionRunner`, `adv-back`, `btn-link`,
+`data-adv-back` → no hits (no Python test asserts on any of these literal
+frontend lines). Full `bun run --cwd frontend build` was NOT run this
+round (deferred to whoever finishes items A/B/C/D/E/I/K, per the brief's
+"once at the end" instruction).
