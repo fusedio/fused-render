@@ -1,14 +1,18 @@
-// Plain-language capability copy for the Local tab's two-pane layout.
+// Capability copy for the Local tab's two-pane layout.
 //
-// `engines.ts`'s `CAPABILITY_LABELS` is the Hub's own vocabulary ("Text
-// generation") — terse, and shared with the Engines tab where a runner list
-// needs a header, not a pitch. This file is the opposite register: the
-// capability column and its pane are the first thing a new user reads on
-// this tab, so each entry gets a plain name ("Chat & writing"), a one-line
-// blurb of what it is for, and the noun a Hub search inside that pane should
-// call its results ("chat models"). Nothing here is inferred — every string
-// is copied verbatim from the approved mockup's `CAPS` array so the shipped
-// copy matches what was reviewed, not a paraphrase of it.
+// `plain` used to carry its own friendly register, distinct from
+// `engines.ts`'s `CAPABILITY_LABELS` ("Text generation") — the mockup's own
+// `CAPS` array copied verbatim ("Chat & writing" etc). Fix round 3 item 11
+// retires that: the user asked for the standard capability names ("the
+// standard capability names like text generation etc") everywhere a
+// capability is named — nav, pane heading, the "← Back to …" link, the
+// Task filter's own menu value (`hubSearchView.ts`'s `activeTask`), and the
+// drawer's "Why we suggest it" sentence, which all read `plain` (directly or
+// via `CapabilityPane`'s lower-cased `paneLabel`) rather than
+// `capabilityLabel` — so the one place to make them agree is this table.
+// `plain` is now `capabilityLabel(key)` itself; blurb and searchNoun keep
+// their own plain-language register unchanged, since neither was named in
+// that ask.
 //
 // Keyed off `CAPABILITY_ORDER`'s five capability tags (see
 // `aiModelGroups.ts`) rather than re-deriving a list, so a capability added
@@ -45,31 +49,31 @@ export const PARTS_ICON =
 
 const CAPABILITY_META: Record<string, CapabilityMeta> = {
   "text-generation": {
-    plain: "Chat & writing",
+    plain: capabilityLabel("text-generation"),
     blurb: "Ask questions, draft text and write code — all on this Mac, nothing sent anywhere.",
     searchNoun: "chat models",
     icon: TEXT_ICON,
   },
   "text-to-image": {
-    plain: "Make images",
+    plain: capabilityLabel("text-to-image"),
     blurb: "Describe a picture and get one back. Takes a few seconds per image.",
     searchNoun: "image models",
     icon: IMAGE_ICON,
   },
   "automatic-speech-recognition": {
-    plain: "Transcribe audio",
+    plain: capabilityLabel("automatic-speech-recognition"),
     blurb: "Turn a recording, a voice note or a meeting into text.",
     searchNoun: "transcription models",
     icon: SPEECH_ICON,
   },
   embeddings: {
-    plain: "Search & similarity",
+    plain: capabilityLabel("embeddings"),
     blurb: "Find things by meaning rather than by exact words — across notes, documents or photos.",
     searchNoun: "embedding models",
     icon: EMBED_ICON,
   },
   "text-to-video": {
-    plain: "Make video",
+    plain: capabilityLabel("text-to-video"),
     blurb: "Describe a shot and get a few seconds of video with sound. Large download, slow to render.",
     searchNoun: "video models",
     icon: VIDEO_ICON,

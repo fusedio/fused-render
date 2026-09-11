@@ -3,16 +3,20 @@ import { describe, expect, it } from "bun:test";
 import { capabilityMeta, PARTS_ICON } from "./capabilityMeta";
 
 describe("capabilityMeta", () => {
-  it("gives the plain-language copy for each of the five known capabilities", () => {
-    expect(capabilityMeta("text-generation").plain).toBe("Chat & writing");
+  it("gives the standard capability name plus its own plain-language blurb noun for each of the five known capabilities", () => {
+    // Item 11 (fix round 3): `plain` is now the same standard capability
+    // name `engines.ts`'s `capabilityLabel` gives every other reader of that
+    // table (nav, Engines tab) — not a separate friendly register — per the
+    // user's "use the standard capability names like text generation etc".
+    expect(capabilityMeta("text-generation").plain).toBe("Text generation");
     expect(capabilityMeta("text-generation").searchNoun).toBe("chat models");
-    expect(capabilityMeta("text-to-image").plain).toBe("Make images");
+    expect(capabilityMeta("text-to-image").plain).toBe("Image generation");
     expect(capabilityMeta("text-to-image").searchNoun).toBe("image models");
-    expect(capabilityMeta("automatic-speech-recognition").plain).toBe("Transcribe audio");
+    expect(capabilityMeta("automatic-speech-recognition").plain).toBe("Speech to text");
     expect(capabilityMeta("automatic-speech-recognition").searchNoun).toBe("transcription models");
-    expect(capabilityMeta("embeddings").plain).toBe("Search & similarity");
+    expect(capabilityMeta("embeddings").plain).toBe("Embeddings");
     expect(capabilityMeta("embeddings").searchNoun).toBe("embedding models");
-    expect(capabilityMeta("text-to-video").plain).toBe("Make video");
+    expect(capabilityMeta("text-to-video").plain).toBe("Video generation");
     expect(capabilityMeta("text-to-video").searchNoun).toBe("video models");
   });
 
@@ -38,11 +42,11 @@ describe("capabilityMeta", () => {
     expect(meta.icon).toContain("<svg");
   });
 
-  it("falls back to the Hub's own label text for a capability engines.ts does recognise", () => {
+  it("agrees with engines.ts's own capability label for a capability it recognises", () => {
+    // Item 11 retired the divergence this test used to assert: `plain` is
+    // now built FROM `capabilityLabel`, deliberately, so the two agree.
     const meta = capabilityMeta("text-generation");
-    // Sanity: plain-language copy differs from the terse engines.ts label,
-    // proving this file is not just re-exporting that vocabulary.
-    expect(meta.plain).not.toBe("Text generation");
+    expect(meta.plain).toBe("Text generation");
   });
 
   it("exports a distinct icon for the non-capability Engine files bucket", () => {

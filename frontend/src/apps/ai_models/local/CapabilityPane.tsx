@@ -68,11 +68,13 @@ export function CapabilityPane({
   const meta = capabilityMeta(capabilityKey);
   // The pane's own title, lowercased — threaded to every `ModelRow` below so
   // the drawer's generated "Why we suggest it" sentence (item T) can say
-  // "Our pick for chat & writing" without re-deriving the label itself.
-  // T-nit: must be the SAME string the `.tp-head` title (`meta.plain`) renders
-  // above, not `capabilityLabel`'s internal runner-key label ("Text
-  // generation") — the two diverge for every known capability (see
-  // `capabilityMeta.ts`'s `plain` field vs. `engines.ts`'s `CAPABILITY_LABELS`).
+  // "Our pick for text generation" without re-deriving the label itself.
+  // T-nit, updated for item 11: must be the SAME string the `.tp-head` title
+  // (`meta.plain`) renders above — since item 11, that IS
+  // `capabilityLabel`'s own standard name (`capabilityMeta.ts`'s `plain`
+  // field now reads straight off `engines.ts`'s `CAPABILITY_LABELS`), so this
+  // still cannot re-derive the label itself without risking a second copy
+  // that drifts from the first.
   const paneLabel = meta.plain.toLowerCase();
 
   const head = (
