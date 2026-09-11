@@ -9,7 +9,10 @@ describe("capabilityMeta", () => {
     // table (nav, Engines tab) — not a separate friendly register — per the
     // user's "use the standard capability names like text generation etc".
     expect(capabilityMeta("text-generation").plain).toBe("Text generation");
-    expect(capabilityMeta("text-generation").searchNoun).toBe("chat models");
+    // Item 5 (fix round 4): the friendly "chat models" was the last
+    // leftover of the pre-D825 vocabulary — matches the "image models"
+    // style the other four capabilities already use with their standard name.
+    expect(capabilityMeta("text-generation").searchNoun).toBe("text generation models");
     expect(capabilityMeta("text-to-image").plain).toBe("Image generation");
     expect(capabilityMeta("text-to-image").searchNoun).toBe("image models");
     expect(capabilityMeta("automatic-speech-recognition").plain).toBe("Speech to text");

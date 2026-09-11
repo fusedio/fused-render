@@ -36,7 +36,7 @@ export interface CapabilityMeta {
   plain: string;
   /** One sentence under the pane head explaining what the capability is for. */
   blurb: string;
-  /** What a Hub search inside this pane calls its results, e.g. "chat models". */
+  /** What a Hub search inside this pane calls its results, e.g. "image models". */
   searchNoun: string;
   /** The nav/pane-head icon — the same component the Playground sidebar
    *  draws for this capability (`lib/capabilityIcons.tsx`), except for
@@ -61,7 +61,7 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
   "text-generation": {
     plain: capabilityLabel("text-generation"),
     blurb: "Ask questions, draft text and write code — all on this Mac, nothing sent anywhere.",
-    searchNoun: "chat models",
+    searchNoun: "text generation models",
     icon: capabilityIcon("text-generation"),
   },
   "text-to-image": {
