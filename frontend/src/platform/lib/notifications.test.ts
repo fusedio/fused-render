@@ -3,6 +3,8 @@
 // `popupTick`. See SPEC-toasts-become-notifications.md and
 // DECISIONS-toasts-become-notifications.md for the reasoning this codifies.
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { act, create } from "react-test-renderer";
+import { createElement } from "react";
 
 import { installDomShim } from "@platform/lib/testDomShim";
 
@@ -18,12 +20,14 @@ import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 const {
   TOAST_EXIT_MS,
   _resetNotificationsForTest,
+  _setIsEmbedForTest,
   _setIsTopEmbedForTest,
   dismissNotification,
   dismissPopup,
   getPopupNotification,
   getRetainedNotifications,
   notify,
+  useRetainedNotifications,
 } = await import("@platform/lib/notifications");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -32,6 +36,8 @@ beforeEach(_resetNotificationsForTest);
 afterEach(() => {
   _resetNotificationsForTest();
   _setIsTopEmbedForTest(null);
+  _setIsEmbedForTest(null);
+  delete (globalThis.window as Record<string, unknown>).top;
 });
 
 const popupSnapshot = getPopupNotification;
@@ -202,4 +208,105 @@ test("IS_TOP_EMBED's no-expiry rule is not in effect elsewhere", async () => {
 
   await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
   expect(popupSnapshot()).toBe(null);
+});
+
+// ---- pane -> shell forwarding (code review #1104, findings 1/2/8) ---------
+//
+// A pane forwards its retained rows to the shell through a same-origin
+// global (`_fusedIngestNotification`/`_fusedDismissNotification`, installed
+// on `globalThis` by this module's own `installIngest()`), not postMessage
+// — see this module's header comment. These tests exercise the RECEIVING
+// end directly (what `installIngest()` wires up on `globalThis` in every
+// document, including the shell's) and, for the dismiss-forwarding case,
+// the SENDING end (`forwardToShell`/`forwardDismissToShell`), which needs
+// `IS_EMBED`/`IS_TOP_EMBED` overridden to look like a pane — see
+// `_setIsEmbedForTest`.
+
+function RetainedProbe({
+  onRender,
+}: {
+  onRender: (titles: string[]) => void;
+}) {
+  const items = useRetainedNotifications();
+  onRender(items.map((n) => n.title));
+  return null;
+}
+
+test("a message ingested via the pane->shell global refreshes the useSyncExternalStore snapshot (finding #1)", () => {
+  const renders: string[][] = [];
+  let renderer: ReturnType<typeof create> | null = null;
+  act(() => {
+    renderer = create(
+      createElement(RetainedProbe, { onRender: (titles: string[]) => renders.push(titles) }),
+    );
+  });
+  expect(renders).toEqual([[]]);
+
+  act(() => {
+    (globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number })
+      ._fusedIngestNotification({ title: "pane error", tone: "error" });
+  });
+
+  // useSyncExternalStore only re-renders when getSnapshot()'s OWN reference
+  // changes across an emit() — a handler that mutates `retained` and calls
+  // emit() but never refreshSnapshot() leaves the old snapshot object in
+  // place and this second render never happens (the exact bug: "the pane
+  // forwards, the shell silently never renders it").
+  expect(renders).toEqual([[], ["pane error"]]);
+
+  // Unmount: otherwise this component stays subscribed (module-level
+  // `listeners` Set) for the rest of the file, and every later test's
+  // notify()/dismissNotification() calls (not wrapped in act(), since they
+  // don't concern this probe) would each print a spurious act() warning.
+  act(() => {
+    renderer?.unmount();
+  });
+});
+
+test("a forwarded message is minted a fresh id in the RECEIVING document's own sequence, not reused from the sender (finding #2)", () => {
+  const localId = notify({ title: "local attention", tone: "error" });
+
+  // Simulate a SEPARATE pane's own module-local `nextId` sequence, which also
+  // starts at 1 in every document — the exact collision the reviewer
+  // describes: two documents each mint id 1 for their own first message, and
+  // the old `forwardToShell` shipped that id verbatim.
+  let ingestedId: number = -1;
+  act(() => {
+    ingestedId = (
+      globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number }
+    )._fusedIngestNotification({ id: localId, title: "pane error", tone: "error" });
+  });
+
+  expect(ingestedId).not.toBe(localId);
+  const ids = getRetainedNotifications().map((n) => n.id);
+  expect(new Set(ids).size).toBe(ids.length);
+});
+
+test("dismissNotification in a pane forwards to the shell's own (independently-minted) copy, not just the pane's invisible one (finding #8)", () => {
+  _setIsEmbedForTest(true);
+  _setIsTopEmbedForTest(false);
+
+  const ingestCalls: unknown[] = [];
+  const dismissCalls: number[] = [];
+  const fakeTop = {
+    _fusedIngestNotification: (input: unknown) => {
+      ingestCalls.push(input);
+      return 999; // the shell's own minted id — deliberately not the pane's local id
+    },
+    _fusedDismissNotification: (id: number) => {
+      dismissCalls.push(id);
+    },
+  };
+  (globalThis.window as Record<string, unknown>).top = fakeTop;
+
+  const localId = notify({ title: "registry error", tone: "error" });
+  expect(ingestCalls.length).toBe(1);
+  expect(localId).not.toBe(999);
+
+  dismissNotification(localId);
+
+  // The row that is actually visible lives in the SHELL's retained list,
+  // under the id the shell minted for it (999) — not the pane's own local
+  // id, which names only the pane's own invisible copy.
+  expect(dismissCalls).toEqual([999]);
 });

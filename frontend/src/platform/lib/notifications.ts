@@ -97,6 +97,21 @@ export function _setIsTopEmbedForTest(value: boolean | null): void {
   isTopEmbedOverride = value;
 }
 
+// Same override, same reason, for `IS_EMBED` — needed to exercise the
+// pane→shell forwarding path (§4) without a second real module instance
+// (see this module's own dead-end note in DECISIONS-toasts-become-
+// notifications.md on why that approach doesn't work under bun's shared
+// module registry).
+let isEmbedOverride: boolean | null = null;
+function effectiveIsEmbed(): boolean {
+  return isEmbedOverride ?? IS_EMBED;
+}
+/** Test-only — see `effectiveIsEmbed`'s comment. `null` restores the real
+ *  `IS_EMBED` reading. */
+export function _setIsEmbedForTest(value: boolean | null): void {
+  isEmbedOverride = value;
+}
+
 let popup: StoredNotification | null = null;
 let retained: StoredNotification[] = [];
 let nextId = 1;
@@ -172,30 +187,79 @@ function capRetained(list: StoredNotification[]): StoredNotification[] {
 // child → parent, so every document installs the RECEIVING end on itself
 // (harmless for a pane — nothing ever calls its own copy) and a pane calls
 // the sending end on `window.top`.
+//
+// The ingest handler takes a plain `NotificationInput` — NOT a
+// `StoredNotification` with the SENDER's own id baked in. Every document's
+// `nextId` starts at 1, so forwarding a sender-minted id verbatim collided
+// across documents (duplicate React keys in the shell's retained list, and
+// `dismissNotification(1)` in one pane silently removing an unrelated row in
+// another). The receiving document instead mints its OWN id from its OWN
+// `nextId` sequence, exactly as if `notify()` had been called locally, and
+// hands that id back to the caller so the pane can remember which shell-side
+// id its own (locally-invisible) retained copy corresponds to.
 function installIngest(): void {
   try {
     (globalThis as unknown as {
-      _fusedIngestNotification?: (n: StoredNotification) => void;
-    })._fusedIngestNotification = (n: StoredNotification) => {
-      retained = capRetained([...retained, n]);
+      _fusedIngestNotification?: (input: NotificationInput) => number;
+      _fusedDismissNotification?: (id: number) => void;
+    })._fusedIngestNotification = (input: NotificationInput) => {
+      const id = nextId++;
+      const item = toStored(input, id);
+      retained = capRetained([...retained, item]);
+      refreshSnapshot();
       emit();
+      return id;
+    };
+    (globalThis as unknown as {
+      _fusedDismissNotification?: (id: number) => void;
+    })._fusedDismissNotification = (id: number) => {
+      dismissNotification(id);
     };
   } catch {
-    // Nothing sensible to do if this document's own global can't be set.
+    // Nothing sensible to do if this document's own globals can't be set.
   }
 }
 installIngest();
 
-function forwardToShell(n: StoredNotification): void {
-  if (!IS_EMBED || IS_TOP_EMBED) return; // top-level window: nothing to forward to
+// local (pane-side) id -> shell-minted id, for every retained item this
+// document has forwarded — lets `dismissNotification` reach across and
+// remove the shell's own, independently-identified copy (finding #8): the
+// pane's own `retained` entry is invisible (no panel renders it, per
+// App.tsx's `!IS_EMBED` guard), so without this map a pane dismiss would
+// only ever clear a row nobody could see, leaving the shell's visible row
+// stuck forever.
+const forwardedIds = new Map<number, number>();
+
+function forwardToShell(n: StoredNotification): number | undefined {
+  if (!effectiveIsEmbed() || effectiveIsTopEmbed()) return undefined; // top-level window: nothing to forward to
   try {
     const top = window.top as unknown as {
-      _fusedIngestNotification?: (n: StoredNotification) => void;
+      _fusedIngestNotification?: (input: NotificationInput) => number;
     };
-    top?._fusedIngestNotification?.(n);
+    const input: NotificationInput = {
+      title: n.title,
+      detail: n.detail,
+      tier: n.tier,
+      tone: n.tone,
+      action: n.action,
+      page: n.page,
+    };
+    return top?._fusedIngestNotification?.(input);
   } catch {
     // Cross-origin/sandboxed frame (snapshot-clear.ts's own guard) — nothing
     // this pane can tell the shell in that case either.
+    return undefined;
+  }
+}
+
+function forwardDismissToShell(shellId: number): void {
+  try {
+    const top = window.top as unknown as {
+      _fusedDismissNotification?: (id: number) => void;
+    };
+    top?._fusedDismissNotification?.(shellId);
+  } catch {
+    // Same cross-origin/sandboxed-frame case as forwardToShell.
   }
 }
 
@@ -262,7 +326,8 @@ export function notify(input: NotificationInput, replaceId?: number): number {
 
   if (item.tier === "attention" || item.tier === "trail") {
     retained = capRetained([...retained, item]);
-    forwardToShell(item);
+    const shellId = forwardToShell(item);
+    if (shellId !== undefined) forwardedIds.set(id, shellId);
   }
 
   // LATEST WINS: a fresh popup always replaces whatever is currently
@@ -315,6 +380,11 @@ function armExitTimer(visibleMs: number): void {
  *  "delete the Notifications row", so the popup's own ✕ starts its exit
  *  animation directly rather than calling this. */
 export function dismissNotification(id: number): void {
+  const shellId = forwardedIds.get(id);
+  if (shellId !== undefined) {
+    forwardDismissToShell(shellId);
+    forwardedIds.delete(id);
+  }
   const next = retained.filter((n) => n.id !== id);
   if (next.length === retained.length) return; // already gone
   retained = next;
@@ -351,6 +421,7 @@ export function _resetNotificationsForTest(): void {
   popup = null;
   retained = [];
   nextId = 1;
+  forwardedIds.clear();
   refreshSnapshot();
   emit();
 }
