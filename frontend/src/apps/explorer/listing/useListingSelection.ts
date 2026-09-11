@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch } from "@platform/lib/router";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
+import { isZeroMatchOfferPath } from "@apps/explorer/listing/zero-match-offer";
 import type { RowCtx } from "@apps/explorer/listing/types";
 import {
   EMPTY_SELECTION,
@@ -39,6 +40,7 @@ export function useListingSelection({
   rowCtxByPathRef,
   overlayOpenRef,
   globalKeys = true,
+  zeroMatchOffer = null,
 }: {
   fsPath: string;
   // Flat, ordered list of the paths the arrow keys step through (the rendered
@@ -65,6 +67,15 @@ export function useListingSelection({
   // also what keeps the embedded listing off the address bar — the URL belongs
   // to the host view, so no `?sel=` is read or written for it.
   globalKeys?: boolean;
+  // The zero-match glob-broadening offer (Listing.tsx), or null when it
+  // isn't showing. `navRows` stays empty for the settled-zero-hits state
+  // this offer renders in — it names no real row, so it must never be
+  // folded into the array every OTHER navRows consumer here (Select All,
+  // the marquee sweep, range-select, the vanish/reconcile effect) already
+  // assumes is nothing but real, selectable rows. Enter is the one
+  // exception: with `rows.length` at zero, its own guard used to be a flat
+  // no-op (see the handler) — this is its one added branch.
+  zeroMatchOffer?: { path: string; onActivate: () => void } | null;
 }) {
   // The folder the row paths hang off, in exactly the form Listing builds them
   // with (`base + "/" + name`), so the `?sel=` codec and the rows agree.
@@ -104,6 +115,9 @@ export function useListingSelection({
   // Read from the once-registered keydown handler, like rowCtxByPathRef.
   const rowsAnswerQueryRef = useRef(rowsAnswerQuery);
   rowsAnswerQueryRef.current = rowsAnswerQuery;
+  // Same pattern, for the zero-match offer's Enter branch below.
+  const zeroMatchOfferRef = useRef(zeroMatchOffer);
+  zeroMatchOfferRef.current = zeroMatchOffer;
   // Fast membership test for the row renderer (a Select All can hold thousands).
   const selectedSet = useMemo(() => new Set(sel.paths), [sel.paths]);
   // Mirror the selection into the cross-remount store so it's already there
@@ -331,13 +345,6 @@ export function useListingSelection({
         // Clear the selection. The search input owns Escape while focused (it
         // clears the query — see its onKeyDown), and the overlay/dialog guards
         // above already stopped us if anything modal is up.
-        //
-        // A pending copy/cut outranks the selection: App's capture-phase Escape
-        // handler cancels the clipboard and calls preventDefault(), so one press
-        // never does both. Reading defaultPrevented keeps that precedence here
-        // without a second copy of the clipboard logic (which would also be
-        // wrong — the cancel has to work from Preview, where no Listing exists).
-        if (e.defaultPrevented) return;
         if (!navActive || inSearch) return;
         if (!selRef.current.paths.length) return;
         e.preventDefault();
@@ -351,7 +358,18 @@ export function useListingSelection({
         // alone can't see that the key was spoken for).
         if (e.defaultPrevented) return;
         if (!navActive) return;
-        if (!rows.length) return;
+        if (!rows.length) {
+          // The one case `navRows` being empty does not end the story: a
+          // settled, zero-hit glob search offers to rerun itself broadened
+          // (Listing.tsx). It names no real row, so it is never in `rows` —
+          // checked here, directly, rather than smuggled into the array.
+          const offer = zeroMatchOfferRef.current;
+          if (offer && isZeroMatchOfferPath(offer.path)) {
+            e.preventDefault();
+            offer.onActivate();
+          }
+          return;
+        }
         // With no selection, Enter opens the FIRST row — which, while the rows
         // answer an older query, is the previous query's top hit. Row 0 is a
         // guess this makes on the user's behalf and it must not be made from

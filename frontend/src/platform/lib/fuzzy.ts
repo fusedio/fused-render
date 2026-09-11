@@ -27,8 +27,9 @@
 // be loose enough for that, and once it is, it no longer catches the smear.
 //
 // Both passes are O(text length) and allocate one positions array. This runs
-// over a 150k-entry corpus on every keystroke (listing/scan-job), so nothing
-// here may become a dynamic-programming alignment.
+// over every ranked hit the server returns on every keystroke
+// (listing/ranked-hits), so nothing here may become a dynamic-programming
+// alignment.
 export interface FuzzyResult {
   score: number;
   positions: number[]; // indices in `text` of the matched chars, ascending

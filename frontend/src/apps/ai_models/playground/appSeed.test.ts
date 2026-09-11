@@ -11,8 +11,16 @@
 // Driven through `buildAppAnnotation`, the exported entry point, rather than the
 // private assembler: what is pinned is what a session actually receives.
 import { describe, expect, it } from "bun:test";
-import { buildAppAnnotation } from "./appSeed";
+
+// appSeed.ts reaches params.ts for `readParam`, which imports router.ts for
+// `replaceSearch` — router.ts reads `location` at module scope, so the shim
+// has to land before the (therefore dynamic) import, the same trade
+// params.test.ts already makes for the same reason.
+import { installDomShim } from "@platform/lib/testDomShim";
 import { type AiCatalogModel } from "@platform/lib/api";
+
+installDomShim();
+const { buildAppAnnotation } = await import("./appSeed");
 
 function model(over: Partial<AiCatalogModel> = {}): AiCatalogModel {
   return {

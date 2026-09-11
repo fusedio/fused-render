@@ -16,6 +16,7 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.freshness import (
     MIN_INTERVAL_S,
     QUIET_S,
+    FreshnessCheck,
     enclosing_root,
     indexed_mtime_ns,
     note_folder_opened,
@@ -24,6 +25,7 @@ from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
 
 NS = 1_000_000_000
+NEVER = FreshnessCheck()
 
 
 def _index(tmp_path, root, dirs):
@@ -120,7 +122,8 @@ def test_a_folder_whose_mtime_moved_since_the_scan_triggers_a_rescan(
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) == canonical_root(root)
+    assert note_folder_opened(cfg, sub, [root], now=now) == FreshnessCheck(
+        started=canonical_root(root))
     assert spawned == [{"root": canonical_root(root), "full": False}]
 
 
@@ -130,7 +133,7 @@ def test_an_unchanged_folder_triggers_nothing(tmp_path, spawned):
     cfg = _index(tmp_path, root, {root: 1 * NS,
                                  sub: os.stat(sub).st_mtime_ns})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) is None
+    assert note_folder_opened(cfg, sub, [root], now=now) == NEVER
     assert spawned == []
 
 
@@ -142,7 +145,7 @@ def test_a_folder_the_index_never_recorded_triggers_nothing(tmp_path, spawned):
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) is None
+    assert note_folder_opened(cfg, sub, [root], now=now) == NEVER
     assert spawned == []
 
 
@@ -153,19 +156,23 @@ def test_an_unknown_recorded_mtime_triggers_nothing(tmp_path, spawned):
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 0})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) is None
+    assert note_folder_opened(cfg, sub, [root], now=now) == NEVER
     assert spawned == []
 
 
 def test_a_folder_that_changed_moments_ago_is_left_to_settle(tmp_path, spawned):
     """The quiet period. A build directory's mtime moves continuously, so it is
     never quiet and never triggers — which is what stops it queueing scan after
-    scan."""
+    scan. Refused here comes back with `retry_after`: the caller gets to ask
+    again once the folder has actually gone quiet, rather than the refusal
+    being the end of the question."""
     root = _tree(tmp_path, "root")
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
     now = os.stat(sub).st_mtime + QUIET_S - 1
-    assert note_folder_opened(cfg, sub, [root], now=now) is None
+    result = note_folder_opened(cfg, sub, [root], now=now)
+    assert result.started is None
+    assert result.retry_after == pytest.approx(1.0)
     assert spawned == []
 
 
@@ -184,7 +191,7 @@ def test_a_root_scanned_within_the_floor_is_not_rescanned(tmp_path, spawned):
     # `now` is in the future relative to the record just written, so express the
     # floor from the record itself.
     at = runner.last_scan(cfg, root) + MIN_INTERVAL_S - 1
-    assert note_folder_opened(cfg, sub, [root], now=max(now, at)) is None
+    assert note_folder_opened(cfg, sub, [root], now=max(now, at)) == NEVER
     assert spawned == []
 
 
@@ -199,7 +206,8 @@ def test_a_root_scanned_two_minutes_ago_is_rescanned(tmp_path, spawned):
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
     runner._record_scan(cfg, canonical_root(root))  # see the floor test above
     at = runner.last_scan(cfg, root) + 120
-    assert note_folder_opened(cfg, sub, [root], now=at) == canonical_root(root)
+    assert note_folder_opened(cfg, sub, [root], now=at) == FreshnessCheck(
+        started=canonical_root(root))
     assert spawned == [{"root": canonical_root(root), "full": False}]
 
 
@@ -257,7 +265,7 @@ def test_a_folder_outside_every_configured_root_triggers_nothing(
     outside = _tree(tmp_path, "elsewhere")
     cfg = _index(tmp_path, root, {root: 1 * NS, outside: 1 * NS})
     now = os.stat(outside).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, outside, [root], now=now) is None
+    assert note_folder_opened(cfg, outside, [root], now=now) == NEVER
     assert spawned == []
 
 
@@ -271,7 +279,7 @@ def test_a_live_scan_of_the_root_is_not_joined_by_a_second_one(
     monkeypatch.setattr(runner, "active_run",
                         lambda cfg, r: {"run_id": "live", "root": r})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) is None
+    assert note_folder_opened(cfg, sub, [root], now=now) == NEVER
     assert spawned == []
 
 
@@ -286,7 +294,8 @@ def test_the_scan_it_starts_is_of_the_configured_root_not_the_open_folder(
     monkeypatch.setattr(runner, "_mounts_dir", lambda: "/nonexistent-mounts")
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _Spawned())
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) == canonical_root(root)
+    assert note_folder_opened(cfg, sub, [root], now=now) == FreshnessCheck(
+        started=canonical_root(root))
     assert runner.last_scan(cfg, root) is not None
     assert runner.last_scan(cfg, sub) is None
 
@@ -324,7 +333,7 @@ def test_a_mount_backed_folder_is_refused_without_touching_the_kernel(
 
     monkeypatch.setattr(freshness.os, "stat", boom)
     now = 10 ** 10
-    assert note_folder_opened(cfg, under, [root], now=now) is None
+    assert note_folder_opened(cfg, under, [root], now=now) == NEVER
     assert spawned == []
 
 
@@ -332,5 +341,42 @@ def test_a_vanished_folder_is_not_an_error(tmp_path, spawned):
     root = _tree(tmp_path, "root")
     gone = os.path.join(root, "gone")
     cfg = _index(tmp_path, root, {root: 1 * NS, gone: 1 * NS})
-    assert note_folder_opened(cfg, gone, [root], now=10 ** 10) is None
+    assert note_folder_opened(cfg, gone, [root], now=10 ** 10) == NEVER
+    assert spawned == []
+
+
+# -- the retry signal -----------------------------------------------------
+
+def test_churning_is_the_only_refusal_that_asks_to_be_retried(tmp_path, spawned):
+    """The one distinction the caller needs: `retry_after` is set precisely
+    when everything cheaper than the quiet check has already passed, and it
+    names the moment the folder will actually have gone quiet."""
+    root = _tree(tmp_path, "root")
+    sub = _tree(tmp_path, "root/sub")
+    cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
+    disk_mtime = os.stat(sub).st_mtime
+    now = disk_mtime + QUIET_S - 5
+    result = note_folder_opened(cfg, sub, [root], now=now)
+    assert result == FreshnessCheck(retry_after=pytest.approx(5.0))
+    # And asking again once that many seconds have actually passed succeeds.
+    assert note_folder_opened(
+        cfg, sub, [root], now=now + result.retry_after + 0.01
+    ) == FreshnessCheck(started=canonical_root(root))
+    assert spawned == [{"root": canonical_root(root), "full": False}]
+
+
+def test_a_change_that_turns_out_not_to_be_stale_still_reports_retry_after(
+        tmp_path, spawned):
+    """The quiet gate runs before the staleness lookup (cheapest-first), so a
+    change inside the quiet window is reported as retryable even when it will
+    turn out, once the folder is actually quiet, not to be stale at all. That
+    costs the caller one wasted retry, never a wrong scan."""
+    root = _tree(tmp_path, "root")
+    sub = _tree(tmp_path, "root/sub")
+    cfg = _index(tmp_path, root, {root: 1 * NS, sub: os.stat(sub).st_mtime_ns})
+    now = os.stat(sub).st_mtime + QUIET_S - 1
+    result = note_folder_opened(cfg, sub, [root], now=now)
+    assert result.retry_after == pytest.approx(1.0)
+    assert note_folder_opened(
+        cfg, sub, [root], now=now + result.retry_after + 0.01) == NEVER
     assert spawned == []

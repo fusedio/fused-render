@@ -211,7 +211,7 @@ describe("groupIntoFamilies", () => {
   });
 
   it("a GGUF republish gets its own family rather than joining the safetensors one", () => {
-    // D767. Both declare the same base, so keying on `baseModel` alone would
+    // D793. Both declare the same base, so keying on `baseModel` alone would
     // put them in one bucket — where the GGUF row can never win the primary
     // slot, because a GGUF row carries no fit, no size and no speed (see
     // `hub_models.py::_model_row`) and so blends its `matchScore` from
@@ -298,7 +298,7 @@ describe("groupIntoFamilies", () => {
   });
 
   it("reports the bare base id in baseModel on both sides of a format-keyed split", () => {
-    // D767 splits the safetensors and GGUF republishes of one base into two
+    // D793 splits the safetensors and GGUF republishes of one base into two
     // families with different `key`s ("...FLUX.2-klein-4B" vs "...FLUX.2-
     // klein-4B gguf") — `baseModel` is the raw tag underneath that suffix,
     // so both families have to report the SAME bare id despite the split.

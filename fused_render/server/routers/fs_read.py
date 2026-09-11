@@ -22,6 +22,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
+from fused_render.server import git_status
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -306,9 +307,21 @@ def api_fs_list(path: str, cursor: str | None = None):
                 "mtime": st.st_mtime,
             }
         )
-    ignored = _git_ignored(path, [e["name"] for e in entries])
+    names = [e["name"] for e in entries]
+    ignored = _git_ignored(path, names)
+    # Git tinting for the row NAMES, alongside the gitignore dimming for whole
+    # rows. Both are one batched `git` call for the listing and both degrade to
+    # nothing, so a folder outside a repo — or a machine without git — pays two
+    # cheap negatives and renders exactly as it did before either existed.
+    statuses = git_status.listing_statuses(path, names)
     for e in entries:
         e["ignored"] = e["name"] in ignored
+        status = statuses.get(e["name"])
+        # Absent rather than null when there is nothing to say: the field is
+        # optional on the wire, and an older shell that has never heard of it
+        # keeps working unchanged.
+        if status is not None:
+            e["git"] = status
     # _sort_entries: dirs first, case-insensitive by name, exact name as a
     # deterministic tiebreak (same order for all three list routes).
     return _list_response(path, _sort_entries(entries), truncated, None)
@@ -739,6 +752,12 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
+    # posix-spawn-exempt: `cmd` is assembled above as "open"/"explorer"/
+    # "xdg-open" (or a Windows format string for the /select case) — the OS's
+    # file-manager launcher, never git. The static sweep in
+    # tests/test_git_posix_spawn.py cannot see through the variable to know
+    # that, and this file's own `e["git"] = status` a few lines up (a JSON
+    # field name, not an argv) is enough to put it in the sweep's scope.
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return JSONResponse({"ok": True})
 

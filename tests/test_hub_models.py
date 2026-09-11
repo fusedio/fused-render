@@ -70,7 +70,7 @@ def _no_token(monkeypatch, tmp_path):
 def _no_format_filter(monkeypatch):
     """Every test here starts with an active text engine that filters no format,
     NO secondary GGUF-capable runner available either, and the handful that care
-    about the format filter (or D753's secondary-runner pick) override one or
+    about the format filter (or D779's secondary-runner pick) override one or
     both.
 
     Without this the module's assertions depend on the HOST, and D416 is what
@@ -85,12 +85,12 @@ def _no_format_filter(monkeypatch):
     the deliberate exception they already read as (`_gguf_runner` below), and it
     is the same reasoning `_no_token` above applies to a developer's Hub login.
 
-    `available_runners` is pinned to `()` for the identical reason (D753, the
+    `available_runners` is pinned to `()` for the identical reason (D779, the
     fix-builder round that added it): left real, this Mac's own registry (both
     `mlx-text` AND `llamacpp-text` genuinely available here) would make the
     secondary-runner GGUF pick fire on `siblings` fixtures that were never
     written to exercise it, and pass or fail by an accident of which machine
-    ran the suite — exactly the trap D753's own test file comment warns about.
+    ran the suite — exactly the trap D779's own test file comment warns about.
     """
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
     monkeypatch.setattr(hub, "available_runners", lambda capability: ())
@@ -366,7 +366,7 @@ def _gguf_runner(tags=("gguf",), code="stand-in"):
     `registry.available_runners`) resolves to, carrying only the fields
     `_model_row` reads. Not a real `Runner` — this module's own resolution is
     under test, not the registry's. `code` matters once there are TWO stand-ins
-    in play (D753's secondary-runner pick tells them apart by `.code`)."""
+    in play (D779's secondary-runner pick tells them apart by `.code`)."""
     import types as _types
 
     return _types.SimpleNamespace(hub_filter_tags=tags, code=code)
@@ -401,10 +401,10 @@ def test_a_gguf_row_carries_no_file_when_no_available_runner_speaks_gguf(
         client, hub_cache, monkeypatch):
     """When the capability's active runner declares no format tag at all —
     the `mlx-text` case — AND no other runner available here does either
-    (D753's `available_runners`, empty per the autouse fixture), a repo is
+    (D779's `available_runners`, empty per the autouse fixture), a repo is
     not resolved or dropped by the picker, whatever its `siblings` look
     like: `file` is simply absent from the answer, the same as it always was
-    before D412 and D753."""
+    before D412 and D779."""
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
         {"rfilename": "m-mmproj-F16.gguf"},
@@ -415,7 +415,7 @@ def test_a_gguf_row_carries_no_file_when_no_available_runner_speaks_gguf(
 
 def test_a_gguf_repo_resolves_via_an_available_but_not_preferred_runner(
         client, hub_cache, monkeypatch):
-    """D753 — the reviewer-caught defect: `mlx-text` (no format tag) is the
+    """D779 — the reviewer-caught defect: `mlx-text` (no format tag) is the
     ACTIVE runner, but `llamacpp-text` is genuinely AVAILABLE here (just not
     preferred). The GGUF pick must still resolve against it — `file`, and
     everything downstream that depends on it (`quant`), must not be `None`
@@ -496,7 +496,7 @@ def test_gguf_row_uses_the_huds_own_gguf_metadata_for_params(client, hub_cache, 
     assert row["file"] == "x-Q4_K_M.gguf"
     assert row["params"] == 1_235_814_432
     # `estimatedSize` stays None — the client's lazy per-file lookup still
-    # owns the displayed Size cell (D752); this fix only feeds the RANKING
+    # owns the displayed Size cell (D778); this fix only feeds the RANKING
     # axes off the real params + the resolved file's own quant token.
     assert row["estimatedSize"] is None
 
@@ -612,7 +612,7 @@ def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
     assert row["speedEstimate"] is None
 
 
-# -- D767: a GGUF row outside text generation is rankable and findable ------
+# -- D793: a GGUF row outside text generation is rankable and findable ------
 #
 # Every test above resolves a `file`, because `_gguf_runner` stands in for
 # llama.cpp and text generation is the one capability whose runners declare
@@ -650,7 +650,7 @@ def test_a_fileless_gguf_row_still_reports_the_hubs_own_params(
 
 def test_a_fileless_gguf_row_outranks_an_identical_one_with_no_metadata(
         client, hub_cache, monkeypatch):
-    """The ranking half of D767. Two `text-to-image` GGUF repos, identical
+    """The ranking half of D793. Two `text-to-image` GGUF repos, identical
     in downloads and age, one with `gguf.total` and one without: the blend
     must be able to tell them apart. Before this fix neither had `params`,
     so both scored off `_FIT_DEFAULT` + `_capability_score(None)` +
@@ -993,7 +993,7 @@ def test_a_row_with_no_tags_at_all_carries_nulls_not_a_500(client, hub_cache, mo
     assert row["relation"] is None
 
 
-# -- D778: a family is not left straddling the `limit` boundary -------------
+# -- D804: a family is not left straddling the `limit` boundary -------------
 #
 # `sort=downloads` throughout: with no explicit sort the composite "best"
 # score reorders `models` itself, which would make the fixtures' own list
@@ -1017,7 +1017,7 @@ def test_a_below_boundary_variant_is_pulled_in_with_its_kept_base(
 def test_a_below_boundary_base_is_pulled_up_by_its_kept_variant(
         client, hub_cache, monkeypatch):
     # The reverse direction (c): the higher-ranked row is the REPUBLISH, and
-    # its base sits below the cut. The base still has to surface — D776 makes
+    # its base sits below the cut. The base still has to surface — D802 makes
     # it the family's primary the moment it is present — so it comes back
     # even though nothing about its own rank would have kept it.
     rows = [
@@ -2217,7 +2217,7 @@ def test_toggling_a_narrow_filter_inside_the_window_does_not_reuse_the_smaller_f
     assert second_limit == "96"
 
 
-# -- D754: the composite "Best match" ranking --------------------------------
+# -- D780: the composite "Best match" ranking --------------------------------
 
 
 def test_matchscore_is_present_on_every_row_regardless_of_sort(client, hub_cache, monkeypatch):
@@ -2251,7 +2251,7 @@ def test_an_unknown_sort_best_typo_is_still_refused(client, hub_cache, monkeypat
 
 def test_sort_best_ranks_by_the_composite_not_by_downloads_order(client, hub_cache, monkeypatch):
     # A tiny, 5-year-old, hugely-downloaded stub vs. a capable, brand-new
-    # model with far fewer downloads — the exact inversion D754 exists to
+    # model with far fewer downloads — the exact inversion D780 exists to
     # produce (a live repro on this project's own screenshot: a 2M-param
     # test stub outranking real, current models by raw downloads alone).
     _pin_hardware(monkeypatch)
@@ -2306,7 +2306,7 @@ def test_speed_axis_defaults_below_the_anchor_even_with_a_real_estimate():
     # a sub-billion-parameter stub, ABOVE a genuinely fast, correctly-
     # modelled model's real score.
     tiny_params = 2_000_000  # a 2M-parameter CI stub, same shape as the
-    # `tiny-Qwen2ForCausalLM-2.5` example D754 itself cites.
+    # `tiny-Qwen2ForCausalLM-2.5` example D780 itself cites.
     inflated_but_tiny = hub._speed_score({"tokensPerSecond": 17_324.6}, tiny_params)
     assert inflated_but_tiny == hub._SPEED_DEFAULT
     real_fast_model = hub._speed_score({"tokensPerSecond": 40}, 7_000_000_000)
@@ -2353,7 +2353,7 @@ def test_popularity_axis_is_weak_log_scaled_and_capped():
 
 def test_popularity_axis_default_is_zero_not_a_middle_value():
     # The one axis whose "nothing known" default is 0, not a mid-range
-    # value like every other axis (D754): popularity measures nothing but
+    # value like every other axis (D780): popularity measures nothing but
     # downloads, so no count at all is genuinely the worst case for it.
     assert hub._popularity_score(None) == 0.0
     assert hub._popularity_score(0) == 0.0

@@ -2161,6 +2161,28 @@ def test_every_suggestion_list_recommends_exactly_one_model():
             f"offers exactly one per engine, out of {[e['id'] for e in entries]}")
 
 
+def test_every_suggestion_list_offers_between_two_and_five_models():
+    """Two rows minimum, five maximum, per engine — `SUGGESTIONS`' own rule.
+
+    The two ends fail differently, which is why neither is left to the eye. A
+    ONE-ROW list is a mandate wearing a shortlist's clothes: the reader whose
+    first answer is not good enough has nothing else to click, and no way to
+    tell whether the model or the prompt was at fault. A SIXTH row costs the
+    thing the list is for — these cards are swept, not studied, and a page of
+    them is a research task rather than a pick.
+
+    Per runner rather than in total, for `recommended`'s reason directly above:
+    a list is what ONE machine sees, and a total would let a one-row engine
+    hide behind a well-stocked one.
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        assert 2 <= len(entries) <= 5, (
+            f"{code} suggests {len(entries)} models "
+            f"({[e['id'] for e in entries]}); every engine's list carries two "
+            "to five — one row leaves a reader nowhere to go, six stops being "
+            "read")
+
+
 def test_recommended_is_written_opt_in_and_never_as_a_false():
     """`recommended` is present-and-True or absent, never `False` in the source.
 
@@ -2244,12 +2266,11 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["runner"] == "mlx-text"
     # The namespace set is a PROXY for "these are MLX conversions", and it
-    # grows: `prism-ml/` was added with the Bonsai row and `LiquidAI/` with the
-    # 8B-A1B, both because no `mlx-community/` conversion of them exists. What
-    # the assertion is really pinning is the Windows half above — that the two
-    # lists are disjoint — so a new publisher belongs here rather than being a
-    # reason to weaken it.
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
+    # grows: `prism-ml/` is here for the Bonsai row, because no
+    # `mlx-community/` conversion of it exists. What the assertion is really
+    # pinning is the Windows half above — that the two lists are disjoint — so
+    # a new publisher belongs here rather than being a reason to weaken it.
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/"))
                for m in text["models"])
 
 
@@ -2946,6 +2967,183 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     described = supervisor.describe()
     assert described["loaded"][0]["model"] == "org/small"
     assert described["totalResidentBytes"] == 1234
+
+
+def test_a_resident_load_reports_its_row_silent(fake_runner):
+    """A resident load's own success report (`_bring_up`) sets
+    `tier=jobs.SILENT` — a successful model load raises no notification at
+    all (the user's own call: loading a model is not news), so the row it
+    already showed as "loading" turning "done" pops nothing and keeps no
+    row."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["tier"] == jobs.SILENT
+
+
+def test_a_resident_loads_row_carries_an_explicit_origin(fake_runner):
+    """`_start_resident`'s opening report states `origin="Local models"`
+    explicitly, even though the row is silent on success — the AI Models >
+    Local page's running Activity list shows this row live, well before it
+    ever reaches the terminal state a tier decides the fate of."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
+def test_an_unload_restates_origin_local_models(fake_runner):
+    """`_remove`'s unload report restates `origin="Local models"` explicitly,
+    the same discipline it applies to `tier=jobs.SILENT` — an unload of a
+    worker this process never itself loaded must not depend on stickiness
+    from an opening report that never happened."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
+def test_a_weights_only_downloads_row_carries_an_explicit_origin(fake_runner):
+    """`load(weights_only=True)`'s opening report states
+    `origin="Local models"` for the identical reason the resident load's own
+    opening report does — the row is visible on the Local models page while
+    downloading, regardless of the tier that governs its retention."""
+    job = supervisor.job_id_for("org/small")
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
+def test_a_weights_only_download_reports_its_row_trail(fake_runner):
+    """`_fetch_only` (a download with no load to follow) is real news — the
+    row must still draw a Notification when it finishes, so it reports
+    `tier=jobs.TRAIL`."""
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["tier"] == jobs.TRAIL
+
+
+def test_a_weights_only_download_does_not_inherit_a_loads_silent_tier(fake_runner):
+    """`_fetch_only`'s `job` is `job_id_for(model)` too — the exact row a
+    resident load of the SAME model already reported `tier=jobs.SILENT`
+    through. A download finishing afterwards must not inherit that stale
+    tier — it restates its own `tier=jobs.TRAIL` explicitly."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.SILENT
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["tier"] == jobs.TRAIL, \
+        "the download's own report must not inherit the load's transient tier"
+
+
+def test_an_unload_reports_its_row_silent(fake_runner):
+    """An unload/eviction (`_remove`) frees memory but writes nothing a click
+    could open — nobody asked for this row and nothing survives it, so it
+    reports `tier=jobs.SILENT` like the load it is undoing: unloading a
+    model raises no notification at all, same as loading one."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["tier"] == jobs.SILENT
+
+
+def test_an_unload_does_not_inherit_a_downloads_trail_tier(fake_runner):
+    """`job_id_for(model)` is shared by all three of a resident load, a
+    weights-only download and an unload. A load leaves this id `SILENT`;
+    a download on the SAME id then flips it to `TRAIL`; an unload right
+    after must not inherit that `TRAIL` — it restates `tier=jobs.SILENT`
+    explicitly, proving the download's tier does not leak forward into the
+    unload's own, unrelated, terminal report."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRAIL
+
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["tier"] == jobs.SILENT, \
+        "the unload's own report must not inherit the download's trail tier"
+
+
+def test_a_resident_loads_opening_report_does_not_inherit_a_downloads_trail_tier(
+        fake_runner, monkeypatch):
+    """`_start_resident`'s OPENING `state="running"` report — the one it sends
+    before `_bring_up` even starts its thread — shares `job_id_for(model)`
+    with a weights-only download of the same model. If that download ran
+    last, the row already sits at `tier=jobs.TRAIL`; a fresh resident load
+    must restate its own `tier=jobs.SILENT` on that very first report, not
+    run the whole load under the stale `TRAIL` a previous producer left
+    behind (`Job.tier`'s own comment: every producer restates tier on every
+    report; it never relies on what an earlier one left).
+
+    `FAKE_LOAD_SECONDS` is widened so the assertion below reliably lands
+    before `_bring_up`'s own thread reaches `ready` and overwrites the row
+    with its terminal report — this test is about the OPENING report, which
+    a race against a near-instant fake load would let slip past unobserved.
+    """
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRAIL
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "running"
+    assert row["tier"] == jobs.SILENT, \
+        "the new load's opening report must not run under the download's stale trail tier"
+    _wait_ready("org/small")
+
+
+def test_a_weights_only_downloads_opening_report_does_not_inherit_a_loads_silent_tier(fake_runner):
+    """The mirror of the resident-load case: `load(weights_only=True)`'s
+    opening `state="running"` report also shares `job_id_for(model)`, and
+    must restate its own `tier=jobs.TRAIL` right away rather than running
+    under a stale `SILENT` a prior resident load (or unload) left on the
+    row."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.SILENT
+
+    supervisor.unload("org/small")
+
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "running"
+    assert row["tier"] == jobs.TRAIL, \
+        "the new download's opening report must not run under the load's stale transient tier"
+    _drain_downloads()
 
 
 def test_os_footprint_probe_returns_a_plausible_figure_or_none():
@@ -3985,6 +4183,89 @@ def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch
     assert supervisor.describe()["downloading"] == []
 
 
+def test_a_failed_resident_load_restates_trail_tier_instead_of_inheriting_silent(
+        fake_runner, monkeypatch):
+    """`_bring_up`'s `cancelled`/`error` terminal reports now restate
+    `tier=jobs.TRAIL` explicitly, the same discipline its own success report
+    already follows (`tier=jobs.SILENT`) and `Job.tier`'s own comment
+    requires of every producer on `job_id_for(model)` — a shared id a
+    resident load, a weights-only download, and an unload all report
+    through. Without the restatement, a load that fails right after an
+    unload of the SAME model would run its failure report under the
+    unload's stale `SILENT`, and `_sweep` would then age the failed row
+    out on the read-gated clock a few seconds after the next poll — exactly
+    the vanishing-row bug a failed load must not have: it left a reason to
+    look, so it declares `TRAIL`, not `SILENT`."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.SILENT, "the unload's own report, sticky until restated"
+
+    def boom(runner, worker, job):
+        raise RuntimeError("uv is on fire")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL, \
+        "a failed load must restate its own tier, not inherit the unload's transient one"
+
+
+def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_silent(
+        fake_runner, monkeypatch):
+    """The cancellation twin of the test above: `_bring_up`'s `cancelled`
+    report restates `tier=jobs.TRAIL` too, not only its `error` report."""
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.SILENT
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    jobs.request_cancel(job)
+
+    row = _row(job)
+    assert row["state"] == "cancelled"
+    assert row["tier"] == jobs.TRAIL, \
+        "a cancelled load must restate its own tier, not inherit the unload's transient one"
+
+
+def test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_silent(
+        fake_runner, monkeypatch):
+    """`_fetch_only`'s two failure-shaped terminal reports — the busy-wait
+    loop's own `cancelled` report and the outer `except` block's
+    `cancelled`/`error` report — restate no tier of their own; unlike
+    `_bring_up`'s resident load, this path never needs to, because
+    `load(weights_only=True)` already opens the row with `tier=jobs.TRAIL`
+    before this run's failure could ever fire (`Job.tier` sticks until a
+    later report says otherwise), so a download that fails right after a
+    load/unload of the SAME model still reports its own tier, restated at
+    open rather than at the terminal report."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.SILENT
+
+    def boom(runner, worker, job):
+        raise RuntimeError("the installer never started")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL, \
+        "a failed download must restate its own tier, not inherit the unload's transient one"
+
+
 def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
         fake_runner, monkeypatch):
     """Both sides of a download watch for the ✕, and the worker can win.
@@ -4704,6 +4985,31 @@ def test_a_worker_can_report_to_its_own_reserved_row(client, fake_runner):
         assert refused.status_code == 400, bogus
 
 
+def test_a_worker_rebuilding_a_forgotten_row_restores_its_page_from_the_body(client, fake_runner):
+    """A transcription worker (`faster_whisper`/`mlx_whisper`'s `worker.py`)
+    spreads its row-identity dict — including `page` — into every tick it
+    posts here, but it never carries `X-Fused-Page` (that header only
+    travels with a PAGE's own runtime calls; a worker subprocess has no page
+    context to attach one from). If the row this id names was forgotten
+    (`jobs._sweep` evicted it, or the app restarted) and this tick is what
+    recreates it, `page` has nowhere else to come from — a worker-token
+    request is already fully trusted to write anything else in the body
+    (title, model, kind, ...), so it may supply `page` too."""
+    supervisor.load("org/reports", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/reports")
+    row_id = supervisor.job_id_for("org/reports")
+    jobs.dismiss(row_id)  # forget the row entirely, as an eviction would
+
+    response = client.post(
+        "/api/jobs",
+        json={"id": row_id, "title": "org/reports", "state": "running",
+              "page": "/tmp/my-transcript-app/index.html"},
+        headers={"X-Fused": "1", "X-Fused-Worker": worker.token},
+    )
+    assert response.status_code == 200
+    assert response.json()["page"] == "/tmp/my-transcript-app/index.html"
+
+
 def test_a_stopped_workers_token_stops_working(client, fake_runner):
     # The token is only good while the worker it belongs to is alive.
     supervisor.load("org/expires", registry.TEXT_GENERATION)
@@ -4885,6 +5191,27 @@ def test_ai_without_a_model_still_means_claude(client, monkeypatch):
     assert "claude" in body["error"]["message"].lower()
 
 
+def test_api_ai_threads_X_Fused_Page_into__ai_relay(client, monkeypatch):
+    """`/api/ai` reads `X-Fused-Page` the same way `routers/jobs.py` and
+    `routers/capture.py` do — pinned here at the route, since what `page=`
+    then does once inside `_ai_relay` (the Claude-tier row, the
+    `/claude-config` fallback) is covered directly in
+    `tests/test_server_ai.py`."""
+    from fused_render.server import ai as ai_mod
+
+    captured = {}
+
+    async def fake_relay(body, session=None, page=""):
+        captured["page"] = page
+        return ai_mod.JSONResponse({"ok": True, "result": {
+            "text": "hi", "model": "m", "usage": None}})
+
+    monkeypatch.setattr(ai_mod, "_ai_relay", fake_relay)
+    client.post("/api/ai", json={"prompt": "hi"},
+               headers={"X-Fused": "1", "X-Fused-Page": "/tasks"})
+    assert captured["page"] == "/tasks"
+
+
 def test_a_slash_bearing_model_goes_local(client, monkeypatch):
     """…and the same call with a repo id does NOT reach for the CLI at all.
 
@@ -4951,6 +5278,130 @@ def _wait_job(job_id, timeout=20.0):
     raise AssertionError(f"{job_id} never finished: {row}")
 
 
+def test_an_image_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_image_runner):
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
+        client, fake_image_runner):
+    """The Playground raises a render with no `X-Fused-Page` at all (it runs
+    in the shell, not a page iframe — see `client.ts`'s own comment). The
+    OPENING report has nowhere to point yet, since the file does not exist
+    until the render finishes — but the terminal report does, and points the
+    row at the rendered file itself."""
+    started = client.post("/api/ai/image", json={"prompt": "a red square"},
+                          headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+
+
+def test_an_image_rows_origin_is_playground_with_no_calling_page(client, fake_image_runner):
+    """`_start_render` derives `origin` from the caller's `page`
+    (`jobs.origin_for_page`) rather than a bare literal — the AI Models
+    Playground runs in the shell, not a page iframe, and sends no
+    `X-Fused-Page`, which is exactly the empty-page case `origin_for_page`
+    answers with the producer's own shell-side default."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "Playground"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_rows_origin_names_the_calling_page_when_there_is_one(
+        client, fake_image_runner):
+    """A render raised from a user app's own page must not be captioned
+    "Playground" — that caption belongs to the shipped Playground alone.
+    With no recognized project above it, the fs path falls back to its own
+    filename stem (`origin_for_page`'s documented fallback)."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my-app/index.html"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "index"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonical(
+        fake_image_runner, monkeypatch, tmp_path):
+    """The worker's own `result["path"]` is built with `os.path` on its side
+    of the boundary, so on Windows it comes back backslashed — this is
+    reproducible on any host by having the (fake) worker hand back a
+    Windows-shaped string directly, independent of the test host's own OS.
+    The row's `page` must still be the canonical (forward-slash) spelling the
+    rest of the app treats a filesystem path as, the same one `/api/ai/image`
+    hands back as `path` — never the raw spelling the render happened to
+    report."""
+    def windows_shaped(model, request, job):
+        return {"steps": 1, "path": r"C:\Users\runner\out\one.png"}
+
+    monkeypatch.setattr(supervisor, "generate_image", windows_shaped)
+    job = supervisor.image_job_id("windows-shaped")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(tmp_path / "one.png")},
+                           job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == "C:/Users/runner/out/one.png"
+
+
+def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
+        client, fake_image_runner):
+    """An app that raised the render keeps opening that app — the output
+    path never overrides a real `X-Fused-Page`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == "/tasks"
+
+
+def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
+        fake_image_runner, monkeypatch, tmp_path):
+    """A render that fails or is cancelled never wrote its file — pointing the
+    row at the missing file itself would open nothing. The folder that would
+    have held it still exists (the route creates it before the render
+    starts), so that is the destination instead."""
+    def boom(model, request, job):
+        raise RuntimeError("the worker choked")
+
+    monkeypatch.setattr(supervisor, "generate_image", boom)
+    out = tmp_path / "renders" / "one.png"
+    out.parent.mkdir(parents=True)
+    job = supervisor.image_job_id("f1")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
+
+
+def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_back_to_the_output_folder(
+        fake_image_runner, monkeypatch, tmp_path):
+    """A finished render's own destination is the file `generate_image`
+    returned, but a runner that reports success without naming a `path` must
+    still land somewhere real — the folder the route already created for it,
+    exactly like the failure path already does."""
+    def no_path(model, request, job):
+        return {"steps": 1}
+
+    monkeypatch.setattr(supervisor, "generate_image", no_path)
+    out = tmp_path / "renders" / "one.png"
+    out.parent.mkdir(parents=True)
+    job = supervisor.image_job_id("f2")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
+
+
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
     response = client.post("/api/ai/image", json={"prompt": "a red square"},
                            headers={"X-Fused": "1"})
@@ -4986,9 +5437,9 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job):
+    def spy(model, request, job, page=""):
         captured.update(request)
-        return real_start(model, request, job)
+        return real_start(model, request, job, page=page)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
@@ -5665,9 +6116,9 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job):
+    def spy(model, request, job, page=""):
         captured.append(dict(request))
-        return real_start(model, request, job)
+        return real_start(model, request, job, page=page)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
 
@@ -5694,8 +6145,8 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job: (captured.append(dict(request)),
-                                                      real_start(model, request, job))[1])
+                        lambda model, request, job, page="": (captured.append(dict(request)),
+                                                      real_start(model, request, job, page=page))[1])
 
     edit = client.post(
         "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
@@ -7020,6 +7471,59 @@ def test_the_video_bridge_base_option_reaches_the_route(
     assert response.status_code == 200, response.json()
 
 
+def test_a_video_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_video_runner):
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_a_video_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
+        client, fake_video_runner):
+    """Same rule as the image path (`_start_render` is shared): no caller
+    page means the row points at its own rendered file once the render is
+    actually done and the file exists."""
+    started = client.post("/api/ai/video", json={"prompt": "a fox"},
+                          headers={"X-Fused": "1"}).json()
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+
+
+def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonical(
+        fake_video_runner, monkeypatch, tmp_path):
+    """See the image twin of this test — `_start_render` is shared, so the
+    same Windows-shaped `result["path"]` has to canonicalize the same way for
+    a video render."""
+    def windows_shaped(model, request, job):
+        return {"steps": 1, "path": r"C:\Users\runner\out\one.mp4"}
+
+    monkeypatch.setattr(supervisor, "generate_video", windows_shaped)
+    job = supervisor.video_job_id("windows-shaped")
+    supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(tmp_path / "one.mp4")},
+                           job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == "C:/Users/runner/out/one.mp4"
+
+
+def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
+        fake_video_runner, monkeypatch, tmp_path):
+    def boom(model, request, job):
+        raise RuntimeError("the worker choked")
+
+    monkeypatch.setattr(supervisor, "generate_video", boom)
+    out = tmp_path / "renders" / "one.mp4"
+    out.parent.mkdir(parents=True)
+    job = supervisor.video_job_id("f1")
+    supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
+
+
 # -- transcription (SPEC §40) ---------------------------------------------------
 # Job-backed like an image and for the same reason — a 90-minute recording is
 # not a chat turn — with one addition: the transcript is a FILE, so the work
@@ -7028,6 +7532,31 @@ def test_the_video_bridge_base_option_reaches_the_route(
 
 def _post_transcribe(client, **body):
     return client.post("/api/ai/transcribe", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_transcript_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_transcribe_runner, recording):
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_a_transcript_rows_origin_names_the_calling_page(
+        client, fake_transcribe_runner, recording):
+    """`transcribe_row_fields` derives `origin` the same way every other
+    producer does — the Scheduler-triggered transcription above must not
+    read "Playground" or blank just because the row is opened from a worker
+    hop; it carries the caller's own page, table-mapped like any other known
+    shell route."""
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "Scheduler"
+    _wait_job(started["jobId"])
 
 
 def test_a_transcript_is_written_to_disk_and_the_job_finishes(
@@ -7086,8 +7615,8 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
 
     reply = _post_transcribe(client, path=recording).json()
     _wait_job(reply["jobId"])
@@ -7151,8 +7680,8 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, True), ({"vad": None}, True),
                            ({"vad": True}, True), ({"vad": False}, False)):
         started = _post_transcribe(client, path=recording, **sent).json()
@@ -7196,8 +7725,8 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
                  {"diarize": True, "speakers": ""}):
         seen.clear()
@@ -7296,8 +7825,8 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, None), ({"diarize": False}, None),
                            ({"diarize": None}, None),
                            ({"diarize": True, "speakers": 3}, 3)):
@@ -7321,8 +7850,8 @@ def test_words_reaches_the_worker_and_defaults_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, False), ({"words": False}, False),
                            ({"words": None}, False), ({"words": True}, True)):
         seen.clear()
@@ -7419,8 +7948,38 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
+    # No "origin" key at all — the Playground's transcribe stage (this
+    # fixture's caller) sends no page, so there is nothing real to derive,
+    # and a present-but-empty key would blank any origin an earlier report
+    # on this same row already set (see `transcribe_row_fields`'s docstring).
     assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
-                           "kind": "task", "cancellable": True, "unit": "s"}
+                           "kind": "task", "cancellable": True, "unit": "s", "page": ""}
+
+
+def test_transcribe_row_fields_omits_origin_entirely_with_no_page():
+    """No `"origin"` key at all when `page` is empty — a present-but-empty
+    value would be gated straight into `job.origin` by `jobs.upsert`'s
+    `"origin" in body and server` check the next time this dict is spread
+    into a worker's restate tick, blanking a caption an earlier report on
+    the same row already set."""
+    fields = supervisor.transcribe_row_fields("f.wav", "org/fake-whisper", "")
+    assert "origin" not in fields
+
+
+def test_a_workers_restate_does_not_blank_an_origin_the_opening_report_set():
+    """`origin` is sticky, same as every other field `jobs.upsert` gates on
+    `server=True` — a worker's restate tick (this row-identity dict spread
+    into its report body) must not overwrite an origin an earlier report
+    already derived just because THIS caller (the Playground's transcribe
+    stage, with no page of its own) has nothing real to say about it."""
+    job_id = jobs.SERVER_ID_PREFIX + "ai-transcribe-race"
+    jobs.upsert({"id": job_id, "title": "t", "state": "running"},
+                origin="Claude annotation", server=True)
+    assert jobs.list_jobs()[0]["origin"] == "Claude annotation"
+
+    fields = supervisor.transcribe_row_fields("f.wav", "org/fake-whisper", "")
+    jobs.upsert({"id": job_id, **fields, "state": "running"}, server=True)
+    assert jobs.list_jobs()[0]["origin"] == "Claude annotation"
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(
@@ -7452,6 +8011,16 @@ def test_a_transcription_row_is_server_owned_and_reserved(
     refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
                           headers={"X-Fused": "1"})
     assert refused.status_code == 400
+
+
+def test_a_transcription_row_states_no_origin(
+        client, fake_transcribe_runner, recording):
+    """`transcribe_row_fields` is shared by the Playground, Claude
+    annotations, and Apple-speech callers alike — no single label would be
+    honest for all of them, so this row states none rather than guess one."""
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["origin"] == ""
 
 
 def test_a_failure_reaches_the_page_even_with_the_QUEUE_OVER_THE_CAP(
@@ -7917,7 +8486,8 @@ def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monke
 def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
     """The pairing itself: acquisition and release are one construct, so a
     caller cannot take a turn and forget to give it back."""
-    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title, model="": None)
+    monkeypatch.setattr(supervisor, "_await_turn",
+                        lambda job, title, model="", page="": None)
     supervisor._TRANSCRIBE_LOCK.acquire()
     with pytest.raises(ValueError):
         with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):

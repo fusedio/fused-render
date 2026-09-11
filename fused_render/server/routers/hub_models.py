@@ -162,7 +162,7 @@ _TIMEOUT_S = 12.0
 # result at ROW-CONSTRUCTION time (`formats.pick_gguf_file`) cheap: the data
 # this needs is already in the payload this module was fetching anyway.
 #
-# **`gguf` (fix for code review finding 1, amending D752) is the same shape
+# **`gguf` (fix for code review finding 1, amending D778) is the same shape
 # of free ride.** Live-verified composed with the rest of this tuple against
 # both a single-file and a multi-quant GGUF repo (`hugging-quants/Llama-3.2-
 # 1B-Instruct-Q4_K_M-GGUF`, `bartowski/Llama-3.2-1B-Instruct-GGUF`): the Hub
@@ -177,7 +177,7 @@ _TIMEOUT_S = 12.0
 # `total` as `params` for a `file`-resolved row that has no safetensors
 # metadata of its own — a GENUINE Hub-reported fact, not a guess from the
 # repo's name — and never `totalFileSize`, which would reintroduce the exact
-# repo-wide-total bug D753's own fix corrected for `usedStorage`.
+# repo-wide-total bug D779's own fix corrected for `usedStorage`.
 _EXPAND = (
     "pipeline_tag", "downloads", "likes", "lastModified", "createdAt",
     "library_name", "gated", "private", "tags", "safetensors", "siblings",
@@ -209,17 +209,17 @@ _PARAMS_BANDS = frozenset({"under4b", "4to15b", "over15b", "any"})
 # `score`, after the per-request join. See `api_hub_search`.
 _FIT_SORT = "fit"
 
-# The DEFAULT ranking (D754): one 0-100 number blending memory fit, a
+# The DEFAULT ranking (D780): one 0-100 number blending memory fit, a
 # params-based capability proxy, speed, recency and popularity, plus a small
-# on-disk bonus — see `_composite_score` and D754 for the full defense of
+# on-disk bonus — see `_composite_score` and D780 for the full defense of
 # the weights and the axes rejected. Like `_FIT_SORT`, not a `_SORTS` key:
 # there is no Hub wire field for it either, so it asks for the same
 # most-downloaded candidate set and reorders it here.
 _BEST_SORT = "best"
 
-# ---- D754's composite score: weights, defaults, and the axis curves -------
+# ---- D780's composite score: weights, defaults, and the axis curves -------
 #
-# Every weight below is a DELIBERATE choice, not a magic tuple — see D754 for
+# Every weight below is a DELIBERATE choice, not a magic tuple — see D780 for
 # the reasoning this comment only summarizes. They sum to 1.0 before the
 # on-disk bonus, which is additive and outside the blend.
 _WEIGHT_FIT = 0.35
@@ -228,12 +228,12 @@ _WEIGHT_SPEED = 0.15
 _WEIGHT_RECENCY = 0.15
 _WEIGHT_POPULARITY = 0.10
 
-# A small nudge for a model already on this disk (D754) — it costs nothing to
+# A small nudge for a model already on this disk (D780) — it costs nothing to
 # open, so it earns a push toward the top of a tie, never enough on its own
 # to out-rank a genuinely better-suited model that lives only on the Hub.
 _ON_DISK_BONUS = 6.0
 
-# D756: a row that only runs via CPU offload or CPU-only is a real cost the
+# D782: a row that only runs via CPU offload or CPU-only is a real cost the
 # ranking must reflect — the speed axis (`_speed_score`) does NOT already
 # cover this: it reads `speed.estimate_tok_s`'s `tokensPerSecond`, which is
 # a MACHINE-WIDE backend guess (Metal/CUDA/CPU-ARM/…, `speed.py`'s own
@@ -346,8 +346,8 @@ def _capability_anchor_params(ram_gb: float | None) -> float:
 
 
 def _capability_score(params: int | None, ram_gb: float | None) -> float:
-    """The params-as-capability-proxy axis (D754) — never a guess when
-    `params` is unknown, which is exactly the row shape D749/D751 already
+    """The params-as-capability-proxy axis (D780) — never a guess when
+    `params` is unknown, which is exactly the row shape D775/D777 already
     guard against inventing a number for."""
     if params is None or params <= 0:
         return _CAPABILITY_DEFAULT
@@ -403,7 +403,7 @@ def _recency_score(created: str | None) -> float:
 
 def _popularity_score(downloads: int | None) -> float:
     """The popularity axis — log-scaled, and DELIBERATELY the one axis whose
-    "nothing known" default is 0 rather than a middle value (D754): every
+    "nothing known" default is 0 rather than a middle value (D780): every
     other axis's default sits in the middle because the absence of evidence
     should not read as "definitely bad", but popularity is a WEAK signal by
     design (the brief's own instruction) — this axis measures downloads and
@@ -461,14 +461,14 @@ def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
 
 
 def _composite_score(row: dict, ram_gb: float | None) -> float:
-    """`row["matchScore"]` (D754) — the composite 0-100 the DEFAULT sort
+    """`row["matchScore"]` (D780) — the composite 0-100 the DEFAULT sort
     ranks by and the merged Fit+Score cell renders, blending:
 
     * memory fit (`row["fit"]["score"]`, `fit.verdict`'s own 0-100) — the
       heaviest weight, because a row already carries this as a hard GATE
       elsewhere (`verdict: "no"` is dropped by default) and a row merely
       "tight" should still visibly rank below one that is "easy" rather
-      than tying with it the way the pre-D754 fit-only sort did.
+      than tying with it the way the pre-D780 fit-only sort did.
     * capability (`_capability_score`) — a params-based proxy for "how much
       model", scaled to what THIS machine can comfortably hold, so a
       machine that can run 8B stops surfacing 137M models ahead of it.
@@ -481,7 +481,7 @@ def _composite_score(row: dict, ram_gb: float | None) -> float:
 
     Plus `_ON_DISK_BONUS` when this row is already on disk, MINUS
     `_CPU_OFFLOAD_PENALTY`/`_CPU_ONLY_PENALTY` when `fit.runMode` says this
-    row would not run on the GPU/unified memory (D756 — the speed axis is a
+    row would not run on the GPU/unified memory (D782 — the speed axis is a
     machine-wide backend guess, not a per-row judgement of THIS repo's own
     offload, so it does not already cover this). The blend is clamped to
     `[0, 100]` afterward: the bonus can push a near-ceiling row past 100 on
@@ -535,16 +535,16 @@ _DTYPE_BITS = {
 }
 
 # The INTEGER dtypes, which store several packed weights per word in a
-# quantized checkpoint (D749-amending finding, code review F2) — the same set
+# quantized checkpoint (D775-amending finding, code review F2) — the same set
 # `hub_cache._safetensors_params` already keys on for the identical reason on
 # a downloaded model's own card. `_quant` must never report one of these as
 # the model's quantization: it names the STORAGE CONTAINER (an MLX/GPTQ 4-bit
 # checkpoint packs 8 weights into one `U32`), not the precision, and reporting
 # it as one is a label as wrong in substance as guessing from the repo's name
-# — the thing D749 exists to rule out. `_params` must not sum these RAW either
+# — the thing D775 exists to rule out. `_params` must not sum these RAW either
 # — doing so counts storage slots, not weights, which is why a 27B MLX-4bit
 # repo used to report 4.7B params (`_params_band` then misclassified it into
-# "Under 8B"). See D751.
+# "Under 8B"). See D777.
 _PACKED_DTYPES = frozenset({"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"})
 
 # Hub `library_name` values NOTHING here can ever open, and the reason this is a
@@ -659,7 +659,7 @@ def _estimated_bytes(safetensors) -> int | None:
     """Bytes on disk, recovered from the dtype -> parameter-count map. None when
     the repo carries no safetensors metadata (a size we cannot compute is left
     out, never guessed from the parameter count alone) OR when the naive byte
-    sum below is DOMINATED by a packed dtype (`_PACKED_DTYPES`, D749/D751's
+    sum below is DOMINATED by a packed dtype (`_PACKED_DTYPES`, D775/D777's
     own "names the storage CONTAINER, not the precision" rule, applied here to
     size instead of the quantization label).
 
@@ -727,8 +727,8 @@ def _quant(safetensors, file: str | None, config=None) -> str | None:
       `safetensors` for a `file`-resolved row precisely so a repo publishing
       BOTH formats cannot have its OTHER upload's dtype decide this row's
       label while the Download button fetches the GGUF.
-    * `config`'s own `quantization`/`quantization_config` block (D751,
-      amending D749) — MLX writes `quantization: {bits}`, transformers writes
+    * `config`'s own `quantization`/`quantization_config` block (D777,
+      amending D775) — MLX writes `quantization: {bits}`, transformers writes
       `quantization_config: {bits | load_in_4bit | load_in_8bit}`. This is the
       checkpoint's own declaration of its precision, read via the same
       `hub_cache._quantization` a downloaded model's card already trusts, so
@@ -786,7 +786,7 @@ def _params_band(params: int | None) -> str | None:
 
 def _params(safetensors, config=None) -> int | None:
     """The repo's real parameter count — not the number of storage SLOTS a
-    quantized checkpoint's dtype map counts (D751, code review F2).
+    quantized checkpoint's dtype map counts (D777, code review F2).
 
     The Hub's own `safetensors.total` is the SAME undercount as summing
     `parameters` raw: verified live against `mlx-community/Qwen3.8-27B-4bit`
@@ -998,7 +998,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
       capability existence alone, and is therefore the one exception to this
       module's "search does not depend on the host" rule.
 
-    **(D753) A GGUF pick is not limited to the ACTIVE runner.** D412 reads as
+    **(D779) A GGUF pick is not limited to the ACTIVE runner.** D412 reads as
     "the active runner decides", but a Mac with `mlx-text` active and
     `llamacpp-text` merely AVAILABLE (not preferred) was falling through
     every GGUF-only repo with `file` left `None` — no drop (mlx-text
@@ -1078,13 +1078,13 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     if runner is not None and "gguf" in runner.hub_filter_tags:
         gguf_runner = runner
     elif runner is not None:
-        # D753: the active runner speaks no format this picker knows, but
+        # D779: the active runner speaks no format this picker knows, but
         # another runner registered for the SAME capability may still be
         # able to load this repo — merely not preferred, not unavailable.
         # Only tried when the active runner itself declared no tag at all;
         # an active runner that DID declare one and found nothing already
         # took the drop branch above, and that verdict is the active
-        # runner's alone to make (see the docstring's D753 paragraph).
+        # runner's alone to make (see the docstring's D779 paragraph).
         for candidate in available_runners(capability):
             if candidate.code != runner.code and "gguf" in candidate.hub_filter_tags:
                 gguf_runner = candidate
@@ -1132,7 +1132,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # cannot leak a memory verdict; it is only ever a capability-axis input
     # and a Params-column fact.
     #
-    # **Read for EVERY GGUF repo, not only a `file`-resolved one** (D767).
+    # **Read for EVERY GGUF repo, not only a `file`-resolved one** (D793).
     # Gating this on `file` tied it to `pick_gguf_file` having run, which
     # only happens when some runner for the capability declares the `gguf`
     # format tag — true for text generation and false for the other three.
@@ -1173,7 +1173,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # server-supplied `estimatedSize`, is the ONLY thing that ever produces
     # a memory verdict or a tok/s figure for such a row.
     #
-    # `params_from_gguf` joins `file` as a reason to refuse (D767), and it has
+    # `params_from_gguf` joins `file` as a reason to refuse (D793), and it has
     # to: the paragraph above argues from the PARAMS being a GGUF
     # checkpoint's, not from `pick_gguf_file` having run. Feeding a
     # `gguf.total` params count into `fit.verdict` with no `size_gb` beside it
@@ -1191,7 +1191,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         if judgeable and capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
-    # (D767) The repo's weight FORMAT, when the Hub said something that
+    # (D793) The repo's weight FORMAT, when the Hub said something that
     # amounts to one — `"gguf"` for a repo that ships `.gguf` and carries no
     # safetensors metadata of its own, `None` for everything else, including
     # a mixed repo that publishes both (its safetensors upload is the one
@@ -1436,7 +1436,7 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     row as its base; a candidate and a kept row agree on the untagged mirror
     triple (`_mirror_key`); or — the direction that is easy to skip and just
     as necessary — a KEPT row names the CANDIDATE as its base, because the
-    base heads its family (D776) and its absence below the cut is exactly
+    base heads its family (D802) and its absence below the cut is exactly
     what let a republish stand in for its own parent.
 
     **A pulled-in row is built by the identical `_model_row` call as every
@@ -1448,7 +1448,7 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     member's index in the response list, and deletes every other member from
     the drawn order — so where a NON-primary pulled-in row lands barely
     matters, but where a pulled-in BASE lands matters a great deal, since
-    D776 makes it the primary the instant it is present. A base is therefore
+    D802 makes it the primary the instant it is present. A base is therefore
     reinserted immediately BEFORE the kept variant that named it, and every
     other pulled-in row immediately AFTER the kept row it matched — both
     keep the family at essentially the rank its strongest kept member already
@@ -1524,7 +1524,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     if guard is not None:
         return guard
     q, task = body.get("q"), body.get("task")
-    # D754: the composite match score, not raw downloads, is the default —
+    # D780: the composite match score, not raw downloads, is the default —
     # see that decision for why downloads-first rewards age and CI traffic
     # over usefulness. `downloads` stays a fully explicit choice, unchanged.
     sort = body.get("sort") or _BEST_SORT
@@ -1686,7 +1686,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
 
-    # D754: every row gets a `matchScore` regardless of which sort was asked
+    # D780: every row gets a `matchScore` regardless of which sort was asked
     # for — the merged Fit+Score cell renders it on every row, not only when
     # ranking by it. Computed once per request off a single `machine_ram_gb()`
     # reading (already `lru_cache`d, like `fit.verdict`'s own per-row reads

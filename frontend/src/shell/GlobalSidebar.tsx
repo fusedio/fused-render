@@ -15,7 +15,7 @@ import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import type { Config, UpdateStatus } from "@platform/lib/api";
 import { updateInstall } from "@platform/lib/api";
 import {
   pokeUpdateStatus,
@@ -24,7 +24,6 @@ import {
   updateRelevant,
   useUpdateStatus,
 } from "@platform/lib/update-status";
-import { pushToast } from "@platform/lib/toast";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -123,6 +122,33 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
+// A download arrow into a tray: the update row's action IS a download and a
+// swap, and every one of its siblings in this popover wears a glyph — a lone
+// text row at the top of the list read as a stray status line rather than the
+// thing you click.
+// The install-in-flight glyph for the popover row: a ring that turns
+// (styles/sidebar.css `.update-spinner`), in the icon slot the download arrow
+// otherwise fills — same box, so the row does not shift.
+const UPDATE_SPINNER = <span className="update-spinner" aria-hidden="true" />;
+
+/** The popover row's word. Same as the badge's label except mid-install,
+ *  where the badge heading stays "Updating…" and this row names the half that
+ *  is running instead (Akshil, 2026-09-08: "downloading, installing, etc."). */
+function updateRowLabel(status: UpdateStatus): string {
+  if (status.state === "installing") {
+    return status.phase === "installing" ? "Installing…" : "Downloading…";
+  }
+  return updateLabel(status);
+}
+
+const UPDATE_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M4 18.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-.5" />
+  </svg>
+);
+
 // A circled question mark — the app's one help affordance, and what a reader
 // looks for when they want the walkthrough back.
 const TOURS_ICON = (
@@ -146,6 +172,9 @@ interface PrefsMenuEntry {
   /** Run this instead of navigating to `href` — the tour entries replay a
       walkthrough in place rather than going anywhere. */
   onPick?: () => void;
+  /** Drawn but inert — the update row while an install runs (Akshil,
+      2026-09-08): it says which half is running and takes no press. */
+  disabled?: boolean;
   /** A one-level flyout hung off this row (Tours). Its own entries never carry
       a `submenu` of their own — one level, like ContextMenu's. */
   submenu?: PrefsMenuEntry[];
@@ -266,6 +295,7 @@ function PrefsRow({
     "context-menu-item" +
     (hasSub ? " has-submenu" : "") +
     (open ? " open" : "") +
+    (entry.disabled ? " disabled" : "") +
     // A flyout parent is never "the page you are on": it has no page.
     (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
   const content = (
@@ -316,8 +346,9 @@ function PrefsRow({
       role="menuitem"
       aria-haspopup={hasSub ? "menu" : undefined}
       aria-expanded={hasSub ? open : undefined}
+      aria-disabled={entry.disabled || undefined}
       className={className}
-      onClick={onActivate}
+      onClick={entry.disabled ? undefined : onActivate}
     >
       {content}
     </div>
@@ -440,26 +471,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // second timer.
   const updateStatus = useUpdateStatus();
   const updateIsRelevant = updateRelevant(updateStatus);
-  // Same action UpdateBadge's own button performs: dmg installs itself, brew
-  // installs are copy-the-command-and-run-it-yourself (the app never shells
-  // out to brew). Reached from the popover row rather than the expanded
-  // badge's own panel, so there's no panel here to flash "Copied" in — a
-  // toast says it instead.
+  // Same action UpdateBadge's own button performs: the install downloads and
+  // swaps the bundle, whichever tool put it there — one install path for
+  // every install type (D767). Reached from the popover row rather than the
+  // expanded badge's own panel, so there's no panel here to flash a result in:
+  // the outcome shows up through the shared poll instead — the rail dot and
+  // the row's own label follow the store as the state moves.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
     // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
-    // badge's own button and the ServerStatusBanner card use. FIRST, before
-    // the brew branch: a brew upgrade also lands in "installed" and clears
-    // manual_command, and the brew branch used to return on that before this
-    // path was reached (bugbot, PR #1058).
+    // badge's own button and the ServerStatusBanner card use.
     if (updateStatus.state === "installed") {
       window.location.assign("fused-render://relaunch");
-      return;
-    }
-    if (updateStatus.method === "brew") {
-      if (!updateStatus.manual_command) return;
-      navigator.clipboard.writeText(updateStatus.manual_command);
-      pushToast({ msg: "Copied", tone: "info" });
       return;
     }
     // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
@@ -472,7 +495,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // answers, so the poll it arms sees "installing" and runs at the busy
     // interval — poked first it would still read "available" and arm the 60s
     // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
-    void updateInstall()
+    // Send what THIS row actually shows — `updateStatus.latest_version` —
+    // not just "install whatever's latest": see UpdateBadge.install and
+    // UpdateManager.install's docstring for why a version the caller didn't
+    // pass can't be trusted to match what was on screen.
+    void updateInstall(updateStatus.latest_version)
       .then(setUpdateStatus)
       .catch(() => {
         // Fall through — the re-armed poll picks up the real state.
@@ -650,11 +677,21 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     // A first row for the same fact the collapsed rail's dot and the expanded
     // badge both carry — the popover is the only one of the three with room
-    // for the actual verb (install / copy the command), so it gets one here
-    // rather than just a label. `href` is a stable key (see PrefsMenuEntry) —
-    // this row never navigates, it only runs `handleUpdatePick`.
+    // for the actual action, so it gets one here rather than just a label,
+    // and an icon like every other row in the list. `href` is a stable key
+    // (see PrefsMenuEntry) — this row never navigates, it only runs
+    // `handleUpdatePick`.
     ...(updateIsRelevant && updateStatus
-      ? [{ href: "#update", label: updateLabel(updateStatus), onPick: handleUpdatePick }, "separator" as const]
+      ? [{
+          href: "#update",
+          // ONE WORD while the install runs (Akshil, 2026-09-08): which half is
+          // running, and the row takes no press — a spinner where the download
+          // arrow was says the same thing without words.
+          label: updateRowLabel(updateStatus),
+          icon: updateStatus.state === "installing" ? UPDATE_SPINNER : UPDATE_ICON,
+          disabled: updateStatus.state === "installing",
+          onPick: handleUpdatePick,
+        }, "separator" as const]
       : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
@@ -865,7 +902,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
-          <UpdateBadge />
+          {/* `version` for the idle row's "Up to date · vX": the same number the
+              chip on the Settings row shows, from the config this sidebar holds. */}
+          <UpdateBadge version={config.version ?? null} />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the

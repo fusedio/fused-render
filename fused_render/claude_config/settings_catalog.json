@@ -56,6 +56,561 @@
     "minVersion": null
   },
   {
+    "key": "fastMode",
+    "label": "Fast mode",
+    "group": "Model & reasoning",
+    "control": "toggle",
+    "doc": "Turn fast mode on for sessions where it's available, for interactive work like rapid iteration or live debugging where you want speed at a higher cost per token.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "maxEffortLevel",
+    "label": "Max effort level",
+    "group": "Model & reasoning",
+    "control": "select",
+    "options": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "doc": "Cap the effort level a session can use, leaving lower levels available.",
+    "default": null,
+    "minVersion": "2.1.267"
+  },
+  {
+    "key": "switchModelsOnFlag",
+    "label": "Switch models on safety flag",
+    "group": "Model & reasoning",
+    "control": "toggle",
+    "doc": "Choose what happens when a safety classifier flags a request: switch to the fallback model and continue, or pause so you can choose between switching and editing the prompt.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "language",
+    "label": "Language",
+    "group": "Model & reasoning",
+    "control": "text",
+    "doc": "Have Claude respond in a language other than English by default.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "autoCompactEnabled",
+    "label": "Auto-compact context",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Automatically compact the conversation when context approaches the limit.",
+    "default": true,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "autoMemoryEnabled",
+    "label": "Auto-memory",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Enable auto memory.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "fileCheckpointingEnabled",
+    "label": "File checkpointing",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Snapshot files before each edit so /rewind can restore them.",
+    "default": true,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "awaySummaryEnabled",
+    "label": "Session recap",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Show a one-line session recap when you return to the terminal after a few minutes away.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "todoFeatureEnabled",
+    "label": "Todo panel",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Enable the todo / task-tracking panel.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "autoCompactWindow",
+    "label": "Auto-compact window (tokens)",
+    "group": "Session behavior",
+    "control": "number",
+    "doc": "Set how full the context window gets before Claude Code compacts automatically.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "autoContinueAtUsageLimit",
+    "label": "Auto-continue at usage limit",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "After a claude.ai usage limit stops your session, wait in the open session and continue the task automatically after the reset.",
+    "default": true,
+    "minVersion": "2.1.234"
+  },
+  {
+    "key": "askUserQuestionTimeout",
+    "label": "Question timeout",
+    "group": "Session behavior",
+    "control": "select",
+    "options": [
+      "60s",
+      "5m",
+      "10m",
+      "never"
+    ],
+    "doc": "Let an unanswered AskUserQuestion dialog auto-continue after a period of idle time, submitting whatever options you had already selected.",
+    "default": "never",
+    "minVersion": "2.1.200"
+  },
+  {
+    "key": "respectGitignore",
+    "label": "Respect .gitignore in file picker",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Control whether the @ file picker leaves out files that match .gitignore patterns.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "showClearContextOnPlanAccept",
+    "label": "Show clear-context option on plan accept",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "When Claude finishes a plan in plan mode, it shows an approval menu.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "bashOutputMaxChars",
+    "label": "Bash output max characters",
+    "group": "Session behavior",
+    "control": "number",
+    "doc": "Set how many characters of a successful Bash or PowerShell command's output Claude receives inline.",
+    "default": null,
+    "minVersion": "2.1.261"
+  },
+  {
+    "key": "taskOutputMaxChars",
+    "label": "Task output max characters",
+    "group": "Session behavior",
+    "control": "number",
+    "doc": "Set how many characters of a background task's output Claude receives inline when Claude reads the task with the TaskOutput tool.",
+    "default": null,
+    "minVersion": "2.1.261"
+  },
+  {
+    "key": "defaultShell",
+    "label": "Default shell",
+    "group": "Session behavior",
+    "control": "select",
+    "options": [
+      "bash",
+      "powershell"
+    ],
+    "doc": "Choose whether Bash or PowerShell runs the shell commands you type with the ! prefix in the input box, the ones Claude Code runs directly and adds to the session.",
+    "default": "bash",
+    "minVersion": null
+  },
+  {
+    "key": "permissions.defaultMode",
+    "label": "Default permission mode",
+    "group": "Permissions",
+    "control": "select",
+    "options": [
+      "default",
+      "acceptEdits",
+      "plan",
+      "auto",
+      "dontAsk",
+      "bypassPermissions",
+      "manual"
+    ],
+    "doc": "Default permission mode when opening Claude Code.",
+    "default": null,
+    "minVersion": "2.1.200"
+  },
+  {
+    "key": "enableAllProjectMcpServers",
+    "label": "Auto-approve project MCP servers",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Automatically approve all MCP servers defined in project .mcp.json files.",
+    "default": null,
+    "minVersion": "2.1.196"
+  },
+  {
+    "key": "skipAutoPermissionPrompt",
+    "label": "Skip auto mode notice",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Skip the one-time notice describing auto mode that Claude Code shows when you first enter auto mode yourself, for example through your own settings or the mode selector, rather than when the built-in default starts a session in it.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "useAutoModeDuringPlan",
+    "label": "Auto mode during plan",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Choose whether Claude Code uses the auto mode classifier to review shell commands in plan mode.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "permissionExplainerEnabled",
+    "label": "Permission prompt explainer",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "<Warning> Removed in v2.1.257, together with the Ctrl+E command explanation on Bash and PowerShell permission prompts.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "permissions.blockReadsOutsideWorkingDirectories",
+    "label": "Block reads outside working directories",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Stop Claude from reading paths outside the session's working directories with the Read, Grep, Glob, and LSP tools, in every permission mode including bypassPermissions.",
+    "default": null,
+    "minVersion": "2.1.257"
+  },
+  {
+    "key": "sandbox.enabled",
+    "label": "Sandbox Bash commands",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Turn on sandboxing for Bash commands.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "preferredNotifChannel",
+    "label": "Notification channel",
+    "group": "Notifications",
+    "control": "select",
+    "options": [
+      "auto",
+      "terminal_bell",
+      "iterm2",
+      "iterm2_with_bell",
+      "kitty",
+      "ghostty",
+      "notifications_disabled"
+    ],
+    "doc": "Method for task-complete and permission-prompt notifications: \"auto\", \"terminal_bell\", \"iterm2\", \"iterm2_with_bell\", \"kitty\", \"ghostty\", or \"notifications_disabled\".",
+    "default": "auto",
+    "minVersion": null
+  },
+  {
+    "key": "inputNeededNotifEnabled",
+    "label": "Notify when input needed",
+    "group": "Notifications",
+    "control": "toggle",
+    "doc": "When Remote Control is connected, send a push notification to your phone when a permission prompt or question is waiting for your input.",
+    "default": false,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "agentPushNotifEnabled",
+    "label": "Agent push notifications",
+    "group": "Notifications",
+    "control": "toggle",
+    "doc": "When Remote Control is connected, allow Claude to send proactive push notifications to your phone, for example when a long task finishes.",
+    "default": false,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "enableArtifact",
+    "label": "Artifacts",
+    "group": "Features",
+    "control": "toggle",
+    "unsetLabel": "managed / org default",
+    "doc": "Enable or disable the Artifact tool for this user.",
+    "default": null,
+    "minVersion": "2.1.196"
+  },
+  {
+    "key": "ultracode",
+    "label": "Ultracode by default",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "Start sessions with ultracode on.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "workflowKeywordTriggerEnabled",
+    "label": "Ultracode keyword trigger",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "Choose whether typing the keyword ultracode in a prompt triggers a dynamic workflow.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "workflowSizeGuideline",
+    "label": "Workflow size guideline",
+    "group": "Features",
+    "control": "select",
+    "options": [
+      "unrestricted",
+      "small",
+      "medium",
+      "large"
+    ],
+    "doc": "Set the agent count Claude aims for in the dynamic workflows it writes.",
+    "default": "medium",
+    "minVersion": "2.1.219"
+  },
+  {
+    "key": "voiceEnabled",
+    "label": "Voice dictation",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "<Warning> Deprecated since v2.1.92, when the voice object replaced it.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "channelsEnabled",
+    "label": "Channels",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "Allow channels for your organization.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "disableBundledSkills",
+    "label": "Bundled skills disabled",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "Turn off the skills and workflows included with Claude Code.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "disableAgentView",
+    "label": "Agent view disabled",
+    "group": "Features",
+    "control": "toggle",
+    "doc": "Turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "cleanupPeriodDays",
+    "label": "Cleanup period (days)",
+    "group": "Maintenance",
+    "control": "number",
+    "doc": "Claude Code deletes session files and other application data older than this period at startup.",
+    "default": 30,
+    "minVersion": "2.1.203"
+  },
+  {
+    "key": "skipWorkflowUsageWarning",
+    "label": "Skip workflow usage warning",
+    "group": "Maintenance",
+    "control": "toggle",
+    "doc": "Suppress the multi-agent workflow cost warning.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "autoUpdatesChannel",
+    "label": "Auto-update channel",
+    "group": "Maintenance",
+    "control": "select",
+    "options": [
+      "latest",
+      "stable"
+    ],
+    "doc": "Choose which release channel background auto-updates and claude update follow.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "desktopSessionCleanupPeriodDays",
+    "label": "Desktop session cleanup period (days)",
+    "group": "Maintenance",
+    "control": "number",
+    "doc": "Set an age limit in days for the transcripts of sessions you started or most recently continued in Claude Desktop or Cowork.",
+    "default": 0,
+    "minVersion": "2.1.248"
+  },
+  {
+    "key": "feedbackDrafts",
+    "label": "Feedback drafts",
+    "group": "Maintenance",
+    "control": "select",
+    "options": [
+      "notify",
+      "quiet",
+      "off"
+    ],
+    "doc": "Control Claude-drafted feedback: whether Claude can queue feedback drafts for you to review, and whether Claude Code shows a card when Claude queues one.",
+    "default": "notify",
+    "minVersion": null
+  },
+  {
+    "key": "includeCoAuthoredBy",
+    "label": "Co-authored-by trailer",
+    "group": "Git & attribution",
+    "control": "toggle",
+    "doc": "<Warning> Deprecated since v2.0.62, when attribution replaced it.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "includeGitInstructions",
+    "label": "Git workflow instructions",
+    "group": "Git & attribution",
+    "control": "toggle",
+    "doc": "At session start, Claude Code adds two git-related pieces to Claude's prompt: its built-in instructions for how to write commits and pull requests, in the Bash tool's description, and a git status snapshot of your repository in the system prompt, meaning the current branch, the main branch, git status output, and recent commits.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "attribution.sessionUrl",
+    "label": "Session link in commits/PRs",
+    "group": "Git & attribution",
+    "control": "toggle",
+    "doc": "Choose whether Claude Code appends the claude.ai session link when it commits or opens a pull request from a cloud or Remote Control session.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "worktree.baseRef",
+    "label": "Worktree base ref",
+    "group": "Git & attribution",
+    "control": "select",
+    "options": [
+      "fresh",
+      "head"
+    ],
+    "doc": "Choose which ref new worktrees branch from.",
+    "default": "fresh",
+    "minVersion": null
+  },
+  {
+    "key": "worktree.bgIsolation",
+    "label": "Background session isolation",
+    "group": "Git & attribution",
+    "control": "select",
+    "options": [
+      "worktree",
+      "none"
+    ],
+    "doc": "Choose how background sessions isolate their file edits.",
+    "default": "worktree",
+    "minVersion": null
+  },
+  {
+    "key": "teammateMode",
+    "label": "Teammate display mode",
+    "group": "Agents & teammates",
+    "control": "select",
+    "options": [
+      "in-process",
+      "auto",
+      "tmux",
+      "iterm2"
+    ],
+    "doc": "Choose where Claude Code shows agent team teammates: inside your main terminal pane, or in split panes when your terminal supports them.",
+    "default": "in-process",
+    "minVersion": null
+  },
+  {
+    "key": "teammateDefaultModel",
+    "label": "Default teammate model",
+    "group": "Agents & teammates",
+    "control": "text",
+    "doc": "<Warning> Removed in v2.1.234, together with its /config row Default teammate model.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "autoConnectIde",
+    "label": "Auto-connect to IDE",
+    "group": "IDE",
+    "control": "toggle",
+    "doc": "Connect to a running IDE automatically when you start Claude Code from an external terminal.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "autoInstallIdeExtension",
+    "label": "Auto-install IDE extension",
+    "group": "IDE",
+    "control": "toggle",
+    "doc": "Install the Claude Code IDE extension automatically when you run Claude Code from a VS Code terminal.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "diffTool",
+    "label": "Diff viewer",
+    "group": "IDE",
+    "control": "select",
+    "options": [
+      "auto",
+      "terminal"
+    ],
+    "doc": "Choose where Claude Code shows the diff of an Edit or Write change it proposes when a VS Code or JetBrains IDE is connected: \"auto\" opens it in the IDE's diff viewer, \"terminal\" keeps it in the terminal.",
+    "default": "auto",
+    "minVersion": null
+  },
+  {
+    "key": "externalEditorContext",
+    "label": "Include response in external editor",
+    "group": "IDE",
+    "control": "toggle",
+    "doc": "When you press Ctrl+G, Claude Code opens the prompt you're typing in your external editor.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "spinnerTipsEnabled",
+    "label": "Show tips",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show tips in the spinner while Claude is working.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "showTurnDuration",
+    "label": "Show turn duration",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show turn duration messages after responses, e.g.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "terminalProgressBarEnabled",
+    "label": "Terminal progress bar",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show the terminal progress bar in supported terminals: ConEmu, Ghostty 1.2.0+, and iTerm2 3.6.6+.",
+    "default": true,
+    "minVersion": null
+  },
+  {
     "key": "theme",
     "label": "Theme",
     "group": "Appearance & editor",
@@ -119,166 +674,133 @@
     "minVersion": null
   },
   {
-    "key": "spinnerTipsEnabled",
-    "label": "Show tips",
-    "group": "Display",
-    "control": "toggle",
-    "doc": "Show tips in the spinner while Claude is working.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "showTurnDuration",
-    "label": "Show turn duration",
-    "group": "Display",
-    "control": "toggle",
-    "doc": "Show turn duration messages after responses, e.g.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "terminalProgressBarEnabled",
-    "label": "Terminal progress bar",
-    "group": "Display",
-    "control": "toggle",
-    "doc": "Show the terminal progress bar in supported terminals: ConEmu, Ghostty 1.2.0+, and iTerm2 3.6.6+.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "permissions.defaultMode",
-    "label": "Default permission mode",
-    "group": "Permissions",
+    "key": "viewMode",
+    "label": "View mode",
+    "group": "Appearance & editor",
     "control": "select",
     "options": [
       "default",
-      "acceptEdits",
-      "plan",
-      "auto",
-      "dontAsk",
-      "bypassPermissions",
-      "manual"
+      "verbose",
+      "focus"
     ],
-    "doc": "Default permission mode when opening Claude Code.",
+    "doc": "Set the transcript view Claude Code starts in: \"default\", \"verbose\", or \"focus\".",
     "default": null,
-    "minVersion": "2.1.200"
+    "minVersion": null
   },
   {
-    "key": "enableAllProjectMcpServers",
-    "label": "Auto-approve project MCP servers",
-    "group": "Permissions",
+    "key": "verbose",
+    "label": "Verbose tool output",
+    "group": "Appearance & editor",
     "control": "toggle",
-    "doc": "Automatically approve all MCP servers defined in project .mcp.json files.",
-    "default": null,
-    "minVersion": "2.1.196"
+    "doc": "By default, the transcript collapses each tool call to a short summary, such as the command Claude ran and a line count of its output, and you press Ctrl+O to switch the whole transcript to the expanded view when you want the details.",
+    "default": false,
+    "minVersion": null
   },
   {
-    "key": "preferredNotifChannel",
-    "label": "Notification channel",
-    "group": "Notifications",
+    "key": "autoScrollEnabled",
+    "label": "Auto-scroll to new output",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Follow new output to the bottom of the conversation in fullscreen rendering.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "emojiCompletionEnabled",
+    "label": "Emoji completion",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Show emoji suggestions when you type : plus a shortcode in the prompt input, and replace a completed shortcode such as :heart: with its emoji.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "syntaxHighlightingDisabled",
+    "label": "Syntax highlighting disabled",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Claude Code colors code by language in the diffs, code blocks, and file previews it shows in the terminal, with its built-in highlighter; no plugin or language server is involved.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "promptSuggestionEnabled",
+    "label": "Prompt suggestions",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Show or hide prompt suggestions, the grayed-out predictions that appear in your prompt input.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "wheelScrollAccelerationEnabled",
+    "label": "Wheel scroll acceleration",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Accelerate mouse-wheel scroll speed during fast scrolls in fullscreen rendering.",
+    "default": true,
+    "minVersion": "2.1.174"
+  },
+  {
+    "key": "terminalTitleFromRename",
+    "label": "Terminal title from session rename",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Claude Code sets your terminal tab's title.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "keybindingFlavor",
+    "label": "Keybinding flavor",
+    "group": "Appearance & editor",
     "control": "select",
     "options": [
-      "auto",
-      "terminal_bell",
-      "iterm2",
-      "iterm2_with_bell",
-      "kitty",
-      "ghostty",
-      "notifications_disabled"
+      "classic",
+      "readline"
     ],
-    "doc": "Method for task-complete and permission-prompt notifications: \"auto\", \"terminal_bell\", \"iterm2\", \"iterm2_with_bell\", \"kitty\", \"ghostty\", or \"notifications_disabled\".",
+    "doc": "<Warning> Deprecated since v2.1.261 and has no effect.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "tui",
+    "label": "Terminal UI renderer",
+    "group": "Appearance & editor",
+    "control": "select",
+    "options": [
+      "default",
+      "fullscreen"
+    ],
+    "doc": "Choose the terminal UI renderer.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "timeFormat",
+    "label": "Time format",
+    "group": "Appearance & editor",
+    "control": "text",
+    "doc": "Choose how Claude Code writes the times it shows in the interface, such as the done 6:05 PM at the end of each turn duration message and the timestamps in the transcript viewer.",
     "default": "auto",
-    "minVersion": null
+    "minVersion": "2.1.257"
   },
   {
-    "key": "inputNeededNotifEnabled",
-    "label": "Notify when input needed",
-    "group": "Notifications",
-    "control": "toggle",
-    "doc": "When Remote Control is connected, send a push notification to your phone when a permission prompt or question is waiting for your input.",
-    "default": false,
-    "minVersion": "2.1.119"
-  },
-  {
-    "key": "agentPushNotifEnabled",
-    "label": "Agent push notifications",
-    "group": "Notifications",
-    "control": "toggle",
-    "doc": "When Remote Control is connected, allow Claude to send proactive push notifications to your phone, for example when a long task finishes.",
-    "default": false,
-    "minVersion": "2.1.119"
-  },
-  {
-    "key": "autoCompactEnabled",
-    "label": "Auto-compact context",
-    "group": "Session behavior",
-    "control": "toggle",
-    "doc": "Automatically compact the conversation when context approaches the limit.",
-    "default": true,
-    "minVersion": "2.1.119"
-  },
-  {
-    "key": "autoMemoryEnabled",
-    "label": "Auto-memory",
-    "group": "Session behavior",
-    "control": "toggle",
-    "doc": "Enable auto memory.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "fileCheckpointingEnabled",
-    "label": "File checkpointing",
-    "group": "Session behavior",
-    "control": "toggle",
-    "doc": "Snapshot files before each edit so /rewind can restore them.",
-    "default": true,
-    "minVersion": "2.1.119"
-  },
-  {
-    "key": "awaySummaryEnabled",
-    "label": "Session recap",
-    "group": "Session behavior",
-    "control": "toggle",
-    "doc": "Show a one-line session recap when you return to the terminal after a few minutes away.",
+    "key": "timeZone",
+    "label": "Time zone",
+    "group": "Appearance & editor",
+    "control": "text",
+    "doc": "Show the times in the interface in a time zone other than your system's.",
     "default": null,
-    "minVersion": null
+    "minVersion": "2.1.257"
   },
   {
-    "key": "todoFeatureEnabled",
-    "label": "Todo panel",
-    "group": "Session behavior",
+    "key": "axScreenReader",
+    "label": "Screen reader mode",
+    "group": "Appearance & editor",
     "control": "toggle",
-    "doc": "Enable the todo / task-tracking panel.",
+    "doc": "Render screen-reader friendly output: flat text without decorative borders or animations.",
     "default": null,
-    "minVersion": null
-  },
-  {
-    "key": "enableArtifact",
-    "label": "Artifacts",
-    "group": "Features",
-    "control": "toggle",
-    "unsetLabel": "managed / org default",
-    "doc": "Enable or disable the Artifact tool for this user.",
-    "default": null,
-    "minVersion": "2.1.196"
-  },
-  {
-    "key": "cleanupPeriodDays",
-    "label": "Cleanup period (days)",
-    "group": "Maintenance",
-    "control": "number",
-    "doc": "Claude Code deletes session files and other application data older than this period at startup.",
-    "default": 30,
-    "minVersion": "2.1.203"
-  },
-  {
-    "key": "skipWorkflowUsageWarning",
-    "label": "Skip workflow usage warning",
-    "group": "Maintenance",
-    "control": "toggle",
-    "doc": "Suppress the multi-agent workflow cost warning.",
-    "default": false,
-    "minVersion": null
+    "minVersion": "2.1.181"
   }
 ]

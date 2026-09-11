@@ -487,6 +487,23 @@ def create_app(start_dir: str) -> FastAPI:
 
         tasks_watch.start()
 
+    # Warm the Tasks listing's transcript caches (routers/tasks.py `warm`) so
+    # the first `/api/tasks` or `/api/tasks/pulse` of the process answers in
+    # milliseconds instead of reading every transcript on the machine inside
+    # that request. A daemon thread: the read is seconds on a big ~/.claude and
+    # must not hold up the rest of startup or the first page paint. A startup
+    # event for the same reason as `_startup_tasks_watch`.
+    @on_startup
+    async def _startup_tasks_warm():
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        thread = threading.Thread(target=tasks_router_mod.warm, daemon=True,
+                                  name="fused-tasks-warm")
+        thread.start()
+        # For tests, which need to know when the warm's own listing is done
+        # before they count listings of their own.
+        app.state.tasks_warm = thread
+
     @on_shutdown
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)
@@ -871,5 +888,21 @@ def create_app(start_dir: str) -> FastAPI:
         # above; called here rather than at import time so a test that never
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
+
+    # A CHECK-ONLY UPDATE MANAGER FOR A DEV RUN (update/mac.DEV_MANAGER_ENV).
+    # The packaged app starts its manager from the AppKit bootstrap (app.py,
+    # after the server is ready); an unpackaged server has no bootstrap and so
+    # never had a badge — which left the sidebar's "Check for updates" row with
+    # nowhere to be tried. `start()` still returns None without the env var,
+    # so this is a no-op for every run that did not ask. Last, and off the
+    # request path: the manager's first manifest fetch is on its own thread.
+    @on_startup
+    async def _startup_update_dev_manager():
+        import os
+
+        from fused_render.update import mac as mac_update
+
+        if os.environ.get(mac_update.DEV_MANAGER_ENV):
+            mac_update.start()
 
     return app

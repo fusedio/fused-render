@@ -101,7 +101,7 @@ The listing may show the selected entry's preview beside the list — Finder's l
 
   View state stays best-effort `localStorage`, silent on failure, same posture as the rest of viewstate and AP-1.
 - **FS-14** **Skeleton shimmer** while the pane's content loads (the iframe's first paint, an embedded listing's own fetch) — the pane occupies real width the moment it opens, so an empty rectangle would read as "this folder has no preview" rather than "loading". The list never blocks on the pane: a slow or failing pane leaves the listing fully interactive.
-- **FS-15** **ONE PRESS MODEL, and the pane does not own it.** A plain press **selects, on `pointerdown`** — for **files and directories alike** — and its **matching release OPENS it** (navigates into a folder, opens a file full-screen) provided the press never travelled the drag/sweep slop; `Enter` does the same from the keyboard. This holds on every row, in every listing, at every width, with no exception for a folder: since D460 the pane no longer shows the selection (FS-11), so there is nothing left for a click to make unreachable by opening. **The press is answered on `pointerdown`, not on `click`**, because rows are drag sources and WebKit does not reliably deliver the `click` after a press on a `draggable` element — which is how Shift/Mod-click once went silently dead. Deciding on the press removes that failure class rather than working around it, and it is what Finder and Explorer do: the highlight lands while the button is still down. A **modified** press (Shift/Mod) never opens on release, whatever it selects — Shift/Mod-click means "add to my selection", not "take me there". The one case that cannot be answered on the press at all is a plain press on a row already inside a **multi-selection** — collapsing there would make a multi-row drag impossible, since every such drag begins with a press on one of the dragged rows — so that one **defers to the release**, and the same release both collapses the selection onto it AND opens it, provided the press never became a drag or a sweep. *Three shapes, in order. First, TWO models chosen by whether the pane was showing: pane off, a single click selected AND opened (the classic FS-5 behaviour); pane on, it only selected — defensible while the pane was something the user switched on, and wrong the moment the split became a measurement of the window (FS-9), since the same click on the same row then opened a file or not depending on how wide the window was when you clicked it. Second, DOUBLE-CLICK opens uniformly — fixing the width dependency, but only by keeping the plain click reserved for what the pane's selection-driven Preview mode needed it to do (FS-11's old text): select without navigating away. D460 is the third shape: the pane stopped reading the selection at all, so the click is free again, and it goes back to opening on release — this time with no width or pane-state condition anywhere in it.*
+- **FS-15** **ONE PRESS MODEL, and the pane does not own it.** A plain press **selects, on `pointerdown`** — for **files and directories alike** — and its **matching release OPENS it** (navigates into a folder, opens a file full-screen) provided the press never travelled the drag/sweep slop; `Enter` does the same from the keyboard. This holds on every row, in every listing, at every width, with no exception for a folder: since D460 the pane no longer shows the selection (FS-11), so there is nothing left for a click to make unreachable by opening. **The press is answered on `pointerdown`, not on `click`**, because rows are drag sources and WebKit does not reliably deliver the `click` after a press on a `draggable` element — which is how Shift/Mod-click once went silently dead. Deciding on the press removes that failure class rather than working around it, and it is what Finder and Explorer do: the highlight lands while the button is still down. A **modified** press (Shift/Mod) never opens on release, whatever it selects — Shift/Mod-click means "add to my selection", not "take me there". The one case that cannot be answered on the press at all is a plain press on a row already inside a **multi-selection** — collapsing there would make a multi-row drag impossible, since every such drag begins with a press on one of the dragged rows — so that one **defers to the release**, and the same release both collapses the selection onto it AND opens it, provided the press never became a drag or a sweep. **The row's drag SOURCE is its name cell, not the row: an unmodified press on the icon+name span (`data-fs-drag-handle`) starts a move-drag on its own, whether or not the row was already selected; a press ANYWHERE ELSE on an already-selected row also starts one, since a selection is dragged whole; every other press in the row is marquee ground, and a modified press never drags at all** (D770). *Three shapes, in order. First, TWO models chosen by whether the pane was showing: pane off, a single click selected AND opened (the classic FS-5 behaviour); pane on, it only selected — defensible while the pane was something the user switched on, and wrong the moment the split became a measurement of the window (FS-9), since the same click on the same row then opened a file or not depending on how wide the window was when you clicked it. Second, DOUBLE-CLICK opens uniformly — fixing the width dependency, but only by keeping the plain click reserved for what the pane's selection-driven Preview mode needed it to do (FS-11's old text): select without navigating away. D460 is the third shape: the pane stopped reading the selection at all, so the click is free again, and it goes back to opening on release — this time with no width or pane-state condition anywhere in it.*
 
   **Clicking the listing BACKGROUND — the empty area below or beside the rows — does nothing to the selection.** Finder deselects there and this listing used to copy it, but the pane changed what that click costs: a stray click in the whitespace of a short listing threw away the row the user was reading and blanked the preview beside it, with no gesture to get it back other than finding the row again. **Escape** remains the deliberate clear, and the right-click background menu is unaffected.
 
@@ -173,6 +173,10 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
   **Undo/redo of a delete goes through ONE endpoint, `POST /api/fs/trash-move {from, to}`, not through `/api/fs/rename`.** It delegates to the rename handler — the same X-Fused guard, absolute-path, snapshot, mount, readonly, 404 and 409 contract, overwrite always off — and adds the only part of a trash that is *not* symmetric: the XDG **`.trashinfo` sidecar**, written when an entry moves into `Trash/files` and removed when it moves back out (both, for a move within the trash). That is server-side bookkeeping, so it lives on the server side of the wire: `applyFsOp` branches on `op.kind` to pick the primitive (`trashMove` for `"delete"`, `renameEntry` otherwise) **and that is its only branch** — the pairs stay plain absolute paths and `invertFsOp`, the reversal semantics, the epoch, the in-flight guard and `UNDO_CAP` know nothing about trash. Restoring with a plain rename would leave the sidecar behind and the bin still claiming to hold an entry that had gone home. **The sidecar branch is a security boundary**: it fires only for a path whose *parent* resolves (`realpath`) to the server-computed trash `files` directory, with the info name taken as a `basename`, so no caller-supplied text can steer the endpoint into unlinking an arbitrary file.
   **Undoability is additionally session-scoped**: the stack is in memory, so a reload — or an eviction past `UNDO_CAP` — leaves the entry sitting in the bin for the user to drag out through the OS. On macOS the rename also writes none of Finder's own put-back record (Finder keeps that in the Trash's private `.DS_Store`, not on the item), so Finder's "Put Back" is not a second way home for what this app trashed. Recents loses the entry in every case (`notePathDeleted`) and the undo does not re-note it: the file returns to the filesystem, its place in the recents list does not.
   **The HARD delete is NOT undoable and its dialog keeps saying so** ("This can't be undone"): its inverse is not a rename, it is the bytes back. Same exclusion, same reason, for the explorer's other asymmetric ops — **copy-paste, duplicate, new file/folder, compress**, whose inverse would be a delete: undo would destroy data on the user's behalf and no redo could reproduce what was lost. A stack whose every entry is one primitive is the reason this can be trusted, not a limitation waiting to be grown out of.
+
+### A status strip under the list (D770)
+
+- **FS-18** **A `listing-status` footer sits under the list, inside the list column only — never the preview pane beside it — and reads one line: how many entries the folder has, and how many of them the current selection covers.** Nothing selected, it names the total (`128 items`, or `1,000+ items` once the walk is truncated — the existing truncated-listing banner row still carries the reason why). A selection adds a count and, for the FILES in it, a byte sum (`3 of 128 selected · 1.4 MB`); the listing has no cheap way to learn a folder's recursive size, so a selected folder is counted on its own instead of silently missing from the sum (`3 of 128 selected · 1.4 MB + 1 folder`). A search in progress or finished answers a different question — how many rows match, not how many the folder holds — so it gets its own line shape and never mixes with the total or the truncation mark (`24 matches`, `3 of 24 selected`). An empty folder reads `Empty folder`. The whole line is one pure, tested function (`listing/status-line.ts`) of counts the listing already keeps; the component sums the selected rows once per render and renders whatever the function returns, deciding nothing itself. **The footer itself renders only once the listing has an answer** — the folder loaded (`state.status === "ok"`) or a search is running/done — since the entry count is `0` for every other state (still loading, failed, access denied) and `Empty folder` would misreport a folder the app has not actually read yet.
 
 ### Server FS API (shape, not final contract)
 
@@ -7854,6 +7858,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   target are untouched and still tested — the removal is of a UI that asked a
   reader to think in git commits about a folder whose only real question is what
   it costs.
+- **AI-7j** **Every suggestion list carries TWO models minimum and FIVE
+  maximum, per ENGINE.** `catalog.SUGGESTIONS` is keyed by runner (AI-7f), and
+  the bound is per key rather than per capability or in total, because a list
+  is what ONE machine sees: a total would let a one-row engine hide behind a
+  well-stocked sibling. The two ends fail differently, which is why neither is
+  left to editorial judgement. A ONE-ROW list is a mandate wearing a
+  shortlist's clothes — the reader whose first answer is not good enough has
+  nothing else to click and no way to tell whether the model or the prompt was
+  at fault. A SIXTH row costs the thing the list is FOR: these cards are swept,
+  not studied, and a page of them is a research task rather than a pick. **The
+  bounds are a budget, not a target** — a fifth row that only restates a
+  neighbour a size class away is worse than four rows, and adding one to a list
+  of five means arguing which existing row it beats. A model already curated
+  for a DIFFERENT engine is not coverage for this one: the lists serve
+  different machines, and no user sees both. `tests/test_ai_runtime.py` asserts
+  both ends per runner code, beside the ordering rule (AI-7d) and the
+  single-`recommended` rule.
 
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
   states the identity** (D436). **Have and not-have are one NEUTRAL axis with two
@@ -11715,3 +11736,116 @@ the rules around it.
 - **Sequenced-after, deliberately absent here**: any cache eviction the app
   does not write itself, any UI that shows or clears an app's `.fused/`, and
   any `window.fused` accessor for the paths.
+
+---
+
+## 48. App Doctor — The Share-Readiness Checklist (D301, D548, D767)
+
+Goal: sharing an app is the moment its folder stops being private, and most of
+what could go wrong is deterministic to check. One button, on the app page's
+header and the explorer's entry-page topbar, runs the checklist and offers a
+per-row fix.
+
+- **AD-1** `fused_render/app_doctor.py` owns the report — a full folder
+  content scan plus one `git status`/`git rev-list` — beside the
+  `fused-render-app-doctor` skill (`skills/fused-render-app-doctor/`), which
+  owns the JUDGMENT and the per-check fix. The skill's `ci/app_check.py` is a
+  stdlib-only, deterministic FLOOR of that judgment: the secret shapes, the
+  device-path roots, and the three structural gaps (entry page, README,
+  thumbnail) it can answer without the runtime. `app_doctor.py` loads that
+  script by path (it lives under a skill directory, never importable as part
+  of the package) and adds the rows the floor deliberately omits because they
+  need the runtime's own knowledge: the ENTRY rule (D301 — a page carrying
+  `<meta name="fused-app">`, since a repo checkout alone has only filenames to
+  go on), the declared `fused-api-version` against the one the runtime
+  speaks, generated state outside `.fused/` (§47/D548), `pyproject.toml`/
+  `icon.svg` parsing, and whether the folder's git repo is clean and pushed.
+- **AD-2** Every check carries `section` (`"essentials"` | `"sharing"`),
+  `severity` (`"critical"` | `"warning"`), and `kind`
+  (`"fact"` | `"candidate"`), in one server-side table
+  (`app_doctor._CHECK_META`, mirrored by `ci/app_check.py`'s own `CHECK_META`
+  for the two ids it computes) — `CHECK_ORDER`/`SECTIONS`/`SEVERITIES` are
+  read off that table, never hardcoded a second time by the modal. `kind` is
+  MEASURED, not assumed (D767): a run of the floor engine over 8 real apps
+  found every one of 40 content findings from the `secrets`/`device-paths`
+  families was a false positive, so those two are `"candidate"` — a pattern
+  match that only LOCATES something to look at — while every other row (a
+  file exists or does not, a version tag reads N or does not) is `"fact"`.
+  The checklist has two severities, not three: a `"suggested"` row got no
+  tint, no rail, and no urgency in the dialog, so nobody ever acted on it — a
+  row worth putting on the checklist at all is worth a `"warning"`, and a row
+  not worth a warning does not belong on the list (`ci/app_check.py` keeps its
+  own three-tier `"suggested"` for the two structural facts a missing push
+  should not fail over, see AD-7). `ok` is "no FAILING check at all" — every
+  row is critical or warning, so a candidate still counts at its own severity
+  for this one flag, though never in the modal's own presentation of it
+  (AD-4).
+- **AD-3** Eleven checks, essentials then sharing, exactly:
+  `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
+  (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
+  (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
+  `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
+  commits via `git rev-list --count @{upstream}..HEAD` — no network call,
+  ever — and skips with no upstream/remote configured rather than failing a
+  folder that was never pushed anywhere. Every label is a complete statement
+  on its own — the dialog does not print a detail sentence under a passing
+  row: `pyproject.toml is valid TOML`, `icon.svg is valid SVG`, `Has a README
+  explaining the app`, `Every change is committed`, `Every commit is pushed`.
+- **AD-4** The modal (`platform/ui/AppDoctorModal.tsx`) groups rows under a
+  section heading in server order, shows a severity chip on each failing row,
+  and gives each failing row its own action button: **Fix** for a `"fact"`
+  row, **Review** for a `"candidate"` row that reads as "N to review" rather
+  than a settled failure. The footer's one button, **Fix all**, covers every
+  currently failing row in one task; there is no Re-run button — the report
+  is fetched fresh every time the dialog opens (the caller mounts it behind
+  `{open && <AppDoctorModal/>}`, so a fresh mount already re-runs everything).
+  Both the header entry points also carry a small status dot, coloured by the
+  worst FAILING severity (`appdoctor-lib.ts`'s `worstSeverity`, the one
+  reduction both surfaces call) — a failing candidate never drives the dot
+  past `"warning"` on its own, since it is unreviewed by definition. The dot
+  is fetched once after first paint, never blocking render; a failed or slow
+  fetch leaves it neutral. Colour is never the only carrier: every state
+  names itself in `title`/`aria-label`.
+- **AD-5** The fix task is per-check. `doctor_prompt(entry_html, check_id,
+  findings)` embeds the check id in the stored prompt (`` check `<id>` ``,
+  read back by `doctor_task_check_id`) and points at that check's own
+  section in the skill by name — SKILL.md's section names match check ids
+  exactly. A candidate row's prompt asks for triage first: judge each finding
+  real or not, say which and why, then fix only the real ones.
+  `doctor_prompt_all` builds the "Fix all" prompt the same way, one block per
+  currently failing row. `POST /api/apps/doctor` takes `check` in the body
+  (400 for an unknown id, `"all"` included) and 404/409 exactly as before —
+  one live fix session per APP, not per row, since two sessions rewriting one
+  folder is a merge nobody asked for. `app_doctor.report_one` still exists —
+  the POST handler uses it to gather one row's findings without paying for a
+  full report — but `GET /api/apps/doctor` no longer takes a `check` query
+  param: an earlier build had one (re-run just one row after its own fix task
+  lands), but creating a fix task navigates away and closes the dialog, so
+  that moment never occurs and the client helper that would have called it
+  had no caller; both were removed rather than left as untested surface
+  (review finding, post-D767). A row's `task` is EITHER its own live fix
+  session or a live "Fix all" session (`app_doctor.ALL`) — `GET`'s response
+  attaches the Fix-all task to every row, not just a row literally named
+  `"all"` (no row ever is), so the modal's per-row buttons and its footer
+  both read a live Fix-all session as in-progress rather than idle.
+- **AD-6** `skills/fused-render-app-doctor/SKILL.md` does not re-derive any of
+  the above: the panel already computed and displays it. The skill is one
+  anchored playbook section per check id — how to judge a hit, what is safe
+  to change, and where the fix belongs if it belongs to another skill — plus
+  the routing table to the sibling API skills, the CI setup procedure, the
+  masking rule, and a short whole-app path for a direct invocation with no
+  panel in front of the session. The two candidate sections lead with triage,
+  using D767's own false positives (a repeated path across committed run
+  logs, a vendored stdlib docstring, markdown code spans, a deliberate
+  system-path constant, a test fixture) as worked examples.
+- **AD-7** The CI floor's exit code (`ci/app_check.py`'s `main`, wired up by
+  `.github/workflows/app-check.yml` on every push) gates on `kind == "fact"`
+  **and** `severity in ("critical", "warning")` — not `kind == "fact"` alone.
+  A `suggested` fact (a missing `preview.png`) still prints, since it is a
+  real, worth-fixing gap, but it must not redden a push the way a `critical`
+  candidate correctly does not either: gating on `kind` alone briefly had a
+  missing thumbnail failing a build while a leaked AWS key printed and exited
+  0, the exact inverted urgency AD-2's severity table exists to prevent.
+  Every finding still prints regardless of whether it blocks — only the exit
+  code changes.

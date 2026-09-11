@@ -546,6 +546,10 @@
   }
   .dl-others[open] summary::after { transform: rotate(225deg) translateY(-1px); }
   .dl-others summary:hover { color: var(--ink-2); }
+  /* macOS: the requirement rides under the button as a spec line, not a
+     warning box — Intel is ruled out by "Apple silicon", quietly. */
+  .dl-spec { margin: 0; font-size: var(--t-xs); line-height: 1.5; color: var(--ink-4); }
+  .dl-spec[hidden] { display: none; }
   .dl-note {
     display: flex; align-items: flex-start; gap: 10px;
     margin: 0; width: fit-content; max-width: min(100%, 56ch); text-align: left;
@@ -558,18 +562,6 @@
   .dl-note b { color: var(--ink); font-weight: 640; }
   .dl-note a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule-hi); }
   .dl-note a:hover { text-decoration-color: var(--ink); }
-  .dl-brew {
-    display: inline-flex; align-items: center; gap: 10px; max-width: 100%;
-    height: 34px; padding: 0 14px; border-radius: 99px;
-    background: none; border: 1px solid var(--rule); color: var(--ink-3); cursor: pointer;
-    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
-    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
-  }
-  .dl-brew[hidden] { display: none; }
-  .dl-brew code { font: inherit; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .dl-brew svg { width: 14px; height: 14px; flex: none; }
-  .dl-brew:hover { border-color: var(--rule-hi); color: var(--ink-2); }
-  .dl-brew.copied { border-color: var(--accent-edge); color: var(--accent); }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .dl-list-note {
     display: flex; align-items: flex-start; gap: 8px;
@@ -577,6 +569,7 @@
     border: 1px solid var(--warn-edge); background: var(--warn-wash);
     font-size: var(--t-xs); line-height: 1.5; color: var(--ink-2);
   }
+  .dl-list-note[hidden] { display: none; }
   .dl-list-note svg { width: 14px; height: 14px; flex: none; color: var(--warn); margin-top: 0.2em; }
   .dl-list-note b { color: var(--ink); font-weight: 620; }
   .dl-others { position: relative; }
@@ -588,16 +581,21 @@
     background: var(--tile); border: 1px solid var(--rule);
     box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
   }
-  .dl-list a, .dl-list .dl-brew-row {
+  .dl-list a {
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
     padding: 9px 11px; border-radius: 8px;
     text-decoration: none; color: var(--ink-2); font-size: var(--t-xs);
     transition: background 0.18s var(--ease), color 0.18s var(--ease);
   }
-  .dl-list .dl-brew-row { width: 100%; background: none; border: 0; cursor: pointer; font-family: inherit; text-align: left; }
-  .dl-list a:hover, .dl-list .dl-brew-row:hover { background: rgba(243, 242, 237, 0.05); color: var(--ink); }
+  .dl-list a:hover { background: rgba(243, 242, 237, 0.05); color: var(--ink); }
   .dl-list .nm { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; }
   .dl-list .nm svg { width: 13px; height: 13px; color: var(--ink-3); }
+  .dl-beta {
+    padding: 1px 6px; border-radius: 99px;
+    border: 1px solid var(--accent-edge); background: var(--accent-wash);
+    font-size: 9px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent-text); white-space: nowrap;
+  }
   .dl-list .sub { color: var(--ink-4); }
   .version { display: block; margin-top: 6px; font-size: var(--t-xs); color: var(--ink-4);
              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; }
@@ -1549,12 +1547,8 @@
               <svg viewBox="0 0 20 20" aria-hidden="true"><use id="dl-primary-icon" href="#i-apple"/></svg>
               <span id="dl-primary-label">Download for macOS</span>
             </a>
+            <p class="dl-spec" id="dl-spec" hidden>Apple silicon (M1 and later) &middot; macOS 11+</p>
             <p class="dl-note" id="dl-note" role="note" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span id="dl-note-text"></span></p>
-            <button class="dl-brew" id="dl-brew" type="button" hidden title="Copy the Homebrew install command">
-              <code>brew install --cask fusedio/tap/fused-render</code>
-              <svg viewBox="0 0 20 20" aria-hidden="true"><use class="brew-ic" href="#i-copy"/></svg>
-              <span class="sr" aria-live="polite"></span>
-            </button>
             <details class="dl-others">
               <summary>Other platforms</summary>
               <div class="dl-list">
@@ -1563,19 +1557,15 @@
                   <span class="sub">Apple silicon &middot; .dmg</span>
                 </a>
                 <a id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-windows"/></svg>Windows</span>
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-windows"/></svg>Windows<span class="dl-beta">Beta</span></span>
                   <span class="sub">64-bit installer &middot; .exe</span>
                 </a>
                 <a id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux</span>
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux<span class="dl-beta">Beta</span></span>
                   <span class="sub">AppImage</span>
                 </a>
-                <button class="dl-brew-row" type="button" title="Copy the Homebrew install command">
-                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-term"/></svg>Homebrew</span>
-                  <span class="sub">macOS &middot; copy command</span>
-                </button>
-                <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
-                there may be missing features and rough edges.<br>Intel MacBooks are not supported.</span></p>
+                <p class="dl-list-note" id="dl-list-note" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
+                there may be missing features and rough edges.</span></p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1757,19 +1747,23 @@
     dlBtn.href = href;
     document.getElementById("dl-primary-label").textContent = "Download for " + osLabel;
     document.getElementById("dl-primary-icon").setAttribute("href", osIcon);
-    // macOS is the native build; say so where it matters, on the other two.
+    // macOS is the native build. There it is only a spec line under the
+    // button; the warning box is for the two best-effort platforms.
     var note = document.getElementById("dl-note");
-    if (note) {
-      if (visitorOS === "mac") {
-        document.getElementById("dl-note-text").innerHTML =
-          "<b>Apple silicon only.</b> Intel MacBooks are not supported.";
-      } else {
-        document.getElementById("dl-note-text").innerHTML =
-          "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
-          "features and rough edges.<br>Intel MacBooks are not supported. <a href=\"#troubleshooting\">Troubleshooting</a>";
-      }
+    var spec = document.getElementById("dl-spec");
+    if (visitorOS === "mac") {
+      if (spec) spec.hidden = false;
+      if (note) note.hidden = true;
+    } else if (note) {
+      document.getElementById("dl-note-text").innerHTML =
+        "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
+        "features and rough edges. <a href=\"#troubleshooting\">Troubleshooting</a>";
       note.hidden = false;
+      if (spec) spec.hidden = true;
     }
+    // Same rule for the static note inside the "Other platforms" list.
+    var listNote = document.getElementById("dl-list-note");
+    if (listNote) listNote.hidden = (visitorOS === "mac");
   }
   syncCta();
 
@@ -1779,50 +1773,6 @@
     document.addEventListener("click", function (e) { if (others.open && !others.contains(e.target)) others.open = false; });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && others.open) others.open = false; });
   }
-
-  // ---- Homebrew ----
-  // The chip only shows itself to macOS visitors; the dropdown row is for
-  // everyone. Both copy the same command.
-  var BREW_CMD = "brew install --cask fusedio/tap/fused-render";
-  var brewChip = document.getElementById("dl-brew");
-  if (brewChip && visitorOS === "mac") brewChip.hidden = false;
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
-    return new Promise(function (ok, no) {
-      var ta = document.createElement("textarea");
-      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
-      var done = false;
-      try { done = document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta);
-      done ? ok() : no(new Error("copy"));
-    });
-  }
-  var brewTimer = 0;
-  function brewCopied() {
-    if (!brewChip) return;
-    brewChip.classList.add("copied");
-    brewChip.querySelector(".brew-ic").setAttribute("href", "#i-check");
-    brewChip.querySelector(".sr").textContent = "Copied";
-    clearTimeout(brewTimer);
-    brewTimer = setTimeout(function () {
-      brewChip.classList.remove("copied");
-      brewChip.querySelector(".brew-ic").setAttribute("href", "#i-copy");
-      brewChip.querySelector(".sr").textContent = "";
-    }, 1600);
-  }
-  document.querySelectorAll("#dl-brew, .dl-brew-row").forEach(function (el) {
-    var sub = el.querySelector(".sub"), subWas = sub ? sub.textContent : "", subTimer = 0;
-    el.addEventListener("click", function () {
-      copyText(BREW_CMD).then(function () {
-        if (sub) {
-          sub.textContent = "Copied \u2713";
-          clearTimeout(subTimer);
-          subTimer = setTimeout(function () { sub.textContent = subWas; }, 1600);
-        } else brewCopied();
-      }, function () { window.prompt("Copy the install command:", BREW_CMD); });
-    });
-  });
 
   // ---- release manifest ----
   // The links already work before this resolves, and simply stay pointed at

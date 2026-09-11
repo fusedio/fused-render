@@ -37,8 +37,23 @@ DOWNLOAD_TIMEOUT_S = 300.0
 # 60s until the first poll landed. 10s keeps the manifest check off the
 # earliest, busiest moment of startup while getting the badge on screen within
 # about a minute of launch instead of two.
+# Shared with the Windows tray updater (supervisor/_win32/update.py), which
+# competes with a whole app launch at this moment; the mac manager wants the
+# check sooner and uses MAC_STARTUP_DELAY_S instead.
 STARTUP_DELAY_S = 10.0
-CHECK_INTERVAL_S = 6 * 60 * 60
+# Every FIVE MINUTES (Akshil, 2026-09-10: "check for updates every 5 mins"). It
+# was 6 h, then 1 h (2026-09-09); the argument each time was the same and it
+# holds at this figure too: a check is one ~300-byte signed GET on CloudFront —
+# 288 a day per install is still nothing — and a release sitting unnoticed for
+# any part of a working day costs more than all of them. With the shell polling
+# /api/config every 60s on top, a release is on the badge within about six
+# minutes of publish without anyone touching anything; the sidebar's own
+# "Check for updates" row (UpdateBadge) is for the person who cannot wait even
+# that long. The check-on-return trigger (update-status.ts) stays as well — a
+# five-minute loop can still be four minutes from its next tick when the user
+# sits back down.
+# Shared with the Windows tray updater (supervisor/_win32/update.py).
+CHECK_INTERVAL_S = 5 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024
 DOWNLOAD_CHUNK = 1024 * 1024

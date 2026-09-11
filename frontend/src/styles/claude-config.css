@@ -65,6 +65,20 @@
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Containing block for the absolutely positioned boxes inside this scroll
+     region, and the reason the DOCUMENT stays 100vh. `.sr-only` (the
+     visually-hidden label every `.cc-row-hint` carries) is
+     `position: absolute` with auto offsets: with no positioned ancestor its
+     containing block is the INITIAL one, so each span lands at its static
+     position measured against the document — the last one on a long
+     Preferences page sat 5144px down, and html's scrollHeight grew to match
+     even though every visible box was clipped inside here. The page then
+     scrolled as a whole, dragging the sidebar and status bar off-screen and
+     leaving unpainted space below the 100vh frame. Positioning this box makes
+     those spans resolve against it instead, where its own overflow contains
+     them. Cheaper and less fragile than adding `position: relative` to every
+     row that hosts a hidden label. */
+  position: relative;
   background: var(--bg);
   font-size: 13px;
 }

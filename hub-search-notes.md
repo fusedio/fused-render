@@ -188,7 +188,7 @@ Context: code review + full suite run on PR #953 produced a fix list. Item 0
 was restoring `DECISIONS.md` (see note at top of this file). Notes on the
 remaining fixes are appended below as they land.
 
-- **D-numbered entries added: D746, D747, D748** (in the restored
+- **D-numbered entries added: D772, D773, D774** (in the restored
   `DECISIONS.md`, appended at the end, dated 2026-09-02). These cover the
   three real product decisions this feature made that the repo's own
   convention treats as decision-log material — a server-side `sort=fit`
@@ -416,7 +416,7 @@ conditionally rendered by `LocalTab`, so this needed no extra gating logic
 of its own) and reverting `SearchControls.tsx` to only query/task/sort/
 includeUnfit, its original scope. `ControlMenu` is now `export`ed out of
 `SearchControls.tsx` so `HubFilterBar` can reuse it rather than a third
-hand-rolled dropdown. See D750.
+hand-rolled dropdown. See D776.
 
 ### Part C — URL params
 
@@ -470,12 +470,12 @@ feature) — `BenchmarkTab.tsx`'s own `readParam`/`writeParams` usage is
 similarly untested at the component level, so this follows that precedent
 rather than inventing a new one.
 
-### Part D — this file, and D749/D750
+### Part D — this file, and D775/D776
 
 Highest D-number was D633 on this branch (D630 on origin/main at the time
-of resume, since renumbered to D746-D748 after a later merge collided with
+of resume, since renumbered to D772-D774 after a later merge collided with
 origin/main's own unrelated D631-D633; see the note at the end of this
-file) — D749 and D750 added, covering the measured-only quant rule and
+file) — D775 and D776 added, covering the measured-only quant rule and
 the filter server/client split + the facet-scoping correction. Both are
 genuinely non-obvious design choices with real rejected alternatives, not
 implementation detail — see `DECISIONS.md` directly rather than duplicating
@@ -486,7 +486,7 @@ the text here.
 - `.venv/bin/python -m pytest tests/test_hub_models.py -q`: 144 passed
   (unchanged by this session's frontend-only work).
 - `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
-  (after appending D749/D750).
+  (after appending D775/D776).
 - `cd frontend && npm run typecheck`: clean, twice (once after Part A/B's
   first pass, once after the scope correction + Part C).
 - `cd frontend && bun test src/apps/ai_models` (every test file under the
@@ -517,7 +517,7 @@ A different builder confirmed F1's symptom directly in a running dev server
 (searching `Llama-3.2-1B-Instruct-GGUF` showed every row with dashes for
 Fit/Score/Params/Quant and repo-wide sizes) and F2's (`Qwen3-4B-4bit` showed
 `U32`/`I32`/`U8`/`BF16` in the Quant column and understated Params for
-packed 4-bit repos). Both are fixed this session — see D751/D752 in
+packed 4-bit repos). Both are fixed this session — see D777/D778 in
 `DECISIONS.md` for the substance. F3-F7 were caught by review/reasoning
 rather than a live repro; each has its own new test (Python) or existing
 scoped bun suite coverage (frontend) demonstrating the fixed behavior.
@@ -525,7 +525,7 @@ scoped bun suite coverage (frontend) demonstrating the fixed behavior.
 **Known limitation, deliberately NOT fixed this session (per the fix
 brief's own scope line) — family grouping under-fills the page.**
 `groupIntoFamilies` (`hubFamilies.ts`) runs CLIENT-side, on the results
-`api_hub_search` already truncated to `limit` (D748's own row-positioning
+`api_hub_search` already truncated to `limit` (D774's own row-positioning
 fix does not change this). So a query whose top results mostly share one
 `base_model` tag returns, say, 24 raw rows that fold into far fewer than 24
 family rows on screen — the Hub's remaining candidates that could have
@@ -535,7 +535,7 @@ was fixed (an earlier finding) to count families rather than raw rows, so
 the NUMBER shown is honest, but the grid itself is still under-filled
 relative to what `limit` promises. This is the same shape of bug the
 `includeUnfit`/`fetch` overfetch fix and Part 3's filters both had to solve
-for their own drops (see D747/D750) — `api_hub_search`'s own overfetch
+for their own drops (see D773/D776) — `api_hub_search`'s own overfetch
 comments already treat "something drops rows after the Hub's answer but
 before the page sees them" as requiring the SAME `fetch` multiplier
 `includeUnfit` gets. Family grouping is the one drop that still runs
@@ -576,7 +576,7 @@ per the fix brief's own instruction, because it is a real gap in what
   sensibly rather than looking like a false click affordance on a row that
   is not, as a whole, clickable.
 
-## Second fix-builder round: GGUF rows still blank on this Mac (D753)
+## Second fix-builder round: GGUF rows still blank on this Mac (D779)
 
 Confirmed live before touching anything (as instructed):
 `registry.for_capability(registry.TEXT_GENERATION)` on this Apple Silicon
@@ -599,7 +599,7 @@ does declare `gguf`, and try the same `pick_gguf_file` over the same
 to the ACTIVE runner's own inability to resolve a pick; a secondary runner
 finding nothing loadable does not drop the row.
 
-Decision recorded as **D753** in `DECISIONS.md` (appended, dated
+Decision recorded as **D779** in `DECISIONS.md` (appended, dated
 2026-09-02) — includes why a "downloads via a different engine" UI note
 was investigated and NOT added: `POST /api/ai/runtime/download` resolves
 strictly through `for_capability(capability)` with no per-model override
@@ -624,7 +624,7 @@ Tests: `tests/test_hub_models.py`'s autouse `_no_format_filter` fixture now
 also pins `hub.available_runners` to `()` (previously only `for_capability`
 was pinned) — needed because leaving it real would let this Mac's own
 registry state (both `mlx-text` and `llamacpp-text` genuinely available)
-decide format-filter-adjacent tests never written to exercise D753, the
+decide format-filter-adjacent tests never written to exercise D779, the
 exact machine-dependent trap this round was warned about. Four new tests
 in `test_hub_models.py` exercise both arrangements explicitly (secondary
 runner present and resolves; secondary runner present but finds nothing;
@@ -643,7 +643,7 @@ watcher from `scripts/dev.sh`. That test was the one branch-only local
 failure the brief described; merging main made it pass locally the same
 way it already does on the CI merge ref. No conflicts.
 
-Then all ten findings, MUST-FIX first. See D758-D765 in `DECISIONS.md` for
+Then all ten findings, MUST-FIX first. See D784-D791 in `DECISIONS.md` for
 the full reasoning on each; this is the short version plus anything the
 brief itself got wrong or that a future reader should know before touching
 this code again.
@@ -662,9 +662,9 @@ Q4_K_M/Q8_0/mixed-quant — all three reported `1235814432`). That is real,
 quantization-invariant evidence `fit._weight_bytes`/`speed.estimate_tok_s`
 already know how to turn into a footprint estimate given a `quantization`
 string (which `_quant` already resolves for a GGUF row, unused for this
-purpose until now). D758 has the rejected alternatives — in particular,
+purpose until now). D784 has the rejected alternatives — in particular,
 do NOT re-derive params from a mixed-repo's own (nulled) safetensors map;
-D752 already settled that one row must describe ONE upload consistently.
+D778 already settled that one row must describe ONE upload consistently.
 
 **(2) hubFamilies primary-selection is sort-aware, not "trust the array's
 own order."** My first instinct was "the input array is already sorted by
@@ -694,7 +694,7 @@ doesn't.** `columnVisible`'s signature is unchanged; it now re-derives
 unanimity from the actual `values` it's handed rather than trusting the
 (primaries-only) `Hoist.unanimous` flag, and the call site passes the full
 `families.flatMap(f => [f.primary, ...f.variants])` list. `hoistValue`
-itself, feeding the summary line, stays primaries-only per D755's own
+itself, feeding the summary line, stays primaries-only per D781's own
 reasoning — this is a presence fix, not a summary fix.
 
 **(5) CSS majority opacity → a real token, `--fg-faint`.** Computed actual
@@ -713,7 +713,7 @@ already refuses to print. `_SPEED_DEFAULT` itself dropped 70 → 63
 it). Checked every OTHER axis default against "can this ever outscore a
 real, good measurement" and found no other violation — left `_FIT_DEFAULT`
 /`_CAPABILITY_DEFAULT`/`_RECENCY_DEFAULT` unchanged, and did not touch
-`_popularity_score`'s 0.0 floor (D754's own deliberate exception).
+`_popularity_score`'s 0.0 floor (D780's own deliberate exception).
 
 **(8) Sort key separated from the displayed number.** `_composite_raw_score`
 (unclamped) is now what `sort=best` and the internal ranking compare on;
@@ -743,7 +743,7 @@ itself, whose own tests for `runModeLabel` are deleted with it.
   still exactly the lazy client-side round trip it already was. What the
   brief was gesturing at, and what turned out to actually be free, was
   `params` (via `expand[]=gguf`'s `total`), not size — I did not add a
-  size estimate to the wire response at all, on purpose (see D758's
+  size estimate to the wire response at all, on purpose (see D784's
   rejected alternatives: an estimate written into `estimatedSize` would
   suppress the client's lazy lookup that resolves the REAL bytes).
 
@@ -753,7 +753,7 @@ itself, whose own tests for `runModeLabel` are deleted with it.
   before this session; 5 net new — 3 for fix (1), 1 each for fix (7) and
   fix (8), plus 2 existing `_speed_score` tests updated to pass `params`).
 - `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
-  (after appending D758-D765).
+  (after appending D784-D791).
 - `.venv/bin/python -m pytest tests/test_theme.py -q`: 133 passed.
 - `.venv/bin/python -m pytest tests/test_ai_fit.py tests/test_ai_speed.py
   -q`: 117 passed (checking `fit.verdict`/`speed.estimate_tok_s`'s new
@@ -790,7 +790,7 @@ itself, whose own tests for `runModeLabel` are deleted with it.
   a real dot/colour with a blank bar/number, and that the hover text reads
   sensibly rather than confusingly terse.
 
-## Merge-conflict note: D631-D633 collided with origin/main, renumbered to D746-D748
+## Merge-conflict note: D631-D633 collided with origin/main, renumbered to D772-D774
 
 Merging `origin/main` (6ddc31d1) into this branch conflicted in
 `DECISIONS.md`: main had independently used D631, D632, D633 for the
@@ -798,22 +798,22 @@ Merging `origin/main` (6ddc31d1) into this branch conflicted in
 had used the same three numbers for the Hub search decisions (server-side
 `sort=fit` ordering, `verdict:"no"` hidden by default, and `base_model`
 family grouping). Main's three keep their numbers as the authoritative
-side; this branch's three were renumbered to **D746, D747, D748**
+side; this branch's three were renumbered to **D772, D773, D774**
 (preserving their original text and order, appended after this branch's
-own D765) to clear `tests/test_doc_duplicate_ids.py`. Every in-repo
+own D791) to clear `tests/test_doc_duplicate_ids.py`. Every in-repo
 cross-reference to the branch's old D631/D632/D633 — in this file and in
-`DECISIONS.md`'s own later entries (D751, D759) — was updated to the new
+`DECISIONS.md`'s own later entries (D777, D785) — was updated to the new
 numbers; references to D631/D632/D633 elsewhere in the repo (`fused_render/
 server/ai.py`, `common.py`, `ai_runtime.py`, the AI Playground frontend
 files) are main's `fused.ai` decisions and were left untouched.
 
 ## Fifth fix-builder round: five more code review findings (three cascades from the fourth round's own fix)
 
-D766-D768 in DECISIONS.md carry the full reasoning; this is what changed and
+D792-D794 in DECISIONS.md carry the full reasoning; this is what changed and
 what the brief got wrong.
 
 **(1) GGUF params feed under-reported memory fit by ~3.4x for unfittable
-models (HIGH, a cascade from D746's own fix).** `hub_models.py`'s
+models (HIGH, a cascade from D772's own fix).** `hub_models.py`'s
 `gguf_quantization`/`fit_params` are now set ONLY when `formats.gguf_quant_
 token(file)` actually resolved a token — an unsuffixed or full-precision
 GGUF (`model.gguf`, `...-F16.gguf`) goes back to `fit: null`/`speedEstimate:
@@ -828,7 +828,7 @@ readings disagree.
 **(2)/(3) Match cell precedence and staleness (MEDIUM each, one commit).**
 `effectiveFit`/`effectiveSpeed` used `model.fit ?? fitOverride ?? null`,
 which let a GGUF row's derived guess (recognized-quant, params x bytes-per-
-param — real as of D746) permanently beat the lazy lookup's REAL measured
+param — real as of D772) permanently beat the lazy lookup's REAL measured
 verdict once the guess existed, since `wantsTotal` stays true for every
 GGUF row regardless of whether `model.fit` is null. Fixed the precedence
 (`fitOverride !== undefined` wins) and, separately, fixed `matchScoreStale`
@@ -843,7 +843,7 @@ inline with no way to drive it, so this round extracted it first.
 **(4) Hoist summary vs. presence contradiction, SECOND time reported
 (MEDIUM).** The third round's fix for the blank-column bug made
 `columnVisible` re-check primaries+variants while leaving the hoist/summary
-on primaries only (D755's original call) — which reproduced the exact
+on primaries only (D781's original call) — which reproduced the exact
 "summary says one thing, column shows another" bug one level up. Pulled
 BOTH computations into one new function, `familyHoist`, reading a single
 `allCapabilityValues`/`allQuantValues` set for everything (hoist, summary,
@@ -870,13 +870,13 @@ Nothing substantive — the fifth-round brief's descriptions of all five
 findings matched what was in the code. One thing worth flagging for a
 future round: `isMatchScoreStale` still only fires when `model.fit` was
 fully `null` (per the brief's literal instruction, `fitOverride != null &&
-model.fit == null`). A GGUF row whose `model.fit` is a non-null D746 GUESS,
+model.fit == null`). A GGUF row whose `model.fit` is a non-null D772 GUESS,
 later corrected by a real measurement that differs from the guess, does
 NOT get marked stale — the displayed `matchScore` was computed against the
 guess's fit-axis contribution and is technically as outdated as the
 null-default case, just not reported as such. The reviewer's finding named
 only the resolves-to-null false positive, not this gap, so it was left
-alone (see D767's own "Rejected" column) rather than silently widening
+alone (see D793's own "Rejected" column) rather than silently widening
 scope.
 
 ### Tests run this session
@@ -888,7 +888,7 @@ scope.
   -q`: 117 passed (checking the `fit_params`/`gguf_quantization` call
   pattern change didn't regress either module).
 - `.venv/bin/python -m pytest tests/test_doc_duplicate_ids.py -q`: 3 passed
-  (after appending D766-D768).
+  (after appending D792-D794).
 - `cd frontend && bun test src/apps/ai_models`: 636 passed (was 3 pass
   short before this round's new `resolveFit`/`resolveSpeed`/
   `matchFitBasis`/`isMatchScoreStale`/`familyHoist` test blocks were added;
@@ -917,7 +917,7 @@ scope.
 
 ## Sixth fix-builder round: derived GGUF fit deleted, not guarded
 
-D769-D772 in DECISIONS.md carry the full reasoning; this is what changed,
+D795-D798 in DECISIONS.md carry the full reasoning; this is what changed,
 what the brief got wrong, and where I diverged from a literal reading of it.
 
 **(1) The whole GGUF params x bytes-per-param derivation is gone.**
@@ -940,7 +940,7 @@ speed_estimate = (
 i.e. gated on `file is None` (not a GGUF row) rather than on any property of
 `quant`. This is unconditional the way the brief asked — no whitelist, no
 "but this token is probably fine" branch. `gguf_quantization` and the
-separate `fit_params` variable D766 introduced are deleted; there is exactly
+separate `fit_params` variable D792 introduced are deleted; there is exactly
 one `params` now, used for both the Params column and (only for a
 non-GGUF row) `fit`/`speedEstimate`.
 
@@ -965,7 +965,7 @@ easy` (the round-2 pin) unmodified — it still passes unchanged, since
 worried deleting derived fit would "reintroduce a page where every GGUF row
 ties near the bottom" and asked me to revisit the axis defaults. I did not
 change `_FIT_DEFAULT`/`_SPEED_DEFAULT`/`_CAPABILITY_DEFAULT` — they already
-implement "absence is neutral, not penal" (D754's own doctrine, re-verified
+implement "absence is neutral, not penal" (D780's own doctrine, re-verified
 against code review finding 7 at the time: no default can ever outscore a
 genuinely good real value). Ran the actual scoring functions rather than
 hand-estimating: a same-params/recency/downloads pair at 7B params/32GB RAM
@@ -1027,7 +1027,7 @@ only ever win for a row whose `file !== null`, and post-(1) every such row's
 `model.fit` is unconditionally `None` from the server. So `modelFit` is
 always `null` in the one branch where `fitOverride` can be honoured, and the
 new comparison is behaviorally identical to the old null-only check today.
-Kept the fix anyway (D772's own "Rejected" column explains why: unreachable
+Kept the fix anyway (D798's own "Rejected" column explains why: unreachable
 today is not an invariant either function's type enforces, and the fifth
 round's own notes explicitly flagged this as a known, deliberately
 unaddressed gap) — updated the one existing test that pinned the OLD,
@@ -1048,7 +1048,7 @@ a reachable bug.
 
 One thing worth flagging for a future round: deleting derived fit means a
 GGUF row can no longer be hidden by the `verdict: "no"` default-hide rule
-(D747) — `(row.get("fit") or {}).get("verdict")` reads `None`, not `"no"`,
+(D773) — `(row.get("fit") or {}).get("verdict")` reads `None`, not `"no"`,
 for every GGUF row until the lazy per-file lookup resolves one client-side.
 This was already true for round 2's unrecognized-quant rows and is an
 accepted, not newly-introduced, consequence of this round's fix — but it
@@ -1068,7 +1068,7 @@ does.
 - `.venv/bin/python -m pytest tests/test_ai_fit.py tests/test_ai_speed.py
   tests/test_doc_duplicate_ids.py -q`: 120 passed (checking the call-pattern
   change — `fit.verdict`/`speed.estimate_tok_s` no longer called at all for
-  a GGUF row — didn't regress either module, and D769-D772 clear the
+  a GGUF row — didn't regress either module, and D795-D798 clear the
   duplicate-id guard).
 - `cd frontend && bun test src/apps/ai_models`: 639 passed (was 636 before
   this session — 3 net new: two `matchTitle` basis-branch tests the brief
@@ -1104,10 +1104,10 @@ does.
 
 ## Seventh fix-builder round: the packed-dtype size over-report, and the hoist rule's final form
 
-D773-D774 in DECISIONS.md carry the full reasoning; this is what changed and
+D799-D800 in DECISIONS.md carry the full reasoning; this is what changed and
 what this round's brief got wrong.
 
-### (1) `_estimated_bytes` packed-dtype guard (D773)
+### (1) `_estimated_bytes` packed-dtype guard (D799)
 
 Confirmed the brief's diagnosis LIVE, not just by reasoning about the
 bytes-per-param ratio. Fetched `https://huggingface.co/api/models/<id>?expand[]=safetensors`
@@ -1151,14 +1151,14 @@ Did NOT add a `config`-based partial unpack (the way `_params` already does
 for the COUNT when `config` declares bits) — the brief was explicit that no
 new estimate should replace the guess this round removes, and this is a
 "make the guess a little more correct" pattern this branch has now rejected
-three times (D749, D751, D769) for the exact same reason each time: a
+three times (D775, D777, D795) for the exact same reason each time: a
 whitelist/partial-fix approach keeps coming back in a new shape.
 
-### (2) The hoist rule, unanimity-only (D774)
+### (2) The hoist rule, unanimity-only (D800)
 
 Implemented exactly option 2 as specified: `hoistValue` no longer has a
 majority branch at all — it returns a value ONLY when literally every row
-in the given set (primaries + variants, one set, per D768) agrees, and a
+in the given set (primaries + variants, one set, per D794) agrees, and a
 `null` anywhere breaks that outright (never filtered out to manufacture
 agreement). `columnVisible` simplified to `hoist === null` after excluding
 the all-unknown case, since a non-null hoist is unanimous by construction

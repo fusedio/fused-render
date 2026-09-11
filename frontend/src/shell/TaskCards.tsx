@@ -33,7 +33,8 @@ import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
-import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
+import { ChatFramePlaceholder } from "@platform/ui/ChatFrame";
+import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
@@ -50,6 +51,7 @@ import {
   cardKey,
   cardsForTasks,
   ERASE_BLOCKED_HINT,
+  emptyPaneFailed,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
@@ -170,7 +172,11 @@ export function TaskCards({
   onPickProject,
   pinnedProjects = [],
   missing,
+  emptyLabel = CARDS_EMPTY,
 }: {
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`) — the same
+   * one the List, Board and Calendar print, so the four views agree. */
+  emptyLabel?: string;
   /** Already filtered, in the SERVER's order — `cardsForTasks` orders it by
    * lane (every lane, Archive last), which is the one thing this view does to
    * the set it is handed and the one place it is decided. */
@@ -278,12 +284,25 @@ export function TaskCards({
   // about a window that is currently hosting param-owning frames, not a fact
   // about the app, and leaving it set would change how an unrelated iframe on
   // some other route resolves its params.
+  //
+  // FLAG ON there are no param-owning frames here at all: every card's chat is
+  // native and reads a MEMORY store of its own (ChatMount), so the flag would be
+  // a claim about this window that is not true.
+  //
+  // TRI-STATE, and only a real `false` sets it. Read as a boolean, `null` ("the
+  // prefs read has not landed") set the flag and deleted it one paint later —
+  // a claim about the window that was never true. Nothing reads it at boot
+  // today, so the cost was only honesty; the fix is to wait for the answer.
+  // The legacy path is byte-identical: a `false` sets it while mounted and
+  // removes it on the way out, exactly as before.
+  const nativeChatState = useNativeChatFlag();
   useEffect(() => {
+    if (nativeChatState !== false) return;
     window._fusedParamBoundary = true;
     return () => {
       delete window._fusedParamBoundary;
     };
-  }, []);
+  }, [nativeChatState]);
 
   // The popup outlives the wall it was opened from: a failed poll empties
   // `tasks`, and a filter can drop the last card, while someone is typing into
@@ -307,7 +326,7 @@ export function TaskCards({
     // there is nothing here.
     return (
       <>
-        <p className="schedule-tv-empty">{CARDS_EMPTY}</p>
+        <p className="schedule-tv-empty">{emptyLabel}</p>
         {popup}
       </>
     );
@@ -464,7 +483,19 @@ function TaskCard({
   const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
 
   return (
-    <section className="task-card" aria-label={`${task.task_id} ${title}`}>
+    <section
+      className="task-card task-card--door"
+      aria-label={`${task.task_id} ${title}`}
+      // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
+      // used to be the live chat with its own scroll and its own clicks —
+      // collapsible chips, thumbnails, links — and a wall of tiles each
+      // fighting for the wheel. Now the body is a picture (task-cards.css
+      // `.task-card--door .task-card-body`: no pointer events, no scroll) and a
+      // press anywhere on the card opens the same popup the head did. The head
+      // keeps its own handler for the keyboard; the doors strip inside it still
+      // stops its presses, so a door never also opens the popup.
+      onClick={() => onPeek(task)}
+    >
       {/* THE HEAD IS THE DOOR (Akshil, 2026-09-05: "when I click on the heading
           of the card ... it should open the preview"). The whole strip — ring,
           id, time, title — is one button that opens the task's popup; the body
@@ -476,7 +507,10 @@ function TaskCard({
         role="button"
         tabIndex={0}
         aria-label={`Preview ${task.task_id}`}
-        onClick={() => onPeek(task)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPeek(task);
+        }}
         onKeyDown={(e) => {
           // Only a key pressed ON THE HEAD. The folder chip inside it is a real
           // button of its own; its Enter and Space bubble here, and answering
@@ -619,10 +653,22 @@ function TaskCard({
           // iframe stays invisible until the chat inside it says its transcript
           // is painted, with the skeleton over it until then. The card's own
           // class rides the iframe, so the scaled fit below is untouched.
-          <ChatFrame
+          //
+          // FLAG ON, the native chat renders in place of that frame and the
+          // class is deliberately NOT stamped on it: `.task-card-frame` is the
+          // 133.33%/scale(0.75) fit, which is exactly what the native compact
+          // variant replaces with a type scale (apps/claude/styles/chat.css).
+          // `session_id` goes into a MEMORY param store per card, which is what
+          // `_fusedParamBoundary` bought the frame (00 §1e).
+          <ChatMount
+            legacySrc={src}
             className="task-card-frame"
-            src={src}
             title={`${task.task_id} ${title}`}
+            file={task.target || task.project}
+            sessionId={task.session_id}
+            chatOnly
+            compact
+            paramsSource="memory"
           />
         ) : resolving ? (
           <ChatFramePlaceholder />
@@ -632,7 +678,14 @@ function TaskCard({
           // "we know which chat that is" (schedule-lib, above `folderHref`) — a
           // real state, a few seconds to a few minutes long. Either way the card
           // says which rather than framing the wrong thing or an empty box.
-          <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+          // ...and the error colour is asked for, not re-derived: a settled
+          // task with no session is a broken promise of the same kind as a
+          // missing folder (`emptyPaneFailed`, FIX-A).
+          <p
+            className={
+              "task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")
+            }
+          >
             {emptyPaneText(task, gone)}
           </p>
         )}
@@ -708,8 +761,25 @@ function TaskPeek({
   // frame's document takes a listener of its own; a key the template already
   // stops (its own popovers close on Esc and stopPropagation) never reaches
   // it, which is the right precedence — Esc closes the innermost thing open.
+  // FLAG ON there is no frame and no second document: the chat is in THIS one,
+  // its root hands Escape up through `onEscape`, and the thing worth focusing is
+  // the composer's textarea rather than a box around it. Both refs are declared
+  // either way; exactly one of them is the live one.
+  const native = useNativeChatEnabled();
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  // WHEN THE COMPOSER EXISTS. `boxRef` is filled by an effect inside the chat,
+  // behind a `lazy` boundary — so at the moment the chassis computes
+  // `initialFocus` it is still null and the caret fell to the ✕, which is
+  // exactly what this popup exists not to do. The chat's own ready signal is
+  // the honest trigger: bumped once the transcript paints, it tells the Modal
+  // to take the focus it could not take at mount. Legacy is unaffected —
+  // `frameRef` is a render-time ref and was live at mount all along, so no
+  // signal is passed on that path (and no `onReady` either, which would
+  // otherwise land on the iframe's `load`).
+  const [chatReady, setChatReady] = useState(0);
   useEffect(() => {
+    if (native) return;
     const frame = frameRef.current;
     if (!frame) return;
     let doc: Document | null = null;
@@ -731,7 +801,7 @@ function TaskPeek({
       frame.removeEventListener("load", attach);
       doc?.removeEventListener("keydown", onKey);
     };
-  }, [src, onClose]);
+  }, [native, src, onClose]);
 
   const refile = async () => {
     if (!filing) return;
@@ -782,7 +852,11 @@ function TaskPeek({
       // not follow "Open in Explorer" instead (Bugbot, #1009). Null while the
       // frame is not there yet ("Starting…"), and the chassis then falls back
       // to its first focusable as every other dialog does.
-      initialFocus={frameRef}
+      // The composer natively, the frame in the legacy path (see `native`).
+      initialFocus={native ? boxRef : frameRef}
+      // See `chatReady`: natively the ref fills after the chunk resolves, so the
+      // chassis re-runs its initial focus when the chat says it is up.
+      {...(native ? { focusSignal: chatReady } : {})}
       // THE DOORS, IN THE HEAD beside the ✕ (Akshil, 2026-09-05: "move them on
       // top where we have the close button"), each an icon WITH its word — an
       // icon alone was not clear — in the app's own small secondary button, the
@@ -860,19 +934,37 @@ function TaskPeek({
       }
     >
       {src ? (
-        // The card's wrapper, at full size. `frameRef` still reaches the iframe
-        // itself — the Esc listener above and the chassis's `initialFocus` both
-        // want the element, not the box around it.
-        <ChatFrame
-          frameRef={frameRef}
+        // The card's wrapper, at full size. `legacyFrameRef` still reaches the
+        // iframe itself — the LEGACY Esc listener above and the chassis's
+        // `initialFocus` both want the element, not the box around it.
+        //
+        // FLAG ON there is no frame to listen inside: `onEscape` is the same
+        // close, handed up from the chat's own root, and `focusRef` is the
+        // composer's textarea — which is a better `initialFocus` than the
+        // iframe ever was, since it is where the reader actually wants the
+        // caret (TaskCards' own note above `frameRef`).
+        <ChatMount
+          legacySrc={src}
+          legacyFrameRef={frameRef}
           className="task-peek-frame"
-          src={src}
           title={`${task.task_id} ${title}`}
+          file={task.target || task.project}
+          sessionId={task.session_id}
+          chatOnly
+          peek
+          paramsSource="memory"
+          onEscape={onClose}
+          focusRef={boxRef}
+          {...(native ? { onReady: () => setChatReady((n) => n + 1) } : {})}
         />
       ) : resolving ? (
         <ChatFramePlaceholder />
       ) : (
-        <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+        <p
+          className={
+            "task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")
+          }
+        >
           {emptyPaneText(task, gone)}
         </p>
       )}

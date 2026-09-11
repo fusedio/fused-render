@@ -749,6 +749,13 @@ export function taskUnread(
   // never applied, a message that arrived since — falls through to the
   // arithmetic below and the server's number is what the row draws.
   if (isAllRead(read, task)) return 0;
+  // A PROVISIONAL row (provisionalTasks) holds no messages and a `message_count`
+  // of 0 — a default, not a count — so the "we hold the whole thread" arm below
+  // would read it as an empty, fully read thread and hollow the ring on a task
+  // pulse says has unread, for exactly the wait the seed exists to cover
+  // (Bugbot, #1079). Pulse's `unread` IS the server's number, and there is
+  // nothing held here to discount it by.
+  if (task.provisional) return task.unread;
   const known = held ?? task.messages ?? [];
   // Once Show more has run we hold the WHOLE thread, and then the count is not
   // arithmetic at all — it is the dots, counted. Same predicate (isUnread), same
@@ -2888,14 +2895,14 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 // attention at the top, because a parked run is the one card that needs a
 // person; Archive at the bottom, under Done.
 //
-// The one decision that is this view's own is the clock inside a lane: `started`
-// rather than `last_active`, because `last_active` climbs on every write and
-// reaches this page within a second, so cards traded places for as long as
-// anything was talking (cardsForTasks, below).
+// And the ORDER inside a lane is the List's too — sortByLane, the same call
+// (Akshil, 2026-09-08: "for list as a reference in order the cards"). This view
+// once kept a clock of its own there (`started`) and its cards read out of order
+// against the times printed on their own heads; see cardsForTasks, below.
 //
-// So the only decisions it makes are here, out of the component, because they
-// are the ones worth testing and a grid of iframes is the last place to test
-// anything.
+// So the only decisions it makes — membership, dedupe, the page — are here, out
+// of the component, because they are the ones worth testing and a grid of
+// iframes is the last place to test anything.
 
 /** The lanes a Cards view draws, top rank first — LIST_ORDER, whole. Kept as
  * its own name so the view's membership test reads as a decision, not a
@@ -2927,13 +2934,98 @@ export interface TaskCardSet {
   hidden: number;
 }
 
-/** What a Cards-view pane says when there is no frame to draw (TaskCards).
- *  `folderMissing` is a folder the server answered 404 for: nothing will ever
- *  be framed for it, and "Starting…" would be a promise the card cannot keep
- *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
-export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+/**
+ * What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *
+ * `folderMissing` is a folder the server answered 404 for: nothing will ever be
+ * framed for it, and "Starting…" would be a promise the card cannot keep
+ * (Akshil, 2026-09-06: "some cards are stuck at starting").
+ *
+ * AND THE SAME PROMISE IS BROKEN FROM THE OTHER SIDE. "Starting…" is only
+ * honest while a run is IN FLIGHT — the window between "claimed and sent" and
+ * "we know which chat that is", which the card's own comment calls "a few
+ * seconds to a few minutes long". A task that has SETTLED (blocked / done /
+ * archived) with no session never recorded one and never will: `schedule.py`'s
+ * `_turn_tick` writes `claude_session_id` on the first watcher tick that
+ * reports one, so a child that dies before its first status line leaves it
+ * empty for good. That row is then unreachable from every session-keyed
+ * surface, the explorer does not list it (it lists transcripts), and the card
+ * spun on "Starting…" for a run that ended a day earlier (P4R1-1, diagnosis
+ * FIX-A). Nothing will ever be framed here — the same fact `folderMissing`
+ * carries, arrived at from the other side — so it says so instead.
+ *
+ * `failed` picks WHICH sentence: a run that broke says it broke, and the card
+ * paints it in the error colour. A settled row that simply has no chat on file
+ * (a done entry whose session was never written) is not an error and does not
+ * wear one.
+ */
+export function emptyPaneText(
+  task: EmptyPaneTask,
+  folderMissing: boolean,
+): string {
   if (folderMissing) return "Folder no longer exists";
-  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
+  if (task.status === "upcoming") return "Not started yet";
+  if (isSettledLane(task.status)) {
+    if (task.failed) return "The run failed before it started a chat";
+    // ASK THE ROW, NOT ONLY THE LANE (L1). `tasks.py:_status` ranks
+    // `if filed: return "archived"` above `_waiting`'s `upcoming`, so filing a
+    // task whose message has not run takes it OUT of the lane the test above
+    // keys on — and the settled sentence would then assert a run happened for a
+    // message still sitting in the future. A row holding a pending message has
+    // one thing that has not run, whatever lane it was filed into.
+    if (hasPendingMessage(task)) return "Not started yet";
+    return "No chat was recorded for this run";
+  }
+  return "Starting…";
+}
+
+/** The lanes where "nothing will ever be framed here" is a FACT and not a
+ *  guess, named one by one (L2).
+ *
+ *  It was an exclusion, and it was read off `taskColumn` — two mistakes in the
+ *  same line. `statusColumn` floors every status this bundle does not know into
+ *  `"done"`, so a lane a future server adds that MEANS in-flight ("resuming",
+ *  say) was BOTH outside the two names the exclusion spared and flattened into
+ *  one that is settled — and the card told the reader no chat was ever recorded
+ *  for a run happening as they read it. Hence the RAW status: the flooring is
+ *  right for a board that must file every row into one of six columns, and
+ *  wrong for a question whose honest answer about an unrecognised lane is "I
+ *  don't know". An unknown lane falls through to "Starting…", which is what
+ *  this card said before FIX-A and is wrong only in being optimistic.
+ *
+ *  One list, asked in both directions, so the sentence and the error colour
+ *  cannot disagree about which lanes are settled. */
+const SETTLED_LANES = new Set<string>(["blocked", "done", "archived"]);
+
+function isSettledLane(status: string): boolean {
+  return SETTLED_LANES.has(status);
+}
+
+/** What the two empty-pane readings need of a row: its status, its verdict, and
+ *  whether anything on it has yet to run. */
+type EmptyPaneTask = Pick<Task, "status" | "failed"> & Pick<Partial<Task>, "messages">;
+
+/** Does this row still hold a message that HAS NOT RUN — the question that
+ *  separates "nothing was recorded" from "nothing has happened yet".
+ *
+ *  The listing window (`PREVIEW_MESSAGES`, the three newest) is all there is to
+ *  ask, and that is enough for the case this exists for: a task whose ONLY
+ *  message is the pending entry cannot have it pushed out of a window of
+ *  three. A busier row that has genuinely recorded runs has a session, and a
+ *  row with a session never draws this pane at all. */
+function hasPendingMessage(task: EmptyPaneTask): boolean {
+  return (task.messages ?? []).some((m) => m.state === "pending");
+}
+
+/** Whether the sentence `emptyPaneText` answers with is a FAILURE — the one the
+ *  card draws in the error colour, beside "Folder no longer exists". Kept here,
+ *  next to the sentence it describes, so the class and the words cannot drift:
+ *  the view asks one question of one module rather than re-deriving the lane. */
+export function emptyPaneFailed(task: EmptyPaneTask, folderMissing: boolean): boolean {
+  if (folderMissing) return true;
+  // The same whitelist the sentence uses, over the same raw status (L2), so the
+  // colour can never outrun the words.
+  return !!task.failed && isSettledLane(task.status);
 }
 
 /**
@@ -2973,56 +3065,48 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
 }
 
 /**
- * The Cards view's rows: the running tasks, by lane then newest first, capped.
+ * The Cards view's rows: the List's order, one card per row, capped.
  *
- * BY LANE FIRST (Akshil, 2026-09-03: order the cards "based on status, the same
- * way we have in list … blocked first and then in progress … sort them by
- * recency" inside each group). The wall used to be one flat recency order, and
- * that buried the only card on it that needs a person: a run parked on a
- * question stops ticking `last_active` the moment it asks, so the longer it
- * waits the further down it sinks — exactly backwards. The rank is a card's
- * lane's index in `CARD_LANES`, which is LIST_ORDER whole, so this
- * cannot drift out of step with the List: the same rows in the same lane order
- * in both views, which is what makes switching between them a change of shape
- * rather than of subject.
+ * THE LIST'S ORDER, WHOLE (Akshil, 2026-09-08: "for list as a reference in
+ * order the cards"). Not the List's rank with a clock of this view's own — that
+ * is what was here, and it is the bug this fixes. The cards ranked by lane like
+ * the List and then ran by `started` (when the task was created) inside a lane,
+ * while every card's head printed `taskWhen` — the last run, the same stamp a
+ * List row prints. So the wall was ORDERED by one clock and LABELLED with another:
+ * a Done card reading "2h ago" sat above one reading "10m ago", the exact
+ * symptom the List had already cured in itself (sortRank), and a recurring task
+ * created weeks ago that had just run sat at the top of Done in the List and at
+ * the bottom of Done here. Switching views reshuffled the lane, which is the one
+ * thing the shared LIST_ORDER was there to prevent.
  *
- * NEWEST TASK FIRST WITHIN A LANE, and `started` is what that means — when the
- * conversation BEGAN (server `_place`: the earliest of the scheduled entry's
- * `created` and the transcript's first record), not when it last said something.
+ * So the order is `sortByLane`, the very function the List calls: rank by
+ * LIST_ORDER, and inside a rank by the time the row prints — last run, most
+ * recent first; Upcoming by the run ahead, soonest first, overdue at the top;
+ * Archive as the server lists it; a row with no time at all last in its rank.
+ * Same rows, same order, in both views, and a card's place on the wall is the
+ * place a reader can check against the stamp on its own head.
  *
- * IT WAS `last_active`, AND THAT IS THE BUG THIS FIXES (Akshil, 2026-09-03: "in
- * cards view, when i create a new task the layout shifts multiple times, fix
- * that it should shift only one time"). `last_active` climbs every time a run
- * writes, and the page's fast lane (/api/tasks/changes, Scheduled.tsx) lands
- * those writes within a second of each one — so on a wall of live chats the sort
- * key of every card was changing continuously and the cards traded places for as
- * long as anything was talking. Measured on this branch: a new card appeared,
- * then dropped a slot nine seconds later because an unrelated run had written in
- * the meantime, then came back when that run finished. A wall whose whole claim
- * is "watch these" may not move while it is being watched.
+ * WHY `started` WAS HERE, AND WHY THE LIST'S KEY IS SAFE TOO. The wall first ran
+ * by `last_active`, which climbs on every write and reaches this page within a
+ * second (the /api/tasks/changes fast lane), so cards traded places for as long
+ * as anything was talking (Akshil, 2026-09-03: "when i create a new task the
+ * layout shifts multiple times"). `started` never moves, and that was the fix
+ * (PR #984) — but it over-corrected: it froze the wall against a clock nobody
+ * could see. The List's key is `lastRunAt`, a message's `ran_at`, which is
+ * written ONCE when the turn begins and does not tick while the run streams — so
+ * a card still holds still while its conversation talks, and moves only when a
+ * run starts, a run ends, or a lane changes: real events with something to say.
+ * The test that pins this ("does not re-sort when a run merely writes") is kept
+ * and still holds.
  *
- * `started` never moves for the life of a task, so a card's place is decided once
- * — when it arrives — and then only by cards ARRIVING and LEAVING. Those two are
- * real events with something to say; "a run wrote a line" is not. Newest first
- * puts a task somebody has just created at the top, which is where they are
- * already looking.
+ * TIES KEEP THE SERVER'S ORDER (sortRank compares the incoming index), which
+ * matters more here than on a row: every card is a live iframe keyed by task,
+ * and two cards trading places between polls is two conversations swapping
+ * seats in front of somebody reading one of them.
  *
- * Deliberately NOT `taskWhen`/`laneTime` either: those answer "which run does
- * this row print", a question with three fallbacks in it, and the card head
- * prints that time — but printing a time is not the same as being ordered by it,
- * and this view would rather hold still.
- *
- * TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly rather
- * than trusting the sort to be stable — sortLane's rule 1, and it matters more
- * here than it does on a lane: every card is a live iframe keyed by task, so two
- * cards trading places between polls is not a row moving, it is two conversations
- * swapping seats in front of somebody reading one of them.
- *
- * A TASK WITH NO CLOCK AT ALL goes last IN ITS OWN LANE (rule 2, same reason: 0
- * is 1970, and a task whose start the server could not name must not be allowed
- * to claim either end of the order by accident). It also covers an older server
- * that sends no `started` at all: every card lands in the `null` bucket and the
- * wall falls back to the server's own listing order, which is stable enough.
+ * `now` is read ONCE for the whole wall and handed down, for sortByLane's own
+ * reason: a comparator that changes its mind halfway through a sort straddling a
+ * second is a comparator with no defined output.
  *
  * ONE CARD PER IDENTITY. Deduplicated on `cardKey`, which is what the view keys
  * its iframes on — two rows resolving to one card would be a React duplicate key
@@ -3034,39 +3118,23 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function cardsForTasks(tasks: Task[], cap: number = CARD_PAGE): TaskCardSet {
-  // `indexOf` rather than a Set: membership AND rank come off the one list, and
-  // -1 — "this lane is not drawn here" — is the filter.
-  const rank = (task: Task) => CARD_LANES.indexOf(taskColumn(task));
-  const rows = tasks
-    .map((task, index) => ({
-      task,
-      index,
-      lane: rank(task),
-      // `|| null` for laneTime's reason: `started` is a float that is 0.0 for
-      // "the server could not name a start", and 0 must be "no clock" rather
-      // than an instant in 1970. `?? 0` first, because an older server sends no
-      // field at all and `undefined || null` is not the same expression.
-      at: (task.started ?? 0) || null,
-    }))
-    .filter((r) => r.lane >= 0);
-  rows.sort((a, b) => {
-    if (a.lane !== b.lane) return a.lane - b.lane;
-    if (a.at === null || b.at === null) {
-      // Exactly one of them has a clock: the one that does comes first.
-      if (a.at !== b.at) return a.at === null ? 1 : -1;
-    } else if (a.at !== b.at) {
-      return b.at - a.at;
-    }
-    return a.index - b.index;
-  });
+export function cardsForTasks(
+  tasks: Task[],
+  cap: number = CARD_PAGE,
+  now: number = Date.now(),
+): TaskCardSet {
   const seen = new Set<string>();
   const all: Task[] = [];
-  for (const row of rows) {
-    const id = cardKey(row.task);
+  for (const task of sortByLane(tasks, now)) {
+    // NOT YET DUE IS NOT A CARD (Akshil, 2026-09-10, E2E R1): an upcoming
+    // task has no chat to show, so its tile was a sentence in a frame — the
+    // Calendar and the List are where a future run is read. The wall shows
+    // work that has happened or is happening.
+    if (task.status === "upcoming") continue;
+    const id = cardKey(task);
     if (seen.has(id)) continue;
     seen.add(id);
-    all.push(row.task);
+    all.push(task);
   }
   // A cap of 0 or less is "no cap" rather than an empty page: the view passes
   // pages × CARD_PAGE and a test can shrink it, and the failure mode of a bad
@@ -3115,6 +3183,58 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
     at,
     text: `next ${relativeWhen(at, now)}`,
     title: `Next run ${messageStamp(at)}`,
+  };
+}
+
+// ---- "and this one is on a schedule" ----------------------------------------
+// The chip above says WHEN the next run is, and only on the rows whose own time
+// is not already that run. What no row said at all is the plainer fact one step
+// up from it: this task has a run booked. That is what a reader scanning a
+// hundred rows for "which of these fire by themselves" is asking, and reading it
+// off a time in the last column means reading every last column.
+//
+// So the List wears a glyph for it (Akshil, 2026-09-10: "for scheduled tasks in
+// the list view, let's show a icon that shows it's scheduled"), beside the file
+// mark, in the slot that already answers "what kind of task is this".
+//
+// A FUTURE RUN is the test, not "has a schedule entry": a task whose every
+// occurrence has fired is not scheduled any more, and a pending run whose time
+// has gone by is overdue work the Upcoming lane surfaces — neither is news about
+// what this task does next. Same rule as nextRunChip, deliberately: two marks on
+// one row must not disagree about whether a run is coming.
+//
+// NOT a second clock on the message rows inside the thread. That pair
+// (ICON_CLOCK/ICON_CHAT, ScheduleTaskViews) was pulled on 2026-08-18 for being a
+// third glyph on a 12.5px line whose first two already carried the state and the
+// id. This is one glyph on the TASK row, where nothing else states it.
+
+export interface ScheduledMark {
+  /** Epoch seconds of the run that makes this task scheduled. */
+  at: number;
+  /** The tooltip: the fact, and exactly when. */
+  title: string;
+  /** The same fact as prose, for anything that cannot see the glyph — no
+   *  middle dot, which a screen reader either names or drops. The file mark
+   *  splits its two strings the same way (path in the hint, sentence in the
+   *  label). */
+  label: string;
+}
+
+/**
+ * Whether this task has a run ahead of it, and the instant it is.
+ *
+ * `nextRunAt` is the source — the row's own `next_run` where the server named
+ * one, the window's earliest pending where it did not — so the mark, the chip
+ * and the Upcoming lane's order are all reading the same field.
+ */
+export function scheduledMark(task: Task, now: number = Date.now()): ScheduledMark | null {
+  const at = nextRunAt(task);
+  if (at === null || at * 1000 <= now) return null;
+  const stamp = messageStamp(at);
+  return {
+    at,
+    title: `Scheduled · next run ${stamp}`,
+    label: `Scheduled, next run ${stamp}`,
   };
 }
 
@@ -3555,8 +3675,8 @@ export interface AttentionRow {
   taskId: string;
   /** The task's own title, for the row's second line. */
   title: string;
-  /** Where clicking the row lands, or null when there is nowhere to go. */
-  href: string | null;
+  /** Where clicking the row lands — always a real destination (see below). */
+  href: string;
 }
 
 /**
@@ -3574,9 +3694,10 @@ export interface AttentionRow {
  * `folderHref`): `taskHref` is null until the run reports a session id, and a run
  * that has parked on a question inside that window is exactly the one somebody
  * needs to reach. The folder with the Claude pane on it is where the answer can
- * be given, so it is a better answer than an inert row. Null only when the task
- * names no folder at all, which the section draws as an unclickable row rather
- * than dropping the news.
+ * be given, so it is a better answer than an inert row. And when the task names
+ * no folder at all, the row still needs a door — every row in the Notifications
+ * panel is clickable, so the last resort is the Tasks page itself, which is
+ * always a correct place to land on "a task needs you".
  */
 export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
   const rows: AttentionRow[] = [];
@@ -3586,10 +3707,30 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
-      href: taskHref(task) ?? folderHref(task),
+      href: taskHref(task) ?? folderHref(task) ?? "/tasks",
     });
   }
   return rows;
+}
+
+/** What a dismissal of a waiting-task row expires against — the same idea
+ *  `repoDismissSignature` (repo-updates-lib.ts) uses for repo rows. `title` is
+ *  the question itself, so a dismissed row comes back the moment the run asks
+ *  something NEW, rather than staying hidden across an unrelated question
+ *  just because it reused the same key. Dismissing the row is not answering
+ *  it — the task stays parked either way, and the sidebar's Tasks dot keeps
+ *  saying so; this only governs whether the same question keeps a seat in
+ *  Notifications. */
+export function attentionDismissSignature(row: AttentionRow): string {
+  return row.title;
+}
+
+/** Which attention rows a dismissal still hides. */
+export function visibleAttentionRows(
+  rows: AttentionRow[],
+  dismissed: Record<string, string>
+): AttentionRow[] {
+  return rows.filter((row) => dismissed[row.key] !== attentionDismissSignature(row));
 }
 
 /**
@@ -3668,4 +3809,57 @@ export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[])
   for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
   for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
   return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
+}
+
+/**
+ * PAINT BEFORE /api/tasks ANSWERS: the sidebar's compact rows, upcast into the
+ * listing's own shape.
+ *
+ * `_task_rows()` reads every transcript from byte 0 on the first call of a
+ * server process — 2.9s on this machine — and the page spent all of it behind a
+ * skeleton while `/api/tasks/pulse` had already told the sidebar the key,
+ * status, project, title, target, session and times of every task. Those are
+ * most of what a row draws, so a row can be drawn from them.
+ *
+ * Everything pulse does not carry gets a NEUTRAL default, never a guess: no
+ * message window, no count, nothing live, nothing failed, nothing blocked and
+ * no next run. `provisional: true` is how the views tell the two apart — the
+ * message count and the expand caret are the two cells that would otherwise
+ * print one of these defaults as a fact, and they draw placeholders instead
+ * (ScheduleTaskViews). Every row is replaced whole the moment the listing
+ * lands, and the keys are the same, so nothing reorders on the swap.
+ */
+export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
+  return rows.map((row) => ({
+    key: row.key,
+    task_id: row.task_id,
+    project: row.project,
+    target: row.target,
+    session_id: row.session_id,
+    title: row.title,
+    // `message` and not `entry`: the difference between those two only decides
+    // whether a title may be a message being composed right now, and a row
+    // this page did not fetch is not one of those.
+    title_source: "message",
+    description: "",
+    status: row.status,
+    failed: false,
+    blocked_reason: "",
+    attention: null,
+    live: false,
+    unread: row.unread,
+    started: 0,
+    last_active: row.last_active,
+    happened_at: row.happened_at,
+    message_count: 0,
+    // From pulse since 2026-09-09: the Board's Upcoming lane sorts by it, and a
+    // default of 0 put every provisional card at the bottom of that lane until
+    // the listing landed and moved it (review, #1079). BOTH fields: namedNextRun
+    // reads the time only when the entry is named too — a time nobody can fire
+    // is not sorted by — so the time alone changed nothing (Bugbot).
+    next_run: row.next_run,
+    next_run_entry: row.next_run_entry,
+    messages: [],
+    provisional: true,
+  }));
 }

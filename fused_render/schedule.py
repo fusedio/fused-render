@@ -648,11 +648,24 @@ def _report(entry_id: str, **fields) -> dict | None:
     Best-effort, like every reporter in this app: a registry that refuses a
     field must not cost a scheduled message its send. The RETURN is load-bearing
     though — it is how the watcher learns the manager's ✕ was pressed, so a
-    plain `_report(id)` with no fields is a legitimate "read it back" call."""
+    plain `_report(id)` with no fields is a legitimate "read it back" call.
+
+    `tier=jobs.TRANSIENT` on every call, not just the terminal one: nobody
+    asked for a scheduled run's own row and a send that worked leaves nothing
+    behind to open, so it is never kept once terminal (SPEC
+    actionable-notifications). `**fields` comes after it so a future caller
+    could still override per-call, but no caller here does.
+
+    `origin="Scheduler"` on every call for the identical reason `tier` is: a
+    scheduled entry fires with no page open at all, so "Scheduler" is this
+    row's one true source regardless of which entry or which tick."""
     try:
         from fused_render import jobs
 
-        return jobs.upsert({"id": _job_id(entry_id), **fields}, server=True)
+        return jobs.upsert(
+            {"id": _job_id(entry_id), "tier": jobs.TRANSIENT,
+             "origin": "Scheduler", **fields}, server=True
+        )
     except Exception:  # noqa: BLE001 — reporting is never authoritative
         logger.debug("could not report scheduled-message job state", exc_info=True)
         return None

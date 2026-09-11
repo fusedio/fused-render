@@ -120,9 +120,41 @@ function place(x: number, y: number): void {
   p.style.top = `${Math.round(top)}px`;
 }
 
+/** The separator a caption uses to say "this token, then what it means". */
+const GLOSS = " \u2014 ";
+
+/** A caption whose every line is `token — meaning` is a TABLE, and setting it
+ *  as text renders it as prose: the dashes land wherever each token happens to
+ *  end, so the meanings never form a column and the tokens get no distinction
+ *  from the sentences explaining them. Two spans a line and a grid gives the
+ *  reader the shape the caption already has.
+ *
+ *  Every line has to qualify. A caption with one glossed line among prose is
+ *  prose with a dash in it, and columnising it would strand the rest. */
+function renderHint(p: HTMLDivElement, text: string): void {
+  const lines = text.split("\n");
+  if (lines.length < 2 || !lines.every((line) => line.includes(GLOSS))) {
+    p.textContent = text;
+    return;
+  }
+  const grid = document.createElement("div");
+  grid.className = "hint-grid";
+  for (const line of lines) {
+    const cut = line.indexOf(GLOSS);
+    const key = document.createElement("span");
+    key.className = "hint-key";
+    key.textContent = line.slice(0, cut);
+    const def = document.createElement("span");
+    def.className = "hint-def";
+    def.textContent = line.slice(cut + GLOSS.length);
+    grid.append(key, def);
+  }
+  p.replaceChildren(grid);
+}
+
 function show(text: string, x: number, y: number): void {
   const p = ensurePanel();
-  p.textContent = text;
+  renderHint(p, text);
   p.classList.add("is-on");
   place(x, y);
 }
@@ -131,9 +163,9 @@ export function hideHint(): void {
   host = null;
   if (panel) {
     panel.classList.remove("is-on");
-    // Emptied as well as hidden: a stale string in a hidden panel is a string
+    // Emptied as well as hidden: stale content in a hidden panel is content
     // that flashes on the next show, before its own text lands.
-    panel.textContent = "";
+    panel.replaceChildren();
   }
 }
 

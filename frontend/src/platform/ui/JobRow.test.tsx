@@ -12,8 +12,18 @@ import { expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
 
-import { JobRow } from "@platform/ui/DownloadManager";
+// DownloadManager.tsx now imports router.ts (a terminal row's rowClick
+// dispatches through `navigateToJobPage`), which reads `location` at module
+// scope (`IS_EMBED`) — this file otherwise renders JobRow with no DOM at
+// all, so the shim has to land before the import, via a dynamic import
+// exactly like router.test.ts's own (see testDomShim.ts's header for why
+// every suite that needs this shares the one shim rather than hand-rolling
+// its own globals).
+import { installDomShim } from "@platform/lib/testDomShim";
 import type { Job } from "@platform/lib/jobs";
+
+installDomShim();
+const { JobRow } = await import("@platform/ui/DownloadManager");
 
 const BASE: Job = {
   id: "a",
@@ -29,6 +39,7 @@ const BASE: Job = {
   unit: "",
   message: "",
   page: "",
+  origin: "",
   owner: "page",
   cancellable: true,
   cancel_requested: false,
@@ -37,6 +48,7 @@ const BASE: Job = {
   finished_at: null,
   stalled: false,
   waiting_for: "",
+  tier: "trail",
 };
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
@@ -109,6 +121,26 @@ test("a model equal to the title draws no .dl-model suffix — a load row must n
   expect(findAll(root, "dl-model")).toHaveLength(0);
 });
 
+test("a job with an origin draws a dimmed .dl-origin caption", () => {
+  const root = renderRow({ ...BASE, origin: "Playground" });
+  const origin = findAll(root, "dl-origin");
+  expect(origin).toHaveLength(1);
+  expect(origin[0].children).toEqual(["Playground"]);
+});
+
+test("a job with no origin renders no .dl-origin element at all — no empty caption, no stray gap", () => {
+  const root = renderRow({ ...BASE, origin: "" });
+  expect(findAll(root, "dl-origin")).toHaveLength(0);
+});
+
+test("origin and model draw as separate lines, both present at once", () => {
+  const root = renderRow({ ...BASE, model: "FLUX.1-schnell", origin: "Playground" });
+  expect(findAll(root, "dl-model")).toHaveLength(1);
+  const origin = findAll(root, "dl-origin");
+  expect(origin).toHaveLength(1);
+  expect(origin[0].children).toEqual(["Playground"]);
+});
+
 test("a done job draws a row with a working dismiss control (C1)", () => {
   // `JobRow` itself draws every state it is handed — a `done` job included.
   // What keeps a terminal job out of THIS file's own Jobs section is
@@ -130,6 +162,45 @@ test("an error job still draws — only a success clears itself", () => {
 test("a cancelled job still draws — only a success clears itself", () => {
   const root = renderRow({ ...BASE, state: "cancelled" });
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
+});
+
+// ---- terminal jobs lose the bar and gain an inline glyph -----------------
+
+test("a done job draws no bar at all — the tick sits on the status line instead", () => {
+  const root = renderRow({ ...BASE, state: "done", detail: "4.6 GB", done: null, total: null });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("4.6 GB");
+});
+
+test("an error job draws no bar and its status line carries the cross", () => {
+  const root = renderRow({
+    ...BASE,
+    state: "error",
+    message: "Authentication failed",
+    done: null,
+    total: null,
+  });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("Authentication failed");
+});
+
+test("a cancelled job draws no bar either", () => {
+  const root = renderRow({ ...BASE, state: "cancelled" });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toContain("with-glyph");
+});
+
+test("a running job keeps its plain status line — no glyph, no with-glyph class", () => {
+  const root = renderRow({ ...BASE, state: "running" });
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toBe("dl-status");
 });
 
 // ---- a rejected Cancel/Dismiss must say so, not go quiet (D572) ----------------
@@ -223,6 +294,213 @@ test("a successful Cancel shows no failure line", async () => {
   // this test fail for the right behaviour.
   const after = tree.toJSON() as ReactTestRendererJSON;
   expect(text(after)).not.toContain("Could not cancel");
+});
+
+test("the dismiss control disables while its own request is in flight, so a second click can't fire another", async () => {
+  // A dismiss whose promise never settles during this assertion — `busy` only
+  // clears in `dismissFn`'s `finally`, so the button has to read `disabled`
+  // while the request is still outstanding, not just before/after it.
+  let resolveFn: (v: { dismissed: string }) => void = () => {};
+  const dismissFn = () => new Promise<{ dismissed: string }>((resolve) => (resolveFn = resolve));
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "running", stalled: true }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(before, "dl-x")[0].props.disabled).toBeFalsy();
+
+  const button = findAll(before, "dl-x")[0];
+  const onClick = (button.props as { onClick: () => Promise<void> }).onClick;
+  let clickDone = false;
+  const clicked = act(async () => {
+    await onClick();
+  }).then(() => {
+    clickDone = true;
+  });
+
+  // The request is still outstanding — the ✕ must already be disabled.
+  const mid = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(mid, "dl-x")[0].props.disabled).toBe(true);
+  expect(clickDone).toBe(false);
+
+  resolveFn({ dismissed: BASE.id });
+  await clicked;
+});
+
+// ---- a terminal row with a destination opens it, and clears itself (SPEC-actionable-notifications.md) --
+
+// Captures whatever url a rowClick's `navigateToJobPage` pushes, without
+// touching the shared shim's own no-op — restored after each use so the next
+// test's shim call still sees the plain stub testDomShim.ts installed.
+function pushedUrl(run: () => void): string {
+  const hist = globalThis.history as { pushState: (s: unknown, t: string, u: string) => void };
+  const prev = hist.pushState;
+  let url = "";
+  hist.pushState = (_s, _t, u) => {
+    url = u;
+  };
+  try {
+    run();
+  } finally {
+    hist.pushState = prev;
+  }
+  return url;
+}
+
+test("a done job's row opens its page and dismisses itself, the same way its own ✕ would", async () => {
+  const theJob = { ...BASE, state: "done" as const, page: "/ai-models/local" };
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
+  };
+  const patched: Job[][] = [];
+  const tree = create(
+    <JobRow
+      job={theJob}
+      onChanged={() => {}}
+      onPatch={(fn) => patched.push(fn([theJob]))}
+      dismissFn={dismissFn}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  expect(findAll(root, "dl-row-open")).toHaveLength(1);
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  await act(async () => {
+    pushedUrl(onClick);
+    await Promise.resolve();
+  });
+  expect(dismissCalls).toBe(1);
+  expect(patched[0]).toEqual([]); // the same onPatch filter dismiss() always applies
+});
+
+test("a done job whose page is an fs path navigates AND dismisses itself, same as a shell route", async () => {
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(url).toBe("/explorer/view/Users/me/Desktop/render.png");
+  expect(dismissCalls).toBe(1);
+});
+
+test("a done job's row navigates to its page", () => {
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "done", page: "/ai-models/local" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={() => new Promise(() => {})} // never settles — isolates the nav assertion
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  expect(url).toBe("/ai-models/local");
+});
+
+test("an error job's row navigates AND dismisses itself — opening it is the acknowledgement", async () => {
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "error", message: "boom", page: "/ai-models/benchmark" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(url).toBe("/ai-models/benchmark");
+  expect(dismissCalls).toBe(1);
+});
+
+test("a cancelled job's row navigates AND dismisses itself too", async () => {
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "cancelled", page: "/claude-config" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(url).toBe("/claude-config");
+  expect(dismissCalls).toBe(1);
+});
+
+test("a terminal job with no page at all draws no rowClick — nothing to open", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "" });
+  expect(findAll(root, "dl-row-open")).toHaveLength(0);
+});
+
+test("a RUNNING job never opens on click, even when it names a page — only a terminal row does", () => {
+  const root = renderRow({ ...BASE, state: "running", page: "/ai-models/local" });
+  expect(findAll(root, "dl-row-open")).toHaveLength(0);
+});
+
+test("a page that is a shell route adds nothing past the title itself to the tooltip — the row's own click already says where it goes", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "/ai-models/local" });
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.title).toBe(BASE.title);
+});
+
+test("a page that is an fs path appends it to the title in the tooltip", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" });
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.title).toBe(`${BASE.title}\n/Users/me/Desktop/render.png`);
+});
+
+// SPEC actionable-notifications item 4: a row's title never wraps to a
+// second line, so a long prompt does not halve how many rows fit — it is
+// truncated to one line with an ellipsis instead (`titleMode="id"`,
+// NotificationCard.tsx), with the full text still reachable on hover (the
+// tooltip assertions above).
+test("the title renders in one-line-ellipsis mode, not wrapping", () => {
+  const root = renderRow(BASE);
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.className).toContain("dl-title-id");
 });
 
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {

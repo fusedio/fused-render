@@ -29,21 +29,49 @@ assertion in tests/test_app_doctor.py. A device path or a structural gap is
 left as-is: neither is a secret, and showing it whole is what makes the
 finding actionable.
 
-EVERY FINDING FAILS THE RUN. All three families this script reports —
-secrets, device paths, and structure — are the kind of problem a CI floor
-exists to catch before it reaches someone else's machine, so `SEVERITY`
-is a flat "high" rather than a per-family table: there is no third tier here
-that is worth reporting but never worth failing a run over. A finding that
-was never going to fail anything belongs in the skill's judgment-driven
-review, not in this script.
+NOT EVERY FINDING FAILS THE RUN — CANDIDATES REPORT, FACTS FAIL. This script
+used to treat every finding as the same flat "high" severity, on the theory
+that everything it reports is worth failing a push over. That theory does not
+survive contact with a real workspace: a run of this exact engine over the 8
+apps in a real `~/Fused/local` produced 40 content findings and every single
+one was a false positive — 26 were the same absolute path repeated across
+committed `runs/*.json` logs, 6 were `/tmp/xxx` inside a vendored stdlib
+module's docstrings, 5 were paths inside markdown code spans (a backtick used
+to count as an opening quote), 2 were a deliberate `SKIP_DIRS` constant and a
+relative URL in test HTML, and 1 was a fixture's obviously-fake password. The
+secrets and device-path families are pattern matches over arbitrary text —
+they locate CANDIDATES, and only a read of the surrounding file decides
+whether one is real, which is exactly the judgment `SKILL.md` exists to make.
+Failing a push on a candidate alone means a false positive blocks a real
+commit; that cost model is upside down for these two families.
+`CHECK_META` (below) marks `secrets` and `device-paths` as `kind: "candidate"`
+and everything else — the three structure gaps — `kind: "fact"`: a missing
+`index.html`/README/`preview.png` is not a pattern match over prose, it is a
+direct `os.path.isfile` answer with no false-positive rate at all. `main`
+exits 1 only when a fact finding fired; a run with candidates only prints them
+and exits 0, so someone still sees them without a push getting blocked over
+a maybe.
+
+BUT NOT EVERY FACT SHOULD BLOCK EITHER. A missing `preview.png`
+(`structure:missing-thumbnail`) is a fact — `os.path.isfile` said so with no
+ambiguity — yet its severity is `suggested`: the share still opens and works
+without a thumbnail, it just looks worse in a listing. Gating the exit code
+on `kind == "fact"` alone made that cosmetic gap fail the same build a leaked
+AWS key (`secrets`, `severity: "critical"`, but `kind: "candidate"` so it
+never blocked) would exit 0 on — inverted urgency, not merely inconsistent.
+`main` now exits 1 only for a FACT finding whose severity is `critical` or
+`warning`; a `suggested` fact still prints (it is real and worth fixing) but
+never reddens the build on its own, and a candidate — any severity — never
+blocks, per the paragraph above.
 
 WORKING TREE ONLY. No history scan — a secret already committed is a job for
 whatever gates publishing, not this script, and scanning history would make
 every run as slow as the app's oldest commit.
 
 Run as `python app_check.py [path]` (path defaults to `.`): prints one
-`path:line: rule: excerpt` line per finding, then exits 1 if any fired and 0
-if the folder is clean.
+`path:line: rule: excerpt` line per finding, then exits 1 if any FACT finding
+of severity `critical` or `warning` fired, 0 otherwise (a clean folder, only
+candidates, or only `suggested` facts).
 """
 import fnmatch
 import os
@@ -51,25 +79,60 @@ import re
 import subprocess
 import sys
 
-# --------------------------------------------------------------- severity
+# --------------------------------------------------------- severity, section, kind
 
-# Every family `check()` runs is HIGH: each is the kind of problem a CI floor
-# exists to fail a push over, so there is no second tier here that is worth
-# reporting but never worth failing a run over (see the module docstring).
-# `severity` is exported (rather than inlining the constant into `_finding`)
-# because `main` reads it too, for the same "does this finding fail the run"
-# question the grouped report answers.
-SEVERITY = "high"
+# One entry per check id this script's two content families answer for —
+# `section` ("essentials" | "sharing"), `severity` ("critical" | "warning" |
+# "suggested"), `kind` ("fact" | "candidate", see the module docstring for why
+# that split exists). `suggested` is a tier THIS engine's exit code uses (see
+# `main`) and app_doctor.py's checklist does not: `secrets` and
+# `device-paths`, the only two ids app_doctor.py reads from this table, are
+# always `critical`/`warning` here, so their vocabulary lines up with the
+# checklist's own two severities without app_doctor.py needing to know this
+# table has a third tier at all. This is the SINGLE table for these two ids:
+# app_doctor.py reads it rather than keeping a second copy, and a fix to one
+# is a fix to both surfaces. The three structure ids (`entry`, `readme`,
+# `preview`, keyed here by their full rule string rather than a family prefix
+# — there is exactly one rule each) are not read by app_doctor.py, which
+# computes those rows itself from the runtime's own knowledge; `suggested`
+# lives on two of them (below) precisely because app_doctor.py never sees it —
+# it is where this engine's own missing-readme/missing-thumbnail gap gets to
+# stay non-blocking without touching the checklist's severities at all.
+CHECK_META = {
+    "secrets": ("essentials", "critical", "candidate"),
+    "device-paths": ("sharing", "warning", "candidate"),
+}
+_STRUCTURE_META = {
+    "structure:missing-index": ("essentials", "critical", "fact"),
+    "structure:missing-readme": ("essentials", "suggested", "fact"),
+    "structure:missing-thumbnail": ("sharing", "suggested", "fact"),
+}
 
 
-def _finding(rule: str, path: str, line: int, excerpt: str) -> dict:
+def _finding(rule: str, path: str, line: int, excerpt: str,
+             section: str, severity: str, kind: str) -> dict:
     return {
         "rule": rule,
-        "severity": SEVERITY,
+        "section": section,
+        "severity": severity,
+        "kind": kind,
         "path": path,
         "line": line,
         "excerpt": excerpt,
     }
+
+
+def _family_finding(family: str, rule: str, path: str, line: int, excerpt: str) -> dict:
+    """A finding for one of `CHECK_META`'s two ids — `secrets` or
+    `device-paths` — reading that id's section/severity/kind from the one
+    table rather than repeating them at each call site."""
+    section, severity, kind = CHECK_META[family]
+    return _finding(rule, path, line, excerpt, section, severity, kind)
+
+
+def _structure_finding(rule: str, excerpt: str) -> dict:
+    section, severity, kind = _STRUCTURE_META[rule]
+    return _finding(rule, ".", 0, excerpt, section, severity, kind)
 
 
 # --------------------------------------------------------- file enumeration
@@ -319,9 +382,13 @@ _PREFIXED_SECRET_PATTERNS = {
 }
 
 # A PEM block. Reported whole (well, masked whole) rather than per-line: a
-# private key split across an excerpt would still be a private key.
+# private key split across an excerpt would still be a private key. Group 1
+# is the body alone (headers excluded) so a placeholder check can run on just
+# the part that is supposed to be random — "BEGIN", "PRIVATE" and "KEY" are
+# never going to be filler words, and checking the whole match against
+# `_is_placeholder` would never recognise a placeholder PEM as one.
 _PRIVATE_KEY_RE = re.compile(
-    rb"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    rb"-----BEGIN [A-Z ]*PRIVATE KEY-----(.*?)-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
 )
 
@@ -384,12 +451,62 @@ _PLACEHOLDER_WORDS = {
 _WORD_RE = re.compile(r"[^a-z0-9]+")
 
 
+def _is_filler_word(word: str) -> bool:
+    """True for a word drawn straight from `_PLACEHOLDER_WORDS`, or for one
+    that is nothing but ONE such word repeated with no separator —
+    `"redactedredactedredacted"`, the shape a masked value takes once it is
+    pasted somewhere that strips punctuation. `_WORD_RE` never splits a run
+    like that into its repeats (there is no non-alnum character between
+    them), so without this a provider key whose whole value is a placeholder
+    word tripled reads as one unrecognised word and the value is judged
+    real."""
+    if word in _PLACEHOLDER_WORDS:
+        return True
+    for filler in _PLACEHOLDER_WORDS:
+        if len(filler) >= 3 and word and len(word) % len(filler) == 0 \
+                and word == filler * (len(word) // len(filler)):
+            return True
+    return False
+
+
 def _is_placeholder(value: bytes) -> bool:
     stripped = value.strip()
     if _PLACEHOLDER_SYMBOL_RE.match(stripped):
         return True
     words = [w for w in _WORD_RE.split(stripped.decode("utf-8", "replace").lower()) if w]
-    return bool(words) and all(w in _PLACEHOLDER_WORDS for w in words)
+    return bool(words) and all(_is_filler_word(w) for w in words)
+
+
+# The literal, non-variable head of each `_PREFIXED_SECRET_PATTERNS` match —
+# stripped off before a placeholder check, so a real prefix like `sk-ant-`
+# never counts as a "word" that has to be filler too. Without this,
+# `sk-ant-REDACTEDREDACTEDREDACTED` fails `_is_placeholder` outright: split on
+# hyphens its first two words are "sk" and "ant", neither of which is filler,
+# even though the SKILL calls this exact shape a placeholder.
+_PREFIXED_SECRET_LITERAL_PREFIX = {
+    "aws-access-key": re.compile(rb"^AKIA"),
+    "github-token": re.compile(rb"^gh[pousr]_"),
+    "slack-token": re.compile(rb"^xox[baprs]-"),
+    "anthropic-key": re.compile(rb"^sk-ant-"),
+    "openai-key": re.compile(rb"^sk-"),
+    "google-api-key": re.compile(rb"^AIza"),
+    "stripe-key": re.compile(rb"^sk_live_"),
+}
+
+
+def _value_is_placeholder(value: bytes) -> bool:
+    """`_is_placeholder`, but also tried after stripping a known provider
+    prefix off the front. `ANTHROPIC_API_KEY = "sk-ant-REDACTED..."` matches
+    BOTH the anthropic-key pattern and the generic assignment pattern (the
+    name reads as credential-shaped either way) — this is the one placeholder
+    check both branches call, so a value judged a placeholder for one never
+    turns up flagged by the other."""
+    if _is_placeholder(value):
+        return True
+    for prefix_re in _PREFIXED_SECRET_LITERAL_PREFIX.values():
+        if prefix_re.match(value):
+            return _is_placeholder(prefix_re.sub(b"", value, count=1))
+    return False
 
 
 def _mask(secret: bytes) -> str:
@@ -424,41 +541,75 @@ def _check_secrets(rel_path: str, text: str, findings: list) -> None:
 
     for name, pattern in _PREFIXED_SECRET_PATTERNS.items():
         for m in pattern.finditer(data):
-            findings.append(_finding(
-                f"secrets:{name}", rel_path, line_for(m.start()),
+            literal_prefix = _PREFIXED_SECRET_LITERAL_PREFIX[name]
+            value = literal_prefix.sub(b"", m.group(0), count=1)
+            if _is_placeholder(value):
+                continue
+            findings.append(_family_finding(
+                "secrets", f"secrets:{name}", rel_path, line_for(m.start()),
                 _mask(m.group(0)),
             ))
 
     for m in _PRIVATE_KEY_RE.finditer(data):
-        findings.append(_finding(
-            "secrets:private-key", rel_path, line_for(m.start()),
+        if _is_placeholder(m.group(1)):
+            continue
+        findings.append(_family_finding(
+            "secrets", "secrets:private-key", rel_path, line_for(m.start()),
             _mask(m.group(0)),
         ))
 
     for m in _ASSIGNMENT_SECRET_RE.finditer(data):
         bare = m.group(2) is None
         value = m.group(2) if not bare else m.group(3)
-        if _is_placeholder(value):
+        if _value_is_placeholder(value):
             continue
         if bare and _DOTTED_NAME_RE.match(value.strip()):
             continue
-        findings.append(_finding(
-            "secrets:assignment", rel_path, line_for(m.start()),
+        findings.append(_family_finding(
+            "secrets", "secrets:assignment", rel_path, line_for(m.start()),
             f"{m.group(1).decode()} = {_mask(value)}",
         ))
 
 
 # ------------------------------------------------------------ device paths
 
-# Absolute paths that are true statements about ONE machine: a home
-# directory (whoever's — the folder is meant to move between machines and
-# users), or a handful of OS-level roots that mean "this filesystem, laid
-# out exactly like mine". A relative path, or an absolute path inside the
-# app folder itself, says nothing about the machine it runs on next.
-_DEVICE_ROOTS = (
-    "/home/", "/Users/", "/root/", "/opt/", "/var/", "/tmp/",
-    "/mnt/", "/media/", "/Volumes/", "/private/",
-)
+# Absolute paths that are true statements about ONE machine, split into two
+# tiers by how reliably they say so.
+#
+# STRONG roots are personal outright: a home directory (whoever's — the app
+# is meant to move between machines and users) or a mount point (whichever
+# machine mounted it, under whatever name). A path under one of these always
+# fires.
+#
+# WEAK roots are shared OS directories that hold both personal AND purely
+# system content — `/var/log`, `/tmp` used as a generic scratch dir,
+# `/private/var/vm` on macOS. Firing on the bare root alone produces exactly
+# the false positives measured against a real workspace: `/private/var/vm`
+# inside a deliberate `SKIP_DIRS` constant, and `/media/cover.png`, a
+# relative URL sitting in test HTML. So a weak root only fires when the path
+# continues PAST a bare OS-jargon directory name into something that reads as
+# user- or project-specific — see `_is_weak_device_root_false_positive`.
+_STRONG_DEVICE_ROOTS = ("/home/", "/Users/", "/root/", "/Volumes/")
+_WEAK_DEVICE_ROOTS = ("/opt/", "/var/", "/tmp/", "/mnt/", "/media/", "/private/")
+_DEVICE_ROOTS = _STRONG_DEVICE_ROOTS + _WEAK_DEVICE_ROOTS
+
+# OS-jargon directory names that show up right after a weak root and mean
+# "this machine's own plumbing" — the same vocabulary every *nix ships,
+# regardless of who is logged in, never a stand-in for someone's own data.
+_WEAK_ROOT_SYSTEM_SEGMENTS = frozenset({
+    "var", "tmp", "etc", "opt", "log", "logs", "run", "lib", "cache",
+    "spool", "bin", "sbin", "proc", "sys", "dev", "mail", "folders",
+    "db", "vm", "empty", "root",
+})
+
+# Prose has no runtime behaviour to break: a path merely mentioned in
+# documentation is not a path an app depends on, and every measured
+# markdown false positive turned out to live inside a fenced code span,
+# where a backtick used to read as an opening quote (see `_quote_precedes`).
+# Skipping the whole family for these suffixes is simpler and more correct
+# than trying to tell a real fenced span from a stray backtick.
+_PROSE_SUFFIXES = (".md", ".rst", ".txt")
+
 # The match body itself: a root, then at least one more path-shaped segment
 # of ordinary filename characters.
 _POSIX_DEVICE_RE = re.compile(
@@ -485,24 +636,49 @@ def _preceded_by_url_host(text: str, match_start: int) -> bool:
 def _quote_precedes(text: str, match_start: int) -> bool:
     """True when the character right before `match_start` is a quote —
     the shape an actual filesystem path takes in source (an assigned string,
-    an HTML attribute, a fenced code span), as opposed to a bare word inside
-    a sentence of prose, which this engine leaves alone."""
-    return match_start > 0 and text[match_start - 1] in "\"'`"
+    an HTML attribute) — as opposed to a bare word inside a sentence of
+    prose, which this engine leaves alone. A backtick does NOT count: it
+    opens a markdown code span, which is prose showing an example, not
+    source with a real assignment — the whole prose-file family is skipped
+    anyway (`_PROSE_SUFFIXES`), but a backtick can just as easily wrap a path
+    inside a docstring or a comment in a real source file."""
+    return match_start > 0 and text[match_start - 1] in "\"'"
+
+
+def _is_weak_device_root_false_positive(match_text: str) -> bool:
+    """True when `match_text` (the whole match, root included) sits under a
+    WEAK root but does not continue far enough past a bare OS directory name
+    to say anything about a real person's data. A match with fewer than two
+    segments past the root (`/media/cover.png`) is a root plus one generic
+    name, not a path into someone's own tree; a match whose first segment
+    past the root is itself OS jargon (`/private/var/vm`) is still talking
+    about the machine, not a person, however many segments follow."""
+    root = next((r for r in _WEAK_DEVICE_ROOTS if match_text.startswith(r)), None)
+    if root is None:
+        return False
+    segments = match_text[len(root):].split("/")
+    if len(segments) < 2:
+        return True
+    return segments[0].lower() in _WEAK_ROOT_SYSTEM_SEGMENTS
 
 
 def _check_device_paths(rel_path: str, text: str, findings: list) -> None:
+    if rel_path.lower().endswith(_PROSE_SUFFIXES):
+        return
     for m in _POSIX_DEVICE_RE.finditer(text):
         if _preceded_by_url_host(text, m.start()) or not _quote_precedes(text, m.start()):
             continue
-        findings.append(_finding(
-            "device-path:hardcoded", rel_path, _line_of(text, m.start()),
+        if _is_weak_device_root_false_positive(m.group(0)):
+            continue
+        findings.append(_family_finding(
+            "device-paths", "device-path:hardcoded", rel_path, _line_of(text, m.start()),
             m.group(0),
         ))
     for m in _WIN_DEVICE_RE.finditer(text):
         if not _quote_precedes(text, m.start()):
             continue
-        findings.append(_finding(
-            "device-path:hardcoded", rel_path, _line_of(text, m.start()),
+        findings.append(_family_finding(
+            "device-paths", "device-path:hardcoded", rel_path, _line_of(text, m.start()),
             m.group(0),
         ))
 
@@ -520,8 +696,8 @@ _PREVIEW_IMAGE_NAME = "preview.png"
 
 def _check_structure(app_dir: str, findings: list) -> None:
     if not os.path.isfile(os.path.join(app_dir, _ENTRY_NAME)):
-        findings.append(_finding(
-            "structure:missing-index", ".", 0,
+        findings.append(_structure_finding(
+            "structure:missing-index",
             f"no {_ENTRY_NAME} — whoever you share this with needs a page to open",
         ))
 
@@ -533,8 +709,8 @@ def _check_structure(app_dir: str, findings: list) -> None:
     except OSError:
         has_readme = True  # an unlistable folder is not a "missing README" finding
     if not has_readme:
-        findings.append(_finding(
-            "structure:missing-readme", ".", 0,
+        findings.append(_structure_finding(
+            "structure:missing-readme",
             "no README in the app folder — say what this app does for whoever you share it with",
         ))
 
@@ -545,8 +721,8 @@ def _check_structure(app_dir: str, findings: list) -> None:
     except OSError:
         has_preview = False
     if not has_preview:
-        findings.append(_finding(
-            "structure:missing-thumbnail", ".", 0,
+        findings.append(_structure_finding(
+            "structure:missing-thumbnail",
             f"no {_PREVIEW_IMAGE_NAME} thumbnail (or it is empty) — this is how "
             "the app is recognized in a grid of others",
         ))
@@ -556,10 +732,14 @@ def _check_structure(app_dir: str, findings: list) -> None:
 
 
 def check(app_dir: str) -> list[dict]:
-    """Every finding for `app_dir`: `{rule, severity, path, line, excerpt}`,
-    `path` always relative to `app_dir`. Never raises — an unreadable app is
-    one the caller already knows is broken some other way, and a doctor that
-    crashes on the app it was asked to examine is not useful to anyone.
+    """Every finding for `app_dir`: `{rule, section, severity, kind, path,
+    line, excerpt}`, `path` always relative to `app_dir`. `kind` is `"fact"`
+    for the three structure gaps and `"candidate"` for the two pattern-match
+    families (secrets, device paths) — see the module docstring for why that
+    split exists and what it changes about `main`'s exit code. Never
+    raises — an unreadable app is one the caller already knows is broken some
+    other way, and a doctor that crashes on the app it was asked to examine
+    is not useful to anyone.
 
     Reviews exactly one app folder — `app_dir` itself — and nothing else.
     A caller that wants every app in a repo reviewed runs this once per app
@@ -592,12 +772,19 @@ def main(argv: list[str] | None = None) -> int:
     number (the structure family reports against the app folder itself)
     drops the line and its colon: `path: rule: excerpt`. Findings are sorted
     by path, then line, then rule, so the same app always prints the same
-    bytes in the same order.
+    bytes in the same order. Every finding prints, candidate and fact alike —
+    only the exit code tells them apart.
 
-    The only mode is fail-on-finding: a CI floor has no use for a run that
-    reports a leaked credential and still exits 0, so there is no flag to
-    turn that off. Returns the process exit code rather than calling
-    `sys.exit` itself, so a caller in the same process can inspect it."""
+    Fails on a FACT finding of severity `critical` or `warning`, never on a
+    candidate alone: see the module docstring for why (a real workspace
+    measurement where every candidate finding was a false positive). A
+    `suggested` fact (a missing `preview.png`, say) still prints — it is
+    real, worth fixing, and worth surfacing in CI logs — but it must not
+    redden a push on its own; `suggested` is, by definition (see
+    `CHECK_META`/`_STRUCTURE_META` above), the severity for a finding that
+    costs an app polish, not correctness. Returns the process exit code
+    rather than calling `sys.exit` itself, so a caller in the same process
+    can inspect it."""
     argv = sys.argv[1:] if argv is None else argv
     path = argv[0] if argv else "."
     path = os.path.abspath(path)
@@ -614,7 +801,8 @@ def main(argv: list[str] | None = None) -> int:
         where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
         print(f"{where}: {f['rule']}: {f['excerpt']}")
     print(f"{len(findings)} finding" + ("" if len(findings) == 1 else "s"))
-    return 1
+    return 1 if any(f.get("kind") == "fact" and f.get("severity") in ("critical", "warning")
+                    for f in findings) else 0
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import { clearListPrefetch, listDir, prefetchListDir, type HttpError } from "@pl
 import { appearedKeys } from "@platform/lib/flip";
 import { pushToast } from "@platform/lib/toast";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
+import { subscribeFsChanged } from "@apps/explorer/listing/fsChangeBus";
 
 // `listPath` is what actually gets fetched — `fsPath` itself, UNLESS this
 // folder sits under an active git snapshot, in which case it is the same
@@ -111,6 +112,25 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
     let retry: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    // Same 300ms debounce as the socket path below, and deliberately the SAME
+    // timer variable: a stage-then-immediately-typed external `git add`
+    // (or any other pair of near-simultaneous changes) should coalesce into
+    // one refetch, not race two independent ones against each other.
+    const scheduleRefresh = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+    };
+    // A write from inside a preview iframe (fused.writeFile/uploadFile/mkdir,
+    // or any runPython — including the git template's stage/unstage, which
+    // only rewrites `.git/index` and so never moves this directory's own
+    // mtime — see window._fusedFsChanged in main.tsx). The dir-watch socket
+    // below only ever hears about a change to `fsPath` ITSELF; this is the
+    // only way an already-mounted listing hears about a change whose origin
+    // isn't a plain filesystem write to the watched directory.
+    const unsubscribe = subscribeFsChanged(() => {
+      clearListPrefetch();
+      scheduleRefresh();
+    });
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss://" : "ws://";
       sock = new WebSocket(proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath));
@@ -139,8 +159,7 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
         // Before the debounce, not inside it: the cache should be dead the moment
         // we know it is wrong, whether or not this listing goes on to refetch.
         clearListPrefetch();
-        if (timer !== null) clearTimeout(timer);
-        timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+        scheduleRefresh();
       };
       // WebSockets don't auto-reconnect the way EventSource did.
       sock.onclose = () => {
@@ -150,6 +169,7 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
     connect();
     return () => {
       closed = true;
+      unsubscribe();
       if (retry !== null) clearTimeout(retry);
       if (timer !== null) clearTimeout(timer);
       sock?.close();

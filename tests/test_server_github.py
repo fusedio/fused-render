@@ -160,3 +160,28 @@ def test_publish_status_is_an_unguarded_read():
     resp = _client().get("/api/github/publish")
     assert resp.status_code == 200
     assert resp.json()["state"] == "idle"
+
+
+def test_publish_status_reports_the_repositorys_resolved_root(
+        tmp_path, monkeypatch):
+    """`_publish_state["root"]` is the realpath'd, containment-checked repo
+    root — both the published job row's click destination
+    (`_report_publish`) AND what these two HTTP endpoints answer with. This
+    is a local-first app: `GET /api/jobs` already hands every page this same
+    path back as `page` on that row, so withholding it from these two
+    endpoints protects nothing and only costs a page a value it can already
+    read elsewhere."""
+    root = _repo_with_a_commit(tmp_path)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    monkeypatch.setattr(github_setup, "_run_publish", lambda *a, **k: None)
+
+    started = _client().post("/api/github/publish", headers={"X-Fused": "1"},
+                             json={"root": root, "name": "my-repo",
+                                   "visibility": "private"})
+    assert started.status_code == 200
+    assert started.json()["root"] == root
+
+    status = _client().get("/api/github/publish")
+    assert status.status_code == 200
+    assert status.json()["root"] == root

@@ -41,7 +41,7 @@ from fused_render.index.ignore import (
     ignored_for_index,
     norm,
 )
-from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
+from fused_render.index.query import MAX_CORPUS, RANK_LIMIT, resolve_query
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -332,11 +332,32 @@ WARM_RANK_QUERY = "zqxjv"
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
                token: CancelToken | None = None, ranked: bool = True) -> dict:
-    """`search_ranked`, unchanged, under the name the rest of this module and
-    the startup warm call it by. `token`, when given, is forwarded unchanged.
-    `ranked`, likewise (D720) — default True, so the startup warm call and
-    every caller that doesn't pass it keeps the scored behavior."""
-    return index_rank(cfg, root, q=q, limit=limit, token=token, ranked=ranked)
+    """`resolve_query` (index/query.py) is run first, on THIS thread — it's
+    the one this call already runs on via `asyncio.to_thread`, and the base
+    resolution it does is blocking filesystem I/O (`os.path.isdir`), so
+    there's no separate thread hop to add. `root` is the box's own root; `q`
+    is the raw typed string, exactly as the client sent it, not yet split
+    into a base and a pattern.
+
+    The resolved `base`/`mode` travel through to the caller on the returned
+    dict (`out["base"]`/`out["mode"]`) — the client captions the search and
+    decides whether hits carry highlight positions off `mode`, and coverage
+    checks downstream (`_rank_reason`) run against `base`, not the box's own
+    `root`, since a `~`/`/`-escaping query can leave the box's root far
+    behind.
+
+    `token`, when given, is forwarded unchanged. `ranked`, likewise (D720) —
+    default True, so the startup warm call and every caller that doesn't
+    pass it keeps the scored behavior. `ranked` has no effect once `mode` is
+    "glob": glob hits are never scored (see `search_ranked`'s own
+    docstring)."""
+    resolved = resolve_query(root, q)
+    base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
+    out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
+                     ranked=ranked, glob=(mode == "glob"))
+    out["base"] = base
+    out["mode"] = mode
+    return out
 
 
 def _covers(a: str, b: str) -> bool:
@@ -598,7 +619,36 @@ def _display_root(root: str) -> str:
 # minted once per `runner.start` (a timestamp plus a random suffix) and is
 # never reused, and a process restart — which empties this set — is also what
 # empties the job registry itself (jobs.py carries no state across restarts).
+#
+# Also the destination for a run this process is choosing NOT to mirror at
+# all (see `_seen_running` below) — either way, once a run_id lands here,
+# `_mirror_one_run_job` never looks at it again.
 _mirrored_terminal: set = set()
+
+# run_ids this process has itself observed `running`. `list_runs` reads run
+# directories off DISK (KEEP_RUNS=20), so on a fresh process's very first
+# tick it can just as easily hand back a run that finished — successfully,
+# or abandoned by a worker that died — in an EARLIER process as one this
+# process is actually doing right now. Nothing in this session watched that
+# earlier run happen, so mirroring its terminal state into a job the moment
+# it is first read back is manufacturing a notification for something
+# nobody here ever saw start: an abandoned pre-restart scan reports itself
+# via `_with_liveness` as a synthetic "died without finishing" error on
+# every such first read, forever (module-local `_mirrored_terminal` is empty
+# again after every restart), which is exactly how a quit-or-killed scan from
+# a previous session turns into a permanent "Indexing files" failure that
+# resurrects at every launch.
+#
+# The fix reads liveness itself as the signal, not a wall clock: a run only
+# gets mirrored into a job at all once THIS process has actually seen it
+# `running`. A run that is already terminal the very first time this process
+# reads it is skipped outright (added straight to `_mirrored_terminal`, no
+# `jobs.upsert` call, no row ever created) — its run may be perfectly real,
+# but it is not news to a session that never watched it. A run seen running
+# here — including one a previous process started that is still genuinely
+# scanning when this process boots — is mirrored normally and, once it goes
+# terminal, gets its terminal row exactly as before.
+_seen_running: set = set()
 
 
 # Phases in which `files + reused` has nothing to do with `prev_total` yet:
@@ -634,6 +684,14 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
     if job_id in _mirrored_terminal:
         return False
     running = bool(run.get("running"))
+    if running:
+        _seen_running.add(job_id)
+    elif job_id not in _seen_running:
+        # Never seen live in THIS process — see `_seen_running`'s own
+        # comment. Skip the mirror outright rather than upserting a
+        # notification for a run nobody here watched happen.
+        _mirrored_terminal.add(job_id)
+        return False
     if not running:
         prev_total = None
     phase = str(run.get("phase") or "")
@@ -700,6 +758,20 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         # bridge does not special-case it into a separate concept.
         "message": str(run.get("phase") or ""),
         "cancellable": True,
+        # A finished scan's success has no destination worth keeping — the
+        # index itself isn't a file a click could open — so nobody asked for
+        # this row to stick around (SPEC actionable-notifications), and
+        # `_sweep` ages a `done` transient row like this one out on the
+        # read-gated clock rather than waiting on a dismiss. A failed or
+        # cancelled run is different on both counts: `effective_tier`'s
+        # override turns it `attention` for VISIBILITY, and `_sweep` only
+        # ages a transient row out once its state is `done` — an
+        # error/cancelled row here is kept until dismissed, same as any
+        # other row a surface can show and let the user clear.
+        "tier": jobs.TRANSIENT,
+        # This row is the Explorer's own indexing scan, never anything a
+        # different feature raises against the same id.
+        "origin": "Explorer",
     }
     if running:
         fields["state"] = jobs.RUNNING
@@ -716,7 +788,11 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
             files_done = summary.get("files")
         fields["message"] = f"{int(files_done or 0)} files indexed"
     try:
-        result = jobs.upsert({"id": job_id, **fields}, server=True)
+        # The Indexing tab of Preferences — where this run's own root list
+        # and toggle live, and the only place a scan can be cancelled or
+        # retried from outside this row.
+        result = jobs.upsert({"id": job_id, **fields},
+                             page="/preferences?tab=indexing", server=True)
     except jobs.JobError:
         # A reporting failure says nothing about whether the RUN is live —
         # `running` above already answered that from `run` itself, before
@@ -835,6 +911,12 @@ def _index_job_loop() -> None:
 _index_job_thread: "threading.Thread | None" = None
 _index_job_started = threading.Lock()
 
+# Named so a test that needs to tell a bridge tick's own call apart from a
+# request's (e.g. one attributing calls to a mocked function by thread, since
+# re-patching `mirror_index_jobs_once` cannot reach a tick already inside its
+# real body) has one spelling to import instead of a copy of this literal.
+INDEX_JOB_BRIDGE_THREAD_NAME = "index-job-bridge"
+
 
 def start_index_job_bridge() -> None:
     """Start the background tick loop. Idempotent, same pattern as
@@ -845,7 +927,7 @@ def start_index_job_bridge() -> None:
         if _index_job_thread is not None and _index_job_thread.is_alive():
             return
         _index_job_thread = threading.Thread(
-            target=_index_job_loop, daemon=True, name="index-job-bridge")
+            target=_index_job_loop, daemon=True, name=INDEX_JOB_BRIDGE_THREAD_NAME)
         _index_job_thread.start()
 
 
@@ -970,9 +1052,13 @@ def _freshness_wait(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _run_freshness_check(path: str) -> None:
+def _run_freshness_check(path: str, now: float | None = None) -> None:
     """The check itself, off the request thread. Never raises: a listing must
-    not fail, or slow down, because index housekeeping did."""
+    not fail, or slow down, because index housekeeping did.
+
+    `now` is a seam for tests, threaded straight through to
+    `freshness.note_folder_opened` — production callers never pass it, and get
+    the real clock."""
     try:
         import time
 
@@ -981,7 +1067,7 @@ def _run_freshness_check(path: str) -> None:
         # The debounce is keyed on the enclosing ROOT, not the folder: a scan
         # is per root, so two folders under one root are the same question. A
         # folder under no root has no question to ask at all, and
-        # note_folder_opened would answer None anyway.
+        # note_folder_opened would answer nothing to start anyway.
         root = enclosing_root(roots, path)
         if root is None:
             return
@@ -1001,16 +1087,94 @@ def _run_freshness_check(path: str) -> None:
         # now, so the recorded check time is when the check actually ran.
         if not _freshness_due(root, time.time()):
             return
-        started = freshness.note_folder_opened(cfg, path, roots)
-        if started:
+        result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        if result.started:
             _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
-                        path, started)
+                        path, result.started)
+        elif result.retry_after is not None:
+            # The one refusal worth a second look: the folder was still
+            # churning, not permanently out of the question. Nothing else is
+            # going to ask again on its own once the user stops touching it,
+            # so this check leaves one behind.
+            _schedule_freshness_retry(path, root, result.retry_after)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
         logger.exception("could not check index freshness for %s", path)
     finally:
         if _freshness_slot.locked():
             _freshness_slot.release()
+
+
+# root -> the pending retry timer asking again once that root's changed
+# folder has actually gone quiet. Coalesced: a folder touched fifty times
+# while one is pending replaces it with a timer for the new deadline instead
+# of piling up a second one, and there is at most one entry per root at any
+# moment. Bounded the same way `_freshness_checked` is (a handful of
+# configured roots), so it needs no eviction beyond what firing/cancelling
+# already does.
+_freshness_retries: dict = {}
+_freshness_retries_lock = threading.Lock()
+
+
+def _schedule_freshness_retry(path: str, root: str, delay: float) -> None:
+    """Ask again about `path` once it has been quiet for `delay` more seconds.
+
+    Deliberately not `index_touch._real_schedule`: importing it here would be
+    circular (`index_touch` already imports this module, from inside its own
+    functions, to reach `runner` and `_wake_index_job_bridge`), and a local
+    import per retry buys nothing over the three lines that pattern actually
+    is. Same shape regardless — a daemon `threading.Timer`, so a pending retry
+    can never hold the process open."""
+    with _freshness_retries_lock:
+        pending = _freshness_retries.get(root)
+        if pending is not None:
+            pending.cancel()
+        timer = threading.Timer(delay, _run_freshness_retry, args=(path, root))
+        timer.daemon = True
+        timer.name = "index-freshness-retry"
+        _freshness_retries[root] = timer
+        timer.start()
+
+
+def _run_freshness_retry(path: str, root: str, now: float | None = None) -> None:
+    """The retry `_run_freshness_check` left behind, firing on its own timer
+    thread rather than from a listing.
+
+    Bypasses `_freshness_due`/`FRESHNESS_CHECK_S` on purpose: this is not a
+    new demand for a check arriving from browsing — the very thing that
+    throttle exists to pace — it is the ONE check that already earned its
+    slot, continued at the moment it was told it could give a different
+    answer. Coalescing above already guarantees there is at most one of these
+    in flight per root, so bypassing the throttle here cannot be used to
+    hammer a root the way raising or removing the throttle generally would.
+
+    Never chains a second retry: if `note_folder_opened` is still churning
+    when this fires, it is left there. One honest retry, not an unbounded
+    chain that a directory which never truly settles could ride forever — the
+    next real listing starts the decision over from scratch.
+
+    Never raises: a background timer failing must not take the process down."""
+    try:
+        with _freshness_retries_lock:
+            _freshness_retries.pop(root, None)
+        cfg = load_config()
+        roots = scan_roots(cfg)
+        if not _freshness_slot.acquire(blocking=False):
+            # A regular check is already in flight for some root; this was
+            # this folder's one retry, so it is dropped rather than requeued.
+            logger.info("index: dropping the freshness retry for %s "
+                        "(a check is already running)", root)
+            return
+        try:
+            result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        finally:
+            _freshness_slot.release()
+        if result.started:
+            _wake_index_job_bridge()
+            logger.info("index: %s changed since the last scan; rescanning "
+                        "%s (retry)", path, result.started)
+    except Exception:  # noqa: BLE001 - a background timer must never surface
+        logger.exception("could not run the freshness retry for %s", path)
 
 
 def note_folder_opened(path: str) -> bool:
@@ -1360,6 +1524,16 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     few KB — no columnar format and no gzip special-casing, because that
     machinery exists for the 20 MB corpus and this is not that.
 
+    `root` is the box's own root; `q` is the raw string exactly as typed,
+    unsplit. `_rank_body` resolves the two into a `(base, pattern, mode)`
+    triple (`resolve_query`, index/query.py) before ever touching the index —
+    `~` and a leading `/` can walk `base` away from `root` entirely, and
+    `mode` ("substring" or "glob") picks which SQL runs. Both `base` and
+    `mode` come back on the response: `base` is what the client captions the
+    search with, and `mode` says whether a hit carries a highlight-worthy
+    substring position (`positions`, dropped below either way — see the
+    `positions` paragraph) or is an unhighlighted glob match.
+
     A miss is `{covered: false, hits: []}` with a 200, exactly as for the
     corpus: "no index yet", "not covered" and "a scan is running" are one
     condition to a search box.
@@ -1440,7 +1614,12 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
     out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
-    out["reason"] = _rank_reason(cfg, root, out)
+    # `out["base"]` — not the box's own `root` — is what coverage is actually
+    # decided against: a `~`/`/`-escaping query resolves to a base that can
+    # be far outside `root` (see `_rank_body`), and mount/ignore/scanning all
+    # have to be asked about the place the search actually ran, not the box
+    # it was typed into.
+    out["reason"] = _rank_reason(cfg, out["base"], out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines
     # logged underneath (stage A per pass) — this fires on every keystroke of
     # the home search, so it stays DEBUG (see query.py's pass_over for the

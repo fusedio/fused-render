@@ -35,9 +35,7 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
-import { ChatFrame } from "@platform/ui/ChatFrame";
-import { ModeMenu } from "@apps/explorer/BarMenu";
-import { SideCloseButton } from "@apps/explorer/SideChrome";
+import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
 import {
   publishPreviewSideSlot,
   retractPreviewSideSlot,
@@ -110,7 +108,7 @@ export default function PreviewSidebar({
   src,
   onSelect,
   onClose,
-  lead,
+  chat,
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -132,11 +130,15 @@ export default function PreviewSidebar({
   // Clears `_side`. The title bar's opener is hidden while this column is up
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
-  // What rides in the header's tail AHEAD of the mode pill — the entry page's
-  // "Open in project" button (Preview.tsx), in the slot the folder pane's
-  // strip gives the same button (ListingPreviewPane). Rendered as given: the
-  // caller gates it, this header only places it.
-  lead?: ReactNode;
+  /**
+   * THE CHAT COMPANION, mounted by the caller. It is the one companion that is
+   * no longer necessarily an iframe (`apps/claude/ChatMount` decides on the
+   * flag), and the caller is the only place that knows the rest of what the
+   * native chat needs — the target, the params source, the pending "Fix with
+   * AI" ask. This column still owns WHERE it goes and its remount `key`, which
+   * is the whole of what this component ever did for it.
+   */
+  chat?: ReactNode;
 }) {
   // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
   // is what makes the divider hold still while you walk from file to file, since
@@ -313,21 +315,18 @@ export default function PreviewSidebar({
               while it is up, the only one — the title bar's opener is not
               rendered. The listing pane's header opens with the same button. */}
           <SideCloseButton what={modeTitle(active)} onClick={onClose} />
-          {/* The shared mode control, over the companions, at the strip's far end
-              (the tail's auto margin packs it there — .side-header-tail, the same
-              wrapper the listing pane's header uses).
-
-              ALWAYS a menu now. This used to fall back to a flat, unclickable
-              label whenever `entries` was down to one, because BarMenu hides a
-              one-row menu and the strip would otherwise have been a lone chevron
-              over an unlabelled document. The list no longer shrinks: `entries`
-              is all three companions on every file, the unavailable ones disabled
-              and carrying the reason (lib/preview-side's `menu`), so there is
-              always a menu to draw and always more in it than the mode you are
-              looking at. */}
+          {/* The switcher, at the strip's far end (the tail's auto margin packs
+              it there — .side-header-tail, the same wrapper the listing pane's
+              header uses). A TAB STRIP over the two companions (SideChrome's
+              SideTabs), where the folder pane keeps a dropdown over its three:
+              the argument is on SideTabs. `entries` is both companions on every
+              file, the unavailable one disabled and carrying its reason
+              (lib/preview-side's `menu`), so the strip never shrinks to one tab.
+              "Open in project" no longer rides ahead of it: the crumb bar's
+              kebab (EntryActionsMenu) offers the hop whether or not this column
+              is up, so the column has nothing to fall back for. */}
           <div className="side-header-tail">
-            {lead}
-            <ModeMenu entries={entries} active={active} onSelect={onSelect} />
+            <SideTabs tabs={entries} active={active} onSelect={onSelect} />
           </div>
         </div>
         {src === null ? (
@@ -353,12 +352,12 @@ export default function PreviewSidebar({
              exchange for a fix nobody asked for there. The key stays on the
              outer component, so a mode switch still replaces the document. */
           active === CHAT_MODE ? (
-            <ChatFrame
-              key={frameKey}
-              className="preview-side-frame"
-              src={src}
-              title={modeTitle(active)}
-            />
+            // Rendered as GIVEN, with no box of its own: the caller's
+            // `ChatMount` carries both the remount `key` and the
+            // `.preview-side-frame` class, so the flag-off path is the exact
+            // iframe this branch used to build and the flag-on path fills the
+            // same parent (`.chat-mount`, apps/claude/styles/chat.css).
+            chat
           ) : (
             <iframe
               key={frameKey}

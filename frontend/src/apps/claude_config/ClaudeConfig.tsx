@@ -38,8 +38,8 @@
 // The CLAUDE.md explorer ("MD Files") is GONE (round 2): it was a browse-and-
 // preview surface bolted onto a page whose job is configuring things, and it
 // was the only section that needed a second body column. `?cctab=claudemd`
-// and the legacy `/claude-md` URL both redirect to Preferences now
-// (shell/App.tsx).
+// and the legacy `/claude-md` URL both redirect to the panel's default tab
+// now (shell/App.tsx).
 //
 // A note on remounting: the shell renders this page keyed on the nav epoch, so
 // any navigation — including this panel's own `?cctab=` writes — remounts it.
@@ -60,10 +60,9 @@ import StatuslineSection from "./sections/StatuslineSection";
 // The tab strip, in order. `file` is the caption under the strip — it names the
 // file (or the git object) the section actually edits, which is the one thing a
 // settings UI over someone's dotfiles owes them.
-// Preferences sits LAST in the strip, not first: it's the tab people touch
-// once and leave, while Plugins/MCP are the ones worth landing on first. It
-// stays the routing default below regardless of its position here — the
-// strip's order is presentation, the default is a bookmark contract.
+// Plugins sits FIRST in the strip, and is the routing default below: it's the
+// page worth landing on. Preferences sits LAST — it's the tab people touch
+// once and leave.
 const TABS = [
   {
     id: "plugins",
@@ -169,20 +168,20 @@ export default function ClaudeConfig() {
       ? "plugins"
       : isSectionId(raw)
         ? raw
-        : "preferences";
+        : "plugins";
   // `active` is always a valid SectionId (isSectionId or one of the explicit
   // redirects above), so this find always hits — the `??` is unreachable, not
-  // a real fallback. It stays PAGES[0] anyway rather than picking a
-  // preferences-flavored default: PAGES[0] is just "some page", used only if
-  // the two stay out of sync in the future, and it should fail obviously
-  // rather than quietly resolve to a section nobody asked for.
+  // a real fallback. It stays PAGES[0] anyway, which happens to already be
+  // the routing default (`active` above): PAGES[0] is used only if the two
+  // stay out of sync in the future, and it should fail obviously rather than
+  // quietly resolve to a section nobody asked for.
   const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
     const params = new URLSearchParams(location.search);
     // The default section is the clean URL, matching how the outer tab strip
     // drops `?tab=render`.
-    if (next === "preferences") params.delete(SECTION_PARAM);
+    if (next === "plugins") params.delete(SECTION_PARAM);
     else params.set(SECTION_PARAM, next);
     const search = params.toString();
     navigateUrl(location.pathname + (search ? "?" + search : ""));

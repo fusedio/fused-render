@@ -18,8 +18,8 @@
 // a browser (see the report).
 //
 // This is about the PLAIN listing. Search mode never mounts SIZE/MODIFIED at
-// all (listing/search-columns), so these rules simply have nothing to match
-// there — and the one-width-less-column invariant holds trivially.
+// all (Listing.tsx's columnCount), so these rules simply have nothing to
+// match there — and the one-width-less-column invariant holds trivially.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -88,12 +88,10 @@ test("a shed column's header collapses to a zero px width with no box", () => {
       // Nothing else lives in this cell, so one clip covers the rest of it.
       expect(decls).toMatch(/overflow:\s*hidden/);
     } else {
-      // MODIFIED is the last column, so its right edge is the TABLE's — which
-      // is where the folder `⋮` is pinned (.listing-head-menu, Listing.tsx),
-      // and it has to survive the collapse or the folder's menu disappears
-      // whenever the listing is narrow. So this cell must NOT clip, and the one
-      // piece of content that font-size:0 cannot silence — the sort arrow,
-      // which sets its own 9px — is hidden by a rule of its own instead.
+      // MODIFIED is the last column and does not clip: the one piece of
+      // content that font-size:0 cannot silence — the sort arrow, which sets
+      // its own 9px — is hidden by a rule of its own instead. (The folder `⋮`
+      // that once rode this cell's right edge is the search row's kebab now.)
       expect(decls).not.toMatch(/overflow:\s*hidden/);
       const block = shedding.find((b) => b.body.includes(`th.${col}`))!;
       expect(ruleFor(block.body, `th.${col} .sort-arrow`)).toMatch(/display:\s*none/);
@@ -101,19 +99,9 @@ test("a shed column's header collapses to a zero px width with no box", () => {
   }
 });
 
-test("SIZE's header reserves berth for the folder ⋮ while MODIFIED is shed", () => {
-  // With MODIFIED collapsed, the absolutely-positioned `⋮` rides the table's
-  // right edge — which is inside SIZE's header until SIZE itself sheds. The
-  // header cell (and only the header cell — the column keeps its px width
-  // under border-box, and the body figures keep the full cell) stops its
-  // content short of the button. Dropping this repaints the label under the
-  // `⋮` between the two shed steps.
-  const wide = shedding.find((b) => /th\.col-mtime[^{]*\{[^}]*width:\s*0/s.test(b.body));
-  expect(wide).toBeDefined();
-  const berth = ruleFor(wide!.body, "th.col-size");
-  expect(berth).toMatch(/padding-right:\s*\d+px/);
-  expect(berth).not.toMatch(/width:/);
-});
+// The "SIZE reserves berth for the folder `⋮`" case is gone with the button:
+// the folder's actions live in the search row's kebab now (EntryActionsMenu),
+// so no header cell has a control to stop short of.
 
 test("the collapse rules outrank the default widths further down the file", () => {
   // The defaults (`table.listing-table th.col-size { width: 96px }`) sit AFTER

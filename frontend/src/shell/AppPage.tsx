@@ -83,6 +83,8 @@ import { applyIconPick } from "@platform/lib/app-icon";
 import { pushToast } from "@platform/lib/toast";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
+import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -435,6 +437,10 @@ export default function AppPage({
   useEffect(() => {
     setDoctorOpen(false);
   }, [dir]);
+  // Fetched after first paint, never blocking it — see useAppDoctorChecks.
+  // Opening the modal re-fetches its own copy; this one is only for the
+  // header dot and is never reused to seed the dialog.
+  const doctorChecks = useAppDoctorChecks(entry ? dir : null);
 
   // ---- export "at the selected version" -------------------------------------
   //
@@ -543,6 +549,7 @@ export default function AppPage({
               onClick={() => setDoctorOpen(true)}
             >
               App Doctor
+              <AppDoctorStatusDot checks={doctorChecks} />
             </Button>
             {/* The app's entry page in the EXPLORER — sidebar, crumb, header
                 and all. This button used to open the chrome-free embed in a

@@ -1,10 +1,12 @@
 """App Doctor's structure family (skills/fused-render-app-doctor/ci/app_check.py):
 three plain file-existence checks that make a shared app openable and
 recognizable to whoever receives it — `index.html`, a README, and a
-non-empty `preview.png`. All three are HIGH severity and fail the run, same
-as secrets and device paths (see app_check.py's module docstring). The
-script is loaded by path (see _app_check_module.py) since it lives under a
-skill directory, not inside the `fused_render` package.
+non-empty `preview.png`. All three are `kind: "fact"` (a plain
+`os.path.isfile` answer, no pattern-match false-positive rate) and so all
+three fail a CI run on their own, unlike the two candidate families, secrets
+and device paths (see app_check.py's module docstring). The script is loaded
+by path (see _app_check_module.py) since it lives under a skill directory,
+not inside the `fused_render` package.
 """
 from _app_check_module import app_doctor
 
@@ -97,10 +99,12 @@ def test_a_zero_byte_thumbnail_counts_as_missing(tmp_path):
 
 
 def test_a_missing_thumbnail_fails_check(tmp_path):
-    """A missing preview.png is severity high, the same as every other
-    finding this engine reports, so it fails a run under --check."""
+    """A missing preview.png is a FACT (a plain os.path.isfile answer, not a
+    pattern match), so it is one of the findings that fails a CI run
+    regardless of its own severity tier."""
     _good_app(tmp_path)
     (tmp_path / "preview.png").unlink()
     findings = app_doctor.check(str(tmp_path))
     hit = next(f for f in findings if f["rule"] == "structure:missing-thumbnail")
-    assert hit["severity"] == "high"
+    assert hit["severity"] == "suggested"
+    assert hit["kind"] == "fact"

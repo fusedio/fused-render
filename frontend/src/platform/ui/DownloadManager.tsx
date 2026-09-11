@@ -75,7 +75,9 @@
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
+import { navigateToJobPage, isJobPageRoute } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
 import {
   jobTypeLabel,
   aggregateProgress,
@@ -84,6 +86,7 @@ import {
   engineDuration,
   fetchJobs,
   isRunning,
+  isTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
@@ -125,12 +128,11 @@ import type { RunningEngine } from "@platform/lib/api";
 // to POLL_IDLE_MS later. It is only an optimisation: a reporter with no JS (a
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
-function useJobs(): {
-  /** Has /api/jobs answered once? `jobs` starts `[]` and stays `[]` on an idle
-   *  machine, so the list cannot tell "not asked yet" from "genuinely
-   *  nothing" — the distinction `useAutoExpandOnNew` needs to avoid reading
-   *  pre-existing jobs as arrivals on load (D574 bug 2). */
-  settled: boolean;
+// Exported purely so DownloadManager.test.tsx (the "loaded" suite) can
+// drive it directly, the way ActivityDock.tsx exports `retiredEngines` for
+// its own test — the default-exported `DownloadManager` below is otherwise
+// the only caller.
+export function useJobs(): {
   jobs: Job[];
   /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
    *  what `jobDetail` measures a running job's age against (C4 fix), never
@@ -138,12 +140,26 @@ function useJobs(): {
    *  drawn before the first response lands still gets a plausible age
    *  rather than measuring against zero. */
   now: number;
+  /** Whether a real `/api/jobs` response has actually been PAINTED at least
+   *  once. `jobs` starts `[]` at mount, before any network round trip has
+   *  happened — that empty array is a placeholder, not an observation, and a
+   *  consumer that cannot tell the two apart (the pop-up's first-tick
+   *  seeding, below and in `ActivityDock.tsx`) mistakes it for "the poll's
+   *  first real read came back empty" and treats every job the ACTUAL first
+   *  read finds already terminal as brand new. Flips once, on the first
+   *  response that lands AND is applied to `jobs` — a stale response (`poll`'s
+   *  `at !== epochRef.current` branch) is real but is deliberately dropped
+   *  without touching `jobs`, so it must not flip this either, or `reported`
+   *  is still the placeholder the moment a consumer is told it is loaded.
+   *  Never flips back once true: a later fetch failure leaves the last real
+   *  snapshot on screen, which is still a real snapshot. */
+  loaded: boolean;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [now, setNow] = useState<number>(() => Date.now() / 1000);
-  const [settled, setSettled] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -203,15 +219,21 @@ function useJobs(): {
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
-        setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           setNow(snapshot.now);
+          setLoaded(true);
           scheduleFor(snapshot.jobs);
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
           // asked for a read while this one was in flight), so the fresh read
-          // is already on its way.
+          // is already on its way. `loaded` does NOT flip here: this response
+          // never touched `jobs`, which is still whatever it was before (the
+          // `[]` placeholder, on the very first poll) — flipping `loaded` off
+          // a response that changed nothing is what used to let a consumer
+          // gated on it (`DownloadManagerView`'s `onJobsReported` effect)
+          // forward that untouched placeholder as though it were a genuine
+          // first read.
           scheduleFor(jobsRef.current);
         }
       } catch {
@@ -263,40 +285,33 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, now, settled, refresh, patch };
+  return { jobs, now, loaded, refresh, patch };
 }
 
-function Bar({ job }: { job: Job }) {
+/** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
+ *  the indeterminate sweep, a `number` fills to that fraction.
+ *
+ *  A terminal job draws no bar at all: success, failure and cancellation are
+ *  told by the card's own glyph on the status line instead of by a bar frozen
+ *  at whatever fraction the job happened to be at when it stopped —
+ *  `jobFraction` is not even consulted for a terminal job.
+ *
+ *  No fraction to draw and still running = indeterminate (`null`): a narrow
+ *  fill that travels, rather than a width that grows. The alternative —
+ *  parking a real bar at some invented percentage — is what makes a live
+ *  download read as frozen (the same lesson as the install loader's D213
+ *  sweep).
+ *
+ *  Nothing to say (`undefined`): a job that ended (or stalled) without ever
+ *  reporting a total has no progress to draw, and an empty track under an
+ *  error message is decoration that reads as "0% done" — which is not what
+ *  happened. */
+function jobProgress(job: Job): number | null | undefined {
+  if (!isRunning(job) && !job.stalled) return undefined;
   const fraction = jobFraction(job);
-  const tone =
-    job.state === "error"
-      ? " is-error"
-      : job.state === "done"
-        ? " is-done"
-        : job.stalled
-          ? " is-stalled"
-          : "";
-  // No fraction to draw and still running = indeterminate: a narrow fill that
-  // travels, rather than a width that grows. The alternative — parking a real
-  // bar at some invented percentage — is what makes a live download read as
-  // frozen (the same lesson as the install loader's D213 sweep).
   const indeterminate = fraction === null && isRunning(job) && !job.stalled;
-  // Nothing to say: a job that ended (or stalled) without ever reporting a
-  // total has no progress to draw, and an empty track under an error message is
-  // decoration that reads as "0% done" — which is not what happened.
-  if (fraction === null && !indeterminate) return null;
-  return (
-    <div className={"dl-bar" + tone}>
-      <div
-        className={"dl-bar-fill" + (indeterminate ? " is-indeterminate" : "")}
-        // `data-indeterminate` is the DOM-observable contract (the install
-        // loader's convention): no headless test can see whether an animation
-        // LOOKS right, but it can see which mode the bar is in.
-        data-indeterminate={indeterminate ? "1" : undefined}
-        style={indeterminate ? undefined : { width: `${(fraction as number) * 100}%` }}
-      />
-    </div>
-  );
+  if (fraction === null && !indeterminate) return undefined;
+  return fraction;
 }
 
 // ---- Engine rows (status-bar merge) ----------------------------------------
@@ -412,25 +427,22 @@ function EngineRow({
     }
   };
 
+  // The failure REPLACES the detail line rather than stacking under it: a
+  // row whose Stop just failed has one thing worth reading. It clears itself
+  // on the next poll (the `useEffect` above), so it stays there only until
+  // the row has something fresh to say.
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span
-          className="dl-title dl-title-id"
-          title={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
-        >
-          {engineLabel(engine)}
-        </span>
-        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
-          {busy ? "Stopping…" : "Stop"}
-        </button>
-      </div>
-      {/* The failure REPLACES the detail line rather than stacking under it:
-          a row whose Stop just failed has one thing worth reading. It clears
-          itself on the next poll (the `useEffect` above), so it stays there
-          only until the row has something fresh to say. */}
-      <div className="dl-status">{failure || engineDetail(engine)}</div>
-    </div>
+    <NotificationCard
+      title={engineLabel(engine)}
+      titleMode="id"
+      titleTooltip={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
+      liveAction={{
+        label: busy ? "Stopping…" : "Stop",
+        onClick: stop,
+        disabled: busy,
+      }}
+      status={failure || engineDetail(engine)}
+    />
   );
 }
 
@@ -455,6 +467,7 @@ export function JobRow({
   onPatch,
   cancelFn = cancelJob,
   dismissFn = dismissJob,
+  onDismissClick,
   now = Date.now() / 1000,
 }: {
   job: Job;
@@ -468,6 +481,13 @@ export function JobRow({
    *  `@platform/lib/api`, which this module itself calls into). */
   cancelFn?: (id: string) => Promise<Job>;
   dismissFn?: (id: string) => Promise<{ dismissed: string }>;
+  /** Overrides what the ✕ specifically does, leaving the whole-row click
+   *  (`rowClick`/`open` below) on the real, server-side `dismiss()`
+   *  regardless. `platform/ui/JobPopupCard.tsx` is the one caller that needs
+   *  this: its ✕ is read as "hide this card", not "clear the panel's row",
+   *  so it must not call `dismissFn` at all — every other caller omits this
+   *  and gets the ordinary ✕ that really dismisses the row. */
+  onDismissClick?: () => void;
   /** The SERVER's clock (`JobsSnapshot.now`), threaded down from `useJobs`
    *  for `jobDetail`'s fallback below (C4 fix). Defaults to the browser's
    *  clock only for callers that genuinely have no server read to give —
@@ -581,6 +601,23 @@ export function JobRow({
     }
   };
 
+  // A TERMINAL row with somewhere to go OPENS on click: `job.page` is where
+  // clicking this row goes, and `navigateToJobPage` is the one place that
+  // turns either shape it can hold — an fs path or one of a handful of shell
+  // routes — into a real navigation. Gated on `isTerminal`, not just `page`
+  // truthiness, because `JobRow` is also `DownloadManagerView`'s own
+  // in-flight-jobs row, and a RUNNING job must never open — only a job that
+  // has already reached Notifications gets a whole-row click at all.
+  //
+  // OPENING A ROW ALWAYS DISMISSES IT, reusing the exact `dismiss()` above —
+  // done, error or cancelled, fs path or shell route alike: going to look IS
+  // the acknowledgement, so the row has done its job the moment it's opened.
+  const canOpen = isTerminal(job) && !!job.page;
+  const open = () => {
+    navigateToJobPage(job.page);
+    void dismiss();
+  };
+
   // NO EXEMPTION FOR "done" HERE (C1 fix): `JobRow` is reused verbatim by
   // `RepoUpdatesDock.tsx` to draw every terminal job — done, error and
   // cancelled alike — in Notifications, and a `done` job returning null left
@@ -590,68 +627,83 @@ export function JobRow({
   // of THIS file's own Jobs section is `DownloadManagerView`'s job — it only
   // ever hands `JobRow` `inFlightJobs`, so a "done" row never reaches this
   // component from there at all.
+  // THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
+  // the jobs card. why are we truncating stuff instead of placing things
+  // elsewhere?"). Drawn as `secondary` rather than a suffix competing with the
+  // title for one line's width, which is what let a running FLUX row render
+  // `update picture to be ghibli st…` then a lone `F…`: a field minced to one
+  // character plus an ellipsis conveys nothing while still costing width.
+  // `jobs.ts`'s own comment already calls this a redundant restatement
+  // whenever the title names the model, so it is the field that stays
+  // relegated. As `secondary` it gets the panel's full width and needs no
+  // shrink factor.
+  // Suppressed when it just repeats the title (`_start_resident`/`load` set
+  // both `title` and `model` to the same model id) — otherwise a model-load
+  // row would draw the model name twice. The MODEL name only, not the whole
+  // `owner/model` repo id: the owner is identical for every row a given
+  // model ever draws. Full id stays on hover, since shortening makes two
+  // owners' same-named models identical.
+  const showModel = job.model && job.model !== job.title;
+
+  // A local action's own failure takes the status line over the job's
+  // ordinary status sentence — it is more urgent and it is about the very
+  // button the user just pressed. `status` (the server's report) comes back
+  // once a later poll succeeds or the row's own next action clears
+  // `failure`.
   return (
-    <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
-      <div className="dl-row-head">
-        <span className="dl-title" title={job.page || undefined}>
-          {job.title}
-        </span>
-        {fraction !== null && running && (
+    <NotificationCard
+      title={job.title}
+      // One line, ellipsis, never wraps (SPEC actionable-notifications item
+      // 4): a long prompt used to wrap to two lines, halving how many rows
+      // fit in the panel. The full text still has to be reachable somehow,
+      // which is what `titleTooltip` is for now — it used to carry ONLY an
+      // fs path (an attribution a hover needs to add on top of the title),
+      // so a truncated title with no path had no hover text at all. It leads
+      // with the title itself, then appends the path only when it is one
+      // worth showing (a shell route like "/tasks" says nothing new).
+      titleMode="id"
+      titleTooltip={
+        job.page && !isJobPageRoute(job.page) ? `${job.title}\n${job.page}` : job.title
+      }
+      stalled={job.stalled}
+      trailing={
+        fraction !== null && running ? (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
-        )}
-        {canCancel && (
-          <button
-            className="dl-row-cancel"
-            onClick={cancel}
-            disabled={busy}
-            title="Cancel"
-            aria-label={`Cancel ${job.title}`}
-          >
-            Cancel
-          </button>
-        )}
-        {canDismiss && (
-          <button
-            className="dl-x"
-            onClick={dismiss}
-            disabled={busy}
-            title="Dismiss"
-            aria-label={`Dismiss ${job.title}`}
-          >
-            ✕
-          </button>
-        )}
-      </div>
-      {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
-          the jobs card. why are we truncating stuff instead of placing things
-          elsewhere?"). It used to be a suffix on the head line, competing with
-          the title for one line's width under D571's shrink ladder — which is
-          how a running FLUX row rendered `update picture to be ghibli st…` then
-          a lone `F…`: a field minced to one character plus an ellipsis, which
-          conveys nothing while still costing width. `jobs.ts`'s own comment
-          already calls this a redundant restatement whenever the title names
-          the model, so it is the field that should be RELEGATED rather than the
-          one that should be minced. Off the head line it gets the panel's full
-          width and needs no shrink factor at all.
-          Suppressed when it just repeats the title (`_start_resident`/`load`
-          set both `title` and `model` to the same model id) — otherwise a
-          model-load row would draw the model name twice. The MODEL name only,
-          not the whole `owner/model` repo id: the owner is identical for every
-          row a given model ever draws. Full id stays on hover, since shortening
-          makes two owners' same-named models identical. */}
-      {job.model && job.model !== job.title && (
-        <div className="dl-model" title={job.model}>
-          {repoName(job.model)}
-        </div>
-      )}
-      <Bar job={job} />
-      {/* A local action's own failure takes this line over the job's
-          ordinary status sentence — it is more urgent and it is about the
-          very button the user just pressed. `status` (the server's report)
-          comes back once a later poll succeeds or the row's own next action
-          clears `failure`. */}
-      {statusLine && <div className="dl-status">{statusLine}</div>}
-    </div>
+        ) : undefined
+      }
+      liveAction={
+        canCancel
+          ? {
+              label: "Cancel",
+              onClick: cancel,
+              disabled: busy,
+              title: "Cancel",
+              ariaLabel: `Cancel ${job.title}`,
+            }
+          : undefined
+      }
+      onDismiss={
+        canDismiss
+          ? {
+              onClick: onDismissClick ?? dismiss,
+              disabled: busy,
+              title: "Dismiss",
+              ariaLabel: `Dismiss ${job.title}`,
+            }
+          : undefined
+      }
+      secondary={showModel ? repoName(job.model) : undefined}
+      secondaryTooltip={showModel ? job.model : undefined}
+      // `job.origin` — a caption naming who raised this row ("Playground",
+      // "Local models", ...). "" draws nothing, same rule `showModel` above
+      // follows for `job.model`: a caption with nothing to say is no
+      // element, never an empty one.
+      caption={job.origin || undefined}
+      progress={jobProgress(job)}
+      terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
+      status={statusLine || undefined}
+      rowClick={canOpen ? { onClick: open, title: `Open ${job.title}` } : undefined}
+    />
   );
 }
 
@@ -665,13 +717,13 @@ export function JobRow({
 // global `mock.module` on it does not scope to one file).
 export function DownloadManagerView({
   reported,
-  ready,
   initialCollapsed,
   engines,
   onJobsReported,
   refresh,
   patch,
   now,
+  loaded,
 }: {
   reported: Job[];
   /** The SERVER's clock (`JobsSnapshot.now`) as of `reported` — threaded down
@@ -690,9 +742,6 @@ export function DownloadManagerView({
    *  `mock.module`: a process-wide replacement has contaminated unrelated
    *  suites here before. */
   initialCollapsed?: boolean;
-  /** Has the first /api/jobs read landed (kept for callers; the chip no longer auto-opens on it)? Optional
-   *  so a test mounting this view with a fixed list keeps the old behaviour. */
-  ready?: boolean;
   /** The Background tasks section (formerly EnginesDock's own chip). Optional
    *  and data-only — see `EnginesSlot`'s own doc. */
   engines?: EnginesSlot;
@@ -705,6 +754,13 @@ export function DownloadManagerView({
   onJobsReported?: (jobs: Job[]) => void;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** Whether `reported` is a genuine response rather than `useJobs`'s pre-fetch
+   *  placeholder. Omitted (`undefined`) by every test that mounts this view
+   *  directly with a fixed job list — those callers never go through
+   *  `useJobs` at all, so their `reported` is already real and is treated as
+   *  loaded from the first render. A real caller (`DownloadManager` below)
+   *  always passes it explicitly. */
+  loaded?: boolean;
 }) {
   // Hover previews, click pins, nothing auto-opens — `lib/statusChip.ts`.
   // `initialCollapsed` is a test seam: false mounts the panel already pinned.
@@ -716,9 +772,20 @@ export function DownloadManagerView({
   // body: it can set state in a parent, and doing that while rendering is what
   // React warns about. Keyed on the array identity, which changes exactly once
   // per response or per local patch.
+  //
+  // GATED ON `loaded`: `useJobs` mounts with `reported = []` before its first
+  // fetch has even gone out, and calling `onJobsReported([])` for that
+  // placeholder is what let a page load replay
+  // its whole terminal backlog as a burst of pop-up cards — the consumer
+  // downstream (`ActivityDock.tsx`'s `popupTick`) treats its very first call
+  // as "seed silently, nothing here is new", so spending that seed on an
+  // empty snapshot that was never actually read left the true first read
+  // looking like a second, later tick full of brand-new terminal jobs. Not
+  // "skip an empty `reported`" — an empty snapshot the poll actually observed
+  // is exactly as real as a non-empty one and must still be forwarded.
   useEffect(() => {
-    onJobsReported?.(reported);
-  }, [onJobsReported, reported]);
+    if (loaded ?? true) onJobsReported?.(reported);
+  }, [onJobsReported, reported, loaded]);
   // Everything the poll returned MINUS a scheduled run's own job (`jobRows`,
   // never drawn here — user: "a task is not something I even want in the
   // activity") MINUS every terminal job (`inFlightJobs` — D586, broadened:
@@ -910,16 +977,16 @@ export default function DownloadManager({
   engines?: EnginesSlot;
   onJobsReported?: (jobs: Job[]) => void;
 }) {
-  const { jobs: reported, now, settled, refresh, patch } = useJobs();
+  const { jobs: reported, now, loaded, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
-      ready={settled}
       engines={engines}
       onJobsReported={onJobsReported}
       refresh={refresh}
       patch={patch}
       now={now}
+      loaded={loaded}
     />
   );
 }

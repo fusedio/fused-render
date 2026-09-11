@@ -1,15 +1,18 @@
 // SWEEP TO SELECT: press on a row's dead space (or the background) and drag,
 // and every row the swept region crosses becomes selected. The pointer half —
-// where a sweep may start, the drag itself, the edge auto-scroll. Every
-// DECISION is marquee.ts, which is pure and tested; a headless test cannot see
-// a drag, so nothing only the browser can see is allowed to decide anything.
+// where a sweep may start, the drag itself, the rubber band, the edge
+// auto-scroll. Every DECISION is marquee.ts, which is pure and tested; a
+// headless test cannot see a drag, so nothing only the browser can see is
+// allowed to decide anything.
 //
-// NOTHING IS DRAWN. There was a rubber band once, and it was the part the user
-// asked to lose: the rows highlighting as the pointer crosses them already say
-// what is selected, and a rectangle over the top of them said it twice. So the
-// swept region is a hit-test region only — computed, never rendered. That is
-// also why this hook holds no React state at all: a sweep re-renders the table
-// when the SELECTION changes and not once per pointermove.
+// THE BAND IS DRAWN IMPERATIVELY, and that is load-bearing, not a style
+// choice: this hook holds no React state at all, so a sweep re-renders the
+// table when the SELECTION changes and never once per pointermove. A rubber
+// band is exactly the kind of thing that would cost a render a frame if it
+// lived in state — so `sweepTo` appends one `div.marquee-band` to the scroller
+// directly and repositions it by writing its style, from the same
+// `marqueeBox`/`bandRect` the hit test already computed. One region feeds
+// both, so what is drawn and what is selected can never disagree.
 //
 // THIS HOOK IS THE GESTURE ARBITER, and there is only one. Its pointerdown is
 // registered in the CAPTURE phase (Listing's onPointerDownCapture), which is
@@ -18,15 +21,18 @@
 // takes that snapshot, asks drag-drop's `pressStartsDrag` once, and the answer
 // is final for the life of the gesture —
 //
-//   was the pressed row ALREADY selected?  → hand off a MOVE-DRAG (row-drag.ts)
-//   anything else                          → SWEEP from here
+//   the press landed on the row's HANDLE?     → hand off a MOVE-DRAG (row-drag.ts)
+//   was the pressed row ALREADY selected?     → hand off a MOVE-DRAG (row-drag.ts)
+//   anything else, or the press was MODIFIED  → SWEEP from here
 //
-// The snapshot is the fix, not a nicety. A press on an unselected row SELECTS
-// it, so a rule that consults the LIVE selection any time after the press sees
-// a selected row and calls every sweep a move-drag. That is exactly what the
-// `draggable` attribute was — a flag the browser read when the movement began,
-// a re-render too late — and it is why the native drag API is out of the row
-// drag entirely (row-drag.ts's header).
+// The snapshot still matters for `rowWasSelected`, not for `onHandle`. A press
+// on an unselected row SELECTS it, so a rule that consults the LIVE selection
+// any time after the press sees a selected row and calls every sweep a
+// move-drag. That is exactly what the `draggable` attribute was — a flag the
+// browser read when the movement began, a re-render too late — and it is why
+// the native drag API is out of the row drag entirely (row-drag.ts's header).
+// `onHandle` needs no snapshot: which element a press landed ON is a fact
+// about the DOM at pointerdown, not state the press itself could change.
 //
 // A press that never travels MARQUEE_DRAG_SLOP is neither gesture: it is the
 // plain click that selects one row (and, on release, opens it — D460). ONE
@@ -34,12 +40,13 @@
 //
 // COORDINATES are the scroller's CONTENT space (viewport offset + scrollTop),
 // not the viewport's. That is what lets the listing scroll under a live sweep
-// without the region or the row bands going stale.
+// without the region, the row bands, or the band's own position going stale.
 import { useEffect, useRef } from "react";
-import { pressStartsDrag } from "@apps/explorer/listing/drag-drop";
-import { DROP_PATH_ATTR } from "@apps/explorer/listing/row-drag";
+import { pressIsSuppressed, pressStartsDrag } from "@apps/explorer/listing/drag-drop";
+import { DRAG_HANDLE_ATTR, DROP_PATH_ATTR } from "@apps/explorer/listing/row-drag";
 import {
   autoScrollStep,
+  bandRect,
   marqueeBox,
   marqueeHits,
   passedDragSlop,
@@ -74,11 +81,20 @@ function measureBands(scroller: HTMLElement, paths: string[]): RowBand[] {
 //
 // The row's path comes off the data attribute it already carries as a drop
 // target (row-drag.ts's DOM protocol), so there is one attribute and not two.
-function pressedRow(target: EventTarget | null): { row: HTMLElement | null } | null {
+// `onHandle` is a second, independent fact about the same press: whether it
+// landed inside the row's `data-fs-drag-handle` span (row-drag.ts), which is
+// the item's own name cell — the only part of the row that starts a drag on
+// its own, whether or not the row was already selected.
+function pressedRow(
+  target: EventTarget | null,
+): { row: HTMLElement | null; onHandle: boolean } | null {
   const el = target as HTMLElement | null;
   if (!el || typeof el.closest !== "function") return null;
   if (el.closest("thead, button, input, a")) return null;
-  return { row: el.closest<HTMLElement>("tr.row") };
+  return {
+    row: el.closest<HTMLElement>("tr.row"),
+    onHandle: el.closest(`[${DRAG_HANDLE_ATTR}]`) !== null,
+  };
 }
 
 export function useMarquee({
@@ -87,6 +103,7 @@ export function useMarquee({
   selectedPaths,
   selectPaths,
   startMoveDrag,
+  suppressPressUntilRef,
   enabled = true,
 }: {
   scrollRef: React.RefObject<HTMLDivElement>;
@@ -106,6 +123,12 @@ export function useMarquee({
     clientX: number;
     clientY: number;
   }) => void;
+  // Listing's post-navigation double-click guard (OPEN_SUPPRESS_MS). This
+  // arbiter runs in the CAPTURE phase, before the row's own bubble-phase
+  // pointerdown (which honours the same ref) ever fires — so it has to
+  // consult it too, or a press the row treats as inert still starts a real
+  // move-drag (drag-drop's `pressIsSuppressed`).
+  suppressPressUntilRef: { current: number };
   enabled?: boolean;
 }) {
   const rowsRef = useRef<string[]>([]);
@@ -130,6 +153,10 @@ export function useMarquee({
     base: string[];
     bands: RowBand[];
     active: boolean;
+    // The rubber band's own element, created the moment the sweep goes active
+    // and destroyed with it — never reused across gestures, since a fresh
+    // `<div>` is cheaper than the bookkeeping to make an old one safe to reuse.
+    band: HTMLDivElement | null;
   } | null>(null);
   // The auto-scroll frame loop's handle, so it can be cancelled from anywhere.
   const rafRef = useRef(0);
@@ -141,6 +168,15 @@ export function useMarquee({
       x: clientX - r.left + scroller.scrollLeft,
       y: clientY - r.top + scroller.scrollTop,
     };
+  };
+
+  // Remove the band element, if a sweep left one behind. The one place this
+  // runs from every exit — up, cancel, leave-before-slop, unmount — is the
+  // guarantee that a live listing never keeps a stray band from a gesture that
+  // ended.
+  const removeBand = () => {
+    const d = drag.current;
+    if (d?.band) d.band.remove();
   };
 
   // One update of the selection from the pointer's current position. Called from
@@ -175,9 +211,27 @@ export function useMarquee({
       } catch {
         /* no capture; the listeners are on the scroller either way */
       }
+      // The band element itself: one absolutely-positioned div, appended to
+      // the scroller (which is `position: relative` — explorer.css) so its
+      // `left`/`top` are in the same content coordinates as everything else
+      // here, and it scrolls with the rows under it for free.
+      const band = document.createElement("div");
+      band.className = "marquee-band";
+      scroller.appendChild(band);
+      d.band = band;
     }
     const region = marqueeBox(d.origin, at);
     selectRef.current(marqueeHits(region, d.bands, { additive: d.additive, base: d.base }));
+    if (d.band) {
+      const rect = bandRect(region, {
+        width: scroller.scrollWidth,
+        height: scroller.scrollHeight,
+      });
+      d.band.style.left = `${rect.left}px`;
+      d.band.style.top = `${rect.top}px`;
+      d.band.style.width = `${rect.width}px`;
+      d.band.style.height = `${rect.height}px`;
+    }
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -201,11 +255,37 @@ export function useMarquee({
     // answers for every pixel, read forwards for the drag and backwards for the
     // sweep.
     const path = pressed.row?.getAttribute(DROP_PATH_ATTR) ?? null;
-    if (path !== null && pressStartsDrag({ rowWasSelected: selRef.current.includes(path) })) {
+    // The row's own pointerdown (Listing's onRowPointerDown) does nothing at
+    // all for the habitual second press of a double-click into a folder — but
+    // that guard is bubble-phase, and this arbiter runs in capture, before it.
+    // Consult the same window here, or a press the row is about to ignore
+    // still reaches `pressStartsDrag` with `onHandle: true` and starts a real
+    // move-drag of a row nothing has selected.
+    if (pressIsSuppressed(path, Date.now(), suppressPressUntilRef.current)) return;
+    // A modified press (Shift/Cmd/Ctrl) never drags, on the handle or anywhere
+    // else: those modifiers mean "sweep additively", and a press that means
+    // that must not be read as "move this item" just because it also happens
+    // to land on the handle.
+    const modified = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (
+      path !== null &&
+      pressStartsDrag({
+        onHandle: pressed.onHandle,
+        rowWasSelected: selRef.current.includes(path),
+        modified,
+      })
+    ) {
       // A pre-slop press abandoned outside the scroller (see the pointerleave
       // handler below) can leave nothing behind — but mouse pointer ids are
       // reused, so any state that DID survive here would match this new
-      // press's moves and resurrect a dead sweep under the drag.
+      // press's moves and resurrect a dead sweep under the drag. `removeBand`
+      // first: a live sweep whose `pointerup` never arrived (the browser owes
+      // none once capture is lost some other way, and `setPointerCapture`
+      // itself is wrapped in try/catch above precisely because it can fail)
+      // would otherwise leave its `.marquee-band` div orphaned in the DOM —
+      // nulling `drag.current` without removing it first drops the only
+      // reference the element had.
+      removeBand();
       drag.current = null;
       dragRef.current({
         path,
@@ -238,12 +318,14 @@ export function useMarquee({
       clientX: e.clientX,
       clientY: e.clientY,
       // Shift or Cmd/Ctrl UNIONS with what is already selected; a bare sweep
-      // replaces it. Read once, at the press: releasing the modifier mid-drag
-      // must not silently change what the gesture meant when it started.
-      additive: e.shiftKey || e.metaKey || e.ctrlKey,
+      // replaces it. Read once, at the press (the same `modified` that just
+      // ruled out a drag above): releasing the modifier mid-drag must not
+      // silently change what the gesture meant when it started.
+      additive: modified,
       base: [...selRef.current],
       bands: [],
       active: false,
+      band: null,
     };
   };
 
@@ -296,6 +378,7 @@ export function useMarquee({
       const d = drag.current;
       if (!d || ev.pointerId !== d.pointerId) return;
       stopScrollLoop();
+      removeBand();
       drag.current = null;
       if (scroller.hasPointerCapture(ev.pointerId)) scroller.releasePointerCapture(ev.pointerId);
       // Nothing to commit on release: the selection has been live the whole
@@ -320,6 +403,7 @@ export function useMarquee({
     scroller.addEventListener("pointerleave", onLeave);
     return () => {
       stopScrollLoop();
+      removeBand();
       scroller.removeEventListener("pointermove", onMove);
       scroller.removeEventListener("pointerup", onUp);
       scroller.removeEventListener("pointercancel", onUp);

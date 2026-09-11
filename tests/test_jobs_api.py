@@ -143,6 +143,58 @@ def test_waiting_for_rejects_an_illegal_id():
                     server=True)
 
 
+def test_tier_round_trips_on_a_server_upsert():
+    """`tier` marks which of the three notification tiers a row belongs to
+    (a resident model load's own success report is `transient`) — a server
+    report setting it must reach the listing verbatim."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "tier": jobs.TRANSIENT}, server=True)
+    row = jobs.list_jobs()[0]
+    assert row["tier"] == jobs.TRANSIENT
+
+
+def test_a_page_owned_report_cannot_set_tier(client):
+    """A page could otherwise hide its own failed row by falsely declaring
+    itself transient — see `Job.tier`'s own comment. Silently dropped, same
+    as `waiting_for`, leaving the "trail" default in place."""
+    report(client, id="a", title="a cat", tier=jobs.TRANSIENT)
+    assert listing(client)[0]["tier"] == jobs.TRAIL
+
+
+def test_tier_rejects_anything_outside_the_closed_set():
+    """Unlike a page-owned report (silently dropped), an out-of-set value on
+    a SERVER report is a real validation error — same as every other
+    closed-set field (`total_scope`, `waiting_for`'s id shape)."""
+    with pytest.raises(jobs.JobError):
+        jobs.upsert({"id": "a", "title": "x", "tier": "urgent"}, server=True)
+
+
+def test_effective_tier_overrides_a_declared_transient_row_that_ends_in_error():
+    """A producer that declares `transient` because SUCCESS leaves nothing
+    behind is wrong the moment the run fails: the user did not get what they
+    asked for, which is always worth a look. `effective_tier` reflects that;
+    the STORED `job.tier` is untouched, since it is what the producer meant
+    to say about its own success path."""
+    job = jobs.Job(id="a", title="x", state="error", tier=jobs.TRANSIENT)
+    assert job.tier == jobs.TRANSIENT
+    assert jobs.effective_tier(job) == jobs.ATTENTION
+
+
+def test_effective_tier_overrides_a_declared_transient_row_that_is_cancelled():
+    job = jobs.Job(id="a", title="x", state="cancelled", tier=jobs.TRANSIENT)
+    assert jobs.effective_tier(job) == jobs.ATTENTION
+
+
+def test_effective_tier_leaves_a_done_transient_row_alone():
+    job = jobs.Job(id="a", title="x", state="done", tier=jobs.TRANSIENT)
+    assert jobs.effective_tier(job) == jobs.TRANSIENT
+
+
+def test_effective_tier_leaves_a_running_row_alone():
+    job = jobs.Job(id="a", title="x", state=jobs.RUNNING, tier=jobs.TRAIL)
+    assert jobs.effective_tier(job) == jobs.TRAIL
+
+
 def test_model_is_its_own_field_separate_from_title_and_detail(client):
     """The model must reach the client as its OWN value, not folded into
     `title` or `detail` — the UI dims it as a distinct element on the title
@@ -196,6 +248,139 @@ def test_a_page_attributes_its_own_rows_through_the_header(client):
     )
     # Percent-decoded like every other X-Fused-* path header.
     assert listing(client)[0]["page"] == "/tmp/my app/index.html"
+
+
+def test_the_page_header_keeps_internal_whitespace_verbatim(client):
+    """A double space or a trailing space inside a real path is part of the
+    path — collapsing it the way a label is collapsed would point the row at
+    a path that does not exist. Only accidental padding around the whole
+    header value is trimmed."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1",
+                 "X-Fused-Page": "%20/tmp/My%20%20App/index.html%20"},
+    )
+    assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
+
+
+def test_origin_round_trips_on_a_server_upsert():
+    """`origin` names WHAT RAISED a job — "Playground", "Local models" — a
+    short caption distinct from `page` (where clicking the row goes). A
+    SERVER report setting it must reach the listing verbatim, same as
+    `tier`/`waiting_for` — see `test_a_page_owned_report_cannot_set_origin`
+    for why a page's own body value does not."""
+    jobs.upsert({"id": "a", "title": "t", "origin": "Playground"}, server=True)
+    assert jobs.list_jobs()[0]["origin"] == "Playground"
+
+
+def test_origin_defaults_to_empty_string_when_never_reported():
+    jobs.upsert({"id": "a", "title": "t"})
+    assert jobs.list_jobs()[0]["origin"] == ""
+
+
+def test_origin_is_sticky_across_a_later_report_that_omits_it(client):
+    """A page-owned report at a known shell route gets `origin` defaulted
+    from that route (`origin_for_page`); a LATER tick with no
+    `X-Fused-Page` at all derives nothing (`origin_for_page`'s `page` is
+    "") and must not blank what the earlier tick already set — same
+    stickiness rule as `tier`/`page`, via `upsert`'s `if origin:` gate."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/benchmark"},
+    )
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "done": 5},
+        headers={"X-Fused": "1"},
+    )
+    assert listing(client)[0]["origin"] == "Benchmark"
+
+
+def test_origin_is_text_capped():
+    jobs.upsert({"id": "a", "title": "t"}, origin="x" * 500)
+    assert len(jobs.list_jobs()[0]["origin"]) == jobs.ORIGIN_MAX
+
+
+def test_a_page_owned_report_cannot_set_origin(client):
+    """A page could otherwise attribute its own row to a trusted system
+    feature ("Claude setup") by typing it into the body — the same argument
+    `Job.waiting_for`'s and `Job.tier`'s own comments make, with more force
+    here since attribution is the whole job of this field. Silently
+    dropped, same treatment as those two: the report carries no
+    `X-Fused-Page` either, so there is nothing for the router to derive in
+    its place, and the row is left with no caption at all rather than the
+    one the page tried to claim."""
+    report(client, id="a", title="t", origin="Playground")
+    assert listing(client)[0]["origin"] == ""
+
+
+def test_the_page_header_defaults_origin_for_a_known_shell_route(client):
+    """A page hosted at one of the closed shell routes (`JOB_PAGE_ROUTES` in
+    `frontend/src/platform/lib/router.ts`, mirrored server-side by
+    `jobs.py`'s `_ORIGIN_BY_ROUTE`) gets its `origin` derived from that
+    route by the router, regardless of what the report's own body claims."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t", "origin": "Custom"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
+    )
+    assert listing(client)[0]["origin"] == "Local models"
+
+
+def test_the_page_header_names_the_project_for_an_fs_path(client, monkeypatch):
+    """The overwhelming majority of X-Fused-Page values are fs paths, not
+    shell routes — `origin_for_page` names the PROJECT the file belongs to
+    (`projectenv.project_root_for` + `projectenv.display_name`), not the
+    generic "unlabeled" `""` this used to leave a page-raised job with."""
+    from fused_render import projectenv
+
+    monkeypatch.setattr(projectenv, "project_root_for",
+                        lambda path: "/workspace/apps/tag/my-cool-app")
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    assert listing(client)[0]["origin"] == "my-cool-app"
+
+
+def test_the_page_header_falls_back_to_the_file_stem_when_no_project_is_recognized(client):
+    """A path outside any project this process recognizes (the common case
+    for a bare fs path in a test, with no `pyproject.toml` anywhere above
+    it) still gets a caption — the bare filename, extension dropped — the
+    next best thing to a project name when there is no project."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    assert listing(client)[0]["origin"] == "index"
+
+
+def test_a_relative_or_malformed_page_gets_no_origin_at_all(client):
+    """`origin_for_page` must never resolve a non-absolute `page` against
+    this SERVER's own cwd — `projectenv.project_root_for` starts with
+    `os.path.abspath(path)`, so a relative or malformed X-Fused-Page (a
+    typo'd header, never a real fs path) would otherwise get captioned with
+    whatever project happens to contain the server's working directory,
+    naming a project the page has nothing to do with instead of drawing no
+    caption at all."""
+    assert jobs.origin_for_page("xxxx") == ""
+    assert jobs.origin_for_page("\x00") == ""
+
+
+def test_an_unlisted_route_is_treated_as_an_fs_path_like_any_other(client):
+    """Nothing distinguishes a shell route from an fs path syntactically —
+    only exact membership in the closed table does — so anything not in it
+    falls through to the same fs-path naming an ordinary page gets."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/some-unlisted-route"},
+    )
+    assert listing(client)[0]["origin"] == "some-unlisted-route"
 
 
 def test_a_non_finite_number_is_refused_not_painted(client):
@@ -439,6 +624,131 @@ def test_a_done_row_now_stays_until_dismissed_same_as_an_error(client):
 
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
     assert later == {"ok", "bad", "stopped"}, "no terminal state ages out on its own any more"
+
+
+def test_a_transient_row_ages_out_on_the_read_gated_clock_instead_of_staying_forever():
+    """A transient row (a resident model load's own success report,
+    `tier=jobs.TRANSIENT`) draws no Notification and nothing can dismiss it —
+    the same reasoning `_sweep` already applies to a scheduled run's own
+    tick. Give it the same carve-out from the "kept until dismissed" rule,
+    so it ages out on the original read-gated `FINISHED_TTL_S` clock instead
+    of surviving for the process's lifetime, one per distinct model, inside
+    the evictable pool."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "tier": jobs.TRANSIENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a transient row ages out, unlike an ordinary terminal row"
+
+
+def test_a_failed_resident_model_load_survives_well_past_finished_ttl_after_being_read():
+    """A `sys:ai-model:*` row is DRAWN somewhere the moment it goes terminal —
+    Notifications (`terminalNotifications`), with a working ✕ — unlike a
+    scheduled tick, which is drawn nowhere at all. Gating retention on the
+    STORED `tier` alone (ignoring state) would age this failed load out a
+    few seconds after the next poll stamps `first_read_at`, forgetting a
+    row someone can see and has not yet dismissed — the vanishing-row bug
+    D663 already settled against, reintroduced under a new gate. `_sweep`
+    only ages a `TRANSIENT` row out once its state is `done`; an `error`
+    row here takes the keep-until-dismissed path like any other row a
+    surface can show."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "error",
+                 "tier": jobs.TRANSIENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}, "still shown while it exists"
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == {"sys:ai-model:x"}, (
+        "a failed resident load is drawn and dismissable, so it is kept "
+        "until dismissed, not aged out on the read-gated clock"
+    )
+
+
+def test_a_failed_scheduled_run_still_ages_out_on_the_read_gated_clock():
+    """A `sys:schedule:*` row is drawn on NO surface at all, in any state —
+    `jobRows` (frontend/src/platform/lib/jobs.ts) excludes the id prefix
+    unconditionally, independent of tier or outcome. Unlike every other
+    `TRANSIENT` producer (which now only ages out on `done`, see the sibling
+    test above), a scheduled run ages out in ANY terminal state, because
+    nothing could ever dismiss it regardless of how it ended."""
+    jobs.upsert({"id": jobs.SCHEDULE_JOB_PREFIX + "e1", "title": "a scheduled run",
+                 "state": "error", "tier": jobs.TRANSIENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {jobs.SCHEDULE_JOB_PREFIX + "e1"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a failed scheduled run ages out — no surface ever draws it"
+
+
+def test_a_silent_row_ages_out_on_the_read_gated_clock_like_a_spent_transient_one():
+    """A silent row (a resident model load/unload's own success report,
+    `tier=jobs.SILENT`) pops no card at all and draws nowhere — an even
+    stronger case than `TRANSIENT` for the same read-gated age-out
+    `_sweep` already gives a spent transient success, so it gets the exact
+    same carve-out rather than surviving for the process's lifetime."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a silent row ages out, unlike an ordinary terminal row"
+
+
+def test_a_failed_silent_model_load_survives_well_past_finished_ttl_after_being_read():
+    """Silence is a property of SUCCESS only. A `sys:ai-model:*` row that
+    ends in `error` is promoted to `attention` by `effective_tier`/
+    `effectiveTier` regardless of the STORED `tier` it declares — a
+    manager process dying mid-report can leave `silent` sitting on a row
+    that then goes `error` without ever restating its own tier — so it must
+    still pop and still be kept until dismissed, exactly like a failed
+    `TRANSIENT` row, not aged out on the read-gated clock `_sweep` only
+    applies to a SUCCESSFUL silent/transient report."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "error",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}, "still shown while it exists"
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == {"sys:ai-model:x"}, (
+        "a failed silent load is drawn and dismissable, so it is kept "
+        "until dismissed, not aged out on the read-gated clock"
+    )
+
+
+def test_a_running_silent_job_still_appears_in_list_jobs():
+    """`SILENT` governs retention/popping of a TERMINAL row only — a still
+    RUNNING silent job (a resident load or unload in progress) is unaffected
+    and keeps its ordinary Activity row, exactly as `jobRows` on the
+    frontend leaves a running row alone regardless of tier."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "running",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    rows = {r["id"] for r in jobs.list_jobs(now=1000.0)}
+    assert rows == {"sys:ai-model:x"}
+
+
+def test_a_wait_job_poll_still_observes_a_transient_row_go_done_before_it_ages_out():
+    """`fused.ai.models.load(wait=True)`'s `_wait_job` poll reads the row via
+    `list_jobs(mark_read=True)` — the same call that starts the read-gated
+    clock. `_sweep` always runs BEFORE `mark_read` stamps a newly-terminal
+    row (see `list_jobs`'s own docstring), so the very read that first
+    reveals `state == "done"` cannot be the read that sweeps it away —
+    guaranteeing the poll gets at least one look at the finished row."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "running"},
+                now=1000.0, server=True)
+    jobs.upsert({"id": "sys:ai-model:x", "state": "done", "tier": jobs.TRANSIENT},
+                now=1000.0 + jobs.FINISHED_TTL_S + 1, server=True)
+
+    seen = read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)
+    assert [r for r in seen if r["id"] == "sys:ai-model:x"][0]["state"] == "done"
 
 
 def test_an_unread_done_row_outlives_the_unread_backstop_too():

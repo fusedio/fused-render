@@ -21,11 +21,11 @@ import type { HubFamily } from "./hubFamilies";
 const DASH = "—";
 
 // ---------------------------------------------------------------------------
-// D754/D755/D756 — the merged Match (Fit+Score) cell.
+// D780/D781/D782 — the merged Match (Fit+Score) cell.
 //
-// Before D754, "Fit" and "Score" were two renderings of the SAME memory-only
+// Before D780, "Fit" and "Score" were two renderings of the SAME memory-only
 // number, which is why a capable machine's table showed an identical bar and
-// "100" on every row. D754 makes SCORE a composite (`HubModel.matchScore`,
+// "100" on every row. D780 makes SCORE a composite (`HubModel.matchScore`,
 // server-computed) that blends memory fit with capability, speed, recency
 // and popularity. The cell prints that composite as a single number, coloured
 // by the memory verdict — the two facts stay distinct (a number's magnitude
@@ -34,7 +34,7 @@ const DASH = "—";
 // needing two separate marks to carry them.
 
 /** What one row's merged Match cell renders — the printed number, the
- *  verdict its colour is drawn from, and (D756) a visible "offload" suffix
+ *  verdict its colour is drawn from, and (D782) a visible "offload" suffix
  *  for a row that would not run on the GPU/unified memory. `verdict` is
  *  `"unknown"` for a row with no fit verdict to judge at all — a fourth,
  *  neutral state distinct from "no" (which means "judged, and it does not
@@ -45,7 +45,7 @@ export interface MatchCell {
   /** The memory verdict the printed number is coloured by — independent of
    *  the number's own magnitude (see this section's own doc). */
   verdict: AiFitVerdict["verdict"] | "unknown";
-  /** D756: MODE was cut as its own column — on Apple Silicon it is a
+  /** D782: MODE was cut as its own column — on Apple Silicon it is a
    *  structural constant (`fit.py`'s own doc: unified memory always reads
    *  "gpu"), and where it DOES vary it is derived from the same footprint
    *  arithmetic the fit verdict already is, so a separate column was a
@@ -166,8 +166,8 @@ const VERDICT_SENTENCE: Record<AiFitVerdict["verdict"], string> = {
 };
 
 /** The merged cell's hover text — has to explain BOTH facts the cell's one
- *  number carries (D755): what the composite is made of, and what its
- *  colour means, PLUS the run mode D756 folded in here once Mode stopped
+ *  number carries (D781): what the composite is made of, and what its
+ *  colour means, PLUS the run mode D782 folded in here once Mode stopped
  *  being its own column. The cell itself is terse by design — a bare number
  *  in a verdict colour — so this hover is where all of that detail lives. */
 export function matchTitle(
@@ -210,7 +210,7 @@ export function matchTitle(
 }
 
 // ---------------------------------------------------------------------------
-// D756 — Task and Capability were the same fact twice (`text generation` /
+// D782 — Task and Capability were the same fact twice (`text generation` /
 // `text-generation`) on every row this table has ever shown for a single
 // capability. The visible column is now keyed on `capability` — the value
 // the download path and runner resolution actually act on — with the Hub's
@@ -229,11 +229,11 @@ export function capabilityHint(model: Pick<HubModel, "capability" | "task">): st
 }
 
 // ---------------------------------------------------------------------------
-// D755 — hoisting a value that is identical across the whole result set out
+// D781 — hoisting a value that is identical across the whole result set out
 // of every row's cell and into one summary line above the table. A value
 // repeated on 21 of 21 rows is noise in a cell and information in a header.
 //
-// D773 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
+// D799 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
 // the other's direction: round 1 computed presence over primaries only (the
 // summary said "all BF16" while an expanded disclosure showed `Q4_K_M`);
 // round 2 shared one primaries+variants set for BOTH presence and the hoist,
@@ -358,13 +358,13 @@ export function isMajorityValue(value: string | null, majority: Hoist | null): b
 }
 
 /** The one line above the table naming whatever the result set UNANIMOUSLY
- *  agrees on (D755, narrowed by D773) — task/capability and quant are the
- *  two candidates left after D756 folded Mode into the Match cell's own
+ *  agrees on (D781, narrowed by D799) — task/capability and quant are the
+ *  two candidates left after D782 folded Mode into the Match cell's own
  *  hint. Size, Params, tok/s, Pop. and New are never hoisted: they are the
  *  columns a reader compares row-to-row on a RANKED list, so even a
  *  coincidental cluster must stay visible per row.
  *
- *  There is no "mostly X" clause (D773): a hoist that is anything
+ *  There is no "mostly X" clause (D799): a hoist that is anything
  *  short of unanimous is `null` by construction (`hoistValue`), so this
  *  function only ever states a value it can back with full agreement across
  *  every row it was computed from — never a claim decided by rows a reader
@@ -389,7 +389,7 @@ export function hoistSummary(count: number, capabilityHoist: Hoist | null, quant
  *  built from the SAME rows** — `allRows`, every family's primary AND every
  *  one of its variants, whether or not a disclosure is currently open.
  *  `count` (fed to `hoistSummary`) is `allRows.length` too, not
- *  `families.length` (D773): passing `families.length` — the number of
+ *  `families.length` (D799): passing `families.length` — the number of
  *  top-level rows — as the count a hoist claim is stated "about" would
  *  disagree with the hoist itself, which is decided over the larger
  *  primaries+variants set; a claim and the count attached to it must

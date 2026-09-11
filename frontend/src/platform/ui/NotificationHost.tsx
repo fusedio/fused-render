@@ -7,7 +7,8 @@
 // and this bottom-right card — which between them meant the same "Path copied"
 // appeared in two different places depending on which view raised it, and a
 // toast could sit next to (or under) an unrelated card in the other corner.
-// One stack, one set of stacking rules, one auto-dismiss timer (the store's).
+// One stack, one set of stacking rules, no auto-dismiss — a toast stays until
+// the ✕ or the code that raised it clears it (lib/toast).
 //
 // Order is oldest → newest top to bottom, so the newest message is nearest the
 // bottom edge where the eye already is, and the server card sits below all of
@@ -23,21 +24,44 @@
 // FIXED, so even collapsed their header sat on top of whatever page was under
 // it. `StatusBar` hosts them now, inside `#main`, where collapsing them
 // actually gives the page its space back rather than merely shrinking a card
-// still floating over it. What stays here — toasts, `ServerStatusBanner` —
-// is either seconds-long or exceptional enough that
+// still floating over it. What stays here — toasts, the job pop-up,
+// `ServerStatusBanner` — is either seconds-long or exceptional enough that
 // overlaying the page is the right call for it: see `StatusBar`'s own header
 // comment for the two long-lived cards' reasoning, which used to live here.
 //
+// THE JOB POP-UP (SPEC actionable-notifications) is the one entry here that
+// draws the SAME card the long-lived Notifications panel does (`JobRow`,
+// reused through `JobPopupCard`) rather than a `Toast` — the user's own
+// clarification was "the UI should still be the same notification card". It
+// qualifies for THIS column, not the panel's, for the same "seconds-long"
+// reason every other entry here does: `JobPopupCard` clears itself in well
+// under 3 seconds regardless of what its job's tier keeps in the panel.
+//
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
-// not the window's. Only the top-level document shows the server card (an
-// embed would otherwise render one per pane, all saying the same thing).
+// not the window's. Only the top-level document shows the server card and
+// the job pop-up (an embed would otherwise pop the same job once per pane,
+// all saying the same thing — `App.tsx`'s own `!IS_EMBED` guard around
+// `ActivityDock` already keeps a pane from ever producing one, and the guard
+// here is belt-and-suspenders against that changing out from under it).
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import Toast from "@platform/ui/Toast";
+import JobPopupCard from "@platform/ui/JobPopupCard";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
+import type { Job } from "@platform/lib/jobs";
 
-export default function NotificationHost() {
+export default function NotificationHost({
+  jobPopup,
+  onJobPopupGone,
+}: {
+  /** The one terminal job currently popped, or `null` for none — "latest
+   *  wins" is enforced upstream (jobs.ts `popupTick`), so this is never more
+   *  than one job. Optional: a caller with no job source (the onboarding
+   *  wizard's own mount, App.tsx) simply never has one to pass. */
+  jobPopup?: Job | null;
+  onJobPopupGone?: () => void;
+} = {}) {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -56,6 +80,24 @@ export default function NotificationHost() {
           />
         </div>
       ))}
+      {/* Keyed on id + `finished_at` — `jobs.ts`'s own `popupTick` keys ITS
+          "have I popped this?" decision the identical way, on a terminal
+          EVENT rather than a job id, because one id CAN go terminal more
+          than once: `job_id_for(model)` (`fused_render/ai/supervisor.py`)
+          mints one id per resident model, reused across that model's load,
+          weights-only download and unload — not a fresh id per run the way
+          `jobs.py`'s ordinary ids are. Keying on the bare id let a second
+          terminal event on the same id reuse the first card's instance
+          (its mount effect never reruns), so the new event's card never
+          restarted its own countdown and could vanish on the FIRST event's
+          timer instead. */}
+      {!IS_EMBED && jobPopup && (
+        <JobPopupCard
+          key={`${jobPopup.id}:${jobPopup.finished_at ?? ""}`}
+          job={jobPopup}
+          onGone={onJobPopupGone ?? (() => {})}
+        />
+      )}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

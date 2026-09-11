@@ -50,7 +50,7 @@ import type { HubModel } from "@platform/lib/api";
 import type { ResultSort } from "./hubSearchView";
 
 // **A GGUF republish is its own family, not a variant of the safetensors
-// one** (D767). Keying on `baseModel` alone puts
+// one** (D793). Keying on `baseModel` alone puts
 // `leejet/FLUX.2-klein-4B-GGUF` and
 // `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` in one bucket, where the GGUF
 // row cannot win the primary contest: a GGUF row's `matchScore` is blended
@@ -117,7 +117,7 @@ function byFitThenDownloads(a: HubModel, b: HubModel): number {
 }
 
 /** Descending: higher composite `matchScore` first, then higher downloads,
- *  same stability guarantee as `byFitThenDownloads`. `matchScore` (D754) is
+ *  same stability guarantee as `byFitThenDownloads`. `matchScore` (D780) is
  *  attached to every row regardless of which sort was requested, so this is
  *  the general-purpose comparator for every sort except "fit" itself, which
  *  asks specifically for the memory-only judgement `byFitThenDownloads`
