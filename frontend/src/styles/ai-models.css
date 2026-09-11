@@ -3518,20 +3518,32 @@ button.am-bench-model:focus-visible {
    order (this file loads after `buttons-modal.css`); if a future edit ever
    reorders the stylesheets, raise this to `.tp .row .btn, .tp .hit .btn`
    rather than reaching for `!important`. */
+/* Item 10 (fix round 3): every property `buttons-modal.css`'s global `.btn`
+   sets (min-height via its own `height:32px`, `line-height`, `box-shadow`,
+   `font-weight`) is overridden explicitly here rather than relied on to fall
+   through cleanly — the row/control instrument this button sits beside is
+   `.tp .menubtn`, and this now matches it property for property (32px
+   there is the CONTROLS row's height; a row-action button reads smaller,
+   28px, same as the mockup's own measured Download). */
 .tp .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 12px;
   font-size: 12px;
-  height: auto;
-  padding: 5px 11px;
-  border-radius: 7px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 6px;
   background: var(--ctl-quiet-bg);
   color: var(--fg);
   border: 1px solid var(--ctl-quiet-border);
-  /* Item 9 (fix round 3): `.btn` also renders as a real `<a>` for a gated
-     row's "Accept terms" action (`hit.act` when `!have && gate`) — an
-     anchor's UA-default underline isn't reset by anything above it, so
-     without this it showed permanently while the sibling `Download`
-     `<button>` never did, making the two look like different widths in the
-     row-act column. */
+  box-shadow: none;
+  /* Item 9: `.btn` also renders as a real `<a>` for a gated row's "Accept
+     terms" action (`hit.act` when `!have && gate`) — an anchor's UA-default
+     underline isn't reset by anything above it, so without this it showed
+     permanently while the sibling `Download` `<button>` never did, making
+     the two look like different widths in the row-act column. */
   text-decoration: none;
 }
 
