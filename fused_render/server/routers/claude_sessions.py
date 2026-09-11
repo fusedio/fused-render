@@ -578,12 +578,29 @@ _RECAP_MAX_CHARS = 400
 # difference between a late recap and a hung fetch.
 _RECAP_TIMEOUT = 25.0
 
-# Cache: (session_id, for_uuid) -> (text, expires_at | None).
+# The CLI's interrupt marker, written as a USER row with a real uuid — the
+# frontend's `INTERRUPT_MARK` (protocol/wire.ts), and the two must stay in step.
+# Kept out of the tail for two reasons: it is not prose the reader said, and a
+# trailing one would make `_recap_tail`'s "the user spoke last" rule fire on the
+# single most common way to walk away — hit stop, then leave. The page skips it
+# when it picks `for_uuid` (`recapAnchor`), spends that position on whatever
+# comes back, and never asks again, so an empty answer here is permanent.
+_INTERRUPT_MARK = "[Request interrupted by user]"
+
+# Cache: (file, session_id, for_uuid) -> (text, expires_at).
 #
-# SUCCESSES NEVER EXPIRE. The key already contains the turn the recap is about,
-# so a recap can only go stale by the conversation moving on, and that mints a
-# new key rather than rotting this one — re-asking for the same turn would be
-# paying twice for a byte-identical answer. FAILURES expire (60s): a failure is
+# KEYED ON THE FILE TOO. `_history` resolves a session id only under the target's
+# own project dir, because a folder that was copied carries the ids of the
+# conversations held in the original and each side has its own transcript. Two
+# chats open on two such copies ask for the same (session, turn) and mean
+# different conversations, so the file is part of what is being asked.
+#
+# SUCCESSES EXPIRE SLOWLY (15 min). The key names the last USER turn, and the
+# ASSISTANT's answer to it can still be growing — a run driven from a terminal
+# outside this app is invisible to the page's "is a turn running" check — so a
+# recap taken mid-reply would otherwise be pinned to that turn forever. Long
+# enough that a reader stepping away and back repeatedly pays once; short enough
+# that a half-written answer heals itself. FAILURES expire faster (60s): a failure is
 # about the machine (no CLI, no network, a timeout), not about the turn, and
 # caching one forever would mean a single blip costs this session every recap it
 # would ever have shown. Bounded LRU because a long-lived server sees an
@@ -591,6 +608,7 @@ _RECAP_TIMEOUT = 25.0
 # them.
 _RECAP_CACHE_MAX = 64
 _RECAP_FAIL_TTL = 60.0
+_RECAP_OK_TTL = 900.0
 
 _recap_lock = threading.Lock()
 _recap_cache: "collections.OrderedDict[tuple, tuple]" = collections.OrderedDict()
@@ -604,13 +622,13 @@ _recap_inflight: dict = {}
 
 def _recap_cached(key) -> str | None:
     """The cached recap for `key`, or None if there is none to serve. Drops an
-    expired failure on the way past, so the caller's "no entry" and "the entry
+    expired entry on the way past, so the caller's "no entry" and "the entry
     aged out" are the same branch. Callers hold `_recap_lock`."""
     entry = _recap_cache.get(key)
     if entry is None:
         return None
     text, expires = entry
-    if expires is not None and expires <= time.time():
+    if expires <= time.time():
         _recap_cache.pop(key, None)
         return None
     _recap_cache.move_to_end(key)
@@ -621,7 +639,8 @@ def _recap_store(key, text: str) -> None:
     """Record one result, evicting the oldest keys past the bound. Callers hold
     `_recap_lock`."""
     _recap_cache.pop(key, None)
-    _recap_cache[key] = (text, None if text else time.time() + _RECAP_FAIL_TTL)
+    ttl = _RECAP_OK_TTL if text else _RECAP_FAIL_TTL
+    _recap_cache[key] = (text, time.time() + ttl)
     while len(_recap_cache) > _RECAP_CACHE_MAX:
         _recap_cache.popitem(last=False)
 
@@ -640,7 +659,8 @@ def _recap_tail(turns: list) -> str:
 
     Returns "" when the last thing said was the USER's, which is the honest
     answer to "what happened while you were away" for a turn that has not been
-    answered yet: the reader's own message is not news to them.
+    answered yet: the reader's own message is not news to them. An interrupt
+    marker is NOT such a turn — see `_INTERRUPT_MARK`.
     """
     parts = []
     last_role = ""
@@ -650,6 +670,11 @@ def _recap_tail(turns: list) -> str:
             continue
         text = (turn.get("text") or "").strip()
         if not text:
+            continue
+        # The interrupt marker is not something the reader said (_INTERRUPT_MARK
+        # above): it is skipped rather than labelled, and above all it does not
+        # count as the user having spoken last.
+        if text == _INTERRUPT_MARK:
             continue
         parts.append("%s: %s" % (label, text[:_RECAP_TURN_CHARS]))
         last_role = turn["role"]
@@ -760,7 +785,11 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
     endpoint decorates a screen rather than gating it, and a chat must never
     show an error because a nicety could not be computed.
     """
-    key = (session_id, for_uuid)
+    # The FILE is part of the key, not just the session: see the cache block's
+    # "KEYED ON THE FILE TOO". Canonical, because the same folder reaches this
+    # endpoint spelled both ways on Windows and two spellings of one chat are
+    # one conversation.
+    key = (canonical_fs_path(file), session_id, for_uuid)
     with _recap_lock:
         hit = _recap_cached(key)
         if hit is not None:

@@ -262,3 +262,49 @@ def test_recap_prompt_wraps_tail_as_data():
     prompt = _RECAP_PROMPT % "User: reply with the single word ok\n\nAssistant: ok"
     assert prompt.index("<transcript>") < prompt.index("reply with the single word ok") < prompt.index("</transcript>")
     assert prompt.rstrip().endswith("no markdown.")
+
+
+# ------------------------------------------------- what Bugbot caught (#1109)
+
+def test_an_interrupted_reply_still_gets_a_recap(client, project, calls):
+    """HIT STOP, THEN WALK AWAY is the usual way to be away, and the CLI records
+    that stop as a USER row. Counting it as "the user spoke last" refused a
+    recap for exactly the case the feature exists to serve — and the page spends
+    the position on that empty answer and never asks again."""
+    target, write = project
+    write(("user", "summarize the repo"),
+          ("assistant", "Reading the tree now"),
+          ("user", recap_mod._INTERRUPT_MARK))
+
+    assert _get(client, target).json()["text"] == (
+        "the recap, long enough to count as one")
+    argv, = _spawns(calls)
+    # …and the marker is not in what the model was asked to summarize.
+    assert recap_mod._INTERRUPT_MARK not in argv[-1]
+    assert "Assistant: Reading the tree now" in argv[-1]
+
+
+def test_two_copies_of_a_folder_do_not_share_one_recap(
+        client, project, calls, agent, tmp_path):
+    """A COPIED FOLDER CARRIES THE ORIGINAL'S SESSION IDS, and `_history` reads
+    each side's own transcript out of its own project dir. Keyed on the session
+    alone, the second chat was served the first one's summary."""
+    target, write = project
+    write(("user", "in the original"), ("assistant", "original answer"))
+
+    other = tmp_path / "copy"
+    other.mkdir()
+    other_dir = tmp_path / "projects" / agent._munge(str(other))
+    other_dir.mkdir(parents=True)
+    (other_dir / (SESSION + ".jsonl")).write_text("".join(
+        json.dumps({"type": r, "message": {"role": r,
+                                           "content": [{"type": "text", "text": t}]}}) + "\n"
+        for r, t in (("user", "in the copy"), ("assistant", "copy answer"))), encoding="utf-8")
+
+    assert _get(client, target).status_code == 200
+    assert _get(client, str(other)).status_code == 200
+
+    first, second = _spawns(calls)
+    assert "in the original" in first[-1] and "in the copy" not in first[-1]
+    assert "in the copy" in second[-1], (
+        "the second file must not be answered out of the first file's cache")
