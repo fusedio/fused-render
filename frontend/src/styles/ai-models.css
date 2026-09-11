@@ -771,12 +771,13 @@
 .am-hub-controls {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  /* A section's worth of air under it, not a card's. This row CHANGES which
-     view is below it, and at 8px it sat flush against the heading of the thing
-     it changes — reading as part of that section rather than as the control
-     over it. */
-  margin: 0 0 var(--am-gap-section);
+  /* Item B: 12px above (the mockup's `.ctl`), separating the row from the
+     big search box it sits under, and a section's worth of air below it —
+     this row CHANGES which view is below it, and at 0 it sat flush against
+     the heading of the thing it changes. */
+  margin: 12px 0 var(--am-gap-section);
 }
 
 /* An empty spacer, not a control: it soaks up the row's slack so whatever
@@ -796,9 +797,13 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin: 10px 0 var(--am-gap-head);
-  font-size: 12.5px;
+  margin: 16px 0 8px;
+  font-size: 11.5px;
   color: var(--fg-muted);
+}
+
+.am-hub-resultline b {
+  color: var(--fg);
 }
 
 /* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
@@ -841,15 +846,15 @@
    one flexible slot. */
 .am-hub-textfilter {
   flex: 0 0 auto;
-  width: 140px;
+  width: 150px;
   height: 32px;
   padding: 0 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 7px;
 }
 
 .am-hub-textfilter:focus-visible {
@@ -912,78 +917,121 @@
   outline-offset: -1px;
 }
 
-/* The two menus' TRIGGERS (D426). They were native selects wearing
-   .field-control, the app's canonical select skin; a select renders as the
-   PLATFORM's control rather than as this app's, and — the reason these two
-   changed — it cannot carry an icon, which is the whole of what makes a task
-   filter and five orderings readable at a glance. So: a button holding the
-   active option's glyph, its label and a caret, opening
-   @platform/ui/ContextMenu.
-   The metrics here are .field-control's to the pixel (32px tall, 13px text, 1px
-   border, 6px radius, 10px inset), so this row's height and rhythm are
-   unchanged and a trigger beside the search box reads as its sibling rather
-   than as a new species of control. */
-.am-hub-menu {
-  flex: 0 0 auto;
+/* Item B: the four menu triggers (Task/Fit/Size/Sort), rewritten to the
+   mockup's own `.menubtn`/`.dd` vocabulary. These replaced a `ContextMenu`-
+   based trigger (D426) because that shared surface has no slot for a hover
+   SENTENCE under every option (`.dd .h`, this pane's whole reason for
+   showing "Every result, regardless of whether it would run here" rather
+   than a bare label) — reproducing the mockup's markup here, scoped to
+   `.tp`, was judged the smaller drift than growing `MenuEntry` a field only
+   this page uses. `ControlMenu` (SearchControls.tsx) owns the dropdown/
+   outside-click logic that used to live in `ContextMenu`. */
+.tp .menubtn {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 10px 0 9px;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 7px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-/* Hover and open both raise the border to the weight select.field-control's own
-   :focus uses. Deliberately NOT a fill: these are two quiet controls in a row
-   whose loud element is the page of results they produce. */
-.am-hub-menu:hover,
-.am-hub-menu.open {
-  border-color: var(--fg-muted);
+.tp .menubtn .k {
+  color: var(--fg-muted);
 }
 
-.am-hub-menu:focus-visible {
+.tp .menubtn.active .k {
+  color: var(--fg);
+}
+
+.tp .menubtn .caret {
+  font-size: 9px;
+  color: var(--fg-muted);
+  margin-left: 2px;
+}
+
+.tp .menubtn.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.tp .menubtn .x {
+  color: var(--fg-muted);
+  margin-left: 2px;
+}
+
+.tp .menubtn .x:hover {
+  color: var(--fg);
+}
+
+.tp .menubtn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
-/* The glyph, at the 16px every other menu icon in the app is drawn at, and
-   muted — it identifies the option rather than asking to be pressed. It
-   brightens with the trigger so the whole control lights as one thing. */
-.am-hub-menu-icon {
-  flex: 0 0 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
+/* The open dropdown — 290px min-width per the mockup's measured box, one
+   option per row, each carrying its own hover sentence (`.h`) so a filter's
+   consequence is legible before it is clicked. */
+.tp .dd {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  z-index: 5;
+  min-width: 290px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* --shadow-lg is 0.18 alpha in light mode — the exact value the mockup's
+     literal rgba(0,0,0,.18) names, via the repo's own shadow scale. */
+  box-shadow: 0 8px 24px var(--shadow-lg);
 }
 
-.am-hub-menu:hover .am-hub-menu-icon,
-.am-hub-menu.open .am-hub-menu-icon {
+.tp .dd button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--fg);
+  font: inherit;
+  cursor: pointer;
 }
 
-/* Truncates rather than stretching the row: a task label is the server's
-   (HS-7), so its length is not this stylesheet's to promise. */
-.am-hub-menu-label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.tp .dd button:hover {
+  background: var(--ctl-quiet-bg);
 }
 
-/* Same muted grey, stroke weight and 12px box as the chevron
-   select.field-control paints as a background image, so a menu trigger and a
-   select elsewhere in the app wear one affordance. */
-.am-hub-menu-caret {
-  flex: 0 0 12px;
+.tp .dd button.on {
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.tp .dd .l {
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tp .dd .l .chk {
+  width: 12px;
+  color: var(--accent-soft);
+  font-size: 11px;
+}
+
+.tp .dd .h {
+  margin: 2px 0 0 20px;
+  font-size: 11px;
   color: var(--fg-muted);
+  line-height: 1.45;
 }
 
 .am-hub-search:focus-visible {
@@ -3556,7 +3604,9 @@ button.am-bench-model:focus-visible {
 .bigsearch {
   display: flex;
   gap: 8px;
-  margin-bottom: 4px;
+  /* Item B: the 12px gap before the controls row now lives on
+     `.am-hub-controls`'s own margin-top, not doubled up here. */
+  margin-bottom: 0;
 }
 
 .bigsearch input {

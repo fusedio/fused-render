@@ -17,11 +17,17 @@ describe("SearchControls task vocabulary", () => {
 });
 
 describe("SearchControls menu surface", () => {
-  it("reuses the app's one ContextMenu-based ControlMenu for every dropdown", () => {
-    expect(SRC).toContain("import ContextMenu, { type MenuEntry } from \"@platform/ui/ContextMenu\";");
+  it("uses one ControlMenu component for every dropdown, mockup-shaped (item B)", () => {
+    expect(SRC).not.toContain("@platform/ui/ContextMenu");
+    expect(SRC).toContain('"menubtn" + (active ? " active" : "")');
+    expect(SRC).toContain('className="dd" role="menu"');
     const menuCalls = SRC.match(/<ControlMenu/g) ?? [];
     // Task, Fit, Size (params), Sort — four menus in this row.
     expect(menuCalls.length).toBe(4);
+  });
+
+  it("shows every option's hover sentence as a <p class=\"h\"> line, not just on the trigger", () => {
+    expect(SRC).toContain('<p className="h">{it.hint}</p>');
   });
 });
 
@@ -31,6 +37,10 @@ describe("SearchControls result line", () => {
   });
 
   it("shows Searching… before a count exists, never a stale one", () => {
-    expect(SRC).toContain('loading\n            ? "Searching…"');
+    expect(SRC).toContain('loading ? (\n            "Searching…"');
+  });
+
+  it("bolds the match count, mockup-style (item E)", () => {
+    expect(SRC).toContain("<b>{matchCount}</b> match");
   });
 });

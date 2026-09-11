@@ -2,17 +2,15 @@
 // Task / Fit / Size / Sort menus, the two free-text filters (quant,
 // publisher), and the result line beneath them.
 //
-// Ported from the approved mockup's `controls()` — with one deliberate
-// narrowing. The mockup's menus render a hover SENTENCE under every option
-// (`<p class="h">`); this app's one menu surface, `@platform/ui/ContextMenu`,
-// has no slot for that (`MenuEntry` carries a label and an icon, nothing
-// else). Reproducing the mockup's `.dd`/`.l`/`.h` markup would mean a second,
-// hand-rolled dropdown beside the app's one menu surface — exactly the drift
-// `scripts/check-boundaries.mjs` and this file's own history (see the
-// now-superseded doc below) exist to prevent. So every menu here keeps
-// `ContextMenu`, and the hover sentence rides on the TRIGGER's own `title`
-// instead of under each option — one sentence instead of five, but never
-// zero.
+// Ported from the approved mockup's `controls()`. Item B (fix round 2):
+// the app's one shared dropdown (the platform menu surface) has no slot for
+// the mockup's hover SENTENCE under every option (`<p class="h">`) — its
+// entries carry a label and an icon, nothing else. Rather than grow that
+// shared surface a field only this one screen uses, `ControlMenu` below is
+// its own small dropdown, matching the mockup's `.menubtn`/`.dd`/`.l`/`.h`/
+// `.chk` markup verbatim (CSS in ai-models.css, scoped to `.tp`). It owns
+// its own outside-click/Escape dismissal, the same contract that shared
+// surface gives every other menu on this page.
 //
 // **The task vocabulary is still the server's, never a literal list**
 // (D313, HS-0a): "only the server knows which pipeline tags a registered
@@ -22,7 +20,7 @@
 //
 // No query box in this file any more — `HubSearchScreen` owns the one
 // `.bigsearch` input the mockup gives the whole screen, above this row.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   activeFitLevel,
   activeParamsBand,
@@ -34,96 +32,115 @@ import {
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
 import { getHubTasks, type HubFitLevel, type HubParamsBand, type HubTask } from "@platform/lib/api";
-import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
-import { MenuIcons } from "@platform/ui/MenuIcons";
 
-/** Which glyph each ordering wears — see this module's own history for why
- *  each choice is what it is (`downloads` reuses the download tray, `fit`
- *  the info glyph, `size` the drive glyph). */
-const SORT_ICONS: Record<ResultSort, ReactNode> = {
-  best: MenuIcons.target,
-  downloads: MenuIcons.download,
-  likes: MenuIcons.heart,
-  updated: MenuIcons.clock,
-  created: MenuIcons.sparkle,
-  trending: MenuIcons.share,
-  fit: MenuIcons.info,
-  size: MenuIcons.drive,
-};
-
-function Caret({ open }: { open: boolean }) {
-  return (
-    <svg
-      className="am-hub-menu-caret"
-      viewBox="0 0 12 12"
-      width="12"
-      height="12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d={open ? "M3 7.5l3-3 3 3" : "M3 4.5l3 3 3-3"} />
-    </svg>
-  );
+/** One row of an open `ControlMenu` dropdown — the mockup's own shape: a
+ *  label, the hover sentence explaining its consequence (`<p class="h">`,
+ *  shown for every option, not just on hover), and whether it is the option
+ *  currently in force. */
+export interface MenuOption {
+  label: string;
+  hint: string;
+  active: boolean;
+  onClick: () => void;
 }
 
-/** One of the row's menus: a bordered trigger showing what is in force, and
- *  `ContextMenu` hanging off its bottom-left corner. Exported so
- *  `HubSearchScreen` can reuse it verbatim rather than a second hand-rolled
- *  trigger — see this file's own doc for why a third menu surface is exactly
- *  the drift to avoid. */
+/** One of the row's menus: a `.menubtn` trigger reading `Key: value`, and
+ *  the mockup's own `.dd` dropdown hanging off its bottom-left corner.
+ *  `keyLabel` is the muted prefix inside the trigger ("Task:", "Fit:",
+ *  "Size:", "Sort:"); `onClear`, when given, draws the `.x` remover for a
+ *  non-default selection and resets it without opening the menu. */
 export function ControlMenu({
-  icon,
-  label,
+  keyLabel,
+  valueLabel,
   title,
   ariaLabel,
+  active,
+  onClear,
   items,
 }: {
-  icon: ReactNode;
-  label: string;
+  keyLabel: string;
+  valueLabel: string;
   title: string;
   ariaLabel: string;
-  items: MenuEntry[];
+  /** Whether a non-default option is in force — draws `.menubtn.active`. */
+  active: boolean;
+  onClear?: () => void;
+  items: MenuOption[];
 }) {
-  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
-  const openUnder = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    setAt({ x: r.left, y: r.bottom + 4 });
-  };
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Same dismissal contract `ContextMenu` gave every menu on this page:
+  // any outside pointerdown or Escape closes it.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   return (
-    <>
+    <div ref={rootRef} style={{ position: "relative" }}>
       <button
         type="button"
-        className={"am-hub-menu" + (at ? " open" : "")}
+        className={"menubtn" + (active ? " active" : "")}
         aria-haspopup="menu"
-        aria-expanded={at !== null}
+        aria-expanded={open}
         aria-label={ariaLabel}
         title={title}
-        onPointerDown={(e) => {
-          if (at) return; // this pointerdown already closed it — see ControlMenu's own doc
-          openUnder(e.currentTarget);
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          if (at) {
-            setAt(null);
-            return;
-          }
-          openUnder(e.currentTarget);
-        }}
+        onClick={() => setOpen((o) => !o)}
       >
-        <span className="am-hub-menu-icon" aria-hidden="true">
-          {icon}
-        </span>
-        <span className="am-hub-menu-label">{label}</span>
-        <Caret open={at !== null} />
+        <span className="k">{keyLabel}</span>
+        {valueLabel}
+        <span className="caret">▾</span>
+        {active && onClear && (
+          <span
+            className="x"
+            role="button"
+            aria-label={`Clear ${keyLabel.replace(":", "")} filter`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClear();
+              setOpen(false);
+            }}
+          >
+            ×
+          </span>
+        )}
       </button>
-      {at && <ContextMenu x={at.x} y={at.y} items={items} onClose={() => setAt(null)} />}
-    </>
+      {open && (
+        <div className="dd" role="menu">
+          {items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitemradio"
+              aria-checked={it.active}
+              className={it.active ? "on" : undefined}
+              onClick={() => {
+                it.onClick();
+                setOpen(false);
+              }}
+            >
+              <span className="l">
+                <span className="chk">{it.active ? "✓" : ""}</span>
+                {it.label}
+              </span>
+              <p className="h">{it.hint}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -190,41 +207,40 @@ export function SearchControls({
   const activeFit = activeFitLevel(fitLevel);
   const activeParams = activeParamsBand(paramsBand);
 
-  const taskItems: MenuEntry[] = [
+  const taskItems: MenuOption[] = [
     {
       label: "Any task",
-      icon: MenuIcons.filter,
+      hint: "Any task an engine here can run — pick one to show only models for that job",
       active: !task.trim(),
       onClick: () => onTask(""),
     },
-    ...(tasks.length ? (["separator"] as MenuEntry[]) : []),
     ...tasks.map(
-      (t): MenuEntry => ({
+      (t): MenuOption => ({
         label: t.label,
-        icon: MenuIcons.filter,
+        hint: t.help ?? "Showing only models for this task",
         active: t.tag === task,
         onClick: () => onTask(t.tag),
       }),
     ),
   ];
 
-  const fitItems: MenuEntry[] = FIT_LEVELS.map((l) => ({
+  const fitItems: MenuOption[] = FIT_LEVELS.map((l) => ({
     label: l.label,
-    icon: MenuIcons.info,
+    hint: l.title,
     active: l.value === fitLevel,
     onClick: () => onFitLevel(l.value),
   }));
 
-  const paramsItems: MenuEntry[] = PARAMS_BANDS.map((b) => ({
+  const paramsItems: MenuOption[] = PARAMS_BANDS.map((b) => ({
     label: b.label,
-    icon: MenuIcons.drive,
+    hint: b.title,
     active: b.value === paramsBand,
     onClick: () => onParamsBand(b.value),
   }));
 
-  const sortItems: MenuEntry[] = SORTS.map((s) => ({
+  const sortItems: MenuOption[] = SORTS.map((s) => ({
     label: s.label,
-    icon: SORT_ICONS[s.value],
+    hint: s.title,
     active: s.value === sort,
     onClick: () => onSort(s.value),
   }));
@@ -233,24 +249,30 @@ export function SearchControls({
     <div data-part="controls">
       <div className="am-hub-controls">
         <ControlMenu
-          icon={MenuIcons.filter}
-          label={activeT.label}
+          keyLabel="Task:"
+          valueLabel={activeT.label}
           title={activeT.title}
           ariaLabel={"Filter by task: " + activeT.label}
+          active={!!task.trim()}
+          onClear={() => onTask("")}
           items={taskItems}
         />
         <ControlMenu
-          icon={MenuIcons.info}
-          label={activeFit.label}
+          keyLabel="Fit:"
+          valueLabel={activeFit.label}
           title={activeFit.title}
           ariaLabel={"Filter by fit: " + activeFit.label}
+          active={fitLevel !== "any"}
+          onClear={() => onFitLevel("any")}
           items={fitItems}
         />
         <ControlMenu
-          icon={MenuIcons.drive}
-          label={activeParams.label}
+          keyLabel="Size:"
+          valueLabel={activeParams.label}
           title={activeParams.title}
           ariaLabel={"Filter by parameter count: " + activeParams.label}
+          active={paramsBand !== "any"}
+          onClear={() => onParamsBand("any")}
           items={paramsItems}
         />
         <input
@@ -273,24 +295,28 @@ export function SearchControls({
         />
         <span className="am-hub-controls-push" />
         <ControlMenu
-          icon={SORT_ICONS[activeS.value]}
-          label={activeS.label}
+          keyLabel="Sort:"
+          valueLabel={activeS.label}
           title={activeS.title}
           ariaLabel={"Sort results: " + activeS.label}
+          active={false}
           items={sortItems}
         />
       </div>
       <div className="am-hub-resultline" data-part="resultline">
         <span>
-          {loading
-            ? "Searching…"
-            : matchCount === null
-              ? ""
-              : matchCount === 0
-                ? "0 matches"
-                : `${matchCount} match${matchCount === 1 ? "" : "es"}${
-                    hiddenUnfit > 0 && !includeUnfit ? ` · ${hiddenUnfit} hidden — will not fit here` : ""
-                  }`}
+          {loading ? (
+            "Searching…"
+          ) : matchCount === null ? (
+            ""
+          ) : matchCount === 0 ? (
+            "0 matches"
+          ) : (
+            <>
+              <b>{matchCount}</b> match{matchCount === 1 ? "" : "es"}
+              {hiddenUnfit > 0 && !includeUnfit ? ` · ${hiddenUnfit} hidden — will not fit here` : ""}
+            </>
+          )}
         </span>
         <span className="am-hub-controls-push" />
         <label className="am-hub-unfit-toggle" title="Include models this machine likely cannot run">
