@@ -368,20 +368,20 @@ export interface MergedSection {
 }
 
 /** The disk rows in the row's reading order: resident first, then by size,
- *  largest first.
+ *  smallest first.
  *
  *  Only membership of `loadedById` is read, never the row itself: what "loaded"
  *  means for an ORDER is "this one is costing memory right now", and a model
  *  whose weights are still going in is already that. Waiting for `ready` would
  *  move the card twice for one event.
  *
- *  Behind the resident one, LARGEST first — this is a vertical pane scanned top
- *  to bottom, not a horizontal carousel read a few cards deep, so the row's own
- *  size figure is what the user reads it against as they go, and biggest-first
- *  answers the question this listing actually exists to answer: "what is the
- *  disk spent on". `lastUsed` no longer orders the list (the "Last used" chip
- *  is computed separately and is unaffected); ties break on `size`, then on
- *  `id` ascending for a deterministic order across renders.
+ *  Behind the resident one, SMALLEST first — this is the row a basic user
+ *  actually reaches for, and the smallest model is the one that loads
+ *  quickest and costs least to try. The section header already prints the
+ *  total bytes spent, so "what is the disk spent on" is answered there, not
+ *  by the card order. `lastUsed` no longer orders the list (the "Last used"
+ *  chip is computed separately and is unaffected); ties break on `size`, then
+ *  on `id` ascending for a deterministic order across renders.
  */
 function orderDisk(repos: AiModelRepo[], loaded: ReadonlyMap<string, unknown>): AiModelRepo[] {
   // Sorted copy; Array.prototype.sort is stable, though the id tiebreak below
@@ -390,7 +390,7 @@ function orderDisk(repos: AiModelRepo[], loaded: ReadonlyMap<string, unknown>): 
     const aLoaded = loaded.has(a.id);
     const bLoaded = loaded.has(b.id);
     if (aLoaded !== bLoaded) return aLoaded ? -1 : 1;
-    if (a.size !== b.size) return b.size - a.size;
+    if (a.size !== b.size) return a.size - b.size;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }

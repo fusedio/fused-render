@@ -2185,3 +2185,25 @@ rationale on each.
 Items 1–2 are markup-only per the brief: no test run. Item 3:
 `bun test frontend/src/apps/ai_models/lib/aiModelGroups.test.ts` — 85 pass,
 0 fail. `bun run --cwd frontend typecheck` — clean.
+
+## Fix round 15 (2026-09-11) — disk list smallest first
+
+- User, seeing round 14's largest-first list: "the smallest model should be
+  first, not last." `orderDisk`'s size comparator flips to ascending
+  (`a.size - b.size`); resident-first and the `id` asc tiebreak are
+  unchanged. Doc comment rewritten: smallest first is the quickest to load
+  and what a basic user actually reaches for, and the section header's own
+  total-bytes figure already answers "what is the disk spent on" (D869,
+  amends D868).
+- Updated three `aiModelGroups.test.ts` cases to the ascending expectation:
+  the two the brief named ("...largest first" → "...smallest first",
+  "ignores lastUsed entirely") plus "keeps the listing's order when nothing
+  is resident and atime is silent", which also runs through `orderDisk` and
+  so needed the same flip (renamed "orders by size, smallest first, when
+  nothing is resident"). "keeps the resident card ahead" is untouched.
+- Grepped `tests/` for the round-14 comment text and for "largest
+  first"/"biggest-first": none found outside the notes files themselves, so
+  no pytest run needed.
+
+`bun test frontend/src/apps/ai_models/lib/aiModelGroups.test.ts` — 85 pass,
+0 fail. `bun run --cwd frontend typecheck` — clean.

@@ -301,14 +301,13 @@ const sectionsOf = (repos: AiModelRepo[], loaded = resident()) =>
 describe("a capability's row is disk then recommended", () => {
   // The one order the whole row rests on. Loaded is the only state that costs
   // something continuously, so it leads; recommended is the only half that is
-  // not on this machine, so it trails; and the disk rows in between run most
-  // recently used first, falling back to the server's size sort when atime has
-  // nothing to say.
+  // not on this machine, so it trails; and the disk rows in between run
+  // smallest first.
   it("puts what is loaded first, then the rest of the disk, then recommendations", () => {
     const sections = sectionsOf(ALL, resident("mlx-community/Qwen3-8B-4bit"));
     const text = sections.find((s) => s.key === "text-generation");
-    // Qwen3-8B-4bit is the SMALLER of the two and the server sorted it second;
-    // being resident is what moves it.
+    // Qwen3-8B-4bit is already the smaller of the two, so residency doesn't
+    // change its position here — see the next test for the case where it does.
     expect(text?.disk.map((r) => r.id)).toEqual([
       "mlx-community/Qwen3-8B-4bit",
       "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -318,17 +317,17 @@ describe("a capability's row is disk then recommended", () => {
     ]);
   });
 
-  it("keeps the listing's order when nothing is resident and atime is silent", () => {
+  it("orders by size, smallest first, when nothing is resident", () => {
     const text = sectionsOf(ALL).find((s) => s.key === "text-generation");
     expect(text?.disk.map((r) => r.id)).toEqual([
-      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
       "mlx-community/Qwen3-8B-4bit",
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
     ]);
   });
 
-  // Behind the resident card the row is MRU: a horizontal row is read a few
-  // cards deep, so the front holds what the user actually reaches for.
-  it("orders the unloaded disk rows by size, largest first", () => {
+  // Behind the resident card the row is smallest-first: the quickest to load,
+  // the one a basic user actually reaches for.
+  it("orders the unloaded disk rows by size, smallest first", () => {
     const stale = repo({
       id: "a/stale",
       capability: "text-generation",
@@ -342,8 +341,8 @@ describe("a capability's row is disk then recommended", () => {
       lastUsed: 2_000,
     });
     const text = sectionsOf([stale, fresh]).find((s) => s.key === "text-generation");
-    // Size wins even though z/fresh was used more recently.
-    expect(text?.disk.map((r) => r.id)).toEqual(["a/stale", "z/fresh"]);
+    // Size wins even though a/stale was used less recently.
+    expect(text?.disk.map((r) => r.id)).toEqual(["z/fresh", "a/stale"]);
   });
 
   it("ignores lastUsed entirely — size order, nulls included", () => {
@@ -358,7 +357,7 @@ describe("a capability's row is disk then recommended", () => {
     const text = sectionsOf([neverBig, neverSmall, dated]).find(
       (s) => s.key === "text-generation",
     );
-    expect(text?.disk.map((r) => r.id)).toEqual(["b/never-big", "c/never-small", "a/dated"]);
+    expect(text?.disk.map((r) => r.id)).toEqual(["a/dated", "c/never-small", "b/never-big"]);
   });
 
   // Residency still beats recency: the model costing memory RIGHT NOW leads
