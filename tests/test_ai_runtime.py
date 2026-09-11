@@ -4324,7 +4324,7 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     installed = {"yes": False}
     report_jobs = []
 
-    def fake_start(project_dir, report_job=True):
+    def fake_start(project_dir, allow_build=False, report_job=True):
         rounds.append(project_dir)
         report_jobs.append(report_job)
         # Round one is the interpreter, under a key that is NOT the venv key.
@@ -4355,6 +4355,60 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     assert report_jobs == [False, False]
 
 
+@pytest.mark.parametrize("manifest, expected", [
+    # No table at all: the overwhelming majority of bundled runners — the
+    # wheels-only default must reach `envinstall.start` unchanged.
+    ("[project]\nname = \"r\"\ndependencies = []\n", False),
+    # The declared opt-in (`ltx_video/pyproject.toml`'s real shape) must reach
+    # `envinstall.start` as allow_build=True — this is the regression itself:
+    # a runner naming a git dependency with no other way to satisfy it must
+    # not be built with `--no-build` still in force.
+    ("[project]\nname = \"r\"\ndependencies = []\n\n"
+     "[tool.fused-render.runner]\nallow_build = true\n", True),
+    # A falsy/explicit-off value reads the same as absent, not as a second
+    # spelling of "no" that happens to also work — the manifest parser must
+    # not be more lenient than the boolean the table promises.
+    ("[project]\nname = \"r\"\ndependencies = []\n\n"
+     "[tool.fused-render.runner]\nallow_build = false\n", False),
+], ids=["no-table", "declared-true", "declared-false"])
+def test_ensure_venv_passes_through_the_runners_own_allow_build_declaration(
+        monkeypatch, tmp_path, manifest, expected):
+    """The supervisor-side half of the per-runner build opt-in: `_ensure_venv`
+    must read `allow_build` off THIS runner's own `pyproject.toml`
+    (`projectenv.runner_allows_build`) and pass it through to
+    `envinstall.start`, rather than defaulting silently — that default is what
+    made `ltx_video`'s git-sourced dependencies uninstallable under
+    `_env_install_worker.py`'s `--no-build`, with no way for that one folder to
+    ask for the opposite. A runner that does not declare the table must keep
+    getting `allow_build=False` unchanged, so this is parametrized over both
+    directions rather than only the new one.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(manifest)
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="R")
+    seen_allow_build = []
+
+    def fake_start(project_dir, allow_build=False, report_job=True):
+        seen_allow_build.append(allow_build)
+        return {"key": "venv-key", "done": True, "error": None, "claimed": True}
+
+    monkeypatch.setattr(envinstall, "start", fake_start)
+    monkeypatch.setattr(envinstall, "progress",
+                        lambda key: {"done": True, "error": None, "stage": "done"})
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: bool(seen_allow_build))
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    assert supervisor._ensure_venv(runner, worker, "sys:ai-model:m") == "/venv/bin/python"
+    assert seen_allow_build == [expected]
+
+
 def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
     """The bug this whole feature shipped to fix: `_ensure_venv` used to read
     only `record["stage"]` (the coarse "installing") and threw away the
@@ -4383,7 +4437,7 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, allow_build=False, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -4439,7 +4493,7 @@ def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_pat
         {"done": True, "error": None, "stage": "done"},
     ]
 
-    monkeypatch.setattr(envinstall, "start", lambda d, report_job=True: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "start", lambda d, allow_build=False, report_job=True: {"key": "venv-key", "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
     monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
@@ -4529,7 +4583,7 @@ def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: False)
     monkeypatch.setattr(envinstall, "start",
-                        lambda d, report_job=True: {"key": "abc123", "done": False, "claimed": True})
+                        lambda d, allow_build=False, report_job=True: {"key": "abc123", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: {"done": False, "stage": "sync"})
     monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
     # The real one — the fixture stubs it, and this test is about what it does.
@@ -4587,7 +4641,7 @@ def shared_install(fake_runner, monkeypatch):
 
     state = {"claims": 0, "done": False, "cancelled": [], "error": None}
 
-    def start(project_dir, report_job=True):
+    def start(project_dir, allow_build=False, report_job=True):
         state["claims"] += 1
         return {"key": "shared-key", "done": False, "claimed": state["claims"] == 1}
 
@@ -4908,7 +4962,7 @@ def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: installed["yes"])
     monkeypatch.setattr(envinstall, "start",
-                        lambda d, report_job=True: {"key": "shared-key", "done": False, "claimed": True})
+                        lambda d, allow_build=False, report_job=True: {"key": "shared-key", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: (
         installed.update(yes=True) or {"done": True, "error": None, "stage": "done"}))
     monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")

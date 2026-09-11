@@ -1043,8 +1043,18 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     progress record, the same verbatim uv errors that every declaring folder in
     the app already gets. A first `torch` install is gigabytes, which is exactly
     why this is a reported stage and not a silent wait.
+
+    `allow_build` is read off the runner's OWN manifest
+    (`projectenv.runner_allows_build`) rather than defaulted here: every bundled
+    runner keeps `--no-build` (PY-18's wheels-only rule) except the one that
+    declares `[tool.fused-render.runner]` `allow_build = true` because its only
+    dependency source is a git checkout with no PyPI release to route a wheel
+    from at all (`ai/runners/ltx_video/pyproject.toml`). This is the automatic
+    build path, not the consent-and-retry one `/api/env/install` offers a user
+    after a genuine no-wheel failure — a folder that has not declared the table
+    gets the same refusal it always has.
     """
-    from fused_render import envinstall
+    from fused_render import envinstall, projectenv
 
     if envinstall.is_installed(runner.folder):
         return envinstall.venv_python_for(runner.folder)
@@ -1071,7 +1081,11 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # `start()`'s own generic `sys:env-install:<key>` row would open
         # alongside it, and a model's first load would show two jobs-dock
         # entries for the one `uv sync` actually running.
-        started = envinstall.start(runner.folder, report_job=False)
+        started = envinstall.start(
+            runner.folder,
+            allow_build=projectenv.runner_allows_build(runner.folder),
+            report_job=False,
+        )
         key = started.get("key") or envinstall.venv_key_for(runner.folder)
         # Published on the worker — and counted — so that stopping this bring-up
         # can stop the install when it is the only thing left waiting on it, and

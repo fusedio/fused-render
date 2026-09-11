@@ -934,11 +934,11 @@ def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
 
 
 @requires_fused
-def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
-    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`)
-    must always reach a real worker — a user who chose to compile from source
-    must not be told "no" by a record left over from a `--no-build` run that
-    never even tried that."""
+def test_user_confirmed_build_bypasses_the_poison_record(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`,
+    which now also sets `user_confirmed_build`) must always reach a real
+    worker — a user who chose to compile from source must not be told "no" by
+    a record left over from a `--no-build` run that never even tried that."""
     proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
     key = envinstall.venv_key_for(proj)
     poisoned = {
@@ -956,10 +956,50 @@ def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
     spawned = []
     monkeypatch.setattr(envinstall, "_spawn",
                         lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
-    rec = envinstall.start(proj, allow_build=True)
-    assert spawned, "allow_build=True must bypass the poison record"
+    rec = envinstall.start(proj, allow_build=True, user_confirmed_build=True)
+    assert spawned, "user_confirmed_build=True must bypass the poison record"
     assert rec["claimed"] is True
     assert spawned[0][2].get("allow_build") is True
+
+
+@requires_fused
+def test_a_declarative_allow_build_does_not_bypass_the_poison_record(tmp_path, monkeypatch):
+    """The bug code review caught: `allow_build=True` with no
+    `user_confirmed_build` is exactly the shape `ai/supervisor.py._ensure_venv`
+    now passes automatically, every load, for a runner that declares
+    `[tool.fused-render.runner] allow_build = true` (ltx_video) — with no
+    click, ever. If that alone bypassed the poison record, a user whose ltx
+    install fails for a repeatable reason would get a fresh detached `uv
+    sync` worker spawned on every single model load, forever, with no
+    short-circuit — where every other runner would have stopped retrying.
+    Only an actual "install anyway" click (`user_confirmed_build=True`) may
+    bypass a poisoned record; a folder's own manifest declaring it wants to
+    build is not that."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    def never(*a, **kw):
+        raise AssertionError(
+            "a poisoned key must not spawn attempt N+1 from a declarative "
+            "allow_build alone"
+        )
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    rec = envinstall.start(proj, allow_build=True)
+    assert rec["key"] == key
+    assert rec["platform_incompatible"] == poisoned["platform_incompatible"]
+    assert rec["done"] is True and rec["error"]
 
 
 # --- a jobs-dock row for every venv install -----------------------------------

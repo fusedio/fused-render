@@ -1987,7 +1987,8 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     threading.Thread(target=run, name="env-install-jobs-mirror", daemon=True).start()
 
 
-def start(project_dir: str, allow_build: bool = False, report_job: bool = True) -> dict:
+def start(project_dir: str, allow_build: bool = False, report_job: bool = True,
+          user_confirmed_build: bool = False) -> dict:
     """Begin (or join) the install for `project_dir`; returns its progress.
 
     `report_job=False` opts out of `_mirror_into_jobs`'s generic
@@ -2009,7 +2010,28 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True) 
     bundled AI runners, through `ai/supervisor.py`) keeps its `--no-build`
     behaviour unchanged, and the one caller that means to allow a source build
     (`/api/env/install`'s explicit retry, after the resolver's own no-wheel
-    error) says so.
+    error) says so. A runner can also reach `allow_build=True` DECLARATIVELY —
+    `[tool.fused-render.runner] allow_build = true` in its own manifest, read
+    by `ai/supervisor.py._ensure_venv` via `projectenv.runner_allows_build` —
+    on every automatic load, with no click at all; that is a separate thing
+    from `user_confirmed_build` below and must not be conflated with it.
+
+    `user_confirmed_build` governs ONLY the poisoned-record short-circuit
+    below, and is deliberately a SEPARATE parameter from `allow_build`: the
+    two answer different questions. `allow_build` says "may this attempt
+    build from source" (a fact about the manifest or the click, forwarded to
+    the worker); `user_confirmed_build` says "did an actual human just click
+    'install anyway' on THIS call" (a one-time action that justifies
+    distrusting a stale terminal verdict). `/api/env/install`'s retry sets
+    both from the same request field, because for that caller they really are
+    the same event. `ai/supervisor.py._ensure_venv` sets only `allow_build`
+    (from the runner's manifest) and leaves `user_confirmed_build` at its
+    default False — a folder's own `pyproject.toml` declaring it wants to
+    build is a standing declaration, not a one-time click, and the two must
+    not be conflated even though a run with `allow_build=True` can never
+    actually reach the record this parameter guards (see that guard's own
+    comment below for why, and for the honest account of what this
+    parameter does and does not prevent).
 
     Idempotent in the two ways that matter: already installed is a no-op, and an
     install already running is joined rather than duplicated. Two workers running
@@ -2049,10 +2071,45 @@ def start(project_dir: str, allow_build: bool = False, report_job: bool = True) 
     # so the memory has to live here, keyed off the manifest rather than off
     # a count: `poisoned` is None the instant `pyproject.toml` changes, which
     # is what lets a user who drops the offending dependency retry for real.
-    # `allow_build` is excluded on purpose — an explicit "install anyway"
-    # click must always reach a real worker, never be answered out of a
-    # record from a run that never even tried building from source.
-    if not allow_build:
+    # `user_confirmed_build` is excluded on purpose — an explicit "install
+    # anyway" click must always reach a real worker, never be answered out of
+    # a record from a run that never even tried building from source.
+    #
+    # This is deliberately NOT `allow_build`: `ai/supervisor.py._ensure_venv`
+    # passes `allow_build=True` automatically, on every load, for a runner
+    # that DECLARES the opt-in table (ltx_video) — no click, ever. What this
+    # guard actually keeps `allow_build=True` from doing is standing in for a
+    # human's one-time "install anyway" consent: a folder's manifest saying
+    # it wants to build is a standing fact, true on every call, and must not
+    # be treated as the click this parameter is reserved for.
+    #
+    # It is NOT, and cannot be, what stops a poisoned `allow_build=True`
+    # runner from respawning forever — that scenario is unreachable by
+    # construction, not prevented by this check. `_env_install_worker.install`
+    # only computes `needs_build` (and, downstream of it, the
+    # `platform_incompatible` verdict `_permanent_failure` looks for) when
+    # `allow_build` is False; a run made with `allow_build=True` can never
+    # write a poisonable record in the first place, so there is nothing here
+    # for `user_confirmed_build` to have bypassed. An ordinary resolver
+    # failure (network, a bad pin, no `git` on PATH) never poisons for ANY
+    # runner, opted in or not — `_permanent_failure`'s own docstring explains
+    # why that is deliberately narrow — so "a failed automatic build is
+    # retried on the next load" is the existing norm every runner already
+    # gets, not a new exposure this opt-in introduces.
+    #
+    # The real, narrow residual case (not what this parameter addresses):
+    # a runner folder has no user-facing "install anyway" retry at all
+    # (`/api/env/install` derives its project from a page, never from
+    # `ai/runners/*`), so a `platform_incompatible` record that somehow
+    # predated a runner's `allow_build` opt-in, and whose `manifest_digest`
+    # still matched, would have no in-app recovery path. In practice this is
+    # mostly defused by the opt-in itself: adding the
+    # `[tool.fused-render.runner]` table changes the manifest bytes
+    # `projectenv.state_digest` hashes, which is exactly what
+    # `_permanent_failure` compares — so the commit that opts a runner into
+    # building invalidates any pre-existing poison record for it as a side
+    # effect, `ltx_video` included.
+    if not user_confirmed_build:
         poisoned = _permanent_failure(key, project_dir)
         if poisoned is not None:
             return _reported(key, poisoned)
