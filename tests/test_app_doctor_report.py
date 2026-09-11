@@ -15,6 +15,7 @@ The spawn is stubbed at the same module seam the scaffolding tests use
 """
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -844,23 +845,61 @@ def test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step(workspa
     assert app_doctor._COMMIT_STEP not in prompt
 
 
+def test_git_skill_section_tells_the_gitignore_branch_to_commit_its_own_edit():
+    """Re-review finding: `_COMMIT_STEP_EXEMPT` means the `git` row's prompt
+    carries NO commit instruction of its own — SKILL.md's `git` section is
+    the whole story (see the test above). That section offers two fixes:
+    "Commit the listed paths" (self-contained: committing IS the action) or
+    ".gitignore them" (NOT self-contained: writing/editing a `.gitignore` is
+    itself a file edit that then needs committing, or it shows up as its own
+    uncommitted change and the row fails again next time). Before the
+    `_COMMIT_STEP` exemption, the generic step caught this; now nothing does
+    unless the section itself says so. Assert the `.gitignore` branch is
+    followed by an explicit instruction to commit that edit."""
+    text = (Path(__file__).resolve().parents[1] / "skills" /
+            "fused-render-app-doctor" / "SKILL.md").read_text()
+    section = text.split("## `git`", 1)[1].split("\n## ", 1)[0]
+    assert ".gitignore" in section
+    gitignore_idx = section.index(".gitignore")
+    after = section[gitignore_idx:].lower()
+    assert "commit" in after, (
+        "the .gitignore branch of the git fix must say to commit that edit too"
+    )
+
+
 def test_fix_all_containing_a_pushed_row_can_still_push_for_that_row(workspace):
     """Review finding 1 in `doctor_prompt_all`: a Fix-all run that includes a
     `pushed` row must still be able to push for that row — the trailing
     `_COMMIT_STEP_ALL` step must not be phrased as a blanket "never push"
-    that overrides the `pushed` row's own SKILL.md instruction."""
+    that overrides the `pushed` row's own SKILL.md instruction.
+
+    Absence of "never push" alone would also pass if the step said nothing
+    about pushing at all — silence isn't permission. Assert the real
+    semantics: the step affirmatively defers to the `pushed` row's own
+    section rather than merely not-forbidding it."""
     checks = [
         {"id": "pushed", "label": "Every commit is pushed", "kind": "fact",
          "state": "fail", "detail": "1 commit ahead of upstream", "findings": []},
     ]
     prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
     assert "never push" not in prompt.lower()
+    lower = prompt.lower()
+    # The trailing step must name the `pushed` row and instruct following
+    # through on push for it — not just avoid a blanket prohibition.
+    assert "pushed" in lower
+    assert "follow through on push" in lower
+    assert "does not forbid it" in lower
 
 
 def test_fix_all_containing_a_git_row_can_still_commit_pre_existing_paths(workspace):
     """Review finding 2 in `doctor_prompt_all`: a Fix-all run that includes a
     `git` row must still be able to commit paths that were already
-    uncommitted before the run — not only "files you actually edited"."""
+    uncommitted before the run — not only "files you actually edited".
+
+    A bare "pre-existing" substring would also pass if it appeared in some
+    unrelated disclaimer. Assert the real semantics: the step explicitly
+    scopes the commit to include paths a `git` row asked for, attributed to
+    that row, not just files edited this run."""
     checks = [
         {"id": "git", "label": "Every change is committed", "kind": "fact",
          "state": "fail", "detail": "1 uncommitted path",
@@ -868,9 +907,13 @@ def test_fix_all_containing_a_git_row_can_still_commit_pre_existing_paths(worksp
                        "excerpt": "?? a.py"}]},
     ]
     prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
+    lower = prompt.lower()
     # The trailing step must not read as forbidding a commit of pre-existing
     # uncommitted paths that the git row itself asked for.
-    assert "pre-existing" in prompt.lower()
+    assert "pre-existing" in lower
+    assert "pre-existing uncommitted" in lower
+    assert "a `git` row" in lower or "a git row" in lower
+    assert "even though you didn't edit them" in lower
 
 
 def test_fix_all_makes_one_trailing_commit_not_one_per_row(workspace):
