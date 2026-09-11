@@ -3917,6 +3917,15 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # A main-turn `result` this scan has not turned into a seam yet. How FAR
     # back it is no longer matters — see the genuine-boundary branch below.
     last_result = None
+    # WHETHER THE WINDOW'S OWN OPENING ECHO HAS GONE PAST. A window always
+    # opens at a turn boundary — that is the whole of `_read_current_turn`'s
+    # cursor rule — so the FIRST echo in it with no `result` before it is the
+    # echo of the turn the window opens on, not a follow-up folded into
+    # anything. Counting it as outstanding made the window's own closing
+    # `result` report a fold-in seam for a payload holding ONE turn, and
+    # spent the `last_result` that the genuinely new turn's echo later in the
+    # same window needed (see the `else` that reads this).
+    opened = False
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -3937,9 +3946,9 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 # Not a seam YET. It becomes one if a new user turn shows up
                 # after it inside this window — see the `elif` below.
                 last_result = i
-        elif i and _starts_new_turn(row):
-            # `i and` skips `rows[0]`: the window opens on its own turn's echo.
+        elif _starts_new_turn(row):
             if seen_result:
+                opened = True
                 seen_result = False   # a genuine new turn, not a fold-in
                 # A GENUINE BOUNDARY IS A SEAM TOO, and it has to be reported
                 # for the same reason a fold-in does: the page gets ONE payload
@@ -3983,6 +3992,24 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 if last_result is not None:
                     _seam(breaks, rows, i, shape, app_reads)
                     last_result = None
+            elif not opened:
+                # THE WINDOW'S OWN OPENING ECHO, and `opened` is the whole of
+                # what tells it from a fold-in. It used to be `rows[0]` — index
+                # 0 and nothing else — which held only while the echo was
+                # literally the first row of the window. It is not: a window
+                # reopened on a still-live host begins with the CLI's
+                # `system/init` and `system/status` before the echo (the real
+                # capture in `test_...second_window...`), and with the echo at
+                # index 2 this branch read the window's own turn as a follow-up
+                # absorbed into a reply that had not even started. Its closing
+                # `result` then reported a fold-in seam for a one-turn payload,
+                # and cleared `last_result`, so when the genuinely new turn's
+                # echo did arrive later in that same window it found nothing to
+                # report a boundary against — the page was handed two replies
+                # in one payload with no seam, and re-rendered the older one
+                # into the new turn's bubble (the second-window duplicate,
+                # PR #1119).
+                opened = True
             else:
                 outstanding += 1
     return breaks

@@ -335,6 +335,91 @@ def test_any_row_between_the_result_and_the_echo_still_leaves_a_seam(agent):
         "and the seam still falls between the segments, never inside one")
 
 
+def test_a_window_that_opens_on_the_CLI_s_plumbing_reports_no_seam_of_its_own(agent):
+    """ONE TURN IS NEVER A SEAM, however the window opens on it.
+
+    Taken from a `poll` capture of the reproduction: a send into a still-live
+    host makes the CLI write `system/init` and `system/status` before it echoes
+    the message, so the window does NOT open on its own turn's echo — the echo
+    is at index 2. The rule that skipped it was `rows[0]` and nothing else, so
+    with two rows in front of it the window's OWN opening turn was counted as a
+    follow-up absorbed into a reply that had not even started, and the `result`
+    that closed it reported a fold-in seam for a payload holding ONE turn.
+
+    The page then took the whole of that reply as the base for the turn it was
+    waiting on. See the test below for the other half of the damage."""
+    body = "A" * 483                      # the real length, from the capture
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the question"),        # index 2, not index 0
+        _text_row(body),
+        _result_row(body),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == [], (
+        "one turn in the window, so there is no boundary inside it to report")
+
+
+def test_the_captured_reopened_window_reports_the_boundary_it_actually_has(agent):
+    """THE SAME CAPTURE, ONE POLL LATER: the newer turn's echo has landed, so
+    the window really does carry two replies and really does need a seam.
+
+    THIS ONE ANSWERED THE SAME BEFORE THE FIX, and it is here to pin that,
+    because the two roads to it are not the same thing and only one of them is
+    a boundary. Miscounting the window's own opening echo as a fold-in made its
+    `result` report the seam and clear `last_result` on the way past, so the
+    genuinely new echo below reported nothing — the offsets coincide only
+    because the window opens on the very turn the fold-in branch was crediting.
+    They stop coinciding the moment the window holds ONE turn (the test above,
+    which is where the wrong road shows), and a reader is entitled to the
+    boundary being reported by the row that actually is one.
+
+    The offsets are the reply already on screen, exactly — which is what makes
+    this payload safe for a reader to slice."""
+    prev, new = "A" * 483, "Yes"
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the question"),
+        _text_row(prev),
+        {"type": "stream_event", "event": {"type": "message_stop"}},
+        _result_row(prev),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the follow-up question"),
+        _text_row(new),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks == [{"segments": 1, "text": len(prev)}]
+    segs = agent._segments_from_rows(rows)
+    texts = [sg["text"] for sg in segs if sg["kind"] == "text"]
+    # The seam falls BETWEEN the segments, never inside one, so a reader can
+    # cut on it: everything before it is the reply already on screen.
+    assert texts[0] == prev
+    assert "".join(texts)[:breaks[0]["text"]] == prev
+
+
+def test_a_follow_up_absorbed_into_a_window_that_opens_on_plumbing_still_reports(agent):
+    """...and the opening-echo rule must not swallow a REAL fold-in.
+
+    The window opens on plumbing and its own echo, exactly as above, and then a
+    follow-up is drained into the reply while it is still streaming. That
+    second echo is a genuine fold-in — no `result` between it and the reply it
+    landed in — and its seam is the `result` that closes that reply."""
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("q1"), _text_row("Reply A, first half. "),
+        _user_row("q2"),                      # absorbed mid-reply
+        _text_row("Reply A, second half."),
+        _result_row("Reply A."),
+        _text_row("Reply B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks == [{"segments": 1,
+                       "text": len("Reply A, first half. Reply A, second half.")}]
+
+
 def test_the_captured_second_window_shape_reports_its_seam(agent):
     """THE REAL ROWS, from a transcript where the duplication was reproduced.
 

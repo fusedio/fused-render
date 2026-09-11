@@ -1598,6 +1598,163 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply[0]!.text).toBe(A.text);
   });
 
+  // ── the SECOND WINDOW's duplicate (PR #1119), from a real `poll` capture ──
+  //
+  // The reported symptom, in the reporter's words: "if multiple tabs are open
+  // to the same conversation, the last response gets duplicated into the UI
+  // before the new response starts streaming when a new prompt is sent".
+  //
+  // The window a second tab adopts opens on the PREVIOUS turn, and it stays
+  // that way for several polls: agent.py's cursor cannot step past that reply
+  // until a NEWER turn's echo proves it closed, and the echo does not land the
+  // moment the other tab sends — the CLI writes `system/init` and
+  // `system/status` first. Every poll in between hands this loop the previous
+  // reply in full (`echo_pending` does not blank them: the run is not idle any
+  // more, those two rows came after the `result`).
+  //
+  // `sendMessage`'s road has always seeded `priorReply` against exactly that.
+  // The ADOPTED road seeded nothing, so the reply already on screen was typed
+  // into a fresh bubble underneath itself — and then, once the new reply began,
+  // it was left stranded in a bubble of its own below it.
+  //
+  // Every payload below is the shape agent.py actually produced, replayed out
+  // of the capture the reporter sent: `window` and `turn_breaks` included, the
+  // seam arriving only on the poll where the newer echo does.
+  const CAPTURED_PREV = "P".repeat(483); // the real lengths, from the capture
+  const CAPTURED_NEW = "Yes";
+  /** The captured poll sequence a second window sees, from its first lap. */
+  const capturedSecondWindow = (n: number): PollResponse => {
+    // Laps 0-3: the send has gone out in the other tab, the echo has not
+    // landed, and the window is still the previous reply alone. No seam —
+    // there is no boundary inside a window holding one turn.
+    if (n <= 3) {
+      return poll({ window: 0, segments: [text(CAPTURED_PREV)], text: CAPTURED_PREV });
+    }
+    // The echo lands: two replies in one window, and agent.py names the seam.
+    // The separator rides INSIDE the newer segment (`_segments_from_rows`'s
+    // `grow`), so the seam is at the previous reply's own length.
+    if (n === 4) {
+      return poll({
+        window: 0,
+        segments: [text(CAPTURED_PREV), text("\n\n" + CAPTURED_NEW)],
+        text: CAPTURED_PREV + "\n\n" + CAPTURED_NEW,
+        turn_breaks: [{ segments: 1, text: CAPTURED_PREV.length }],
+      });
+    }
+    // The cursor steps over the boundary: the newer reply alone, no seam left.
+    if (n === 5) return poll({ window: 9537, segments: [text(CAPTURED_NEW)], text: CAPTURED_NEW });
+    return poll({
+      done: true,
+      window: 9537,
+      segments: [text(CAPTURED_NEW + ", that is correct")],
+      text: CAPTURED_NEW + ", that is correct",
+    });
+  };
+
+  test("a second window adopting a live run never re-types the reply on screen", async () => {
+    let live = false;
+    const made = makeController({
+      history: () => ({
+        turns: [
+          { role: "user" as const, text: "the run's first message", uuid: "u0" },
+          { role: "assistant" as const, text: "An older answer.", uuid: "a0" },
+          { role: "user" as const, text: "the previous question", uuid: "u1" },
+          { role: "assistant" as const, text: CAPTURED_PREV, uuid: "a1" },
+        ],
+      }),
+      live_run: () => ({ run_id: live ? "r-live" : "" }),
+      // agent.py's `message` is the run's FIRST message, not the turn in
+      // flight — which is why a second window cannot reconcile the new turn
+      // against its own last user line, and goes straight to `pollLoop`.
+      poll: (_f, n) => ({ ...capturedSecondWindow(n), message: "the run's first message" }),
+    });
+    await made.controller.openSession("s1");
+    // Let `openSession`'s own adoption window run out before the run starts,
+    // so this is the STANDING WATCH's posture — a tab that was already open.
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // EVERY FRAME, not the final state. The duplicate is a FLASH: it is on
+    // screen only until agent.py's cursor steps over the boundary, and the
+    // payload after that step overwrites the bubble down to the newer reply —
+    // which is precisely the reported symptom ("duplicated into the UI BEFORE
+    // the new response starts streaming") and precisely what a final-state
+    // assertion cannot see.
+    const seen: string[][] = [];
+    const off = made.controller.subscribe(() => {
+      seen.push(assistants(made.controller).map((t) => t.text));
+    });
+    live = true;
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    await new Promise<void>((r) => setTimeout(r, 30));
+    off();
+
+    // No frame ever shows the restored reply twice.
+    expect(seen.filter((f) => f.filter((t) => t === CAPTURED_PREV).length > 1)).toEqual([]);
+    // And the run lands as three bubbles, not four: before the fix the last
+    // frame carried a stray "\n\nYes" the newer reply had been lifted out of.
+    expect(assistants(made.controller).map((t) => t.text)).toEqual([
+      "An older answer.",
+      CAPTURED_PREV,
+      CAPTURED_NEW + ", that is correct",
+    ]);
+  });
+
+  test("an adopted loop never skips past a seam the prefix on screen does not reach", async () => {
+    // THE LIMIT ON THE FIX ABOVE, and the reason the adopted road cannot just
+    // borrow `adoptFirstSeam`.
+    //
+    // A loop started by a send owns only the turn it sent, so every span the
+    // first payload has already closed off predates it and the base may
+    // advance to the first of them, wherever it falls. An ADOPTED loop owns
+    // nothing: a span past the prefix already on screen may be a reply this
+    // page has never rendered, and advancing past one would drop it outright.
+    //
+    // So the adopted road takes a seam only where it CONFIRMS the base — at
+    // exactly the end of the prefix on screen, which costs nothing to believe
+    // — and leaves every other seam alone. Here agent.py reports one seam and
+    // it is past the prefix: taking it would swallow the reply in between.
+    const NEW = "The reply this window is here for. ";
+    const EXTRA = "And what came after it.";
+    let live = false;
+    const made = makeController({
+      history: () => ({
+        turns: [
+          { role: "user" as const, text: "the previous question", uuid: "u1" },
+          { role: "assistant" as const, text: CAPTURED_PREV, uuid: "a1" },
+        ],
+      }),
+      live_run: () => ({ run_id: live ? "r-live" : "" }),
+      poll: (_f, n) => ({
+        ...(n <= 1
+          ? poll({ window: 0, segments: [text(CAPTURED_PREV)], text: CAPTURED_PREV })
+          : poll({
+              done: n > 2,
+              window: 0,
+              segments: [text(CAPTURED_PREV), text(NEW), text(EXTRA)],
+              text: CAPTURED_PREV + NEW + EXTRA,
+              // The ONLY seam, and it is past the prefix on screen.
+              turn_breaks: [{ segments: 2, text: CAPTURED_PREV.length + NEW.length }],
+            })),
+        // After the spread, or `poll`'s own default blanks it — and a blank
+        // `message` reaches `pollLoop` down a DIFFERENT road (no reconciliation
+        // at all), which is not the one this test is about.
+        message: "the run's first message",
+      }),
+    });
+    await made.controller.openSession("s1");
+    await new Promise<void>((r) => setTimeout(r, 30));
+    live = true;
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // Nothing is dropped: the reply between the prefix and the seam is on
+    // screen, and the reply already there was still not typed twice.
+    const shown = assistants(made.controller).map((t) => t.text).join("\n");
+    expect(shown).toContain(NEW);
+    expect(shown).toContain(EXTRA);
+    expect(shown.split(CAPTURED_PREV).length - 1).toBe(1);
+  });
+
   test("an agent.py with no `turn_breaks` keeps one payload as one reply", async () => {
     // The compatibility floor: no seam reported, so nothing is split. One
     // bubble that grows, which is the pre-feedback-#9 rendering minus the

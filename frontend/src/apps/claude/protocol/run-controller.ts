@@ -276,6 +276,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * replaced (it commonly is not), so no length test can see the step.
    */
   let landedWindow: { runId: string; segments: number; text: string } | null = null;
+  /**
+   * THE SETTLED REPLY THE TRANSCRIPT IS ALREADY SHOWING — `pollLoop`'s
+   * `priorReply` base, for the two roads that start a loop over a window that
+   * may still open on a reply this page has rendered.
+   *
+   * `landedWindow` only ever covers a reply THIS controller watched land, so a
+   * transcript restored from `_history` — a reload, or a second tab opened on
+   * the same conversation — has nothing there even though the reply is right
+   * in front of the reader. This is the answer for those: the prose is exact
+   * either way (`_history` and a live poll agree byte for byte), and it is
+   * the prefix the live window reopens on until agent.py's cursor steps past
+   * the boundary.
+   *
+   * TRAILING USER TURNS ARE SKIPPED FIRST, because both callers read this
+   * with one on the end: `sendMessage` after `dispatchSend`'s optimistic
+   * bubble, `resumeRun` after `stripAfterLastUser` (or its own `addUser`).
+   * Without the skip the caller's OWN message read back as "the reply already
+   * on screen", no assistant turn was found, and nothing was seeded at all.
+   *
+   * Only a SETTLED assistant turn counts once that skip lands on one: a
+   * streaming one is not a safe prefix to assume closed.
+   */
+  const settledReply = (): { text: string } | null => {
+    let i = state.turns.length - 1;
+    while (i >= 0 && state.turns[i]!.role === "user") i--;
+    const last = state.turns[i];
+    if (!last || last.role !== "assistant" || last.streaming) return null;
+    return { text: last.text || "" };
+  };
   /** A live-run adoption watch is in flight — see `adoptLiveRun`. Separate
    *  from `state.adopting`, which is the RENDERER's gate: this one is the
    *  one-watch-at-a-time latch and stays set for as long as the adopted run
@@ -1107,6 +1136,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
      * skipping them would drop them.
      */
     let adoptFirstSeam = !!opts.ownTurn;
+    /**
+     * THE ADOPTED ROAD'S NARROWER HALF OF THE SAME QUESTION.
+     *
+     * An adopted loop cannot take the first seam past the base — that is what
+     * the paragraph above rules out, and for a reason that still holds: the
+     * spans before it may be a cold read of turns this page has never
+     * rendered, and advancing past one would drop it.
+     *
+     * But it can still have a seam CONFIRM the base it was handed. A
+     * `priorReply` seed is exact prose and an unknown segment count
+     * (`baseSegTrusted`), so `segs` cannot be sliced on it and the new reply
+     * renders as flat text — no tool timeline, no thinking block — for as long
+     * as the window still opens on the old one. A seam landing at EXACTLY the
+     * end of that prefix is agent.py's own count for the same boundary, so it
+     * costs nothing to believe and hides nothing: the base does not move, it
+     * only becomes sliceable. Anything past the prefix is left alone.
+     */
+    let confirmBaseSeam = !opts.ownTurn && !baseSegTrusted;
     let tick = 0;
 
     try {
@@ -1253,7 +1300,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // has not landed — threw away the real seam when it arrived a poll
         // later, leaving `baseSegTrusted` down for the whole reply and its
         // segments suppressed with it.
-        if (adoptFirstSeam && anyBody) {
+        if ((adoptFirstSeam || confirmBaseSeam) && anyBody) {
           // THE FIRST SEAM PAST THE BASE, NOT THE LAST (Bugbot, PR #1119,
           // twice). The base is where THIS turn begins, and this turn begins at
           // the FIRST boundary the payload closes off beyond what was already
@@ -1271,9 +1318,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // answers: the pre-send boundary is exactly the first one past the
           // base, wake continuation included, and it is adopted whether or not
           // a follow-up has landed since.
-          const opening = reported.find(
-            (b) => b.segments > baseSeg || b.text > baseText.length,
-          );
+          const opening = adoptFirstSeam
+            ? reported.find((b) => b.segments > baseSeg || b.text > baseText.length)
+            // The adopted road's seam — see `confirmBaseSeam`: the one that
+            // ends exactly where the prefix already on screen does, and no
+            // other.
+            : reported.find((b) => b.text === baseText.length && b.segments > baseSeg);
           if (opening) {
             baseSeg = opening.segments;
             baseText = fullText.slice(0, opening.text);
@@ -1282,6 +1332,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // reconciliation.
             baseSegTrusted = true;
             adoptFirstSeam = false;
+            confirmBaseSeam = false;
           } else if (!baseText || !fullText.startsWith(baseText)) {
             // Nothing left to wait behind: no base at all (every body is this
             // turn's — a fresh chat), or the window no longer OPENS on the
@@ -1295,6 +1346,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // left the real seam, which lands with the echo a poll later, read
             // as this send's own follow-up instead of as the base.
             adoptFirstSeam = false;
+            confirmBaseSeam = false;
           }
         }
 
@@ -1746,13 +1798,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Only a SETTLED assistant turn counts once that skip lands on one: a
     // streaming one is either impossible here (`sending` is one-at-a-time) or,
     // if seen anyway, not a safe prefix to assume closed.
-    const priorReply = (() => {
-      let i = state.turns.length - 1;
-      while (i >= 0 && state.turns[i]!.role === "user") i--;
-      const last = state.turns[i];
-      if (!last || last.role !== "assistant" || last.streaming) return null;
-      return { text: last.text || "" };
-    })();
+    const priorReply = settledReply();
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
     //
@@ -3001,7 +3047,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
         addUser(probeMsg);
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
-      await pollLoop(runId, gen);
+      // AND THE REPLY ALREADY ON SCREEN IS THIS LOOP'S BASE TOO (PR #1119,
+      // second window).
+      //
+      // A run reopened on a still-live host begins its window at the PREVIOUS
+      // turn: agent.py's cursor cannot advance past that reply until a newer
+      // turn's echo proves it closed, so every poll between the send in the
+      // other tab and that echo landing hands this loop the previous reply in
+      // full. With no base at all, that is a fresh bubble carrying a verbatim
+      // copy of the answer already above it — the duplicate that shows up in
+      // a SECOND window "before the new response starts streaming", captured
+      // in a real `poll` trace and pinned in the tests below.
+      //
+      // `sendMessage`'s road has always seeded this; the difference was never
+      // anything about the window, only which road opened it. Read HERE rather
+      // than before the probe because the two reconciliation branches above
+      // both move the log: `stripAfterLastUser` drops the partial rows under
+      // the matched user line (leaving the previous reply as the last settled
+      // one), and `addUser` appends a line this has to skip past.
+      await pollLoop(runId, gen, { priorReply: settledReply() });
     } catch (err) {
       // A THROWN PROBE IS A TROUBLE CARD, not an unhandled rejection. Every
       // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s,
