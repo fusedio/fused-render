@@ -1259,6 +1259,46 @@ def pick_gguf_file(filenames) -> str | None:
     return None
 
 
+def gguf_candidate_files(siblings) -> list[str]:
+    """Root-level, non-auxiliary GGUF filenames out of a repo's own
+    `siblings` listing (dicts with `rfilename`, or bare filename strings —
+    either shape a caller's own `raw["siblings"]` might already be in), with
+    a multi-part shard set (`GGUF_SPLIT_RE`) COLLAPSED to its first part —
+    one entry per distinct WEIGHT VARIANT the repo ships, not one per file
+    on disk.
+
+    Item 5 (SPEC AI-19 round 2): `hub_models._count_variants` used to
+    exclude helper files with its own narrower `("mmproj", "vision")`
+    substring list, so a `mtp-`/`draft-`/`projector`-named auxiliary file
+    `pick_gguf_file` already knows to refuse could still inflate a repo's
+    variant count by one, AND a sharded quant (`-00001-of-00005.gguf`)
+    counted once per shard rather than once per quantization. Reusing
+    `pick_gguf_file`'s own `GGUF_SPLIT_RE`/`GGUF_AUXILIARY_RE` here means
+    the two can never quietly disagree about what counts as a real,
+    downloadable quantization again — one filter, two callers.
+    """
+    names = []
+    for entry in siblings or []:
+        name = entry.get("rfilename") if isinstance(entry, dict) else entry
+        if isinstance(name, str):
+            names.append(name)
+    candidates: list[str] = []
+    seen_shard_bases: set[str] = set()
+    for name in names:
+        if "/" in name or not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_AUXILIARY_RE.search(name):
+            continue
+        split_match = GGUF_SPLIT_RE.search(name)
+        if split_match:
+            base = name[:split_match.start()]
+            if base in seen_shard_bases:
+                continue
+            seen_shard_bases.add(base)
+        candidates.append(name)
+    return candidates
+
+
 def gguf_quant_token(filename: str) -> str | None:
     """The quantization token literally in `filename`'s own name — e.g.
     `Q4_K_M` out of `...-Q4_K_M.gguf`, or `UD-Q3_K_XL` out of unsloth's

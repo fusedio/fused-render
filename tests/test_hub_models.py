@@ -797,6 +797,42 @@ def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch
     assert _search(client).json()["models"][0]["variants"] == 1
 
 
+def test_a_sharded_gguf_quant_counts_once_not_once_per_shard(client, hub_cache, monkeypatch):
+    """Item 5: `_count_variants` reuses `formats.pick_gguf_file`'s own split-
+    shard exclusion (`GGUF_SPLIT_RE`) — a multi-part `-00001-of-00003.gguf`
+    shard set is ONE quantization, not three, so a sharded repo does not
+    inflate its variant count by however many parts that one quant happens
+    to be split into."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/sharded-gguf",
+        siblings=[
+            {"rfilename": "model-Q8_0-00001-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00002-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00003-of-00003.gguf"},
+            {"rfilename": "model-Q4_K_M.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 2
+
+
+def test_a_draft_or_projector_gguf_sibling_is_not_counted_as_its_own_variant(
+        client, hub_cache, monkeypatch):
+    """Item 5: `_count_variants` now excludes the SAME auxiliary markers
+    `formats.GGUF_AUXILIARY_RE` does (`mmproj`/`mtp`/`draft`/`projector`),
+    not just its own narrower ad-hoc `("mmproj", "vision")` list — a
+    speculative-decoding draft model shipped alongside the real quants must
+    not inflate the count either."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/with-draft",
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+            {"rfilename": "draft-model-Q4_0.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variants"] == 2
+
+
 def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub_cache, monkeypatch):
     """`mlx-community`'s own convention: several bit-width subfolders under
     one repo, each a distinct weight variant."""

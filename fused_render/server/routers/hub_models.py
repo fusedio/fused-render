@@ -1121,24 +1121,23 @@ def _gate(raw) -> str | None:
     return "auto" if raw == "auto" else "manual"
 
 
-#: Substrings that mark a GGUF sibling as a helper file rather than a weight
-#: variant of its own — a vision projector ("mmproj") shipped alongside a
-#: multimodal GGUF repo. Counted separately would inflate "N variants" by
-#: one for every repo that ships one, which is every popular VLM GGUF repo.
-_GGUF_HELPER_MARKERS = ("mmproj", "vision")
-
-
 def _count_variants(raw: dict) -> int:
-    """Item 9c (fix round 5): how many distinct weight variants this repo
-    ships, best-effort and from data already in `raw` (`siblings`, `gguf`,
-    `safetensors` — all already in `_EXPAND`, so this costs no extra
-    request). 1 when nothing suggests more than one, never 0 — a repo the
-    rest of this row exists to describe always has at least the one weight
-    set the Download button would fetch.
+    """Item 9c (fix round 5); item 5 (round 2): how many distinct weight
+    variants this repo ships, best-effort and from data already in `raw`
+    (`siblings`, `gguf`, `safetensors` — all already in `_EXPAND`, so this
+    costs no extra request). 1 when nothing suggests more than one, never 0
+    — a repo the rest of this row exists to describe always has at least
+    the one weight set the Download button would fetch.
 
     GGUF repos: one `.gguf` sibling is one quantization of the SAME
-    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted directly, minus any
-    helper file (`_GGUF_HELPER_MARKERS`) that is not a weight variant at all.
+    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted via
+    `formats.gguf_candidate_files`, the SAME root-level/non-auxiliary/
+    shard-collapsing filter `pick_gguf_file` itself uses to decide what
+    counts as a real quantization (round 2: this used to be a narrower,
+    ad-hoc `("mmproj", "vision")` substring exclusion of its own, which
+    could both undercount a sharded quant — one `.gguf` sibling per shard,
+    not per quantization — and overcount a `mtp-`/`draft-`/`projector`-named
+    helper file the picker already knew to refuse).
 
     Safetensors/MLX repos: no per-file quant list to count the same way (a
     dtype conversion is usually one subfolder, not one file) — counted only
@@ -1153,9 +1152,7 @@ def _count_variants(raw: dict) -> int:
     names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
               if isinstance(siblings, list) else [])
     names = [n for n in names if isinstance(n, str)]
-    gguf_files = [n for n in names
-                  if n.lower().endswith(".gguf")
-                  and not any(marker in n.lower() for marker in _GGUF_HELPER_MARKERS)]
+    gguf_files = formats.gguf_candidate_files(siblings if isinstance(siblings, list) else [])
     if gguf_files:
         return max(1, len(gguf_files))
     dtype_dirs = {
