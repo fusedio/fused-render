@@ -48,7 +48,6 @@ import {
   mergeSections,
   PARTIAL_TAG,
   resumable,
-  runnersByCapability,
 } from "@apps/ai_models/lib/aiModelGroups";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { activeFitLevel, activeParamsBand, activeSort, type ResultSort } from "@apps/ai_models/lib/hubSearchView";
@@ -401,7 +400,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   const curated = curatedRepoIds(catalog);
   const grouped = groupRepos(repos);
   const sections = mergeSections(grouped.models.groups, catalog, loadedById, onCard);
-  const runners = runnersByCapability(catalog);
 
   /** The three-way guard, asked once: a pull is live if the runtime reports it,
    *  if this tab just clicked it, or if it has stopped being reported and the
@@ -524,7 +522,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
                 capabilityKey={selected}
                 settled={settled}
                 cards={onCard}
-                runners={runners}
                 jobByModel={jobByModel}
                 pulling={pulling}
                 onDownload={runDownload}

@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
-import { type DiskCard, type SectionRunner, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
+import { type DiskCard, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
   bySizeAscending,
@@ -251,7 +251,6 @@ export function HubSearchScreen({
   capabilityKey,
   settled,
   cards,
-  runners,
   jobByModel,
   pulling,
   onDownload,
@@ -263,7 +262,6 @@ export function HubSearchScreen({
   capabilityKey: string;
   settled: SettledQuery;
   cards: ReadonlyMap<string, DiskCard> | null;
-  runners: ReadonlyMap<string, SectionRunner>;
   jobByModel: Map<string, Job>;
   pulling: (id: string) => boolean;
   onDownload: (id: string, capability: string) => void;
@@ -467,10 +465,7 @@ export function HubSearchScreen({
 }
 
 /** The one place this screen asks a third party a question, stated plainly —
- *  ported from `HubResults.tsx`'s own note. Only while the runner registry
- *  serving `capabilityKey` is known here (unused today; `runners` is kept as
- *  a prop for a future per-capability engine note, same as `HubResults`
- *  read it for). */
+ *  ported from `HubResults.tsx`'s own note. */
 function chromeNote(settled: SettledQuery, host: string, hostUrl: string) {
   if (!settled.q.trim() && !settled.task.trim()) return null;
   return (
