@@ -3136,6 +3136,58 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     expect(peek.controller.getState().historyLoading).toBe(false);
   });
 
+  test("the fetched answer replaces the warm paint's cards — a finished run leaves no ghost card (Bugbot)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    store.set("/proj/app.py|s-abc", liveHistory("q1") as unknown as HistoryResponse);
+    const made = makeController(
+      {
+        history: () => ({ ...liveHistory("q1"), live_run: "", permissions: [], mode: "" }),
+        live_run: () => ({ run_id: "" }),
+        poll: () => poll({ done: true }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    const seen: string[][] = [];
+    made.controller.subscribe(() => seen.push(made.controller.getState().permissions.map((p) => p.id)));
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(seen.some((ids) => ids.includes("q1"))).toBe(true); // the warm paint had it
+    expect(made.controller.getState().permissions).toEqual([]); // the fetch took it away
+  });
+
+  test("a new chat stops writing into the previous session's cache entry (Bugbot)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      {
+        history: () => ({ ...liveHistory("q1"), permissions: [] }),
+        live_run: () => ({ run_id: "" }),
+        start: () => ({ run_id: "r2" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ session_id: "s-new", permissions: [question("q9")] })
+            : poll({ done: true, session_id: "s-new", permissions: [question("q9")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    made.controller.newChat();
+    await made.controller.sendMessage("hello");
+    expect(made.controller.getState().permissions.map((p) => p.id)).toEqual(["q9"]);
+    const old = store.get("/proj/app.py|s-abc")!;
+    expect((old.permissions || []).map((p) => p.id)).toEqual([]);
+  });
+
   test("the cache follows the cards a polling tile publishes", async () => {
     const store = new Map<string, HistoryResponse>();
     const historyCache = {

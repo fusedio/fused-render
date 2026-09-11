@@ -2229,6 +2229,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
   function landHistory(res: HistoryResponse, fromCache: boolean): void {
     const live = typeof res.live_run === "string";
     if (live) {
+      // THE FETCH REPLACES THE WARM PAINT, cards included: `syncPermissions`
+      // only adds and updates by id, so a cache paint's card would survive an
+      // answer that says the run is over (`live_run: ""`, no rows) and sit
+      // there answerable, posting `decide` to a run that has ended (Bugbot, PR
+      // #1112). Nothing else has written a card yet — `openSession` cleared
+      // them and holds `sending` until this lands — so this only drops the
+      // cache's own rows.
+      if (!fromCache) permCards.clear();
       syncPermissions(
         res.permissions,
         res.live_run || "",
@@ -2977,6 +2985,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     activeSeat = 0;
     activeTurnKey = null;
     permCards.clear();
+    restoredSid = ""; // the cache key leaves with the transcript (Bugbot, PR #1112)
     notedSkills.clear();
     answeredStates.clear();
     notedStates.clear();
