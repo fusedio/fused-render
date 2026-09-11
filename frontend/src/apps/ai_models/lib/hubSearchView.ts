@@ -25,6 +25,7 @@
 // whole safety property is "this value never reaches the wire" is a rule, and a
 // rule belongs somewhere it can be driven.
 import type { HubFitLevel, HubParamsBand, HubSort, HubTask } from "@platform/lib/api";
+import { capabilityLabel } from "@apps/ai_models/lib/engines";
 
 /** Which face of the Local page is on screen. */
 export type SearchFace = "models" | "results";
@@ -250,8 +251,20 @@ export function activeTask(
     };
   }
   const known = tasks.find((x) => x.tag === t);
+  // Item 3/11 (fix round 3): the wire's own `label` is a per-runner string
+  // (seen live, lower-cased: "text generation") that can disagree with the
+  // one name this app already gives that same tag everywhere else — the
+  // capability nav, the pane heading, the "← Back to …" link. `engines.ts`'s
+  // `CAPABILITY_LABELS` is that one name (D-standard-capability-names); it
+  // covers the five capability tags this app actually runs and returns the
+  // tag itself, unchanged, for anything outside that set — which is exactly
+  // when there is no risk of disagreeing with a heading built from the same
+  // table, so falling through to the glossary's own label for THOSE tags
+  // (a task menu entry the local capabilities don't cover, e.g.
+  // "summarization") is still correct.
+  const standard = capabilityLabel(t);
   return {
-    label: known?.label ?? t,
+    label: standard !== t ? standard : (known?.label ?? t),
     title: known?.help ?? "Showing only models for this task",
   };
 }

@@ -367,10 +367,23 @@ describe("activeTask", () => {
     // before) or a runner can be unregistered between the two. Falling back to
     // "Any task" there would make this the one control on the row describing a
     // different page than the one on screen — the results ARE narrowed.
-    expect(activeTask("automatic-speech-recognition", []).label).toBe(
-      "automatic-speech-recognition",
-    );
+    expect(activeTask("some-unregistered-task", []).label).toBe("some-unregistered-task");
     expect(activeTask("summarization", tasks).label).not.toBe("Any task");
+  });
+
+  it("item 3/11 (fix round 3): wears the standard capability name, not the wire's own label, for a tag this app's five capabilities cover", () => {
+    // Live bug: the wire's own `label` for this tag was seen lower-cased
+    // ("text generation"), which disagreed with the "Text generation" the
+    // nav/pane heading/back link build from `capabilityLabel` for the exact
+    // same tag. The task menu now reads off that same table, ignoring the
+    // glossary's own `label` for the five tags it covers, so a server that
+    // sends a differently-cased (or missing) label cannot make this one
+    // control describe a different capability than the rest of the screen.
+    expect(
+      activeTask("automatic-speech-recognition", [
+        { tag: "automatic-speech-recognition", label: "transcription", help: null },
+      ]).label,
+    ).toBe("Speech to text");
   });
 });
 
