@@ -155,6 +155,48 @@ def _declared_uv_sources(folder):
     return data.get("tool", {}).get("uv", {}).get("sources", {})
 
 
+def _names_needing_build_opt_in(sources):
+    """Distribution names whose `[tool.uv.sources]` entry can ONLY be
+    satisfied by uv BUILDING a checkout — never by fetching a wheel — and so
+    require the declared `allow_build` opt-in.
+
+    Two shapes, normalized identically, the same way
+    `projectenv.nonstandard_dependencies_of` already has to (see that
+    function's own comment): a source is either a single table, or uv's
+    platform-conditional form, a LIST of tables (each usually carrying its
+    own `marker`). A bare `isinstance(entry, dict)` guard here used to skip
+    the list form entirely — the exact mistake that function's comment warns
+    about, re-made in this file: a future runner writing
+    `pkg = [{ git = "...", marker = "sys_platform == 'darwin'" }]` sailed
+    through with no opt-in required at all.
+
+    A `git` key always qualifies — there is never a wheel for a git
+    checkout. A `url` key qualifies only when it does NOT name a `.whl`
+    directly: `{ url = "https://.../foo-1.0-py3-none-any.whl" }` install
+    fine under `--no-build` (it fetches a real wheel file), so requiring the
+    opt-in for it would grant a runner a blanket build exception it does not
+    need — weakening this guard rather than enforcing it. Case-insensitive
+    on the extension since a URL's path segment is not guaranteed lowercase.
+    """
+    names = set()
+    for name, source in sources.items():
+        if isinstance(source, dict):
+            entries = [source]
+        elif isinstance(source, list):
+            entries = [e for e in source if isinstance(e, dict)]
+        else:
+            continue
+        for entry in entries:
+            if "git" in entry:
+                names.add(name)
+                break
+            url = entry.get("url")
+            if isinstance(url, str) and not url.lower().endswith(".whl"):
+                names.add(name)
+                break
+    return names
+
+
 def _declares_allow_build(folder):
     """Does this runner's manifest carry `[tool.fused-render.runner]
     allow_build = true` — the one declared opt-out of the wheels-only default
@@ -165,6 +207,27 @@ def _declares_allow_build(folder):
         data = tomllib.load(handle)
     runner = data.get("tool", {}).get("fused-render", {}).get("runner", {})
     return runner.get("allow_build") is True
+
+
+def _declares_package_false(folder):
+    """Does this runner's manifest carry `[tool.uv] package = false`?
+
+    Load-bearing for `allow_build = true`, not merely conventional:
+    `_env_install_worker._build` only appends `--no-install-project` alongside
+    `--no-build`, never on its own (see that function's own docstring on why
+    the two ride together — `--no-build` alone refuses to build the LOCAL
+    PROJECT too, the instant it declares `[build-system]`, which a bare `uv
+    init` scaffold does by default). So `allow_build = true` also drops
+    `--no-install-project`, and WITHOUT `package = false` that re-enables
+    installing the runner's own folder as a project into its venv — harmless
+    for `ltx_video` only because it already declares `package = false` for an
+    unrelated reason (it is a folder of scripts, not a distribution). A future
+    opted-in runner that skips this table would have its own folder built and
+    installed, and in a packaged app that folder is read-only.
+    """
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    return data.get("tool", {}).get("uv", {}).get("package") is False
 
 
 def _runner_folders():
@@ -289,12 +352,16 @@ def test_a_git_or_url_dependency_source_requires_the_declared_build_opt_in(folde
     manifest table read at the point of install rather than a name check in
     Python: the next runner that names a git dependency is caught by the
     same rule without anyone remembering to update a list here.
+
+    Covers uv's platform-conditional LIST form too
+    (`pkg = [{ git = "...", marker = "..." }]`, already in this repo —
+    `diffusers_image_cuda/pyproject.toml`'s `torch` index selection uses the
+    same shape for `[tool.uv.index]`) via `_names_needing_build_opt_in`'s
+    normalization, and excludes a direct `.whl` URL (installs fine under
+    `--no-build`, so it needs no exception) — see that helper's own docstring.
     """
     sources = _declared_uv_sources(folder)
-    git_or_url_names = sorted(
-        name for name, entry in sources.items()
-        if isinstance(entry, dict) and ("git" in entry or "url" in entry)
-    )
+    git_or_url_names = sorted(_names_needing_build_opt_in(sources))
     if not git_or_url_names:
         return
     assert _declares_allow_build(folder), (
@@ -346,6 +413,104 @@ def test_a_runner_declaring_git_sources_without_the_opt_in_fails_the_guard(tmp_p
     sources = _declared_uv_sources(str(tmp_path))
     assert "some-pkg" in sources
     assert not _declares_allow_build(str(tmp_path))
+
+
+def test_a_list_form_git_source_still_requires_the_opt_in():
+    """The bug this file's guard exists to catch, reproduced directly against
+    `_names_needing_build_opt_in`: uv's platform-conditional LIST form
+    (`pkg = [{ git = "...", marker = "..." }]`) names a git source exactly as
+    much as the single-table form does, and a bare `isinstance(entry, dict)`
+    guard — the mistake `projectenv.nonstandard_dependencies_of`'s own
+    comment warns was already made once — would skip it entirely, reading a
+    runner with this shape as needing no opt-in when uv still shells out to
+    git for it."""
+    sources = {
+        "some-pkg": [
+            {"git": "https://example.com/repo", "marker": "sys_platform == 'darwin'"},
+        ],
+    }
+    assert _names_needing_build_opt_in(sources) == {"some-pkg"}
+
+
+def test_a_direct_wheel_url_source_does_not_require_the_opt_in():
+    """A `[tool.uv.sources]` entry of `{ url = "https://.../foo-1.0-py3-none-
+    any.whl" }` is a wheel and installs fine under `--no-build` — treating it
+    as build-only would force a runner to accept a blanket build exception it
+    does not need, which weakens the guard rather than enforcing it."""
+    sources = {
+        "some-pkg": {"url": "https://example.com/dist/foo-1.0-py3-none-any.whl"},
+    }
+    assert _names_needing_build_opt_in(sources) == set()
+
+
+def test_a_non_wheel_url_source_still_requires_the_opt_in():
+    """The other half of the URL split: a bare URL that is NOT a `.whl` (an
+    sdist tarball, a bare repo archive) can only be satisfied by building it,
+    same as a `git` source."""
+    sources = {
+        "some-pkg": {"url": "https://example.com/dist/foo-1.0.tar.gz"},
+    }
+    assert _names_needing_build_opt_in(sources) == {"some-pkg"}
+
+
+@pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
+def test_an_opted_in_runner_also_declares_package_false(folder):
+    """`allow_build = true` does not only permit a source build — it also
+    drops `--no-install-project` (`_env_install_worker._build` appends the
+    two together, only under `if not allow_build`), which re-enables
+    installing the runner's OWN folder as a project into its venv. That is
+    harmless only when the folder also declares `[tool.uv] package = false`
+    (a folder of scripts, not a distribution) — `ltx_video/pyproject.toml`
+    does, but only by what its own header comment calls an accident nothing
+    enforced. A future runner that opts into a source build without also
+    declaring `package = false` would have its own folder built and
+    installed — and in a packaged app that folder is read-only. This turns
+    that accident into a checked rule."""
+    if not _declares_allow_build(folder):
+        return
+    assert _declares_package_false(folder), (
+        f"{os.path.basename(folder)} declares [tool.fused-render.runner] "
+        f"allow_build = true but not [tool.uv] package = false. "
+        f"allow_build also drops --no-install-project (they ride together in "
+        f"_env_install_worker._build), which re-enables installing this "
+        f"folder's OWN project into its venv — safe only when the folder "
+        f"declares itself not a distribution via package = false."
+    )
+
+
+def test_allow_build_without_package_false_fails_the_invariant(tmp_path):
+    """The failure half of the invariant above, against a synthetic manifest:
+    a runner that opts into allow_build but forgets package = false must read
+    as broken."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\n'
+        'name = "fake-runner"\n'
+        'dependencies = ["some-pkg"]\n\n'
+        '[tool.uv.sources]\n'
+        'some-pkg = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n\n'
+        '[tool.fused-render.runner]\n'
+        'allow_build = true\n')
+    assert _declares_allow_build(str(tmp_path))
+    assert not _declares_package_false(str(tmp_path))
+
+
+def test_allow_build_with_package_false_passes_the_invariant(tmp_path):
+    """The positive half, against a synthetic manifest shaped like
+    `ltx_video/pyproject.toml`."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\n'
+        'name = "fake-runner"\n'
+        'dependencies = ["some-pkg"]\n\n'
+        '[tool.uv]\n'
+        'package = false\n\n'
+        '[tool.uv.sources]\n'
+        'some-pkg = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n\n'
+        '[tool.fused-render.runner]\n'
+        'allow_build = true\n')
+    assert _declares_allow_build(str(tmp_path))
+    assert _declares_package_false(str(tmp_path))
 
 
 @pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
