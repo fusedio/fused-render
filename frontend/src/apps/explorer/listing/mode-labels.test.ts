@@ -39,12 +39,20 @@ const REGISTRY: Record<string, string[]> = JSON.parse(
   readFileSync(join(import.meta.dir, "../../../../../fused_render/templates/registry.json"), "utf8")
 );
 
-const PERMUTATIONS = [false, true];
+// A key binds to files OR to directories, never both: `_match_registry`
+// (fused_render/server/templates.py, `_key_segments`) only considers a
+// `/`-terminated key for a directory and only a bare one for a file. So the
+// pane's `isDir` is DECIDED by the key, not a free permutation — an `.html`
+// list assembled with isDir=true is a list no user can be shown, and a guard
+// that ran it would fail on wording that is fine everywhere real (the `_render`
+// sentinel's own label, "Preview", lives only on file keys).
+function isDirKey(key: string): boolean {
+  return key.endsWith("/");
+}
 
 // Every set of modes a user can see in ONE list: the registry key's own list
 // (the Open With menu and the preview route render it as-is), plus the preview
-// pane's assembled list — the same entries with `_listing` dropped for a file —
-// across both isDir permutations.
+// pane's assembled list — the same entries with `_listing` dropped for a file.
 function offeredSets(): Array<{ where: string; modes: string[] }> {
   const sets: Array<{ where: string; modes: string[] }> = [];
   for (const [key, modes] of Object.entries(REGISTRY)) {
@@ -53,12 +61,11 @@ function offeredSets(): Array<{ where: string; modes: string[] }> {
     const templates: TemplateEntry[] = modes.map(
       (m) => ({ mode: m, path: m.startsWith("_") ? null : `/t/${m}`, icon: null, conditional: false }) as TemplateEntry
     );
-    for (const isDir of PERMUTATIONS) {
-      sets.push({
-        where: `preview pane, key ${key} (isDir=${isDir})`,
-        modes: paneModeList({ templates, conditions: {}, isDir }),
-      });
-    }
+    const isDir = isDirKey(key);
+    sets.push({
+      where: `preview pane, key ${key} (isDir=${isDir})`,
+      modes: paneModeList({ templates, conditions: {}, isDir }),
+    });
   }
   return sets;
 }
