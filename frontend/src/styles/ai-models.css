@@ -788,7 +788,8 @@
    — one line, not part of the controls' own flex-wrap, so a narrow window
    wraps the FILTERS before it starts stealing room from the sentence that
    says how many results they produced. */
-.am-hub-resultline {
+.am-hub-resultline,
+.tp .resultline {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -798,7 +799,8 @@
   color: var(--fg-muted);
 }
 
-.am-hub-resultline b {
+.am-hub-resultline b,
+.tp .resultline b {
   color: var(--fg);
 }
 
@@ -3616,12 +3618,17 @@ button.am-bench-model:focus-visible {
   outline-offset: -1px;
 }
 
-.sorthint {
+.tp .sorthint {
   margin: 0 0 10px;
   font-size: 11.5px;
   color: var(--fg-muted);
   line-height: 1.6;
   max-width: 96ch;
+}
+
+.tp .sorthint .k {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
 }
 
 .advfoot {

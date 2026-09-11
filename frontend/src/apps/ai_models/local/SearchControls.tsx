@@ -303,7 +303,10 @@ export function SearchControls({
           items={sortItems}
         />
       </div>
-      <div className="am-hub-resultline" data-part="resultline">
+      {/* Item 6 (fix round 3): also wears the mockup's own `.resultline`
+       *  class — a live check for that exact selector found nothing, since
+       *  this row only ever carried `am-hub-controls`'s own naming. */}
+      <div className="am-hub-resultline resultline" data-part="resultline">
         <span>
           {loading ? (
             "Searching…"
