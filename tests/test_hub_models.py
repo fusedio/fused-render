@@ -682,8 +682,8 @@ def test_a_repo_publishing_both_formats_is_not_labelled_gguf(
     shipping both uploads that is the safetensors one — which is also what
     `params`, `estimatedSize`, `quant` and `fit` on this row already
     describe. Calling it `"gguf"` would split it away from its own base
-    model's family (`hubFamilies.ts`) on the strength of a secondary upload
-    nothing else here reads."""
+    model's family (the mirror/variant grouping the frontend's search screen
+    draws on) on the strength of a secondary upload nothing else here reads."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
     monkeypatch.setattr(httpx, "get", _reply([_hit(
@@ -1037,7 +1037,7 @@ def test_the_untagged_mirror_signal_pulls_in_a_republish_too(
         client, hub_cache, monkeypatch):
     # No `base_model:` tag on either side — the mirror key (trailing name
     # segment + exact params + quant) is the only signal there is, same as
-    # `hubFamilies.ts`'s own untagged fallback.
+    # the frontend search screen's own untagged fallback.
     dtype = {"parameters": {"BF16": 7_000_000_000}, "total": 7_000_000_000}
     rows = [
         _hit("first-org/Weights-7B", downloads=100, safetensors=dtype),

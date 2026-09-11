@@ -1,5 +1,5 @@
 // ---- what a model row OFFERS, pinned against the source ------------------
-// Same discipline as repoCardControls.test.ts / CapabilityNav.test.ts: the
+// Same discipline as CapabilityNav.test.ts: the
 // four action-slot branches and the drawer's "not recorded" fallbacks are
 // one-line facts a screenshot does not distinguish from their near
 // neighbours (Try vs disabled Try, a note vs the cache-row sentence), so

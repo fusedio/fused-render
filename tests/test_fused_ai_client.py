@@ -530,8 +530,8 @@ def test_the_bridge_and_the_client_forward_the_same_embed_options():
     Cheap and worth it: a page author meets `fused.ai.embed` through the bridge
     and a `.py` author through this module, and a parameter one forwards and the
     other drops is a feature that works in half the app. Read as text rather
-    than parsed, the same way `frontend/.../repoCardControls.test.ts` pins the
-    Local card's own conditions.
+    than parsed, the same way `frontend/.../ModelRow.test.ts` pins the
+    Local row's own conditions.
     """
     import pathlib
 

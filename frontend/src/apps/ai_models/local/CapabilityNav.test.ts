@@ -1,5 +1,5 @@
 // ---- what the capability column SAYS, pinned against the source ----------
-// Same discipline as repoCardControls.test.ts: this file's states (hover,
+// Same discipline as ModelRow.test.ts: this file's states (hover,
 // off, zero) are one-line facts a screenshot does not distinguish from their
 // near neighbours, so they are pinned by reading the source rather than by
 // rendering it.

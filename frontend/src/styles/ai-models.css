@@ -375,265 +375,6 @@
   color: var(--fg-muted);
 }
 
-/* -- a capability's row ------------------------------------------------------
-   ONE horizontal row per capability, scrolled sideways, rather than a grid that
-   wraps.
-
-   The row became open-ended when the disk cards and the recommended ones joined
-   it: the left half grows with every download and the right half is as long as
-   the curation is. Wrapped, that made each capability a block of unknown height,
-   so the third heading on the page was reliably below the fold — on a page whose
-   whole job is to be swept for "what have I got, what should I get". A row per
-   capability keeps every heading on screen at once and puts the length INSIDE
-   the row, where a horizontal scroll is the reader's own business.
-
-   `proximity`, not `mandatory`: somebody who has dragged past two cards to read
-   a third should land where they stopped, and mandatory snapping fights a
-   trackpad flick by pulling the row to a card edge nobody aimed for.
-   `overscroll-behavior-x: contain` is the other half of behaving inside a page
-   — a flick that reaches the end of one capability's row must not turn into the
-   browser's back gesture. */
-.am-carousel {
-  --am-cpv: 3;
-  display: flex;
-  gap: var(--am-gap-card);
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
-  /* Room for the scrollbar under the cards rather than over them, so an
-     overlay scrollbar does not come to rest on a footer's Download button. */
-  padding-bottom: 6px;
-}
-
-/* Same family as the Kanban board's lanes (schedule.css, its "one decision
-   about one kind of furniture" block) — copied rather than joined to that
-   selector list only because this bar is HORIZONTAL: `height` here is `width`
-   there, and one axis-mixed rule would be wrong in both files.
-
-   `::-webkit-scrollbar-*` ONLY, deliberately not paired with the standard
-   `scrollbar-width`/`scrollbar-color` properties this rule briefly carried:
-   this app never renders in a Firefox-family engine at all — the desktop
-   shell is a native macOS WKWebView (`fused_render/menubar_pin.py` imports
-   `WKWebView` straight from the `WebKit` framework) — so the parity those
-   properties would buy is parity with a browser that never runs this page.
-   What they DO cost is real: per spec, a UA that supports the standard
-   properties at all is expected to let a non-`auto` value on either one
-   suppress its `::-webkit-scrollbar-*` rendering for that element, which is
-   exactly the fate schedule.css's own header warns a `::-webkit-scrollbar`
-   rule exists to dodge — the whole reason schedule.css reaches for this
-   pseudo-element in the first place is that STYLING it is what opts a lane
-   out of macOS's overlay scrollbars (a bare `scrollbar-gutter: stable` gets a
-   zero gutter from an overlay bar by spec). Carrying both mechanisms risked
-   quietly losing that opt-out — and with it the `padding-bottom: 6px` above,
-   reserved for a bar that would no longer draw in its own space — the moment
-   either engine's `scrollbar-width` support caught up. One mechanism, so
-   there is nothing left to go stale.
-
-   Quieter than the Kanban recipe on purpose: this row already SAYS it
-   scrolls with its own prev/next arrows (rendered whenever there is overflow
-   in that direction, not hover-gated — see Carousel.tsx), so the
-   scrollbar's only job left is the drag handle, not the announcement. It
-   stays fully transparent at rest and only draws a thin thumb while the row
-   is actually scrolling, or while keyboard focus is visible inside it — not
-   on hover. Hover was the first cut, but the carousel element IS the row: a
-   `:hover` reveal painted the thumb for as long as the pointer sat anywhere
-   over any card, so it popped in and out as the pointer wandered the page
-   rather than tracking an actual scroll. `Carousel.tsx` now stamps
-   `is-scrolling` on scroll and clears it 800ms after the last event, so the
-   thumb reads as "this row just moved," which also keeps macOS "always show
-   scrollbars" from turning it into a permanent dark stripe under every row —
-   that setting still paints track+thumb at rest, but a transparent thumb
-   paints nothing.
-   `scrollbar-width: none` (or its `::-webkit-scrollbar { display: none }`
-   equivalent) was ruled out for the same reason a standard-property mix was:
-   it would remove the drag handle for anyone without a trackpad or scroll
-   wheel, on the one engine that renders this page. */
-.am-carousel::-webkit-scrollbar {
-  height: 6px;
-}
-
-.am-carousel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.am-carousel::-webkit-scrollbar-thumb {
-  background: transparent;
-  background-clip: padding-box;
-  border: 2px solid transparent;
-  border-radius: 999px;
-}
-
-/* A second arm besides `is-scrolling`, so a keyboard user tabbing through
-   the row's cards can still see where the thumb is without ever scrolling
-   it. This used to be `:focus-within`, which matched on ANY focus inside the
-   row — including the one a mouse click leaves behind, since clicking Load,
-   Try, (i) or an arrow focuses that control — so the thumb stayed painted
-   until focus left the row entirely, long after the click that caused it.
-   `:has(:focus-visible)` only matches when the browser itself would draw a
-   focus ring in there, which is the keyboard case this arm is actually
-   for. */
-.am-carousel.is-scrolling::-webkit-scrollbar-thumb,
-.am-carousel:has(:focus-visible)::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg-muted) 40%, transparent);
-  background-clip: padding-box;
-  border: 2px solid transparent;
-}
-
-/* An EXACT FRACTION of the row per view, not a fixed card width, so every
-   card in a view is the same width and the eye learns one rhythm — a card
-   half in view reads as "there is more" rather than as a narrower card. The
-   fraction itself steps with the row's own width via `--am-cpv` (container
-   queries below): three cards on an ordinary window, more as the row grows,
-   so a card never stretches past ~480px on a wide monitor — a fixed third of
-   a 2200px row was pushing 720px, wider than a card has any business being.
-   The 360px floor is unchanged and still governs narrow windows, where even
-   the lowest count would crush the footer's buttons into each other; below
-   it the row shows fewer cards than `--am-cpv` and scrolls. */
-.am-carousel > .am-card {
-  flex: 0 0
-    max(
-      360px,
-      calc((100% - (var(--am-cpv) - 1) * var(--am-gap-card)) / var(--am-cpv))
-    );
-  scroll-snap-align: start;
-}
-
-/* Card count steps up with the WRAP's own width, not the viewport's — the
-   grid sits inside a sidebar-plus-content shell, so a container query keyed
-   to `.am-carousel-wrap` (below) answers "how wide is this row really" where
-   a media query would answer a different question. Breakpoints are picked so
-   a card's share of the row stays inside the ~360-480px band this design
-   calls a card's width: below 1480px three cards already sit under 480px;
-   above it a fourth keeps them there, and so on up to six. */
-@container am-carousel (min-width: 1480px) {
-  .am-carousel {
-    --am-cpv: 4;
-  }
-}
-
-@container am-carousel (min-width: 1880px) {
-  .am-carousel {
-    --am-cpv: 5;
-  }
-}
-
-@container am-carousel (min-width: 2280px) {
-  .am-carousel {
-    --am-cpv: 6;
-  }
-}
-
-/* The arrows live OUTSIDE the flow — absolutely placed over the row's edges —
-   because their whole brief is "say the row scrolls without moving anything":
-   with exact fractions there is no half-visible card left to say it, and a control
-   that appears in the flow would shift the very cards it points at. Vertical
-   centring is against the wrapper, so a click scrolls sideways and nothing on
-   the page moves up or down. */
-.am-carousel-wrap {
-  position: relative;
-  container: am-carousel / inline-size;
-}
-
-/* A full-height fade with the chevron over it, not a floating disc: the
-   gradient dissolves the edge card into the page background, which is itself
-   the "there is more" signal — the row visibly runs out of view instead of
-   ending at a crisp border. The strip stops above the scrollbar's lane
-   (`bottom: 6px` mirrors the row's padding) so the fade never sits on the bar
-   it shares an edge with.
-
-   The fade lives on the WRAP, as a `pointer-events: none` pseudo-element,
-   rather than on the button: a full-height, 56px-wide button covered a real
-   control (Load, trash) on whichever card ended up under it, stealing its
-   click. Only the chevron itself — a compact, vertically-centred hit target —
-   is a `<button>`; the fade beside it is decoration a click passes straight
-   through.
-
-   24px wide, not 32: even a vertically-centred button that width still
-   overlapped a Load button on the partially-visible edge card underneath.
-   24px sits inside the zone the fade has already made illegible (≥75%
-   opaque at that distance from the edge), so there is nothing legible left
-   to cover.
-
-   24px TALL too, not the fade's full 56px: the row itself is only ~134px
-   tall, so a 56px-tall centred button still reached down into the card
-   footer's Load button below it. 24px centred lands on the card's subtitle
-   line, which is text, not a control, so the button's hit area no longer
-   sits on anything the reader can click. */
-.am-carousel-wrap.has-prev::before,
-.am-carousel-wrap.has-next::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 6px;
-  width: 56px;
-  pointer-events: none;
-  z-index: 1;
-}
-
-.am-carousel-wrap.has-prev::before {
-  left: 0;
-  background: linear-gradient(to left, transparent, var(--bg) 75%);
-}
-
-.am-carousel-wrap.has-next::after {
-  right: 0;
-  background: linear-gradient(to right, transparent, var(--bg) 75%);
-}
-
-.am-caro-btn {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  width: 24px;
-  height: 24px;
-  border: 0;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.am-caro-btn:hover {
-  color: var(--fg);
-}
-
-.am-caro-btn.prev {
-  left: 0;
-}
-
-.am-caro-btn.next {
-  right: 0;
-}
-
-/* Cards in a row are the SAME height, and their footers line up.
-   `align-items: start` was here to stop an open revision drawer stretching the
-   card beside it — but it paid for that with a permanently ragged grid: a repo
-   with no metadata line (a CTranslate2 conversion had none until its layout
-   became evidence) is a visibly shorter card whose footer floats mid-row.
-   Ragged is the state the page is in ALL the time; a stretched neighbour is the
-   state it is in while a drawer is open, and `margin-top: auto` on the footer
-   below makes that case read as deliberate rather than as a hole. */
-/* `.am-grid` (the card grid task 4 replaced with `.am-hubtable`) is gone —
-   see that block, further down, for its replacement. */
-
-/* …which is the other half of it: the facts sit under the head, and the
-   footer sits on the floor of whatever height the row settled on. Without
-   this, stretching a card only moves its bottom edge and leaves the footer
-   under the text. */
-.am-card .cc-mdcard-foot {
-  margin-top: auto;
-  /* One Download button tall, whether or not there IS one. A footer is a repo
-     id and sometimes a button, and the button is the taller of the two — so a
-     card already downloaded (no button) sat its id several pixels lower than
-     the card beside it, and a row of four cards had four footers on three
-     baselines. The height is the button's own: 12px text at 1.5, plus its 3px
-     padding and 1px border on each side. */
-  min-height: 28px;
-}
 
 /* The two destinations named in the page's captions: the cache directory this
    machine fills (the page caption) and the host a search queries (the results
@@ -678,25 +419,8 @@
    reader needed. There is no org here any more — it leads the subtitle below —
    and long single-token names (`FLUX.2-klein-4B-GGUF`) still break rather than
    overflow the plate. */
-.am-card-name {
-  min-width: 0;
-  font-size: 14px;
-  color: inherit;
-  text-decoration: none;
-  white-space: normal;
-  overflow: visible;
-  overflow-wrap: anywhere;
-}
 
-.am-card-name:hover {
-  text-decoration: underline;
-}
 
-.am-card-name:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 3px;
-}
 
 /* -- the caption line: which repo it is, then what it costs -----------------
    Directly under the name. The figure is pinned to the card's RIGHT edge
@@ -704,57 +428,21 @@
    shared margin — tabular for the same reason — while the id continues the
    name it sits under (Akshil, 2026-08-27: "move the size all the way to the
    right in the card"). */
-.am-card-size {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  white-space: nowrap;
-}
 
 /* No separator between the two: a middot in `--border` at 11px over a card wash
    is a mark nobody can see ("the dot here is barely visible, let's just remove
    it"), and the gap already does the work. */
-.am-card-sub {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
-  margin-top: 3px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-}
 
 /* The id is the half that can be arbitrarily long, so it is the half that
    shrinks — ellipsised, with the whole string on the line's own hint. Mono,
    like every other place this page prints a repo address. */
-.am-card-slug {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 
 /* The curation's seal, at the end of the name. A mark ON the name rather than a
    control beside it — no box, no plate, no hover wash. Accent, because it is
    this app's own opinion and accent is what this app says that in; FILLED,
    because a hairline check at 13px is a smudge and read as one more quiet claim
    about the disk rather than as an endorsement. */
-.am-card-pick {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  margin-left: -2px;
-  color: var(--accent);
-  cursor: default;
-}
 
-.am-card-pick:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 3px;
-}
 
 /* The (i), pinned to the head's right corner whatever the name's length —
    the `margin-left: auto` the size figure used to carry. Exactly one thing in
@@ -871,39 +559,11 @@
    task carries the emphasis because it is the answer to "what IS this" that a
    repo id only hints at. */
 
-.am-card-what {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  /* One line's worth, reserved. The row is rendered for every card now (the
-     engine tag is a fact about all of them), and a dataset with nothing to say
-     in it must hold its slot rather than collapse and shorten the card. */
-  min-height: 16px;
-}
 
 /* -- the two tags that are STATE ---------------------------------------------
    The class is still called `am-card-engine` because both of its survivors sit
    in the slot the engine tag used to occupy and wear its chrome — a small
    outlined pill, the same vocabulary as the facts that used to sit beside it. */
-.am-card-engine {
-  padding: 1px 6px;
-  font-size: 11px;
-  /* Muted, flatly: the two tags left wearing this base are a stopped download
-     and a component, and both are quiet facts. The per-family hues that used to
-     override it are gone with the tags that carried them. */
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  white-space: nowrap;
-  /* A long label in a narrow column ellipsizes rather than pushing the card's
-     other facts onto a third line. The title attribute carries the full one. */
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* NO HUE, AND NO `-family` / `-off` / `-none` TAGS (2026-08-25).
    Three of the five engine-tag states are gone from the page along with the
@@ -922,10 +582,6 @@
 /* The reason lives in the title attribute, and a tag nobody can focus is a
    tooltip that only exists for a mouse. The unavailable states take a tab stop
    (see AiModels.tsx) and this is what makes landing on one visible. */
-.am-card-engine:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 
 
 /* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
@@ -935,56 +591,22 @@
    `am-card-engine-off`'s palette deliberately: both mean "not loadable as it
    stands", and a third colour for one more shade of that would spend the card's
    attention on a distinction the tag's own words already draw. */
-.am-card-engine-partial {
-  color: var(--warning-soft);
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--warning-soft) 40%, transparent);
-  background: color-mix(in srgb, var(--warning-soft) 10%, transparent);
-}
 
 /* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
    else. Quiet like the dead end above, because it is a fact about the repo and
    not a warning; SOLID-bordered unlike it, because nothing is missing here —
    the dashes on the other two mean "this cannot load", and this one was never
    supposed to. Same two channels, the other way round. */
-.am-card-engine-component {
-  color: var(--fg-muted);
-  border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
-  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
-}
 
 /* Sentence case, not Title Case: `capitalize` would render the Hub's
    "text-to-image" as "Text To Image". inline-block is what makes ::first-letter
    apply to a span at all. */
-.am-card-task {
-  display: inline-block;
-  color: var(--fg);
-  font-weight: 500;
-}
 
-.am-card-task::first-letter {
-  text-transform: uppercase;
-}
 
-.am-card-params {
-  font-variant-numeric: tabular-nums;
-}
 
 /* The stored weight width — the difference between a 7GB download and a 24GB
    one of the same model, so it reads as a property, not an aside. */
-.am-card-quant {
-  padding: 1px 6px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
 
-.am-card-library::before {
-  /* A separator that belongs to the optional item, so the line has no dangling
-     middot when the library is unknown. */
-  content: "·";
-  margin-right: 10px;
-}
 
 /* -- the (i) panel: everything the face gave up (2026-08-24) -----------------
    A fact sheet — not a menu, not a card. `position: fixed`, placed by
@@ -1174,9 +796,6 @@
    section — between the "Searching huggingface.co" disclosure and the
    table it narrows — rather than above a section swap, so it wears a
    smaller gap than the section-changing row above it. */
-.am-hub-facets {
-  margin: 0 0 10px;
-}
 
 /* The one checkbox on this row — a filter over the results, not a menu, so it
    wears the plainest control that says "on/off" rather than borrowing the two
@@ -1392,23 +1011,8 @@
    Local tab's version is an icon among icons. Sized to sit on the same line as
    the button rather than to match it: this navigates, the other spends
    gigabytes, and they should not read as a matched pair of actions. */
-.am-card-explore-link {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  text-decoration: none;
-  font-size: 12px;
-}
 
-.am-card-explore-link:hover {
-  color: var(--fg);
-  text-decoration: underline;
-}
 
-.am-card-explore-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 3px;
-}
 
 /* -- what a model is doing right now (SPEC §40) ------------------------------
    The runtime row sits between what a model IS and the meta line, because it is
@@ -1453,83 +1057,10 @@
   .am-runtime-dot { animation: none; }
 }
 
-.am-card-runtime-ready { color: var(--fg); }
-.am-card-runtime-error { color: var(--error); }
 
-/* WHY LOAD IS DISABLED — in the actions strip, beside the button it explains.
-   It was a `<p>` below the strip with a warning rail down its leading edge, and
-   it was allowed to WRAP, on the argument that ellipsising a long refusal would
-   put the answer back behind a hover. On a 300px card that meant three lines of
-   grey prose under two buttons — taller than the model's own name, on the cards
-   that can do the least (Akshil, 2026-08-24: "reduce this message more, and it
-   should be next to load button").
 
-   So it takes whatever width the buttons leave and ellipsises into it. Nothing
-   is lost by that: the whole sentence is still on this span's hover AND on the
-   disabled button's accessible name, which is where a screen reader was always
-   going to find it — and the REMEDY, the half that says what to do, is a
-   separate element that never shrinks.
 
-   MUTED, and now with no rail: the line sits inside a row of controls, and a
-   coloured edge in that row would read as a fourth control rather than as a
-   caption on the third. */
-/* -- and the shape it takes when there IS something to do (2026-08-25) -------
-   `Switch engines`, in the warning hue, on the amber wash this app uses for a
-   state that wants a decision. It replaced `Set to MLX FLUX` beside a separate
-   `Engines` link: a statement of configuration ("i don't know what it means")
-   followed by a noun, where what a reader wants is the verb.
 
-   Loud on purpose, and it is the one refusal that gets to be: it is also the
-   only one that can be acted on, and everything else in this strip is either a
-   greyed button or grey text. `align-items: center` on the strip is what keeps
-   it optically level with the button beside it — baseline alignment sat a
-   bordered pill and a bordered button on different lines, which is the
-   misalignment in the screenshot. */
-.am-card-fix {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  white-space: nowrap;
-  color: var(--warning);
-  text-decoration: none;
-}
-
-.am-card-fix:hover {
-  border-color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 20%, transparent);
-}
-
-.am-card-fix:focus-visible {
-  outline: 2px solid var(--warning);
-  outline-offset: 2px;
-}
-
-.am-card-why {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  /* The one thing in this strip that gives up width. Every button beside it is
-     `flex: 0 0 auto`, so the sentence absorbs the whole remainder and shrinks to
-     nothing before a control does. */
-  flex: 1 1 auto;
-  min-width: 0;
-  margin-right: 2px;
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--fg-muted);
-}
-
-.am-card-why-text {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 
 /* …and the two ancestors that have to ALLOW that shrink. A flex item's floor is
    its content width unless something says otherwise, so `min-width: 0` on the
@@ -1538,15 +1069,7 @@
    control the sentence exists to explain. Scoped to `.am-card` because
    `.cc-mdcard-actions` is shared chrome and nothing else that wears it has a
    sentence inside. */
-.am-card .cc-mdcard-foot,
-.am-card .cc-mdcard-actions {
-  min-width: 0;
-}
 
-.am-card .cc-mdcard-actions {
-  flex: 0 1 auto;
-  align-items: center;
-}
 
 /* The "used 4h ago" beside it gives up its width FIRST. Both are grey text in
    the same row, and between the two the one that matters on a card whose Load
@@ -1554,13 +1077,6 @@
    refusal is about what the reader is trying to do right now. It keeps its own
    ellipsis rather than being dropped: a card that hid it would change what the
    footer means depending on a state two lines up. */
-.am-card .cc-mdcard-meta {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 
 /* The remedy, where the remedy is a place. Accent because it is the one thing in
    this line that can be pressed, and underlined on hover rather than at rest so
@@ -1568,17 +1084,7 @@
    `flex: 0 0 auto` is load-bearing: splitting the cause from the remedy is only
    worth anything if the half telling somebody what to DO is never the half that
    gets cut off. */
-.am-card-refusal-link {
-  flex: 0 0 auto;
-  color: var(--accent);
-  text-decoration: none;
-  white-space: nowrap;
-}
 
-.am-card-refusal-link:hover,
-.am-card-refusal-link:focus-visible {
-  text-decoration: underline;
-}
 
 .am-runtime-mem {
   margin-left: auto;
@@ -1589,35 +1095,21 @@
 /* When the memory figure is the whole row (a loaded model, whose STATE the
    badge already carries), it leads rather than being pushed to the far edge by
    an absent label. */
-.am-runtime-mem-lead {
-  margin-left: 0;
-}
 
 /* -- where the weights actually landed ---------------------------------------
    A muted chip beside the memory figure, because on a GPU it is a fact worth
    one glance and no more. `margin-left: auto` puts it at the far edge, so the
    row reads "3.2 GB in memory …………… on CPU" — the two independent things the
    card knows about a running model, at its two ends. */
-.am-runtime-device {
-  margin-left: auto;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
 
 /* The CPU case is the one that has to be READ rather than glanced at: the card
    is green, the memory figure is healthy, and the model is about to answer at
    walking pace for reasons nothing else on screen explains. Warning-coloured
    rather than error-coloured — this is working software, just slowly. */
-.am-runtime-device-cpu {
-  color: var(--warning, var(--fg-muted));
-}
 
 /* The consequence, spelled out. Muted rather than warning-coloured so the two
    halves are not equally loud: "on CPU" is the fact and this is the gloss, and
    the tooltip carries the full explanation for anyone who wants it. */
-.am-runtime-device-tail {
-  color: var(--fg-muted);
-}
 
 /* The row wraps rather than eliding, and the device chip is what wraps: a
    narrow card puts it on its own line under the memory figure instead of
@@ -1678,9 +1170,6 @@
    pick new color, the bg of grey"). A mix that is right in one palette and
    wrong in the other is two colours wearing one declaration — so they are
    written twice, in tokens.css, where the theme test allows literals. */
-.am-card-have {
-  background: var(--am-surface-have);
-}
 
 /* …and the far end of that axis: nothing of this model is on this disk. Mixed
    toward --bg so the plate recedes toward the PAGE in both themes — --bg is
@@ -1692,20 +1181,12 @@
    primary action, and dimming the whole card would mute the Download button with
    it, which reads as a control that has been refused rather than as a model
    nobody has fetched. */
-.am-card-none {
-  background: var(--am-surface-none);
-}
 
 /* Resident, and it keeps the green surface it shipped with. The two classes are
    mutually exclusive in the TSX — `RepoCard` picks `am-card-loaded` OR
    `am-card-have` from one ternary, never both — so this does not need to outrank
    the grey above it; it is ordered after it only to read in the same sequence the
    states do. */
-.am-card-loaded {
-  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
-  border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
-  box-shadow: inset 3px 0 0 var(--success-bright);
-}
 
 /* -- on this disk, and how much of it (D436) ---------------------------------
    The card's own surface answers the question the grid is read for. Three of
@@ -1725,13 +1206,6 @@
    `--am-part` (set inline; see `aiModelGroups.partialFraction`). A wash at 14%
    rather than a fill, because text sits on top of it — and hard stops rather
    than a blend, because the boundary IS the information. */
-.am-card-part {
-  background: linear-gradient(
-    to right,
-    color-mix(in srgb, var(--warning) 14%, var(--bg-alt)) 0 var(--am-part, 100%),
-    var(--bg-alt) var(--am-part, 100%) 100%
-  );
-}
 
 /* -- arriving, i.e. a download in flight (D439) ----------------------------------------------------------------
    A download IN FLIGHT, drawn as the same boundary in the colour of where it is
@@ -1748,37 +1222,12 @@
 
    Never worn together with the amber classes — each card picks exactly one of
    the two, in TSX, because a card cannot be both stopped and running. */
-.am-card-arriving {
-  background: linear-gradient(
-    to right,
-    color-mix(in srgb, var(--success-bright) 14%, var(--bg-alt)) 0 var(--am-part, 0%),
-    var(--bg-alt) var(--am-part, 0%) 100%
-  );
-}
 
 /* …and the same state with no denominator anywhere on this page: a flat wash
    across the whole card. "Some of this is here and we cannot say how much" is a
    different sentence from "2% of this is here", and a gradient stopped at an
    invented number would tell the reader the second one. */
-.am-card-part-unknown {
-  background: color-mix(in srgb, var(--warning) 10%, var(--bg-alt));
-}
 
-.am-loaded-badge {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  border-radius: 999px;
-  /* The .am-suggest-have pattern: a filled pill whose text is the PAGE background,
-     which stays readable in both themes without a second token — dark text on
-     the bright green above, white on the darker green below. */
-  color: var(--bg);
-  background: var(--success-bright);
-}
 
 /* The track is drawn for BOTH kinds of work now (2026-08-24). It used to be
    bytes-only — a download knows its total, so it got a real bar, while loading
@@ -1884,23 +1333,13 @@
 
 /* Only the border changes here now — `color: var(--fg)` used to be this rule's
    own job, back when the resting state below it was muted. */
-.am-card-power-on {
-  border-color: var(--accent);
-}
 
 /* The dead end's way out (D437): the primary control on a partly downloaded repo
    whose fetch cannot be resumed. Error-coloured TEXT on the ordinary button
    shell, not a filled danger button — it destroys nothing on its own (the
    confirm dialog does the deleting), and the loudest thing on a card should not
    be the card nobody wants. */
-.am-card-power-discard {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
-}
 
-.am-card-power-discard:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-}
 
 .am-card-power:focus-visible {
   outline: 2px solid var(--accent);
@@ -1923,15 +1362,7 @@
    card put `mlx-community/Qwen3.5-9B-OptiQ-4bit` straight through the Download
    button. The id ellipsizes and the actions keep their width; the whole id is on
    the hover, and the card's NAME above is the readable form of it anyway. */
-.am-reccard .cc-mdcard-meta {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.am-reccard .cc-mdcard-actions {
-  flex: 0 0 auto;
-}
 
 /* -- the search results' own chrome (SPEC §39) --------------------------------
    Laid out in the vocabulary of the sections it replaces — .am-section, and the
@@ -1949,22 +1380,10 @@
    both what you are looking at and who chose it, against the byte subtotals the
    page's own capability rows carry in the same slot. Same size and colour as the runner labels below, for the same
    reason: it qualifies the heading rather than competing with it. */
-.am-discover-summary {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
 
 /* The heading's right-hand end holds two things in the results state — the
    count and the way back — so they share the one slot rather than the way back
    pushing the title off the left. */
-.am-discover-headmeta {
-  display: flex;
-  flex: 0 1 auto;
-  align-items: baseline;
-  gap: 12px;
-  min-width: 0;
-}
 
 /* "← Back to models", beside the count. Deliberately LOUDER than the
    count it sits next to — it is the only control in that row and the answer to
@@ -2026,14 +1445,6 @@
 
 /* The checkmark is the whole reason this list is here rather than in a doc:
    "you already have this one" is what turns a shortlist into a decision. */
-.am-suggest-have {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
-  color: var(--bg);
-  background: var(--accent);
-  white-space: nowrap;
-}
 
 /* "gated" / "gated — by approval", in the ✓'s slot on a search result.
    OUTLINED and muted where the ✓ is a filled accent chip: the ✓ is good news
@@ -3450,394 +2861,4 @@ button.am-bench-model:focus-visible {
 .am-bench-forget:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-/* ---- The dense Hub results table (task 4, redesigned D780-D782) ---------
-   Replaces the card grid the search face used to draw (`.am-grid`, above).
-   Follows `.am-bench-table` above it — same app, same stylesheet, the same
-   sticky-head-free plain table with tabular numbers on the right. Container
-   queries are the PRIMARY mechanism: columns drop as the pane narrows so the
-   page never scrolls sideways for the common case.
-
-   **Design review, 2026-09-02: three levels of ink, no more.** Full `--fg`
-   is reserved for the model name and the size — the two facts every row
-   states about itself that a reader compares row to row. A heavier weight
-   at full `--fg` is reserved for the match SCORE number (below) — the one
-   number this whole table is ranked by. Everything else (`--fg-muted`) is
-   support: it answers a question a reader asks only sometimes, and giving
-   it the same weight as the two facts above buries them in noise — the
-   screenshot this redesign responds to counted `text generation` /
-   `text-generation` / `GPU` / `BF16` / `≈` on nearly every one of 21 rows,
-   about 40% of the table's ink stating something that told two rows apart
-   from each other zero times.
-
-   **`overflow-x: auto` on the wrap too (code review F5), as a SAFETY NET,
-   not the primary mechanism.** The ladder thresholds below were chosen with
-   no running browser to measure against (`hub-search-notes.md` says so
-   directly) — an acknowledged, still-open gap, not something this pass
-   fixed. Losing Match, Model, Size or the action is worse than a horizontal
-   scrollbar confined to this table's own box, so the wrap scrolls
-   internally rather than clipping when the ladder under-shoots; it stays a
-   no-op at every width the ladder DOES cover. The page body scrolling
-   sideways is still the thing this must never do — `overflow-x` here is
-   scoped to `.am-hubtable-wrap` alone, never the page. */
-.am-hubtable-wrap {
-  container-type: inline-size;
-  margin-top: 6px;
-  overflow-x: auto;
-}
-
-/* The hoisted-constants summary line (D781/D782) — "21 text-generation
-   models · all BF16" in place of repeating either fact on every row below.
-   Sits directly above the table, its own single line: not stacked beside
-   the "Searching huggingface.co…" note above the filter bar, which is a
-   different fact (WHO is being asked) stated in a different place. */
-.am-hubtable-summary {
-  margin: 0 0 4px;
-}
-
-.am-hubtable {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-}
-
-.am-hubtable th,
-.am-hubtable td {
-  padding: 6px 8px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-/* The per-row hairline is GONE: 21 identical borders read as one grey field
-   with no primary column. Each family is its own `<tbody>` now, so the CSS
-   can draw a border around a group instead of counting rows — see
-   `.am-hubtable tbody[data-expanded]` below. The hover tint carries row
-   tracking with no border to anchor on. */
-.am-hubtable tbody tr {
-  border-bottom: 0;
-}
-
-/* A border around a family's `<tbody>` ONLY while its disclosure is open
-   (`data-expanded`, set in `HubResultsTable.tsx`) — an open group is
-   visibly one group, its variant rows bracketed with the family row that
-   opened them. A closed family (the common case) gets no border at all. */
-.am-hubtable tbody[data-expanded] {
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-
-.am-hubtable th.num,
-.am-hubtable td.num {
-  text-align: right;
-}
-
-.am-hubtable thead th {
-  color: var(--fg-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border);
-}
-
-/* The Match column (D780/D781/D782) — the table's signature element and the
-   one place this design spends emphasis. The printed number IS the
-   composite `matchScore`; its COLOUR is the memory verdict (`fit.verdict`)
-   — two different facts carried by one mark, because after D780 they
-   finally say two different things, and disagreement between them (a red,
-   high number) is itself informative rather than something to reconcile. A
-   non-GPU run mode (D782 folded Mode's own column in here) prints as a
-   visible muted suffix rather than a second colour, since colour here
-   already carries the verdict and must not carry two meanings.
-
-   The flex layout lives on an INNER wrapper, never on the `<td>` itself
-   (`am-hubtable-match-inner`, below) — `display: flex` on a table cell
-   drops it out of `display: table-cell`, which knocks the whole row's
-   cells out of the table's column model (the browser then generates
-   anonymous cells around it) and misaligns every column to its right. The
-   `<td>` keeps `display: table-cell` and only carries `white-space`. */
-.am-hubtable-match {
-  white-space: nowrap;
-}
-
-.am-hubtable-match-inner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* The printed match score — heavier than the rest of the table (design
-   review's three-tier rule: name + size at full `--fg`, the score heavier
-   still, everything else muted) and coloured by the memory verdict
-   (`am-hubtable-score-<verdict>`, below) — the one mark left in this cell,
-   so it carries both the composite's magnitude and the verdict's colour. */
-.am-hubtable-score-num {
-  font-weight: 700;
-  min-width: 1.6em;
-  text-align: right;
-}
-
-.am-hubtable-score-easy {
-  color: var(--success);
-}
-
-.am-hubtable-score-tight {
-  color: var(--warning);
-}
-
-.am-hubtable-score-no {
-  color: var(--error);
-}
-
-.am-hubtable-score-unknown {
-  color: var(--fg-muted);
-}
-
-/* D782: the visible, non-colour cost of not running on the GPU/unified
-   memory — a small muted suffix beside the score, never a colour change
-   (colour in this cell already carries the memory verdict). */
-.am-hubtable-offload {
-  font-size: 10px;
-  color: var(--fg-muted);
-}
-
-/* D782 fix: a value matching the hoisted majority (Task/Capability, Quant)
-   is muted rather than blanked — the column still prints every row's real
-   value; a blank cell and a genuine dash (unknown) must never look the
-   same, so this is the ONLY difference a majority row gets.
-
-   A dedicated colour token, never `opacity` (code review finding): this
-   table already sets `color: var(--fg-muted)` on itself, so an `opacity`
-   here used to COMPOUND with that muting rather than replace it — a
-   ~2.3:1 contrast in light mode, invisible in practice, re-creating the
-   exact blank-vs-dash ambiguity this rule exists to prevent. `--fg-faint`
-   is a known, single contrast value in each theme instead of a product of
-   two unrelated dimming rules — see `tokens.css`'s own comment on it. */
-.am-hubtable-majority {
-  color: var(--fg-faint);
-}
-
-/* The Model column: the family's own name, the curated seal, the state tag
-   and — on its own line — the actual repo a Download button acts on.
-
-   Same rule as `.am-hubtable-match` above: the flex column lives on an
-   INNER wrapper (`am-hubtable-name-inner`), never directly on the `<td>` —
-   a `<td>` with `display: flex` stops being a table cell, which is what
-   was collapsing this column into its neighbour and offsetting every
-   header rightward. The `<td>` stays a plain cell carrying only
-   `white-space`. Full `--fg` (design review): this is one of the two
-   facts (with Size) a reader compares row to row, so it wears the table's
-   highest ink level alongside the match score. */
-.am-hubtable-name {
-  white-space: normal;
-  color: var(--fg);
-}
-
-/* Size shares the Model column's ink level (design review): it is the other
-   fact a reader compares row to row on a ranked list of things they might
-   download, so it stays full `--fg` while every other support column sits
-   at `--fg-muted`. */
-.am-hubtable td.am-col-size {
-  color: var(--fg);
-}
-
-.am-hubtable-name-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-
-.am-hubtable-name-inner > a {
-  font-weight: 600;
-  color: var(--fg);
-  text-decoration: none;
-  /* `nowrap`, not the column's default `normal`: the owner prefix below sits
-     right up against the name with a bare "/" and no space between them,
-     and CSS treats "/" as a soft break opportunity on its own — without
-     this the owner and name could split across lines exactly where a
-     reader most needs them read as one unit. The surrounding row (gate
-     pill, curated mark, state tag) is unaffected: they are siblings outside
-     this `<a>`, not text this rule touches. */
-  white-space: nowrap;
-}
-
-/* The owner prefix ("black-forest-labs/") ahead of the bold repo name — a
-   search table's mirrors and community re-uploads share a repo NAME across
-   different owners (see `splitRepoId`'s own doc for why a curated card can
-   drop this and a search row cannot), so the owner has to stay readable
-   without competing with the name it precedes: muted to the table's
-   existing "secondary fact" ink level, a step smaller, and never wrapped
-   onto its own line from the name it identifies. */
-.am-hubtable-owner {
-  color: var(--fg-muted);
-  font-weight: 400;
-  font-size: 0.9em;
-  white-space: nowrap;
-}
-
-.am-hubtable-name-inner > a:hover {
-  text-decoration: underline;
-}
-
-/* The GROUPING fact ("from <baseModel>") — muted, secondary, and never the
-   bold name (E: identity/action/name must all be the same repo). Was
-   `.am-hubtable-variant-id`, which the same rule used to render the OTHER
-   way round (the primary's own id, muted, under a base-model bold name).
-   Corrected (code review F7): the class name did NOT stay, contrary to what
-   this comment used to claim — the JSX now emits `am-hubtable-basemodel`
-   (below), so `.am-hubtable-variant-id` would have been a dead selector had
-   one still existed under that name; there was none left to remove, only
-   this comment's stale claim about it. */
-.am-hubtable-basemodel {
-  font-size: 10.5px;
-  color: var(--fg-muted);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.am-hubtable-partial {
-  font-size: 10px;
-  color: var(--warning-soft);
-  border: 1px dashed var(--warning-soft);
-  border-radius: 3px;
-  padding: 0 4px;
-}
-
-/* Var. — how many other repos this row folded in. A pill, not a bare number,
-   for the same reason `catalog.py`'s recommended badge is one: it is a COUNT,
-   not a measurement, and the shape says so before the digit is read. */
-.am-hubtable-varcount {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-}
-
-/* The count is also the disclosure TOGGLE (E-1) — a real affordance, not
-   chrome that only looks like one, so it wears the pointer and a visible
-   hover/focus the plain count-only span (no siblings) does not need. */
-.am-hubtable-vartoggle {
-  border: none;
-  cursor: pointer;
-  font: inherit;
-}
-
-.am-hubtable-vartoggle:hover,
-.am-hubtable-vartoggle:focus-visible {
-  background: var(--bg-hover, var(--bg-alt));
-}
-
-/* Quality floor (design review): keyboard focus stays VISIBLE on every
-   interactive cell, not just hover — this button had a hover-only
-   treatment before, which is invisible to a keyboard user tabbing through
-   the table. */
-.am-hubtable-vartoggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* A sibling's own disclosure row, opened from "N variants" — indented under
-   the family row it belongs to so it reads as folded IN rather than as a
-   result of its own. */
-.am-hubtable-variant-row {
-  font-size: 0.95em;
-}
-
-.am-hubtable-variant-row .am-hubtable-variant-name {
-  padding-left: 1.25em;
-}
-
-.am-hubtable-variant-row .am-hubtable-name-inner > a {
-  color: var(--fg-muted);
-}
-
-/* The `↳` marker ahead of a variant's own link — it does not replace the
-   indent above, just names what the indent is FOR. */
-.am-hubtable-branch {
-  color: var(--fg-muted);
-  margin-right: 4px;
-}
-
-/* The family row's own base class (code review F7) — emitted in JSX
-   (`HubResultsTable.tsx`, alongside the disk-state washes below) so a family
-   row and a variant sub-row (`.am-hubtable-variant-row`) can be told apart in
-   CSS, but this had no rule of its own at all before this fix. A subtle
-   hover, matching `.am-hubtable-vartoggle`'s own hover treatment, so a row
-   under the pointer reads as the thing being scanned — most rows carry
-   neither disk-state wash, and for the few that do this briefly swaps their
-   wash for the hover tint while the pointer is over them, reverting on
-   mouseout, which is an acceptable trade for one shared rule rather than a
-   `:not(.am-card-have):not(.am-card-part-unknown):not(.am-card-arriving)`
-   guard nobody asked for. */
-.am-hubtable-row:hover {
-  background: var(--bg-hover, var(--bg-alt));
-}
-
-/* The disk-state washes themselves (`am-card-have`, `am-card-part-unknown`,
-   `am-card-arriving`) are the SAME classes every other card on this page
-   wears for the same three states (D436) — see `HubResultsTable.tsx`, and
-   their rules further up this file. Nothing hubtable-specific needed here. */
-
-.am-hubtable-action {
-  text-align: right;
-}
-
-/* Column-hiding, widest-drops-first (D782 rewrite): Task, tok/s, Params,
-   Quant, Pop. and New drop in that order as the pane narrows — Match,
-   Model, Size and the action never do (the redesign's own line in the
-   sand: the fitness spine, identity, the one other row-to-row comparison,
-   and the escape hatch). Capability, Mode and Score are GONE as their own
-   columns (merged into Task, folded into Match, merged into Match — see
-   D781/D782), so this ladder is six rungs where it used to be eight.
-   Thresholds are the TABLE's own inline size (`container-type:
-   inline-size` above), not the viewport, so a split pane narrows the same
-   columns a full-width window would — unverified in a running browser, per
-   this file's own long-standing caveat above.
-
-   Task drops first (820px): once Mode and Capability are gone, it is the
-   one remaining column most likely to already be stated once in the
-   hoisted summary line above the table (D781) rather than carrying new
-   information on any given row. Quant drops just after Params rather than
-   with it, since a quant token is often the more decisive fact of the two
-   at that width. */
-@container (max-width: 820px) {
-  .am-hubtable .am-col-task {
-    display: none;
-  }
-}
-
-@container (max-width: 740px) {
-  .am-hubtable .am-col-tok {
-    display: none;
-  }
-}
-
-@container (max-width: 660px) {
-  .am-hubtable .am-col-params {
-    display: none;
-  }
-}
-
-@container (max-width: 600px) {
-  .am-hubtable .am-col-quant {
-    display: none;
-  }
-}
-
-@container (max-width: 540px) {
-  .am-hubtable .am-col-pop {
-    display: none;
-  }
-}
-
-@container (max-width: 460px) {
-  .am-hubtable .am-col-new {
-    display: none;
-  }
 }

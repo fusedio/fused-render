@@ -1,20 +1,25 @@
-// The dense results table's cell values, as pure derivations — read by
-// `HubResultsTable.tsx`, tested here for the reason `hubSearchView.ts` and
-// `hubFamilies.ts` already are: no DOM harness exists in this repo by design,
-// so the part with a rule in it lives in a module that can be driven.
+// One row per hit's cell values, as pure derivations — read by
+// `HubSearchScreen.tsx`'s `HitRow`, tested here for the reason
+// `hubSearchView.ts` already is: no DOM harness exists in this repo by
+// design, so the part with a rule in it lives in a module that can be
+// driven.
 //
 // **Every cell whose source can be absent renders a dash, and that is the
-// whole discipline this module exists to enforce.** A table is denser than a
-// card, so a wrong number is louder — the plan's own example is llmfit's
-// `search` table, whose Score/tok/s/Runtime/Mode/Mem% columns are filled
-// entirely with `-` because nothing there ever distinguished "we do not know"
-// from "the answer is zero". The two failure modes this module is built to
-// keep apart: an unmeasured size must never render `0 GB`, and a null
-// `speedEstimate` must never render `0 tok/s` — both would be a LOUDER wrong
-// answer than the dash they replace.
-import type { AiFitVerdict, AiSpeedEstimate, HubModel } from "@platform/lib/api";
+// whole discipline this module exists to enforce.** A wrong number is a
+// louder mistake than a dash — the plan's own example is llmfit's `search`
+// table, whose Score/tok/s/Runtime/Mode/Mem% columns are filled entirely
+// with `-` because nothing there ever distinguished "we do not know" from
+// "the answer is zero". This module never renders `0` for something merely
+// unmeasured.
+//
+// The family/hoist/dense-table half of this module (`hoistValue`,
+// `familyHoist`, `occupiedColumns`, `speedLabel`, `familyDisplay`,
+// `capabilityHint`, and friends) was deleted alongside `HubResultsTable.tsx`
+// and `hubFamilies.ts`: the two-pane port's search screen (`HubSearchScreen`)
+// draws one row per repo with no family grouping and no dense `<table>`, so
+// there is nothing left to hoist a column out of or collapse a family into.
+import type { AiFitVerdict } from "@platform/lib/api";
 import { formatParams, timeAgo } from "@platform/lib/format";
-import type { HubFamily } from "./hubFamilies";
 
 /** The dash every absent cell in this table shows — one glyph, so a reader's
  *  eye can learn it once rather than per column. */
@@ -72,81 +77,6 @@ export interface MatchCell {
  *  row) or by the lazy per-file `hub/size` lookup — and `fit.verdict`
  *  already states which rung of its own ladder it used. */
 export type MatchFitBasis = AiFitVerdict["basis"] | null;
-
-/** The fit actually shown for a row — lives here, apart from
- *  `HubResultsTable.tsx`, so the precedence rule is a pure function this
- *  file's own test suite can drive, matching every other rule in this
- *  module.
- *
- *  **A judged override only wins when the lookup that produced it could
- *  actually judge anything.** `api_hub_size` (`hub_models.py`) computes a
- *  fit/speed verdict ONLY when it was asked with a `file` — a lookup made
- *  with `file: null` (any row `HubResultsTable` did not resolve a GGUF pick
- *  for) always answers `fit: null`, not because there was nothing to fit,
- *  but because that shape of request never judges at all. `hubSize.ts`'s
- *  `lookupTotalSize` caches that `null` the same way it would cache a real
- *  "asked, and there was nothing to judge" answer (`knownFit`'s own pinned
- *  contract, `hubSize.test.ts:295`) — the two are indistinguishable from the
- *  cache alone. Without this `file` gate, a row that already carries a real
- *  `basis: "measured"` verdict from `footprint_store` (a model already on
- *  disk, scored at search time) would have that verdict WIPED by the
- *  never-judges `null` the moment its `file`-less lookup resolves — the dot
- *  drops to "unknown" and the tok/s blanks for a row nothing was ever wrong
- *  with. So the override is only honoured when `file !== null`: exactly the
- *  shape of request `api_hub_size` can answer with a real verdict for. */
-export function resolveFit(
-  modelFit: AiFitVerdict | null,
-  fitOverride: AiFitVerdict | null | undefined,
-  file: string | null,
-): AiFitVerdict | null {
-  return file !== null && fitOverride !== undefined ? fitOverride : (modelFit ?? null);
-}
-
-/** `resolveFit`'s sibling for the speed estimate riding the same lazy
- *  lookup — identical precedence, same reason. */
-export function resolveSpeed(
-  modelSpeed: AiSpeedEstimate | null,
-  speedOverride: AiSpeedEstimate | null | undefined,
-  file: string | null,
-): AiSpeedEstimate | null {
-  return file !== null && speedOverride !== undefined ? speedOverride : (modelSpeed ?? null);
-}
-
-/** Which basis the fit actually being shown rests on — `matchTitle`'s hover
- *  text. Reads `AiFitVerdict.basis` straight off the resolved verdict rather
- *  than re-deriving it from `wantsTotal`/`fitOverride`: with the derived-fit
- *  guess deleted (see `MatchFitBasis`'s own doc), the wire value is already
- *  the honest answer, and inferring a second one risks disagreeing with it. */
-export function matchFitBasis(fit: AiFitVerdict | null): MatchFitBasis {
-  return fit?.basis ?? null;
-}
-
-/** Whether `matchScore` was computed against a fit this row is not
- *  currently showing — `matchCell`/`matchTitle`'s `stale` parameter, its own
- *  pure function for the same reason `resolveFit` is one: a rule worth a
- *  test belongs in a module that can be driven, not inline in a component
- *  with no DOM harness to exercise it.
- *
- *  **True when the lazy lookup handed back a verdict that actually differs
- *  from the one `matchScore` was computed against** — not merely "the
- *  lookup has answered". Compares verdicts, not just nullness: `modelFit ==
- *  null` alone (the server scored `matchScore` against `_FIT_DEFAULT` with
- *  nothing real to judge by) still counts, but so would a same-shaped
- *  correction that changed the verdict outright, if one were ever possible.
- *  `fitOverride` resolving to `null` (`knownFit`'s own pinned contract for
- *  "asked, and there was nothing to judge") is not a correction of
- *  anything, so it never marks stale. When genuinely stale, the number falls
- *  back to the dash (never a second, possibly-also-wrong number invented to
- *  fill the gap) so the colour the corrected fit earns has nothing beside it
- *  to contradict it — this is what let an EARLIER bug show a GGUF row's
- *  green "easy" colour beside a low, unrelated number, while the hover
- *  claimed the number "blends memory fit". */
-export function isMatchScoreStale(
-  modelFit: AiFitVerdict | null,
-  fitOverride: AiFitVerdict | null | undefined,
-): boolean {
-  return fitOverride != null && (modelFit == null || fitOverride.verdict !== modelFit.verdict);
-}
 
 export function matchCell(
   fit: AiFitVerdict | null,
@@ -209,217 +139,6 @@ export function matchTitle(
   return `${scoreText} Number colour: ${verdictText}.${modeText}${basisText}`;
 }
 
-// ---------------------------------------------------------------------------
-// D782 — Task and Capability were the same fact twice (`text generation` /
-// `text-generation`) on every row this table has ever shown for a single
-// capability. The visible column is now keyed on `capability` — the value
-// the download path and runner resolution actually act on — with the Hub's
-// own `task` label folded into the hover ONLY where it genuinely differs,
-// so a real discrepancy stays inspectable rather than silently dropped.
-
-/** The hover note for the merged Task/Capability cell — present only when
- *  the Hub's own task label and this app's capability slug actually
- *  disagree (they are usually the same string, `"text-generation"` twice,
- *  which is the bug this column collapse fixes). */
-export function capabilityHint(model: Pick<HubModel, "capability" | "task">): string | undefined {
-  if (model.task && model.task !== model.capability) {
-    return `The Hub's own task label for this repo is "${model.task}".`;
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
-// D781 — hoisting a value that is identical across the whole result set out
-// of every row's cell and into one summary line above the table. A value
-// repeated on 21 of 21 rows is noise in a cell and information in a header.
-//
-// D799 narrowed this to UNANIMITY ONLY, after two rounds each contradicted
-// the other's direction: round 1 computed presence over primaries only (the
-// summary said "all BF16" while an expanded disclosure showed `Q4_K_M`);
-// round 2 shared one primaries+variants set for BOTH presence and the hoist,
-// but let a strong (80%) MAJORITY still drive both `isMajorityValue`'s
-// full-weight cell styling and a "mostly X" summary line — so three visible
-// primary rows all reading `BF16` could sit under a "mostly Q4_K_M" summary
-// decided entirely by fifteen variants nobody had opened the disclosure to
-// see. There is no majority hoist any more: `hoistValue` only ever returns a
-// value when the ENTIRE set (primaries and variants) agrees, so the summary
-// can never state a fact contradicted by a row that's actually on screen.
-// The muted-common-value styling for a majority is a SEPARATE, column-local
-// concept (`majorityValue`) that only ever affects which cell is
-// de-emphasized, never whether the column exists or what the header says.
-
-/** One column's hoisted fact: the single value EVERY row in the set shares.
- *  Returned only when the whole set is unanimous (`hoistValue`) — the
- *  column is then DROPPED entirely (`columnVisible`) and the value is
- *  stated once in the summary line instead of on every row. */
-export interface Hoist {
-  value: string;
-}
-
-/** The threshold (design review, 2026-09-02) a value's SHARE of a column
- *  must clear to be muted as "the common case" (`majorityValue`,
- *  `isMajorityValue`) — a purely cosmetic de-emphasis, never a fact this
- *  column's header or the summary line above it claims. 80%: high enough
- *  that muting still tracks the row a reader is actually looking at most of
- *  the time, without pretending a bare majority makes the minority beneath
- *  notice. */
-export const HOIST_MAJORITY = 0.8;
-
-/** Whether every value in the set is the SAME known value — the only case
- *  this column's fact is ever hoisted out of the table. A `null` anywhere
- *  in the set breaks unanimity outright, same as a differing value would:
- *  "we don't know for one row" is exactly the case the column exists to
- *  show, never something to explain away by treating the known majority as
- *  the whole truth. This function returns no partial/majority result —
- *  see `majorityValue` for the separate, purely cosmetic concept. */
-export function hoistValue(values: readonly (string | null)[]): Hoist | null {
-  if (values.length === 0) return null;
-  const first = values[0];
-  if (first === null) return null;
-  for (const v of values) {
-    if (v !== first) return null;
-  }
-  return { value: first };
-}
-
-/** The value most rows in the set share, when it clears `HOIST_MAJORITY` —
- *  used ONLY to mute that value's cells (`isMajorityValue`) so the rows
- *  that disagree with it are what catch the eye. Never used to hide a
- *  column or to put a value in the summary line: those both require full
- *  unanimity (`hoistValue`) now, and a column that is visible (i.e. NOT
- *  unanimous) may still have a common value worth de-emphasizing without
- *  the header claiming it as fact. `null` values are excluded from the
- *  count itself (an unknown row is not evidence FOR any value) but still
- *  count in the denominator, so a column half full of unknowns cannot
- *  read as 80%-common off the known half alone. */
-export function majorityValue(values: readonly (string | null)[]): Hoist | null {
-  if (values.length === 0) return null;
-  const counts = new Map<string, number>();
-  for (const v of values) {
-    if (v === null) continue;
-    counts.set(v, (counts.get(v) ?? 0) + 1);
-  }
-  let modal: string | null = null;
-  let modalCount = 0;
-  for (const [v, c] of counts) {
-    if (c > modalCount) {
-      modal = v;
-      modalCount = c;
-    }
-  }
-  if (modal === null || modalCount === 0) return null;
-  if (modalCount / values.length >= HOIST_MAJORITY) return { value: modal };
-  return null;
-}
-
-/** Whether a column should exist in the table AT ALL — presence, not just
- *  cell content. A half-applied hoist, where a fully-hoisted column leaves
- *  every cell blank while the `<th>` and every `<td>` still render, is a
- *  labelled column stating nothing 21 times over; this function is what
- *  keeps that from happening.
- *
- *  HIDDEN in two cases: every row agrees (`hoist` non-null — by
- *  construction that means unanimous, already stated once in the summary
- *  line — repeating it as a column of identical text would be the exact
- *  noise this whole redesign removes), or NOTHING is known at all (every
- *  value `null`) — a column of nothing but dashes states nothing either,
- *  so it is not worth its width.
- *
- *  SHOWN in every other case — including a strong majority short of full
- *  agreement: `hubTableView`'s cell rule for a shown column always prints
- *  the row's own real value (see `isMajorityValue` for the muted/full-weight
- *  split) — it never blanks a majority row's cell while the column is
- *  visible, because that produced a real ambiguity a reviewer caught live:
- *  a blank cell and a genuine dash (unknown) are two different facts, and
- *  rendering both as "no visible text" left a reader with no way to tell
- *  "unremarkable, matches the summary" from "nobody knows".
- *
- *  **`values` must cover every row the table can DISPLAY, primaries and
- *  variants alike**, and so must `hoist` itself —
- *  both are built from the same set in `familyHoist`, so this function's
- *  own re-check of `values` can never disagree with what `hoist` was
- *  computed from. */
-export function columnVisible(hoist: Hoist | null, values: readonly (string | null)[]): boolean {
-  const known = values.filter((v): v is string => v !== null);
-  if (known.length === 0) return false;
-  return hoist === null;
-}
-
-/** Whether ONE row's value is the column's majority value (`majorityValue`)
- *  — purely a STYLING signal (de-emphasize the value most rows already
- *  share) and never a reason to omit the text: the cell always prints
- *  `value` (or the dash for a genuinely unknown one) regardless of this
- *  function's answer. Callers pass `majorityValue`'s result here, never
- *  `hoistValue`'s — a unanimous column is not rendered at all
- *  (`columnVisible`), so there is no cell left to style, and `hoistValue`
- *  never has a non-unanimous "majority" shape to hand this function. */
-export function isMajorityValue(value: string | null, majority: Hoist | null): boolean {
-  return !!majority && value !== null && value === majority.value;
-}
-
-/** The one line above the table naming whatever the result set UNANIMOUSLY
- *  agrees on (D781, narrowed by D799) — task/capability and quant are the
- *  two candidates left after D782 folded Mode into the Match cell's own
- *  hint. Size, Params, tok/s, Pop. and New are never hoisted: they are the
- *  columns a reader compares row-to-row on a RANKED list, so even a
- *  coincidental cluster must stay visible per row.
- *
- *  There is no "mostly X" clause (D799): a hoist that is anything
- *  short of unanimous is `null` by construction (`hoistValue`), so this
- *  function only ever states a value it can back with full agreement across
- *  every row it was computed from — never a claim decided by rows a reader
- *  cannot currently see. `null` when there is nothing to say (no rows yet,
- *  or neither column reached unanimity). */
-export function hoistSummary(count: number, capabilityHoist: Hoist | null, quantHoist: Hoist | null): string | null {
-  if (count <= 0) return null;
-  const noun = count === 1 ? "model" : "models";
-  const head = capabilityHoist ? `${count} ${capabilityHoist.value} ${noun}` : `${count} ${noun}`;
-  if (!quantHoist) return head;
-  return `${head} · all ${quantHoist.value}`;
-}
-
-/** Everything `HubResultsTable` needs to draw the Task/Capability and Quant
- *  columns' shared state — lives here, apart from the component, so the
- *  "one value set feeds both presence and the summary" rule is a pure
- *  function this file's own test suite can drive, the way every other rule
- *  in this module already is.
- *
- *  **In one sentence: `capabilityHoist`/`quantHoist`, their majority
- *  counterparts, and the `values` `columnVisible` re-checks against are all
- *  built from the SAME rows** — `allRows`, every family's primary AND every
- *  one of its variants, whether or not a disclosure is currently open.
- *  `count` (fed to `hoistSummary`) is `allRows.length` too, not
- *  `families.length` (D799): passing `families.length` — the number of
- *  top-level rows — as the count a hoist claim is stated "about" would
- *  disagree with the hoist itself, which is decided over the larger
- *  primaries+variants set; a claim and the count attached to it must
- *  describe the same rows, or a reader has no way to know how many models
- *  the stated fact actually covers. */
-export function familyHoist(families: readonly HubFamily[]): {
-  capabilityHoist: Hoist | null;
-  quantHoist: Hoist | null;
-  capabilityMajority: Hoist | null;
-  quantMajority: Hoist | null;
-  summary: string | null;
-  showTask: boolean;
-  showQuant: boolean;
-} {
-  const allRows = families.flatMap((f) => [f.primary, ...f.variants]);
-  const allCapabilityValues = allRows.map((m) => m.capability);
-  const allQuantValues = allRows.map((m) => m.quant);
-  const capabilityHoist = hoistValue(allCapabilityValues);
-  const quantHoist = hoistValue(allQuantValues);
-  return {
-    capabilityHoist,
-    quantHoist,
-    capabilityMajority: majorityValue(allCapabilityValues),
-    quantMajority: majorityValue(allQuantValues),
-    summary: hoistSummary(allRows.length, capabilityHoist, quantHoist),
-    showTask: columnVisible(capabilityHoist, allCapabilityValues),
-    showQuant: columnVisible(quantHoist, allQuantValues),
-  };
-}
-
 /** "18d ago", or the dash when the Hub did not say (or said something this
  *  page cannot parse) — `created` is an ISO8601 string or null, and
  *  `timeAgo` wants epoch SECONDS, so the one unit conversion lives here
@@ -429,54 +148,6 @@ export function ageLabel(created: string | null): string {
   const ms = Date.parse(created);
   if (!Number.isFinite(ms)) return DASH;
   return timeAgo(ms / 1000) ?? DASH;
-}
-
-/** Below this many parameters, `speed.py`'s own bandwidth formula is
- *  documented as UNVALIDATED (`speed.py:283`'s own anchor rule, llmfit's
- *  `params_b >= 1.0 and not is_moe`): a sub-billion-parameter model's tok/s
- *  is dominated by fixed per-call overhead the formula does not model at
- *  all, so a number it produces down there is not evidence of anything.
- *  This table has no MoE flag to check the other half of that rule against
- *  (a Hub search row carries no such fact), so the params-only half is what
- *  it can honestly apply. */
-const SPEED_ANCHOR_PARAMS = 1_000_000_000;
-
-/** tok/s, scaled to how many digits a reader actually needs — or the dash,
- *  never "0 tok/s", which reads as a measurement rather than as "nobody
- *  knows".
- *
- *  **The bug this fixes:** `tiny-Qwen2ForCausalLM-2.5` (2M parameters) shows
- *  a confident five-digit `17.3k` — a number the formula's own documented
- *  anchor rule (see `SPEED_ANCHOR_PARAMS`) says it has no business
- *  producing for anything this small. Below the anchor the honest render is
- *  the dash, with the reason in the hover (`speedTitle`) — a formatting fix
- *  cannot repair a number that should not have been shown at all. At or
- *  above the anchor, three precision bands: under 10 keeps one decimal (a
- *  real distinction at conversational speeds), 10-999 rounds to a whole
- *  token, and 1000+ compacts to `formatParams`'s own K-step so the column
- *  stays a fixed few characters wide. */
-export function speedLabel(speed: AiSpeedEstimate | null, params: number | null): string {
-  if (params !== null && params < SPEED_ANCHOR_PARAMS) return DASH;
-  if (!speed || typeof speed.tokensPerSecond !== "number" || !Number.isFinite(speed.tokensPerSecond)) {
-    return DASH;
-  }
-  const tps = speed.tokensPerSecond;
-  if (tps < 10) return tps.toFixed(1);
-  if (tps < 1000) return Math.round(tps).toString();
-  return `${(tps / 1000).toFixed(1)}k`;
-}
-
-/** The tok/s cell's hover — states the anchor-rule reason for the dash when
- *  that is why it is one, rather than leaving a reader to guess whether
- *  "unknown" means "not measured" or "not modelled at this size". */
-export function speedTitle(params: number | null): string | undefined {
-  if (params !== null && params < SPEED_ANCHOR_PARAMS) {
-    return (
-      "Not estimated: below one billion parameters, tok/s is dominated by fixed per-call overhead " +
-      "the bandwidth formula does not model, so a number here would not be a real estimate."
-    );
-  }
-  return undefined;
 }
 
 /** The row's measured quantization (`HubModel.quant`, server-derived — see
@@ -498,14 +169,6 @@ export function popLabel(downloads: number | null): string {
   return compact || String(downloads);
 }
 
-/** How many OTHER repos this family folds in — the dash for a family that is
- *  just the one repo, never a bare `0`: the column states how much was
- *  collapsed, and "nothing was collapsed" is a fact worth a dash rather than
- *  a number that reads as a measurement of something. */
-export function variantLabel(variantCount: number): string {
-  return variantCount > 0 ? String(variantCount) : DASH;
-}
-
 /** Splits a Hub repo id into its owner and its own name — the owner is
  *  everything before the last `/` (`null` when the id has none, the Hub's
  *  legacy canonical models like `gpt2`), and the name is the remainder.
@@ -524,33 +187,6 @@ export function splitRepoId(id: string): { owner: string | null; name: string } 
   return cut === -1 ? { owner: null, name: id } : { owner: id.slice(0, cut), name: id.slice(cut + 1) };
 }
 
-/** The Model column's two lines: the repo a Download button on this row would
- *  actually act on, and — only where the row is standing in for a base model
- *  that is not itself among the results — which base that is.
- *
- *  **The row's NAME is always the primary's own id, never a repo that isn't
- *  in the results.** `groupIntoFamilies` already heads a family with its
- *  base model whenever that repo is present, so for the common case the two
- *  are the same string and the second line is empty. Where they differ, the
- *  base repo is one the results do not contain — dropped by `_model_row`, or
- *  simply outside the query's match — and naming the row after it would be
- *  wrong on three counts a table full of Download buttons cannot afford: it
- *  is not necessarily a repo this app can run at all, two DIFFERENT base
- *  models that share a repo name (`Qwen/Qwen3-8B` vs `unsloth/Qwen3-8B`)
- *  would truncate to one identical name for two unrelated families, and —
- *  the sharpest version of the same mistake — identity, the href and the
- *  download action must all name the same repo or a click acts on something
- *  other than what was read. So `name` is `family.primary.id`, matching the
- *  href and the download action exactly; `baseModel` is the grouping fact,
- *  shown as secondary context only for a family whose base is absent.
- */
-export function familyDisplay(family: HubFamily): { name: string; baseModel: string | null } {
-  return {
-    name: family.primary.id,
-    baseModel: family.base ? null : family.baseModel,
-  };
-}
-
 /** `params` formatted the same compact way the rest of the page counts
  *  parameters, or the dash for a repo with none. */
 export function paramsLabel(params: number | null): string {
@@ -558,64 +194,3 @@ export function paramsLabel(params: number | null): string {
   return formatParams(params) || DASH;
 }
 
-// ---------------------------------------------------------------------------
-// Occupied columns — a real image-model search (`text-to-image`) makes some
-// optional columns go dead across the WHOLE result set: TOK/S is a
-// text-generation-only figure (`speedLabel`'s own anchor rule), so on an
-// image search every row's cell is the dash, and QUANT is often unmeasured
-// for every row but one. A column of nothing-but-dashes eats horizontal
-// space and reads as broken rather than as "checked, nothing here" — this
-// function decides which optional columns are worth `HubResultsTable`
-// drawing a `<th>`/`<td>` pair for at all.
-
-/** The optional data columns this table can hide when a result set has
- *  nothing to put in them. MATCH and MODEL are structural, not
- *  data-dependent, so they never appear here — this table always has a row
- *  to name and a score to bar, even when it has neither params nor a
- *  measured quant. `vars` (the family "N other repos" column) is
- *  deliberately absent from this type: see `occupiedColumns`'s own doc for
- *  why. */
-export type HubColumnKey = "params" | "quant" | "size" | "tokens" | "pop" | "new";
-
-/** Which optional columns carry at least one real value across `models` —
- *  `HubResultsTable` checks this before drawing a column's `<th>`/`<td>`
- *  pair, the same way `columnVisible` already gates Task/Quant for a
- *  unanimous result set (a DIFFERENT rule: that one hides a column because
- *  every row agrees and says so once in the summary; this one hides a
- *  column because no row has anything to say at all).
- *
- *  "Real value" is checked by running each row through the SAME label
- *  function the cell itself would call (`paramsLabel`, `quantLabel`,
- *  `speedLabel`, `popLabel`, `ageLabel`) and asking whether it printed
- *  anything other than the dash — so this function can never call a column
- *  "occupied" that every one of its own cells would then render as a dash,
- *  or the reverse. A column is occupied the moment ONE row clears that bar;
- *  it does not take a majority.
- *
- *  `size` is the one field this cannot check the same way: `hubSize.ts` owns
- *  the size string's own formatting (a lazily-fetched, sometimes-approximate
- *  figure), and this module does not import it. "Real" for `size` is
- *  decided straight off the two fields a size cell needs to have anything
- *  to show at all — `estimatedSize` and `params` both non-null — with the
- *  cell's own renderer staying the sole authority on the actual printed
- *  string.
- *
- *  `vars` (how many other repos a family folds in) is not decided here at
- *  all: it is a FAMILY fact (`HubFamily.variants.length`), and `models` is
- *  the flat per-row list this function is handed, which carries no such
- *  count for any individual `HubModel` — answering it would mean guessing
- *  at grouping this function was never given, so it is left out of
- *  `HubColumnKey` entirely rather than answered with a guess.
- *
- *  An empty `models` returns an empty set: `.some()` over no rows is
- *  `false` for every column, never a fallback to "show everything". */
-export function occupiedColumns(models: readonly HubModel[]): Set<HubColumnKey> {
-  const occupied = new Set<HubColumnKey>();
-  if (models.some((m) => paramsLabel(m.params) !== DASH)) occupied.add("params");
-  if (models.some((m) => quantLabel(m.quant) !== DASH)) occupied.add("quant");
-  if (models.some((m) => m.estimatedSize !== null && m.params !== null)) occupied.add("size");
-  if (models.some((m) => speedLabel(m.speedEstimate, m.params) !== DASH)) occupied.add("tokens");
-  if (models.some((m) => popLabel(m.downloads) !== DASH)) occupied.add("pop");
-  if (models.some((m) => ageLabel(m.created) !== DASH)) occupied.add("new");
-  return occupied;
-}
