@@ -198,6 +198,19 @@ describe("matchRowTip", () => {
     expect(tip).toContain("+6");
   });
 
+  it("blames unknown size, not unused capacity, when capability lost points with no params", () => {
+    // C5 (Bugbot): a row with no declared params still uses the capability
+    // axis's default score, but the phrase must not invent "this machine
+    // could run more" reasoning next to a dash it never measured.
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 21, lost: 0, footprintGb: 17, poolGb: 22.4 }),
+      axis({ axis: "capability", gained: 0, lost: 25, params: null }),
+    ];
+    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
+    expect(tip.toLowerCase()).toContain("size unknown");
+    expect(tip.toLowerCase()).not.toContain("could run more");
+  });
+
   it("names a run-mode penalty as its own loss when it applied", () => {
     const breakdown: HubMatchAxis[] = [
       axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),

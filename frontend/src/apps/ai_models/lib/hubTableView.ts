@@ -173,7 +173,9 @@ function axisLossPhrase(entry: HubMatchAxis): string {
     case "recency":
       return `recency (${entry.ageDays != null ? agePhrase(entry.ageDays) : "age unknown"})`;
     case "capability":
-      return `model size (${paramsLabel(entry.params ?? null)} — this machine could run more)`;
+      return entry.params != null
+        ? `model size (${paramsLabel(entry.params)} — this machine could run more)`
+        : "model size (size unknown, default score)";
     case "speed":
       return entry.tokensPerSecond != null
         ? `speed (~${Math.round(entry.tokensPerSecond)} tok/s)`
