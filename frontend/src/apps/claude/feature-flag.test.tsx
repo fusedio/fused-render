@@ -15,6 +15,14 @@ let calls = 0;
 let answer: () => Promise<unknown> = async () => ({ chat: { native: false } });
 const realFetch = globalThis.fetch;
 beforeEach(() => {
+  // RESET BEFORE, NOT ONLY AFTER. This module is process-global and other
+  // suites in the same bun run now reach it too — `ClaudeChat` asks for the
+  // recap switch on the same one prefs read, so any file that mounts a chat
+  // starts a read against this module. One of those landing late used to leave
+  // `enabled` already answered here, and the first assertion below is that a
+  // fresh mount sees `null`. Resetting here bumps the generation, which is what
+  // makes a leaked in-flight read from another file unable to write at all.
+  resetNativeChatFlagForTests();
   calls = 0;
   (globalThis as { fetch: unknown }).fetch = async () => {
     calls += 1;

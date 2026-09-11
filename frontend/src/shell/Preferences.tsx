@@ -46,6 +46,7 @@ import {
   hfLogout,
   putCanvasesEnabled,
   putNativeChatEnabled,
+  putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
   getLanDevices,
@@ -57,7 +58,10 @@ import {
 } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishNativeChatEnabled } from "@apps/claude/feature-flag";
+import {
+  publishChatRecapEnabled,
+  publishNativeChatEnabled,
+} from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -225,6 +229,10 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const enabled = prefs.chat?.native ?? false;
+  // DEFAULT ON, so the fallback is `true` and the read is `!== false`: a server
+  // that predates the field is a server whose chat shows the fold.
+  const recap = prefs.chat?.recap !== false;
+  const [recapBusy, setRecapBusy] = useState(false);
   // `FUSED_RENDER_NATIVE_CHAT` BEATS THE STORED SWITCH (prefs.py
   // `native_chat_enabled`), so under it a click stores a value the server then
   // reports back as the other one and the box snaps back with no explanation.
@@ -244,6 +252,21 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleRecap = async () => {
+    if (recapBusy) return;
+    setRecapBusy(true);
+    setError(null);
+    try {
+      const next = await putChatRecapEnabled(!recap);
+      onChange(next);
+      publishChatRecapEnabled(next.chat?.recap !== false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRecapBusy(false);
     }
   };
 
@@ -271,6 +294,23 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
           which overrides this switch.
         </p>
       )}
+      {/* A SETTING OF THE NATIVE CHAT'S, so it lives inside this section rather
+          than beside it — and it is NOT disabled when the chat is off: the box
+          says what the chat will do, and a control that disappears the moment
+          the feature it belongs to is off is a control nobody can find again.
+          Own `busy`, so one switch in flight does not freeze the other. */}
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={recap}
+          disabled={recapBusy}
+          onChange={toggleRecap}
+        />
+        <span>
+          <b>Session recap</b> — after you have been away a minute, one line at the
+          bottom of the chat saying where the conversation stands.
+        </span>
+      </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );

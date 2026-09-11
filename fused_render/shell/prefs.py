@@ -204,6 +204,22 @@ def _chat_forced_by() -> str | None:
     return raw if raw in ("0", "1") else None
 
 
+def chat_recap_enabled() -> bool:
+    """Whether the native chat offers the "While you were away" session recap
+    (default ON — unlike `native_chat_enabled`, which is an opt-in beta).
+
+    THE DEFAULT IS THE OPPOSITE WAY ROUND on purpose, so the idiom is too: a
+    feature that is on unless asked otherwise cannot read "only a stored true is
+    on", or every install that has never opened Preferences would have it off.
+    Only a stored `false` turns it off; missing, legacy and junk all read as on.
+
+    No env override. `FUSED_RENDER_NATIVE_CHAT` exists because it decides which
+    of two whole implementations a chat runs on; this is one row at the bottom of
+    a transcript, and a second override is a switch nobody would remember.
+    """
+    return read_prefs().get("chat_recap_enabled") is not False
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -497,6 +513,10 @@ def _prefs_response() -> dict:
         "chat": {
             "native": native_chat_enabled(),
             "forced_by": _chat_forced_by(),
+            # The "While you were away" recap fold (native chat only). Default
+            # ON, so a payload without it must not be read as off — the client
+            # reads `p.chat?.recap !== false` for exactly that reason.
+            "recap": chat_recap_enabled(),
         },
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
@@ -663,6 +683,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
         prefs["native_chat_enabled"] = value
         changed = True
+    if "chat_recap_enabled" in body:
+        value = body.get("chat_recap_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"}, status_code=400)
+        prefs["chat_recap_enabled"] = value
+        changed = True
     if "lan_enabled" in body:
         value = body.get("lan_enabled")
         if not isinstance(value, bool):
@@ -765,6 +791,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
+                      "'chat_recap_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "

@@ -7,7 +7,7 @@ import { memo } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { Turn as TurnRow, UserTurn } from "../protocol/controller-api";
-import { isMarkerOnly } from "../protocol/wire";
+import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
@@ -17,24 +17,13 @@ import { Receipts } from "./Receipts";
 import { SegmentView } from "./SegmentView";
 import { TroubleMessage } from "./TroubleView";
 
-/** THE CLI'S OWN INTERRUPT MARKER (R2-2). When a turn is cut short the Claude
- *  Code CLI writes this exact string into the transcript as a USER-ROLE record —
- *  it is not something the reader typed, and drawn as a user bubble it reads as
- *  the reader having sent those five words to the model. Matched on the exact
- *  text, which is the only thing the record carries that tells it apart from a
- *  real prompt (the role, the uuid and the timestamp are a prompt's).
- *
- *  Exported so the tests, and any future history mapper that would rather stamp
- *  a note row at parse time, name the same string once. */
-export const INTERRUPT_MARK = "[Request interrupted by user]";
-
-/** Is this user row the CLI's interrupt marker rather than a prompt? Trimmed,
- *  because the record has carried a trailing newline in some CLI builds; NOT
- *  case-folded or fuzzy — a prompt that happens to talk about interrupts must
- *  still render as what the reader wrote. */
-export function isInterruptMark(text: string | undefined): boolean {
-  return (text ?? "").trim() === INTERRUPT_MARK;
-}
+/** THE INTERRUPT MARKER, RE-EXPORTED. It now lives in `protocol/wire.ts`
+ *  because `protocol/recap.ts` needs the same answer this file does — a record
+ *  drawn as a note carries no `data-msg`, so it is not a position anything may
+ *  scroll to — and protocol may not reach into a React module for it. Kept
+ *  named here so the callers that already say `from "./Turn"` still read the
+ *  one definition. */
+export { INTERRUPT_MARK, isInterruptMark };
 
 export interface TurnProps {
   turn: TurnRow;

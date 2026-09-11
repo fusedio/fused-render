@@ -1315,6 +1315,34 @@ def test_native_chat_reports_which_env_value_is_deciding(tmp_path, monkeypatch):
     assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
 
 
+def test_chat_recap_defaults_on_and_toggles(tmp_path, monkeypatch):
+    """THE ONE SWITCH HERE THAT DEFAULTS ON, so it needs the opposite idiom to
+    every flag above: only a stored `false` turns the session-recap fold off.
+    Read `is not False` rather than `is True`, or every install that has never
+    opened Preferences loses a feature it was never asked about."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["chat"]["recap"] is True
+    body = client.put("/api/prefs", json={"chat_recap_enabled": False}, headers=FUSED).json()
+    assert body["chat"]["recap"] is False
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["chat_recap_enabled"] is False
+    assert client.put("/api/prefs", json={"chat_recap_enabled": True}, headers=FUSED).json()[
+        "chat"
+    ]["recap"] is True
+    # Junk is not "off" either — only the boolean the PUT validates can be.
+    (home / "prefs.json").write_text(json.dumps({"chat_recap_enabled": "no"}), encoding="utf-8")
+    assert prefs_mod.chat_recap_enabled() is True
+
+
+def test_put_rejects_bad_chat_recap_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"chat_recap_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_bad_native_chat_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (

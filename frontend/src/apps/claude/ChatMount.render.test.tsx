@@ -14,7 +14,7 @@ const { createMemoryParamsStore } = await import("./params/store");
 // The native branch is a `lazy` chunk, so an `act` that does not AWAIT pins the
 // Suspense fallback and nothing else. Resolving the module once, here, makes
 // every mount below able to reach the chat itself inside one async `act`.
-await import("./ClaudeChat");
+const { ClaudeChat } = await import("./ClaudeChat");
 const { publishNativeChatEnabled, resetNativeChatFlagForTests } = await import("./feature-flag");
 
 // NO PREFS GET FROM THIS FILE. Every test publishes the flag directly, but the
@@ -262,4 +262,24 @@ test("a host id that arrives later pushes only its own key", async () => {
   // A run id of its own still lands.
   act(() => r.update(<Probe sessionId="s3" runId="r2" />));
   expect(wrote[wrote.length - 1]).toEqual({ run: "r2" });
+});
+
+test("the recap is OPT-IN: absent unless the host asked for it", async () => {
+  // The bug this pins: "While you were away" is a ~12s model call fired by
+  // window `focus`, which EVERY mounted chat hears. A tasks wall spent seven of
+  // them on one return. Default-off is the guarantee — a new embed site cannot
+  // inherit the cost by not thinking about it — so what is asserted is the
+  // absence of the prop, not merely a falsy one.
+  publishNativeChatEnabled(true);
+  const off = await mountAsync(
+    <ChatMount file="/w/p" chatOnly legacySrc={SRC} paramsSource="url" />,
+  );
+  const propsOf = (r: ReturnType<typeof create>) =>
+    r.root.findByType(ClaudeChat).props as Record<string, unknown>;
+  expect("recap" in propsOf(off)).toBe(false);
+
+  const on = await mountAsync(
+    <ChatMount file="/w/p" chatOnly legacySrc={SRC} paramsSource="url" recap />,
+  );
+  expect(propsOf(on).recap).toBe(true);
 });
