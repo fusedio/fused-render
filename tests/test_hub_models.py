@@ -1038,6 +1038,17 @@ def test_the_untagged_mirror_signal_pulls_in_a_republish_too(
     # No `base_model:` tag on either side — the mirror key (trailing name
     # segment + exact params + quant) is the only signal there is, same as
     # the frontend search screen's own untagged fallback.
+    #
+    # D810: this test is about the mirror-pull-in signal, not about fit — but
+    # both hits carry a real BF16 dtype total (~14GB), so without a pinned
+    # machine the fit verdict follows whatever RAM the runner actually has.
+    # On a small CI runner that verdict is "no", and the default
+    # `includeUnfit=false` search path (`hub_models.py`) drops both rows
+    # before the mirror-pull-in logic this test targets ever sees them —
+    # never green on CI, always green on a 32GB+ dev Mac. `_pin_hardware`
+    # (the same helper the fit-specific tests below use) fixes the premise so
+    # the assertion tests only what it claims to.
+    _pin_hardware(monkeypatch, ram_gb=32.0)
     dtype = {"parameters": {"BF16": 7_000_000_000}, "total": 7_000_000_000}
     rows = [
         _hit("first-org/Weights-7B", downloads=100, safetensors=dtype),
