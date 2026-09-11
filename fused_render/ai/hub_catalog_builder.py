@@ -24,11 +24,14 @@ away. The next trigger (a search, or the daily delta) checks
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from urllib.parse import urlencode
 
 import httpx
+
+_log = logging.getLogger(__name__)
 
 from fused_render.ai import hub_catalog
 from fused_render.ai import hub_metadata
@@ -144,7 +147,10 @@ def _page(url: str, headers: dict):
     return payload, response, None
 
 
-def _fetch_all_pages(tag: str, fmt: str | None) -> tuple[list[dict], float | None, str | None]:
+def _fetch_all_pages(tag: str, fmt: str | None, *,
+                      capability: str | None = None,
+                      page_counter: list[int] | None = None,
+                      ) -> tuple[list[dict], float | None, str | None]:
     """Every row for one (tag, format) pair, paged via `Link: rel="next"`.
 
     Returns `(rows, rate_limit_reset_s, error)`. `rate_limit_reset_s` is not
@@ -152,7 +158,13 @@ def _fetch_all_pages(tag: str, fmt: str | None) -> tuple[list[dict], float | Non
     that response's `RateLimit` header (or `_DEFAULT_BACKOFF_S` if the
     header did not parse) — and `rows` holds whatever pages completed before
     it, which the caller still keeps (a partial page's worth of real rows is
-    strictly better than throwing the whole fetch away)."""
+    strictly better than throwing the whole fetch away).
+
+    `capability`/`page_counter` are optional instrumentation: when given,
+    every page fetched logs one INFO line (capability, tag/format, page
+    index, rows so far, elapsed seconds since this call started) and bumps
+    `page_counter[0]` so the caller can total pages across every (tag,
+    format) pair for the manifest's `pages` count."""
     params: dict[str, object] = {
         "sort": "lastModified", "direction": -1, "limit": _PAGE_LIMIT,
         "expand[]": list(_EXPAND),
@@ -166,7 +178,8 @@ def _fetch_all_pages(tag: str, fmt: str | None) -> tuple[list[dict], float | Non
 
     url = f"{_hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
     rows: list[dict] = []
-    for _ in range(_MAX_PAGES):
+    started = time.time()
+    for page_index in range(_MAX_PAGES):
         page_rows, response, error = _page(url, headers)
         if error == "429":
             reset_s = _parse_ratelimit_reset(
@@ -175,6 +188,14 @@ def _fetch_all_pages(tag: str, fmt: str | None) -> tuple[list[dict], float | Non
         if error is not None:
             return rows, None, error
         rows.extend(r for r in page_rows if isinstance(r, dict))
+        if capability is not None:
+            if page_counter is not None:
+                page_counter[0] += 1
+            _log.info(
+                "hub-catalog build: capability=%s tag=%s format=%s page=%d "
+                "rows_so_far=%d elapsed=%.1fs",
+                capability, tag, fmt or "", page_index, len(rows),
+                time.time() - started)
         next_link = response.links.get("next") if response is not None else None
         if not next_link:
             break
@@ -201,6 +222,8 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     a truncated one that `pool_exists` would then serve forever — the daily
     delta only ever WIDENS an existing pool, it never backfills a gap left
     by a build that silently skipped a pair (D1241)."""
+    started_at = time.time()
+    page_counter = [0]
     tags = ai_tasks.tags_for_capability(capability)
     formats = _formats_for_capability(capability)
     format_list: tuple[str | None, ...] = formats if formats else (None,)
@@ -209,7 +232,8 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     rate_limit_reset_s: float | None = None
     for tag in tags:
         for fmt in format_list:
-            rows, reset_s, error = _fetch_all_pages(tag, fmt)
+            rows, reset_s, error = _fetch_all_pages(
+                tag, fmt, capability=capability, page_counter=page_counter)
             if error is not None:
                 # Abort the whole build without writing anything — see the
                 # docstring above. The next trigger (a search, or the daily
@@ -238,18 +262,28 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
         return {"rows": 0, "rateLimited": True}
 
+    build_seconds = time.time() - started_at
     # `write_pool` writes a fresh manifest entry (clearing any prior
     # `blockedUntil`), so the backoff has to be set AFTER it when both apply
     # — otherwise this write would immediately clobber the block it is
     # itself supposed to be recording.
-    hub_catalog.write_pool(cfg, capability, list(merged.values()))
+    hub_catalog.write_pool(cfg, capability, list(merged.values()),
+                           build_seconds=build_seconds, pages=page_counter[0],
+                           started_at=started_at)
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+    _log.info(
+        "hub-catalog build complete: capability=%s rows=%d pages=%d "
+        "buildSeconds=%.1f rateLimited=%s",
+        capability, len(merged), page_counter[0], build_seconds,
+        rate_limit_reset_s is not None)
     return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
 
 
-def _fetch_delta_pages(tag: str, fmt: str | None,
-                        watermark: str) -> tuple[list[dict], float | None, str | None]:
+def _fetch_delta_pages(tag: str, fmt: str | None, watermark: str, *,
+                        capability: str | None = None,
+                        page_counter: list[int] | None = None,
+                        ) -> tuple[list[dict], float | None, str | None]:
     """Rows newer than `watermark` (a `lastModified` ISO8601 string, or `""`
     for "everything") for one (tag, format) pair — the daily refresh's
     fetch, paged the identical way `_fetch_all_pages` is, but STOPPING as
@@ -275,7 +309,8 @@ def _fetch_delta_pages(tag: str, fmt: str | None,
 
     url = f"{_hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
     rows: list[dict] = []
-    for _ in range(_MAX_PAGES):
+    started = time.time()
+    for page_index in range(_MAX_PAGES):
         page_rows, response, error = _page(url, headers)
         if error == "429":
             reset_s = _parse_ratelimit_reset(
@@ -294,6 +329,14 @@ def _fetch_delta_pages(tag: str, fmt: str | None,
                 reached_watermark = True
                 continue
             rows.append(raw)
+        if capability is not None:
+            if page_counter is not None:
+                page_counter[0] += 1
+            _log.info(
+                "hub-catalog delta: capability=%s tag=%s format=%s page=%d "
+                "rows_so_far=%d elapsed=%.1fs",
+                capability, tag, fmt or "", page_index, len(rows),
+                time.time() - started)
         if reached_watermark:
             break
         next_link = response.links.get("next") if response is not None else None
@@ -323,6 +366,8 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     if hub_catalog.is_blocked(cfg, capability):
         return {"skipped": "blocked"}
 
+    started_at = time.time()
+    page_counter = [0]
     existing_rows = hub_catalog.query_pool(cfg, capability)
     watermark = ""
     by_id: dict[str, dict] = {}
@@ -342,7 +387,8 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     changed_ids: set[str] = set()
     for tag in tags:
         for fmt in format_list:
-            new_rows, reset_s, error = _fetch_delta_pages(tag, fmt, watermark)
+            new_rows, reset_s, error = _fetch_delta_pages(
+                tag, fmt, watermark, capability=capability, page_counter=page_counter)
             if error is not None:
                 # A genuine fetch error (not a 429 — that already returns
                 # via `reset_s`) must not write a pool at all: unlike a 429,
@@ -367,13 +413,20 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
             break
 
     merged = [{"capability": capability, "format": "", "raw": raw} for raw in by_id.values()]
+    build_seconds = time.time() - started_at
     # Unlike `build_capability_pool`, a delta always has the EXISTING rows to
     # write even when a 429 lands before a single new one comes back — there
     # is no "empty pool would be worse than no pool" case here, only "no
     # widening happened this round".
-    hub_catalog.write_pool(cfg, capability, merged)
+    hub_catalog.write_pool(cfg, capability, merged, build_seconds=build_seconds,
+                           pages=page_counter[0], started_at=started_at)
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+    _log.info(
+        "hub-catalog delta complete: capability=%s rows=%d pages=%d "
+        "buildSeconds=%.1f rateLimited=%s",
+        capability, len(merged), page_counter[0], build_seconds,
+        rate_limit_reset_s is not None)
 
     # SPEC item 5's TTL replacement: a repo whose `lastModified` the delta
     # just showed us has moved may now have a stale harvested `config.json`

@@ -16,6 +16,7 @@ from fused_render.ai import hub_catalog
 from fused_render.ai import hub_catalog_builder as builder
 from fused_render.ai.hub_catalog_config import load_config
 from fused_render.ai import registry
+from fused_render.ai import tasks as ai_tasks
 
 
 @pytest.fixture(autouse=True)
@@ -309,3 +310,66 @@ def test_delta_refresh_invalidates_hub_metadata_for_changed_repos_only(monkeypat
     changed_fetched_at = hub_metadata._load()["repos"]["org/changed"]["fetchedAt"]
     assert untouched_fetched_at > 0.0  # never invalidated
     assert changed_fetched_at == 0.0  # invalidate() resets to 0.0
+
+
+# -- instrumentation (spec item 1) -------------------------------------------
+
+
+def test_build_records_started_at_pages_and_build_seconds_on_manifest(monkeypatch, caplog):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/a"), _hit("org/b")]))
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    before = time.time()
+    with caplog.at_level("INFO", logger="fused_render.ai.hub_catalog_builder"):
+        builder.build_capability_pool(load_config(), "text-generation")
+    after = time.time()
+
+    cfg = load_config()
+    entry = hub_catalog.pool_entry(cfg, "text-generation")
+    assert before <= entry["startedAt"] <= after
+    # text-generation resolves to multiple pipeline tags (D780 multi-tag
+    # capability); each tag is its own (tag, format) fetch, one page apiece.
+    assert entry["pages"] == len(ai_tasks.tags_for_capability("text-generation"))
+    assert entry["buildSeconds"] >= 0
+    assert any("hub-catalog build complete" in r.message for r in caplog.records)
+    assert any("page=0" in r.message for r in caplog.records)
+
+
+def test_multi_page_build_counts_pages_across_tag_format_pairs(monkeypatch):
+    calls = []
+
+    def fake_get(url, *a, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            return _resp([_hit("org/page1")],
+                         headers={"Link": '<https://hub.test/api/models?cursor=2>; rel="next"'})
+        return _resp([_hit("org/page2")])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    builder.build_capability_pool(load_config(), "automatic-speech-recognition")
+
+    cfg = load_config()
+    entry = hub_catalog.pool_entry(cfg, "automatic-speech-recognition")
+    assert entry["pages"] == 2
+
+
+def test_delta_refresh_also_records_instrumentation(monkeypatch):
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "",
+         "raw": _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")},
+    ])
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
+        [_hit("org/new", lastModified="2026-01-05T00:00:00.000Z")]))
+
+    monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
+                         lambda cap: ("text-generation",))
+    builder.refresh_capability_pool_delta(cfg, "text-generation")
+
+    entry = hub_catalog.pool_entry(cfg, "text-generation")
+    assert entry["pages"] == 1
+    assert "buildSeconds" in entry
+    assert "startedAt" in entry

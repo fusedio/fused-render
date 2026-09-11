@@ -188,13 +188,22 @@ def _row_columns(rows: list[dict]) -> dict:
     return cols
 
 
-def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict]) -> dict:
+def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
+               build_seconds: float | None = None, pages: int | None = None,
+               started_at: float | None = None) -> dict:
     """Write a fresh generation of `capability`'s pool and swap the manifest
     in — the whole operation under `store_lock`, so two writers (two dev
     servers on the same home dir, or a retriggered build racing the daily
     delta) serialize rather than corrupt each other's file or manifest entry.
 
     `rows`: `[{"capability": ..., "format": ..., "raw": <raw Hub row dict>}]`.
+    `build_seconds`/`pages`/`started_at` are OPTIONAL instrumentation the
+    caller (`hub_catalog_builder.py`) supplies to record how long a build
+    took, how many Hub list-endpoint pages it fetched, and when it started —
+    manifest schema stays version 1 (they're written only when the caller
+    passes them, so `pool_entry`/`pool_exists`/`query_pool` and any older
+    manifest entry that predates this instrumentation all keep working with
+    them simply absent).
     Returns the manifest entry written. The PREVIOUS generation's file is
     deleted only after the new one is durably swapped in via the manifest —
     the atomic-swap-then-reclaim shape `index/store.py:compact` uses, scaled
@@ -235,6 +244,12 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict]) -> dict
 
         entry = {"file": filename, "generation": generation, "rows": len(rows),
                   "updated": time.time(), "blockedUntil": None}
+        if build_seconds is not None:
+            entry["buildSeconds"] = build_seconds
+        if pages is not None:
+            entry["pages"] = pages
+        if started_at is not None:
+            entry["startedAt"] = started_at
         manifest["capabilities"][capability] = entry
         _write_manifest(cfg, manifest)
 
