@@ -58,6 +58,8 @@ import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { clearFinishedJobs, effectiveTier, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
+import { dismissNotification, useRetainedNotifications } from "@platform/lib/notifications";
+import type { StoredNotification } from "@platform/lib/notifications";
 import {
   attentionRows,
   attentionDismissSignature,
@@ -235,6 +237,46 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // waiting; dismissing here never dims it. `tasks-lib.attentionDismissSignature`
 // keys the dismissal on the question's own title, so a run asking something
 // NEW earns a fresh row even if its key is unchanged.
+// A CLIENT-RAISED MESSAGE, RETAINED (SPEC toasts-become-notifications §3) —
+// the fifth row kind, and the only one that never touches the server at all:
+// `lib/notifications.ts`'s own store decided this message's tier (attention
+// or trail; transient/silent messages never reach here) when it popped, and
+// this row is that same decision's after-image, drawn through the identical
+// `NotificationCard` every other row here uses. `dismissNotification` is
+// purely client-side and in-memory (SPEC's own Constraints: no server store,
+// no localStorage) — there is no request to await, no optimistic-then-revert
+// shape the way a pairing or a repo row needs.
+//
+// A MESSAGE WITH A `page` IS CLICKABLE, THE SAME WAY A WAITING TASK IS
+// (SPEC-actionable-notifications' "every row goes somewhere"): the whole row
+// navigates and clears itself. One without a `page` is dismiss-only — no
+// worse than a repo row before D572, just not as good as it could be; call
+// sites are encouraged to set one where an obvious destination exists (SPEC
+// §3), not required to.
+function MessageRowView({ notification }: { notification: StoredNotification }) {
+  const dismiss = () => dismissNotification(notification.id);
+  return (
+    <NotificationCard
+      title={notification.title}
+      secondary={notification.detail}
+      terminal={notification.tone === "error" ? "error" : undefined}
+      navAction={notification.action}
+      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
+      rowClick={
+        notification.page
+          ? {
+              onClick: () => {
+                navigateUrl(notification.page as string);
+                dismiss();
+              },
+              title: `Open ${notification.title}`,
+            }
+          : undefined
+      }
+    />
+  );
+}
+
 function AttentionRowView({
   row,
   onDismiss,
@@ -453,6 +495,7 @@ export function RepoUpdatesCardView({
   attentionDismissed = {},
   onAttentionDismiss,
   onPairingGone,
+  messages = [],
   onJobsChanged,
   onTerminalPatch,
 }: {
@@ -464,6 +507,11 @@ export function RepoUpdatesCardView({
   pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
+  /** Client-raised messages retained by `lib/notifications.ts` — the fifth
+   *  row kind (SPEC toasts-become-notifications §3). Already filtered to
+   *  `attention`/`trail` by the store itself; split the same way `terminal`
+   *  is split below. */
+  messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides — keyed and expired the
    *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
   attentionDismissed?: Record<string, string>;
@@ -496,6 +544,13 @@ export function RepoUpdatesCardView({
   // has actually failed.
   const terminalAttention = terminal.filter((job) => effectiveTier(job) === "attention");
   const terminalTrail = terminal.filter((job) => effectiveTier(job) !== "attention");
+  // MESSAGES SPLIT THE SAME WAY — `lib/notifications.ts`'s own `resolveTier`
+  // already applies its client-side equivalent of `effectiveTier` (a `tone:
+  // "error"` message is always "attention", never lost to a declared tier)
+  // before a message ever reaches the retained list, so there is nothing
+  // left to re-derive here; the store's tier IS the effective one.
+  const messagesAttention = messages.filter((m) => m.tier === "attention");
+  const messagesTrail = messages.filter((m) => m.tier === "trail");
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted
   // toward this cap: the cap exists to bound how tall "Worth keeping" gets
@@ -521,16 +576,25 @@ export function RepoUpdatesCardView({
   // in this change. Unaffected by the attention/trail split above: `terminal`
   // is still every terminal job, whichever section it lands in.
   const total =
-    visible.length + terminal.length + pairings.length + visibleAttention.length;
+    visible.length +
+    terminal.length +
+    pairings.length +
+    visibleAttention.length +
+    messages.length;
   const idle = total === 0;
   // HOW MANY ROWS NEED A LOOK, ACROSS BOTH ATTENTION SOURCES (SPEC
   // actionable-notifications item 3) — a waiting task and a failed/cancelled
   // job are the same kind of fact from the chip's point of view: something
   // the person asked for, or something that happened to them, that nobody
   // has looked at yet.
-  const attentionCount = visibleAttention.length + terminalAttention.length;
+  const attentionCount =
+    visibleAttention.length + terminalAttention.length + messagesAttention.length;
   const hasAttentionSection = attentionCount > 0;
-  const hasTrailSection = pairings.length > 0 || visible.length > 0 || terminalTrail.length > 0;
+  const hasTrailSection =
+    pairings.length > 0 ||
+    visible.length > 0 ||
+    terminalTrail.length > 0 ||
+    messagesTrail.length > 0;
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   // THE CHIP READS (D673, extended by item 3): "Notifications" with a count
@@ -631,6 +695,13 @@ export function RepoUpdatesCardView({
                         onPatch={onTerminalPatch ?? NOOP_PATCH}
                       />
                     ))}
+                    {/* Client-raised messages last — the newest row kind,
+                        appended rather than interleaved so the existing
+                        reading order (waiting task, then a failed run) never
+                        shuffles for a caller that never sees one. */}
+                    {messagesAttention.map((m) => (
+                      <MessageRowView key={m.id} notification={m} />
+                    ))}
                   </div>
                 </div>
               )}
@@ -694,6 +765,9 @@ export function RepoUpdatesCardView({
                         onPatch={onTerminalPatch ?? NOOP_PATCH}
                       />
                     ))}
+                    {messagesTrail.map((m) => (
+                      <MessageRowView key={m.id} notification={m} />
+                    ))}
                   </div>
                 </div>
               )}
@@ -725,8 +799,13 @@ export function RepoUpdatesCardView({
                   either counted alone: one stuck repo plus one failed job is
                   two dismissable rows, and a reader looking at two rows and
                   no bulk action has the same "did this break" reaction a
-                  count of two of the SAME kind would give them. */}
-              {visible.length + terminal.length > 1 && (
+                  count of two of the SAME kind would give them. MESSAGES join
+                  the same combined count (not pairings/attention, unchanged):
+                  a retained message is dismissed the same client-side,
+                  in-memory way a repo row's dismissal already is, so it costs
+                  this button nothing extra to fold in — see
+                  DECISIONS-toasts-become-notifications.md for this call. */}
+              {visible.length + terminal.length + messages.length > 1 && (
                 <div className="dl-head">
                   <button
                     className="dl-clear"
@@ -737,6 +816,7 @@ export function RepoUpdatesCardView({
                           .then(() => onTerminalPatch?.(jobsAfterClear))
                           .catch(() => {});
                       }
+                      for (const m of messages) dismissNotification(m.id);
                     }}
                     title="Dismiss every notification"
                   >
@@ -789,6 +869,7 @@ export function RepoUpdatesDockView({
   attentionDismissed,
   onAttentionDismiss,
   onPairingGone,
+  messages = [],
   onDismiss,
   onDismissAll,
   onDone,
@@ -812,6 +893,11 @@ export function RepoUpdatesDockView({
    *  panel open over the chat holding the answer — hover or click still
    *  decide when it shows. */
   attention?: AttentionRow[];
+  /** Client-raised messages, retained — the fifth row kind. Same "hover or
+   *  click only" rule as pairings/attention: nothing here throws the panel
+   *  open on arrival, the chip's own numeral (and its red state, once one is
+   *  `attention`) is what announces it. */
+  messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides. */
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
@@ -850,6 +936,7 @@ export function RepoUpdatesDockView({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
+      messages={messages}
       collapsed={!chip.open}
       onToggle={chip.toggle}
       pinned={chip.pinned}
@@ -882,6 +969,11 @@ export default function RepoUpdatesDock({
   // the answer changes, and it means the notification and the sidebar's red dot
   // can never disagree — they are reading the same array.
   const attention = attentionRows(useTasksPulseRows());
+  // `lib/notifications.ts`'s own store — the fifth row source (SPEC
+  // toasts-become-notifications §3). Read reactively so a message popping
+  // and landing in the retained list re-renders this card the same way a new
+  // repo row or terminal job already does.
+  const messages = useRetainedNotifications();
   const pairingGone = useCallback(
     (id: string) => setPairings((list) => list.filter((p) => p.id !== id)),
     [setPairings],
@@ -897,6 +989,7 @@ export default function RepoUpdatesDock({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
+      messages={messages}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
