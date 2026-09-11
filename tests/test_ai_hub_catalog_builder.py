@@ -151,6 +151,64 @@ def test_format_filter_pages_each_runner_format_separately(monkeypatch):
     assert ids == {"org/mlx-model", "org/gguf-model"}
 
 
+def test_fetch_error_aborts_build_without_writing_a_truncated_pool(monkeypatch):
+    """Finding: a network error / 5xx / non-JSON body on one (tag, format)
+    pair used to be silently discarded (`_error` from `_fetch_all_pages` was
+    never checked), so the loop moved on to the next pair and `write_pool`
+    committed whatever HAD been merged so far. `pool_exists` then reads that
+    truncated pool as built forever — the daily delta only ever widens an
+    existing pool by `lastModified`, it never backfills a whole tag/format
+    slice a build silently skipped. A genuine fetch error must abort the
+    build instead: no pool written, so the next trigger retries from
+    scratch."""
+    calls = []
+
+    def fake_get(url, *a, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            return _resp([_hit("org/first-tag-ok")])
+        # Second (tag, format) pair: a 5xx the builder must not swallow.
+        return _resp([], status=500)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    # TEXT_GENERATION resolves to more than one tag so a second pair exists
+    # to fail on.
+    monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
+                         lambda cap: ("text-generation", "text2text-generation"))
+
+    result = builder.build_capability_pool(load_config(), "text-generation")
+
+    assert result == {"rows": 0, "error": True}
+    cfg = load_config()
+    assert not hub_catalog.pool_exists(cfg, "text-generation")
+
+
+def test_fetch_error_leaves_an_existing_pool_untouched_on_delta_refresh(monkeypatch):
+    """Same finding, delta path (`refresh_capability_pool_delta`): a fetch
+    error on one (tag, format) pair must not overwrite the pool that was
+    already there with a merge missing that pair's rows."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "",
+         "raw": _hit("org/existing", lastModified="2026-01-01T00:00:00.000Z")},
+    ])
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
+                         lambda cap: ("text-generation",))
+
+    def fake_get(url, *a, **k):
+        return _resp([], status=500)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    result = builder.refresh_capability_pool_delta(cfg, "text-generation")
+
+    assert result == {"skipped": "error"}
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "text-generation")}
+    assert ids == {"org/existing"}
+
+
 def test_ensure_build_started_skips_when_pool_already_built(monkeypatch):
     cfg = load_config()
     hub_catalog.write_pool(cfg, "text-generation", [

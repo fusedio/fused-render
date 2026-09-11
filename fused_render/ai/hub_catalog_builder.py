@@ -194,7 +194,13 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     when a 429 was hit before a single row came back, does NOT call
     `write_pool` at all (an empty pool would be worse than no pool: the
     search route's `pool_exists` check would start serving zero results
-    instead of falling back to the live path)."""
+    instead of falling back to the live path). Same principle for a genuine
+    fetch error (network error, 5xx, non-JSON body) on ANY (tag, format)
+    pair: `write_pool` is never called, so a build that fails partway leaves
+    whatever pool existed before (or none) untouched rather than committing
+    a truncated one that `pool_exists` would then serve forever — the daily
+    delta only ever WIDENS an existing pool, it never backfills a gap left
+    by a build that silently skipped a pair (D1241)."""
     tags = ai_tasks.tags_for_capability(capability)
     formats = _formats_for_capability(capability)
     format_list: tuple[str | None, ...] = formats if formats else (None,)
@@ -203,7 +209,12 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     rate_limit_reset_s: float | None = None
     for tag in tags:
         for fmt in format_list:
-            rows, reset_s, _error = _fetch_all_pages(tag, fmt)
+            rows, reset_s, error = _fetch_all_pages(tag, fmt)
+            if error is not None:
+                # Abort the whole build without writing anything — see the
+                # docstring above. The next trigger (a search, or the daily
+                # delta's own retry-on-next-tick shape) simply tries again.
+                return {"rows": 0, "error": True}
             for raw in rows:
                 repo_id = raw.get("id") if isinstance(raw, dict) else None
                 if not isinstance(repo_id, str):
@@ -331,7 +342,19 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     changed_ids: set[str] = set()
     for tag in tags:
         for fmt in format_list:
-            new_rows, reset_s, _error = _fetch_delta_pages(tag, fmt, watermark)
+            new_rows, reset_s, error = _fetch_delta_pages(tag, fmt, watermark)
+            if error is not None:
+                # A genuine fetch error (not a 429 — that already returns
+                # via `reset_s`) must not write a pool at all: unlike a 429,
+                # which still writes whatever was already merged from EARLIER
+                # (tag, format) pairs plus the existing rows, a silently
+                # skipped pair here would mean this capability's next delta
+                # tick recomputes its watermark from a pool that never saw
+                # that pair's rows — an unbounded gap the delta path (which
+                # only ever widens, never backfills a whole tag/format scan)
+                # can never close on its own. Leave the existing pool exactly
+                # as it was; the next daily tick retries this pair too.
+                return {"skipped": "error"}
             for raw in new_rows:
                 repo_id = raw.get("id") if isinstance(raw, dict) else None
                 if isinstance(repo_id, str):
