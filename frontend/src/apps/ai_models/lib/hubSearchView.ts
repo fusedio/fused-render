@@ -165,7 +165,7 @@ export const SORTS: readonly SortOption[] = [
   {
     value: "best",
     label: "Best match",
-    title: "Ranked for this Mac: fit, speed, size, recency, popularity",
+    title: "Ranked for what runs well on this Mac",
   },
   { value: "downloads", label: "Downloads", title: "Most downloaded in the last month" },
   { value: "likes", label: "Likes", title: "Most liked on the Hub" },
