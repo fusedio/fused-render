@@ -133,14 +133,21 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
    file, settable even before a pool exists. Logged as D1236. Tests:
    `tests/test_ai_hub_catalog.py`, 9 passing.
 
-3. **Not started** (highest-value remaining, roughly in dependency order):
-   - The bulk builder: reuses `_EXPAND`/`_fetch`/`_get` shapes from
-     `hub_models.py` but paginates via the `Link: rel="next"` header (not the
-     live path's single-page `_OVERFETCH`/`_MAX_FETCH`), across every
-     `(pipeline_tag, format)` pair a capability's runners resolve to. 429
-     handling: read the `RateLimit` header, persist a "blocked until"
-     timestamp in the catalog dir, resume lazily on the next trigger — no
-     retry loop.
+3. **Done this session**: `fused_render/ai/hub_catalog_builder.py` — the
+   bulk builder. Pages `(tag, format)` pairs via `httpx.Response.links["next"]`,
+   own `httpx.get` calls (not `hub_models._get`/`_fetch`, which drop the
+   `Link`/`RateLimit` headers this needs). `build_capability_pool(cfg, capability)`
+   is the synchronous full build; `ensure_build_started(capability, cfg=None)`
+   is the non-blocking entry point for the search route (module-level
+   `_building` thread-registry, skips if a pool exists or a backoff is
+   active). 429 → `hub_catalog.set_blocked_until`, called AFTER `write_pool`
+   (write_pool always resets `blockedUntil` to None — order matters, see
+   D1237 for the bug this caught). Logged as D1237. Tests:
+   `tests/test_ai_hub_catalog_builder.py`, 9 passing; re-ran
+   `tests/test_hub_models.py` (245 total) to confirm zero interaction with
+   the live path so far — it isn't wired in yet.
+
+4. **Not started** (highest-value remaining, roughly in dependency order):
    - `api_hub_search` (hub_models.py ~1683): branch on pool-exists-for-
      capability; catalog path queries via DuckDB (fresh connection per
      query), covers filters/ILIKE/D780 scoring/sort/facets over the WHOLE
@@ -156,15 +163,20 @@ Progress as of this session (see git log on `worktree-hub-catalog` for commits):
      drop `MAX_REPOS`; TTL replaced by re-harvest-on-lastModified-change for
      rows in a built pool, TTL fallback otherwise; one-time JSON import.
 
-4. **Test coverage still needed for #3**: a builder test under the
-   no-egress guard (fake paginated Hub responses, assert parquet pool
-   written + manifest swap), a 429/backoff test, a catalog-path search test
-   (zero `httpx.get` calls once a pool exists), a facets/family-pull-in test
-   over a pool bigger than the old 200-row window (this is the regression
-   test for the "missing-publisher facet" bug the spec cites), and a
-   supervisor delta-refresh test parallel to
-   `test_ai_supervisor_hub_metadata_refresh.py`.
+5. **Test coverage still needed for #4**: a catalog-path search test (zero
+   `httpx.get` calls once a pool exists), a facets/family-pull-in test over
+   a pool bigger than the old 200-row window (this is the regression test
+   for the "missing-publisher facet" bug the spec cites), and a supervisor
+   delta-refresh test parallel to `test_ai_supervisor_hub_metadata_refresh.py`.
+   The builder unit's own coverage (paginated fetch, 429/backoff) is done —
+   see #2 above.
 
-This session ran out of budget before starting #2. A fresh builder can pick
-up directly at "not started" above — the D1235 unit is self-contained and
-already committed, so there's no partial state to reconcile there.
+A fresh builder can pick up directly at "not started" (#4) above — #1 and #2
+are self-contained and already committed, so there's no partial state to
+reconcile there. Suggested next step inside #4: read `api_hub_search`
+(hub_models.py ~1683-1970, through the response-building tail past line
+1962 that this session did not read yet) to find exactly where to insert the
+pool-exists branch and where facets/family-pull-in/hiddenUnfit are computed,
+since the catalog path has to run those same computations over
+`hub_catalog.query_pool(...)` results (each `json.loads`'d raw row still goes
+through `_model_row` unchanged) instead of the live `models` list.

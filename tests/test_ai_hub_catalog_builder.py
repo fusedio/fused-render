@@ -1,0 +1,181 @@
+"""Tests for the bulk Hub catalog builder (`fused_render.ai.hub_catalog_builder`).
+
+Same no-egress discipline as `tests/test_hub_models.py`: `httpx.get` is
+replaced per test with a canned `httpx.Response`, never a real socket. The
+builder's own seams (`_hub_endpoint`/`_token`) are monkeypatched too, so no
+import-time state from `hub_models.py`/`registry.py` (an active token, a
+different active runner on CI) can change what these tests exercise.
+"""
+import json
+import time
+
+import httpx
+import pytest
+
+from fused_render.ai import hub_catalog
+from fused_render.ai import hub_catalog_builder as builder
+from fused_render.ai.hub_catalog_config import load_config
+from fused_render.ai import registry
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(builder, "_hub_endpoint", lambda: "https://hub.test")
+    monkeypatch.setattr(builder, "_token", lambda: None)
+    builder._building.clear()
+
+
+def _hit(repo_id, **extra):
+    row = {"id": repo_id, "downloads": 10, "likes": 1,
+           "lastModified": "2026-01-01T00:00:00.000Z", "library_name": "mlx",
+           "pipeline_tag": "text-generation", "tags": ["mlx"]}
+    row.update(extra)
+    return row
+
+
+def _resp(rows, status=200, headers=None):
+    return httpx.Response(status, content=json.dumps(rows).encode(),
+                           headers=headers or {},
+                           request=httpx.Request("GET", "https://hub.test/api/models"))
+
+
+def test_single_page_build_writes_a_pool(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/a"), _hit("org/b")]))
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    result = builder.build_capability_pool(load_config(), "text-generation")
+
+    assert result == {"rows": 2, "rateLimited": False}
+    cfg = load_config()
+    assert hub_catalog.pool_exists(cfg, "text-generation")
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "text-generation")}
+    assert ids == {"org/a", "org/b"}
+
+
+def test_pagination_follows_link_next_header(monkeypatch):
+    calls = []
+
+    def fake_get(url, *a, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            return _resp([_hit("org/page1")],
+                         headers={"Link": '<https://hub.test/api/models?cursor=2>; rel="next"'})
+        return _resp([_hit("org/page2")])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
+
+    assert result["rows"] == 2
+    assert len(calls) == 2
+    assert calls[1] == "https://hub.test/api/models?cursor=2"
+    cfg = load_config()
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "automatic-speech-recognition")}
+    assert ids == {"org/page1", "org/page2"}
+
+
+def test_429_persists_blocked_until_and_keeps_partial_rows(monkeypatch):
+    calls = []
+
+    def fake_get(url, *a, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            return _resp([_hit("org/first")],
+                         headers={"Link": '<https://hub.test/api/models?cursor=2>; rel="next"'})
+        return _resp([], status=429, headers={"RateLimit": "limit=100, remaining=0, reset=120"})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    before = time.time()
+    result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
+
+    assert result["rateLimited"] is True
+    assert result["rows"] == 1
+    cfg = load_config()
+    assert hub_catalog.pool_exists(cfg, "automatic-speech-recognition")
+    assert hub_catalog.is_blocked(cfg, "automatic-speech-recognition")
+    entry = hub_catalog.pool_entry(cfg, "automatic-speech-recognition")
+    # roughly "now + 120s", not the fallback default
+    assert before + 110 < entry["blockedUntil"] < before + 130
+
+
+def test_429_with_no_rows_yet_leaves_no_pool_but_sets_the_block(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
+        [], status=429, headers={"RateLimit": "limit=100, remaining=0, reset=30"}))
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    result = builder.build_capability_pool(load_config(), "automatic-speech-recognition")
+
+    assert result == {"rows": 0, "rateLimited": True}
+    cfg = load_config()
+    assert not hub_catalog.pool_exists(cfg, "automatic-speech-recognition")
+    assert hub_catalog.is_blocked(cfg, "automatic-speech-recognition")
+
+
+def test_unparseable_ratelimit_header_falls_back_to_default_backoff(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp(
+        [], status=429, headers={"RateLimit": "not-a-real-header"}))
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    before = time.time()
+    builder.build_capability_pool(load_config(), "automatic-speech-recognition")
+
+    cfg = load_config()
+    entry = hub_catalog.pool_entry(cfg, "automatic-speech-recognition")
+    assert before + builder._DEFAULT_BACKOFF_S - 5 < entry["blockedUntil"]
+
+
+def test_format_filter_pages_each_runner_format_separately(monkeypatch):
+    seen_filters = []
+
+    class FakeRunner:
+        hub_filter_tags = ("mlx", "gguf")
+
+    def fake_get(url, *a, **k):
+        seen_filters.append(url)
+        if "mlx" in url:
+            return _resp([_hit("org/mlx-model")])
+        return _resp([_hit("org/gguf-model")])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: FakeRunner())
+
+    result = builder.build_capability_pool(load_config(), "text-generation")
+
+    assert result["rows"] == 2
+    cfg = load_config()
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "text-generation")}
+    assert ids == {"org/mlx-model", "org/gguf-model"}
+
+
+def test_ensure_build_started_skips_when_pool_already_built(monkeypatch):
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ])
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is False
+
+
+def test_ensure_build_started_skips_while_blocked(monkeypatch):
+    cfg = load_config()
+    hub_catalog.set_blocked_until(cfg, "text-generation", time.time() + 1000)
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is False
+
+
+def test_ensure_build_started_builds_in_background(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/bg")]))
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    cfg = load_config()
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is True
+
+    thread = builder._building["text-generation"]
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert hub_catalog.pool_exists(cfg, "text-generation")
