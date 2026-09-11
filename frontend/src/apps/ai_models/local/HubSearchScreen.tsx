@@ -56,7 +56,6 @@ export interface SettledQuery {
   q: string;
   task: string;
   sort: ResultSort;
-  includeUnfit: boolean;
   fitLevel: HubFitLevel;
   paramsBand: HubParamsBand;
   quant: string;
@@ -435,7 +434,6 @@ export function HubSearchScreen({
   const [authEpoch, setAuthEpoch] = useState(0);
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
-  const [hiddenUnfit, setHiddenUnfit] = useState(0);
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
   const debounce = useRef<number | null>(null);
   // Item 2 (fix round 4): the timer must merge into whatever `settled` is
@@ -486,7 +484,11 @@ export function HubSearchScreen({
       capability: capabilityKey,
       sort: wireSort(settled.sort),
       limit,
-      includeUnfit: settled.includeUnfit,
+      // Item 7 (fix round 5): the "Show models that will not fit" toggle is
+      // gone — every row is always shown (the per-row red "Will not fit"
+      // line is the only warning now). `searchHubModels` no longer sends
+      // `includeUnfit`; the server defaults/ignores it and always behaves as
+      // if it were true.
       fitLevel: settled.fitLevel,
       paramsBand: settled.paramsBand,
       quant: settled.quant || undefined,
@@ -498,7 +500,6 @@ export function HubSearchScreen({
         setError(data.error ?? null);
         setModels(data.models);
         setEndpoint(data.endpoint ?? null);
-        setHiddenUnfit(data.hiddenUnfit ?? 0);
         setAuthenticated(!!data.authenticated);
       },
       (e: Error) => {
@@ -581,16 +582,13 @@ export function HubSearchScreen({
         paramsBand={settled.paramsBand}
         quant={settled.quant}
         publisher={settled.publisher}
-        includeUnfit={settled.includeUnfit}
         onSort={(sort) => onSettle({ ...settled, sort })}
         onFitLevel={(fitLevel) => onSettle({ ...settled, fitLevel })}
         onParamsBand={(paramsBand) => onSettle({ ...settled, paramsBand })}
         onQuant={(quant) => onSettle({ ...settled, quant })}
         onPublisher={(publisher) => onSettle({ ...settled, publisher })}
-        onIncludeUnfit={(includeUnfit) => onSettle({ ...settled, includeUnfit })}
         loading={loading && models === null}
         matchCount={shown?.length ?? null}
-        hiddenUnfit={hiddenUnfit}
       />
       {/* Item 12c (fix round 3): the legend explained the ranking but never
        *  named the number itself — now opens by naming it, same as the

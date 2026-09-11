@@ -35,8 +35,10 @@ describe("SearchControls menu surface", () => {
 });
 
 describe("SearchControls result line", () => {
-  it("states a hidden-unfit count only while the toggle is off", () => {
-    expect(SRC).toContain("hiddenUnfit > 0 && !includeUnfit");
+  it("has no unfit toggle or hidden count (item 7, D843 round 5) — every model is always shown", () => {
+    expect(SRC).not.toContain("includeUnfit");
+    expect(SRC).not.toContain("hiddenUnfit");
+    expect(SRC).not.toContain('type="checkbox"');
   });
 
   it("shows Searching… before a count exists, never a stale one", () => {

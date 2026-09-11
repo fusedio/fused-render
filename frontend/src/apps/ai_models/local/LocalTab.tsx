@@ -76,7 +76,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 export type Pending = { kind: "repo"; repo: AiModelRepo };
 
 /** Everything the URL says about the Hub search, read once on load —
- *  `hubQ`/`hubTask`/`hubSort`/`hubUnfit` unconditionally, and Part B's four
+ *  `hubQ`/`hubTask`/`hubSort` unconditionally, and Part B's four
  *  search-only facets (`hubFit`/`hubParams`/`hubQuant`/`hubOrg`) ONLY when a
  *  query or task is ALSO present. See `SettledQuery` (HubSearchScreen.tsx)
  *  for the shape this fills in.
@@ -85,6 +85,11 @@ export type Pending = { kind: "repo"; repo: AiModelRepo };
  *  `?model=` already means something else, page-wide (the side panel's own
  *  seed — a live, deliberately unfixed collision this page must not add a
  *  second version of).
+ *
+ *  No `hubUnfit`/`includeUnfit` any more (item 7, D843 round 5): the "Show
+ *  models that will not fit" toggle is gone — every row is always shown, the
+ *  per-row red "Will not fit" line is the only warning now. An old URL still
+ *  carrying `?hubUnfit=1` is simply ignored.
  */
 function readHubUrl(): SettledQuery {
   const q = readParam("hubQ") ?? "";
@@ -94,7 +99,6 @@ function readHubUrl(): SettledQuery {
     q,
     task,
     sort: activeSort(readParam("hubSort") as ResultSort).value,
-    includeUnfit: readParam("hubUnfit") === "1",
     fitLevel: asked ? activeFitLevel(readParam("hubFit") as HubFitLevel).value : "any",
     paramsBand: asked ? activeParamsBand(readParam("hubParams") as HubParamsBand).value : "any",
     quant: asked ? (readParam("hubQuant") ?? "") : "",
@@ -105,7 +109,6 @@ function readHubUrl(): SettledQuery {
 const BLANK_SEARCH: Omit<SettledQuery, "sort"> = {
   q: "",
   task: "",
-  includeUnfit: false,
   fitLevel: "any",
   paramsBand: "any",
   quant: "",
@@ -283,7 +286,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       // "best" (D780) is the default, so it is the value omitted from the URL
       // rather than always written.
       hubSort: settled.sort === "best" ? null : settled.sort,
-      hubUnfit: settled.includeUnfit ? "1" : null,
       hubFit: asked && settled.fitLevel !== "any" ? settled.fitLevel : null,
       hubParams: asked && settled.paramsBand !== "any" ? settled.paramsBand : null,
       hubQuant: asked && settled.quant ? settled.quant : null,

@@ -3663,10 +3663,6 @@ export interface HubSearchResult {
   error?: string;
   endpoint?: string;
   authenticated?: boolean;
-  /** How many `verdict: "no"` rows this search dropped before `limit` was
-   *  applied — 0 when `includeUnfit` asked for them back. Optional so an
-   *  error reply (which never got this far) does not have to fake a count. */
-  hiddenUnfit?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -3708,11 +3704,6 @@ export function searchHubModels(opts: {
   capability?: string;
   sort?: HubSort;
   limit?: number;
-  /** Ask for models that will NOT fit this machine too — off by default, so a
-   *  search does not fill the grid with rows nothing here could hold. The
-   *  server states how many it hid either way (`HubSearchResult.hiddenUnfit`),
-   *  so the default is never a silent drop. */
-  includeUnfit?: boolean;
   /** Part 3's three explicit filters, all server-side (see `hub_models.py`'s
    *  own `api_hub_search` for why: each one only removes rows AFTER the
    *  Hub's own answer, so filtering client-side over an already-truncated
@@ -3737,7 +3728,6 @@ export function searchHubModels(opts: {
     capability: opts.capability,
     sort: opts.sort,
     limit: opts.limit,
-    includeUnfit: opts.includeUnfit,
     fitLevel: opts.fitLevel,
     quant: opts.quant,
     paramsBand: opts.paramsBand,

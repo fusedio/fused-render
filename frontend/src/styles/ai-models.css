@@ -822,19 +822,6 @@
    table it narrows — rather than above a section swap, so it wears a
    smaller gap than the section-changing row above it. */
 
-/* The one checkbox on this row — a filter over the results, not a menu, so it
-   wears the plainest control that says "on/off" rather than borrowing the two
-   menus' bordered-trigger skin. */
-.am-hub-unfit-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
 /* Part B's two open-text filters (Quant, Publisher) — same metrics as the two
    `ControlMenu` triggers beside them (32px tall, 13px text, 1px border, 6px
    radius) but no icon/caret: they are plain inputs over an open set, not a

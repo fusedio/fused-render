@@ -151,37 +151,28 @@ export function SearchControls({
   paramsBand,
   quant,
   publisher,
-  includeUnfit,
   onSort,
   onFitLevel,
   onParamsBand,
   onQuant,
   onPublisher,
-  onIncludeUnfit,
   loading,
   matchCount,
-  hiddenUnfit,
 }: {
   sort: ResultSort;
   fitLevel: HubFitLevel;
   paramsBand: HubParamsBand;
   quant: string;
   publisher: string;
-  /** "Show models that will not fit here" — off by default (D316's own
-   *  "never a silent drop"): the result line beneath states how many are
-   *  hidden either way. */
-  includeUnfit: boolean;
   onSort: (sort: ResultSort) => void;
   onFitLevel: (v: HubFitLevel) => void;
   onParamsBand: (v: HubParamsBand) => void;
   onQuant: (v: string) => void;
   onPublisher: (v: string) => void;
-  onIncludeUnfit: (v: boolean) => void;
   /** The result line's own three-way state — loading, a count, or nothing
    *  yet asked. */
   loading: boolean;
   matchCount: number | null;
-  hiddenUnfit: number;
 }) {
   const activeS = activeSort(sort);
   const activeFit = activeFitLevel(fitLevel);
@@ -260,6 +251,10 @@ export function SearchControls({
       {/* Item 6 (fix round 3): also wears the mockup's own `.resultline`
        *  class — a live check for that exact selector found nothing, since
        *  this row only ever carried `am-hub-controls`'s own naming. */}
+      {/* Item 7 (fix round 5): the "Show models that will not fit" toggle
+       *  and the "N hidden" count are gone — every model is always shown,
+       *  and the per-row red "Will not fit" line (HubSearchScreen.tsx) is
+       *  the only warning left, so the result line states only the count. */}
       <div className="am-hub-resultline resultline" data-part="resultline">
         <span>
           {loading ? (
@@ -271,19 +266,9 @@ export function SearchControls({
           ) : (
             <>
               <b>{matchCount}</b> match{matchCount === 1 ? "" : "es"}
-              {hiddenUnfit > 0 && !includeUnfit ? ` · ${hiddenUnfit} hidden — will not fit here` : ""}
             </>
           )}
         </span>
-        <span className="am-hub-controls-push" />
-        <label className="am-hub-unfit-toggle" title="Include models this machine likely cannot run">
-          <input
-            type="checkbox"
-            checked={includeUnfit}
-            onChange={(e) => onIncludeUnfit(e.target.checked)}
-          />
-          Show models that will not fit
-        </label>
       </div>
     </div>
   );
