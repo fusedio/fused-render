@@ -184,10 +184,20 @@ Default mapping is `tone`-driven (§1), so a mechanical rename gets the right
 answer for most sites. Deviate deliberately where the message deserves a
 record:
 
-- **Destructive-but-successful** operations get `trail`, not `transient` —
-  "Freed 1.4 GB — deleted superwhisper/s1-mini", a completed move, a
-  duplicate. The user should be able to find out what was deleted after the
-  card is gone. This is the case that motivated the whole change.
+- **Destructive-but-successful** operations were originally meant to get
+  `trail`, not `transient` — "Freed 1.4 GB — deleted superwhisper/s1-mini",
+  a completed move, a duplicate — on the theory that the user should be
+  able to find out what was deleted after the card is gone. **Reversed**
+  (user: "don't keep this in the list. just show popup. anything non
+  actionable or error doesn't belong in the list" — see
+  DECISIONS-toasts-become-notifications.md's "Reversal: retention narrows
+  to error-or-actionable"): a client-raised message is retained only if it
+  is an error, or carries something to act on (`action`/`page`). A
+  destructive-but-successful operation with neither now only pops, same as
+  any other ordinary confirmation. `trail` is no longer even a type a
+  client call site can pass (`ClientNotificationTier` in
+  `notifications.ts`) — it remains valid only on the server-side `JobTier`
+  a job row declares.
 - **Ordinary confirmations** stay `transient` — "Path copied", "Duplicated as
   foo.py".
 - **Failures** are `attention` by default and should stay there.

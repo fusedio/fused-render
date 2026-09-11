@@ -477,3 +477,136 @@ number.
 is the literal guard on `.notif-host`'s `width` — a future change to that
 number must update both `notifications.css` and this test file's assertion
 (and, if the prose narrates the number, its comments) in the same commit.
+
+## Reversal: retention narrows to error-or-actionable — `trail` retention is gone
+
+User, looking at "Undid the delete." and "Redid the delete." sitting in the
+Notifications panel: "don't keep this in the list. just show popup. anything
+non actionable or error doesn't belong in the list."
+
+This reverses the "destructive-but-successful → `trail`" decision this
+migration made earlier and named as its own motivating example — "Freed
+1.4 GB — deleted superwhisper/s1-mini", a completed move, a completed
+undo/redo. All three no longer stay in the panel; each now pops for the
+normal `JOB_POPUP_VISIBLE_MS` window via the plain `tone: "info"` default
+(`transient`) and leaves no trace. The earlier delete-toast and
+file-indexing reversals (above) already established the principle for two
+specific surfaces; this generalizes it into the retention rule itself.
+
+**The new rule**, `isRetained(input, tier)` in `notifications.ts`:
+
+- `tier === "silent"` → never retained, no exception.
+- `tier === "attention"` (any `tone: "error"` message, or an explicit
+  `tier: "attention"` override) → always retained.
+- everything else → retained only if the message carries something to act
+  on: `input.action` or `input.page`.
+
+One shared helper, used at all three retention-check sites inside `notify()`
+(the fresh-item path, and both places the `replaceId` path re-checks
+whether an in-place update should join/leave the retained list) — replacing
+the old `tier === "attention" || tier === "trail"` check that was inlined at
+each of those sites separately.
+
+**`trail` in `NotificationInput["tier"]`: deliberately made unrepresentable.**
+`jobs.ts`'s server-side `JobTier` (`"attention" | "trail" | "transient" |
+"silent"`) is untouched — the server still has a real `trail` default
+(`fused_render/jobs.py`'s `Job.tier`), and a server-produced job row still
+reaches the panel exactly as before. What changed is only the CLIENT
+input type: `NotificationInput.tier` narrows from `JobTier` to a new
+`ClientNotificationTier = Exclude<JobTier, "trail">`. A client call site
+that types `tier: "trail"` today is trying to say "keep this even though it
+isn't an error and carries no action/page" — exactly the case this reversal
+closes off — so making it a compile error is more honest than leaving it
+type-legal and silently downgrading it at runtime. (The alternative
+considered and rejected: leave `tier` as the full `JobTier` and let
+`isRetained` simply stop special-casing `"trail"`, so a stray `tier: "trail"`
+call site would keep compiling but silently stop being retained. Rejected
+because that is exactly the kind of "quietly wrong" a type system exists to
+prevent — the next engineer reaching for `tier: "trail"` on a call site that
+really does want retention would get no signal that the tier no longer
+does what its name says.) `forwardToShell()` (panel → embed shell, for
+`IS_TOP_EMBED`) bridges back from the full `JobTier` a `StoredNotification`
+carries to `ClientNotificationTier` with a type-safe ternary
+(`n.tier === "trail" ? undefined : n.tier`) rather than a cast — in
+practice that branch is dead code, since only `resolveTier` (fed a
+`ClientNotificationTier` input) ever produces a client-side
+`StoredNotification`, but the ternary keeps that true by construction
+rather than by convention.
+
+**Call sites migrated** (all dropped their `tier: "trail"` override — the
+plain `tone: "info"` default already lands on `transient`, which pops and is
+not retained):
+
+- `apps/explorer/lib/fs-move.ts:122` — "Moved X to Y".
+- `apps/explorer/listing/useFileOps.ts:424` — the undo/redo `relocationToast`
+  success branch. This is the literal "Undid the delete." row the user
+  pointed at. Its failure branch (line ~431) is untouched — `tone: "error"`
+  already promotes to `attention` regardless of tier, so no override was
+  ever needed there, and a new integration test
+  (`useFileOps.undo.test.tsx`) drives the real hook through a real
+  `doUndo()` against a stubbed failing `/api/fs/rename` to prove that,
+  rather than assume it.
+- `apps/ai_models/local/LocalTab.tsx:333` — "Freed X — deleted…" /
+  "Nothing deleted…". Its failure branch (`result.failures.length`) is
+  likewise untouched and relies on the same `tone: "error"` promotion;
+  verified by code inspection against the now-integration-tested
+  `useFileOps.ts` call site, which is structurally identical
+  (`tone: failures ? "error" : "info"`, no tier), plus the exhaustive
+  general-rule coverage in `notifications.test.ts` — not by a fresh
+  dedicated render test for `LocalTab`, which has no existing test harness
+  and would need a non-trivial `CacheScan`/`useAiRuntime` mock to build one
+  from scratch; judged disproportionate to what is otherwise a two-line,
+  non-branching `notify()` call.
+- `shell/TaskCards.tsx:686`, `:963` and `shell/ScheduleTaskViews.tsx:2851`,
+  `:3589` — all four "Deleted `<task_id>`" call sites. `tasks-lib.test.ts`
+  had a literal-source assertion pinning the old
+  `tier: "trail"` call (line ~4140) — updated to assert the new,
+  tier-less call and to assert `tier: "trail"` is absent from both source
+  files.
+
+**`RepoUpdatesDock.tsx`'s "Worth keeping" split** changes from
+`m.tier === "trail"` to `m.tier !== "attention"`. This was a real bug
+caught during this round, not a cosmetic rename: once client input can no
+longer produce `tier: "trail"`, a retained-but-not-attention message
+resolves to whatever `resolveTier` actually landed on — in practice almost
+always `"transient"` (an actionable `tone: "info"` message with no explicit
+tier) — and the old literal `=== "trail"` check would have silently dropped
+every such message from BOTH panel sections the moment this reversal
+shipped. Fixed as part of the same commit as the retention narrowing, not
+as a follow-up.
+
+**What was verified vs. inspected, for the three things this round was
+asked to check:**
+
+- **The dock collapses correctly** when client `trail` messages disappear —
+  verified with a test. `hasTrailSection` already OR-combines every
+  trail-eligible source (pairings/visible/terminalTrail/`messagesTrail`),
+  so no code change was needed there; `RepoUpdatesDock.test.tsx` still
+  passes in full (64/64) including a new test that drives an actionable
+  `tone: "info"` message through the REAL store (`notify()` +
+  `getRetainedNotifications()`) to prove it resolves to `tier: "transient"`
+  yet still renders under "Worth keeping".
+- **The chip's numeral/red-state still add up** — verified by existing,
+  already-passing tests, not a new one: `attentionCount` (the number on the
+  chip, and what turns "Notifications" into "N needs you") is computed from
+  `messagesAttention.length` alone, a filter this round never touched
+  (`m.tier === "attention"`, unchanged). `"the chip reads 'N needs you'..."`
+  and `"an attention-tier message fills the numeral and the needs-you
+  count..."` (pre-existing tests) cover exactly this and stayed green
+  through the whole round.
+- **Python `tests/` grepped** for stale literals tied to this round's
+  specific changes (`"Undid the delete."`, `"Freed"`/`"Moved"` notification
+  text, `tier: "trail"` at any of the migrated line numbers) — none found.
+  Every Python `tier`/`trail` hit in `tests/` (`test_jobs_api.py`,
+  `test_ai_runtime.py`, `test_index_jobs.py`) is server-side `jobs.py`
+  vocabulary (`jobs.TRAIL`, `jobs.SILENT`, ...), which this round
+  deliberately left untouched — see the `ClientNotificationTier` decision
+  above.
+
+Discrepancies found against this round's task brief, for the record: the
+brief's call-site line numbers had drifted slightly from actual (e.g.
+`useFileOps.ts:418` → `:424`, `LocalTab.tsx:333` → `338` at dispatch time,
+though `git blame` churn later put it back near 333 — always re-grepped
+rather than trusted); and the "destructive-but-successful" bullet the brief
+asked to be corrected lives in `SPEC-toasts-become-notifications.md`
+(§5, "Migrate the 69 call sites"), not `SPEC-actionable-notifications.md`.
