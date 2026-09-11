@@ -218,10 +218,12 @@ function HitDrawer({
           <HubLogin onSignedIn={onSignedIn} />
         </div>
       )}
+      {/* Item 5 (fix round 5): dropped the "View on Hugging Face ↗" link —
+       *  the row's own model-name link (`.mono-name`, item 14 round 3)
+       *  already opens the same page, so this was a second link to the same
+       *  place. `.btn-link` stays defined in ai-models.css: `ModelRow.tsx`
+       *  and `CapabilityPane.tsx` still use it, and so does Close below. */}
       <div className="acts">
-        <a className="btn-link" href={hubModelUrl(model.id)} target="_blank" rel="noreferrer">
-          View on Hugging Face ↗
-        </a>
         <button type="button" className="btn-link" onClick={onClose}>
           Close
         </button>
@@ -564,7 +566,7 @@ export function HubSearchScreen({
         />
         <button
           type="button"
-          className="btn btn-primary"
+          className="btn btn-primary btn-lg"
           onClick={() => {
             setLimit(INITIAL_LIMIT);
             onSettle({ ...settled, q: liveQuery });
@@ -592,7 +594,7 @@ export function HubSearchScreen({
       />
       {/* Item 12c (fix round 3): the legend explained the ranking but never
        *  named the number itself — now opens by naming it, same as the
-       *  cell's own `title` (matchTitle) already does on hover. */}
+       *  cell's own `data-tip` popover (round 5) already does on hover. */}
       <p className="sorthint">
         Match score (0–100) is ranked for this Mac: memory fit first, then speed, freshness and popularity; models
         already here get a small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will
