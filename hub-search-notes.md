@@ -1818,3 +1818,99 @@ To verify in the browser:
   NOT read `matches ""`.
 - The text-generation pane's search placeholder/copy reads "text
   generation models", not "chat models".
+
+## Fix round 5 (2026-09-11)
+
+Nine items, three from the original brief plus six added mid-round via
+coordinator messages (5-9). D843-D850 in DECISIONS.md; see there for full
+rationale on each.
+
+- Items 1 & 2 (D843): a search from a capability pane's own "search
+  Hugging Face" door 400'd for embeddings — the endpoint only understood
+  a single Hub pipeline tag, and embeddings spans two
+  (`feature-extraction`, `sentence-similarity`) which Hub's AND-only
+  `filter=` cannot express in one request. Added
+  `ai/tasks.py::tags_for_capability` and a `capability` field on the
+  search request; the server now fetches per-tag and merges/de-dupes
+  when needed, keeping `task` for backward compat. Since the left pane
+  already scopes the whole screen to one capability, the Task menu in
+  `SearchControls.tsx` had no job left and was removed outright.
+- Item 3 (D844): the match-score cell's tooltip was a native `title=` —
+  small, unstyled, one line. Replaced with a `data-tip` + scoped
+  `.tp .match[data-tip]::after` CSS popover, opening upward; confirmed by
+  grep no ancestor clips it with `overflow: hidden`.
+- Item 4 (D845): the stats cell (downloads/likes/date) was a fragile
+  2-column grid with an `nth-child(3)` escape hatch. Reworked to a single
+  right-aligned flex column: downloads+likes grouped on one line
+  (`.counts`), date underneath.
+- Item 5 (D846): removed the redundant "View on Hugging Face ↗" link
+  from the hit row's drawer (the row's own name already links there,
+  D837) — kept "Close". `.tp .btn-link` CSS confirmed still used
+  elsewhere (`ModelRow.tsx`, `CapabilityPane.tsx`, this Close button), so
+  not removed.
+- Item 6 (D847): the Search button in `.bigsearch` was shorter than the
+  query input beside it. Added a scoped `.tp .bigsearch .btn` rule
+  (`height: auto; align-self: stretch; ...`) and a `btn-lg` className
+  hook, rather than loosening `.tp .btn` globally.
+- Item 7 (D848): removed the "Show models that will not fit" toggle
+  entirely — every row is always shown now (the per-row red "Will not
+  fit" line is the only warning left). Frontend dropped the checkbox,
+  `includeUnfit`/`hiddenUnfit` state, and the `?hubUnfit=1` URL param
+  (an old saved URL with it is now silently ignored). Server always
+  behaves as `includeUnfit: true`, accepting but ignoring the field from
+  an old client. Rewrote the pytest tests that pinned the old
+  default-drop/overfetch behavior (including the overfetch-sizing test,
+  whose expected `limit` shrank now that `include_unfit` no longer
+  varies).
+- Item 8 (D849): only the right pane scrolls on the Local tab now; the
+  capability nav stays put. This reverses D815's own explicit choice not
+  to add an inner scroller. `.tp-page-fill`/`.tp` no longer scroll;
+  `.tp-pane` — the one class all three right-column panes already share
+  as their root, found by grep rather than editing three files — is now
+  the scroller; `.tp-nav` gained `align-self: start`. Verified by reading
+  (not in-browser) that D844's popover is unaffected by the new
+  `overflow-x: hidden` on `.tp-pane`.
+- Item 9 (D850): hit rows show more metadata, ordered common-to-rare
+  left-to-right. Meta line gained a format token (GGUF/MLX/Safetensors,
+  derived from `format`/`library`, skipped if neither) and an
+  `"N variants"` count (only shown when > 1). The "from X" line now uses
+  `relation` for phrasing: "quantized from X" / "fine-tuned from X" /
+  "adapter for X" / "merge of X", plain "from X" otherwise. Server gained
+  `_count_variants(raw)` — GGUF repos count `.gguf` siblings minus
+  mmproj/vision-projector helpers, safetensors/MLX repos count distinct
+  bit-width/dtype subfolders only when there's clearly more than one,
+  else 1 — read from data already fetched (`siblings`), no extra Hub
+  request. Last-updated (rather than created) in the stats cell was
+  already done as part of item 4's rework.
+
+### Tests run this round
+
+- `.venv/bin/pytest tests/test_hub_models.py -q` — 204 pass (200 after
+  item 7's rewrites, +4 more after item 9c's variant tests, +2 for the
+  mmproj/subfolder edge cases — 6 new tests total for item 9c).
+- `bun test src/apps/ai_models/local/` — 48 pass throughout (item 7's
+  checkbox-removal test rewritten; no new frontend test needed for item
+  9's display-only changes beyond what typecheck catches).
+- `bun run --cwd frontend typecheck` — clean after every item.
+- Items 3, 4, 5, 6, 8 are CSS/markup-only per the brief; no tests written
+  for them, matching this round's own "CSS-only rounds skip tests" rule.
+
+### To verify in the browser
+
+- Embeddings capability's "search Hugging Face" door no longer 400s.
+- No Task menu in the search controls row on any capability pane.
+- Hovering/focusing the match-score cell shows a styled popover, not a
+  native tooltip; it opens upward and isn't clipped.
+- The stats cell shows downloads+likes on one line, last-updated date
+  underneath, right-aligned.
+- The hit row drawer has no outbound Hugging Face link, only Close.
+- The Search button in the big search bar is the same height as the
+  query input beside it.
+- No "Show models that will not fit" checkbox anywhere; every row (fit
+  or not) is always in the list.
+- Scrolling the Local tab's right pane leaves the left capability nav in
+  place; the nav no longer scrolls off screen.
+- A hit row's meta line can show a format token (GGUF/MLX/Safetensors)
+  and an "N variants" count after size, when applicable; the "from X"
+  line reads "quantized from"/"fine-tuned from"/"adapter for"/"merge of"
+  when the repo has a known relation to its base model.
