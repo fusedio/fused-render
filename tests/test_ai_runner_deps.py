@@ -147,6 +147,26 @@ SPLIT_DISTRIBUTIONS = {
 }
 
 
+def _declared_uv_sources(folder):
+    """Every `[tool.uv.sources]` entry a runner declares, as raw dicts keyed by
+    the distribution name they route."""
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    return data.get("tool", {}).get("uv", {}).get("sources", {})
+
+
+def _declares_allow_build(folder):
+    """Does this runner's manifest carry `[tool.fused-render.runner]
+    allow_build = true` — the one declared opt-out of the wheels-only default
+    (`fused_render.projectenv.runner_allows_build` is the real, shared
+    reader; this is a from-scratch parse, on purpose, so a bug in one does
+    not hide a bug in the other)."""
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    runner = data.get("tool", {}).get("fused-render", {}).get("runner", {})
+    return runner.get("allow_build") is True
+
+
 def _runner_folders():
     return sorted(
         os.path.join(RUNNERS_DIR, name) for name in os.listdir(RUNNERS_DIR)
@@ -242,6 +262,90 @@ def test_a_non_pypi_index_is_explicit(folder):
             f"candidate for every dependency in the graph, not only the one "
             f"it exists for."
         )
+
+
+@pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
+def test_a_git_or_url_dependency_source_requires_the_declared_build_opt_in(folder):
+    """The regression this file did not have the day the ltx_video runner
+    landed: a `[tool.uv.sources]` entry routing to `git` (or a bare URL, the
+    other non-wheel shape uv accepts there) can ONLY be satisfied by BUILDING
+    the checkout — there is no wheel to fetch instead, ever. Every bundled
+    runner installs through `ai/supervisor.py._ensure_venv`, which leaves
+    `allow_build` at its default False unless the runner's OWN manifest opts
+    in (`[tool.fused-render.runner] allow_build = true`,
+    `projectenv.runner_allows_build`) — and under that default,
+    `_env_install_worker.py` appends `--no-build` to `uv sync`, which cannot
+    ever succeed against a git source. That mismatch is exactly what shipped:
+    `ltx_video/pyproject.toml` named two git-sourced packages with no opt-in
+    table at all, so its automatic build died on every install, for every
+    packaged-app user, with no consent-and-retry prompt in that code path to
+    recover with (`/api/env/install`'s explicit retry is a different, user-
+    clicked flow this supervisor-driven bring-up never reaches).
+
+    A wheels-only PyPI dependency with an ordinary version specifier needs no
+    opt-in and is silent here, same shape as `test_a_non_pypi_index_is_explicit`
+    above. This only fires for the one shape that is structurally
+    uninstallable under the default — which is also why the opt-in is a
+    manifest table read at the point of install rather than a name check in
+    Python: the next runner that names a git dependency is caught by the
+    same rule without anyone remembering to update a list here.
+    """
+    sources = _declared_uv_sources(folder)
+    git_or_url_names = sorted(
+        name for name, entry in sources.items()
+        if isinstance(entry, dict) and ("git" in entry or "url" in entry)
+    )
+    if not git_or_url_names:
+        return
+    assert _declares_allow_build(folder), (
+        f"{os.path.basename(folder)} declares a git/url [tool.uv.sources] "
+        f"entry for {git_or_url_names} but no "
+        f"[tool.fused-render.runner] allow_build = true table — "
+        f"ai/supervisor.py._ensure_venv installs every bundled runner with "
+        f"allow_build defaulting to False, which makes `_env_install_worker.py` "
+        f"append --no-build to `uv sync`. A git/url source can ONLY be "
+        f"satisfied by building the checkout, so without the declared "
+        f"opt-in this runner's automatic build is uninstallable on every "
+        f"machine, every time — the exact defect ltx_video/pyproject.toml "
+        f"shipped with. See that file's header comment for the worked "
+        f"example and the two facts (no PyPI release; pure Python, no "
+        f"compiler needed) that justify granting the opt-in at all."
+    )
+
+
+def test_a_runner_declaring_git_sources_and_the_build_opt_in_passes(tmp_path):
+    """The positive half of the guard above, so it is not merely "nothing
+    named git ever failed" — a runner that DOES the right thing must read as
+    fine, not as an untested edge nobody confirmed passes."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\n'
+        'name = "fake-runner"\n'
+        'dependencies = ["some-pkg"]\n\n'
+        '[tool.uv.sources]\n'
+        'some-pkg = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n\n'
+        '[tool.fused-render.runner]\n'
+        'allow_build = true\n')
+    sources = _declared_uv_sources(str(tmp_path))
+    assert "some-pkg" in sources
+    assert _declares_allow_build(str(tmp_path))
+
+
+def test_a_runner_declaring_git_sources_without_the_opt_in_fails_the_guard(tmp_path):
+    """The failure half, written directly against the synthetic manifest
+    rather than only inferred from the positive case — a runner that forgets
+    the table must read as broken, which is what this codifies as a
+    reusable assertion the parametrized test above also makes."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\n'
+        'name = "fake-runner"\n'
+        'dependencies = ["some-pkg"]\n\n'
+        '[tool.uv.sources]\n'
+        'some-pkg = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n')
+    sources = _declared_uv_sources(str(tmp_path))
+    assert "some-pkg" in sources
+    assert not _declares_allow_build(str(tmp_path))
 
 
 @pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)

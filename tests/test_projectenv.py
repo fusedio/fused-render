@@ -308,6 +308,37 @@ def test_manifest_with_a_project_table_is_an_environment(home):
     assert projectenv.dependencies_of(str(proj)) == ["cowsay", "altair"]
 
 
+def test_runner_allows_build_reads_the_declared_opt_in(home):
+    """`[tool.fused-render.runner] allow_build = true` is the one declared,
+    per-folder opt-out of the wheels-only default (`ai/supervisor.py`'s
+    `_ensure_venv` reads this for the runner it is about to build) — same
+    `[tool.fused-render.<table>]` shape `background_apps.py`'s
+    `[tool.fused-render.app]` already uses. Absent, non-dict, or anything but
+    a literal `True` must all read as False: the safe default every other
+    bundled runner relies on."""
+    proj = _write_project(home / "proj", ["cowsay"])
+    assert projectenv.runner_allows_build(str(proj)) is False
+
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname='x'\nversion='1'\ndependencies=['cowsay']\n\n"
+        "[tool.fused-render.runner]\nallow_build = true\n", encoding="utf-8")
+    assert projectenv.runner_allows_build(str(proj)) is True
+
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname='x'\nversion='1'\ndependencies=['cowsay']\n\n"
+        "[tool.fused-render.runner]\nallow_build = \"true\"\n", encoding="utf-8")
+    assert projectenv.runner_allows_build(str(proj)) is False
+
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname='x'\nversion='1'\ndependencies=['cowsay']\n\n"
+        "[tool.fused-render]\nsomething_else = 1\n", encoding="utf-8")
+    assert projectenv.runner_allows_build(str(proj)) is False
+
+
+def test_runner_allows_build_is_false_with_no_manifest(home):
+    assert projectenv.runner_allows_build(str(home / "does-not-exist")) is False
+
+
 def test_unparseable_manifest_is_not_an_environment(home):
     proj = home / "proj"
     proj.mkdir()
