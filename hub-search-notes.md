@@ -2165,3 +2165,23 @@ rationale on each.
 - `bun test frontend/src/apps/ai_models/local/ModelRow.test.ts` — 12
   pass, 0 fail.
 - `bun run --cwd frontend typecheck` — clean.
+
+## Fix round 14 (2026-09-11) — drawer links, model card, size-sorted disk list
+
+- Item 1: `ModelRow.tsx`'s row-header model name is now an `<a>` to
+  `hubModelUrl(model.id)`, matching `HubSearchScreen.tsx`'s `.mono-name` link
+  and this file's own `row-note` id link. The drawer's separate "View on
+  Hugging Face ↗" link is gone (D866).
+- Item 2: the drawer's "Show in Finder" button is replaced with an
+  "Open model card" link that reuses the orphaned `ModelInfo.tsx`'s
+  `urlForFsPath(...) / navigate(..., { isDir: true, mode: "model_card" })`
+  pattern — same-tab, in-app. `onShowInFinder` and `revealPath` are gone
+  from `ModelRowHandlers`/`LocalTab.tsx` (D867).
+- Item 3: `orderDisk` no longer sorts by `lastUsed`; it's resident-first,
+  then `size` desc, then `id` asc. The doc comment above it now argues from
+  the vertical pane's own scan order rather than the old carousel framing
+  (D868).
+
+Items 1–2 are markup-only per the brief: no test run. Item 3:
+`bun test frontend/src/apps/ai_models/lib/aiModelGroups.test.ts` — 85 pass,
+0 fail. `bun run --cwd frontend typecheck` — clean.
