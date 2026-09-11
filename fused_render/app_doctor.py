@@ -267,16 +267,25 @@ def _git_pending(app_dir: str) -> tuple[str, list[tuple[str, str]]]:
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
     if not lines:
         return PASS, []
-    # `git status` reports paths relative to the REPO root, which for an app in
-    # the shared repo is one level up from the folder being reviewed. Strip that
-    # prefix so a row reads like every other finding's path — app-relative.
-    prefix = os.path.basename(app_dir.rstrip("/\\")) + "/"
+    # `git status` reports paths relative to the REPO root. For an app living
+    # in the shared `local` repo (D626) that root is one level up from the
+    # folder being reviewed, so a prefix strip is needed to read app-relative,
+    # the same as every other finding's path. But an app that IS its own repo
+    # root (`_repo_scope`'s other supported layout — an unmigrated app with
+    # its own `.git`) has paths already relative to app_dir with nothing to
+    # strip: stripping there would wrongly collapse a same-named untracked
+    # SUBdirectory (`?? demo/` inside app `demo/`) down to the empty string,
+    # over-claiming the whole app as untracked when only that subdirectory
+    # is (review finding: string-compare alone can't tell the two apart).
+    scope = app_git._repo_scope(app_dir)
+    is_own_repo_root = scope is not None and scope[1] == "."
+    prefix = "" if is_own_repo_root else os.path.basename(app_dir.rstrip("/\\")) + "/"
     out = []
     for ln in lines:
         code, _, rest = ln[:2], ln[2:3], ln[3:]
         rest = rest.strip().strip('"')
         code = code.strip() or "??"
-        if rest.startswith(prefix):
+        if prefix and rest.startswith(prefix):
             rest = rest[len(prefix):]
         # `(code, rest)` — NOT a formatted string. `rest` strips to "" when
         # the WHOLE app folder is untracked (git collapses that to one `??

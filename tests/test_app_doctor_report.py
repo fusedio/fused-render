@@ -347,6 +347,38 @@ def test_a_nested_untracked_directory_reads_as_a_directory_not_a_bare_code(works
     assert finding["excerpt"] == "sub/ (untracked directory)"
 
 
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_an_app_that_is_its_own_repo_root_does_not_over_claim_the_whole_folder(
+    workspace,
+):
+    """Review finding 4: `rest` strips to empty for ANY porcelain line whose
+    path equals the app's own basename, not only the whole-app-folder
+    collapse. When the app folder IS the repo root (an unmigrated app with
+    its own `.git`, `app_git._repo_scope`'s other supported layout) git
+    already reports paths relative to the app dir itself — no prefix to
+    strip at all. An untracked subdirectory that happens to share the app's
+    own folder name (`?? demo/` inside app `demo/`) must read as that
+    subdirectory being untracked, not as the whole app being untracked."""
+    d = _app(workspace, name="demo")
+    _git(d, "init", "-q")
+    _git(d, "add", "-A")
+    _git(d, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    sub = d / "demo"  # same basename as the app folder itself
+    sub.mkdir()
+    (sub / "new.py").write_text("x = 1\n")
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    # Must NOT read as "the whole app folder is untracked" — only one
+    # subdirectory is.
+    assert finding["path"] != "."
+    assert "whole app folder" not in finding["excerpt"]
+    assert finding["path"] == "demo/"
+    assert finding["excerpt"] == "demo/ (untracked directory)"
+
+
 # --------------------------------------------------------------- pushed
 
 def test_a_folder_that_is_not_a_repo_skips_the_pushed_row_with_the_right_reason(
