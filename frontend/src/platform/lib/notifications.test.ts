@@ -18,6 +18,7 @@ import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 const {
   TOAST_EXIT_MS,
   _resetNotificationsForTest,
+  _setIsTopEmbedForTest,
   dismissNotification,
   dismissPopup,
   getPopupNotification,
@@ -28,7 +29,10 @@ const {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(_resetNotificationsForTest);
-afterEach(_resetNotificationsForTest);
+afterEach(() => {
+  _resetNotificationsForTest();
+  _setIsTopEmbedForTest(null);
+});
 
 const popupSnapshot = getPopupNotification;
 
@@ -134,4 +138,31 @@ test("replaceId against an id that already left starts a fresh notification", as
   const second = notify({ title: "second", tone: "info" }, id);
   expect(second).not.toBe(id);
   expect(popupSnapshot()?.title).toBe("second");
+});
+
+// ---- IS_TOP_EMBED no-expiry path ---------------------------------------------
+
+test("an attention popup never auto-expires under IS_TOP_EMBED", async () => {
+  _setIsTopEmbedForTest(true);
+  notify({ title: "Could not save", tone: "error" });
+
+  await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()?.title).toBe("Could not save");
+  expect(popupSnapshot()?.leaving).toBe(false);
+});
+
+test("a trail popup still auto-expires normally under IS_TOP_EMBED", async () => {
+  _setIsTopEmbedForTest(true);
+  notify({ title: "Moved 3 items", tier: "trail" });
+
+  await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()).toBe(null);
+});
+
+test("IS_TOP_EMBED's no-expiry rule is not in effect elsewhere", async () => {
+  _setIsTopEmbedForTest(false);
+  notify({ title: "Could not save", tone: "error" });
+
+  await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()).toBe(null);
 });

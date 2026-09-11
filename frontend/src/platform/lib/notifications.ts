@@ -77,6 +77,26 @@ export const TOAST_EXIT_MS = 150;
 // keeping"/"Needs you" can hold from client-raised messages.
 export const MAX_RETAINED = 5;
 
+// `IS_TOP_EMBED` proper (`router.ts:169`) is a `const` frozen once at that
+// module's own init from `location`/`window` — correct for production (a
+// document really cannot be re-parented mid-life), but untestable directly:
+// bun shares one module registry across every file in a single `bun test`
+// invocation (testDomShim.ts's own header comment), so a SECOND test file
+// setting up an embed `location` before importing this module still gets
+// `router.ts`'s value from whichever file happened to import it FIRST in
+// that run. This override exists solely so `notifications.test.ts` can
+// exercise the IS_TOP_EMBED branch without fighting that caching — it
+// defaults to the real flag and every non-test caller never touches it.
+let isTopEmbedOverride: boolean | null = null;
+function effectiveIsTopEmbed(): boolean {
+  return isTopEmbedOverride ?? IS_TOP_EMBED;
+}
+/** Test-only — see `effectiveIsTopEmbed`'s comment. `null` restores the real
+ *  `IS_TOP_EMBED` reading. */
+export function _setIsTopEmbedForTest(value: boolean | null): void {
+  isTopEmbedOverride = value;
+}
+
 let popup: StoredNotification | null = null;
 let retained: StoredNotification[] = [];
 let nextId = 1;
@@ -184,7 +204,10 @@ function forwardToShell(n: StoredNotification): void {
 function getSnapshot(): { popup: StoredNotification | null; retained: StoredNotification[] } {
   return snapshot;
 }
-let snapshot = { popup, retained };
+let snapshot: { popup: StoredNotification | null; retained: StoredNotification[] } = {
+  popup,
+  retained,
+};
 function refreshSnapshot(): void {
   snapshot = { popup, retained };
 }
@@ -214,7 +237,9 @@ export function notify(input: NotificationInput, replaceId?: number): number {
       retained = retained.map((n) => (n.id === replaceId ? updated : n));
       if (updated.tier === "attention" || updated.tier === "trail") {
         popup = updated;
-        armExitTimer(JOB_POPUP_VISIBLE_MS);
+        if (!(effectiveIsTopEmbed() && updated.tier === "attention")) {
+          armExitTimer(JOB_POPUP_VISIBLE_MS);
+        }
       }
       refreshSnapshot();
       emit();
@@ -242,7 +267,14 @@ export function notify(input: NotificationInput, replaceId?: number): number {
   refreshSnapshot();
   emit();
 
-  if (item.tier !== "silent") armExitTimer(JOB_POPUP_VISIBLE_MS);
+  // IS_TOP_EMBED's own exception (SPEC §4): a standalone tab/bookmark has no
+  // shell underneath it to retain an "attention" message for, so that one
+  // tier, in that one context, never auto-expires — it sits until the user
+  // dismisses it (MessagePopupCard's own outside-press/✕) or presses
+  // elsewhere. `trail`/`transient` still time out normally even there; only
+  // a failure would otherwise vanish with no history anywhere.
+  const neverExpiresHere = effectiveIsTopEmbed() && item.tier === "attention";
+  if (item.tier !== "silent" && !neverExpiresHere) armExitTimer(JOB_POPUP_VISIBLE_MS);
 
   return id;
 }
