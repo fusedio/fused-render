@@ -335,6 +335,53 @@ def test_any_row_between_the_result_and_the_echo_still_leaves_a_seam(agent):
         "and the seam still falls between the segments, never inside one")
 
 
+def test_the_captured_second_window_shape_reports_its_seam(agent):
+    """THE REAL ROWS, from a transcript where the duplication was reproduced.
+
+    Everything above reasons about what CAN sit between a `result` and the next
+    echo. This is what actually did, read out of `out.jsonl` on a machine that
+    had just hit the bug — the previous reply's `result`, then `system/init`
+    and `system/status`, then the echo of the message the reader sent:
+
+        111  result
+        112  system subtype=init
+        113  system subtype=status
+        114  user blocks=text <<< starts a new turn
+        119  assistant blocks=text
+
+    Two rows in between, so the old adjacency rule reported nothing and the
+    page had no boundary to place the new reply against — it rendered the
+    previous reply into the new bubble instead. Pinned with the real shape
+    rather than a one-row stand-in, because the one-row case passed a rule
+    this one still failed."""
+    prev, new = "P" * 524, "N" * 11      # the real lengths, from the capture
+    rows = [
+        _user_row("the earlier question"),
+        _text_row(prev),
+        {"type": "assistant", "message": {"role": "assistant",
+         "content": [{"type": "text", "text": prev}]}},
+        {"type": "stream_event", "event": {"type": "message_stop"}},
+        _result_row(prev),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("x" * 706),
+        _text_row(new),
+        {"type": "assistant", "message": {"role": "assistant",
+         "content": [{"type": "text", "text": new}]}},
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert len(breaks) == 1, "the boundary is real and has to be reported"
+    seam = breaks[0]
+    segs = agent._segments_from_rows(rows)
+    full = "".join(sg["text"] for sg in segs if sg["kind"] == "text")
+    # Everything up to the seam is the reply that was already on screen, and
+    # everything after it is the answer to the message just sent — which is
+    # the whole of what the page needs to keep them in separate bubbles.
+    assert set(full[:seam["text"]]) == {"P"}
+    assert set(full[seam["text"]:].strip()) == {"N"}
+    assert seam["text"] == len(prev)
+
+
 def test_a_wake_with_nothing_after_it_is_not_a_seam(agent):
     """A D415 wake is a `result` followed by more rows of the SAME displayed
     turn and NO user echo — `_segments_from_rows` joins it with a `notice`
