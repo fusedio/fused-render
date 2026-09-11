@@ -3470,17 +3470,28 @@ button.am-bench-model:focus-visible {
    own color rule is defined LATER in this file, and at equal specificity a
    bare `.tp .drawer-close` would lose the cascade to it and render in
    `--accent-soft` instead of the quiet muted tone this control wants. */
+/* Item 2 (fix round 7): measured live at 8×12px — the bare glyph's own box,
+   no padding. Grown to a 24×24px hit target (adjusting `top`/`right` so the
+   glyph's visual centre stays roughly where it was) with a quiet hover
+   affordance, tokens only. */
 .tp .btn-link.drawer-close {
   position: absolute;
-  top: 10px;
-  right: 12px;
-  font-size: 12px;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 16px;
   line-height: 1;
   color: var(--fg-muted);
 }
 
 .tp .btn-link.drawer-close:hover,
 .tp .btn-link.drawer-close:focus-visible {
+  background: var(--ctl-quiet-bg-hover);
   color: var(--fg);
   text-decoration: none;
 }
