@@ -71,7 +71,7 @@ import {
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 /** What a confirmation is about. Every destructive action becomes one of these
@@ -323,11 +323,19 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       );
       // A deletion that freed nothing is worth saying out loud too — it means
       // every target failed, and the banner beside it says why.
-      pushToast({
-        msg: result.freed
+      //
+      // "Freed 1.4 GB — deleted…" is the spec's own motivating example for
+      // destructive-but-successful (SPEC-toasts-become-notifications.md
+      // §3): trail-tier on a clean run, so it can be found again after the
+      // popup is gone. A failed run stays attention — tone: "error" already
+      // promotes it there regardless of tier, so no explicit override is
+      // needed on that branch.
+      notify({
+        title: result.freed
           ? `Freed ${formatSize(result.freed)} — ${label}`
           : `Nothing deleted — ${label}`,
         tone: result.failures.length ? "error" : "info",
+        tier: result.failures.length ? undefined : "trail",
       });
       setPending(null);
     } catch (e) {
