@@ -14,8 +14,10 @@
 import type { ReactNode } from "react";
 
 import type { AiFitVerdict } from "@platform/lib/api";
+import { navigateUrl } from "@platform/lib/router";
 
 import { hubModelUrl } from "@apps/ai_models/local/hub";
+import { tabHref } from "@apps/ai_models/routes";
 
 /** D813 (item P): the pre-port curated mark, restored verbatim from
  *  `origin/main`'s `RepoCard.tsx` after the user asked for "the older green
@@ -250,11 +252,26 @@ function Actions({
     );
   }
   if (model.have) {
+    // Item I: a real link to the Playground route, carrying `?model=` — so
+    // middle-click and copy-link reach it the way `AiModelsPage`'s own tab
+    // strip links do (see that file's own doc on this exact pattern). The
+    // left-click still fires `onTry` (which starts the actual load) before
+    // handing off to client-side navigation, same as a plain button did.
+    const tryHref = tabHref("playground", `?model=${encodeURIComponent(model.id)}`);
     return (
       <>
-        <button type="button" className="btn btn-primary" onClick={() => handlers.onTry?.(model.id)}>
+        <a
+          className="btn btn-primary"
+          href={tryHref}
+          onClick={(e) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            handlers.onTry?.(model.id);
+            navigateUrl(tryHref);
+          }}
+        >
           Try
-        </button>
+        </a>
         <button
           type="button"
           className="iconbtn"

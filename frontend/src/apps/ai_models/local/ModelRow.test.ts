@@ -23,7 +23,14 @@ describe("ModelRow action slot", () => {
   });
 
   it("uses the primary Try link only for a model this Mac actually has", () => {
-    expect(ROW).toContain('className="btn btn-primary" onClick={() => handlers.onTry?.(model.id)}');
+    expect(ROW).toContain('className="btn btn-primary"');
+    expect(ROW).toContain("href={tryHref}");
+  });
+
+  it("Try is a real link to the Playground carrying the encoded repo id (item I)", () => {
+    expect(ROW).toContain('tabHref("playground", `?model=${encodeURIComponent(model.id)}`)');
+    expect(ROW).toContain("navigateUrl(tryHref)");
+    expect(ROW).toContain("handlers.onTry?.(model.id)");
   });
 
   it("gives Download the primary class only when opts.primary is set", () => {
