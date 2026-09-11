@@ -1539,7 +1539,13 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
     capability_filter = (capability or "").strip()[:60] if isinstance(capability, str) else ""
-    include_unfit = bool(body.get("includeUnfit"))
+    # Item 7 (fix round 5): the "Show models that will not fit" toggle is
+    # gone from the frontend — every row is always shown now (the per-row
+    # red "Will not fit" line, untouched by this change, is the only warning
+    # left). `includeUnfit` is still accepted on the wire (an old saved page,
+    # or a stale client) but is ignored: this always behaves as if it were
+    # true, never dropping a `verdict: "no"` row.
+    include_unfit = True
     # Part 3's three explicit filters. All server-side, and for the SAME
     # reason `includeUnfit` already is (see the `fetch` comment below): each
     # one only removes rows AFTER the Hub's own answer, so filtering them

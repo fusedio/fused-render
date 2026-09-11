@@ -748,22 +748,19 @@ def test_identical_queries_inside_the_window_ask_once(client, hub_cache, monkeyp
     assert len(fake.calls) == 2  # …a different query is a different question
 
 
-def test_unchecking_include_unfit_inside_the_window_does_not_reuse_the_smaller_fetch(
+def test_include_unfit_is_always_on_now_an_old_client_sending_false_is_ignored(
         client, hub_cache, monkeypatch):
-    # With a task filter AND includeUnfit=True, `fetch` collapses to `count`
-    # (the Hub already returns only rows kept). Unchecking includeUnfit for
-    # the SAME query/task/sort/count within the TTL must ask the Hub again
-    # with the larger overfetch `count * _OVERFETCH` — not reuse the
-    # includeUnfit=True response's smaller payload, which has no headroom
-    # left for the verdict:"no" drop to backfill from.
+    """Item 7 (fix round 5): the "Show models that will not fit" toggle is
+    gone from the frontend — the server always behaves as `includeUnfit:
+    True` regardless of what an old saved page/client sends, so a `false`
+    from one no longer changes the fetch size or drops any `verdict: "no"`
+    row."""
     fake = _reply([_hit("org/m")])
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"task": "text-generation", "includeUnfit": True})
-    _search(client, {"task": "text-generation", "includeUnfit": False})
-    assert len(fake.calls) == 2  # a fresh Hub request, not a stale cache hit
+    _search(client, {"task": "text-generation", "includeUnfit": False, "q": "distinct"})
     limits = [parse_qs(urlsplit(url).query)["limit"][0] for url, _ in fake.calls]
-    assert limits[0] == "24"
-    assert limits[1] == str(24 * hub._OVERFETCH)
+    assert limits == ["24", "24"]
 
 
 def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
@@ -1222,29 +1219,31 @@ def test_sort_trending_reaches_the_wire_as_trendingscore(client, hub_cache, monk
     assert "sort=trendingScore" in url
 
 
-def test_a_verdict_no_row_is_absent_by_default_and_present_with_the_opt_in_flag(
-        client, hub_cache, monkeypatch):
+def test_a_verdict_no_row_is_always_shown_now(client, hub_cache, monkeypatch):
+    """Item 7 (fix round 5): the "Show models that will not fit" toggle is
+    gone — a `verdict: "no"` row is never dropped any more, `includeUnfit`
+    (still accepted for an old client) changes nothing, and the per-row fit
+    verdict itself (untouched by this change) is the only warning left."""
     fake = _reply([
         _fitted("org/fits", score=100, safetensors_gb=1),
         _fitted("org/toobig", score=0, safetensors_gb=4000),
     ])
     monkeypatch.setattr(httpx, "get", fake)
     default = _search(client).json()
-    assert [m["id"] for m in default["models"]] == ["org/fits"]
-    assert default["hiddenUnfit"] == 1
+    assert {m["id"] for m in default["models"]} == {"org/fits", "org/toobig"}
 
-    opted_in = _search(client, {"includeUnfit": True}).json()
-    assert {m["id"] for m in opted_in["models"]} == {"org/fits", "org/toobig"}
-    assert opted_in["hiddenUnfit"] == 0
+    old_client = _search(client, {"includeUnfit": False, "q": "distinct"}).json()
+    assert {m["id"] for m in old_client["models"]} == {"org/fits", "org/toobig"}
 
 
-def test_a_model_already_on_disk_is_never_hidden_by_the_unfit_default(
+def test_a_model_already_on_disk_is_never_hidden(
         client, hub_cache, monkeypatch):
     # The stated reason this search exists is the local join — "you already
-    # have this one". Hiding a `verdict: "no"` row that is downloaded (or
-    # mid-download) would defeat that: someone who pulled a 70B repo months
-    # ago, or is mid-pull right now, searches its name to check on it, and
-    # the unfit default must not make the page say nothing matches.
+    # have this one". A `verdict: "no"` row that is downloaded (or
+    # mid-download) must never disappear: someone who pulled a 70B repo
+    # months ago, or is mid-pull right now, searches its name to check on
+    # it, and the page must not say nothing matches. (Item 7, round 5: this
+    # is no longer a "default" — every row is always shown, on disk or not.)
     _cached_repo(hub_cache, "models--org--toobig")
     blob = hub_cache / "models--org--partial" / "blobs" / "b1"
     blob.parent.mkdir(parents=True)
@@ -1257,8 +1256,7 @@ def test_a_model_already_on_disk_is_never_hidden_by_the_unfit_default(
     monkeypatch.setattr(httpx, "get", fake)
     body = _search(client).json()
     ids = {m["id"] for m in body["models"]}
-    assert ids == {"org/toobig", "org/partial"}
-    assert body["hiddenUnfit"] == 1
+    assert ids == {"org/toobig", "org/partial", "org/nowhere"}
 
 
 def test_limit_still_counts_rows_actually_returned_after_the_fit_filter(
@@ -1590,17 +1588,18 @@ def test_an_unfiltered_search_asks_for_more_than_it_shows(client, hub_cache, mon
     assert "limit=10" in fake.calls[1][0]
 
 
-def test_a_task_filtered_search_still_overfetches_for_the_default_unfit_drop(
+def test_a_task_filtered_search_no_longer_overfetches_now_unfit_is_never_dropped(
         client, hub_cache, monkeypatch):
-    """A task filter alone doesn't mean nothing here can still drop a row —
-    by default, `verdict: "no"` rows are dropped too, and a task filter gives
-    the Hub no way to see that coming. Without over-fetching here, `limit`
-    stops meaning "rows you will be shown" the moment a task filter is set,
-    exactly as it already doesn't for an unfiltered query (D313)."""
+    """Item 7 (fix round 5): a `verdict: "no"` row used to be dropped by
+    default, which a task filter alone gave the Hub no way to see coming —
+    that drop is gone now (every row is always shown), so a single-tag task
+    filter with no other Part 3 filter active asks the Hub for exactly
+    `limit`, the same small request an explicit `includeUnfit: True` used to
+    require opting into."""
     fake = _reply([])
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"q": "small", "task": "text-generation", "limit": 10})
-    assert "limit=40" in fake.calls[0][0]
+    assert "limit=10" in fake.calls[0][0]
 
 
 def test_limit_still_counts_rows_actually_returned_with_a_task_filter(
