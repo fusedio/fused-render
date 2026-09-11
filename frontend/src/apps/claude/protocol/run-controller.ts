@@ -1029,15 +1029,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let prevWindow: number | null = null;
     let seenFollowupSeq = followupSeq;
     /**
-     * The same counter as this loop ENTERED on, never advanced — so
-     * "has a follow-up landed since this loop started" stays answerable after
-     * `seenFollowupSeq` has caught up to it (which it does at the top of every
-     * poll that saw one). `adoptFirstSeam` below is the reader, and comparing
-     * against `seenFollowupSeq` there was dead code: the two are already equal
-     * by the time it runs (Bugbot, PR #1119).
-     */
-    const followupSeqAtStart = followupSeq;
-    /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
      *
      * One per follow-up that landed and whose reply this loop has not yet seen
@@ -1263,28 +1254,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // later, leaving `baseSegTrusted` down for the whole reply and its
         // segments suppressed with it.
         if (adoptFirstSeam && anyBody) {
-          const last = reported[reported.length - 1];
-          if (followupSeq !== followupSeqAtStart) {
-            // A FOLLOW-UP LANDED IN THIS LOOP, so STOP WAITING WITHOUT
-            // ADOPTING — checked ahead of the adoption, not beside it. From
-            // here a payload can carry two seams, the pre-send boundary AND
-            // the `result` closing the reply this loop's own follow-up was
-            // folded into, and the adoption below takes the LAST one: it would
-            // take that second seam and swallow this send's whole reply into
-            // the base (Bugbot, PR #1119 — where this gate first sat in the
-            // `else` and so could not stop the adoption at all, on top of
-            // being written against `seenFollowupSeq`, which the top of every
-            // poll has already caught up to `followupSeq`).
-            adoptFirstSeam = false;
-          } else if (last && (last.segments > baseSeg || last.text > baseText.length)) {
-            baseSeg = last.segments;
-            baseText = fullText.slice(0, last.text);
+          // THE FIRST SEAM PAST THE BASE, NOT THE LAST (Bugbot, PR #1119,
+          // twice). The base is where THIS turn begins, and this turn begins at
+          // the FIRST boundary the payload closes off beyond what was already
+          // on screen. Every seam after that one is this turn's own — the
+          // `result` closing a reply a follow-up of this loop's was folded into
+          // — and belongs to a bubble.
+          //
+          // Taking the last seam read those as the base and swallowed this
+          // send's whole reply into it. Refusing to adopt at all once a
+          // follow-up had landed — the first attempt at that — cost the other
+          // half: the pre-send boundary then went unadopted too, so a D415
+          // wake that grew the turn already on screen AFTER this send was
+          // composed stayed in this turn's bubble, `priorReply`'s text having
+          // been sampled before the wake appended anything. One seam is both
+          // answers: the pre-send boundary is exactly the first one past the
+          // base, wake continuation included, and it is adopted whether or not
+          // a follow-up has landed since.
+          const opening = reported.find(
+            (b) => b.segments > baseSeg || b.text > baseText.length,
+          );
+          if (opening) {
+            baseSeg = opening.segments;
+            baseText = fullText.slice(0, opening.text);
             // A REPORTED SEAM IS agent.py's OWN COUNT, measured against THIS
             // very payload's segmentation — unlike `priorReply`'s, it needs no
-            // reconciliation. Taking the LAST seam is safe only because of the
-            // branch above: with no follow-up of this loop's own in the
-            // payload, every seam in it closes a turn that ended before this
-            // send, and the last of them is where this turn begins.
+            // reconciliation.
             baseSegTrusted = true;
             adoptFirstSeam = false;
           } else if (!baseText || !fullText.startsWith(baseText)) {

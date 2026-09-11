@@ -1381,17 +1381,23 @@ describe("follow-ups (T:16024, D687)", () => {
             await controller.sendFollowUp("and one more thing");
             return poll({ segments: [A], text: A.text });
           }
-          // Now a seam arrives — but this one closes the reply the follow-up
-          // was folded into, so it is OURS, not the base.
+          // Now the echo lands, and the payload carries TWO seams: the
+          // pre-send boundary (end of the reply already on screen) and the
+          // `result` closing the reply the follow-up was folded into. The
+          // first is the base; the second is ours.
+          const twoSeams = [
+            { segments: 1, text: A.text.length },
+            { segments: 2, text: A.text.length + B.text.length },
+          ];
           if (n === 2) {
             return poll({
               segments: [A, B, C],
               text: A.text + B.text + C.text,
-              turn_breaks: [{ segments: 2, text: A.text.length + B.text.length }],
+              turn_breaks: twoSeams,
             });
           }
           return poll({ done: true, segments: [A, B, C], text: A.text + B.text + C.text,
-                        turn_breaks: [{ segments: 2, text: A.text.length + B.text.length }] });
+                        turn_breaks: twoSeams });
         },
       },
       params,
@@ -1408,6 +1414,72 @@ describe("follow-ups (T:16024, D687)", () => {
     );
     expect(bodies.some((b) => b.includes(B.text))).toBe(true);
     // …and the reply already on screen is still not duplicated into it.
+    expect(bodies.slice(1).some((b) => b.includes(A.text))).toBe(false);
+    // The follow-up's own answer is here too, and in its own bubble rather
+    // than merged into this send's.
+    expect(bodies.some((b) => b.includes(C.text))).toBe(true);
+    expect(bodies.some((b) => b.includes(B.text) && b.includes(C.text))).toBe(false);
+  });
+
+  // AND THE BASE SEAM IS STILL ADOPTED AFTERWARDS (Bugbot, PR #1119). Refusing
+  // to adopt once a follow-up had landed — the first attempt at the test above
+  // — left the pre-send boundary unadopted too, and `priorReply`'s text was
+  // sampled when this send was composed, BEFORE a wake appended anything to
+  // the turn already on screen. So the wake's continuation had nothing
+  // excluding it and rendered into this turn's bubble: the same duplication
+  // the rest of this PR closes, arriving by the other door.
+  test("a wake that grew the previous turn after the send is still excluded", async () => {
+    let controller!: ChatController;
+    const A = text("The answer from before the reload.");
+    const WAKE = text(" And the background task finished.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const made = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: async (_f, n) => {
+          // The wake grows the turn already on screen — AFTER `priorReply`
+          // sampled its text, so `baseText` alone cannot exclude it.
+          if (n === 0) return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          // A follow-up lands before this send's own echo does.
+          if (n === 1) {
+            await controller.sendFollowUp("and one more thing");
+            return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          }
+          // The echo lands and the pre-send boundary is named — past the
+          // wake's continuation, which belongs to the previous turn.
+          return poll({
+            done: n > 2,
+            segments: [A, WAKE, B],
+            text: A.text + WAKE.text + B.text,
+            turn_breaks: [{ segments: 2, text: A.text.length + WAKE.text.length }],
+          });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.openSession("s1");
+    await controller.sendMessage("and now this");
+
+    const bodies = assistants(controller).map(
+      (t) => (t.segments || []).map(bodyOf).join("") + (t.text || ""),
+    );
+    // This send's reply is here, and neither the old reply NOR the wake's
+    // continuation came with it.
+    expect(bodies.some((b) => b.includes(B.text))).toBe(true);
+    expect(bodies.slice(1).some((b) => b.includes(WAKE.text))).toBe(false);
     expect(bodies.slice(1).some((b) => b.includes(A.text))).toBe(false);
   });
 
