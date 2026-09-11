@@ -165,10 +165,7 @@ export const SORTS: readonly SortOption[] = [
   {
     value: "best",
     label: "Best match",
-    title:
-      "This machine's own ranking: blends how well each result fits its memory, how much of its " +
-      "capacity the model uses, estimated speed, how recently it was published, and popularity — " +
-      "see the Match column's own hover for the full breakdown.",
+    title: "Ranked for this Mac: fit, speed, size, recency, popularity",
   },
   { value: "downloads", label: "Downloads", title: "Most downloaded in the last month" },
   { value: "likes", label: "Likes", title: "Most liked on the Hub" },
@@ -177,22 +174,17 @@ export const SORTS: readonly SortOption[] = [
   {
     value: "trending",
     label: "Trending",
-    title: "Rising fastest on the Hub right now — the Hub's own trending score",
+    title: "Rising fastest on the Hub right now",
   },
   {
     value: "fit",
     label: "Fit",
-    title:
-      "Memory fit only, on THIS machine — narrower than \"Best match\": it asks for the " +
-      "most-downloaded results and reorders them by how comfortably each one would run, with no " +
-      "regard to speed, size or popularity.",
+    title: "Memory fit on this Mac only",
   },
   {
     value: "size",
     label: "Size",
-    title:
-      "Smallest first, measured on this page. The Hub cannot rank a search by size, so this " +
-      "orders the most-downloaded results by what the whole repo weighs — which takes a moment.",
+    title: "Smallest first, measured on this page",
   },
 ];
 
