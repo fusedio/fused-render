@@ -62,10 +62,12 @@ def _segs_flat_src(html):
 
 
 def _record_src(html):
-    """What the done branch records for the next loop."""
+    """What the done branch records for the next loop, ownership guard and
+    all."""
     start = html.index("        // AND THE WINDOW IS NOW ON SCREEN")
     end = html.index("          : null;", start)
-    return html[start:end + len("          : null;")]
+    end = html.index("\n        }\n", end) + len("\n        }\n")
+    return html[start:end]
 
 
 _HARNESS = """
@@ -117,6 +119,8 @@ const run_id = "r1";
 const fullSegs = [%s];
 const fullText = %s;
 const end = { keepText: true };
+const seat = 1;
+let loopSeq = 1;
 """ % (json.dumps(PREV), json.dumps(PREV)) + body)
     assert kept[0] == {"run_id": "r1", "segs": 1, "text": PREV}
 
@@ -125,6 +129,8 @@ const run_id = "r1";
 const fullSegs = [%s];
 const fullText = %s;
 const end = { keepText: false };
+const seat = 1;
+let loopSeq = 1;
 """ % (json.dumps(PREV), json.dumps(PREV)) + body)
     assert dropped[0] is None, "a reply that was removed is not a base"
 
@@ -199,3 +205,91 @@ console.log(JSON.stringify(out));
 """)
     assert frames[0]["segs"] == [NEW]
     assert frames[0]["flat"] == NEW
+
+
+# ---- the two Bugbot findings on the first cut of this fix -------------------
+
+
+def test_a_blank_poll_does_not_retire_the_landed_base(html):
+    """BUGBOT, HIGH. A send into an IDLE host leaves out.jsonl ending on the
+    previous `result`, so agent.py reads the run as idle and `pending_echo`
+    blanks BOTH `text` and `segments` until this send's echo lands.
+
+    An empty string starts with nothing, so the first cut of the retire check
+    read that blank payload as "the cursor stepped over the boundary" and threw
+    the base away — and the polls after it, still carrying the previous reply
+    because the cursor had NOT moved, typed it into the new bubble. Reproduced
+    in the running app with a host that takes a moment to start: the duplicate
+    came straight back.
+    """
+    frames = _run("""
+const run_id = "r1";
+landedWindow = { run_id: "r1", segs: 1, text: %s };
+""" % json.dumps(PREV) + _seed_src(html) + """
+"""
+        # `pending_echo` blanks the payload...
+        + _poll(html, {"segments": [], "text": ""})
+        # ...and the cursor has still not moved, so this is the OLD reply.
+        + _poll(html, {"segments": [{"kind": "text", "text": PREV}], "text": PREV})
+        + """
+console.log(JSON.stringify(out));
+""")
+    assert frames[0]["segs"] == [] and frames[0]["flat"] == ""
+    assert frames[0]["textBase"] == len(PREV), (
+        "a blank payload proves nothing; the base must survive it")
+    assert frames[1]["segs"] == [], "the previous reply was re-typed"
+    assert frames[1]["flat"] == "", "the previous reply was re-typed"
+
+
+def test_a_segments_only_window_still_retires_the_base(html):
+    """...and the guard for that must not swallow a real window. A turn that
+    opens on a tool call carries segments with no prose at all: `text` is empty
+    but the payload is the NEW turn, and slicing its segments against the old
+    reply's count would drop them."""
+    frames = _run("""
+const run_id = "r1";
+landedWindow = { run_id: "r1", segs: 1, text: %s };
+""" % json.dumps(PREV) + _seed_src(html) + """
+""" + _poll(html, {"segments": [{"kind": "tool", "text": ""}], "text": ""}) + """
+console.log(JSON.stringify(out));
+""")
+    assert frames[0]["segBase"] == 0, "a segments-only window is a real window"
+    assert len(frames[0]["segs"]) == 1, "the new turn's own segment, not a slice"
+
+
+def test_a_superseded_loop_does_not_overwrite_the_record(html):
+    """BUGBOT, MEDIUM. A respawn kills this run and starts a NEW pollLoop while
+    the old one is still on its way back from the poll it already sent. Its
+    late arrival in the done branch would overwrite — or null — the record the
+    newer loop has already made, and the send after that would open with no
+    base and flash the previous reply again.
+
+    Same `loopSeq === seat` test the `run` param and the stop note in that very
+    block already make."""
+    newer = {"run_id": "r1", "segs": 2, "text": "what the newer loop settled"}
+    body = _record_src(html) + """
+out.push(landedWindow);
+console.log(JSON.stringify(out));
+"""
+    stale = _run("""
+const run_id = "r1";
+const fullSegs = [%s];
+const fullText = %s;
+const end = { keepText: true };
+const seat = 1;      // this loop
+let loopSeq = 2;     // ...but a newer one has taken over
+landedWindow = %s;
+""" % (json.dumps(PREV), json.dumps(PREV), json.dumps(newer)) + body)
+    assert stale[0] == newer, "the superseded loop wrote over the newer record"
+
+    owner = _run("""
+const run_id = "r1";
+const fullSegs = [%s];
+const fullText = %s;
+const end = { keepText: true };
+const seat = 2;
+let loopSeq = 2;     // still the newest loop
+landedWindow = null;
+""" % (json.dumps(PREV), json.dumps(PREV)) + body)
+    assert owner[0] == {"run_id": "r1", "segs": 1, "text": PREV}, (
+        "the loop that owns the turn still records it")
