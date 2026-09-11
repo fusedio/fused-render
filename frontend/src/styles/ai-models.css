@@ -3549,6 +3549,24 @@ button.am-bench-model:focus-visible {
   word-break: break-all;
 }
 
+/* Item A (per-variant download): each variant row gets its own Download
+ * button, reusing `.btn`'s own look but sized down to sit beside a
+ * monospace filename rather than competing with the row-level one. */
+.tp .drawer .variant-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.tp .drawer .variant-download {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
 .tp .drawer .why {
   margin: 12px 0 0;
   padding-top: 10px;

@@ -25,7 +25,10 @@ describe("HubSearchScreen one row per hit", () => {
     const body = SRC.slice(start, SRC.indexOf("\nexport function HubSearchScreen"));
     expect(body).toContain('const have = disk.state === "downloaded";');
     expect(body).toContain("have ? (");
-    expect(body).toContain("✓ Downloaded");
+    // Item A: the plain "✓ Downloaded" caption became a quant-aware one
+    // (`downloadedVariantLabel`) so a non-default cached variant is named
+    // rather than reading as the repo's default download.
+    expect(body).toContain("downloadedVariantLabel({");
   });
 
   it("states the memory reason for a will-not-fit row rather than inventing one", () => {

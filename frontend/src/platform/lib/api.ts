@@ -4351,8 +4351,14 @@ export function loadAiModel(model: string, capability?: string): Promise<AiLoadS
   return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
 }
 
-export function downloadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
-  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability });
+export function downloadAiModel(
+  model: string, capability?: string, file?: string,
+): Promise<AiLoadStarted> {
+  // `file` (item A, per-variant download): names one specific GGUF variant
+  // to fetch instead of whichever one the server would otherwise pick for
+  // this repo. Omitted for an ordinary row-level download, which stays
+  // byte-identical to the request this always sent.
+  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability, file });
 }
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {

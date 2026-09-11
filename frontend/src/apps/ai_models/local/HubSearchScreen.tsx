@@ -30,6 +30,7 @@ import {
 import { hubSizeBytes, knownTotalSize, lookupTotalSize } from "@apps/ai_models/lib/hubSize";
 import {
   ageLabel,
+  downloadedVariantLabel,
   matchCell,
   matchRowTip,
   paramsLabel,
@@ -189,11 +190,22 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
 function HitDrawer({
   model,
   authenticated,
+  busy,
+  onDownloadFile,
   onSignedIn,
   onClose,
 }: {
   model: HubModel;
   authenticated: boolean;
+  /** Item A: the row's own busy state (a download already in flight for
+   *  THIS repo) — a per-variant button is disabled the same way the
+   *  row-level one is, rather than letting a reader start a second
+   *  concurrent download of the same repo under a different filename. */
+  busy: boolean;
+  /** Item A (per-variant download): fetches exactly `file` rather than
+   *  whichever one the server's picker would otherwise choose. Absent for
+   *  the row-level Download button, which keeps its unchanged behaviour. */
+  onDownloadFile: (file: string) => void;
   onSignedIn: () => void;
   onClose: () => void;
 }) {
@@ -229,23 +241,38 @@ function HitDrawer({
          *  (`model.file`, unchanged from before) and the file already on this
          *  disk (`model.local.file`) each get a quiet marker so a reader can
          *  tell "what I'd get" and "what I already have" apart from the rest.
-         *  Re-downloading a NON-default variant is out of scope for this
-         *  round: `supervisor.load`/`/api/ai/runtime/download` have no
-         *  mechanism today for a caller to override which GGUF file gets
-         *  fetched — see D1252 — so this is a read-only list, not a picker. */}
+         *  Item A (per-variant download) turned this from a read-only list
+         *  into a picker: `/api/ai/runtime/download` now accepts an explicit
+         *  `file`, validated server-side against this same repo's own real
+         *  GGUF candidates — see D1252 for the gap this closed. Each row
+         *  reuses the row-level Download button's own `.btn` styling, and is
+         *  disabled with "On disk" for whichever variant is already
+         *  cached — the same fact `v.file === model.local?.file` already
+         *  annotated in prose below, now also driving the control. */}
         {model.variants && model.variants.length > 1 && (
           <>
             <dt>Variants</dt>
             <dd className="plain">
               <ul className="variant-list">
-                {model.variants.map((v) => (
-                  <li key={v.file}>
-                    <code>{v.file}</code>
-                    {v.quant ? ` — ${v.quant}` : ""}
-                    {v.file === model.file ? " (default)" : ""}
-                    {v.file === model.local?.file ? " (on disk)" : ""}
-                  </li>
-                ))}
+                {model.variants.map((v) => {
+                  const onDisk = v.file === model.local?.file;
+                  return (
+                    <li key={v.file}>
+                      <code>{v.file}</code>
+                      {v.quant ? ` — ${v.quant}` : ""}
+                      {v.file === model.file ? " (default)" : ""}
+                      {onDisk ? " (on disk)" : ""}
+                      <button
+                        type="button"
+                        className="btn variant-download"
+                        disabled={busy || onDisk}
+                        onClick={() => onDownloadFile(v.file)}
+                      >
+                        {onDisk ? "On disk" : "Download"}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </dd>
           </>
@@ -280,6 +307,7 @@ function HitRow({
   busy,
   infoOpen,
   onDownload,
+  onDownloadFile,
   onCancel,
   onToggleInfo,
   onSignedIn,
@@ -291,6 +319,9 @@ function HitRow({
   busy: boolean;
   infoOpen: boolean;
   onDownload: () => void;
+  /** Item A (per-variant download): fetches exactly `file`, threaded down to
+   *  the drawer's own per-variant Download button. */
+  onDownloadFile: (file: string) => void;
   onCancel: (job: Job) => void;
   onToggleInfo: () => void;
   onSignedIn: () => void;
@@ -433,7 +464,14 @@ function HitRow({
         <span className="row-act">
           {have ? (
             <span className="downloaded" title="Already on this Mac — use it from its capability">
-              ✓ Downloaded
+              ✓{" "}
+              {downloadedVariantLabel({
+                variantCount: model.variantCount ?? null,
+                variants: model.variants ?? null,
+                file: model.file,
+                quant: model.quant,
+                localFile: model.local?.file ?? null,
+              })}
             </span>
           ) : busy ? (
             <button type="button" className="btn" onClick={() => job && onCancel(job)}>
@@ -460,7 +498,14 @@ function HitRow({
         </span>
       </div>
       {infoOpen && (
-        <HitDrawer model={model} authenticated={authenticated} onSignedIn={onSignedIn} onClose={onToggleInfo} />
+        <HitDrawer
+          model={model}
+          authenticated={authenticated}
+          busy={busy}
+          onDownloadFile={onDownloadFile}
+          onSignedIn={onSignedIn}
+          onClose={onToggleInfo}
+        />
       )}
     </div>
   );
@@ -483,7 +528,10 @@ export function HubSearchScreen({
   cards: ReadonlyMap<string, DiskCard> | null;
   jobByModel: Map<string, Job>;
   pulling: (id: string) => boolean;
-  onDownload: (id: string, capability: string) => void;
+  /** Item A: `file` names one specific GGUF variant — absent for the
+   *  row-level Download button, which keeps sending the exact request it
+   *  always did. */
+  onDownload: (id: string, capability: string, file?: string) => void;
   onCancel: (job: Job) => void;
   /** Live query text — separate from `settled.q` for the same reason
    *  `LocalTab` used to keep them apart: a burst of typing is one request,
@@ -729,6 +777,7 @@ export function HubSearchScreen({
               infoOpen={openInfoId === m.id}
               job={jobByModel.get(m.id)}
               onDownload={() => onDownload(m.id, m.capability)}
+              onDownloadFile={(file) => onDownload(m.id, m.capability, file)}
               onCancel={onCancel}
               onToggleInfo={() => setOpenInfoId((cur) => (cur === m.id ? null : m.id))}
               onSignedIn={() => setAuthEpoch((n) => n + 1)}

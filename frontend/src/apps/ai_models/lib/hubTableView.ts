@@ -267,6 +267,37 @@ export function quantLabel(quant: string | null): string {
   return quant ?? DASH;
 }
 
+/** Item A (per-variant download): the row's "✓ Downloaded" caption, once the
+ *  on-disk file might not be the DEFAULT variant a plain row-level Download
+ *  would have fetched. `model.local.file` names whichever single GGUF is
+ *  actually on disk (`hub_models.py::_local_state`'s own "exactly one, or
+ *  null" rule — an ambiguous multi-file cache reads the same as none here,
+ *  matching that same refusal-to-guess); `model.file` is the file a plain
+ *  download would pick. When they differ, the caption names the count of
+ *  variants this repo offers alongside the quant actually downloaded, so a
+ *  reader is not told "Downloaded" for a file that quietly is not the one
+ *  they would get by pressing Download again. Callers pass `null`
+ *  `variantCount`/`quant` when the row has none (a non-GGUF format) and get
+ *  the plain default caption back. */
+export function downloadedVariantLabel(model: {
+  variantCount: number | null;
+  variants: { file: string; quant: string | null }[] | null;
+  file: string | null;
+  quant: string | null;
+  localFile: string | null;
+}): string {
+  const isNonDefault =
+    model.localFile != null && model.file != null && model.localFile !== model.file;
+  if (!isNonDefault || !model.variantCount || model.variantCount <= 1) {
+    return model.quant ? `${model.quant} downloaded` : "Downloaded";
+  }
+  const variant = model.variants?.find((v) => v.file === model.localFile);
+  const quant = variant?.quant ?? model.quant;
+  return quant
+    ? `${model.variantCount} variants · ${quant} downloaded`
+    : `${model.variantCount} variants downloaded`;
+}
+
 /** Downloads, compacted the same way the rest of the page counts things
  *  (`formatParams`'s own K/M/B steps) — or the dash for a repo the Hub
  *  reported no count for. Never a bare `0`: an uncounted repo is not

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
+import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -361,3 +361,98 @@ describe("poolBuildBanner", () => {
   });
 });
 
+
+
+describe("downloadedVariantLabel", () => {
+  it("names the plain quant for the default variant", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 3,
+        variants: [
+          { file: "model-Q4_K_M.gguf", quant: "Q4_K_M" },
+          { file: "model-Q8_0.gguf", quant: "Q8_0" },
+        ],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-Q4_K_M.gguf",
+      }),
+    ).toBe("Q4_K_M downloaded");
+  });
+
+  it("names the variant count and quant when a non-default variant is on disk", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 3,
+        variants: [
+          { file: "model-Q4_K_M.gguf", quant: "Q4_K_M" },
+          { file: "model-Q8_0.gguf", quant: "Q8_0" },
+        ],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-Q8_0.gguf",
+      }),
+    ).toBe("3 variants · Q8_0 downloaded");
+  });
+
+  it("falls back to the plain default caption for a non-GGUF row (no variants at all)", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: null,
+        variants: null,
+        file: null,
+        quant: "BF16",
+        localFile: null,
+      }),
+    ).toBe("BF16 downloaded");
+  });
+
+  it("reads 'Downloaded' with no quant known at all", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: null,
+        variants: null,
+        file: null,
+        quant: null,
+        localFile: null,
+      }),
+    ).toBe("Downloaded");
+  });
+
+  it("does not treat a single-variant repo as a non-default download even if file differs", () => {
+    // variantCount <= 1 means there is nothing to disambiguate — the plain
+    // caption applies regardless of any (theoretical) file mismatch.
+    expect(
+      downloadedVariantLabel({
+        variantCount: 1,
+        variants: [{ file: "model.gguf", quant: "Q4_K_M" }],
+        file: "model.gguf",
+        quant: "Q4_K_M",
+        localFile: "model.gguf",
+      }),
+    ).toBe("Q4_K_M downloaded");
+  });
+
+  it("falls back to the row's own quant when the local file isn't in the variant list", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 2,
+        variants: [{ file: "model-Q4_K_M.gguf", quant: "Q4_K_M" }],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-mystery.gguf",
+      }),
+    ).toBe("2 variants · Q4_K_M downloaded");
+  });
+
+  it("names the variant count alone when no quant is known at all", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 2,
+        variants: [{ file: "model-Q4_K_M.gguf", quant: null }],
+        file: "model-Q4_K_M.gguf",
+        quant: null,
+        localFile: "model-Q8_0.gguf",
+      }),
+    ).toBe("2 variants downloaded");
+  });
+});
