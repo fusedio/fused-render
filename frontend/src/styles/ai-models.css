@@ -969,6 +969,11 @@
   left: 0;
   z-index: 5;
   min-width: 290px;
+  /* Item 5's Publisher/Quant menus can carry up to 40 options plus a filter
+     input — a fixed cap with its own scroller (`.am-engine-popup`'s pattern)
+     rather than an unbounded list pushing the page around. */
+  max-height: 320px;
+  overflow-y: auto;
   padding: 4px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1017,6 +1022,37 @@
   font-size: 11px;
   color: var(--fg-muted);
   line-height: 1.45;
+}
+
+/* Item 5's search-select menus (Publisher/Quant, `SearchMenu` in
+   SearchControls.tsx): the filter input pinned to the top of the `.dd`,
+   using `.am-hub-textfilter`'s own metrics (32px tall, same border/radius)
+   rather than a new size scale. */
+.tp .dd .textfilter {
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 7px;
+}
+
+.tp .dd .textfilter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.tp .dd .l .count {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .am-hub-search:focus-visible {

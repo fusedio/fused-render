@@ -32,7 +32,12 @@ import {
   SORTS,
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
-import { type HubFitLevel, type HubParamsBand } from "@platform/lib/api";
+import {
+  type HubFacetOption,
+  type HubFitLevel,
+  type HubParamsBand,
+  type HubSearchFacets,
+} from "@platform/lib/api";
 
 /** One row of an open `ControlMenu` dropdown — the mockup's own shape: a
  *  label, the hover sentence explaining its consequence (`<p class="h">`,
@@ -145,6 +150,133 @@ export function ControlMenu({
   );
 }
 
+/** Item 5 (fix round 6): a searchable dropdown replacing a free-text input
+ *  for Publisher/Quant — the trigger reads `Key: value` exactly like
+ *  `ControlMenu`, but its `.dd` opens with a filter `<input>` on top (matches
+ *  `.am-hub-textfilter`'s own metrics, reused as `.dd .textfilter`) that
+ *  narrows `options` by a case-insensitive substring match, plus a muted
+ *  count next to each. Typing a value that never appears in the list and
+ *  pressing Enter still applies it as free text — the Hub has far more
+ *  publishers/quants than any one search's facets will enumerate, and this
+ *  keeps that reachable without a second, separate input. */
+function SearchMenu({
+  keyLabel,
+  value,
+  options,
+  placeholder,
+  ariaLabel,
+  title,
+  onChange,
+  align,
+}: {
+  keyLabel: string;
+  value: string;
+  options: HubFacetOption[];
+  placeholder: string;
+  ariaLabel: string;
+  title: string;
+  onChange: (v: string) => void;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setFilter("");
+    inputRef.current?.focus();
+    const onPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const narrowed = filter
+    ? options.filter((o) => o.id.toLowerCase().includes(filter.toLowerCase()))
+    : options;
+
+  const apply = (v: string) => {
+    onChange(v);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        className={"menubtn" + (value ? " active" : "")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        title={title}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="k">{keyLabel}</span>
+        {value || "Any"}
+        <span className="caret">▾</span>
+        {value && (
+          <span
+            className="x"
+            role="button"
+            aria-label={`Clear ${keyLabel.replace(":", "")} filter`}
+            onClick={(e) => {
+              e.stopPropagation();
+              apply("");
+            }}
+          >
+            ×
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className={"dd" + (align === "right" ? " right" : "")} role="menu">
+          <input
+            ref={inputRef}
+            className="textfilter"
+            type="text"
+            value={filter}
+            placeholder={placeholder}
+            aria-label={ariaLabel}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && filter.trim()) {
+                e.preventDefault();
+                apply(filter.trim());
+              }
+            }}
+          />
+          {narrowed.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={o.id === value}
+              className={o.id === value ? "on" : undefined}
+              onClick={() => apply(o.id)}
+            >
+              <span className="l">
+                <span className="chk">{o.id === value ? "✓" : ""}</span>
+                {o.id}
+                <span className="count">{o.count}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SearchControls({
   sort,
   fitLevel,
@@ -158,6 +290,7 @@ export function SearchControls({
   onPublisher,
   loading,
   matchCount,
+  facets,
 }: {
   sort: ResultSort;
   fitLevel: HubFitLevel;
@@ -173,6 +306,9 @@ export function SearchControls({
    *  yet asked. */
   loading: boolean;
   matchCount: number | null;
+  /** Item 5 (fix round 6): the Publisher/Quant menus' option lists, computed
+   *  server-side pre-narrowing. `null` before the first search response. */
+  facets?: HubSearchFacets | null;
 }) {
   const activeS = activeSort(sort);
   const activeFit = activeFitLevel(fitLevel);
@@ -220,23 +356,23 @@ export function SearchControls({
           onClear={() => onParamsBand("any")}
           items={paramsItems}
         />
-        <input
-          className="am-hub-textfilter"
-          type="text"
+        <SearchMenu
+          keyLabel="Quant:"
           value={quant}
-          placeholder="Quant (e.g. Q4_K_M)"
-          aria-label="Filter by exact quantization"
+          options={facets?.quants ?? []}
+          placeholder="Type to filter, e.g. Q4_K_M…"
+          ariaLabel="Filter by exact quantization"
           title="Show only results with this exact measured quantization"
-          onChange={(e) => onQuant(e.target.value)}
+          onChange={onQuant}
         />
-        <input
-          className="am-hub-textfilter"
-          type="text"
+        <SearchMenu
+          keyLabel="Publisher:"
           value={publisher}
-          placeholder="Publisher/org"
-          aria-label="Filter by publisher or organization"
+          options={facets?.publishers ?? []}
+          placeholder="Type to filter…"
+          ariaLabel="Filter by publisher or organization"
           title="Show only results published by this Hub user or organization"
-          onChange={(e) => onPublisher(e.target.value)}
+          onChange={onPublisher}
         />
         <span className="am-hub-controls-push" />
         <ControlMenu

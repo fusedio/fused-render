@@ -45,6 +45,7 @@ import {
   type HubFitLevel,
   type HubModel,
   type HubParamsBand,
+  type HubSearchFacets,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
@@ -463,6 +464,9 @@ export function HubSearchScreen({
   const [loading, setLoading] = useState(false);
   const [endpoint, setEndpoint] = useState<string | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
+  // Item 5 (fix round 6): facets computed server-side pre-narrowing, for the
+  // Publisher/Quant dropdown option lists in `SearchControls`.
+  const [facets, setFacets] = useState<HubSearchFacets | null>(null);
   const [authEpoch, setAuthEpoch] = useState(0);
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
@@ -533,6 +537,7 @@ export function HubSearchScreen({
         setModels(data.models);
         setEndpoint(data.endpoint ?? null);
         setAuthenticated(!!data.authenticated);
+        setFacets(data.facets ?? null);
       },
       (e: Error) => {
         if (!alive) return;
@@ -621,6 +626,7 @@ export function HubSearchScreen({
         onPublisher={(publisher) => onSettle({ ...settled, publisher })}
         loading={loading && models === null}
         matchCount={shown?.length ?? null}
+        facets={facets}
       />
       {/* Item 12c (fix round 3): the legend explained the ranking but never
        *  named the number itself — now opens by naming it, same as the

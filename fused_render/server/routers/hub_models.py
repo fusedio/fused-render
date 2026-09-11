@@ -1362,6 +1362,87 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     return payload, None
 
 
+def _fetch_query_tags(base_params: dict, query_tags: tuple[str, ...],
+                       extra_tags: tuple[str, ...], sort_field: str,
+                       direction: int) -> tuple[list, str | None]:
+    """One or more Hub fetches for `query_tags`, merged: (rows, error).
+
+    Extracted (fix round 6, item 5) so `api_hub_search`'s facet computation
+    can run the identical single-tag/multi-tag fetch a second time with a
+    different `base_params` (author dropped) without duplicating this logic
+    — see that call site for why. Behaviour is otherwise unchanged from the
+    inline version this replaced: a single tag (or none) is one request; more
+    than one tag is one request PER TAG, merged and de-duped by repo id (the
+    Hub can return the same id on more than one tag's keyword-search page),
+    then re-sorted by the requested field so a multi-tag merge ranks
+    identically to a single-tag fetch.
+    """
+    if len(query_tags) <= 1:
+        params = dict(base_params)
+        if query_tags:
+            tag = query_tags[0]
+            params["filter"] = [tag, *extra_tags] if extra_tags else tag
+        return _fetch(params)
+    rows: list = []
+    seen_ids: set[str] = set()
+    error = None
+    for tag in query_tags:
+        tag_params = dict(base_params)
+        tag_params["filter"] = [tag, *extra_tags] if extra_tags else tag
+        tag_rows, tag_error = _fetch(tag_params)
+        if tag_error:
+            error = tag_error
+            continue
+        for row in tag_rows:
+            row_id = row.get("id") if isinstance(row, dict) else None
+            if row_id is not None and row_id in seen_ids:
+                continue
+            if row_id is not None:
+                seen_ids.add(row_id)
+            rows.append(row)
+    if not rows and error:
+        return [], error
+
+    def _sort_key(row: object) -> tuple[bool, object]:
+        value = row.get(sort_field) if isinstance(row, dict) else None
+        return (value is not None, value if value is not None else 0)
+
+    rows.sort(key=_sort_key, reverse=(direction == -1))
+    return rows, None
+
+
+def _facets(models: list[dict]) -> dict:
+    """Publisher/quant option lists for the search screen's dropdown menus
+    (fix round 6, item 5) — `{"publishers": [{"id", "count"}, ...],
+    "quants": [...]}`, each sorted by count desc then name and capped at 40.
+
+    Computed over the same rows the caller already has in hand: publisher is
+    parsed off the repo id (`org/name`), quant is the row's own MEASURED
+    `quant` (never a guess). Callers are responsible for handing this a row
+    set that has NOT yet been narrowed by the quant filter or (for
+    publisher) the wire-level `author` param — see `api_hub_search`'s own
+    comment on why an already-narrowed set would collapse the menu to the
+    one value already picked.
+    """
+    publisher_counts: dict[str, int] = {}
+    quant_counts: dict[str, int] = {}
+    for row in models:
+        model_id = row.get("id")
+        if isinstance(model_id, str) and "/" in model_id:
+            publisher = model_id.split("/", 1)[0]
+            if publisher:
+                publisher_counts[publisher] = publisher_counts.get(publisher, 0) + 1
+        quant = row.get("quant")
+        if isinstance(quant, str) and quant:
+            quant_counts[quant] = quant_counts.get(quant, 0) + 1
+
+    def _top(counts: dict[str, int]) -> list[dict]:
+        ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        return [{"id": name, "count": count} for name, count in ordered[:40]]
+
+    return {"publishers": _top(publisher_counts), "quants": _top(quant_counts)}
+
+
 def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
     """One repo's total bytes on the Hub: (usedStorage, error).
 
@@ -1749,57 +1830,11 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
            extra_tags, fetch, publisher)
     payload = _cached(key)
     if payload is None:
-        if len(query_tags) <= 1:
-            params = dict(base_params)
-            if query_tags:
-                tag = query_tags[0]
-                params["filter"] = [tag, *extra_tags] if extra_tags else tag
-            rows, error = _fetch(params)
-            if error:
-                # Not a 5xx: the request was fine, the far side was not, and
-                # the page has a sentence to show for it.
-                return {"models": [], "error": error, "query": {
-                    "q": query, "task": task_filter, "sort": sort, "limit": count}}
-        else:
-            # One Hub request per tag (see the `query_tags` comment above),
-            # merged and de-duped by repo id — a repo can only claim ONE
-            # `pipeline_tag`, so no id can genuinely answer to two of these
-            # fetches, but nothing stops the Hub from putting the same repo
-            # in more than one of a keyword search's per-tag pages, and a
-            # duplicate row would render twice.
-            rows = []
-            seen_ids: set[str] = set()
-            error = None
-            for tag in query_tags:
-                tag_params = dict(base_params)
-                tag_params["filter"] = [tag, *extra_tags] if extra_tags else tag
-                tag_rows, tag_error = _fetch(tag_params)
-                if tag_error:
-                    error = tag_error
-                    continue
-                for row in tag_rows:
-                    row_id = row.get("id") if isinstance(row, dict) else None
-                    if row_id is not None and row_id in seen_ids:
-                        continue
-                    if row_id is not None:
-                        seen_ids.add(row_id)
-                    rows.append(row)
-            if not rows and error:
-                return {"models": [], "error": error, "query": {
-                    "q": query, "task": task_filter, "sort": sort, "limit": count}}
-            # Merging per-tag pages interleaves each tag's own Hub-sorted
-            # order — re-sort the merged set by the same field/direction the
-            # request asked the Hub for, so a multi-tag capability search
-            # ranks identically to a single-tag one before the `_BEST_SORT`/
-            # `_FIT_SORT` reorder (below) runs its own pass over everything
-            # regardless. `None` sorts last for either direction: a field
-            # the Hub did not report is not "biggest" or "smallest", it is
-            # unknown.
-            def _sort_key(row: object) -> tuple[bool, object]:
-                value = row.get(sort_field) if isinstance(row, dict) else None
-                return (value is not None, value if value is not None else 0)
-
-            rows.sort(key=_sort_key, reverse=(direction == -1))
+        rows, error = _fetch_query_tags(base_params, query_tags, extra_tags,
+                                        sort_field, direction)
+        if not rows and error:
+            return {"models": [], "error": error, "query": {
+                "q": query, "task": task_filter, "sort": sort, "limit": count}}
         payload = {"raw": rows}
         _store(key, payload)
 
@@ -1843,6 +1878,41 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # goes through this extra check.
     if capability_filter:
         models = [row for row in models if row.get("capability") == capability_filter]
+
+    # D853 (fix round 6, item 5): publisher/quant option lists for the two
+    # new dropdown menus, computed over this same row set BEFORE the
+    # quant/fitLevel/paramsBand filters below narrow it further — narrowing
+    # first would make picking a quant collapse the menu to just that one
+    # value, with no way back to "any" without reloading. `publisher`
+    # narrows differently: it already went out on the WIRE (`base_params
+    # ["author"]`), so `models` here is already scoped to one publisher
+    # whenever one is picked — the SAME collapse problem, one step earlier.
+    # Rather than re-fetch the whole candidate set unscoped (a second full
+    # multi-tag fetch, cache-shared with the un-pinned key), the publisher
+    # narrowing is undone by a second `_fetch_query_tags` call with `author`
+    # dropped, cached under a `publisher=None` key so an unpinned search for
+    # the same query/tags/sort reuses it directly instead of paying twice.
+    if publisher:
+        facet_key = (hub_endpoint(), query, query_tags, sort, count, bool(_token()),
+                     extra_tags, fetch, None)
+        facet_payload = _cached(facet_key)
+        if facet_payload is None:
+            facet_params = dict(base_params)
+            facet_params.pop("author", None)
+            facet_rows, facet_error = _fetch_query_tags(
+                facet_params, query_tags, extra_tags, sort_field, direction)
+            facet_payload = {"raw": [] if facet_error and not facet_rows else facet_rows}
+            _store(facet_key, facet_payload)
+        facet_models = [row
+                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                                    for r in facet_payload["raw"] if isinstance(r, dict))
+                        if row is not None]
+        if capability_filter:
+            facet_models = [row for row in facet_models
+                             if row.get("capability") == capability_filter]
+    else:
+        facet_models = models
+    facets = _facets(facet_models)
 
     # D780: every row gets a `matchScore` regardless of which sort was asked
     # for — the merged Fit+Score cell renders it on every row, not only when
@@ -1957,6 +2027,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
         "hiddenUnfit": hidden_unfit,
+        "facets": facets,
     }
 
 

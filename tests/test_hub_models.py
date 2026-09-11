@@ -2376,7 +2376,75 @@ def test_publisher_joins_the_cache_key(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"publisher": "mlx-community"})
     _search(client, {"publisher": "unsloth"})
-    assert len(fake.calls) == 2
+    # D853 (fix round 6, item 5): a `publisher`-scoped search now makes a
+    # SECOND Hub request with `author` dropped, to compute the publisher/quant
+    # facets over the unscoped candidate set (so the dropdown does not
+    # collapse to the one publisher already picked) — cached under a
+    # `publisher=None` key, so the second search's own facet fetch is a cache
+    # hit off the first's. Two main (author-scoped) fetches + one shared
+    # facet fetch = 3, not the 2 a publisher-only cache key would predict.
+    assert len(fake.calls) == 3
+
+
+def test_search_reports_publisher_and_quant_facets(client, hub_cache, monkeypatch):
+    """D853 (fix round 6, item 5): `facets.publishers`/`facets.quants` — repo
+    id before the `/`, and the row's own measured `quant` — sorted by count
+    desc then name, so the frontend's new dropdown menus have something to
+    list."""
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("Qwen/a", safetensors={"parameters": {"BF16": 1_000_000}}),
+        _hit("Qwen/b", safetensors={"parameters": {"BF16": 1_000_000}}),
+        _hit("Qwen/c", safetensors={"parameters": {"F16": 1_000_000}}),
+        _hit("unsloth/d", safetensors={"parameters": {"F16": 1_000_000}}),
+    ]))
+    body = _search(client, {"includeUnfit": True}).json()
+    assert body["facets"]["publishers"] == [
+        {"id": "Qwen", "count": 3}, {"id": "unsloth", "count": 1}]
+    assert body["facets"]["quants"] == [
+        {"id": "BF16", "count": 2}, {"id": "F16", "count": 2}]
+
+
+def test_quant_facets_do_not_collapse_once_a_quant_is_picked(client, hub_cache, monkeypatch):
+    """The quant filter narrows `models` AFTER facets are computed — picking
+    `BF16` must not make the dropdown's own option list shrink to just
+    `BF16`, or a reader could never get back to `F16`."""
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/a", safetensors={"parameters": {"BF16": 1_000_000}}),
+        _hit("org/b", safetensors={"parameters": {"F16": 1_000_000}}),
+    ]))
+    body = _search(client, {"quant": "BF16", "includeUnfit": True}).json()
+    ids = {m["id"] for m in body["models"]}
+    assert ids == {"org/a"}
+    assert {q["id"] for q in body["facets"]["quants"]} == {"BF16", "F16"}
+
+
+def test_publisher_facets_do_not_collapse_once_a_publisher_is_picked(
+        client, hub_cache, monkeypatch):
+    """Publisher narrows the WIRE request itself (`author`), so without the
+    unscoped second fetch the facet list would only ever see the one
+    publisher already picked — this pins that the full candidate set's
+    publishers still show up."""
+    _pin_hardware(monkeypatch)
+
+    def fake(url, **kwargs):
+        fake.calls.append(url)
+        q = parse_qs(urlsplit(url).query)
+        if "author" in q:
+            rows = [_hit("mlx-community/a", safetensors={"parameters": {"BF16": 1_000_000}})]
+        else:
+            rows = [
+                _hit("mlx-community/a", safetensors={"parameters": {"BF16": 1_000_000}}),
+                _hit("unsloth/b", safetensors={"parameters": {"F16": 1_000_000}}),
+            ]
+        return httpx.Response(200, content=json.dumps(rows).encode(),
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client, {"publisher": "mlx-community", "includeUnfit": True}).json()
+    assert {m["id"] for m in body["models"]} == {"mlx-community/a"}
+    assert {p["id"] for p in body["facets"]["publishers"]} == {"mlx-community", "unsloth"}
 
 
 def test_no_publisher_means_no_author_param(client, hub_cache, monkeypatch):

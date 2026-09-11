@@ -3663,6 +3663,25 @@ export interface HubModel {
   url: string;
 }
 
+/** One facet option — `HubSearchResult.facets`'s own row shape (fix round 6,
+ *  item 5): an `id` (publisher name, or a measured quant token) and how many
+ *  of THIS query's rows carry it. */
+export interface HubFacetOption {
+  id: string;
+  count: number;
+}
+
+/** Publisher/quant option lists for the search screen's dropdown menus,
+ *  computed server-side over the rows THIS query fetched, before the
+ *  quant filter and (for publisher) the wire-level `author` narrowing — see
+ *  `hub_models.py`'s own `_facets` docstring for why picking a value must
+ *  not collapse the list down to it. Absent only for a response predating
+ *  this field (an old cached page reload); a running server always sends it. */
+export interface HubSearchFacets {
+  publishers: HubFacetOption[];
+  quants: HubFacetOption[];
+}
+
 export interface HubSearchResult {
   models: HubModel[];
   query: { q: string; task: string; capability?: string; sort: string; limit: number };
@@ -3670,6 +3689,7 @@ export interface HubSearchResult {
   error?: string;
   endpoint?: string;
   authenticated?: boolean;
+  facets?: HubSearchFacets;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
