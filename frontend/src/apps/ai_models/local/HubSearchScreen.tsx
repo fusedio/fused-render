@@ -69,19 +69,31 @@ const INITIAL_LIMIT = 24;
 const LOAD_MORE = 20;
 const SIZE_LOOKUPS = 4;
 
-async function measureSizes(
-  ids: readonly string[],
+/** Item 1 (fix round 4): a Size sort must rank by the SAME bytes the row's
+ *  own cell would show (`hubSizeBytes`, `lib/hubSize.ts`) — the resolved
+ *  file's own size for a GGUF row, never the repo-wide `usedStorage` total
+ *  that same function only trusts when `model.file` is set. Looking every
+ *  row up with `file: null` (the old behavior) handed a GGUF row a
+ *  repo-wide sum that `hubSizeBytes` then read as if it were that row's own
+ *  file — the "17 bytes/param" bug the code review flagged. A row with no
+ *  `file` is the opposite problem: `hubSizeBytes` always returns null for
+ *  it regardless of what `total` says, so asking the Hub for one at all is a
+ *  request spent on a lookup nobody can use — skipped here instead. */
+export async function measureSizes(
+  models: readonly Pick<HubModel, "id" | "file">[],
   alive: () => boolean,
 ): Promise<Map<string, number | null>> {
   const out = new Map<string, number | null>();
+  const withFile = models.filter((m) => m.file);
+  for (const m of models) if (!m.file) out.set(m.id, null);
   let next = 0;
   const worker = async () => {
-    while (alive() && next < ids.length) {
-      const id = ids[next++];
-      out.set(id, await lookupTotalSize(id, null));
+    while (alive() && next < withFile.length) {
+      const m = withFile[next++];
+      out.set(m.id, await lookupTotalSize(m.id, m.file));
     }
   };
-  await Promise.all(Array.from({ length: Math.min(SIZE_LOOKUPS, ids.length) }, () => worker()));
+  await Promise.all(Array.from({ length: Math.min(SIZE_LOOKUPS, withFile.length) }, () => worker()));
   return out;
 }
 
@@ -468,16 +480,21 @@ export function HubSearchScreen({
       setMeasuring(false);
       return;
     }
-    const ids = models.filter((m) => !m.estimatedSize).map((m) => m.id);
-    if (ids.every((id) => knownTotalSize(id) !== undefined)) {
-      setSizes(new Map(ids.map((id) => [id, knownTotalSize(id) as number | null])));
+    const unmeasured = models.filter((m) => !m.estimatedSize);
+    // A row with no `file` never needs a lookup at all (see `measureSizes`);
+    // one with a `file` is "known" only once THAT (id, file) key has resolved
+    // — `knownTotalSize(id)` (implicitly `file: null`) would ask the wrong
+    // question for it.
+    const known = (m: Pick<HubModel, "id" | "file">) => (m.file ? knownTotalSize(m.id, m.file) : null);
+    if (unmeasured.every((m) => !m.file || known(m) !== undefined)) {
+      setSizes(new Map(unmeasured.map((m) => [m.id, known(m) ?? null])));
       setMeasuring(false);
       return;
     }
     let alive = true;
     setSizes(null);
     setMeasuring(true);
-    measureSizes(ids, () => alive).then((got) => {
+    measureSizes(unmeasured, () => alive).then((got) => {
       if (!alive) return;
       setMeasuring(false);
       setSizes(got);

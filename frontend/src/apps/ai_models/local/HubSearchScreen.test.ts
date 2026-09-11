@@ -1,7 +1,9 @@
 // ---- what the full search screen OFFERS, pinned against the source -------
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { _forgetTotalSizes, lookupTotalSize } from "@apps/ai_models/lib/hubSize";
+import { measureSizes } from "./HubSearchScreen";
 
 const SRC = readFileSync(join(import.meta.dir, "HubSearchScreen.tsx"), "utf8");
 
@@ -35,5 +37,38 @@ describe("HubSearchScreen one row per hit", () => {
 describe("HubSearchScreen pagination", () => {
   it("asks for 20 more without resetting the settled query", () => {
     expect(SRC).toContain("setLimit((n) => n + LOAD_MORE)");
+  });
+});
+
+// Item 1 (fix round 4): the Size sort's lookup must match what the row's own
+// cell would show — a GGUF row's resolved FILE, never the repo-wide total —
+// and must not spend a lookup on a row `hubSizeBytes` can never use anyway.
+describe("measureSizes (item 1)", () => {
+  beforeEach(_forgetTotalSizes);
+
+  it("ranks a GGUF multi-quant row by its own resolved file's size, not the repo-wide total", async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const fetchSize = async (id: string, file?: string) => {
+      asked.push([id, file]);
+      // A generous multi-quant repo total that would be the wrong sort key
+      // if this read `usedStorage` (via a `file: null` ask) instead of the
+      // resolved file's own `fileSize`.
+      return file
+        ? { usedStorage: 1_400_000_000_000, fileSize: 4_200_000_000 }
+        : { usedStorage: 1_400_000_000_000 };
+    };
+    // Seed the (id, file)-keyed cache the same way a real card lookup would —
+    // `measureSizes` itself always asks with its default (network) fetcher,
+    // so pre-resolving the key here is how the test controls the answer.
+    await lookupTotalSize("unsloth/x-GGUF", "x-Q4_K_M.gguf", fetchSize);
+
+    const sizes = await measureSizes([{ id: "unsloth/x-GGUF", file: "x-Q4_K_M.gguf" }], () => true);
+    expect(sizes.get("unsloth/x-GGUF")).toBe(4_200_000_000);
+    expect(asked).toEqual([["unsloth/x-GGUF", "x-Q4_K_M.gguf"]]);
+  });
+
+  it("skips the lookup entirely for a row with no file — hubSizeBytes can never use it", async () => {
+    const sizes = await measureSizes([{ id: "org/no-file", file: null }], () => true);
+    expect(sizes.get("org/no-file")).toBeNull();
   });
 });
