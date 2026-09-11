@@ -57,7 +57,7 @@
 // purpose: a headless test cannot see a drag, so nothing it cannot see is
 // allowed to decide anything.
 import { statPath } from "@platform/lib/api";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { basename } from "@platform/lib/format";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
@@ -572,8 +572,8 @@ async function completeDrop(
     // that declared itself a file — was refused by the cursor before the
     // release, and saying so again is saying it twice.
     if (refusalNeedsToast(verdict.reason, declaredKind)) {
-      pushToast({
-        msg: `"${basename(target.path)}" isn't a folder — nothing was moved.`,
+      notify({
+        title: `"${basename(target.path)}" isn't a folder — nothing was moved.`,
         tone: "error",
       });
     }

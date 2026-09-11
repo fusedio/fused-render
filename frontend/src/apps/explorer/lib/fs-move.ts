@@ -27,7 +27,7 @@
 // name against a listing, and two in flight would both pick the same one.
 import { renameEntry, statPath } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import {
   freePastePath,
   friendlyFsError,
@@ -108,8 +108,8 @@ export async function moveEntriesInto(
     }
   }
   if (report.failed) {
-    pushToast({
-      msg: friendlyFsError(report.failed.error, {
+    notify({
+      title: friendlyFsError(report.failed.error, {
         verb: "move",
         name: basename(report.failed.path),
       }),
@@ -117,7 +117,9 @@ export async function moveEntriesInto(
     });
   } else if (announce && report.moved.length) {
     const what = report.moved.length === 1 ? basename(report.moved[0]) : `${report.moved.length} items`;
-    pushToast({ msg: `Moved ${what} to ${basename(dir)}`, tone: "info" });
+    // Destructive-but-successful (spec's own motivating example): the user
+    // should be able to find out what moved after the card is gone.
+    notify({ title: `Moved ${what} to ${basename(dir)}`, tone: "info", tier: "trail" });
   }
   return report;
 }

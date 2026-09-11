@@ -60,7 +60,7 @@ import {
 } from "@apps/explorer/lib/fs-undo";
 import { basename } from "@platform/lib/format";
 import { getClipboard, setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
-import { pushToast, dismissToast } from "@platform/lib/toast";
+import { dismissPopup, notify } from "@platform/lib/notifications";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { nameError } from "@apps/explorer/FsDialogs";
@@ -129,7 +129,7 @@ export function useFileOps({
       await fn();
       refetch();
     } catch (e) {
-      pushToast({ msg: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
+      notify({ title: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
     }
   };
 
@@ -139,7 +139,7 @@ export function useFileOps({
   // Returns true when the name is rejected (caller should bail).
   const rejectName = (name: string): boolean => {
     const err = nameError(name);
-    if (err) pushToast({ msg: err, tone: "error" });
+    if (err) notify({ title: err, tone: "error" });
     return err !== null;
   };
 
@@ -189,8 +189,8 @@ export function useFileOps({
       },
     };
     if (showProgress) {
-      progressToastId = pushToast({
-        msg: `Copying 1 of ${paths.length}…`,
+      progressToastId = notify({
+        title: `Copying 1 of ${paths.length}…`,
         tone: "info",
         action: progressAction,
       });
@@ -212,8 +212,8 @@ export function useFileOps({
             break;
           }
           if (showProgress) {
-            pushToast(
-              { msg: `Copying ${i + 1} of ${paths.length}…`, tone: "info", action: progressAction },
+            notify(
+              { title: `Copying ${i + 1} of ${paths.length}…`, tone: "info", action: progressAction },
               progressToastId,
             );
           }
@@ -264,18 +264,18 @@ export function useFileOps({
         // and it is the case a user most wants back — recorded before the
         // rethrow, since run()'s error path never reaches the lines below.
         if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
-        if (progressToastId !== undefined) dismissToast(progressToastId);
+        if (progressToastId !== undefined) dismissPopup();
         throw e;
       }
       if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
       // Re-anchor onto the last thing written, if it lands in this view.
       if (last !== null) pendingSelectRef.current = last;
       if (progressToastId !== undefined) {
-        dismissToast(progressToastId);
+        dismissPopup();
         // Already-copied files stay exactly where they landed — cancelling
         // stops the loop from asking for the next one, nothing more.
         if (cancelled) {
-          pushToast({ msg: `Copy cancelled — ${pasted.length} of ${paths.length} copied`, tone: "info" });
+          notify({ title: `Copy cancelled — ${pasted.length} of ${paths.length} copied`, tone: "info" });
         }
       }
     }, { verb: "paste", name: label }).finally(() => {
@@ -321,8 +321,8 @@ export function useFileOps({
         pendingSelectRef.current = report.moved[report.moved.length - 1];
         refetch();
       } catch (e) {
-        pushToast({
-          msg: friendlyFsError(e, {
+        notify({
+          title: friendlyFsError(e, {
             verb: "move",
             name: paths.length === 1 ? basename(paths[0]) : `${paths.length} items`,
           }),
@@ -408,7 +408,15 @@ export function useFileOps({
         // ONE toast, always, and it tells the whole outcome — built in lib/fs-undo
         // so its arithmetic (which path is blamed, what the retry count covers) is
         // testable without a renderer.
-        pushToast(relocationToast(verb, op.kind, report));
+        // relocationToast's "Undid/Redid the <kind>" success message is a
+        // completed move/delete/copy record - the same "destructive-but-
+        // successful" case fs-move.ts's own move confirmation is (spec's
+        // motivating example); its failure branch stays attention (the
+        // default for tone: "error").
+        {
+          const t = relocationToast(verb, op.kind, report);
+          notify({ title: t.msg, tone: t.tone, tier: t.tone === "info" ? "trail" : undefined });
+        }
       })
       .finally(() => {
         // FINALLY, for the reason spelled out on moveInFlight above: a latched
@@ -486,7 +494,7 @@ export function useFileOps({
 
   const doReveal = (path: string) => {
     revealPath(path).catch((e) =>
-      pushToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
+      notify({ title: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
     );
   };
 
@@ -495,7 +503,7 @@ export function useFileOps({
     // or permission denied) stays silent — the path is still reachable via
     // Reveal in Finder.
     copyToClipboard(path).then((ok) => {
-      if (ok) pushToast({ msg: "Path copied", tone: "info" });
+      if (ok) notify({ title: "Path copied", tone: "info" });
     });
   };
 
@@ -503,7 +511,7 @@ export function useFileOps({
   // manager writes for a multi-selection paste into a terminal or editor).
   const doCopyPaths = (paths: string[]) => {
     copyToClipboard(paths.join("\n")).then((ok) => {
-      if (ok) pushToast({ msg: `${paths.length} paths copied`, tone: "info" });
+      if (ok) notify({ title: `${paths.length} paths copied`, tone: "info" });
     });
   };
 
@@ -513,7 +521,7 @@ export function useFileOps({
   // commands — copy, then say so.
   const doOpenInClaude = (path: string, isDir: boolean, parentDir: string) => {
     copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
-      if (ok) pushToast({ msg: "Command copied — paste it in your terminal", tone: "info" });
+      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
   };
 
@@ -607,7 +615,7 @@ export function useFileOps({
             navigateUrl(urlForFsPath(dst, location.search));
           },
           (e: unknown) =>
-            pushToast({ msg: friendlyFsError(e, { verb: "rename", name: basename(dir) }), tone: "error" }),
+            notify({ title: friendlyFsError(e, { verb: "rename", name: basename(dir) }), tone: "error" }),
         );
       },
     });
@@ -702,9 +710,12 @@ export function useFileOps({
         }
       }
       if (trashed.length) {
-        pushToast({
-          msg: trashed.length === 1 ? "Deleted" : `Deleted ${trashed.length} items`,
+        // Destructive-but-successful (spec's own motivating example): the user
+        // should be able to find out what was deleted after the card is gone.
+        notify({
+          title: trashed.length === 1 ? "Deleted" : `Deleted ${trashed.length} items`,
           tone: "info",
+          tier: "trail",
         });
         // One op for the batch, so a single Cmd+Z brings the whole selection
         // back. Guarded on emptiness EXPLICITLY even though recordFsOp's push
@@ -721,8 +732,8 @@ export function useFileOps({
       // partial success actually is. The unsupported fallback only runs when
       // nothing errored.
       if (failed !== null) {
-        pushToast({
-          msg: friendlyFsError(failed.message, { verb: "delete", name: failed.row.name }),
+        notify({
+          title: friendlyFsError(failed.message, { verb: "delete", name: failed.row.name }),
           tone: "error",
         });
       } else if (unsupported.length) {
@@ -805,7 +816,7 @@ export function useFileOps({
             icon: MenuIcons.compress,
             onClick: () => {
               downloadAppFile(row.path, row.name).catch((e: Error) =>
-                pushToast({ msg: "Could not export " + row.name + ": " + e.message, tone: "error" }),
+                notify({ title: "Could not export " + row.name + ": " + e.message, tone: "error" }),
               );
             },
           } as MenuEntry]

@@ -45,7 +45,7 @@ import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
-import { dismissToast, pushToast } from "@platform/lib/toast";
+import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -240,7 +240,7 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
       const r = await cloneAppFile(fsPath);
       await land(r.path);
     } catch (e) {
-      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
+      notify({ title: (e as Error).message || "clone failed", tone: "error" });
       setBusy(false);
     }
     // Success navigates away and unmounts this button; no busy reset needed.
@@ -324,9 +324,9 @@ function usePreviewFileMenu(
       try {
         const dst = await freeDuplicatePath(parent, stat.name, stat.is_dir);
         await copyEntry(fsPath, dst);
-        pushToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
+        notify({ title: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
-        pushToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
+        notify({ title: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
       } finally {
         duplicateInFlight.current = false;
       }
@@ -349,7 +349,7 @@ function usePreviewFileMenu(
             notePathDeleted(fsPath);
             navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
-          (e: Error) => pushToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
+          (e: Error) => notify({ title: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -373,7 +373,7 @@ function usePreviewFileMenu(
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        pushToast({ msg: friendlyFsError(r.message, { verb: "delete", name: stat.name }), tone: "error" });
+        notify({ title: friendlyFsError(r.message, { verb: "delete", name: stat.name }), tone: "error" });
       }
     });
   };
@@ -389,7 +389,7 @@ function usePreviewFileMenu(
         if (name === stat.name) return;
         const err = nameError(name);
         if (err) {
-          pushToast({ msg: err, tone: "error" });
+          notify({ title: err, tone: "error" });
           return;
         }
         const dst = join(parent, name);
@@ -411,20 +411,20 @@ function usePreviewFileMenu(
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));
           },
-          (e: Error) => pushToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
+          (e: Error) => notify({ title: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
         );
       },
     });
 
   const doCopyPath = () => {
     copyToClipboard(fsPath).then((ok) => {
-      if (ok) pushToast({ msg: "Path copied", tone: "info" });
+      if (ok) notify({ title: "Path copied", tone: "info" });
     });
   };
 
   const doReveal = () => {
     revealPath(fsPath).catch((e) =>
-      pushToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
+      notify({ title: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
     );
   };
 
@@ -454,7 +454,7 @@ function usePreviewFileMenu(
   // clipboard hand-off the listing's row menu makes, not a launch.
   const doOpenInClaude = () => {
     copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
-      if (ok) pushToast({ msg: "Command copied — paste it in your terminal", tone: "info" });
+      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
   };
 
@@ -500,32 +500,32 @@ function usePreviewFileMenu(
     // "Preview saved" toast (Bugbot, 2026-08-27).
     const frame = document.querySelector(".preview-frame.is-shown");
     if (!cropRect(frame)) {
-      pushToast({
-        msg: "Preview not captured — the app frame has to be fully on screen",
+      notify({
+        title: "Preview not captured — the app frame has to be fully on screen",
         tone: "error",
       });
       return;
     }
     const blob = await captureAppPreview(fsPath, frame, { stage: false });
     if (!blob) {
-      pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
+      notify({ title: "Preview not captured — nothing was changed", tone: "info" });
       return;
     }
     try {
       await setAppPreview(parent, blob);
-      pushToast({
-        msg: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
+      notify({
+        title: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
         tone: "info",
       });
     } catch (e) {
-      pushToast({ msg: "Could not save preview: " + (e as Error).message, tone: "error" });
+      notify({ title: "Could not save preview: " + (e as Error).message, tone: "error" });
     }
   };
   const doSetPreview = () => {
     statPath(join(parent, "preview.png")).then(
       (s) => {
         if (s.is_dir) {
-          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
+          notify({ title: "preview.png here is a folder — move it first", tone: "error" });
           return;
         }
         setDialog({
@@ -576,8 +576,8 @@ function usePreviewFileMenu(
         ? crumbMenu({
             onReveal: () =>
               revealPath(crumb).catch((e) =>
-                pushToast({
-                  msg: friendlyFsError(e, { verb: "reveal", name: basename(crumb) }),
+                notify({
+                  title: friendlyFsError(e, { verb: "reveal", name: basename(crumb) }),
                   tone: "error",
                 })
               ),
@@ -2433,7 +2433,7 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
       (result) => {
         setBusy(false);
         if (isFixed(result)) {
-          pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
+          notify({ title: "Fixed — reloading this file's preview…", tone: "info" });
           onReload?.();
         } else {
           // The action no-opped (repair found the file already parses fine —
@@ -2445,7 +2445,7 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
           // message rather than inline text: refetching may make the whole
           // notice disappear (nothing left to fix), which would otherwise
           // take the message down with it before anyone reads it.
-          pushToast({ msg: "Nothing to repair — the registry file already reads fine.", tone: "info" });
+          notify({ title: "Nothing to repair — the registry file already reads fine.", tone: "info" });
           getRegistryEntryForPath(fsPath, isDir).then(
             (r) => setEntry(r),
             () => setEntry({ key: null })
@@ -2638,10 +2638,17 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   useEffect(() => {
     const error = stat.template_error || "";
     syncRegistryToast(error, previews, {
-      dismiss: dismissToast,
+      // Fully retracted (popup + retained row), not just left to expire:
+      // the registry claim is now FALSE, so nothing should remain saying it —
+      // this is a correction, not a record (contrast the trail-tier
+      // messages elsewhere in this file, which ARE meant to leave a trace).
+      dismiss: (id: number) => {
+        dismissPopup();
+        dismissNotification(id);
+      },
       push: () =>
-        pushToast({
-          msg: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
+        notify({
+          title: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
           tone: "error",
           action: {
             label: "Copy details",

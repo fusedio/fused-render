@@ -55,7 +55,7 @@ import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { openTopbarMenu } from "@apps/explorer/topbar-menu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
@@ -475,7 +475,7 @@ async function openUrl(url: string, scheme: string): Promise<void> {
     try {
       navigate(fileUrlToPath(url));
     } catch (e) {
-      pushToast({ msg: (e as Error).message, tone: "error" });
+      notify({ title: (e as Error).message, tone: "error" });
     }
     return;
   }
@@ -486,11 +486,11 @@ async function openUrl(url: string, scheme: string): Promise<void> {
     } catch (e) {
       // The server's message names what's missing ("no mount covers
       // s3://<bucket> — add one from the Mounts page in the sidebar").
-      pushToast({ msg: (e as Error).message, tone: "error" });
+      notify({ title: (e as Error).message, tone: "error" });
     }
     return;
   }
-  pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
+  notify({ title: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
 }
 
 // The crumb bar AND its box, in whichever column it belongs to.
