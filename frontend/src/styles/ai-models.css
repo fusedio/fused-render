@@ -3399,11 +3399,36 @@ button.am-bench-model:focus-visible {
 }
 
 .tp .drawer {
+  position: relative;
   border: 1px solid var(--border);
   border-top: 0;
   border-radius: 0 0 8px 8px;
   background: var(--bg-alt);
   padding: 12px 14px;
+}
+
+/* Fix round 6 item 4: a search hit's drawer (HubSearchScreen.tsx's own
+   `HitDrawer` — `ModelRow.tsx`'s pane-row drawer is untouched and keeps its
+   footer Close) closes via a quiet `×` in the top-right corner instead of a
+   footer link. Styled like the existing `.btn-link` quiet control, just
+   positioned and sized for a corner glyph rather than a line of text. */
+/* `.tp .btn-link.drawer-close` (not plain `.tp .drawer-close`): `.btn-link`'s
+   own color rule is defined LATER in this file, and at equal specificity a
+   bare `.tp .drawer-close` would lose the cascade to it and render in
+   `--accent-soft` instead of the quiet muted tone this control wants. */
+.tp .btn-link.drawer-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+}
+
+.tp .btn-link.drawer-close:hover,
+.tp .btn-link.drawer-close:focus-visible {
+  color: var(--fg);
+  text-decoration: none;
 }
 
 .tp .drawer dl {

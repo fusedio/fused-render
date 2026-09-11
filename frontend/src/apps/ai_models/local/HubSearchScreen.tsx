@@ -196,6 +196,17 @@ function HitDrawer({
   const sizeLabel = model.estimatedSize ? `≈${formatSize(model.estimatedSize)}` : "not recorded";
   return (
     <div className="drawer" data-part="hit.drawer">
+      {/* Fix round 6 item 4: the footer "Close" link (below) read as buried
+       *  at the bottom of a scrolled-past panel — moved to a quiet `×`
+       *  control in the drawer's own top-right corner instead. */}
+      <button
+        type="button"
+        className="btn-link drawer-close"
+        onClick={onClose}
+        aria-label="Close details"
+      >
+        ×
+      </button>
       <dl>
         <dt>Repository</dt>
         <dd>{model.id}</dd>
@@ -218,16 +229,6 @@ function HitDrawer({
           <HubLogin onSignedIn={onSignedIn} />
         </div>
       )}
-      {/* Item 5 (fix round 5): dropped the "View on Hugging Face ↗" link —
-       *  the row's own model-name link (`.mono-name`, item 14 round 3)
-       *  already opens the same page, so this was a second link to the same
-       *  place. `.btn-link` stays defined in ai-models.css: `ModelRow.tsx`
-       *  and `CapabilityPane.tsx` still use it, and so does Close below. */}
-      <div className="acts">
-        <button type="button" className="btn-link" onClick={onClose}>
-          Close
-        </button>
-      </div>
     </div>
   );
 }
