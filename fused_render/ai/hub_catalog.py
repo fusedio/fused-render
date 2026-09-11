@@ -155,6 +155,20 @@ def _row_columns(rows: list[dict]) -> dict:
     def n(v):
         return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
 
+    def gated_str(v):
+        """The Hub's real `gated` values are `False`, `True`, `"auto"`, or
+        `"manual"` — a mix of `bool` and `str` in the same field across
+        different repos. `pa.table`'s type inference cannot pick a single
+        Arrow type for a Python list mixing both, and raises for any pool
+        containing at least one of each (every non-trivial capability).
+        Normalise to ONE explicit string type instead: `False`/missing ->
+        `""` (not gated), `True` -> `"manual"` (the Hub's own bool shorthand
+        for "gated, no auto-approval flow"), any other string passed through
+        as-is (D1241)."""
+        if isinstance(v, str):
+            return v
+        return "manual" if v is True else ""
+
     cols = {"id": [], "capability": [], "format": [], "downloads": [],
             "likes": [], "lastModified": [], "createdAt": [], "libraryName": [],
             "gated": [], "private": [], "raw": []}
@@ -168,8 +182,7 @@ def _row_columns(rows: list[dict]) -> dict:
         cols["lastModified"].append(s(raw.get("lastModified")) or "")
         cols["createdAt"].append(s(raw.get("createdAt")) or "")
         cols["libraryName"].append(s(raw.get("library_name")) or "")
-        gated = raw.get("gated")
-        cols["gated"].append(gated if isinstance(gated, str) else bool(gated))
+        cols["gated"].append(gated_str(raw.get("gated")))
         cols["private"].append(bool(raw.get("private")))
         cols["raw"].append(json.dumps(raw))
     return cols
@@ -197,7 +210,27 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict]) -> dict
         os.makedirs(cfg.pools_dir, exist_ok=True)
         filename = f"pool-{capability}-{generation:06d}.parquet"
         path = os.path.join(cfg.pools_dir, filename)
-        table = pa.table(_row_columns(rows))
+        # An explicit schema, not `pa.table`'s own type inference: every
+        # column here is already normalised to one Python type per value by
+        # `_row_columns` (see `gated_str`'s docstring for why `gated`
+        # specifically needed that), but declaring the schema up front means
+        # a future column that mixes types the same way fails loudly at the
+        # point it is added to `_row_columns`, not with an opaque pyarrow
+        # error the first time a real pool happens to contain both variants.
+        schema = pa.schema([
+            ("id", pa.string()),
+            ("capability", pa.string()),
+            ("format", pa.string()),
+            ("downloads", pa.int64()),
+            ("likes", pa.int64()),
+            ("lastModified", pa.string()),
+            ("createdAt", pa.string()),
+            ("libraryName", pa.string()),
+            ("gated", pa.string()),
+            ("private", pa.bool_()),
+            ("raw", pa.string()),
+        ])
+        table = pa.table(_row_columns(rows), schema=schema)
         pq.write_table(table, path)
 
         entry = {"file": filename, "generation": generation, "rows": len(rows),
@@ -234,7 +267,12 @@ def query_pool(cfg: HubCatalogConfig, capability: str, *,
     import duckdb
 
     entry = pool_entry(cfg, capability)
-    if entry is None:
+    if not entry or not entry.get("file"):
+        # Mirrors `pool_exists`'s own check: a manifest entry can exist with
+        # no "file" key yet (`set_blocked_until` writes one before any pool
+        # has ever been built), and `entry["file"]` would raise `KeyError`
+        # for that case instead of the "no pool" `[]` every other no-pool
+        # path returns.
         return []
     path = os.path.join(cfg.pools_dir, entry["file"])
     if not os.path.exists(path):

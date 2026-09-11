@@ -123,6 +123,43 @@ def test_delete_catalog_clears_everything():
     assert hub_catalog.read_manifest(cfg)["capabilities"] == {}
 
 
+def test_mixed_str_and_bool_gated_values_do_not_raise():
+    """Finding: a real capability's pool mixes repos with `gated: False`
+    (bool), `gated: True` (bool), and `gated: "auto"`/`"manual"` (str) in the
+    SAME column. `pa.table`'s type inference cannot pick one Arrow type for
+    a Python list holding both bools and strs and used to raise, so any
+    build of a non-trivial capability crashed before ever writing a pool."""
+    cfg = load_config()
+    rows = [
+        _row("org/ungated", downloads=1)
+        | {"raw": {**_row("org/ungated")["raw"], "gated": False}},
+        _row("org/auto", downloads=2)
+        | {"raw": {**_row("org/auto")["raw"], "gated": "auto"}},
+        _row("org/manual", downloads=3)
+        | {"raw": {**_row("org/manual")["raw"], "gated": "manual"}},
+        _row("org/booltrue", downloads=4)
+        | {"raw": {**_row("org/booltrue")["raw"], "gated": True}},
+    ]
+    entry = hub_catalog.write_pool(cfg, "text-generation", rows)
+    assert entry["rows"] == 4
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "text-generation")}
+    assert ids == {"org/ungated", "org/auto", "org/manual", "org/booltrue"}
+
+
+def test_query_pool_on_blocked_before_any_build_returns_empty_not_keyerror():
+    """Finding: `set_blocked_until` can write a manifest entry with no
+    `"file"` key (a block set before the capability's first build ever
+    ran). `query_pool` only checked `entry is None`, then did
+    `entry["file"]` unconditionally — raising `KeyError` for exactly this
+    state instead of returning `[]`, the same "no pool yet" answer
+    `pool_exists` already gives it."""
+    cfg = load_config()
+    hub_catalog.set_blocked_until(cfg, "text-generation", until=1e15)
+    assert hub_catalog.pool_entry(cfg, "text-generation") is not None
+    assert "file" not in hub_catalog.pool_entry(cfg, "text-generation")
+    assert hub_catalog.query_pool(cfg, "text-generation") == []
+
+
 def test_malformed_row_fields_degrade_rather_than_raise():
     cfg = load_config()
     bad_row = {"capability": "text-generation", "format": "mlx", "raw": {
