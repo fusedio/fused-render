@@ -1249,3 +1249,109 @@ correct id.
   observed live either; confirm the column shows a real measured size after
   the lazy lookup resolves, rather than sitting blank/dash indefinitely for
   a repo whose measured lookup also can't produce a number.
+
+## Two-pane port (build session starting HEAD b179f8021)
+
+Brief: `/private/tmp/claude-501/-Users-iamsdas-Work-fused-render/ed8c10b1-1b36-4a1e-a82e-d717465cba7e/scratchpad/builder-brief.md`,
+mockup: `/private/tmp/claude-501/-Users-iamsdas-Work-fused-render/ed8c10b1-1b36-4a1e-a82e-d717465cba7e/scratchpad/ai-models-two-pane.html`.
+Port the Local tab's idle two-face design (search-controls bar + carousels /
+Hub table) into a two-pane layout: a 196px capability-nav rail on the left,
+a per-capability "what you have" → "suggestions" → "search Hub" pane on the
+right, opening into a full mockup-accurate Hub search screen.
+
+### (1) D806 — the one mandated server change (done, committed)
+
+`hub_models.py::api_hub_search`'s `fitLevel` filter treated a row with NO
+`fit.verdict` (Hub gave no size to measure) identically to a row whose
+verdict is the measured `"no"` — both failed `verdict in allowed`, so
+"Easy fit only" / "Easy or tight" silently hid every unmeasured repo
+alongside genuinely-too-big ones, with no count and no way to ask for them
+back. Fixed to also pass `verdict is None`. See D806 in `DECISIONS.md` for
+the full rationale (the two-pane search screen deliberately renders unknown
+fit with its own `?` glyph, so the filter must not have already erased the
+distinction upstream). Two new tests added directly above
+`test_an_unknown_fit_level_is_refused` in `tests/test_hub_models.py`:
+`test_fit_level_easy_still_shows_an_unknown_verdict_row`,
+`test_fit_level_tight_still_shows_an_unknown_verdict_row`.
+
+Verified: `.venv/bin/python -m pytest tests/test_hub_models.py tests/test_ai_registry.py -q`
+→ 230 passed. Committed as `186db6d67`; D806 logged in `DECISIONS.md`,
+committed as `12bc1210d`.
+
+### (2) Findings that change scope from the brief
+
+- **`Availability.reason` is already on the wire.** `fused_render/ai/registry.py`'s
+  `Availability` dataclass (`ok: bool`, `reason: str`) already flows through
+  `fused_render/ai/catalog.py::describe()` into the `/api/ai/catalog`
+  payload's per-capability `available`/`reason` fields, and the frontend
+  already types this on `AiCatalogCapability` in `platform/lib/api.ts`. The
+  brief's conditional "add it if it isn't already exposed" does not apply —
+  no server change needed for capability-disabled-with-reason; the nav
+  component can read `catalog.capabilities[...].available`/`.reason`
+  directly.
+- **Capability display order conflicts with the mockup.** The mockup's
+  `CAPS` array orders capabilities text → image → speech → embed → video.
+  The app's existing shared `CAPABILITY_ORDER` constant
+  (`lib/aiModelGroups.ts`, used identically by Benchmark/Playground/Discover
+  tabs) orders image → text → speech → embed → video. Not yet resolved;
+  leaning toward keeping the app's existing shared order (breaking it here
+  would make the Local tab's capability order the only one in the app that
+  disagrees with itself) and documenting the mockup deviation explicitly in
+  the final report, rather than either reordering the shared constant (blast
+  radius: 3 other tabs) or forking a second, Local-tab-only order.
+- **`hubTableView.ts` needs surgical trimming, not wholesale deletion.**
+  It mixes two families of exports: generic row-formatters that the new
+  search-screen hit row still needs (`ageLabel`, `speedLabel`, `quantLabel`,
+  `popLabel`, `paramsLabel`, `matchCell`, `matchTitle`, `resolveFit`,
+  `resolveSpeed`, `splitRepoId`, `capabilityHint`, `matchFitBasis`,
+  `isMatchScoreStale`) and family-grouping/column-hoisting-specific exports
+  that are dead once family grouping is gone (`HOIST_MAJORITY`, `hoistValue`,
+  `majorityValue`, `columnVisible`, `isMajorityValue`, `hoistSummary`,
+  `familyHoist`, `occupiedColumns`, `familyDisplay`, `groupIntoFamilies`).
+  Plan: delete only the second group (+ its test cases in
+  `hubTableView.test.ts`), keep the file under its current name for the
+  first group's helpers, and grep `tests/` (Python) before deleting any of
+  it per the standing rule (`pytest-greps-frontend-source-lines`).
+
+### Status: PARTIAL-DONE — stopping here to report
+
+Only the backend fix + decision/notes logging are complete. **None of the
+frontend implementation has been started**: no plain-language capability
+metadata module, no `CapabilityNav`, no capability pane / row components, no
+full search screen, no `LocalTab.tsx` rewrite, no CSS added to
+`ai-models.css`, no dead-code deletion (`HubResultsTable.tsx`,
+`hubFamilies.ts`+test, the hoist half of `hubTableView.ts`+test, possibly
+`Carousel.tsx`/`RecommendedCard.tsx`/`RepoCard.tsx`/shadcn `table.tsx`), and
+no `bun` commands have been run this session (no `bun test`, no
+`typecheck`, no `build`, no `check-boundaries.mjs`).
+
+Also still unread, and required by the brief before building markup: the
+mockup's lines 787-1319 (`screen`/`pane`/`controls`/`menu`/`row`/`drawer`
+render functions and the 15-entry `STATES` array), `frontend/src/styles/ai-models.css`,
+and `frontend/src/styles/tokens.css`.
+
+### Resume point for the next builder
+
+1. Read `ai-models-two-pane.html` lines 787-1319 (the render functions and
+   `STATES` array — this is the acceptance-bar reference for markup, copy,
+   spacing, and every state).
+2. Read `frontend/src/styles/ai-models.css` (3843 lines, unread) and
+   `frontend/src/styles/tokens.css` for the token/theme rules to reuse.
+3. Decide the capability-order question above (default: keep
+   `CAPABILITY_ORDER`, log the deviation) and add a plain-language metadata
+   module (label/icon/searchNoun per capability) — likely a new file next to
+   `lib/aiModelGroups.ts` rather than overloading `CAPABILITY_LABELS` in
+   `lib/engines.ts` (those are the technical labels Benchmark/Playground
+   still need unchanged).
+4. Build `CapabilityNav`, the capability pane (what-you-have / suggestions /
+   search-Hub-link), the full search screen (chip + `ControlMenu`-based
+   filters + fixed-grid hit rows using the kept `hubTableView.ts` helpers),
+   then rewire `LocalTab.tsx` and delete the dead code (grep `tests/` first
+   for every deleted symbol).
+5. Run targeted `bun test` per touched file as you go; `bun run --cwd
+   frontend typecheck` and one final `bun run --cwd frontend build` +
+   `node frontend/scripts/check-boundaries.mjs` at the end; re-run
+   `.venv/bin/python -m pytest tests/test_hub_models.py tests/test_ai_registry.py -q`
+   plus any other Python files touched by the deletions.
+6. HEAD at handoff: `12bc1210d` (branch `worktree-hub-search-discovery`,
+   tree clean).
