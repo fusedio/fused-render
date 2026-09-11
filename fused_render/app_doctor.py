@@ -243,10 +243,12 @@ def _generated_paths(app_dir: str) -> list[str]:
 # ------------------------------------------------------------------ git state
 
 
-def _git_pending(app_dir: str) -> tuple[str, list[str]]:
-    """`(state, paths)` for the folder's version control: FAIL with the
-    uncommitted paths, PASS when the folder is clean, SKIP when git cannot
-    answer (not a repo, git missing, a repo that will not read).
+def _git_pending(app_dir: str) -> tuple[str, list[tuple[str, str]]]:
+    """`(state, records)` for the folder's version control: FAIL with the
+    uncommitted `(code, rest)` porcelain records (app-relative, prefix
+    already stripped — see `_git_findings` for what each shape means), PASS
+    when the folder is clean, SKIP when git cannot answer (not a repo, git
+    missing, a repo that will not read).
 
     Status is scoped to the app folder itself — sibling apps share one `local`
     repo (D626), and a neighbour's work in progress is not this app's finding.
@@ -273,10 +275,54 @@ def _git_pending(app_dir: str) -> tuple[str, list[str]]:
     for ln in lines:
         code, _, rest = ln[:2], ln[2:3], ln[3:]
         rest = rest.strip().strip('"')
+        code = code.strip() or "??"
         if rest.startswith(prefix):
             rest = rest[len(prefix):]
-        out.append(f"{code.strip() or '??'} {rest}")
+        # `(code, rest)` — NOT a formatted string. `rest` strips to "" when
+        # the WHOLE app folder is untracked (git collapses that to one `??
+        # myapp/` line, and `rest == prefix` exactly), and stays non-empty
+        # but directory-shaped (`"sub/"`) for a nested untracked directory
+        # git also collapses. `_git_findings` below turns each shape into a
+        # readable finding — this function only parses porcelain output, it
+        # does not decide how a shape reads.
+        out.append((code, rest))
     return FAIL, out
+
+
+def _git_findings(pending: list[tuple[str, str]]) -> list[dict]:
+    """One finding per `(code, rest)` pair from `_git_pending`, in the shape
+    `_git_check` hands to the modal and the fix prompt.
+
+    Three shapes, by what `rest` looks like after `_git_pending`'s prefix
+    strip:
+
+    * EMPTY — the whole app folder is untracked (git's `?? myapp/` collapse,
+      stripped down to nothing). `path` is `.` (there is no more specific
+      path to give) and the excerpt says so in words, ending in a period so
+      the modal's `excerpt.includes(path)` dedup guard still fires on the
+      literal `.` — the same trick every other shape below relies on, just
+      earned differently.
+    * A DIRECTORY — `rest` still ends in `/` (git's `?? sub/` collapse for a
+      nested untracked directory: nothing inside was walked, so there is
+      nothing more specific to report). Reads as the directory itself, not
+      the bare porcelain line.
+    * ORDINARY — a real file entry (`M app.py`, `?? notes.txt`). Unchanged
+      from before this fix: `path` and `excerpt` are both `"{code} {rest}"`,
+      which is what existing tests pin and what the modal's dedup guard
+      already handles.
+    """
+    out = []
+    for code, rest in pending:
+        if not rest:
+            out.append({"rule": "git:uncommitted", "path": ".", "line": 0,
+                       "excerpt": "the whole app folder is untracked."})
+        elif rest.endswith("/"):
+            out.append({"rule": "git:uncommitted", "path": rest, "line": 0,
+                       "excerpt": f"{rest} (untracked directory)"})
+        else:
+            p = f"{code} {rest}"
+            out.append({"rule": "git:uncommitted", "path": p, "line": 0, "excerpt": p})
+    return out
 
 
 # `_pushed_pending`'s SKIP reasons — distinct enough that `_pushed_check` can
@@ -517,8 +563,7 @@ def _git_check(app_dir: str) -> dict:
         else f"{len(pending)} uncommitted path{'' if len(pending) == 1 else 's'} — "
              "commit them so what you share is what you tested" if state == FAIL
         else "the working tree is clean",
-        [{"rule": "git:uncommitted", "path": p, "line": 0, "excerpt": p}
-         for p in pending],
+        _git_findings(pending),
     )
 
 

@@ -301,6 +301,52 @@ def test_a_sibling_apps_uncommitted_work_is_not_this_apps_finding(workspace):
     assert _state(app_doctor.report(str(theirs)), "git") == "fail"
 
 
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_wholly_untracked_app_folder_reads_as_a_folder_finding_not_a_bare_code(
+    workspace,
+):
+    """git collapses a fully-untracked directory to one `?? demo/` line. After
+    the app-relative prefix strip, `rest` is exactly empty (D-defect-2) — the
+    finding must read as the app folder itself being untracked, never as a
+    bare `??` with nothing after it."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    _git(repo, "init", "-q")
+    # Nothing committed at all: the whole app folder is untracked.
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    assert finding["path"] == "."
+    assert finding["excerpt"] != "??"
+    assert "?" not in finding["excerpt"]
+    assert "untracked" in finding["excerpt"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_nested_untracked_directory_reads_as_a_directory_not_a_bare_code(workspace):
+    """A subdirectory that is entirely new collapses to one `?? sub/` line —
+    unlike the whole-app case, `rest` is not empty here (D-defect-2's
+    variant), but it should still read as a directory, not a raw status
+    line."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    sub = d / "sub"
+    sub.mkdir()
+    (sub / "new.py").write_text("x = 1\n")
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    assert finding["path"] == "sub/"
+    assert finding["excerpt"] == "sub/ (untracked directory)"
+
+
 # --------------------------------------------------------------- pushed
 
 def test_a_folder_that_is_not_a_repo_skips_the_pushed_row_with_the_right_reason(
