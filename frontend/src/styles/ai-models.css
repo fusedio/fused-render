@@ -3435,16 +3435,19 @@ button.am-bench-model:focus-visible {
   font-size: 11.5px;
 }
 
-/* D810 (item M): `<button class="btn-link">` here has no `.btn` class, so
-   with nothing overriding it the browser's native `<button>` chrome (a
-   grey filled, bordered pill) shows straight through — read live as "the
-   search button is ugly". The mockup's own `.btn-link` is a PLAIN text
-   link: no border, no background, no padding, underline only on hover —
-   this rule now states that in full rather than leaving the native button
-   reset to chance. Scoped to `.tp .hubdoor` (not a bare `.btn-link`,
-   which does not otherwise exist as a class in this file) so it never
-   reaches for a button elsewhere in the app that wants real chrome. */
-.tp .hubdoor .btn-link {
+/* D810 (item M, generalised under D816/item S): `<button class="btn-link">`
+   here has no `.btn` class, so with nothing overriding it the browser's
+   native `<button>` chrome (a grey filled, bordered pill) shows straight
+   through — read live as "the search button is ugly". The mockup's own
+   `.btn-link` is a PLAIN text link: no border, no background, no padding,
+   underline only on hover — this rule now states that in full rather than
+   leaving the native button reset to chance. Originally scoped to
+   `.tp .hubdoor`; widened to `.tp .btn-link` (item S) once the drawer's own
+   "View on Hugging Face"/"Show in Finder"/"Close" actions turned out to want
+   the identical treatment — `.btn-link` does not otherwise exist as a class
+   in this file, so the wider scope still never reaches for a button
+   elsewhere in the app that wants real chrome. */
+.tp .btn-link {
   display: inline;
   background: none;
   border: 0;
@@ -3455,7 +3458,7 @@ button.am-bench-model:focus-visible {
   cursor: pointer;
 }
 
-.tp .hubdoor .btn-link:hover {
+.tp .btn-link:hover {
   text-decoration: underline;
 }
 
