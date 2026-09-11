@@ -2973,18 +2973,26 @@ button.am-bench-model:focus-visible {
    `.cc-main` rather than making EVERY `.cc-main` a flex column (the other
    tabs' multi-section pages have no single "the rest of the page" child to
    stretch, and `.cc-main`'s comment there is explicit that it is meant to
-   just grow to content). Unlike `.pg-fill`, no `overflow-y: hidden` here:
-   Local has no inner scroller of its own, so a `.tp` taller than the
-   available space should keep scrolling the page exactly as it does today,
-   not clip. */
+   just grow to content).
+   Item 8 (fix round 5, reverses D815's own note above): the whole page
+   scrolling meant the left capability nav scrolled away with it — now only
+   the RIGHT pane (`.tp-pane`, below) scrolls, and `.tp-nav` stays put.
+   `overflow: hidden` + `min-height: 0` here (and on `.tp` below) is what
+   makes that possible: a flex/grid child must be allowed to shrink below
+   its content height before its own overflow rule can bound it, and this is
+   the frame `.cc-main`'s own viewport-bound height (claude-config.css) gets
+   handed down into. */
 .tp-page-fill {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .tp-page-fill > .tp {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
 }
 
 @media (max-width: 760px) {
@@ -3005,6 +3013,13 @@ button.am-bench-model:focus-visible {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  /* Item 8 (fix round 5): `.tp` itself no longer scrolls (only `.tp-pane`,
+     the right column, does) so this does not need to stick against a
+     scrolling ancestor to stay visible — it already stays put. `align-self:
+     start` just stops the grid's own `align-items: stretch` from forcing
+     this column to match the right pane's (now scrollable, effectively
+     unbounded) height. */
+  align-self: start;
 }
 
 .tp-nav h5 {
@@ -3134,6 +3149,21 @@ button.am-bench-model:focus-visible {
   padding: 16px 18px 20px;
   min-width: 0;
   background: var(--bg);
+  /* Item 8 (fix round 5): every pane that can occupy `.tp`'s right grid
+     column (`HubSearchScreen`, `CapabilityPane`, `EngineFilesPane` — all
+     three render a `.tp-pane` root) is now the ONE scroller on this screen;
+     `.tp`/`.tp-page-fill` above give it a bounded height to scroll within
+     instead of growing the whole page. `overflow-x: hidden` rather than
+     `visible` (the two can't mix) — item 3's match-score popover is
+     confirmed to open within this pane's own bounds, not past it.
+     `overscroll-behavior: contain` keeps a scroll-to-edge here from
+     bubbling to (and scrolling) the page behind it. Right padding widened
+     so the scrollbar does not sit on top of the row's own (i) button. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  overscroll-behavior: contain;
+  padding-right: 22px;
 }
 
 .tp-head {
