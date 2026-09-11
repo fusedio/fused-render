@@ -5019,8 +5019,17 @@ def _sessions(file: str) -> dict:
     """
     file = os.path.abspath(file)
     sessions = _cli_sessions(file)
+    # RUNNING FIRST, THEN RECENCY — the Tasks list's own rule (shell/tasks-lib
+    # LIST_ORDER: the ranks that are still doing something sit above the ones
+    # that are over, and time orders WITHIN a rank). The clock here is the
+    # transcript's mtime, and a turn writes its records in one burst when it
+    # ENDS, so a chat ten minutes into a long turn carries an older stamp than
+    # one that finished four minutes ago — sorted by time alone it sat under it
+    # while saying "running" (Akshil, 2026-09-11). A stable sort, so two running
+    # chats still order by when each last wrote.
     sessions.sort(key=lambda s: s.get("last_used") or s.get("created_at") or 0,
                   reverse=True)
+    sessions.sort(key=lambda s: not s.get("running"))
     return {"sessions": sessions}
 
 
