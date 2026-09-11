@@ -24,6 +24,7 @@
 // draft that failed to save costs the user a draft; a draft that threw inside a
 // keystroke handler costs them the keystroke.
 import { useCallback, useEffect, useRef } from "react";
+import type { RecurrenceRule } from "./api";
 
 /** ONE ATTACHMENT, as the schedule form stores it — `path`, `name`, `kind`, the
  *  identical three fields `sched-draft.ts`'s `SchedAttachment` carries and a
@@ -60,6 +61,22 @@ export interface TaskDraftForm {
   permission: string;
   attachments: DraftAttachment[];
   new_task_each_run: boolean | null;
+  /**
+   * THE RULE BEHIND A "CUSTOM" REPEAT, because the preset key alone is not an
+   * answer (Bugbot, PR #1118).
+   *
+   * Every other repeat choice IS its own data — "every day" needs nothing but
+   * the word — but `repeat: "custom"` is a pointer at a rule the recurrence
+   * dialog built, and a draft that stored the pointer and dropped the rule
+   * reopened on a card that said Custom, held no rule, and refused Save with
+   * nothing on screen explaining why (`saveEnabled`: a custom repeat needs its
+   * rule). Stored as the object, pass-through on the server, so what comes back
+   * is what the dialog produced.
+   *
+   * Null whenever the choice is not Custom — including a repeat that is switched
+   * off entirely, exactly as `repeat` itself is.
+   */
+  custom_rule: RecurrenceRule | null;
 }
 
 export interface TaskDraft extends TaskDraftForm {
@@ -178,10 +195,45 @@ async function write(
 }
 
 /**
+ * CHAT KEYS WHOSE DRAFT IS SPENT — sent, or cleared on purpose — and which must
+ * therefore read back as EMPTY even while the server still says otherwise
+ * (Bugbot, PR #1118).
+ *
+ * THE RACE IT CLOSES. The first send from a session-less chat does two things in
+ * the same tick: it fires `DELETE /api/drafts/chat/new:<file>`, and it gives the
+ * landing a session — which remounts the whole chat, composer included
+ * (`ClaudeChat`'s remount on the first send). The new mount seeds itself from
+ * the server (`fetchChatDraft`), and that GET can overtake a DELETE that is
+ * still in flight. What it answers is the sentence that was just sent, into a
+ * box the send had emptied; the rekey that follows then walks those words onto
+ * the session, and the message the reader sent is sitting on their own task row
+ * as an unsent draft.
+ *
+ * NOTHING INSIDE ONE MOUNT CAN FIX IT. `reset`, `stop` and `settle` all belong
+ * to a component that is being thrown away at that instant, and the seed that
+ * resurrects the words runs in a DIFFERENT one. So the fact lives at module
+ * scope, where both mounts can see it — which is also where it belongs, since
+ * spent-ness is a fact about the KEY and not about any one composer.
+ *
+ * ENTERED BEFORE THE REQUEST, because covering the window the request is in is
+ * the entire point; and KEPT afterwards, because the window does not close when
+ * the DELETE answers — a remount a second later would seed from a cached or
+ * re-read snapshot just the same. A key stays spent until somebody types into it
+ * again, which is exactly what `saveChatDraft` below hears.
+ */
+const spent = new Set<string>();
+
+/**
  * Upsert this chat's draft. EMPTY TEXT WITH NO ATTACHMENTS IS A DELETE, decided
  * server-side (design.md: "writing empty == delete") — so the caller does not
  * have to tell "cleared the box" apart from "never typed", and a composer
  * emptied by hand leaves no ghost row on the list.
+ *
+ * A write WITH CONTENT un-spends the key (see `spent`): there are words under it
+ * again, they were put there deliberately, and the next composer to open on it
+ * must be allowed to see them. An empty write does not, because an empty write
+ * IS a delete and un-spending on it would re-open the very window `spent`
+ * closes.
  */
 export function saveChatDraft(
   key: string,
@@ -189,11 +241,15 @@ export function saveChatDraft(
   attachments: readonly DraftAttachment[] = [],
   opts?: DraftWriteOptions,
 ): Promise<boolean> {
+  if (text.trim() || attachments.length) spent.delete(key);
   return write("PUT", chatUrl(key), { text, attachments }, opts);
 }
 
-/** On send, and on an explicit clear. */
+/** On send, and on an explicit clear. The key is marked spent BEFORE the
+ *  request goes out — see `spent` for the remount that would otherwise read the
+ *  draft back out from under the delete. */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
+  spent.add(key);
   return write("DELETE", chatUrl(key), undefined, opts);
 }
 
@@ -212,6 +268,16 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  * number's continuity and nothing the reader is doing — which is this module's
  * standing contract, and doubly right here: the thing being renamed is a draft
  * that the send is about to delete anyway (Akshil, 2026-09-11).
+ *
+ * NO SPENT-KEY GUARD IS NEEDED HERE, and that is worth writing down rather than
+ * re-deriving (Bugbot, PR #1118). This never moves spent words: the route
+ * deletes `from` unconditionally and only copies text across when `from` still
+ * HAS a record, which after a send it does not — the send's DELETE went out
+ * first, and it is ordered behind `settle()` precisely so the last PUT cannot
+ * land after it. And if the reader typed ON after sending, that PUT carried
+ * content, which un-spent the key (`saveChatDraft`) — those words really do
+ * belong to the conversation the send created, which is the one case the route's
+ * copy exists for.
  */
 export function rekeyChatDraft(from: string, to: string): Promise<boolean> {
   if (!from || !to || from === to) return Promise.resolve(false);
@@ -268,8 +334,14 @@ export async function fetchDrafts(): Promise<DraftsSnapshot> {
 
 /** One chat draft, or null. A convenience over `fetchDrafts` — there is no
  *  per-key GET in the contract, and the store is small enough that the whole of
- *  it is cheaper than a second endpoint would be. */
+ *  it is cheaper than a second endpoint would be.
+ *
+ *  A SPENT KEY IS ALWAYS NULL, whatever the server still holds: this is the
+ *  call a remounting composer seeds from, and it is the one that would put a
+ *  sent message back in the box (see `spent`). Checked before the request
+ *  rather than after it, so the resurrection costs not even a round trip. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
+  if (spent.has(key)) return null;
   const all = await fetchDrafts();
   return all.chat[key] ?? null;
 }

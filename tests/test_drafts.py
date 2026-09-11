@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import drafts, schedule, schedule_wake, tasks_store
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -311,9 +312,11 @@ def test_a_task_draft_is_a_row_with_a_number(client, tmp_path):
     assert tasks_store.task_number("draft:draft-0001") == "TASK-001"
     assert row["title"] == "Nightly report"
     # The same rule every other row's project follows (`_workdir`): a folder
-    # target IS the project, a file target is the folder it sits in.
-    assert row["target"] == str(target)
-    assert row["project"] == str(target)
+    # target IS the project, a file target is the folder it sits in. Compared
+    # through `canonical_fs_path`, the same normalisation the row itself
+    # applies — `str(target)` is backslashed on Windows, and the row is not.
+    assert row["target"] == canonical_fs_path(str(target))
+    assert row["project"] == canonical_fs_path(str(target))
     assert row["when"] is None
     assert row["session_id"] == ""
     assert row["message_count"] == 0
@@ -473,6 +476,70 @@ def test_a_discarded_draft_does_not_give_its_number_back(client, tmp_path):
     assert tasks_store.task_number("draft:draft-0001") == "TASK-001"
 
 
+def test_a_draft_changing_folder_is_renumbered_in_the_new_project(client, tmp_path):
+    """A draft's number belongs to the project it points at NOW.
+
+    The bug this ends: the number is allocated at the first keystroke, in
+    whatever folder the modal happened to open on, and then the person picks a
+    different one — the number rode along, and a project counting TASK-001…015
+    showed a TASK-202 borrowed from the project the draft was started in
+    (Akshil, 2026-09-11). Nothing has been promised while it is still a draft,
+    which is what makes this the one row allocate-once may renumber."""
+    alpha = tmp_path / "alpha"
+    alpha.mkdir()
+    beta = tmp_path / "beta"
+    beta.mkdir()
+    client.put("/api/drafts/task/draft-beta1",
+               json={"title": "already here", "target": str(beta)})
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(alpha)})
+    assert _by_key(client)["draft:draft-0001"]["task_id"] == "TASK-001"
+
+    # The folder changes — the same autosave PUT every other keystroke makes.
+    client.put("/api/drafts/task/draft-0001", json={"target": str(beta)})
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["project"] == canonical_fs_path(str(beta))
+    assert row["title"] == "Nightly report", "an omitted field is not a delete"
+    assert row["task_id"] == "TASK-002", "beta's next free number, not alpha's"
+    assert tasks_store.task_number("draft:draft-0001") == "TASK-002"
+
+    # ...and alpha's TASK-001 is a GAP, not a number handed out twice: the same
+    # price a discarded draft pays two tests up.
+    client.put("/api/drafts/task/draft-0002",
+               json={"title": "later", "target": str(alpha)})
+    assert _by_key(client)["draft:draft-0002"]["task_id"] == "TASK-002"
+
+
+def test_a_moved_draft_keeps_the_new_number_when_it_is_scheduled(client, tmp_path):
+    """Scheduling is where the renumbering STOPS. The number the draft ends up
+    with is the one the pending row carries, so the last thing the user saw in
+    the modal is what they see in the list."""
+    alpha = tmp_path / "alpha"
+    alpha.mkdir()
+    beta = tmp_path / "beta"
+    beta.mkdir()
+    client.put("/api/drafts/task/draft-beta1",
+               json={"title": "already here", "target": str(beta)})
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(alpha)})
+    # Listed BEFORE the move, which is what allocates alpha's number — without
+    # it the draft would simply be numbered late, in beta, and prove nothing.
+    assert _by_key(client)["draft:draft-0001"]["task_id"] == "TASK-001"
+
+    client.put("/api/drafts/task/draft-0001", json={"target": str(beta)})
+    number = _by_key(client)["draft:draft-0001"]["task_id"]
+    assert number == "TASK-002"
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(beta), "message": "roll it up",
+                          "delay_seconds": 600, "title": "Nightly report",
+                          "draft_id": "draft-0001"})
+    assert r.status_code == 200, r.text
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows, "one task, not two"
+    assert rows["pending:" + r.json()["entry"]["id"]]["task_id"] == number
+
+
 # ----------------------------------------------- round 2: new-chat drafts
 
 
@@ -497,11 +564,12 @@ def test_an_unsent_new_chat_is_a_row(client, tmp_path):
     assert row["draft_id"] == ""
     assert row["session_id"] == ""
     assert row["title"] == "look at the chart", "the first line, nothing else"
-    # The FOLDER is the project — the file is what the chat opens on.
-    assert row["project"] == str(folder)
-    assert row["cwd"] == str(folder)
-    assert row["target"] == str(view)
-    assert row["file"] == str(view)
+    # The FOLDER is the project — the file is what the chat opens on. Compared
+    # through `canonical_fs_path`, same as above.
+    assert row["project"] == canonical_fs_path(str(folder))
+    assert row["cwd"] == canonical_fs_path(str(folder))
+    assert row["target"] == canonical_fs_path(str(view))
+    assert row["file"] == canonical_fs_path(str(view))
     assert row["draft"]["preview"] == "look at the chart"
     assert row["draft"]["updated_at"] > 0
     assert row["form"] is None, "no form to reopen — it is a composer"
@@ -516,7 +584,7 @@ def test_a_new_chat_draft_on_a_folder_is_numbered_in_that_folder(client, tmp_pat
     key = "new:" + str(folder)
     client.put(_chat_url(key), json={"text": "start here"})
     row = _by_key(client)[key]
-    assert row["project"] == str(folder) == row["target"]
+    assert row["project"] == canonical_fs_path(str(folder)) == row["target"]
     assert row["task_id"] == "TASK-001"
 
 
@@ -755,3 +823,111 @@ def test_scheduling_into_a_session_drops_that_session_chat_draft(client, tmp_pat
     assert r.status_code == 200, r.text
     assert drafts.get_chat("sess-a") is None
     assert _by_key(client)["sess-a"]["draft"] is None
+
+
+# ----------------------------------------------- round 3: what Schedule takes
+#
+# Two things the first cut of the feature let slip past the create endpoint
+# (Bugbot, PR #1118). Both are about a draft OUTLIVING the thing it turned into,
+# which is the one outcome "a draft moves, never duplicates" forbids.
+
+
+def test_scheduling_a_hop_drops_the_chat_draft_it_came_from(client, tmp_path):
+    """The composer hop's chat draft, retired by the create rather than by the
+    task draft's first autosave.
+
+    That autosave is what normally moves it (`from_chat_key` on the task-draft
+    PUT), but a card opened from the Schedule button opens ready to send: press
+    it inside the 600 ms debounce and no task draft is minted at all, so nothing
+    ever names the chat key. `session_id` cannot stand in — a chat that has never
+    sent anything has no session, and its draft is keyed `new:<file>`."""
+    target = tmp_path / "project"
+    target.mkdir()
+    key = "new:" + str(target / "notes.py")
+    client.put(_chat_url(key), json={"text": "roll up the PRs"})
+    assert key in _by_key(client), "the unsent chat is a row of its own"
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "roll up the PRs",
+                          "delay_seconds": 600, "title": "Roll up the PRs",
+                          "from_chat_key": key})
+    assert r.status_code == 200, r.text
+    assert drafts.get_chat(key) is None
+    rows = _by_key(client)
+    assert key not in rows, "one task, not a task and the draft it came from"
+    assert any(row["title"] == "Roll up the PRs" for row in rows.values())
+
+
+def test_a_session_keyed_from_chat_key_is_taken_too(client, tmp_path, projects_dir):
+    """The same field carries the other shape — a chat that HAS a session, hopped
+    to the card before `session_id` was ever on the payload."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    target = tmp_path / "project"
+    target.mkdir()
+    client.put("/api/drafts/chat/sess-a", json={"text": "and then deploy"})
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "and then deploy",
+                          "delay_seconds": 600, "from_chat_key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert drafts.get_chat("sess-a") is None
+
+
+def test_a_bad_or_absent_from_chat_key_changes_nothing(client, tmp_path):
+    """Optional and silently ignored — every client written before drafts
+    existed sends none, and a malformed one is not worth a 400 on a request that
+    has already scheduled the task."""
+    target = tmp_path / "project"
+    target.mkdir()
+    key = "new:" + str(target)
+    client.put(_chat_url(key), json={"text": "untouched"})
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "hi",
+                          "delay_seconds": 600, "from_chat_key": "/etc/passwd"})
+    assert r.status_code == 200, r.text
+    assert drafts.get_chat(key) is not None
+
+
+def test_a_custom_repeat_keeps_its_rule(state_dir):
+    """`repeat` is a preset KEY, and "custom" is a pointer at a rule the
+    recurrence dialog built. A draft that stored the key and dropped the rule
+    reopened saying Custom, holding nothing, with Save refused and nothing on the
+    card saying why."""
+    rule = {"freq": "week", "interval": 2, "byday": [1, 3]}
+    stored = drafts.put_task("draft-0001", {"title": "Standup notes",
+                                            "repeat": "custom",
+                                            "custom_rule": rule})
+    assert stored["custom_rule"] == rule
+    assert drafts.get_task("draft-0001")["custom_rule"] == rule
+    # Pass-through, not parsed: this store is not the authority on what a
+    # recurrence rule looks like, and a shape it validated would be a second
+    # copy of `recur`'s grammar going stale.
+    assert drafts.put_task("draft-0002", {"custom_rule": {"freq": "fortnight"}}
+                           )["custom_rule"] == {"freq": "fortnight"}
+    # A field the client omits keeps what the stored draft had, like every other.
+    assert drafts.put_task("draft-0001", {"title": "Standup"}
+                           )["custom_rule"] == rule
+    # …and clearing the choice clears the rule with it.
+    assert drafts.put_task("draft-0001", {"repeat": None, "custom_rule": None}
+                           )["custom_rule"] is None
+
+
+def test_a_rule_alone_is_still_a_draft(state_dir):
+    """`_empty_task` asks "is there anything a person chose here", and opening
+    the recurrence dialog and building a rule is exactly that."""
+    assert drafts.put_task("draft-0001",
+                           {"custom_rule": {"freq": "month"}}) is not None
+    assert drafts.put_task("draft-0001", {"custom_rule": None}) is None
+    assert drafts.get_task("draft-0001") is None
+
+
+def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
+    """The row's `form` is what the modal reopens on, so the rule has to be in
+    it or the round trip is only half built."""
+    rule = {"freq": "month", "monthly": "nth-weekday"}
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Monthly report", "target": str(tmp_path),
+                     "repeat": "custom", "custom_rule": rule})
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["form"]["repeat"] == "custom"
+    assert row["form"]["custom_rule"] == rule

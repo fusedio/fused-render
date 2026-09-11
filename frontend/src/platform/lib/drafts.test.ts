@@ -28,12 +28,16 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
 import {
   chatDraftKey,
+  deleteChatDraft,
+  fetchChatDraft,
   newChatFile,
   rekeyChatDraft,
+  saveChatDraft,
   saveTaskDraft,
   useAutosave,
   type Autosave,
   type AutosaveOptions,
+  type ChatDraft,
   type DraftWriteOptions,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
@@ -277,8 +281,8 @@ describe("useAutosave({ writeInitial })", () => {
 
 const FORM: TaskDraftForm = {
   title: "", description: "half a thought", target: "~/news",
-  when: null, repeat: null, model: "", effort: "", permission: "",
-  attachments: [], new_task_each_run: null,
+  when: null, repeat: null, custom_rule: null, model: "", effort: "",
+  permission: "", attachments: [], new_task_each_run: null,
 };
 
 /** Swap `fetch` for a recorder, and put the real one back afterwards. */
@@ -389,5 +393,105 @@ describe("the two shapes of a chat key", () => {
     expect(newChatFile("")).toBe("");
     // Nothing is trimmed or normalised — chatDraftKey's rule, held here too.
     expect(newChatFile("new:/Users/me/news/")).toBe("/Users/me/news/");
+  });
+});
+
+// ---- a spent chat key never hands its draft back -----------------------------
+//
+// THE BUG (Bugbot, PR #1118). The first send from a session-less chat deletes
+// the draft under `new:<file>` AND gives the landing a session, which remounts
+// the composer. The fresh mount seeds itself from `fetchChatDraft`, and that GET
+// can overtake the DELETE still in flight: the answer is the sentence that was
+// just sent, put back into the box the send had emptied — and the rekey that
+// follows walks it onto the session, so the message the reader sent is sitting
+// on their own task row as an unsent draft.
+//
+// Nothing inside one mount can close that window (`reset`/`stop`/`settle` all
+// belong to the component being thrown away, and the seed runs in the NEXT one),
+// so the fact lives at module scope. These drive the module's own functions,
+// which is where it lives; every test uses a key of its own, because the set is
+// module state and deliberately outlives any one of them.
+
+describe("a spent chat key reads back as empty", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+
+  /** `fetch` answering `GET /api/drafts` out of `chat`, and recording every call
+   *  — the writes here never reach a server, which is the point: what is being
+   *  asserted is what the module answers WHILE the DELETE is still in the air. */
+  function serve(chat: Record<string, ChatDraft>) {
+    const calls: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ chat, task: {} }),
+      } as unknown as Response);
+    }) as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = real; } };
+  }
+
+  test("the remount's seed gets nothing, though the server still holds the words", async () => {
+    const key = "new:/Users/me/sent";
+    const f = serve({ [key]: held("ship the release notes") });
+    // Before the send: the draft is real and the composer would restore it.
+    expect(await fetchChatDraft(key)).not.toBeNull();
+    // The send. Deliberately NOT awaited — the DELETE being in flight is the
+    // whole of the race.
+    void deleteChatDraft(key);
+    expect(await fetchChatDraft(key)).toBeNull();
+    f.restore();
+  });
+
+  test("and answers without a request at all", async () => {
+    const key = "new:/Users/me/sent-quietly";
+    const f = serve({ [key]: held("ship it") });
+    void deleteChatDraft(key);
+    const before = f.calls.length;
+    expect(await fetchChatDraft(key)).toBeNull();
+    expect(f.calls.length).toBe(before);
+    f.restore();
+  });
+
+  test("typing into the key again brings it back", async () => {
+    // Spent is not dead: a reader who starts a second unsent message in the same
+    // folder has a draft again, and the next composer to open there must see it.
+    const key = "new:/Users/me/typed-on";
+    const f = serve({ [key]: held("and one more thing") });
+    void deleteChatDraft(key);
+    expect(await fetchChatDraft(key)).toBeNull();
+    await saveChatDraft(key, "and one more thing");
+    expect(await fetchChatDraft(key)).not.toBeNull();
+    f.restore();
+  });
+
+  test("an attachment alone is content enough", async () => {
+    const key = "new:/Users/me/dropped-a-file";
+    const f = serve({ [key]: held("") });
+    void deleteChatDraft(key);
+    await saveChatDraft(key, "", [{ path: "/tmp/a.png", name: "a.png", kind: "image" }]);
+    expect(await fetchChatDraft(key)).not.toBeNull();
+    f.restore();
+  });
+
+  test("an empty write does NOT un-spend it — an empty write is itself a delete", async () => {
+    // The composer's autosave fires on the pause after the send cleared the box.
+    // Treating that as "there are words here again" would re-open the window.
+    const key = "new:/Users/me/cleared";
+    const f = serve({ [key]: held("ghost") });
+    void deleteChatDraft(key);
+    await saveChatDraft(key, "   ");
+    expect(await fetchChatDraft(key)).toBeNull();
+    f.restore();
+  });
+
+  test("one key's spending says nothing about any other", async () => {
+    const sent = "new:/Users/me/one";
+    const other = "new:/Users/me/two";
+    const f = serve({ [sent]: held("sent"), [other]: held("still unsent") });
+    void deleteChatDraft(sent);
+    expect(await fetchChatDraft(sent)).toBeNull();
+    expect((await fetchChatDraft(other))?.text).toBe("still unsent");
+    f.restore();
   });
 });

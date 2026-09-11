@@ -393,6 +393,31 @@ def api_schedule_create(body: dict = Body(...),
                 tasks_watch.notify({session})
         except OSError:
             pass
+
+    # ...AND THE CHAT THE COMPOSER HOP CAME FROM, WHICH `session_id` CANNOT NAME
+    # (Bugbot, PR #1118).
+    #
+    # The Schedule button carries what is in the composer into the New task card,
+    # and the card's FIRST autosave is what tells the server to drop the chat's
+    # copy (`from_chat_key` on `PUT /api/drafts/task/<id>`). Press Schedule
+    # inside the 600 ms debounce and that write never happens: no draft id is
+    # minted, none is sent here, and the chat draft — row, TASK number and all —
+    # survives beside the task it just became. `session_id` above covers a chat
+    # that HAS a session; a brand-new one is keyed `new:<file>`, which is not a
+    # session id and never rides in that field.
+    #
+    # So the card names its origin here too. Validated through `chat_key` (both
+    # shapes), optional, and silently ignored when absent — every client that
+    # predates drafts sends none. Best-effort like the two deletes above: the
+    # task IS scheduled, and a draft that could not be dropped costs one stale
+    # row, never the task.
+    origin = drafts.chat_key(body.get("from_chat_key"))
+    if origin and origin != session:
+        try:
+            if drafts.delete_chat(origin):
+                tasks_watch.notify({origin})
+        except OSError:
+            pass
     return {"entry": entry}
 
 

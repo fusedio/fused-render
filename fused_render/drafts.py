@@ -116,14 +116,15 @@ PREVIEW_MAX = 120
 #: client sends that is not in here is DROPPED rather than refused (the modal
 #: gains fields over time and an older server must not start 400ing a newer
 #: page), and a field the client omits keeps whatever the stored draft had.
-TASK_FIELDS = ("title", "description", "target", "when", "repeat", "model",
-               "effort", "permission", "attachments", "new_task_each_run",
-               "from_chat_key")
+TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
+               "model", "effort", "permission", "attachments",
+               "new_task_each_run", "from_chat_key")
 
 #: The three fields that are plain text. The rest are pass-through (`when`,
-#: `repeat`), a tri-state flag (`new_task_each_run`), rows (`attachments`) or
-#: the chat key this draft was moved out of (`from_chat_key`, which is a chat
-#: key rather than free text and is validated as one).
+#: `repeat`, `custom_rule`), a tri-state flag (`new_task_each_run`), rows
+#: (`attachments`) or the chat key this draft was moved out of
+#: (`from_chat_key`, which is a chat key rather than free text and is validated
+#: as one).
 #:
 #: `from_chat_key` is DELIBERATELY NOT IN HERE, and that is the whole of what
 #: keeps it from changing what a draft is: `_empty_task` asks "is there anything
@@ -433,6 +434,15 @@ def _task_record(rec) -> dict | None:
         out[field] = _text(rec.get(field))
     out["when"] = _jsonable(rec.get("when"))
     out["repeat"] = _jsonable(rec.get("repeat"))
+    # THE RULE BEHIND A `custom` REPEAT (Bugbot, PR #1118). `repeat` is a preset
+    # KEY, and every key but one is its own whole answer — "every day" needs no
+    # second field. `custom` is a pointer at a rule the recurrence dialog built,
+    # so a draft that stored the key and dropped the rule reopened saying Custom,
+    # holding nothing, with Save refused and nothing on the card saying why.
+    # Pass-through like `when` and `repeat`, and for the same reason: this store
+    # is not the authority on what a recurrence rule looks like, and a shape it
+    # validated would be a second copy of `recur`'s grammar going stale.
+    out["custom_rule"] = _jsonable(rec.get("custom_rule"))
     out["attachments"] = _attachments(rec.get("attachments"))
     out["new_task_each_run"] = _flag(rec.get("new_task_each_run"))
     # WHERE THESE WORDS CAME FROM, and it is stored rather than merely acted on
@@ -463,6 +473,7 @@ def _empty_task(record: dict) -> bool:
     if record["attachments"]:
         return False
     return (record["when"] in (None, "") and record["repeat"] in (None, "")
+            and record["custom_rule"] in (None, "")
             and record["new_task_each_run"] is None)
 
 

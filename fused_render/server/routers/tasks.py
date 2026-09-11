@@ -2181,6 +2181,19 @@ def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
     so a backfill over a store that predates numbering reads in the order the
     drafts were actually typed. Degrades to no numbers on an unwritable state
     dir, exactly like `_numbers`: blank numbers, never a lost page.
+
+    `reproject=True` is the ONE way this differs from `_numbers`, and it is the
+    one thing a draft has that a task does not: a folder the user can still
+    change. The number is allocated at the first keystroke, under the folder the
+    modal opened on — change the folder afterwards and the number allocated in
+    the old project rode along into the new one, which is how a list of
+    TASK-001…015 came to show a TASK-202. A draft's number belongs to the
+    project it points at NOW, so the store drops the old mapping and allocates
+    afresh (`tasks_store.ensure_ids`); the old number stays spent, a gap in the
+    project it was minted in. Nothing is renumbered once the draft is scheduled
+    — that rekey onto `pending:` is what fixes it for good (Akshil,
+    2026-09-11). `new:<file>` chat drafts carry their file IN the key and so can
+    never move, which is why one flag covers both kinds here.
     """
     items = []
     for ident, record in task_drafts.items():
@@ -2197,7 +2210,7 @@ def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
     if not items:
         return {}
     try:
-        return tasks_store.ensure_ids(items)
+        return tasks_store.ensure_ids(items, reproject=True)
     except OSError:
         return {}
 

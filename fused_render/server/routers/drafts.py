@@ -161,8 +161,8 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     """Upsert one task draft from the modal's form fields.
 
     The body IS the form — `title`, `description`, `target`, `when`, `repeat`,
-    `model`, `effort`, `permission`, `attachments`, `new_task_each_run`,
-    `from_chat_key` — and
+    `custom_rule`, `model`, `effort`, `permission`, `attachments`,
+    `new_task_each_run`, `from_chat_key` — and
     anything else in it is dropped by the store rather than refused here, so
     the modal may grow a field without this endpoint learning about it. An
     all-empty form is a delete, the same bargain the chat half makes."""

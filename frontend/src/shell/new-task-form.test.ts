@@ -52,6 +52,7 @@ let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
 let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
+let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -87,6 +88,7 @@ beforeAll(async () => {
   PATH_MISSING = mod.PATH_MISSING;
   twoLevelsMissing = mod.twoLevelsMissing;
   saveActionLabel = mod.saveActionLabel;
+  seededDraftForm = mod.seededDraftForm;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1996,5 +1998,110 @@ describe("a draft moves with the reader, never duplicating", () => {
     expect(page).toContain('q.get("message") === null');
     // The opening is forgotten on close, like every other deep-link value.
     expect(page).toContain("setNewChatKey(null);");
+  });
+});
+
+// ---- the hop's chat draft does not outlive the task it became ----------------
+//
+// THE BUG (Bugbot, PR #1118). The composer's Schedule button carries what is in
+// the box into this card, and the card's FIRST autosave is what tells the server
+// to drop the chat's copy (`from_chat_key` on the task-draft PUT). Press
+// Schedule inside the 600 ms debounce — which is the ordinary way to use a hop,
+// since the card opens already filled in — and that write never happens: no
+// draft id is minted, none goes on the wire, and the chat draft survives beside
+// the task, row and TASK number and all. `session_id` does not cover it: a chat
+// that has never sent anything HAS no session, and its draft is keyed
+// `new:<file>`.
+
+describe("the chat draft a Schedule leaves behind", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the payload names the chat the words came out of", () => {
+    const body = buildSchedulePayload(form({ fromChatKey: "new:/Users/me/news" }));
+    expect(body.from_chat_key).toBe("new:/Users/me/news");
+    // A session-keyed chat rides the same field — the server validates both
+    // shapes — and the two are independent of each other.
+    expect(buildSchedulePayload(form({ fromChatKey: "sess-9" })).from_chat_key)
+      .toBe("sess-9");
+  });
+
+  test("and leaves the key off the wire when there is no chat behind the card", () => {
+    // "+ New task" from the app page, the `?new=1` hop, every client that
+    // predates drafts. Omitted rather than sent as "", like every other
+    // optional here.
+    expect("from_chat_key" in buildSchedulePayload(form())).toBe(false);
+    expect("from_chat_key" in buildSchedulePayload(form({ fromChatKey: "" }))).toBe(false);
+  });
+
+  test("both openings answer the same question: which chat was this typed in", () => {
+    const s = src();
+    // The FRESH hop is handed the key as a prop; a card REOPENED from its draft
+    // row has only what the server stored on the draft — the same fact
+    // `backToChat` aims at.
+    expect(s).toContain(
+      'const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");',
+    );
+    expect(s).toContain("fromChatKey: originChatKey,");
+  });
+
+  test("submit flushes before it stops, so the hop's own write still goes out", () => {
+    // `writeInitial` only ARMS the debounce. A Schedule inside that window would
+    // otherwise reach `stop()` before any write left at all — no id, no
+    // `from_chat_key`, no draft. The flush is what makes the id exist; the
+    // payload's own key is what covers it when even that is too late.
+    const submit = src().slice(src().indexOf("// THE DRAFT STOPS HERE."));
+    expect(submit.indexOf("autosaveRef.current.flush();"))
+      .toBeLessThan(submit.indexOf("autosaveRef.current.stop();"));
+    expect(submit.indexOf("autosaveRef.current.stop();"))
+      .toBeLessThan(submit.indexOf("await autosaveRef.current.settle()"));
+    expect(submit.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(submit.indexOf("await scheduleMessage("));
+  });
+});
+
+// ---- a Custom repeat survives being drafted ----------------------------------
+//
+// THE BUG (Bugbot, PR #1118). The autosave stored `repeat` — the preset KEY —
+// and nothing else. Every other key is its own whole answer ("every day" needs
+// no second field); "custom" is a pointer at a rule the recurrence dialog built.
+// So a Custom draft reopened saying Custom, holding no rule, with Save refused
+// (`saveEnabled`) and nothing on the card explaining the dead button.
+
+describe("a Custom repeat survives being drafted", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the rule comes back off the stored draft", () => {
+    const rule: RecurrenceRule = { freq: "week", interval: 2, byday: [1, 3] };
+    const seeded = seededDraftForm({
+      id: "d1",
+      form: { repeat: "custom", custom_rule: rule },
+    });
+    expect(seeded.repeat).toBe("custom");
+    expect(seeded.customRule).toEqual(rule);
+  });
+
+  test("and a draft with no rule in it still opens, saying nothing", () => {
+    expect(seededDraftForm({ id: "d1", form: {} }).customRule).toBeNull();
+    expect(seededDraftForm(null).customRule).toBeNull();
+  });
+
+  test("a shape this build cannot read costs the rule and never the card", () => {
+    // A draft is loose JSON that may have been written by another build, and
+    // this runs inside a `useState` initialiser: a throw here is a card that
+    // will not open at all.
+    for (const bad of [null, "every week", 7, [], {}, { freq: "fortnight" }]) {
+      expect(seededDraftForm({ id: "d1", form: { custom_rule: bad } }).customRule)
+        .toBeNull();
+    }
+  });
+
+  test("the form stores the rule only while the choice points at one", () => {
+    const s = src();
+    // Null the same moment `repeat` itself goes null, so a draft can never say
+    // "custom" with nothing behind it.
+    expect(s).toContain('custom_rule: repeatOn && repeat === "custom" ? customRule : null,');
+    // …and the card seeds its state back off it, which is the half that makes
+    // storing it worth anything.
+    expect(s).toContain('if (saved.repeat === "custom" && saved.customRule) return saved.customRule;');
   });
 });

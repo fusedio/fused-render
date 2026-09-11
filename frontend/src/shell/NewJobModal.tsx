@@ -2089,6 +2089,19 @@ export function buildSchedulePayload(form: {
   // same request that creates the task: two round trips could half-fail and
   // leave a draft row sitting beside the task it had already become.
   draftId?: string;
+  // THE CHAT DRAFT THESE WORDS WERE TYPED IN, for a card opened from the
+  // composer's Schedule button — or re-opened from a draft that remembers one
+  // (`form.from_chat_key`). Sent so the server drops the chat's copy in the same
+  // request that creates the task.
+  //
+  // IT IS NOT REDUNDANT WITH `draftId`, which is the bug it fixes (Bugbot, PR
+  // #1118): the hop's first autosave is what normally moves the chat draft onto
+  // the task draft, and pressing Schedule inside that 600 ms debounce means
+  // there IS no task draft — no id, no move, and the chat draft (with its row
+  // and its TASK number) outlives the task it just became. Nor is it covered by
+  // `sessionId`: a chat that has never sent anything has no session at all, and
+  // its draft is keyed `new:<file>`.
+  fromChatKey?: string;
   // DID ANYONE PICK THIS TIME? False when the card was opened from the List or
   // the Board — where the when-row starts folded away — and the user never
   // touched it, so `when` is only the form's own default of "now". The task
@@ -2174,6 +2187,7 @@ export function buildSchedulePayload(form: {
     // same reason `title` is.
     ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
     ...(form.draftId ? { draft_id: form.draftId } : {}),
+    ...(form.fromChatKey ? { from_chat_key: form.fromChatKey } : {}),
     ...(form.images && form.images.length ? { images: form.images } : {}),
     ...(form.attachments && form.attachments.length
       ? { attachments: form.attachments } : {}),
@@ -2329,6 +2343,37 @@ export interface SeededDraftForm {
    * It is what "Back to chat" aims at on that card (`backToChat`).
    */
   fromChatKey: string | null;
+  /**
+   * THE RULE `repeat: "custom"` POINTS AT (Bugbot, PR #1118). The preset key
+   * alone is not an answer for Custom — see `TaskDraftForm.custom_rule` — so a
+   * reopened draft needs this to seed `customRule` with, not just `repeat`.
+   * Null for anything that does not parse as one of the five known shapes:
+   * a draft is loose JSON that may have been written by a different build
+   * (module docstring), and a malformed rule must cost the rule, not the card.
+   */
+  customRule: RecurrenceRule | null;
+}
+
+/** `f.custom_rule`, as a `RecurrenceRule` or not at all. Every field its own
+ *  type check, exactly like `str`/`attachments` below — a draft is loose JSON
+ *  and a bad shape must never throw inside the `useState` initialiser that
+ *  reads this (module docstring). */
+function parseCustomRule(value: unknown): RecurrenceRule | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const freq = row.freq;
+  if (freq !== "hour" && freq !== "day" && freq !== "week" && freq !== "month" && freq !== "year") {
+    return null;
+  }
+  const rule: RecurrenceRule = { freq };
+  if (typeof row.interval === "number") rule.interval = row.interval;
+  if (Array.isArray(row.byday) && row.byday.every((d) => typeof d === "number")) {
+    rule.byday = row.byday as number[];
+  }
+  if (row.monthly === "day" || row.monthly === "nth-weekday") rule.monthly = row.monthly;
+  if (typeof row.until === "string") rule.until = row.until;
+  if (typeof row.count === "number") rule.count = row.count;
+  return rule;
 }
 
 export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
@@ -2361,6 +2406,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
     fromChatKey: str("from_chat_key"),
+    customRule: parseCustomRule(f.custom_rule),
   };
 }
 
@@ -2732,11 +2778,17 @@ export default function NewJobModal({
   const [repeat, setRepeat] = useState<string>(
     () => saved.repeat ?? initialRepeatKey(editing),
   );
-  const [customRule, setCustomRule] = useState<RecurrenceRule | null>(() =>
-    editing?.rule && keyOfRule(editing.rule, new Date(editing.due)) === "custom"
+  const [customRule, setCustomRule] = useState<RecurrenceRule | null>(() => {
+    // A REOPENED DRAFT'S OWN RULE OUTRANKS `editing` — the two are mutually
+    // exclusive (a draft never carries `editing`, per `hopSeeded`'s comment
+    // above), and reading it here is the other half of the fix `custom_rule`
+    // exists for: storing it was pointless if nothing ever seeded it back
+    // (Bugbot, PR #1118).
+    if (saved.repeat === "custom" && saved.customRule) return saved.customRule;
+    return editing?.rule && keyOfRule(editing.rule, new Date(editing.due)) === "custom"
       ? editing.rule
-      : null,
-  );
+      : null;
+  });
   // Repeat is a CHECKBOX now, and the dropdown only exists while it is ticked
   // (design §6). Editing a repeating task therefore opens ticked, with the
   // stored rule already loaded — which is exactly "the key is not none".
@@ -3113,6 +3165,24 @@ export default function NewJobModal({
    * this card was handed).
    */
   const hopSeeded = !editing && !initialDraft && !!(initialMessage ?? "").trim();
+  /**
+   * THE CHAT THIS CARD'S WORDS CAME OUT OF, whichever way the card was opened —
+   * and the thing `POST /api/schedule` is told so it can drop that draft (Bugbot,
+   * PR #1118).
+   *
+   * The move is normally made by the first autosave (`from_chat_key` on the
+   * task-draft PUT, below). But Schedule pressed inside the 600 ms debounce
+   * never gets there: no id is minted, no PUT goes out, and the composer's draft
+   * — its row and its TASK number with it — sits beside the task it just became.
+   * `session_id` on the payload does not cover it either: a chat with no session
+   * yet is keyed `new:<file>`, which is not a session id.
+   *
+   * Two sources, same answer. The FRESH hop is handed the key as a prop; a card
+   * REOPENED from its draft row has only what the server stored on the draft
+   * (`form.from_chat_key`) — the same fact `backToChat` aims at below, for the
+   * same reason it exists at all.
+   */
+  const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");
   const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)
     ? {
       title,
@@ -3129,6 +3199,10 @@ export default function NewJobModal({
         .filter((i) => i.path)
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
+      // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
+      // moment `repeat` itself goes null, so a draft can never say "custom"
+      // with nothing behind it (Bugbot, PR #1118; see `TaskDraftForm.custom_rule`).
+      custom_rule: repeatOn && repeat === "custom" ? customRule : null,
     }
     : null;
   // NULL UNTIL THE FORM IS DIRTY, and that is what "nothing minted for an
@@ -3463,6 +3537,14 @@ export default function NewJobModal({
       // `settle` waits that one out too, BEFORE the request below goes out —
       // the server-side delete must be ordered after the last PUT, not merely
       // after the last one this client could still call off.
+      //
+      // `flush` FIRST, and it is load-bearing on a HOP-SEEDED card: `writeInitial`
+      // only arms the 600 ms debounce, so a Schedule pressed within that window
+      // (the whole point of a hop is that the card opens ready to send) would
+      // otherwise reach `stop` before a single write ever went out — no id
+      // minted, no `from_chat_key`, and the chat draft this hop was supposed to
+      // retire outlives the task it became (Bugbot, this batch).
+      autosaveRef.current.flush();
       autosaveRef.current.stop();
       await autosaveRef.current.settle();
       await scheduleMessage(
@@ -3492,6 +3574,9 @@ export default function NewJobModal({
           // in the same request. Empty when the form was never dirty enough to
           // mint one, which is most one-line tasks.
           draftId: draftIdRef.current ?? "",
+          // …and the chat draft this card was composed out of, for the case the
+          // autosave never got to move it. See originChatKey.
+          fromChatKey: originChatKey,
           // Whether anybody chose this time, which is what decides if the task
           // is a plan or a thing to run. See `timePicked`.
           timePicked,
