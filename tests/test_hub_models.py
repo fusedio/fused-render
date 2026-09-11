@@ -881,6 +881,81 @@ def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypa
     assert len(fake.calls) == 2  # a different engine choice is a different question
 
 
+# -- D843: `capability`, resolved to every tag it reaches --------------------
+
+
+def test_a_capability_with_one_tag_behaves_like_the_old_task_filter(client, hub_cache, monkeypatch):
+    fake = _reply([_hit("org/m", pipeline_tag="text-to-image")])
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.IMAGE_GENERATION})
+    assert resp.status_code == 200
+    assert len(fake.calls) == 1
+    assert "filter=text-to-image" in fake.calls[0][0]
+
+
+def test_an_unrecognised_capability_400s(client, hub_cache):
+    resp = _search(client, {"capability": "not-a-real-capability"})
+    assert resp.status_code == 400
+    assert "not-a-real-capability" in resp.json()["error"]
+
+
+def test_embeddings_capability_searches_every_tag_it_reaches(client, hub_cache, monkeypatch):
+    """`embeddings` is the one capability reached by three tags at once
+    (`ai_tasks.tags_for_capability`'s docstring) — no single `filter=` can
+    express it, so this is one Hub request per tag, merged."""
+    def fake(url, **kwargs):
+        fake.calls.append((url, kwargs))
+        q = parse_qs(urlsplit(url).query)
+        tag = q["filter"][0]
+        rows = {
+            "feature-extraction": [_hit("org/fe", pipeline_tag="feature-extraction")],
+            "sentence-similarity": [_hit("org/ss", pipeline_tag="sentence-similarity")],
+            "zero-shot-image-classification": [
+                _hit("org/zs", pipeline_tag="zero-shot-image-classification")],
+        }[tag]
+        return httpx.Response(200, content=json.dumps(rows).encode(),
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.EMBEDDINGS})
+    assert resp.status_code == 200
+    ids = {m["id"] for m in resp.json()["models"]}
+    assert ids == {"org/fe", "org/ss", "org/zs"}
+    assert len(fake.calls) == 3
+
+
+def test_embeddings_search_dedupes_a_repo_seen_through_more_than_one_tag(
+        client, hub_cache, monkeypatch):
+    def fake(url, **kwargs):
+        fake.calls.append((url, kwargs))
+        q = parse_qs(urlsplit(url).query)
+        tag = q["filter"][0]
+        # The same repo id turns up behind two different tag pages — a real
+        # repo cannot claim two `pipeline_tag`s, but nothing stops the Hub
+        # from returning the same id for two different keyword-search pages.
+        rows = {
+            "feature-extraction": [_hit("org/dupe", pipeline_tag="feature-extraction")],
+            "sentence-similarity": [_hit("org/dupe", pipeline_tag="feature-extraction")],
+            "zero-shot-image-classification": [],
+        }[tag]
+        return httpx.Response(200, content=json.dumps(rows).encode(),
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.EMBEDDINGS})
+    ids = [m["id"] for m in resp.json()["models"]]
+    assert ids.count("org/dupe") == 1
+
+
+def test_speech_to_text_capability_resolves_its_one_tag(client, hub_cache, monkeypatch):
+    fake = _reply([_hit("org/whisper", pipeline_tag="automatic-speech-recognition")])
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.SPEECH_TO_TEXT})
+    assert resp.status_code == 200
+    assert [m["id"] for m in resp.json()["models"]] == ["org/whisper"]
+    assert "filter=automatic-speech-recognition" in fake.calls[0][0]
+
+
 # -- fit, speed and age (task 1) --------------------------------------------
 
 

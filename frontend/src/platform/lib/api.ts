@@ -3658,7 +3658,7 @@ export interface HubModel {
 
 export interface HubSearchResult {
   models: HubModel[];
-  query: { q: string; task: string; sort: string; limit: number };
+  query: { q: string; task: string; capability?: string; sort: string; limit: number };
   /** Present INSTEAD of results when the Hub could not be reached or refused. */
   error?: string;
   endpoint?: string;
@@ -3699,6 +3699,13 @@ export type HubParamsBand = "under4b" | "4to15b" | "over15b" | "any";
 export function searchHubModels(opts: {
   q?: string;
   task?: string;
+  /** D843: the capability the search screen's left pane is scoped to
+   *  (`registry.py`'s keys) — resolved server-side to every Hub `pipeline_tag`
+   *  that capability reaches (`ai_tasks.tags_for_capability`), which is more
+   *  than one for `embeddings`. `task` stays accepted alongside this for a
+   *  single-tag request; the two are never both sent by this app's own
+   *  screen (it sends `capability` since the Task menu was removed). */
+  capability?: string;
   sort?: HubSort;
   limit?: number;
   /** Ask for models that will NOT fit this machine too — off by default, so a
@@ -3727,6 +3734,7 @@ export function searchHubModels(opts: {
   return postJson<HubSearchResult>("/api/ai-models/hub/search", {
     q: opts.q,
     task: opts.task,
+    capability: opts.capability,
     sort: opts.sort,
     limit: opts.limit,
     includeUnfit: opts.includeUnfit,

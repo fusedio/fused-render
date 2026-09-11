@@ -528,6 +528,27 @@ def label_for(tag: str | None) -> str | None:
     return classify(tag).label
 
 
+def tags_for_capability(capability: str | None) -> tuple[str, ...]:
+    """Every `pipeline_tag` that reaches this capability, in table order.
+
+    D843: the search screen's left pane is scoped by a CAPABILITY
+    (`fused_render/ai/registry.py`'s keys), not by a single Hub tag, and
+    `embeddings` is the capability `supported_tags()`'s docstring already
+    flags as unusual — it is reached by THREE tags
+    (`zero-shot-image-classification`, `feature-extraction`,
+    `sentence-similarity`), so no single `task=` filter can express "search
+    for embedding models" at all. `capability_for_tag` inverts a tag into its
+    capability for a single row already in hand; this is the other
+    direction, needed once — here — to turn a capability BACK into every tag
+    a search must OR together. Empty for a string that names no capability
+    here (a typo, or a capability nothing serves), which the caller turns
+    into the same 400 an unsupported `task` already gets.
+    """
+    if not capability:
+        return ()
+    return tuple(task.tag for task in _TASKS if task.capability == capability)
+
+
 def help_for(tag: str | None) -> str | None:
     """The glossary sentence for a tag, or None. Keyed by TAG (HS-7): the two
     faces of the AI Models page used to key it by prose label, which is how one

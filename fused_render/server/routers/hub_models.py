@@ -1524,6 +1524,13 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     if guard is not None:
         return guard
     q, task = body.get("q"), body.get("task")
+    # D843: `capability` is the search screen's own scope now that the left
+    # pane, not this screen's own (now-removed) Task menu, picks the job — a
+    # capability key (`ai/registry.py`'s constants), never a Hub tag. `task`
+    # stays accepted for whatever still sends a single tag (an old saved URL,
+    # `tests/test_hub_models.py`'s existing pins) and wins ties with
+    # `capability` never arising in practice (the frontend sends exactly one).
+    capability = body.get("capability")
     # D780: the composite match score, not raw downloads, is the default —
     # see that decision for why downloads-first rewards age and CI traffic
     # over usefulness. `downloads` stays a fully explicit choice, unchanged.
@@ -1531,6 +1538,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     limit = body.get("limit")
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
+    capability_filter = (capability or "").strip()[:60] if isinstance(capability, str) else ""
     include_unfit = bool(body.get("includeUnfit"))
     # Part 3's three explicit filters. All server-side, and for the SAME
     # reason `includeUnfit` already is (see the `fetch` comment below): each
@@ -1570,6 +1578,16 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # run them".
     if task_filter and task_filter not in supported_tags():
         return _error(f"nothing here runs {task_filter!r}", status=400)
+    # D843: a capability that resolves to no tags (a typo, or a capability
+    # nothing here serves) gets the identical 400 an unsupported `task`
+    # already does — `tags_for_capability` is total (empty tuple for
+    # anything it does not recognise), so this is the one place that has to
+    # turn "no tags" into an error rather than a silent zero-result search.
+    capability_tags: tuple[str, ...] = ()
+    if capability_filter and not task_filter:
+        capability_tags = ai_tasks.tags_for_capability(capability_filter)
+        if not capability_tags:
+            return _error(f"nothing here runs {capability_filter!r}", status=400)
     try:
         count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
@@ -1599,18 +1617,19 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # them being active forces the full overfetch multiplier, the same as an
     # unfiltered query already gets by default.
     extra_filters_active = fit_level != "any" or bool(quant_filter) or params_band != "any"
-    fetch = (count if task_filter and include_unfit and not extra_filters_active
+    single_tag_task = task_filter or (capability_tags[0] if len(capability_tags) == 1 else "")
+    fetch = (count if single_tag_task and include_unfit and not extra_filters_active
              else min(count * _OVERFETCH, _MAX_FETCH))
-    params: dict[str, object] = {
+    base_params: dict[str, object] = {
         "sort": sort_field,
         "direction": direction,
         "limit": fetch,
         "expand[]": list(_EXPAND),
     }
     if query:
-        params["search"] = query
+        base_params["search"] = query
     if publisher:
-        params["author"] = publisher
+        base_params["author"] = publisher
     # (D412) When a task filter is set AND the runner actually serving that
     # capability HERE declares a format tag (`Runner.hub_filter_tags`), the
     # Hub is asked to AND it onto the pipeline-tag filter already sent —
@@ -1621,13 +1640,24 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # spans every supported tag at once), so this narrowing is skipped and
     # `_model_row`'s own per-row check is the only gate — the same
     # two-layer shape the pipeline-tag filter itself already has.
-    extra_tags: tuple[str, ...] = ()
-    if task_filter:
-        filter_capability = ai_tasks.capability_for_tag(task_filter)
-        filter_runner = for_capability(filter_capability) if filter_capability else None
-        if filter_runner is not None:
-            extra_tags = filter_runner.hub_filter_tags
-        params["filter"] = [task_filter, *extra_tags] if extra_tags else task_filter
+    #
+    # D843: `capability_tags` widens this from "one tag" to "one tag per
+    # request, merged" — the Hub's own `filter=` params are ANDed together
+    # (confirmed live, see above), so there is no single request that asks
+    # for "feature-extraction OR sentence-similarity OR
+    # zero-shot-image-classification". Embeddings is the one capability more
+    # than one tag reaches (`ai_tasks.tags_for_capability`'s docstring), so
+    # this is one `_fetch` call per tag, merged and de-duped by repo id
+    # below — the simplest shape that keeps a single Hub request's
+    # AND-semantics intact for every other capability, which still resolves
+    # to exactly one tag and takes the old one-request path.
+    query_tags: tuple[str, ...] = capability_tags if capability_tags else ((task_filter,) if task_filter else ())
+    filter_capability = (
+        capability_filter if capability_tags
+        else (ai_tasks.capability_for_tag(task_filter) if task_filter else None)
+    )
+    filter_runner = for_capability(filter_capability) if filter_capability else None
+    extra_tags: tuple[str, ...] = filter_runner.hub_filter_tags if filter_runner is not None else ()
 
     # `extra_tags` is part of the cache key because it is part of the
     # ANSWER: a preference switched live (CT-5, no restart needed) changes
@@ -1647,16 +1677,66 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # every request in the post-join section below exactly like
     # `include_unfit` already does, and their only effect on what gets FETCHED
     # is already captured by `fetch`'s own value, which is already here.
-    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()),
+    # `query_tags` (D843) replaces `task_filter` in the key for the same
+    # reason as `extra_tags`: it is the actual set of tags fetched, and two
+    # different capabilities that happened to share a `task_filter` string
+    # can never occur, but a capability resolving to different tags across a
+    # runner change must not share a cache entry with the old tag set.
+    key = (hub_endpoint(), query, query_tags, sort, count, bool(_token()),
            extra_tags, fetch, publisher)
     payload = _cached(key)
     if payload is None:
-        rows, error = _fetch(params)
-        if error:
-            # Not a 5xx: the request was fine, the far side was not, and the
-            # page has a sentence to show for it.
-            return {"models": [], "error": error, "query": {
-                "q": query, "task": task_filter, "sort": sort, "limit": count}}
+        if len(query_tags) <= 1:
+            params = dict(base_params)
+            if query_tags:
+                tag = query_tags[0]
+                params["filter"] = [tag, *extra_tags] if extra_tags else tag
+            rows, error = _fetch(params)
+            if error:
+                # Not a 5xx: the request was fine, the far side was not, and
+                # the page has a sentence to show for it.
+                return {"models": [], "error": error, "query": {
+                    "q": query, "task": task_filter, "sort": sort, "limit": count}}
+        else:
+            # One Hub request per tag (see the `query_tags` comment above),
+            # merged and de-duped by repo id — a repo can only claim ONE
+            # `pipeline_tag`, so no id can genuinely answer to two of these
+            # fetches, but nothing stops the Hub from putting the same repo
+            # in more than one of a keyword search's per-tag pages, and a
+            # duplicate row would render twice.
+            rows = []
+            seen_ids: set[str] = set()
+            error = None
+            for tag in query_tags:
+                tag_params = dict(base_params)
+                tag_params["filter"] = [tag, *extra_tags] if extra_tags else tag
+                tag_rows, tag_error = _fetch(tag_params)
+                if tag_error:
+                    error = tag_error
+                    continue
+                for row in tag_rows:
+                    row_id = row.get("id") if isinstance(row, dict) else None
+                    if row_id is not None and row_id in seen_ids:
+                        continue
+                    if row_id is not None:
+                        seen_ids.add(row_id)
+                    rows.append(row)
+            if not rows and error:
+                return {"models": [], "error": error, "query": {
+                    "q": query, "task": task_filter, "sort": sort, "limit": count}}
+            # Merging per-tag pages interleaves each tag's own Hub-sorted
+            # order — re-sort the merged set by the same field/direction the
+            # request asked the Hub for, so a multi-tag capability search
+            # ranks identically to a single-tag one before the `_BEST_SORT`/
+            # `_FIT_SORT` reorder (below) runs its own pass over everything
+            # regardless. `None` sorts last for either direction: a field
+            # the Hub did not report is not "biggest" or "smallest", it is
+            # unknown.
+            def _sort_key(row: object) -> tuple[bool, object]:
+                value = row.get(sort_field) if isinstance(row, dict) else None
+                return (value is not None, value if value is not None else 0)
+
+            rows.sort(key=_sort_key, reverse=(direction == -1))
         payload = {"raw": rows}
         _store(key, payload)
 
@@ -1794,7 +1874,8 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     models = _pull_in_family_members(models[:count], models[count:])
     return {
         "models": models,
-        "query": {"q": query, "task": task_filter, "sort": sort, "limit": count},
+        "query": {"q": query, "task": task_filter, "capability": capability_filter,
+                  "sort": sort, "limit": count},
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
         "hiddenUnfit": hidden_unfit,

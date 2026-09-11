@@ -461,7 +461,13 @@ export function HubSearchScreen({
     setLoading(true);
     searchHubModels({
       q: settled.q,
-      task: settled.task,
+      // D843: the search screen is scoped by the CAPABILITY this pane was
+      // opened from — `capabilityKey`, the same prop `CapabilityPane` reads,
+      // not a Hub tag — so the server resolves it to every tag that
+      // capability reaches (`embeddings` is three). The Task menu that used
+      // to let a reader narrow independently is gone (item 2); `settled.task`
+      // is kept only as the URL's `hubTask` mirror.
+      capability: capabilityKey,
       sort: wireSort(settled.sort),
       limit,
       includeUnfit: settled.includeUnfit,
