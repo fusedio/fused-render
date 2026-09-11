@@ -3845,8 +3845,8 @@ button.am-bench-model:focus-visible {
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg-muted);
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
-  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
