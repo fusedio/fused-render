@@ -2167,6 +2167,15 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # tag) — a request that only sends the legacy `task` param always takes
     # the live path below.
     if capability_filter and hub_catalog.pool_exists(hub_catalog.load_config(), capability_filter):
+        # C3 follow-up: `ensure_build_started` is a no-op unless the pool is
+        # missing, blocked, or `_formats_are_stale` (D1258) says this
+        # machine can now serve a wider format set than the built pool
+        # covers — the catalog gate above returning early on `pool_exists`
+        # meant a stale-but-existing pool never reached this call, so a
+        # second runner installed after the pool was built stayed invisible
+        # forever. The stale pool still serves THIS request; the wider
+        # rebuild (if one starts) lands for the next one.
+        hub_catalog_builder.ensure_build_started(capability_filter)
         return _catalog_search(capability_filter, query, publisher, count, sort,
                                 fit_level, quant_filter, params_band, task_filter)
     pool_state = "none"

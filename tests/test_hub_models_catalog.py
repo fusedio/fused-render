@@ -287,3 +287,34 @@ def test_live_path_reports_pool_state_blocked(client, monkeypatch):
     body = resp.json()
     assert body["poolState"] == "blocked"
     assert "poolPagesDone" not in body
+
+
+def test_catalog_path_starts_a_stale_rebuild_but_still_serves_the_existing_pool(
+        client, hub_cache, monkeypatch):
+    """C3 follow-up (D1260): `ensure_build_started` is only a no-op when the
+    pool is fresh (`_formats_are_stale` False) — but the catalog gate used to
+    return `_catalog_search` before ever calling it, so a pool built with a
+    narrower format set than the machine can now serve (a second runner
+    installed since) never triggered the wider rebuild. This pins that the
+    catalog path now calls `ensure_build_started` (which itself decides
+    whether a rebuild is actually warranted) BEFORE serving, and that the
+    stale pool still answers this request rather than blocking on the
+    rebuild."""
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION,
+                            [_pool_row("only/gguf-model", downloads=5)],
+                            formats=("gguf",))
+
+    runner = types.SimpleNamespace(hub_filter_tags=("gguf",), code="llamacpp-text")
+    runner2 = types.SimpleNamespace(hub_filter_tags=("mlx",), code="mlx-text")
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner, runner2))
+
+    started = []
+    monkeypatch.setattr(hub.hub_catalog_builder, "ensure_build_started",
+                         lambda capability, **k: started.append(capability) or True)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert started == [registry.TEXT_GENERATION]
+    body = resp.json()
+    assert [m["id"] for m in body["models"]] == ["only/gguf-model"]
