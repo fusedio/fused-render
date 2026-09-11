@@ -367,32 +367,32 @@ export interface MergedSection {
   runner: SectionRunner | null;
 }
 
-/** The disk rows in the row's reading order: resident first, then by recency.
+/** The disk rows in the row's reading order: resident first, then by size,
+ *  largest first.
  *
  *  Only membership of `loadedById` is read, never the row itself: what "loaded"
  *  means for an ORDER is "this one is costing memory right now", and a model
  *  whose weights are still going in is already that. Waiting for `ready` would
  *  move the card twice for one event.
  *
- *  Behind the resident one, MOST RECENTLY USED first — a horizontal row is read
- *  a few cards deep and then scrolled, so the front has to hold the models the
- *  user actually reaches for; the listing's size order optimises for a question
- *  ("what is the disk spent on") the header's byte figure already answers.
- *  `lastUsed` is filesystem atime and can be null (noatime volumes) — nulls sort
- *  last, and ties keep the listing's order, so a volume that never writes atime
- *  degrades to exactly the old sort rather than to a shuffle.
+ *  Behind the resident one, LARGEST first — this is a vertical pane scanned top
+ *  to bottom, not a horizontal carousel read a few cards deep, so the row's own
+ *  size figure is what the user reads it against as they go, and biggest-first
+ *  answers the question this listing actually exists to answer: "what is the
+ *  disk spent on". `lastUsed` no longer orders the list (the "Last used" chip
+ *  is computed separately and is unaffected); ties break on `size`, then on
+ *  `id` ascending for a deterministic order across renders.
  */
 function orderDisk(repos: AiModelRepo[], loaded: ReadonlyMap<string, unknown>): AiModelRepo[] {
-  // Finite sentinels, not ±Infinity: two nulls (or, defensively, two resident
-  // rows) must compare EQUAL, and Infinity - Infinity is NaN — which a sort
-  // comparator reads as garbage, not as a tie.
-  const recency = (repo: AiModelRepo) => {
-    if (loaded.has(repo.id)) return Number.MAX_SAFE_INTEGER;
-    return repo.lastUsed ?? -1;
-  };
-  // Sorted copy; Array.prototype.sort is stable, which is what "ties keep the
-  // listing's order" rests on.
-  return [...repos].sort((a, b) => recency(b) - recency(a));
+  // Sorted copy; Array.prototype.sort is stable, though the id tiebreak below
+  // makes the order deterministic even without that guarantee.
+  return [...repos].sort((a, b) => {
+    const aLoaded = loaded.has(a.id);
+    const bLoaded = loaded.has(b.id);
+    if (aLoaded !== bLoaded) return aLoaded ? -1 : 1;
+    if (a.size !== b.size) return b.size - a.size;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 }
 
 /** Which of the two disk states a card is in. Not a boolean, since D424: a

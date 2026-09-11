@@ -328,7 +328,7 @@ describe("a capability's row is disk then recommended", () => {
 
   // Behind the resident card the row is MRU: a horizontal row is read a few
   // cards deep, so the front holds what the user actually reaches for.
-  it("orders the unloaded disk rows by last use, newest first", () => {
+  it("orders the unloaded disk rows by size, largest first", () => {
     const stale = repo({
       id: "a/stale",
       capability: "text-generation",
@@ -342,11 +342,11 @@ describe("a capability's row is disk then recommended", () => {
       lastUsed: 2_000,
     });
     const text = sectionsOf([stale, fresh]).find((s) => s.key === "text-generation");
-    // The server sorted a/stale first (bigger); recency is what flips them.
-    expect(text?.disk.map((r) => r.id)).toEqual(["z/fresh", "a/stale"]);
+    // Size wins even though z/fresh was used more recently.
+    expect(text?.disk.map((r) => r.id)).toEqual(["a/stale", "z/fresh"]);
   });
 
-  it("sorts a null lastUsed after every dated row, in the listing's order", () => {
+  it("ignores lastUsed entirely — size order, nulls included", () => {
     const dated = repo({
       id: "a/dated",
       capability: "text-generation",
@@ -358,7 +358,7 @@ describe("a capability's row is disk then recommended", () => {
     const text = sectionsOf([neverBig, neverSmall, dated]).find(
       (s) => s.key === "text-generation",
     );
-    expect(text?.disk.map((r) => r.id)).toEqual(["a/dated", "b/never-big", "c/never-small"]);
+    expect(text?.disk.map((r) => r.id)).toEqual(["b/never-big", "c/never-small", "a/dated"]);
   });
 
   // Residency still beats recency: the model costing memory RIGHT NOW leads
