@@ -3687,11 +3687,6 @@ button.am-bench-model:focus-visible {
   color: var(--error);
 }
 
-.tp .row-meta.unknown {
-  color: var(--fg-muted);
-  font-style: italic;
-}
-
 .tp .row-facts.pop {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -305,12 +305,6 @@ function HitRow({
               Will not fit — needs about {formatSize(model.fit.footprintBytes)} of memory.
             </p>
           )}
-          {cell.verdict === "unknown" && (
-            <p className="row-meta unknown">
-              Fit not measured yet — the Hub did not say how big this file is. It is shown, not hidden:
-              unmeasured is not the same as too big.
-            </p>
-          )}
         </div>
         <span className="row-facts pop">
           <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
