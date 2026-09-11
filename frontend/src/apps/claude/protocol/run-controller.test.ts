@@ -13,7 +13,7 @@ const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
 import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
-import type { PermissionRow, PollResponse, Segment } from "./types";
+import type { HistoryResponse, PermissionRow, PollResponse, Segment } from "./types";
 
 // ---- fake agent.py ---------------------------------------------------------
 
@@ -91,7 +91,13 @@ const bodyOf = (sg: Segment): string => (sg as { text?: string }).text || "";
 function makeController(
   handlers: Record<string, Handler>,
   params = createMemoryParamsStore(),
-  over: { appStateBlock?: () => Promise<string> } = {},
+  over: {
+    appStateBlock?: () => Promise<string>;
+    historyCache?: {
+      get(file: string, sessionId: string): HistoryResponse | undefined;
+      set(file: string, sessionId: string, res: HistoryResponse): void;
+    };
+  } = {},
 ) {
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
@@ -3016,5 +3022,228 @@ describe("a follow-up that fails after Back stays quiet (D3, QA PR #1061)", () =
     expect(controller.getState().trouble).toBeNull();
     expect(controller.getState().turns).toEqual([]);
     expect(made.returned.length).toBe(0);
+  });
+});
+
+describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)", () => {
+  const question = (id: string): PermissionRow => ({
+    id,
+    tool: "AskUserQuestion",
+    input: { questions: [{ question: "Which?", options: [{ label: "A" }] }] },
+    created_at: 0,
+    decision: "",
+    scope: "",
+    mode: "",
+    answers: {},
+  });
+  const liveHistory = (id: string) => ({
+    turns: [{ role: "user", text: "hi", uuid: "u1" }],
+    transcript: null,
+    live_run: "r9",
+    permissions: [question(id)],
+    mode: "prompt",
+  });
+
+  test("the card and the transcript land in ONE emit, gate down, before any live_run lookup", async () => {
+    const made = makeController({
+      history: () => liveHistory("q1"),
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => poll({ done: true, permissions: [question("q1")] }),
+    });
+    const frames: { perms: string[]; turns: number; adopting: boolean }[] = [];
+    made.controller.subscribe(() => {
+      const st = made.controller.getState();
+      frames.push({
+        perms: st.permissions.map((p) => p.id),
+        turns: st.turns.length,
+        adopting: st.adopting,
+      });
+    });
+    await made.controller.openSession("s-abc");
+    const landed = frames.find((f) => f.turns === 1);
+    expect(landed).toEqual({ perms: ["q1"], turns: 1, adopting: false });
+    // The card knows its run, so it is answerable before any poll attaches.
+    expect(made.controller.getState().permissions[0]!.runId).toBe("r9");
+  });
+
+  test("the first poll replaying the same rows does not duplicate the card", async () => {
+    const made = makeController({
+      history: () => liveHistory("q1"),
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => poll({ done: true, permissions: [question("q1")] }),
+    });
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.controller.getState().permissions.map((p) => p.id)).toEqual(["q1"]);
+  });
+
+  test("an answer without `live_run` (older server) keeps the gate up as before", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true }),
+    });
+    const seen: boolean[] = [];
+    made.controller.subscribe(() => seen.push(made.controller.getState().adopting));
+    await made.controller.openSession("s-old");
+    // The history emit itself did not lower the gate; the watch's first lap does.
+    expect(seen.includes(true)).toBe(true);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.controller.getState().adopting).toBe(false);
+  });
+
+  test("a second controller paints from the shared cache before its own fetch returns (Peek on a tile)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const tile = makeController(
+      {
+        history: () => liveHistory("q1"),
+        live_run: () => ({ run_id: "r9" }),
+        poll: () => poll({ done: true, permissions: [question("q1")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await tile.controller.openSession("s-abc");
+    expect(store.size).toBe(1);
+
+    let release: (() => void) | null = null;
+    const peek = makeController(
+      {
+        history: () =>
+          new Promise((r) => {
+            release = () => r(liveHistory("q1"));
+          }),
+        live_run: () => ({ run_id: "r9" }),
+        poll: () => poll({ done: true, permissions: [question("q1")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    const opening = peek.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Fetch still out — yet transcript, card and an open gate are on screen.
+    const st = peek.controller.getState();
+    expect(st.turns.length).toBe(1);
+    expect(st.permissions.map((p) => p.id)).toEqual(["q1"]);
+    expect(st.adopting).toBe(false);
+    expect(st.historyLoading).toBe(true);
+    release!();
+    await opening;
+    expect(peek.controller.getState().historyLoading).toBe(false);
+  });
+
+  test("the fetched answer replaces the warm paint's cards — a finished run leaves no ghost card (Bugbot)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    store.set("/proj/app.py|s-abc", liveHistory("q1") as unknown as HistoryResponse);
+    const made = makeController(
+      {
+        history: () => ({ ...liveHistory("q1"), live_run: "", permissions: [], mode: "" }),
+        live_run: () => ({ run_id: "" }),
+        poll: () => poll({ done: true }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    const seen: string[][] = [];
+    made.controller.subscribe(() => seen.push(made.controller.getState().permissions.map((p) => p.id)));
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(seen.some((ids) => ids.includes("q1"))).toBe(true); // the warm paint had it
+    expect(made.controller.getState().permissions).toEqual([]); // the fetch took it away
+  });
+
+  test("a card answered on the warm paint keeps its verdict when the fetch lands (Bugbot round 2)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    store.set("/proj/app.py|s-abc", liveHistory("q1") as unknown as HistoryResponse);
+    let release: (() => void) | null = null;
+    const made = makeController(
+      {
+        // The answer was built BEFORE the click: q1 still open on the wire.
+        history: () =>
+          new Promise((r) => {
+            release = () => r(liveHistory("q1"));
+          }),
+        decide: () => ({ decision: "allow", scope: "once", answers: { Which: "A" } }),
+        live_run: () => ({ run_id: "r9" }),
+        poll: () => poll({ done: true, permissions: [question("q1")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    const opening = made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.controller.getState().permissions[0]!.decision).toBe("");
+    await made.controller.answerQuestion("q1", { Which: ["A"] });
+    expect(made.controller.getState().permissions[0]!.decision).toBe("allow");
+    release!();
+    await opening;
+    const card = made.controller.getState().permissions.find((p) => p.id === "q1")!;
+    expect(card.decision).toBe("allow");
+    expect(card.placement).toBe("parked");
+  });
+
+  test("a new chat stops writing into the previous session's cache entry (Bugbot)", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      {
+        history: () => ({ ...liveHistory("q1"), permissions: [] }),
+        live_run: () => ({ run_id: "" }),
+        start: () => ({ run_id: "r2" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ session_id: "s-new", permissions: [question("q9")] })
+            : poll({ done: true, session_id: "s-new", permissions: [question("q9")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    made.controller.newChat();
+    await made.controller.sendMessage("hello");
+    expect(made.controller.getState().permissions.map((p) => p.id)).toEqual(["q9"]);
+    const old = store.get("/proj/app.py|s-abc")!;
+    expect((old.permissions || []).map((p) => p.id)).toEqual([]);
+  });
+
+  test("the cache follows the cards a polling tile publishes", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      {
+        history: () => ({ ...liveHistory("q1"), permissions: [] }),
+        live_run: () => ({ run_id: "r9" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ permissions: [question("q2")] })
+            : poll({ done: true, permissions: [question("q2")] }),
+      },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const cached = [...store.values()][0]!;
+    expect((cached.permissions || []).map((p) => p.id)).toEqual(["q2"]);
+    expect(cached.live_run).toBe("r9");
   });
 });

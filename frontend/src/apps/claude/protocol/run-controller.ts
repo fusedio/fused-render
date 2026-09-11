@@ -738,7 +738,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     list: PermissionRow[] | null | undefined,
     runId: string,
     liveMode: PermissionMode | undefined,
-  ) => {
+    publish = true,
+  ): boolean => {
     // `poll.mode` is agent.py's `_live_mode` — the authoritative read of the mode
     // the run is in, so it outranks whatever the start seeded (T:16325).
     setPermissionMode(liveMode);
@@ -786,7 +787,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // else: KEEP `prev`. Nothing the card draws has moved, and replacing the
       // row would re-emit the whole list for a replay of the same request.
     }
-    if (changed) publishPermissions();
+    if (changed && publish) publishPermissions();
+    return changed;
   };
 
   /** Whether two readings of one request say the same thing TO THE CARD. `input`
@@ -806,14 +808,42 @@ export function createChatController(deps: ControllerDeps): ChatController {
     a.runId === b.runId &&
     JSON.stringify(a.answers ?? {}) === JSON.stringify(b.answers ?? {});
 
-  const publishPermissions = () => {
+  const permissionRows = (): PermissionRow[] => {
     const rows: PermissionRow[] = [];
     for (const row of permCards.values()) rows.push(row);
     // Open cards pinned LAST, in request order, as one contiguous block: the run
     // is blocked on them (T:14680 pinOpenCards).
     rows.sort((a, b) => Number(a.placement === "open") - Number(b.placement === "open"));
-    emit({ permissions: rows });
+    return rows;
   };
+  const publishPermissions = () => {
+    const rows = permissionRows();
+    emit({ permissions: rows });
+    rememberCards(rows);
+  };
+  /** THE CACHE FOLLOWS THE CARDS. A Peek opened on a tile that has been
+   *  polling for a minute must open on the card the tile shows NOW, not the one
+   *  the tile's history fetch saw at boot — so every published change writes
+   *  the rows (with the run they belong to) back over the cached answer. */
+  const rememberCards = (rows: PermissionRow[]) => {
+    const cache = deps.historyCache;
+    if (!cache) return;
+    // Under the id the conversation was RESTORED with, not `state.sessionId`:
+    // the first poll can re-point that to the id the CLI minted
+    // (`--fork-session`, `noteSessionId`), while the wall's tile and the Peek
+    // opened on it both still name the task's original session. Mirrored under
+    // the live id as well when the two differ, so either spelling opens warm.
+    const runId = activeRun || rows.find((r) => r.runId)?.runId || "";
+    for (const sid of new Set([restoredSid, state.sessionId])) {
+      if (!sid) continue;
+      const had = cache.get(FILE || "", sid);
+      if (!had) continue;
+      cache.set(FILE || "", sid, { ...had, live_run: runId || had.live_run || "", permissions: rows });
+    }
+  };
+  /** The session id `openSession` last restored — the cache key `rememberCards`
+   *  writes back under (see there). */
+  let restoredSid = "";
 
   /** The reason `sendError` is cleared HERE and not by the card: the row is the
    *  controller's, and a retry has to disable the buttons again — which the card
@@ -2184,6 +2214,52 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- history / sessions -------------------------------------------------
 
+  /**
+   * ONE EMIT for a restored conversation: turns, and — when the answer names a
+   * live run (`_history_live`) — its cards and the mode it is running in, with
+   * the adoption gate DOWN in the same frame. The gate exists so the transcript
+   * never paints once without its card (see `openSession`); with the card in
+   * hand there is nothing left to hold it for. An answer without `live_run`
+   * (older server, tests) keeps the gate up and the adopt watch discovers as
+   * before. The first poll of the adopted run replays the same rows and
+   * `syncPermissions` dedupes them by id.
+   *
+   * `fromCache` keeps `historyLoading` up: the fetch is still out.
+   */
+  function landHistory(res: HistoryResponse, fromCache: boolean): void {
+    const live = typeof res.live_run === "string";
+    if (live) {
+      // THE FETCH REPLACES THE WARM PAINT, cards included: `syncPermissions`
+      // only adds and updates by id, so a cache paint's card would survive an
+      // answer that says the run is over (`live_run: ""`, no rows) and sit
+      // there answerable, posting `decide` to a run that has ended (Bugbot, PR
+      // #1112). Only the UNDECIDED cards the answer no longer names go: the
+      // warm paint's gate is down, so a click can land while the fetch is out,
+      // and a verdict that already reached the server must not come back as an
+      // open card because this answer was built a moment before it (Bugbot,
+      // round 2). `syncPermissions` keeps a landed decision over an incoming
+      // row without one, so the decided card survives either way.
+      if (!fromCache) {
+        const named = new Set((res.permissions || []).map((p) => p && p.id));
+        for (const [id, row] of permCards) {
+          if (!named.has(id) && !row.decision) permCards.delete(id);
+        }
+      }
+      syncPermissions(
+        res.permissions,
+        res.live_run || "",
+        (res.mode || undefined) as PermissionMode | undefined,
+        false,
+      );
+    }
+    emit({
+      turns: historyToTurns(res),
+      transcript: res.transcript ?? null,
+      ...(fromCache ? {} : { historyLoading: false }),
+      ...(live ? { permissions: permissionRows(), adopting: false } : {}),
+    });
+  }
+
   async function openSession(sessionId: string): Promise<void> {
     if (disposed) return;
     // Reuse the `sending` gate: a message sent during the await would be
@@ -2241,15 +2317,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `emptyState`; this is the other way a transcript is replaced.
       ownRunEndedAt: 0,
     });
+    // WHAT THIS PAGE ALREADY KNOWS ABOUT THE CONVERSATION paints before the
+    // fetch is even sent: the Tasks wall loaded this chat into a tile, and the
+    // Peek opened on that tile is a second controller with nothing of its own.
+    // Transcript and cards together, gate down — the fetch below replaces it.
+    restoredSid = sessionId;
+    const cached = deps.historyCache?.get(FILE || "", sessionId);
+    if (cached) landHistory(cached, true);
     try {
       const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       if (res.error) throw new Error(res.error);
-      emit({
-        turns: historyToTurns(res),
-        transcript: res.transcript ?? null,
-        historyLoading: false,
-      });
+      deps.historyCache?.set(FILE || "", sessionId, res);
+      landHistory(res, false);
     } catch (err) {
       // A failed restore is not a trouble card in T either — it warns and leaves
       // an empty log (T:18057-18059).
@@ -2859,6 +2939,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (activeRun || sending) return;
       if (state.ownRunEndedAt !== endBefore || state.transcriptGen !== tGen) return;
       if (res.error) throw new Error(res.error);
+      deps.historyCache?.set(FILE || "", sessionId, res);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a
       // refresh cannot say WHICH runs it just rendered. The duplicate-attach
@@ -2912,6 +2993,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     activeSeat = 0;
     activeTurnKey = null;
     permCards.clear();
+    restoredSid = ""; // the cache key leaves with the transcript (Bugbot, PR #1112)
     notedSkills.clear();
     answeredStates.clear();
     notedStates.clear();

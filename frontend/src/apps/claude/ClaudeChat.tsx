@@ -35,7 +35,7 @@ import { currentUrl, navigateUrl } from "@platform/lib/router";
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { resolveAgentDir } from "./protocol/agent";
-import { fetchHistory } from "./protocol/history";
+import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, UserTurn } from "./protocol/controller-api";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -825,6 +825,7 @@ function ChatBody(props: ChatBodyProps) {
         // `/api/claude-sessions/history`, with agent.py through `/api/run`
         // behind it. See `fetchHistory`.
         history: (f, s) => fetchHistory(agentDir, f, s),
+        historyCache: sharedHistoryCache,
         model: () => liveModel.current,
         effort: () => liveEffort.current,
         hasPane: () => paneAnswer.current(),

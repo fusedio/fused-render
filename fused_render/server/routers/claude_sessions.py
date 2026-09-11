@@ -757,7 +757,8 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
          "--output-format", "json", "--system-prompt", _RECAP_SYSTEM,
          _RECAP_PROMPT % tail],
         cwd=workdir, env=agent._spawn_env(), stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        encoding="utf-8", errors="replace")
     try:
         stdout, _ = proc.communicate(timeout=_RECAP_TIMEOUT)
     except subprocess.TimeoutExpired:
