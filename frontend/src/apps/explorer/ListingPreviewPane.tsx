@@ -190,6 +190,12 @@ export default function ListingPreviewPane({
             noFocus
             noOpen
             paramsSource="url"
+            // THE RECAP OPT-IN (ChatMount `recap`): this pane IS the chat the
+            // reader opened on a folder — `/explorer/view/<dir>?session_id=`
+            // lands here, not in Preview's content pane — so it is a primary
+            // site like Preview's two. `noFocus` is about the keyboard staying
+            // on the listing, not about the chat being display-only.
+            recap
             {...(initialAsk ? { initialAsk } : {})}
           />
         ) : (

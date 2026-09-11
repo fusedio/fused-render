@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
@@ -99,6 +100,10 @@ export interface TranscriptProps {
    * mounted, `null` when it is not.
    */
   followRef?: MutableRefObject<(() => void) | null>;
+  /** The recap line (ui/RecapFold), drawn after the last turn INSIDE the log so
+   *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
+   *  the last line of the transcript, and so does this. */
+  recap?: ReactNode;
 }
 
 export const Transcript = memo(function Transcript({
@@ -114,6 +119,7 @@ export const Transcript = memo(function Transcript({
   paneNoun,
   what,
   followRef,
+  recap,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -427,6 +433,11 @@ export const Transcript = memo(function Transcript({
     const el = findTurn(log.current, msgAnchor);
     spend.current?.();
     if (!el || !wrap) return;
+    // AND THE FOLLOW GOES OFF. The reader has asked to be somewhere that is not
+    // the tail, and the flag's other writer is a ResizeObserver — a picture
+    // loading above the anchor would otherwise pull them straight back down,
+    // which is the same fight `settleAnchor` exists to win.
+    followTail.current = false;
     const still =
       typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
     scrollToAnchor(el, still);
@@ -441,6 +452,7 @@ export const Transcript = memo(function Transcript({
     return () => window.clearTimeout(off);
   }, [flare]);
   useEffect(() => () => stopSettle.current?.(), []);
+
 
   const onStop = useCallback(() => void actions.stopRun(), [actions]);
 
@@ -509,6 +521,10 @@ export const Transcript = memo(function Transcript({
             {state.trouble ? (
               <TroubleView trouble={state.trouble} {...(what ? { what } : {})} />
             ) : null}
+            {/* THE RECAP LINE, last in the log (after the error row, if any):
+                what happened while the reader was away is the newest thing
+                said, so it goes where the newest thing goes. */}
+            {recap ?? null}
             {/* THE TAIL PIN (#17). An OPEN card sticks to the bottom of the
                 scrollport for as long as it is open, because the run cannot
                 continue without it and a reader who has scrolled up to re-read

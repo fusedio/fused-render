@@ -104,6 +104,7 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
+  RecapFold,
   SchedBlock,
   SentPop,
   settleReceipts,
@@ -117,6 +118,7 @@ import {
   sendBlocks,
   useArtStrip,
   useAttachments,
+  useAwayRecap,
   useFitStrip,
   useComposerDefaults,
   useRecentSessions,
@@ -125,6 +127,8 @@ import {
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import { recapAnchor } from "./protocol/recap";
+import { useChatRecapEnabled } from "./feature-flag";
 import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness } from "@platform/lib/api";
@@ -206,6 +210,21 @@ export interface ClaudeChatProps {
   /** The composer's textarea, for a host modal's `initialFocus` (TaskPeek's
    *  `Modal initialFocus`, which used to be the iframe element). */
   focusRef?: MutableRefObject<HTMLTextAreaElement | null>;
+  /**
+   * "WHILE YOU WERE AWAY", OPT-IN — and default OFF is the whole point.
+   *
+   * A recap is a ~12s model call fired by window `focus`, which every mounted
+   * chat on the page hears. The tasks wall mounts one chat PER CARD, the
+   * canvases workspace mounts its editor, the explorer mounts the one the
+   * reader actually opened: a single return spent seven model calls, six of
+   * them for folds inside cards nobody was looking at.
+   *
+   * So the recap belongs to the PRIMARY chat — the full one the reader opened —
+   * and the host has to say so. Off by default means a new embed site cannot
+   * inherit the cost by forgetting to think about it, which is the opposite of
+   * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
+   */
+  recap?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -2347,23 +2366,6 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── PR4: scheduled runs, the standing watch, the artifact strip ───────────
 
-  /**
-   * T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
-   * the banner appears, because the banner SHRINKS the scrollport.
-   *
-   * ONLY A PINNED ONE. This used to write `scrollTop = scrollHeight` off a raw
-   * `.chat-logwrap` lookup, which jumped a reader who had scrolled up to the
-   * latest turn the moment a pending message landed (Bugbot, PR #1075). T
-   * calls `followBottom()` here, not `scrollBottom()`, and that function is
-   * the follow FLAG's — so the port asks the flag too, through the handle the
-   * scrollport lends out (`Transcript`'s `followRef`).
-   *
-   * The flag, not a geometry read taken here: this banner shrinks the
-   * scrollport as it appears, so by the time an effect could measure, the gap
-   * to the tail has crossed any threshold because the VIEWPORT moved and not
-   * because the reader did (T:17211-17213). A flag survives a resize.
-   */
-  const transcriptFollow = useRef<(() => void) | null>(null);
   const followBottom = useCallback(() => {
     transcriptFollow.current?.();
   }, []);
@@ -2623,6 +2625,60 @@ function ChatBody(props: ChatBodyProps) {
     [params],
   );
 
+  /**
+   * T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
+   * the banner appears, because the banner SHRINKS the scrollport.
+   *
+   * ONLY A PINNED ONE. This used to write `scrollTop = scrollHeight` off a raw
+   * `.chat-logwrap` lookup, which jumped a reader who had scrolled up to the
+   * latest turn the moment a pending message landed (Bugbot, PR #1075). T
+   * calls `followBottom()` here, not `scrollBottom()`, and that function is
+   * the follow FLAG's — so the port asks the flag too, through the handle the
+   * scrollport lends out (`Transcript`'s `followRef`).
+   *
+   * The flag, not a geometry read taken here: this banner shrinks the
+   * scrollport as it appears, so by the time an effect could measure, the gap
+   * to the tail has crossed any threshold because the VIEWPORT moved and not
+   * because the reader did (T:17211-17213). A flag survives a resize.
+   */
+  const transcriptFollow = useRef<(() => void) | null>(null);
+  /**
+   * "WHILE YOU WERE AWAY" (.claude-design/session-recap.md).
+   *
+   * The three facts the hook cannot read for itself:
+   *
+   *   * `recapAnchor` — WHERE the transcript stands. The last user turn's uuid,
+   *     because assistant turns carry none (protocol/recap.ts);
+   *   * `hasDraft` — read off the TEXTAREA, not off state. The composer's text
+   *     is its own `useState` and only that component can see it (Composer's
+   *     `submitRef` note says so in as many words), and `boxRef` is the seat
+   *     this file already holds for exactly that reason. A function, sampled at
+   *     the moment of the check, so nothing here re-renders per keystroke;
+   *   * `enabled` — `prefs.chat.recap`, off the one prefs read every chat embed
+   *     already makes (`feature-flag.ts`).
+   */
+  const recapEnabled = useChatRecapEnabled();
+  const recapFor = useMemo(() => recapAnchor(state.turns), [state.turns]);
+  const hasDraft = useCallback(
+    () => !!boxRef.current && boxRef.current.value.trim().length > 0,
+    [boxRef],
+  );
+  /** The mount's own box, for the hook's on-screen check — a getter because
+   *  the ref is null on the render that binds the listeners and only the check
+   *  runs late enough to have it. */
+  const recapRoot = useCallback(() => rootRef.current, [rootRef]);
+  const away = useAwayRecap({
+    file,
+    sessionId: state.sessionId,
+    forUuid: recapFor,
+    running,
+    hasDraft,
+    // THREE facts, and the host's is the one that is new: the pref, this mount
+    // being a conversation rather than the landing, and the host having said
+    // this is the chat the reader opened (`recap`, above).
+    enabled: recapEnabled && inChat && !!props.recap,
+    root: recapRoot,
+  });
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
@@ -2870,6 +2926,11 @@ function ChatBody(props: ChatBodyProps) {
               onOpenShot={setViewing}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
+              recap={
+                away.recap ? (
+                  <RecapFold text={away.recap.text} />
+                ) : null
+              }
             />
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
                 T's own arrangement: `body.chat-compact` and `body.chat-peek`

@@ -202,3 +202,7 @@ export {
 export type { AttachApi, Viewable } from "./attachApi";
 export { SentPopBody } from "./SentPop";
 export type { SentPopProps } from "./SentPop";
+export { RecapFold } from "./RecapFold";
+export type { RecapFoldProps } from "./RecapFold";
+export { useAwayRecap, AWAY_MS, MAX_FAILURES } from "./useAwayRecap";
+export type { AwayRecapOptions, AwayRecapResult } from "./useAwayRecap";

@@ -200,6 +200,17 @@ export interface ChatMountProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** Replaces `window.top.location` hops; defaults to `navigateUrl`. */
   onNavigate?: (url: string) => void;
+  /**
+   * "While you were away" — OPT-IN, and off unless this is the chat the reader
+   * opened (ClaudeChat's `recap`, .claude-design/session-recap.md).
+   *
+   * Every mount on the page hears the same window `focus`, so a default-on
+   * recap made one return into one model call PER MOUNT — seven, on a tasks
+   * wall. Passing it is a host saying "this is the full chat, in front of the
+   * reader": the explorer's content pane and its claude sidebar. Never a card,
+   * a peek, a thumbnail or a listing preview.
+   */
+  recap?: boolean;
 }
 
 export function ChatMount(props: ChatMountProps) {
@@ -253,6 +264,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.focusRef ? { focusRef: props.focusRef } : {})}
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
+        {...(props.recap ? { recap: true } : {})}
       />
      </Suspense>
     </div>

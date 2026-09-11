@@ -1169,7 +1169,12 @@ export interface Prefs {
   // field existed) answers without it. A required field here would only make
   // every `Prefs` literal in the suites over-constrained while the runtime read
   // stayed defensive anyway.
-  chat?: { native: boolean; forced_by?: string | null };
+  //
+  // `recap` is the native chat's "While you were away" fold — the ONE pref
+  // here that defaults ON (shell/prefs.py `chat_recap_enabled`), so every
+  // reader asks `chat?.recap !== false` rather than `=== true`: an older
+  // server answers without the field and that server's chat still shows it.
+  chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1389,6 +1394,10 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
+export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
 }
 
 export interface LanDevice {

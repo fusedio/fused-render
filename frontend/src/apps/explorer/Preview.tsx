@@ -2211,7 +2211,13 @@ function TemplatePreview({
                   file={fsPath}
                   paramsSource="url"
                   {...(stat.remote ? { remote: true } : {})}
-                  {...(IS_PREVIEW ? { preview: true, noFocus: true } : {})}
+                  /* THE RECAP OPT-IN, and one of only two sites that take it:
+                     this pane and the `?_side=claude` sidebar are the full chat
+                     the reader opened. A thumbnail is neither — `IS_PREVIEW`
+                     already says "display-only", and that is as true of a ~12s
+                     model call for a fold nobody reads as it is of the keyboard
+                     (ChatMount's `recap`). */
+                  {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}
@@ -2355,7 +2361,13 @@ function TemplatePreview({
                 annotateTarget={annotateTargetFrame}
                 paramsSource="url"
                 {...(stat.remote ? { remote: true } : {})}
-                {...(IS_PREVIEW ? { preview: true, noFocus: true } : {})}
+                /* THE RECAP OPT-IN, and one of only two sites that take it:
+                   this pane and the `?_side=claude` sidebar are the full chat
+                   the reader opened. A thumbnail is neither — `IS_PREVIEW`
+                   already says "display-only", and that is as true of a ~12s
+                   model call for a fold nobody reads as it is of the keyboard
+                   (ChatMount's `recap`). */
+                {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
             }

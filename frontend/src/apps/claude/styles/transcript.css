@@ -2061,3 +2061,33 @@
   color: var(--c-faint);
   align-self: flex-end;
 }
+
+/* ── recap (Claude Code's `※ recap: …` line, drawn in the log) ─────────── */
+/* A `note` turn with its own label: the shared `.turn.note` rule gives it the
+   flex row and `--c-faint`; here only what differs. Reading size rather than
+   the note's 12px — this is a sentence to be read, not a status aside. No
+   border, no plate, no hover, no control. */
+.chat-root .turn.note.recap {
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin-top: 6px;
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+}
+.chat-root .turn.note.recap .eye {
+  flex: none;
+  font-size: 0.85em;
+}
+.chat-root .turn.note.recap .recap-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--c-fg);
+}
+.chat-root .turn.note.recap .recap-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-style: italic;
+  white-space: normal;
+  word-break: break-word;
+}

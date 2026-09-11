@@ -79,6 +79,30 @@ export function isMarkerOnly(text: string | null | undefined): boolean {
   return t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
 }
 
+/** THE CLI'S OWN INTERRUPT MARKER (R2-2). When a turn is cut short the Claude
+ *  Code CLI writes this exact string into the transcript as a USER-ROLE record —
+ *  it is not something the reader typed, and drawn as a user bubble it reads as
+ *  the reader having sent those five words to the model. Matched on the exact
+ *  text, which is the only thing the record carries that tells it apart from a
+ *  real prompt (the role, the uuid and the timestamp are a prompt's).
+ *
+ *  IN THE PROTOCOL LAYER, not in `ui/Turn.tsx` where it started, because TWO
+ *  places have to agree about it and only one of them draws: `Turn` renders such
+ *  a record as a centred note with NO `data-msg`, and `protocol/recap.ts`'s
+ *  `recapAnchor` must therefore not offer its uuid as somewhere to scroll to.
+ *  Two copies of this string is how the "While you were away" fold's body
+ *  became a dead click — the recap anchored on an interrupt row that the
+ *  transcript renders without an anchor attribute at all. */
+export const INTERRUPT_MARK = "[Request interrupted by user]";
+
+/** Is this user row the CLI's interrupt marker rather than a prompt? Trimmed,
+ *  because the record has carried a trailing newline in some CLI builds; NOT
+ *  case-folded or fuzzy — a prompt that happens to talk about interrupts must
+ *  still render as what the reader wrote. */
+export function isInterruptMark(text: string | undefined | null): boolean {
+  return (text ?? "").trim() === INTERRUPT_MARK;
+}
+
 // ---- the pictures block ----------------------------------------------------
 
 /** One entry of the `<pane-shot>` payload (T:16519 wire field mapping). */
