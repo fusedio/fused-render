@@ -92,3 +92,26 @@ describe("HubSearchScreen debounce (item 2)", () => {
     expect(SRC).toContain("settledRef.current = settled;");
     const timeoutStart = SRC.indexOf("debounce.current = window.setTimeout(() => {");
     const timeoutBody = SRC.slice(timeoutStart, SRC.indexOf("}, 350);"));
+    expect(timeoutBody).toContain("onSettle({ ...settledRef.current, q: liveQuery });");
+    expect(timeoutBody).not.toMatch(/onSettle\(\{\s*\.\.\.settled,/);
+  });
+});
+
+// Item 3 (fix round 4): empty-result copy must not literally quote an empty
+// query — the default state reached from a pane's own "Search Hugging Face
+// for more…" door opens with a task filter and no typed query.
+describe("HubSearchScreen empty-result copy (item 3)", () => {
+  it("says something other than `matches \"\"` when q is empty", () => {
+    expect(SRC).toContain("settled.q.trim()");
+    expect(SRC).not.toContain('Nothing on {host} matches "{settled.q}"');
+  });
+});
+
+// Item 4 (fix round 4): the dead `display: none` summary paragraph, left
+// over from the HubResults port, is gone.
+describe("HubSearchScreen dead summary output (item 4)", () => {
+  it("no longer computes or renders the hidden summary paragraph", () => {
+    expect(SRC).not.toContain("resultsSummary");
+    expect(SRC).not.toContain('style={{ display: "none" }}');
+  });
+});

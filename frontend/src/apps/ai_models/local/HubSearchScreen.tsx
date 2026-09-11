@@ -22,7 +22,6 @@ import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
   bySizeAscending,
   gateChrome,
-  resultsSummary,
   sortsOnPage,
   wireSort,
   type ResultSort,
@@ -526,8 +525,6 @@ export function HubSearchScreen({
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
       : models;
-  const summary = resultsSummary(settled.q, shown?.length ?? null, host, !!error);
-
   return (
     <div className="tp-pane" data-part="adv">
       <button type="button" className="adv-back" data-adv-back="1" onClick={onBack}>
@@ -587,12 +584,14 @@ export function HubSearchScreen({
       {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
       {models !== null && models.length === 0 && !error && (
         <p className="cc-empty">
-          Nothing on {host} matches "{settled.q}" — among the {meta.searchNoun} this Mac can run.
-        </p>
-      )}
-      {summary && (
-        <p className="cc-caption" style={{ display: "none" }}>
-          {summary}
+          {/* Item 3 (fix round 4): `settled.q` is often empty here — a task
+           *  filter with no typed query is the default state reached from a
+           *  pane's "Search Hugging Face for more…" door — and quoting an
+           *  empty string read as literal `matches ""`, a search nobody
+           *  typed claiming to have run. */}
+          {settled.q.trim()
+            ? `Nothing on ${host} matches "${settled.q}" — among the ${meta.searchNoun} this Mac can run.`
+            : `No ${meta.searchNoun} the Hub knows about will run here.`}
         </p>
       )}
       {shown && shown.length > 0 && (
