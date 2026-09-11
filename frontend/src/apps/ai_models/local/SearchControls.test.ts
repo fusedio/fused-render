@@ -1,18 +1,20 @@
 // ---- what the reworked controls row OFFERS, pinned against the source -----
-// Same discipline as CapabilityPane.test.ts: the D313 server-driven task
-// list and the ContextMenu-based menu surface (never a second hand-rolled
-// dropdown) are one-line facts a screenshot does not distinguish from a
-// hardcoded menu that happens to look the same today.
+// Same discipline as CapabilityPane.test.ts: the ContextMenu-based menu
+// surface (never a second hand-rolled dropdown) is a one-line fact a
+// screenshot does not distinguish from a hardcoded menu that happens to look
+// the same today.
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = readFileSync(join(import.meta.dir, "SearchControls.tsx"), "utf8");
 
-describe("SearchControls task vocabulary", () => {
-  it("asks the server for the task glossary rather than hardcoding one (D313)", () => {
-    expect(SRC).toContain("getHubTasks()");
-    expect(SRC).not.toContain('"text-generation"');
+describe("SearchControls task menu", () => {
+  it("has no Task menu (D843) — the capability the pane was opened for is the only scope now", () => {
+    expect(SRC).not.toContain("getHubTasks()");
+    expect(SRC).not.toContain('keyLabel="Task:"');
+    expect(SRC).not.toContain("Any task");
+    expect(SRC).not.toContain("taskItems");
   });
 });
 
@@ -22,8 +24,9 @@ describe("SearchControls menu surface", () => {
     expect(SRC).toContain('"menubtn" + (active ? " active" : "")');
     expect(SRC).toContain('className="dd" role="menu"');
     const menuCalls = SRC.match(/<ControlMenu/g) ?? [];
-    // Task, Fit, Size (params), Sort — four menus in this row.
-    expect(menuCalls.length).toBe(4);
+    // Fit, Size (params), Sort — three menus in this row now the Task menu
+    // is gone (D843).
+    expect(menuCalls.length).toBe(3);
   });
 
   it("shows every option's hover sentence as a <p class=\"h\"> line, not just on the trigger", () => {

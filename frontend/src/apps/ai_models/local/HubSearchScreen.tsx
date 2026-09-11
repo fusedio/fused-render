@@ -560,14 +560,12 @@ export function HubSearchScreen({
         </button>
       </div>
       <SearchControls
-        task={settled.task}
         sort={settled.sort}
         fitLevel={settled.fitLevel}
         paramsBand={settled.paramsBand}
         quant={settled.quant}
         publisher={settled.publisher}
         includeUnfit={settled.includeUnfit}
-        onTask={(task) => onSettle({ ...settled, task })}
         onSort={(sort) => onSettle({ ...settled, sort })}
         onFitLevel={(fitLevel) => onSettle({ ...settled, fitLevel })}
         onParamsBand={(paramsBand) => onSettle({ ...settled, paramsBand })}

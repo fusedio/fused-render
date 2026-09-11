@@ -1,6 +1,6 @@
 // The controls row for the full Hub search screen (`HubSearchScreen.tsx`):
-// Task / Fit / Size / Sort menus, the two free-text filters (quant,
-// publisher), and the result line beneath them.
+// Fit / Size / Sort menus, the two free-text filters (quant, publisher), and
+// the result line beneath them.
 //
 // Ported from the approved mockup's `controls()`. Item B (fix round 2):
 // the app's one shared dropdown (the platform menu surface) has no slot for
@@ -12,11 +12,13 @@
 // its own outside-click/Escape dismissal, the same contract that shared
 // surface gives every other menu on this page.
 //
-// **The task vocabulary is still the server's, never a literal list**
-// (D313, HS-0a): "only the server knows which pipeline tags a registered
-// runner can serve", so the mockup's fixed five-entry `MENUS.task` cannot be
-// copied in as a constant. `getHubTasks()` is asked once, here, same as
-// before.
+// **No Task menu** (D843, round 5): the left pane already scopes this whole
+// screen to one capability (`HubSearchScreen`'s own `capabilityKey` prop,
+// sent to the server as `capability`), so a second, independent task filter
+// inside the search controls had no job left — see D843 for the search-scope
+// change this followed from. The server-driven task glossary this file used
+// to fetch (D313) and `activeTask` (`hubSearchView.ts`) are unused here now;
+// both stay for whatever else still reads them.
 //
 // No query box in this file any more — `HubSearchScreen` owns the one
 // `.bigsearch` input the mockup gives the whole screen, above this row.
@@ -25,13 +27,12 @@ import {
   activeFitLevel,
   activeParamsBand,
   activeSort,
-  activeTask,
   FIT_LEVELS,
   PARAMS_BANDS,
   SORTS,
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
-import { getHubTasks, type HubFitLevel, type HubParamsBand, type HubTask } from "@platform/lib/api";
+import { type HubFitLevel, type HubParamsBand } from "@platform/lib/api";
 
 /** One row of an open `ControlMenu` dropdown — the mockup's own shape: a
  *  label, the hover sentence explaining its consequence (`<p class="h">`,
@@ -145,14 +146,12 @@ export function ControlMenu({
 }
 
 export function SearchControls({
-  task,
   sort,
   fitLevel,
   paramsBand,
   quant,
   publisher,
   includeUnfit,
-  onTask,
   onSort,
   onFitLevel,
   onParamsBand,
@@ -163,7 +162,6 @@ export function SearchControls({
   matchCount,
   hiddenUnfit,
 }: {
-  task: string;
   sort: ResultSort;
   fitLevel: HubFitLevel;
   paramsBand: HubParamsBand;
@@ -173,7 +171,6 @@ export function SearchControls({
    *  "never a silent drop"): the result line beneath states how many are
    *  hidden either way. */
   includeUnfit: boolean;
-  onTask: (task: string) => void;
   onSort: (sort: ResultSort) => void;
   onFitLevel: (v: HubFitLevel) => void;
   onParamsBand: (v: HubParamsBand) => void;
@@ -186,43 +183,9 @@ export function SearchControls({
   matchCount: number | null;
   hiddenUnfit: number;
 }) {
-  const [tasks, setTasks] = useState<HubTask[]>([]);
-
-  useEffect(() => {
-    // D313: the filter list comes from the server because only the server
-    // knows which pipeline tags a registered runner can serve — a hardcoded
-    // menu would offer filters for models this app cannot load.
-    let alive = true;
-    getHubTasks().then(
-      (d) => alive && setTasks(d.tasks),
-      () => alive && setTasks([]),
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const activeT = activeTask(task, tasks);
   const activeS = activeSort(sort);
   const activeFit = activeFitLevel(fitLevel);
   const activeParams = activeParamsBand(paramsBand);
-
-  const taskItems: MenuOption[] = [
-    {
-      label: "Any task",
-      hint: "Any task an engine here can run — pick one to show only models for that job",
-      active: !task.trim(),
-      onClick: () => onTask(""),
-    },
-    ...tasks.map(
-      (t): MenuOption => ({
-        label: t.label,
-        hint: t.help ?? "Showing only models for this task",
-        active: t.tag === task,
-        onClick: () => onTask(t.tag),
-      }),
-    ),
-  ];
 
   const fitItems: MenuOption[] = FIT_LEVELS.map((l) => ({
     label: l.label,
@@ -248,15 +211,6 @@ export function SearchControls({
   return (
     <div data-part="controls">
       <div className="am-hub-controls">
-        <ControlMenu
-          keyLabel="Task:"
-          valueLabel={activeT.label}
-          title={activeT.title}
-          ariaLabel={"Filter by task: " + activeT.label}
-          active={!!task.trim()}
-          onClear={() => onTask("")}
-          items={taskItems}
-        />
         <ControlMenu
           keyLabel="Fit:"
           valueLabel={activeFit.label}
