@@ -283,9 +283,30 @@ function HitRow({
   // Filtered out here rather than in `paramsLabel`/`quantLabel` themselves,
   // which the drawer's own `<dd>` cells still call directly and still want
   // the dash for.
-  const metaParts = [model.task, paramsLabel(model.params), quantLabel(model.quant), sizeLabel].filter(
-    (v): v is string => Boolean(v) && v !== "—",
-  );
+  // Item 9a (fix round 5): a short upper-case format token — from `format`
+  // when the Hub said "gguf" outright, else a guess off `library` for the
+  // other two names worth calling out (MLX, Safetensors); anything else
+  // (diffusers, transformers, ...) is not distinctive enough to earn a slot
+  // on an already-crowded line, so it is skipped rather than spelled out.
+  const formatLabel =
+    model.format === "gguf"
+      ? "GGUF"
+      : model.library === "mlx"
+        ? "MLX"
+        : model.library === "safetensors"
+          ? "Safetensors"
+          : null;
+  // Item 9a: only worth a mention once there is more than one to count —
+  // "1 variant" would be true of nearly every row and add noise, not signal.
+  const variantsLabel = model.variants && model.variants > 1 ? `${model.variants} variants` : null;
+  const metaParts = [
+    model.task,
+    paramsLabel(model.params),
+    quantLabel(model.quant),
+    sizeLabel,
+    formatLabel,
+    variantsLabel,
+  ].filter((v): v is string => Boolean(v) && v !== "—");
 
   return (
     <div className="rowwrap" data-part="hit">
@@ -337,7 +358,27 @@ function HitRow({
               </span>
             )}
           </div>
-          {model.baseModel && <p className="row-note mono from">from {model.baseModel}</p>}
+          {/* Item 9b (fix round 5): `relation` names WHAT this repo is
+           *  relative to its base ("quantized", "finetune", "merge",
+           *  "adapter" — free text off the Hub's own tag, see the field's
+           *  doc comment in api.ts), so the line reads like the reason the
+           *  repo exists rather than a bare cross-reference. Unrecognised
+           *  or absent relation text falls back to the plain "from X" this
+           *  line always said before. */}
+          {model.baseModel && (
+            <p className="row-note mono from">
+              {model.relation === "quantized"
+                ? "quantized from "
+                : model.relation === "finetune"
+                  ? "fine-tuned from "
+                  : model.relation === "adapter"
+                    ? "adapter for "
+                    : model.relation === "merge"
+                      ? "merge of "
+                      : "from "}
+              {model.baseModel}
+            </p>
+          )}
           {metaParts.length > 0 && (
             <p className="row-meta">
               {metaParts.map((part, i) => (

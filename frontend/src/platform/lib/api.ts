@@ -3634,6 +3634,13 @@ export interface HubModel {
    *  safetensors republish of the same base, so the two get their own
    *  family rows instead of one swallowing the other. */
   format: string | null;
+  /** Item 9c (fix round 5): how many distinct weight variants this repo
+   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded) or
+   *  bit-width/dtype subfolders, whichever the repo's own layout shows.
+   *  Best-effort and never 0; see `hub_models.py::_count_variants`'s own
+   *  docstring for the exact rule. Undefined only for a response shape that
+   *  predates this field — a running server always sends it. */
+  variants?: number;
   /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
    *  for every other row (D412's own field). Threaded back into
    *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask
