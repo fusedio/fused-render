@@ -8083,6 +8083,11 @@ describe("popoverPill", () => {
     // failed folds into the column, exactly as StatusIcon reads it...
     const f = task({ status: "done", failed: true });
     expect(popoverPill(f, false, false, f.messages, day, later).label).toBe("Blocked");
+    // ...but a LIVE one-off wears its status, not its history (ringFailed): the
+    // failed flag is the last settled run, and this one is running again.
+    const again = task({ status: "in_progress", failed: true });
+    expect(popoverPill(again, false, false, again.messages, day, later).label)
+      .toBe("In Progress");
     // ...and the day's contents cannot move a one-off's word: it IS its task.
     expect(popoverPill(t, false, false, [broke], day, later).label).toBe("Done");
   });

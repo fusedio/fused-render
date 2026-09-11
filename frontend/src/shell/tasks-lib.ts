@@ -3633,7 +3633,10 @@ export function popoverPill(
   day: Date,
   now: Date,
 ): RunStatus {
-  if (!recurring) return taskStatus(taskColumn(task), task.failed);
+  // ringFailed, not the raw flag: the calendar has no lane header either, so a
+  // live one-off whose LAST settled run broke would otherwise still read
+  // "Blocked" here after the List ring stopped saying so (Bugbot, PR #1105).
+  if (!recurring) return taskStatus(taskColumn(task), ringFailed(task));
   return dayPill(dayMessages, day, now, live);
 }
 
