@@ -22,6 +22,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.ai import fit
 from fused_render.ai import hw_detect
 from fused_render.ai import registry
 from fused_render.ai import tasks as ai_tasks
@@ -610,6 +611,52 @@ def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
     # ...but never turned into a synthesized footprint or verdict.
     assert row["fit"] is None
     assert row["speedEstimate"] is None
+
+
+def test_gguf_row_uses_a_cached_real_file_size_when_hub_size_already_resolved_one(
+        client, hub_cache, monkeypatch):
+    """SPEC item 3: a real byte count for this exact (id, file) pair, already
+    cached by `api_hub_size` (the lazy per-card lookup — see its own
+    docstring), is reused here rather than left on the floor — the row's
+    `fit`/`speedEstimate` are judged off THOSE real bytes, never a
+    `params * DEFAULT_BYTES_PER_PARAM` guess (that guess is exactly what the
+    two tests above prove must never happen). A cache MISS (the ordinary
+    case, nothing has resolved this file yet) must leave the row exactly as
+    unjudgeable as before — proven by the sibling row below, whose id was
+    never stored in the cache."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/gguf-known-size", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
+             gguf={"total": 30_000_000_000}),
+        _hit("org/gguf-unknown-size", siblings=[{"rfilename": "y-Q8_K_XL.gguf"}],
+             gguf={"total": 30_000_000_000}),
+    ]))
+    # ~31.5GB real bytes for the known row — the same figure this file's own
+    # docstrings use as the "real" contrast against the 17.4GB guess.
+    real_bytes = 31_500_000_000
+    key = ("size", hub.hub_endpoint(), "org/gguf-known-size", "x-Q8_K_XL.gguf", False)
+    hub._store(key, {"usedStorage": None, "fileSize": real_bytes})
+
+    body = _search(client).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    known = by_id["org/gguf-known-size"]
+    unknown = by_id["org/gguf-unknown-size"]
+
+    assert known["fit"] is not None
+    # `footprintBytes` is the weight bytes PLUS `fit.RUNTIME_OVERHEAD_BYTES`
+    # (0.5GB) — the "download" rung's own fixed runtime allowance, unrelated
+    # to which source (real cache vs. a guess) supplied the weight bytes.
+    assert known["fit"]["footprintBytes"] == real_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    # The guessed figure `Q8_K_XL`'s recognised bpp would have produced for
+    # 30B params (~32GB weights, ~32.5GB with overhead) must NOT be what won
+    # — proves the real cached bytes were used, not `params * bpp`.
+    guessed_weight_bytes = 30_000_000_000 * fit.quant_bytes_per_param("Q8_K_XL")
+    assert known["fit"]["footprintBytes"] != guessed_weight_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    assert known["speedEstimate"] is not None
+
+    assert unknown["fit"] is None
+    assert unknown["speedEstimate"] is None
 
 
 # -- D793: a GGUF row outside text generation is rankable and findable ------

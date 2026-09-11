@@ -1386,12 +1386,41 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # re-open the door it came out of.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
     judgeable = file is None and not params_from_gguf
+    # SPEC item 3: a GGUF row's `file` may ALREADY have a real byte count on
+    # hand — not guessed, not fetched here, but the exact same
+    # `("size", ...)` cache entry `api_hub_size` populates once a card for
+    # this (model_id, file) pair scrolled into view and resolved its true
+    # size (see that route's own docstring for why a per-row Hub round trip
+    # inside a search reply is refused). Reusing it here costs nothing
+    # extra — no request, just a dict read — and turns "you have to open
+    # this card once before its verdict shows up on the NEXT search" into
+    # "shows up immediately once it is known at all". A cache miss (the
+    # common case, nothing has ever measured this file) leaves `judgeable`
+    # exactly as the three code-review rounds above pinned it: unconditionally
+    # unjudgeable off `params * DEFAULT_BYTES_PER_PARAM`.
+    # `params=None` on this branch specifically — NOT the shared `params`
+    # variable — is load-bearing: `_weight_bytes` prefers `params x bpp` over
+    # a real `size_gb` whenever the quant token is one `_quant_key` happens to
+    # recognise (see its own docstring's "measured beats guessed" precedence,
+    # one level down), which for a recognised token like `Q8_K_XL` would
+    # silently throw the real bytes away and reconstruct the exact guess this
+    # whole `judgeable` gate exists to refuse. Passing `None` here forces
+    # `_weight_bytes` onto its `size_gb`-branch, the same way `api_hub_size`
+    # itself already calls `fit.verdict(..., params=None, ...)` for the
+    # identical reason.
+    real_file_size = _cached_gguf_file_size(model_id, file) if file is not None else None
+    if real_file_size is not None:
+        size_gb = real_file_size / fit.GB_BYTES
+        judgeable = True
+        verdict_params = None
+    else:
+        verdict_params = params
     fit_verdict = (
-        fit.verdict(capability, model_id, size_gb, params=params,
+        fit.verdict(capability, model_id, size_gb, params=verdict_params,
                     footprint_store=footprint_store, hardware=hardware)
         if judgeable else None)
     speed_estimate = (
-        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        speed.estimate_tok_s(size_gb, params=verdict_params, hardware=hardware)
         if judgeable and capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
@@ -1677,6 +1706,20 @@ def _cached(key: tuple):
         if hit and now - hit[0] < _CACHE_TTL_S:
             return hit[1]
     return None
+
+
+def _cached_gguf_file_size(model_id: str, file: str) -> int | None:
+    """A real byte count for `(model_id, file)`, IF `api_hub_size` already
+    resolved and cached one within its own TTL — the exact same `("size",
+    ...)` cache key that route reads/writes, never a second cache with its
+    own invalidation story. `None` for a miss (never measured, or the TTL
+    already lapsed), which callers must treat as "unknown", not "zero"."""
+    key = ("size", hub_endpoint(), model_id, file, bool(_token()))
+    payload = _cached(key)
+    if not isinstance(payload, dict):
+        return None
+    size = payload.get("fileSize")
+    return size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else None
 
 
 def _store(key: tuple, value: dict) -> None:
