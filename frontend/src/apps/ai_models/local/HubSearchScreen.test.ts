@@ -72,3 +72,23 @@ describe("measureSizes (item 1)", () => {
     expect(sizes.get("org/no-file")).toBeNull();
   });
 });
+
+// Item 2 (fix round 4): the debounce effect must (a) not settle when the
+// text matches what is already settled — opening the screen must issue
+// exactly one search, not a duplicate on mount — and (b) merge into the
+// LATEST settled state when the timer fires, not a stale closure, so a
+// filter/sort click inside the 350ms window survives.
+describe("HubSearchScreen debounce (item 2)", () => {
+  it("skips onSettle when the live text already matches settled.q (no duplicate mount search)", () => {
+    expect(SRC).toContain("if (liveQuery === settledRef.current.q) return;");
+  });
+
+  it("merges the timer into a ref tracking the LATEST settled, not a stale closure", () => {
+    // A plain `settled` read inside the 350ms setTimeout callback would close
+    // over whatever `settled` was when the effect last ran (deps: [liveQuery]
+    // only) — a ref updated every render is what makes onSettle merge into
+    // whatever settled state is current when the timer actually fires.
+    expect(SRC).toContain("const settledRef = useRef(settled);");
+    expect(SRC).toContain("settledRef.current = settled;");
+    const timeoutStart = SRC.indexOf("debounce.current = window.setTimeout(() => {");
+    const timeoutBody = SRC.slice(timeoutStart, SRC.indexOf("}, 350);"));

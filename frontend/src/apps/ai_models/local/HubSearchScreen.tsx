@@ -423,13 +423,30 @@ export function HubSearchScreen({
   const [hiddenUnfit, setHiddenUnfit] = useState(0);
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
   const debounce = useRef<number | null>(null);
+  // Item 2 (fix round 4): the timer must merge into whatever `settled` is
+  // CURRENT when it fires, not the value closed over when it was scheduled —
+  // this effect's deps are `[liveQuery]` only (see below), so a plain
+  // `settled` read inside the callback is a stale capture the moment a
+  // filter/sort click updates `settled` within the 350ms window, reverting
+  // that click when the timer runs. A ref updated every render (not inside
+  // an effect — it must be current the instant the closure created THIS
+  // render reads it) sidesteps that with no extra effect dependency.
+  const settledRef = useRef(settled);
+  settledRef.current = settled;
 
   useEffect(() => {
     if (debounce.current) window.clearTimeout(debounce.current);
     debounce.current = window.setTimeout(() => {
-      setLimit(INITIAL_LIMIT);
-      onSettle({ ...settled, q: liveQuery });
       onQuery(liveQuery);
+      // Also item 2: opening the screen runs this effect once on mount with
+      // `liveQuery === settled.q` (the initial value), and settling anyway
+      // built a NEW `settled` object identity, which the fetch effect below
+      // is keyed on — a duplicate `searchHubModels` request on every open,
+      // for a query that never changed. Nothing to settle when the text
+      // matches what is already settled.
+      if (liveQuery === settledRef.current.q) return;
+      setLimit(INITIAL_LIMIT);
+      onSettle({ ...settledRef.current, q: liveQuery });
     }, 350);
     return () => {
       if (debounce.current) window.clearTimeout(debounce.current);
