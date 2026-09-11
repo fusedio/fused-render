@@ -1062,6 +1062,62 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.length).toBe(2);
   });
 
+  // BUGBOT, PR #1119: the fix above's first shape `continue`d past every poll
+  // for as long as `baseSegTrusted` stayed down, waiting for the "already
+  // landed prefix retires" check to notice `fullText` no longer starts with
+  // the old reply. A short new reply that happens to share the old one's own
+  // prefix ("OK" answering into "OK, done.") never makes that true — so that
+  // shape skipped `poll.done` forever, never cleared `sending`, and left the
+  // composer stuck. This is that exact shape, and it must still terminate.
+  test("a short reply sharing the old reply's own prefix still finishes and clears `sending` (no seam)", async () => {
+    const A = text("OK");
+    const Bgrowing = text("OK, d");
+    const Bfull = text("OK, done.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, returned } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          // No `turn_breaks` — the ambiguous poll `baseSegGrace` is spent on.
+          if (n === 1) return poll({ segments: [A, Bgrowing], text: A.text + Bgrowing.text });
+          // The cursor has advanced (a clean window, B alone) — but B's own
+          // full text STILL starts with "OK", so a check keyed on the prefix
+          // no longer matching would never fire here either.
+          return poll({ done: true, segments: [Bfull], text: Bfull.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    // Must resolve on its own — a hang here means `sending` never clears.
+    await controller.sendMessage("and now what?");
+
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().working).toBeNull();
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(Bfull.text);
+    expect(reply.length).toBe(2);
+
+    // `sending` itself cleared: a second send is accepted, not refused.
+    const returnedBefore = returned.length;
+    await controller.sendMessage("one more");
+    expect(returned.length).toBe(returnedBefore);
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and

@@ -1087,6 +1087,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // some later turn instead.
     landedWindow = null;
     /**
+     * ONE TICK'S GRACE for `baseSegTrusted` to resolve on its own (a reported
+     * seam confirms it, or the prefix retires because it no longer applies)
+     * before this loop stops waiting for either and trusts `segs` regardless.
+     *
+     * NOT a guess: agent.py's cursor write is synchronous inside the very
+     * `_read_current_turn` call that hands back an unconfirmed, combined
+     * window (see `priorReply`'s note above) — so the NEXT poll's `segs` is
+     * already clean whether or not this loop's own heuristics noticed. A
+     * bug report (Bugbot, PR #1119) is why this exists as an explicit,
+     * unconditionally-spent allowance rather than "keep waiting until the
+     * text stops matching": a short reply that happens to share a prefix with
+     * the one before it ("OK" answering into "OK, done") never makes that
+     * text stop matching, and skipping every poll until it did — this loop's
+     * first attempt — left `poll.done` unhandled right along with the
+     * segments, `sending` stuck, and the composer dead.
+     */
+    let baseSegGrace = true;
+    /**
      * A LOOP STARTED BY A SEND OWNS ONLY THE TURN IT SENT.
      *
      * `landedWindow` (or, on the reload road, `priorReply` above) covers the
@@ -1276,22 +1294,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
           baseText = "";
           baseSegTrusted = true;
         }
+        // `baseSegGrace` is spent here — UNCONDITIONALLY, the one poll this
+        // loop first has anything to render at all with `baseSegTrusted`
+        // still down — never only on the poll where suppression actually
+        // fires. That is what keeps it a ONE-TIME allowance rather than a
+        // wait for a condition that might not arrive (see its own note): by
+        // the poll after the one it is spent on, agent.py's cursor is
+        // provably already past the old turn, so `segs` needs no more
+        // protecting whether or not `baseSegTrusted` itself ever flips.
+        if (!baseSegTrusted && anyBody) {
+          if (baseSegGrace) baseSegGrace = false;
+          else baseSegTrusted = true;
+        }
         // AN UNCONFIRMED TEXT BASE WITH SEGMENTS STILL IN THE PAYLOAD IS NOT
-        // SAFE TO SLICE. `baseText` is exact either way (see `baseSegTrusted`'s
-        // own note), but a `baseSeg` of 0 left over from `priorReply` means
-        // "unknown", not "nothing to skip" — slicing `segs` on it would render
-        // the reload's old reply right alongside the new one, in the very
-        // shape this exists to prevent. So: skip this one poll rather than
-        // guess a count nobody has confirmed. It resolves within one more poll
-        // guaranteed, not a hope — THIS poll is itself proof that the new
-        // turn's echo, with a `result` already closing the reply before it,
-        // has reached the file, which is exactly what advances agent.py's
-        // cursor past the old turn (`_read_current_turn`) for every poll after
-        // this one. A payload with nothing left to slice (`segs.length === 0`,
-        // the flat-text-only path) never hits this at all — `bodyText` alone
-        // already renders it correctly.
-        if (!baseSegTrusted && anyBody && segs.length > 0) continue;
-        const bodySegs = baseSeg ? segs.slice(baseSeg) : segs;
+        // SAFE TO SLICE — see `baseSegTrusted`'s note. `baseText` is exact
+        // either way, so `bodyText` below is unaffected: only `bodySegs` is
+        // held back, for exactly the one poll `baseSegGrace` just spent, so
+        // this reply still renders (as plain text, not segments, for that one
+        // poll) rather than showing nothing, and every poll still reaches
+        // `poll.done`/`syncPermissions` below whether or not this fires
+        // (Bugbot, PR #1119 — the previous shape `continue`d past all of
+        // that, and a short reply sharing a prefix with the one before it,
+        // "OK" answering into "OK, done", never made the OLDER retirement
+        // check below fire, so `sending` never cleared at all).
+        const segSliceUnsafe = !baseSegTrusted && segs.length > 0;
+        const bodySegs = segSliceUnsafe ? [] : baseSeg ? segs.slice(baseSeg) : segs;
         const bodyText = baseText ? fullText.slice(baseText.length) : fullText;
         // Rebased onto the body, and a seam that falls AT the base is the
         // boundary the base already stands for — it names no reply of ours.
