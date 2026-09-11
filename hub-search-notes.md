@@ -1562,3 +1562,93 @@ L/M/F/H, after O). `bun test src/apps/ai_models` (frontend/, item O check)
 frontend lines). Full `bun run --cwd frontend build` was NOT run this
 round (deferred to whoever finishes items A/B/C/D/E/I/K, per the brief's
 "once at the end" instruction).
+
+## Fix round 2 (items C, A, B, D, E, I)
+
+Implemented in priority order per `fix-brief-1.md`: C+D first, then A, then
+B (+E folded in), then I. Also fixed two nits found in live review before
+this round's items: T-nit (drawer's "Why we suggest it" line now reads the
+pane's own visible title lowercased, not `capabilityLabel`'s internal key)
+and S-nit (`.tp .btn-link` no longer shows a permanent underline on the
+drawer's HF link).
+
+- **D818 — Hit rows rewritten to `.row.hit.rich` (items C, D).** `HitRow`/
+  `HitDrawer` in `HubSearchScreen.tsx` now match the mockup's dense row
+  layout; the gated state's login action moved into the drawer instead of
+  a page-level `.am-hub-login` banner. `hubTableView.ts` gained
+  `verdictGlyph`. Self-review caught and fixed a stale test
+  (`HubSearchScreen.test.ts` pinned the pre-rewrite ternary literally) and
+  a redundant ternary in the gated chip (`gate.pill` is always one of
+  exactly `"gated"` / `"gated — by approval"` when `gate` is truthy, so the
+  chip just renders the mockup's literal `Gated` string now).
+- **D819 — Task filter seeded from the opening capability (item A).**
+  `CapabilityPane`'s `onOpenSearch` now takes the capability key and
+  `LocalTab.tsx` seeds `settled.task` with it before opening search.
+  Confirmed via `capabilityMeta.ts` that `capabilityKey` already IS the
+  Hub's own pipeline tag (the same vocabulary the Task filter and `hubTask`
+  URL param use) — no separate capability→tag lookup table was needed, so
+  this landed smaller than the round-1 notes above anticipated.
+- **D820 — Controls-row menus rebuilt as `ControlMenu`, one hover
+  sentence per option (item B); match count bolded (item E).** The
+  shared `ContextMenu`/`MenuEntry` surface has no slot for a per-option
+  hover sentence (`.dd .h`), so rather than extend that one shared surface
+  for a field only this screen uses, `SearchControls.tsx` now owns a small
+  `ControlMenu` component matching the mockup's `.menubtn`/`.dd`/`.l`/`.h`/
+  `.chk` markup verbatim, with its own outside-click/Escape dismissal
+  (same contract `ContextMenu` gave every menu on this page). Every
+  option's hint reuses that option's own existing `.title`/`.help` field
+  (`FIT_LEVELS`, `PARAMS_BANDS`, `SORTS`, `activeTask`'s task entries) — no
+  new copy was invented. The dropdown's `box-shadow` uses `--shadow-lg`,
+  which already resolves to the mockup's exact literal `rgba(0, 0, 0,
+  0.18)` in light mode, avoiding both a new token and a literal color.
+  Item E was mostly already in place per the round-1 notes; this round
+  just wrapped the count in `<b>` and tightened the result-line spacing to
+  match the mockup's metrics.
+- **D821 — Local's Try button is a real link to the Playground (item
+  I).** `ModelRow.tsx`'s `model.have` branch now renders `<a
+  href={tabHref("playground", `?model=${encodeURIComponent(model.id)}`)}>`
+  instead of a plain `<button onClick>`, following the same intercepted-
+  left-click pattern `AiModelsPage.tsx`'s tab strip already uses (a real
+  `<a>` for middle-click/copy-link, `e.preventDefault()` +
+  `navigateUrl(tryHref)` on a plain left-click, skipping interception for
+  modified clicks). `onTry` still fires first so the actual load starts
+  before navigation. Verified by test that the href contains the encoded
+  repo id (`ModelRow.test.ts`).
+
+Deviations from the brief: D (gated-row rewrite) landed together with C in
+one commit rather than strictly after A/B in file order, since both are
+the same `HitRow`/`HitDrawer` rewrite and splitting them into separate
+commits would have meant a broken intermediate state. Item B's
+architecture deviates from the round-1 notes' "keep `ContextMenu`"
+framing — this round resolves that tension by building the small
+scoped dropdown described above instead.
+
+Verification this round: `bun test src/apps/ai_models/local` passed at
+each item boundary (41 then 42 tests, 0 fail) and once more at the end
+(42 pass, 0 fail). `bun run --cwd frontend typecheck` clean after item A,
+after item B/E, and after item I. `bun run --cwd frontend build` was not
+run this round either — still deferred, per the brief, to whoever closes
+out the remaining lettered items (F, G, H, J, K, L, M, N).
+
+To verify in the browser:
+- Hit rows in the Hub search results match the mockup's dense
+  `.row.hit.rich` layout (name, chips, glyph column, facts) at both full
+  and narrow width; opening a gated row's drawer shows the login/accept
+  action there, not as a page banner.
+- Opening the search screen from a capability pane (e.g. "Chat") lands
+  with the Task filter already set to that capability, not "Any task".
+- Task/Fit/Size/Sort dropdowns show the mockup's `.menubtn`/`.dd` styling
+  (12px font, 7px radius, active state with a `×` remover) and each option
+  shows its hover sentence as a visible line under the label, not only on
+  mouse hover.
+- The result line's match count renders bold; the "N hidden — will not fit
+  here" clause still only appears while "Show models that will not fit" is
+  off.
+- Clicking "Try" on a model this Mac already has navigates to the
+  Playground with that model pre-selected; middle-click / Cmd-click opens
+  it in a new tab instead of intercepting.
+- The drawer's "Why we suggest it" sentence reads the pane's own visible
+  (lowercased) title, e.g. "chat", not an internal key like
+  "text-generation".
+- The drawer's Hugging Face link has no permanent underline, only on
+  hover/focus, matching every other `.btn-link` on the page.
