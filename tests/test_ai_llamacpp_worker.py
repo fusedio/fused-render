@@ -1262,3 +1262,40 @@ def test_download_with_an_explicit_file_overrides_an_uncurated_repos_pick(
         "model-Q4_K_M.gguf", "model-Q8_0.gguf", "README.md"])
     path = worker.download("some/uncurated-repo", file="model-Q8_0.gguf")
     assert path == "/blobs/some/uncurated-repo/model-Q8_0.gguf"
+
+
+def test_download_with_an_explicit_file_rescues_an_all_sharded_repo(
+        worker, monkeypatch):
+    """Item 5 (code review): a repo whose ONLY GGUF files are all shards of
+    one multi-part quant has nothing `pick_gguf_file` will ever pick — every
+    entry matches `GGUF_SPLIT_RE`, so `_resolve_uncurated_repo` refuses it by
+    name (`_NO_GGUF_MATCH`). Before this fix, `download` called
+    `_resolve_model_id` (which raises there) BEFORE ever looking at `file`,
+    so an explicit, server-validated `file` could never rescue this repo.
+    Now, with `file` given, `_resolve_model_id`/`pick_gguf_file` are never
+    consulted at all — the repo id is used directly."""
+    fake = _fake_huggingface_hub(monkeypatch, files=[
+        "model-Q8_0-00001-of-00003.gguf",
+        "model-Q8_0-00002-of-00003.gguf",
+        "model-Q8_0-00003-of-00003.gguf",
+    ])
+    path = worker.download(
+        "some/all-sharded-repo", file="model-Q8_0-00001-of-00003.gguf")
+    assert path == "/blobs/some/all-sharded-repo/model-Q8_0-00001-of-00003.gguf"
+    # And `list_repo_files` is never even called — `file` short-circuits the
+    # whole resolution path, not just the picker's verdict.
+    assert fake.calls == []
+
+
+def test_download_of_an_all_sharded_repo_without_file_still_raises(
+        worker, monkeypatch):
+    """The default (no `file`) path is UNCHANGED: the same all-sharded repo
+    still raises exactly as it did before this fix, proving the rescue above
+    is real and not a side effect of a broader loosening."""
+    _fake_huggingface_hub(monkeypatch, files=[
+        "model-Q8_0-00001-of-00003.gguf",
+        "model-Q8_0-00002-of-00003.gguf",
+        "model-Q8_0-00003-of-00003.gguf",
+    ])
+    with pytest.raises(RuntimeError):
+        worker.download("some/all-sharded-repo")
