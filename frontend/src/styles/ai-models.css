@@ -3742,19 +3742,26 @@ button.am-bench-model:focus-visible {
   color: var(--error);
 }
 
+/* Item 4 (fix round 5): was a 2-col grid (downloads, likes, date each their
+   own cell) — with only three cells it read lopsided, and the lone `date`
+   cell got an ad hoc `span:nth-child(3)` spanning rule to fill the second
+   column. A right-aligned flex column reads as two lines instead: downloads
+   + likes together on one line (`<span class="counts">` in HubSearchScreen.tsx),
+   the date underneath — no spanning rule needed. */
 .tp .row-facts.pop {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
   text-align: right;
-  align-content: center;
   font-size: 11px;
   color: var(--fg-muted);
   white-space: nowrap;
 }
 
-.tp .row-facts.pop span:nth-child(3) {
-  grid-column: 1 / -1;
+.tp .row-facts.pop .counts {
+  display: flex;
+  gap: 10px;
 }
 
 .tp .row.unfit {
@@ -3789,6 +3796,48 @@ button.am-bench-model:focus-visible {
   height: 100%;
   background: currentColor;
   border-radius: 3px;
+}
+
+/* Item 3 (fix round 5): the match cell used to carry a native `title=` — a
+   60-word sentence rendered as a plain unstyled browser tooltip. This is a
+   scoped, CSS-only popover instead: same background/border/shadow tokens as
+   the global `[data-tip]` primitive in schedule.css (deliberately not that
+   rule itself — that one is `white-space: nowrap`, sized for 4-char labels,
+   and global; this one wraps a real sentence and only ever applies to this
+   cell). `.rowwrap`/`.hits`/the row grid above have no `overflow: hidden`
+   (checked), so opening upward is safe. */
+.tp .match[data-tip] {
+  position: relative;
+}
+
+.tp .match[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: 280px;
+  white-space: normal;
+  font-family: var(--font-sans, inherit);
+  font-size: 11.5px;
+  line-height: 1.45;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: var(--fg);
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 2px 8px var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+  z-index: 5;
+}
+
+.tp .match[data-tip]:hover::after,
+.tp .match[data-tip]:focus-visible::after {
+  opacity: 1;
 }
 
 /* Item 12 (fix round 3): the bare score number (`.mnum`) had no caption

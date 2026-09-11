@@ -30,7 +30,6 @@ import { hubSizeBytes, knownTotalSize, lookupTotalSize } from "@apps/ai_models/l
 import {
   ageLabel,
   matchCell,
-  matchTitle,
   paramsLabel,
   popLabel,
   quantLabel,
@@ -261,7 +260,15 @@ function HitRow({
   job: Job | undefined;
 }) {
   const cell = matchCell(model.fit, model.matchScore);
-  const title = matchTitle(model.fit, model.matchScore);
+  // Item 3 (fix round 5): `matchTitle`'s full sentence (still used for other
+  // rows elsewhere) reads as a 60-word paragraph in a native `title=` —
+  // small, unstyled, one-line-wrapped, ugly. This row instead carries a
+  // short `data-tip` for a real (CSS-only) popover — see `.tp .match[data-tip]`
+  // in ai-models.css — that keeps the score and the colour legend and drops
+  // the rest.
+  const matchTip =
+    `Match ${cell.scoreText}/100 — memory fit, size vs this machine, speed, recency, popularity ` +
+    `(+bonus if already downloaded). Colour = memory fit: ${cell.verdict}.`;
   const glyph = verdictGlyph(cell.verdict);
   const have = disk.state === "downloaded";
   const gate = have ? null : gateChrome(model.gated, authenticated);
@@ -284,14 +291,19 @@ function HitRow({
       <div
         className={`row hit rich${have ? " have" : ""}${model.fit?.verdict === "no" ? " unfit" : ""}`}
       >
-        <span className={`match fit-${cell.verdict}`} title={title} data-verdict={cell.verdict}>
+        <span
+          className={`match fit-${cell.verdict}`}
+          data-tip={matchTip}
+          data-verdict={cell.verdict}
+          tabIndex={0}
+        >
           <span className="glyph">{glyph}</span>
           <span className="mbar">
             <i style={{ width: `${cell.scoreText === "—" ? 0 : cell.scoreText}%` }} />
           </span>
           {/* Item 12 (fix round 3): the bare number carried no label — a
            *  reader had no way to tell 84 was a score, out of what, or of
-           *  what. The cell's own `title` (matchTitle, below) already
+           *  what. The cell's own `data-tip` popover (round 5, above) already
            *  explains it on hover; this adds a caption that names it at a
            *  glance instead of only on hover. */}
           <span className="score">
@@ -342,9 +354,11 @@ function HitRow({
           )}
         </div>
         <span className="row-facts pop">
-          <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
-          <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
-          <span title="Last updated">{ageLabel(model.created)}</span>
+          <span className="counts">
+            <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
+            <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
+          </span>
+          <span title="Last updated">{ageLabel(model.updated ?? model.created)}</span>
         </span>
         <span className="row-act">
           {have ? (
