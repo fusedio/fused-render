@@ -107,7 +107,7 @@ export function useScheduleEvents(onOutcome?: () => void): void {
         action: {
           label: "Open",
           onClick: () => {
-            dismissPopup();
+            dismissPopup(id);
             dismissNotification(id);
             navigateUrl("/tasks");
           },

@@ -396,9 +396,20 @@ export function dismissNotification(id: number): void {
  *  same shape as `dismissToast`) — the retained row (if this message has
  *  one) is untouched. This is what the popup card's own ✕/outside-press
  *  calls; a caller that wants to clear the retained row too calls
- *  `dismissNotification` as well. */
-export function dismissPopup(): void {
+ *  `dismissNotification` as well.
+ *
+ *  `id`, optional for the popup's own ✕ (which always means "whatever's
+ *  showing right now"), is required for correctness anywhere else: a
+ *  delayed caller (e.g. a "Reconnect" action on a retained row, fired
+ *  whenever the user eventually clicks it) captured the id its own popup
+ *  had when it first appeared, and by the time it runs an unrelated
+ *  `notify()` has almost always already replaced the popup with something
+ *  else — a bare `dismissPopup()` would close THAT unrelated card instead
+ *  of doing nothing. Passing the id makes the call a no-op once it no
+ *  longer names the current popup. */
+export function dismissPopup(id?: number): void {
   if (!popup || popup.leaving) return;
+  if (id !== undefined && popup.id !== id) return;
   clearTimer(exitTimer);
   popup = { ...popup, leaving: true };
   refreshSnapshot();

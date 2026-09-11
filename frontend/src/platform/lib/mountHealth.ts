@@ -76,7 +76,7 @@ export function useMountHealth(): void {
             // own visible window early if it is still up — the reconnect
             // attempt's own success/failure raises its own fresh
             // notification below, so this one's job is done.
-            dismissPopup();
+            dismissPopup(id);
             dismissNotification(id);
             try {
               await reconnectMount(mountId);

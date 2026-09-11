@@ -37,7 +37,7 @@ afterEach(() => {
   _resetNotificationsForTest();
   _setIsTopEmbedForTest(null);
   _setIsEmbedForTest(null);
-  delete (globalThis.window as Record<string, unknown>).top;
+  delete (globalThis.window as unknown as Record<string, unknown>).top;
 });
 
 const popupSnapshot = getPopupNotification;
@@ -119,6 +119,34 @@ test("the popup ✕ (dismissPopup) does not clear the retained row", async () =>
 
   expect(popupSnapshot()).toBe(null);
   expect(getRetainedNotifications().length).toBe(1);
+});
+
+test("dismissPopup(id) is a no-op if the given id is not the CURRENTLY showing popup (finding #5)", async () => {
+  // The exact shape the finding describes: a caller from a delayed action
+  // (e.g. clicking "Reconnect" on a retained row) captures the id it minted
+  // when it first popped, but by the time the click fires an unrelated
+  // notify() may have replaced the popup with something else entirely —
+  // without an id, `dismissPopup()` closes whatever's showing now, not the
+  // one the caller actually means.
+  const firstId = notify({ title: "first disconnected", tone: "error" });
+  const secondId = notify({ title: "second disconnected", tone: "error" });
+  expect(popupSnapshot()?.id).toBe(secondId);
+
+  dismissPopup(firstId);
+  // Nothing should have happened — `firstId` no longer names the popup.
+  expect(popupSnapshot()?.id).toBe(secondId);
+  expect(popupSnapshot()?.leaving).toBe(false);
+
+  dismissPopup(secondId);
+  await sleep(TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()).toBe(null);
+});
+
+test("dismissPopup() with no id still closes whatever popup is currently showing", async () => {
+  notify({ title: "Could not save", tone: "error" });
+  dismissPopup();
+  await sleep(TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()).toBe(null);
 });
 
 test("dismissNotification removes a retained row and leaves the popup untouched", () => {
@@ -297,7 +325,7 @@ test("dismissNotification in a pane forwards to the shell's own (independently-m
       dismissCalls.push(id);
     },
   };
-  (globalThis.window as Record<string, unknown>).top = fakeTop;
+  (globalThis.window as unknown as Record<string, unknown>).top = fakeTop;
 
   const localId = notify({ title: "registry error", tone: "error" });
   expect(ingestCalls.length).toBe(1);

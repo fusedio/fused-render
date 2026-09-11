@@ -270,14 +270,14 @@ export function useFileOps({
         // and it is the case a user most wants back — recorded before the
         // rethrow, since run()'s error path never reaches the lines below.
         if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
-        if (progressToastId !== undefined) dismissPopup();
+        if (progressToastId !== undefined) dismissPopup(progressToastId);
         throw e;
       }
       if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
       // Re-anchor onto the last thing written, if it lands in this view.
       if (last !== null) pendingSelectRef.current = last;
       if (progressToastId !== undefined) {
-        dismissPopup();
+        dismissPopup(progressToastId);
         // Already-copied files stay exactly where they landed — cancelling
         // stops the loop from asking for the next one, nothing more.
         if (cancelled) {

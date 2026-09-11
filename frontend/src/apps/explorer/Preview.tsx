@@ -2643,7 +2643,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
       // this is a correction, not a record (contrast the trail-tier
       // messages elsewhere in this file, which ARE meant to leave a trace).
       dismiss: (id: number) => {
-        dismissPopup();
+        dismissPopup(id);
         dismissNotification(id);
       },
       push: () =>
