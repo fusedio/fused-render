@@ -1,6 +1,6 @@
 // The two per-model controls on the embeddings stage (SPEC §40), pinned
-// against the SOURCE the way `local/repoCardControls.test.ts` pins the Local
-// card's own conditions.
+// against the SOURCE the way `local/ModelRow.test.ts` pins the Local
+// row's own conditions.
 //
 // **Why source text rather than a render.** What is being pinned is not what
 // the controls look like — it is that each one is drawn off the SERVER's own

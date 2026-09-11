@@ -111,21 +111,26 @@ window are answered from memory.
 
 from __future__ import annotations
 
+import math
 import os
+import re
 import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai import fit, footprints, hw_detect, speed
 from fused_render.ai import tasks as ai_tasks
-from fused_render.ai.registry import for_capability
+from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
     _entry_is_dir,
+    _quantization as _config_quantization_bits,
     _scan_repo,
     _unfinished_fetch,
     hub_cache_dir,
@@ -157,19 +162,384 @@ _TIMEOUT_S = 12.0
 # no per-repo follow-up request. That is what makes resolving a GGUF search
 # result at ROW-CONSTRUCTION time (`formats.pick_gguf_file`) cheap: the data
 # this needs is already in the payload this module was fetching anyway.
+#
+# **`gguf` (fix for code review finding 1, amending D778) is the same shape
+# of free ride.** Live-verified composed with the rest of this tuple against
+# both a single-file and a multi-quant GGUF repo (`hugging-quants/Llama-3.2-
+# 1B-Instruct-Q4_K_M-GGUF`, `bartowski/Llama-3.2-1B-Instruct-GGUF`): the Hub
+# returns `{"total": <param count>, "architecture": ..., "totalFileSize":
+# ...}` for every repo that ships a `.gguf` at all, absent otherwise. `total`
+# is the checkpoint's REAL parameter count read off the GGUF header itself —
+# confirmed IDENTICAL (1,235,814,432) across three different quantizations
+# of the same model, i.e. it does not change with quantization the way
+# `totalFileSize` (the repo-wide byte total across every file the author
+# shipped, the same "whole repo standing in for one file" shape `_quant`/
+# `_estimated_bytes` already refuse for safetensors) does. `_model_row` uses
+# `total` as `params` for a `file`-resolved row that has no safetensors
+# metadata of its own — a GENUINE Hub-reported fact, not a guess from the
+# repo's name — and never `totalFileSize`, which would reintroduce the exact
+# repo-wide-total bug D779's own fix corrected for `usedStorage`.
 _EXPAND = (
     "pipeline_tag", "downloads", "likes", "lastModified", "createdAt",
     "library_name", "gated", "private", "tags", "safetensors", "siblings",
+    "config", "gguf",
 )
 
 # Sorts the page offers. Keyed so a client cannot pass an arbitrary sort field
-# through to the Hub.
+# through to the Hub. `trending` -> `trendingScore` is verified live against the
+# API. `fit` is deliberately NOT a key here — it is not a field the Hub has, so
+# there is no wire value to map it to; `api_hub_search` special-cases it below,
+# the same honesty `hubSearchView.ts` documents for its own page-only "size".
 _SORTS = {
     "downloads": ("downloads", -1),
     "likes": ("likes", -1),
     "updated": ("lastModified", -1),
     "created": ("createdAt", -1),
+    "trending": ("trendingScore", -1),
 }
+
+# Part 3's three explicit filters — "any"/unset is always the no-op default,
+# so a page that never touches these controls behaves exactly as it did
+# before they existed.
+_FIT_LEVELS = frozenset({"easy", "tight", "any"})
+_PARAMS_BANDS = frozenset({"under4b", "4to15b", "over15b", "any"})
+
+# The one sort value this endpoint accepts that is not in `_SORTS`: "fit" asks
+# for a candidate set the Hub CAN rank (downloads — the same honest default
+# `size` uses on the frontend) and reorders it here, over `fit.verdict`'s own
+# `score`, after the per-request join. See `api_hub_search`.
+_FIT_SORT = "fit"
+
+# The DEFAULT ranking (D780): one 0-100 number blending memory fit, a
+# params-based capability proxy, speed, recency and popularity, plus a small
+# on-disk bonus — see `_composite_score` and D780 for the full defense of
+# the weights and the axes rejected. Like `_FIT_SORT`, not a `_SORTS` key:
+# there is no Hub wire field for it either, so it asks for the same
+# most-downloaded candidate set and reorders it here.
+_BEST_SORT = "best"
+
+# ---- D780's composite score: weights, defaults, and the axis curves -------
+#
+# Every weight below is a DELIBERATE choice, not a magic tuple — see D780 for
+# the reasoning this comment only summarizes. They sum to 1.0 before the
+# on-disk bonus, which is additive and outside the blend.
+_WEIGHT_FIT = 0.35
+_WEIGHT_CAPABILITY = 0.25
+_WEIGHT_SPEED = 0.15
+_WEIGHT_RECENCY = 0.15
+_WEIGHT_POPULARITY = 0.10
+
+# A small nudge for a model already on this disk (D780) — it costs nothing to
+# open, so it earns a push toward the top of a tie, never enough on its own
+# to out-rank a genuinely better-suited model that lives only on the Hub.
+_ON_DISK_BONUS = 6.0
+
+# D782: a row that only runs via CPU offload or CPU-only is a real cost the
+# ranking must reflect — the speed axis (`_speed_score`) does NOT already
+# cover this: it reads `speed.estimate_tok_s`'s `tokensPerSecond`, which is
+# a MACHINE-WIDE backend guess (Metal/CUDA/CPU-ARM/…, `speed.py`'s own
+# `backend_bucket`), not a per-row judgement of whether THIS repo's own
+# footprint would spill out of fast memory on THIS machine — so without an
+# explicit penalty here, two rows with the same speed estimate but
+# different `runMode`s would tie on this axis despite one of them being
+# visibly worse to actually use. Flat penalties, not a curve: this is a
+# binary fact (offloaded or not), not a quantity with diminishing returns.
+_CPU_OFFLOAD_PENALTY = 10.0
+_CPU_ONLY_PENALTY = 20.0
+
+# Defaults for a row with nothing to judge ONE axis by. Never 0 (reads as
+# "definitely bad") and never the axis's own ceiling (reads as "definitely
+# good") — "honest degrade to missing data" per the brief. Popularity is the
+# one exception (see `_popularity_score`): a real absence of any download
+# count is the worst case for a signal that measures nothing but downloads.
+#
+# **Every default here was re-checked against one question (code review
+# finding 7): can this number ever score HIGHER than a real, honestly-
+# measured value would for a genuinely capable/fast/recent row?** Only
+# speed failed it. `_FIT_DEFAULT`/`_CAPABILITY_DEFAULT`/`_RECENCY_DEFAULT`
+# each sit well below their own axis's ceiling and below what a
+# comfortably-good real row scores (an "easy" fit is 100, a machine-
+# saturating model's capability is ~86, a brand-new repo's recency is
+# ~100) — a row with no evidence to judge those axes by never outranks one
+# that is actually good on them, only ones that are actually bad, which is
+# the intended "absence is not evidence of badness" reading. `_SPEED_
+# DEFAULT` alone had a NAMED anchor to fail against: 70 (`_saturating`'s
+# curve, corresponding to ~14.4 tok/s) sat ABOVE `_SPEED_CONVERSATIONAL_
+# TOK_S` (12 tok/s) itself, so an unmeasured row scored higher than a real,
+# measured, plainly-usable 8 tok/s model (score 48) ever could — absence
+# beating weak-but-real evidence, not just beating bad evidence. Lowered to
+# just AT the anchor (`_saturating(12, 12)` rounds to ~63.2): a row with no
+# speed evidence now reads as "about as fast as barely-conversational",
+# never faster than a model that is REALLY that fast.
+_FIT_DEFAULT = 40.0
+_CAPABILITY_DEFAULT = 30.0
+_SPEED_DEFAULT = 63.0
+_RECENCY_DEFAULT = 35.0
+
+# Mirrors the frontend's identical anchor (`hubTableView.ts::SPEED_ANCHOR_
+# PARAMS`, same value, same citation): below this many parameters,
+# `speed.py`'s own bandwidth formula is documented as unvalidated (fixed
+# per-call overhead dominates), so `speedLabel` renders the dash there
+# rather than a number — and `_speed_score` (fix for finding 6) must not
+# rank on a number the table itself refuses to print. Kept as a SEPARATE
+# constant rather than importing the frontend's, because there is nothing
+# in this backend module to import it FROM — see `_speed_score`'s own
+# docstring for the bug this fixes.
+_SPEED_ANCHOR_PARAMS = 1_000_000_000.0
+
+# The capability axis turns `params` into a 0-100 score via a diminishing-
+# returns curve anchored to what THIS machine could comfortably hold — so an
+# 8B model on a 32GB Mac scores near its ceiling while a 137M model on the
+# same machine scores near zero, without the axis needing to know anything
+# about quality. The anchor assumes BF16 (2 bytes/param, the middle ground
+# between full precision and a 4-bit quant) over `fit.COMFORT`'s own
+# utilization ceiling — the SAME "comfortable" fraction `fit.verdict` scores
+# 100 at, so this axis and the fit axis agree on what "comfortable" means
+# rather than fighting over two different budgets.
+_CAPABILITY_BYTES_PER_PARAM = 2.0
+# No RAM reading at all (`fit.machine_ram_gb()` returned None or 0) — a
+# reasonable mid-catalog anchor rather than refusing to rank the axis.
+_CAPABILITY_DEFAULT_ANCHOR_PARAMS = 8_000_000_000.0
+# `1 - exp(-k*x)` reaches ~86% of its ceiling at `x == 1` when `k == 2` — a
+# model sitting exactly at the machine's own comfortable-capacity anchor
+# should read as "near-saturated", not as "at the curve's inflection point".
+_CAPABILITY_STEEPNESS = 2.0
+
+# "Roughly conversational speed" (the brief's own words) — the tok/s past
+# which more speed stops earning much on this axis. A UX anchor, not a
+# hardware calibration constant, and deliberately not shared with anything
+# in `speed.py`.
+_SPEED_CONVERSATIONAL_TOK_S = 12.0
+
+# Half-life, in days, for the recency decay (`0.5 ** (age_days / this)`). A
+# repo exactly this old scores half of a brand-new one. One year: at four
+# years old (`gpt2`, the screenshot's own example) that is `0.5**4 ≈ 6%` —
+# visibly near the bottom with no hard cliff at an arbitrary birthday, which
+# is the whole complaint about the old downloads-only ranking.
+_RECENCY_HALF_LIFE_DAYS = 365.0
+
+# The download count at which the (weak, log-scaled) popularity axis
+# saturates near its ceiling — a handful of the most-downloaded repos on the
+# Hub at any given time. Beyond this, "more downloads" stops being a
+# meaningfully different fact for a TIEBREAK axis, which is all popularity
+# is supposed to be here.
+_POPULARITY_ANCHOR_DOWNLOADS = 5_000_000.0
+
+# Fix round 11, item 2: `_facets` counts publishers over the ~200
+# most-downloaded rows in the candidate set — a publisher with only one or
+# two rows in that window sorts alphabetically behind the top-40 cutoff and
+# never appears in the Publisher dropdown, even though a search for it by
+# name returns a full page (the Hub has far more of that publisher's repos
+# than this window ever saw). This hides the ONE publisher an Apple-Silicon
+# user looks for first (`mlx-community`) behind an arbitrary top-40 count
+# cutoff, so a small set is pinned to the FRONT of the list regardless of
+# its count in this window — keyed by this machine's backend bucket
+# (`speed.backend_bucket`, the same helper `_speed_score` already uses),
+# since the publisher someone reaches for first depends on what their
+# machine can actually run fast. Text-generation only (or no capability
+# filter, which still error toward text-gen as the common case) — an
+# image/speech/embedding search has no reason to pin a text-gen publisher.
+_PINNED_PUBLISHERS_METAL = ["mlx-community", "lmstudio-community"]
+_PINNED_PUBLISHERS_OTHER = ["bartowski", "unsloth", "lmstudio-community"]
+
+
+def _pin_publisher_facets(facets: dict, facet_models: list[dict],
+                          capability_filter: str, hardware) -> None:
+    """Mutates `facets["publishers"]` in place, pinning this machine's
+    go-to runner publishers to the front (see `_PINNED_PUBLISHERS_METAL`/
+    `_OTHER` above). No-op for any capability other than text-generation or
+    none at all (`""`, the "no capability filter yet" wire shape)."""
+    if capability_filter not in ("", "text-generation"):
+        return
+    is_apple = fit.is_apple_silicon()
+    backend = speed.backend_bucket(hardware, is_apple_unified=is_apple)
+    pinned = _PINNED_PUBLISHERS_METAL if backend == "metal-mlx" else _PINNED_PUBLISHERS_OTHER
+
+    counts: dict[str, int] = {}
+    for row in facet_models:
+        model_id = row.get("id")
+        if isinstance(model_id, str) and "/" in model_id:
+            name = model_id.split("/", 1)[0]
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+
+    publishers = facets.get("publishers")
+    if not isinstance(publishers, list):
+        return
+    rest = [p for p in publishers if p.get("id") not in pinned]
+    pinned_entries = [{"id": name, "count": counts.get(name, 0)} for name in pinned]
+    facets["publishers"] = (pinned_entries + rest)[:40]
+
+
+def _saturating(value: float, scale: float, steepness: float = 1.0) -> float:
+    """0-100 via `100 * (1 - exp(-steepness * value / scale))` — the one
+    diminishing-returns curve shape every axis below shares. `<= 0` input or
+    scale is a flat `0`, never a stray negative from floating point."""
+    if value <= 0 or scale <= 0:
+        return 0.0
+    return 100.0 * (1.0 - math.exp(-steepness * value / scale))
+
+
+def _capability_anchor_params(ram_gb: float | None) -> float:
+    """How many BF16-equivalent parameters this machine could comfortably
+    hold — the capability axis's own scale, not a size estimate anyone
+    reads a number off of (that stays `fit.py`'s job, per row, off real
+    evidence). See the constants above for the reasoning."""
+    if not ram_gb or ram_gb <= 0:
+        return _CAPABILITY_DEFAULT_ANCHOR_PARAMS
+    comfortable_bytes = ram_gb * fit.GB_BYTES * fit.COMFORT
+    return comfortable_bytes / _CAPABILITY_BYTES_PER_PARAM
+
+
+def _capability_score(params: int | None, ram_gb: float | None) -> float:
+    """The params-as-capability-proxy axis (D780) — never a guess when
+    `params` is unknown, which is exactly the row shape D775/D777 already
+    guard against inventing a number for."""
+    if params is None or params <= 0:
+        return _CAPABILITY_DEFAULT
+    anchor = _capability_anchor_params(ram_gb)
+    return _saturating(float(params), anchor, _CAPABILITY_STEEPNESS)
+
+
+def _speed_score(speed_estimate: dict | None, params: int | None) -> float:
+    """The speed axis. Saturates past `_SPEED_CONVERSATIONAL_TOK_S` by
+    construction (`_saturating`), which is what stops a bandwidth formula's
+    own known blind spot — an anchor-less sub-billion-parameter model's
+    inflated tok/s (`speed.py:283`'s own documented gap) — from winning this
+    axis outright: it saturates at the same ceiling a genuinely fast,
+    correctly-modelled model already reaches, never above it.
+
+    **`params` gates the SAME anchor `speedLabel` already refuses to print a
+    number below** (fix for code review finding 6). Below `_SPEED_ANCHOR_
+    PARAMS`, `speedTitle`'s own words are "a number here would not be a real
+    estimate" — but this function used to score `tokensPerSecond` in
+    unchanged regardless, so `_saturating(17_324.6, 12)` (the tiny CI-stub
+    example the frontend's own doc cites) rounded to the axis's CEILING,
+    100.0, while the cell right beside it showed a dash. One source of
+    truth for "this estimate isn't real": a row below the anchor gets
+    `_SPEED_DEFAULT` here too, the identical default an estimate-less row
+    already gets, rather than trusting a number this app's own UI does not
+    trust."""
+    if params is not None and params < _SPEED_ANCHOR_PARAMS:
+        return _SPEED_DEFAULT
+    if not isinstance(speed_estimate, dict):
+        return _SPEED_DEFAULT
+    tok_s = speed_estimate.get("tokensPerSecond")
+    if not isinstance(tok_s, (int, float)) or tok_s <= 0:
+        return _SPEED_DEFAULT
+    return _saturating(float(tok_s), _SPEED_CONVERSATIONAL_TOK_S)
+
+
+def _recency_score(created: str | None) -> float:
+    """The recency axis — exponential decay off `created` (ISO8601), or the
+    default for a repo the Hub gave no `createdAt` for, or one this server
+    could not parse. Never negative: a clock-skewed "future" timestamp is
+    floored to age zero rather than scored ABOVE a brand-new repo."""
+    if not created:
+        return _RECENCY_DEFAULT
+    try:
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return _RECENCY_DEFAULT
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+    return 100.0 * (0.5 ** (age_days / _RECENCY_HALF_LIFE_DAYS))
+
+
+def _popularity_score(downloads: int | None) -> float:
+    """The popularity axis — log-scaled, and DELIBERATELY the one axis whose
+    "nothing known" default is 0 rather than a middle value (D780): every
+    other axis's default sits in the middle because the absence of evidence
+    should not read as "definitely bad", but popularity is a WEAK signal by
+    design (the brief's own instruction) — this axis measures downloads and
+    nothing else, so a repo the Hub reports no count for genuinely has no
+    popularity evidence to credit it with, unlike a missing `params` or
+    `created` where the model still plainly exists and simply was not
+    described."""
+    if downloads is None or downloads <= 0:
+        return 0.0
+    return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
+
+
+def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
+    """The composite blend BEFORE the `[0, 100]` clamp `_composite_score`
+    applies for display — see that function for the full description of the
+    five axes and the bonus/penalties below.
+
+    **Kept separate from the clamp, and this is what the SORT must use**
+    (fix for code review finding 8). `_ON_DISK_BONUS` and `_CPU_OFFLOAD_
+    PENALTY`/`_CPU_ONLY_PENALTY` are flat adjustments that do not change one
+    row's rank RELATIVE to another with the same blend — but clamping BEFORE
+    comparing does: on a GPU-less machine every row takes the identical
+    `_CPU_ONLY_PENALTY`, and a typical pre-penalty blend down the tail (say
+    25-50) lands under 20 post-penalty, so `max(0.0, blended)` flattened a
+    real slice of the tail to exactly 0.0 — a comparison the CLAMPED number
+    can no longer make, silently falling the sort back to the Hub's own
+    downloads order for every tied-at-zero row. `_ON_DISK_BONUS` does the
+    same at the ceiling. The fix is to compare on THIS unclamped figure and
+    only clamp the number actually shown."""
+    fit_verdict = row.get("fit")
+    fit_axis = (
+        float(fit_verdict["score"])
+        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
+        else _FIT_DEFAULT
+    )
+    capability_axis = _capability_score(row.get("params"), ram_gb)
+    speed_axis = _speed_score(row.get("speedEstimate"), row.get("params"))
+    recency_axis = _recency_score(row.get("created"))
+    popularity_axis = _popularity_score(row.get("downloads"))
+    blended = (
+        _WEIGHT_FIT * fit_axis
+        + _WEIGHT_CAPABILITY * capability_axis
+        + _WEIGHT_SPEED * speed_axis
+        + _WEIGHT_RECENCY * recency_axis
+        + _WEIGHT_POPULARITY * popularity_axis
+    )
+    if (row.get("local") or {}).get("state", "none") != "none":
+        blended += _ON_DISK_BONUS
+    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
+    if run_mode == "cpu-offload":
+        blended -= _CPU_OFFLOAD_PENALTY
+    elif run_mode == "cpu-only":
+        blended -= _CPU_ONLY_PENALTY
+    return blended
+
+
+def _composite_score(row: dict, ram_gb: float | None) -> float:
+    """`row["matchScore"]` (D780) — the composite 0-100 the DEFAULT sort
+    ranks by and the merged Fit+Score cell renders, blending:
+
+    * memory fit (`row["fit"]["score"]`, `fit.verdict`'s own 0-100) — the
+      heaviest weight, because a row already carries this as a hard GATE
+      elsewhere (`verdict: "no"` is dropped by default) and a row merely
+      "tight" should still visibly rank below one that is "easy" rather
+      than tying with it the way the pre-D780 fit-only sort did.
+    * capability (`_capability_score`) — a params-based proxy for "how much
+      model", scaled to what THIS machine can comfortably hold, so a
+      machine that can run 8B stops surfacing 137M models ahead of it.
+    * speed (`_speed_score`) — saturating past conversational pace, so an
+      anchor-less tiny model's inflated tok/s cannot win outright.
+    * recency (`_recency_score`) — exponential decay, so a 4-year-old repo
+      sinks well below a current one with no hard cliff.
+    * popularity (`_popularity_score`) — log-scaled and the LOWEST weight, a
+      tiebreak rather than a ranking driver, per the brief's own instruction.
+
+    Plus `_ON_DISK_BONUS` when this row is already on disk, MINUS
+    `_CPU_OFFLOAD_PENALTY`/`_CPU_ONLY_PENALTY` when `fit.runMode` says this
+    row would not run on the GPU/unified memory (D782 — the speed axis is a
+    machine-wide backend guess, not a per-row judgement of THIS repo's own
+    offload, so it does not already cover this). The blend is clamped to
+    `[0, 100]` afterward: the bonus can push a near-ceiling row past 100 on
+    its own, and a reader comparing this number to the 0-100 axes it is
+    made of should never see it escape that range.
+
+    **This is the DISPLAYED number only — `api_hub_search`'s own sort uses
+    `_composite_raw_score` (unclamped) instead, see that function's own
+    docstring for why (code review finding 8).**
+    """
+    return min(100.0, max(0.0, _composite_raw_score(row, ram_gb)))
+
 
 _MAX_LIMIT = 60
 
@@ -183,6 +553,15 @@ _MAX_ID_LEN = 200
 # connection and a public API: four pages' worth, never more than _MAX_FETCH.
 _OVERFETCH = 4
 _MAX_FETCH = 200
+
+# `_pull_in_family_members`'s own bounds. Per-family: a republish spree
+# (a base with two dozen quantizations) must not by itself blow out a page,
+# so only the highest-ranked dozen of any one family's overflow members ride
+# along. Overall: a query where MANY kept rows each have their own overflowing
+# family must still return a payload of bounded size — capped independently of
+# `count` so a `limit=60` request cannot add another 720 rows on top.
+_FAMILY_PULL_IN_PER_FAMILY_CAP = 12
+_FAMILY_PULL_IN_TOTAL_CAP = 60
 
 # The tags a filter menu could offer are `ai/tasks.py`'s table, in its order —
 # every `pipeline_tag` the Hub serves, vendored from `@huggingface/tasks`. This
@@ -200,6 +579,19 @@ _DTYPE_BITS = {
     "U32": 32, "I32": 32, "F32": 32,
     "U64": 64, "I64": 64, "F64": 64,
 }
+
+# The INTEGER dtypes, which store several packed weights per word in a
+# quantized checkpoint (D775-amending finding, code review F2) — the same set
+# `hub_cache._safetensors_params` already keys on for the identical reason on
+# a downloaded model's own card. `_quant` must never report one of these as
+# the model's quantization: it names the STORAGE CONTAINER (an MLX/GPTQ 4-bit
+# checkpoint packs 8 weights into one `U32`), not the precision, and reporting
+# it as one is a label as wrong in substance as guessing from the repo's name
+# — the thing D775 exists to rule out. `_params` must not sum these RAW either
+# — doing so counts storage slots, not weights, which is why a 27B MLX-4bit
+# repo used to report 4.7B params (`_params_band` then misclassified it into
+# "Under 8B"). See D777.
+_PACKED_DTYPES = frozenset({"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"})
 
 # Hub `library_name` values NOTHING here can ever open, and the reason this is a
 # DENYLIST rather than an allowlist.
@@ -311,31 +703,177 @@ def supported_tags() -> tuple[str, ...]:
 
 def _estimated_bytes(safetensors) -> int | None:
     """Bytes on disk, recovered from the dtype -> parameter-count map. None when
-    the repo carries no safetensors metadata: a size we cannot compute is left
-    out, never guessed from the parameter count alone."""
+    the repo carries no safetensors metadata (a size we cannot compute is left
+    out, never guessed from the parameter count alone) OR when the naive byte
+    sum below is DOMINATED by a packed dtype (`_PACKED_DTYPES`, D775/D777's
+    own "names the storage CONTAINER, not the precision" rule, applied here to
+    size instead of the quantization label).
+
+    An MLX/GPTQ checkpoint's `U32` packs several weights into one word; this
+    function has no honest way to know the packing factor (that is exactly
+    what `_quant`, elsewhere in this module, can never report for a packed
+    dtype either), so treating the container's own width as real per-weight
+    bytes overstates the size by that unknown factor. Verified live against
+    the repo that surfaced this bug: `mlx-community/Lens-3.8B-4bit` and
+    `-8bit` report the IDENTICAL dtype map — `{"BF16": 27_361_664, "U32":
+    4_076_863_488}` — for two different quantizations, and the naive sum
+    (~15.24 GiB) is *larger* than the real BF16 original
+    (`mlx-community/Lens-3.8B-bf16`, ~7.65 GiB): a ~2x over-report for the
+    8-bit variant, ~6.6x for the 4-bit one, both reporting a QUANT of `—`
+    (`_quant` already refuses to name a packed dtype) as the corroborating
+    signal that nothing here actually knows this repo's real precision.
+
+    "Dominated" is measured in BYTES, over this function's own naive
+    (uncorrected) sum: refuse only when packed-dtype rows account for a
+    STRICT MAJORITY of that sum. Deliberately not "any packed dtype present"
+    or "majority of PARAMETERS packed" — a repo can legitimately mix a small
+    integer buffer (a quantization scale/zero-point tensor, a rotary cache)
+    alongside real float weights, and refusing a size for that case, where the
+    packed slice is a rounding error against the float majority, would be an
+    over-correction with no evidence behind it. Byte share is the direct
+    measure of how wrong the OUTPUT would be: a packed minority can only skew
+    the total by a small amount even at an unknown packing factor, while a
+    packed majority (both Lens variants above are ~99.7% packed by this
+    measure) means the number this function would return is mostly a count of
+    storage slots, not weight bytes.
+    """
     if not isinstance(safetensors, dict):
         return None
     by_dtype = safetensors.get("parameters")
     if not isinstance(by_dtype, dict):
         return None
     total = 0
+    packed = 0
     for dtype, count in by_dtype.items():
-        bits = _DTYPE_BITS.get(str(dtype).upper())
+        dtype_u = str(dtype).upper()
+        bits = _DTYPE_BITS.get(dtype_u)
         if bits and isinstance(count, int) and count >= 0:
-            total += count * bits // 8
-    return total or None
+            row_bytes = count * bits // 8
+            total += row_bytes
+            if dtype_u in _PACKED_DTYPES:
+                packed += row_bytes
+    if total <= 0:
+        return None
+    if packed * 2 > total:
+        return None
+    return total
 
 
-def _params(safetensors) -> int | None:
+def _quant(safetensors, file: str | None, config=None) -> str | None:
+    """The row's quantization, when it is a MEASURED fact — never a guess from
+    the repo's own NAME (the user's explicit complaint about llmfit's
+    approach, and the reason this function exists at all).
+
+    Three sources, in priority order, all real evidence:
+
+    * a GGUF row's own resolved `file` — the quant token IN the filename
+      llama.cpp's own ecosystem publishes it under (`formats.gguf_quant_token`),
+      which is a real published fact about the one file this row would
+      actually download. Wins outright when set (F3): `_model_row` clears
+      `safetensors` for a `file`-resolved row precisely so a repo publishing
+      BOTH formats cannot have its OTHER upload's dtype decide this row's
+      label while the Download button fetches the GGUF.
+    * `config`'s own `quantization`/`quantization_config` block (D777,
+      amending D775) — MLX writes `quantization: {bits}`, transformers writes
+      `quantization_config: {bits | load_in_4bit | load_in_8bit}`. This is the
+      checkpoint's own declaration of its precision, read via the same
+      `hub_cache._quantization` a downloaded model's card already trusts, so
+      the two surfaces cannot label the same repo two different ways.
+    * `safetensors.parameters` — the SAME dtype -> count map `_estimated_bytes`
+      already sums, but **only a FLOAT dtype is reported this way.** An
+      integer dtype (`_PACKED_DTYPES`) with no `config` evidence names a
+      STORAGE CONTAINER, not a quantization — an MLX/GPTQ 4-bit checkpoint
+      bit-packs eight weights into each `U32`, and `U32` is not "the
+      quantization" any more than "gzip" would be. Among float dtypes, the one
+      with the most BYTES (not the most parameters — a small embedding table
+      at a different width must not decide the label for an otherwise-uniform
+      model) is the one reported.
+
+    `None` when nothing above has real evidence: an unquantifiable repo (no
+    GGUF file, no declared config quantization, and either no safetensors
+    metadata or only a packed integer dtype with nothing corroborating it)
+    renders nothing rather than an inference.
+    """
+    if file:
+        return formats.gguf_quant_token(file)
+    if isinstance(config, dict):
+        bits = _config_quantization_bits(config)
+        if isinstance(bits, int) and bits > 0:
+            return f"{bits}-bit"
+    if isinstance(safetensors, dict):
+        by_dtype = safetensors.get("parameters")
+        if isinstance(by_dtype, dict):
+            best_dtype, best_bytes = None, -1
+            for dtype, count in by_dtype.items():
+                dtype_u = str(dtype).upper()
+                bits = _DTYPE_BITS.get(dtype_u)
+                if not bits or not isinstance(count, int) or count < 0:
+                    continue
+                total_bytes = count * bits
+                if total_bytes > best_bytes:
+                    best_dtype, best_bytes = dtype_u, total_bytes
+            if best_dtype is not None and best_dtype not in _PACKED_DTYPES:
+                return best_dtype
+    return None
+
+
+def _params_band(params: int | None) -> str | None:
+    """Which of Part 3's three size bands `params` falls in, or `None` for a
+    row with no known parameter count — a band filter drops those rather than
+    guessing which one they would belong to."""
+    if params is None:
+        return None
+    if params < 4_000_000_000:
+        return "under4b"
+    if params <= 15_000_000_000:
+        return "4to15b"
+    return "over15b"
+
+
+def _params(safetensors, config=None) -> int | None:
+    """The repo's real parameter count — not the number of storage SLOTS a
+    quantized checkpoint's dtype map counts (D777, code review F2).
+
+    The Hub's own `safetensors.total` is the SAME undercount as summing
+    `parameters` raw: verified live against `mlx-community/Qwen3.8-27B-4bit`
+    (a declared 27B model), whose `total` (4,665,462,000) is exactly the sum
+    of its `BF16` and `U32` element counts with NEITHER unpacked — i.e. the
+    Hub does not adjust for packing either, so trusting `total` directly
+    reproduces this bug rather than avoiding it. `total` is therefore only a
+    fallback for the shape `parameters` cannot cover (present, but not a dict).
+
+    When `config` declares a bit width (`_config_quantization_bits`, the same
+    source `_quant` trusts), each PACKED dtype's count is expanded by how many
+    that width of weights its storage width holds — `hub_cache._safetensors_params`'s
+    own arithmetic, applied to the aggregate dtype->count map this endpoint
+    gets instead of that function's per-tensor shapes. Without a declared bit
+    width there is no honest way to un-pack a `U32` count, so it is counted as
+    published (an undercount `_params_band`/callers must live with, the same
+    as before this fix, rather than a guess at the packing ratio).
+    """
     if not isinstance(safetensors, dict):
         return None
+    by_dtype = safetensors.get("parameters")
+    if isinstance(by_dtype, dict):
+        quantized_bits = _config_quantization_bits(config) if isinstance(config, dict) else None
+        counted = 0
+        saw_any = False
+        for dtype, count in by_dtype.items():
+            if not isinstance(count, int) or count < 0:
+                continue
+            saw_any = True
+            dtype_u = str(dtype).upper()
+            if quantized_bits and dtype_u in _PACKED_DTYPES:
+                bits = _DTYPE_BITS.get(dtype_u)
+                per_word = (bits // quantized_bits) if bits else 0
+                if per_word > 1:
+                    count *= per_word
+            counted += count
+        if saw_any:
+            return counted or None
     total = safetensors.get("total")
     if isinstance(total, int) and total > 0:
         return total
-    by_dtype = safetensors.get("parameters")
-    if isinstance(by_dtype, dict):
-        counted = sum(v for v in by_dtype.values() if isinstance(v, int) and v >= 0)
-        return counted or None
     return None
 
 
@@ -400,6 +938,65 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
     }
 
 
+#: `base_model:<relation>:<id>` — the Hub's own tag naming what a repo was
+#: derived from. `relation` is free text on the Hub's side, but the four
+#: values every republish here actually uses are `quantized`, `finetune`,
+#: `merge` and `adapter`; the parse itself does not narrow to that set — a
+#: value the Hub adds later still groups, it would just group under a
+#: relation label the frontend has not written a name for yet.
+_BASE_MODEL_TAG_PREFIX = "base_model:"
+
+
+def _base_model(tags) -> tuple[str | None, str | None]:
+    """`(baseModel, relation)` parsed off a repo's own `tags`, or `(None,
+    None)` when none of them says what this was derived from — a row
+    standing alone, or a repo whose tags this server could not read at all
+    (missing, not a list, or entries that are not strings).
+
+    **Parsing only. The grouping RULE is the frontend's** (`hubFamilies.ts`)
+    — this function's whole job is turning the Hub's own colon-delimited tag
+    into two fields, never deciding which rows share a family or which one
+    leads it. Mirrors `_gate`'s own shape: never absent from the row, so "no
+    base" and "the Hub did not say" would be one field if this ever had a
+    reason to conflate them — it does not, both read as `None` today, but the
+    shape is deliberate rather than incidental.
+
+    The FIRST matching tag wins where more than one exists (a repo cannot
+    have two base models this table would agree on, and the Hub does not
+    document what a second one would mean), and the base model id itself may
+    contain colons in principle (an org or repo name never does on today's
+    Hub, but nothing here assumes otherwise) — `partition`, not `split`, so
+    only the first two colons are consumed and the id is whatever remains.
+
+    **The relation-less form, `base_model:<id>` with no second colon, is a
+    real tag shape** — it is what the Hub emits from a model card's own
+    `base_model:` metadata when the card never set `base_model_relation:`,
+    so treating it the same as a malformed tag (as an earlier version of this
+    function did) silently ungrouped a large share of repos. When the
+    remainder has no `:` at all, the whole remainder is the id and
+    `relation` is `None` — the frontend keys a family on `baseModel` alone
+    and never reads `relation`, so this costs nothing there. A malformed
+    tag — an empty id either side of a colon that IS present — is still
+    skipped.
+    """
+    if not isinstance(tags, list):
+        return None, None
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.startswith(_BASE_MODEL_TAG_PREFIX):
+            continue
+        rest = tag[len(_BASE_MODEL_TAG_PREFIX):]
+        relation, sep, base_id = rest.partition(":")
+        if not sep:
+            # No second colon: the Hub's relation-less `base_model:<id>` form.
+            if not relation:
+                continue
+            return relation, None
+        if not relation or not base_id:
+            continue
+        return base_id, relation
+    return None, None
+
+
 def _gate(raw) -> str | None:
     """The Hub's `gated` field as one of None / "auto" / "manual".
 
@@ -413,7 +1010,55 @@ def _gate(raw) -> str | None:
     return "auto" if raw == "auto" else "manual"
 
 
-def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
+#: Substrings that mark a GGUF sibling as a helper file rather than a weight
+#: variant of its own — a vision projector ("mmproj") shipped alongside a
+#: multimodal GGUF repo. Counted separately would inflate "N variants" by
+#: one for every repo that ships one, which is every popular VLM GGUF repo.
+_GGUF_HELPER_MARKERS = ("mmproj", "vision")
+
+
+def _count_variants(raw: dict) -> int:
+    """Item 9c (fix round 5): how many distinct weight variants this repo
+    ships, best-effort and from data already in `raw` (`siblings`, `gguf`,
+    `safetensors` — all already in `_EXPAND`, so this costs no extra
+    request). 1 when nothing suggests more than one, never 0 — a repo the
+    rest of this row exists to describe always has at least the one weight
+    set the Download button would fetch.
+
+    GGUF repos: one `.gguf` sibling is one quantization of the SAME
+    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted directly, minus any
+    helper file (`_GGUF_HELPER_MARKERS`) that is not a weight variant at all.
+
+    Safetensors/MLX repos: no per-file quant list to count the same way (a
+    dtype conversion is usually one subfolder, not one file) — counted only
+    when the repo obviously carries more than one, via a Hub-name convention
+    a handful of publishers use (`mlx-community`'s own `4bit/`, `8bit/`,
+    `bf16/` subfolders being the common case): distinct top-level directories
+    among `siblings` whose name looks like a bit-width or dtype token.
+    Anything else (the overwhelming majority of repos) reads as 1 rather
+    than guessing.
+    """
+    siblings = raw.get("siblings")
+    names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
+              if isinstance(siblings, list) else [])
+    names = [n for n in names if isinstance(n, str)]
+    gguf_files = [n for n in names
+                  if n.lower().endswith(".gguf")
+                  and not any(marker in n.lower() for marker in _GGUF_HELPER_MARKERS)]
+    if gguf_files:
+        return max(1, len(gguf_files))
+    dtype_dirs = {
+        n.split("/", 1)[0].lower()
+        for n in names
+        if "/" in n and re.fullmatch(r"(?:[1248]bit|fp16|bf16|f16|f32|int8|int4)", n.split("/", 1)[0].lower())
+    }
+    if len(dtype_dirs) > 1:
+        return len(dtype_dirs)
+    return 1
+
+
+def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
+               footprint_store: dict | None, hardware) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
@@ -445,6 +1090,26 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
       the one drop reason that depends on the resolved runner rather than on
       capability existence alone, and is therefore the one exception to this
       module's "search does not depend on the host" rule.
+
+    **(D779) A GGUF pick is not limited to the ACTIVE runner.** D412 reads as
+    "the active runner decides", but a Mac with `mlx-text` active and
+    `llamacpp-text` merely AVAILABLE (not preferred) was falling through
+    every GGUF-only repo with `file` left `None` — no drop (mlx-text
+    declares no format tag, so the D412 branch above never runs), but no
+    resolution either, so `quant`/`params`/`estimatedSize`/`fit` were all
+    `None` and the client's lazy per-file size lookup (keyed on `file`)
+    never fired, leaving the repo's whole-repo `usedStorage` as the only
+    number the page had — a multi-quant repo's TOTAL standing in for one
+    file's size. So the GGUF pick is tried against the active runner FIRST
+    (unchanged), and — only when the active runner declares no format tag at
+    all — against the first OTHER runner this machine has AVAILABLE for the
+    same capability that does declare one (`registry.available_runners`).
+    Still no outbound Hub request: `pick_gguf_file` reads the same `siblings`
+    already on the row. The drop rule above is UNCHANGED — it fires only when
+    the ACTIVE runner itself needed a pick and found none; a repo the
+    secondary runner also cannot resolve simply keeps `file=None`, same as
+    before this fix, because the active runner never asked to be a gatekeeper
+    for a format it does not speak.
 
     **`gated` is NOT a drop, and the distinction is the point** (D316). It was
     one, on the rule that every card must be downloadable — a rule drawn one
@@ -481,7 +1146,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         return None
     if raw.get("private"):
         return None
-    reading = ai_tasks.classify(raw.get("pipeline_tag"))
+    # `classify_repo`, not `classify`: the repo's `tags` list gets a say when
+    # its `pipeline_tag` slot names a task nothing here runs. That slot holds
+    # ONE of the tasks a repo may claim, and a search that reads only the slot
+    # dropped every `black-forest-labs/FLUX.2-klein-*` repo — `image-to-image`
+    # in the slot, `text-to-image` in the tags — while happily listing fifteen
+    # community quants OF those repos, which put the runnable task in the slot.
+    # See that function for why the widening cannot manufacture a capability.
+    reading = ai_tasks.classify_repo(raw.get("pipeline_tag"), raw.get("tags"))
     capability = reading.capability
     if capability is None:
         # HS-0: everything on this tab is runnable HERE. A ruled-out task and an
@@ -495,7 +1167,22 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         return None
     file = None
     runner = for_capability(capability)
+    gguf_runner = None
     if runner is not None and "gguf" in runner.hub_filter_tags:
+        gguf_runner = runner
+    elif runner is not None:
+        # D779: the active runner speaks no format this picker knows, but
+        # another runner registered for the SAME capability may still be
+        # able to load this repo — merely not preferred, not unavailable.
+        # Only tried when the active runner itself declared no tag at all;
+        # an active runner that DID declare one and found nothing already
+        # took the drop branch above, and that verdict is the active
+        # runner's alone to make (see the docstring's D779 paragraph).
+        for candidate in available_runners(capability):
+            if candidate.code != runner.code and "gguf" in candidate.hub_filter_tags:
+                gguf_runner = candidate
+                break
+    if gguf_runner is not None:
         # The one runner-specific branch in this module (see the docstring's
         # last section) — `pick_gguf_file` is a GGUF-specific function, and
         # `hub_filter_tags` names the FILTER TAG generically but not the
@@ -506,11 +1193,145 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
                  if isinstance(siblings, list) else [])
         file = formats.pick_gguf_file(names)
-        if file is None:
+        if file is None and gguf_runner is runner:
+            # Only the ACTIVE runner's own inability to resolve a pick drops
+            # the row (D412) — a secondary runner finding nothing is not a
+            # verdict the active runner ever asked for.
             return None
     safetensors = raw.get("safetensors")
+    config = raw.get("config")
+    # F3 (code review): a `file`-resolved row (llama.cpp is the active text
+    # engine and this repo also ships GGUF) downloads THAT file — a repo that
+    # ALSO publishes safetensors is publishing a different upload the Download
+    # button never touches. Reading size/params/quant off it here would make
+    # every one of those fields describe the full-precision weights while the
+    # button fetches a quantized GGUF, and — because `estimated_size` would
+    # then be non-null — would suppress `HubResultRow`'s lazy per-file lookup
+    # that would otherwise correct it (`wantsTotal` goes false). Treating
+    # safetensors as absent for this row is what lets the file's own token
+    # (`_quant`, below) and the file's own bytes (the lazy `hub/size` lookup,
+    # once the fix for F1 keys it by `file` too) win instead, exactly as this
+    # repo's Download button would.
+    if file is not None:
+        safetensors = None
+    params = _params(safetensors, config)
+    estimated_size = _estimated_bytes(safetensors)
+    quant = _quant(safetensors, file, config)
+    # `params` from the Hub's own `gguf` metadata expand (`_EXPAND`, no extra
+    # request), which reports the checkpoint's REAL parameter count straight
+    # off the GGUF header — quantization-invariant, unlike `estimatedSize` —
+    # and costs nothing extra to keep. `_capability_score` reads `params`
+    # directly with no bytes-per-param conversion, so this figure alone
+    # cannot leak a memory verdict; it is only ever a capability-axis input
+    # and a Params-column fact.
+    #
+    # **Read for EVERY GGUF repo, not only a `file`-resolved one** (D793).
+    # Gating this on `file` tied it to `pick_gguf_file` having run, which
+    # only happens when some runner for the capability declares the `gguf`
+    # format tag — true for text generation and false for the other three.
+    # So a `text-to-image` GGUF republish (`leejet/FLUX.2-klein-4B-GGUF`)
+    # arrived with `params`, `estimatedSize`, `quant` and `fit` ALL null,
+    # and `_composite_raw_score` then read three of its five axes off pure
+    # missing-evidence defaults (`_FIT_DEFAULT` 40, `_capability_score(None)`
+    # 30, `_speed_score(None, None)` 63) — the same three constants for every
+    # such repo, leaving only recency and popularity (0.25 of the blend) able
+    # to tell any two of them apart. Every GGUF diffusion repo therefore
+    # clustered in one flat band near the truncation boundary regardless of
+    # how good or how popular it was, which is not a ranking, it is a coin
+    # flip. `gguf.total` is the one real fact available to break that tie,
+    # and reading it does not depend on any runner: it is the Hub's answer
+    # about the repo, not this machine's answer about the format.
+    gguf_meta = raw.get("gguf")
+    gguf_total = gguf_meta.get("total") if isinstance(gguf_meta, dict) else None
+    params_from_gguf = False
+    if params is None and isinstance(gguf_total, int) and gguf_total > 0:
+        params = gguf_total
+        params_from_gguf = True
+    # Fit/speed derivation for a GGUF row was DELETED (three code review
+    # rounds each caught the same under-report class re-emerging — see the
+    # DECISIONS.md entry recorded alongside this change). It is not a bug
+    # this module can patch by recognising more quant tokens: `formats.
+    # gguf_quant_token`'s regex resolves tokens (`Q8_K_XL`, `FP8`, `Q5_1`,
+    # `IQ4_NL`, `Q4_1`, ...) that `fit._quant_key` has no bytes-per-param
+    # entry for, and `_weight_bytes` silently falls back to
+    # `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") for ANY unrecognised
+    # string whenever there is no real `size_gb` to prefer — which is always
+    # true here, since a `file`-resolved row has no safetensors-derived
+    # `estimated_size`. A 30B `Q8_K_XL` file computes 30e9 x 0.58 = 17.4GB
+    # against a real ~31.5GB and still reads "easy" on a 32GB machine. There
+    # is no whitelist of tokens that makes `params x bytes-per-param` safe
+    # in general — only the actual file's bytes do — so a GGUF row's `fit`
+    # and `speedEstimate` are unconditionally `None` here. The client's lazy
+    # per-file `hub/size` lookup, which fires anyway for every row without a
+    # server-supplied `estimatedSize`, is the ONLY thing that ever produces
+    # a memory verdict or a tok/s figure for such a row.
+    #
+    # `params_from_gguf` joins `file` as a reason to refuse (D793), and it has
+    # to: the paragraph above argues from the PARAMS being a GGUF
+    # checkpoint's, not from `pick_gguf_file` having run. Feeding a
+    # `gguf.total` params count into `fit.verdict` with no `size_gb` beside it
+    # is precisely the `params x DEFAULT_BYTES_PER_PARAM` guess three review
+    # rounds deleted — widening where that count comes from must not quietly
+    # re-open the door it came out of.
+    size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
+    judgeable = file is None and not params_from_gguf
+    fit_verdict = (
+        fit.verdict(capability, model_id, size_gb, params=params,
+                    footprint_store=footprint_store, hardware=hardware)
+        if judgeable else None)
+    speed_estimate = (
+        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        if judgeable and capability == TEXT_GENERATION else None)
+    created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
+    base_model, relation = _base_model(raw.get("tags"))
+    # (D793) The repo's weight FORMAT, when the Hub said something that
+    # amounts to one — `"gguf"` for a repo that ships `.gguf` and carries no
+    # safetensors metadata of its own, `None` for everything else, including
+    # a mixed repo that publishes both (its safetensors upload is the one
+    # every other field on this row already describes).
+    #
+    # Its only consumer is `hubFamilies.ts`'s grouping key, and that is the
+    # whole reason it exists: a GGUF republish and a 4-bit safetensors
+    # republish of one base model are not two views of the same download,
+    # and collapsing them into one family made the GGUF one unreachable —
+    # its `matchScore` can never win the primary contest (see the
+    # `params_from_gguf` note above for why three of its axes are constants),
+    # so it was always the variant behind the expander. Read off the Hub, not
+    # guessed from the repo's name, exactly like `_quant` and `library`.
+    weight_format = "gguf" if gguf_meta and not isinstance(raw.get("safetensors"), dict) else None
     return {
         "id": model_id,
+        # Measured, never guessed from the repo's own name — see `_quant`'s
+        # own docstring for the two sources this can come from and why a
+        # third (name-matching) is deliberately not one of them.
+        "quant": quant,
+        # What this repo was derived from, and how — parsed off the Hub's own
+        # `base_model:<relation>:<id>` tag, or (None, None) for a row standing
+        # alone or one whose tags this server could not read. The GROUPING
+        # rule that turns this into one row per family is the frontend's
+        # (`hubFamilies.ts`) — this is the raw fact, not the judgement.
+        "baseModel": base_model,
+        "relation": relation,
+        # Item 9c (fix round 5): how many weight variants this repo ships —
+        # `_count_variants`'s own docstring for the (best-effort, no extra
+        # request) rule.
+        "variants": _count_variants(raw),
+        # "gguf" or None — the other half of that grouping key. See
+        # `weight_format` above.
+        "format": weight_format,
+        # {verdict, basis, footprintBytes, score, runMode} or None — the same
+        # judgement `ai_runtime.describe_catalog` computes for a downloaded
+        # model, over the SAME `fit.verdict` this app already trusts, so a
+        # Hub row and a local card cannot disagree about what "fits" means.
+        "fit": fit_verdict,
+        # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
+        # calibrated, calibrationFactor} or None — text-generation only, the
+        # same restriction `ai_runtime.describe_catalog` applies, because the
+        # unit means nothing for the other three capabilities.
+        "speedEstimate": speed_estimate,
+        # ISO8601 or None. Already in `_EXPAND` and thrown away before this —
+        # the field the "New" sort orders by but the page never drew.
+        "created": created,
         "task": task,
         # The same sentence the local cards show on hover, so a task means the
         # same thing on both tabs or it means nothing.
@@ -536,8 +1357,8 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
-        "params": _params(safetensors),
-        "estimatedSize": _estimated_bytes(safetensors),
+        "params": params,
+        "estimatedSize": estimated_size,
         "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
     }
@@ -586,6 +1407,87 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     return payload, None
 
 
+def _fetch_query_tags(base_params: dict, query_tags: tuple[str, ...],
+                       extra_tags: tuple[str, ...], sort_field: str,
+                       direction: int) -> tuple[list, str | None]:
+    """One or more Hub fetches for `query_tags`, merged: (rows, error).
+
+    Extracted (fix round 6, item 5) so `api_hub_search`'s facet computation
+    can run the identical single-tag/multi-tag fetch a second time with a
+    different `base_params` (author dropped) without duplicating this logic
+    — see that call site for why. Behaviour is otherwise unchanged from the
+    inline version this replaced: a single tag (or none) is one request; more
+    than one tag is one request PER TAG, merged and de-duped by repo id (the
+    Hub can return the same id on more than one tag's keyword-search page),
+    then re-sorted by the requested field so a multi-tag merge ranks
+    identically to a single-tag fetch.
+    """
+    if len(query_tags) <= 1:
+        params = dict(base_params)
+        if query_tags:
+            tag = query_tags[0]
+            params["filter"] = [tag, *extra_tags] if extra_tags else tag
+        return _fetch(params)
+    rows: list = []
+    seen_ids: set[str] = set()
+    error = None
+    for tag in query_tags:
+        tag_params = dict(base_params)
+        tag_params["filter"] = [tag, *extra_tags] if extra_tags else tag
+        tag_rows, tag_error = _fetch(tag_params)
+        if tag_error:
+            error = tag_error
+            continue
+        for row in tag_rows:
+            row_id = row.get("id") if isinstance(row, dict) else None
+            if row_id is not None and row_id in seen_ids:
+                continue
+            if row_id is not None:
+                seen_ids.add(row_id)
+            rows.append(row)
+    if not rows and error:
+        return [], error
+
+    def _sort_key(row: object) -> tuple[bool, object]:
+        value = row.get(sort_field) if isinstance(row, dict) else None
+        return (value is not None, value if value is not None else 0)
+
+    rows.sort(key=_sort_key, reverse=(direction == -1))
+    return rows, None
+
+
+def _facets(models: list[dict]) -> dict:
+    """Publisher/quant option lists for the search screen's dropdown menus
+    (fix round 6, item 5) — `{"publishers": [{"id", "count"}, ...],
+    "quants": [...]}`, each sorted by count desc then name and capped at 40.
+
+    Computed over the same rows the caller already has in hand: publisher is
+    parsed off the repo id (`org/name`), quant is the row's own MEASURED
+    `quant` (never a guess). Callers are responsible for handing this a row
+    set that has NOT yet been narrowed by the quant filter or (for
+    publisher) the wire-level `author` param — see `api_hub_search`'s own
+    comment on why an already-narrowed set would collapse the menu to the
+    one value already picked.
+    """
+    publisher_counts: dict[str, int] = {}
+    quant_counts: dict[str, int] = {}
+    for row in models:
+        model_id = row.get("id")
+        if isinstance(model_id, str) and "/" in model_id:
+            publisher = model_id.split("/", 1)[0]
+            if publisher:
+                publisher_counts[publisher] = publisher_counts.get(publisher, 0) + 1
+        quant = row.get("quant")
+        if isinstance(quant, str) and quant:
+            quant_counts[quant] = quant_counts.get(quant, 0) + 1
+
+    def _top(counts: dict[str, int]) -> list[dict]:
+        ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        return [{"id": name, "count": count} for name, count in ordered[:40]]
+
+    return {"publishers": _top(publisher_counts), "quants": _top(quant_counts)}
+
+
 def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
     """One repo's total bytes on the Hub: (usedStorage, error).
 
@@ -617,6 +1519,46 @@ def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
     return used, None
 
 
+def _fetch_file_size(model_id: str, file: str) -> tuple[int | None, str | None]:
+    """One named file's own bytes within a repo: (size, error) — the bytes
+    the row's resolved GGUF `file` would actually add to disk, never the
+    repo-wide total `_fetch_used_storage` answers.
+
+    **`blobs=true` on the SAME detail endpoint**, not a second one — verified
+    against `huggingface_hub`'s own `HfApi.model_info(files_metadata=True)`
+    (`hf_api.py`: `if files_metadata: params["blobs"] = True`), which is what
+    turns the bare-filename `siblings` the LIST endpoint already returns (see
+    `_EXPAND`'s own docstring) into filename + size + LFS metadata on this
+    per-repo endpoint. Still one GET, still one round trip.
+
+    A file the Hub does not list among `siblings` (renamed since the search
+    that resolved it, or simply wrong) reports no size rather than a stale
+    guess. Anything that is not a plain non-negative int is the same "no
+    answer" `_fetch_used_storage` already reads for `usedStorage`.
+    """
+    url = f"{hub_endpoint()}/api/models/{quote(model_id, safe='/')}?{urlencode({'blobs': 'true'})}"
+    response, error = _get(url)
+    if error or response is None:
+        return None, error
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "The Hub sent something that is not JSON."
+    if not isinstance(payload, dict):
+        return None, "The Hub sent an unexpected reply."
+    siblings = payload.get("siblings")
+    if not isinstance(siblings, list):
+        return None, None
+    for sibling in siblings:
+        if not isinstance(sibling, dict) or sibling.get("rfilename") != file:
+            continue
+        size = sibling.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            return None, None
+        return size, None
+    return None, None
+
+
 def _cached(key: tuple):
     now = time.monotonic()
     with _cache_lock:
@@ -634,6 +1576,107 @@ def _store(key: tuple, value: dict) -> None:
             for stale, _ in sorted(_cache.items(), key=lambda kv: kv[1][0])[: _CACHE_MAX // 2]:
                 _cache.pop(stale, None)
         _cache[key] = (time.monotonic(), value)
+
+
+def _mirror_key(row: dict) -> tuple[str, int, str] | None:
+    """`(trailing name segment, params, quant)` — the untagged-republish
+    signal `hubFamilies.ts` mirrors on the frontend, absent (`None`) whenever
+    `params` or `quant` is unmeasured, since a null is not a value two rows
+    can agree on."""
+    params, quant = row.get("params"), row.get("quant")
+    if params is None or quant is None:
+        return None
+    return (row["id"].rsplit("/", 1)[-1], params, quant)
+
+
+def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dict]:
+    """`kept` (the rows `limit` would otherwise cut the response to) with any
+    `remaining` candidate reinserted that belongs to a family a kept row
+    already heads or belongs to — so a family never straddles the page
+    boundary with only its weaker half showing.
+
+    **`limit` counts MODELS, not rows returned by the Hub.** Grouping quant
+    and finetune republishes into one family is entirely the frontend's job
+    (`hubFamilies.ts`) — this function never groups anything itself — but a
+    family can only fold together the rows a search actually hands back, and
+    the Hub's own ranking routinely puts a base model and its strongest
+    republish on opposite sides of an ordinary page size. Reaching a little
+    past `limit` here is what keeps that fold from depending on where the cut
+    happened to fall.
+
+    **The membership test only has to be a SUPERSET of `hubFamilies.ts`'s own
+    key equality, never an exact match.** A row this function pulls in that
+    the frontend then declines to group renders as its own standalone family
+    — a harmless miss in the other direction. A row this function fails to
+    pull in reproduces the exact bug this exists to close. So every branch
+    below errs toward including a candidate, and the three tests it runs
+    mirror the frontend's own signals directly: a candidate names a kept
+    row as its base; a candidate and a kept row agree on the untagged mirror
+    triple (`_mirror_key`); or — the direction that is easy to skip and just
+    as necessary — a KEPT row names the CANDIDATE as its base, because the
+    base heads its family (D802) and its absence below the cut is exactly
+    what let a republish stand in for its own parent.
+
+    **A pulled-in row is built by the identical `_model_row` call as every
+    other row on the page** — this function only reorders and filters an
+    already-built list, so a reader cannot tell a pulled-in row from one that
+    was never in danger of being cut.
+
+    **Placement.** This function decides MEMBERSHIP only — it never decides
+    where a pulled-in row is drawn. It used to reinsert a pulled-in base
+    immediately before the kept variant that named it (and every other
+    pulled-in row immediately after its match), on the theory that
+    `HubResults.tsx` would draw a whole family at its primary member's index
+    and delete every other member from the drawn order. That table is gone:
+    `HubSearchScreen.tsx` draws every row flat, in payload order, with no
+    family grouping (see that file's own header comment) — so a placement
+    rule tuned for a grouping consumer that no longer exists just meant a
+    pulled-in base could land ahead of a variant that outranks it, visibly
+    breaking the sort (D859). The caller now re-sorts the union this
+    function returns by the same key the page was already ranked on, so
+    this function is free to return members in whatever order it finds
+    them.
+
+    **Ranking within the pull-in.** `remaining` arrives already in the same
+    rank order `kept` was truncated from, so scanning it in order and
+    stopping at each cap keeps the highest-ranked overflow members and drops
+    the rest — the cap bites on the weakest candidates, never the strongest.
+    """
+    kept_ids = {row["id"] for row in kept}
+    total_added = 0
+    result: list[dict] = []
+    for row in kept:
+        before: list[dict] = []
+        after: list[dict] = []
+        added_here = 0
+        row_base = row.get("baseModel")
+        row_mirror = _mirror_key(row)
+        for cand in remaining:
+            if added_here >= _FAMILY_PULL_IN_PER_FAMILY_CAP:
+                break
+            if total_added + added_here >= _FAMILY_PULL_IN_TOTAL_CAP:
+                break
+            cand_id = cand.get("id")
+            if cand_id is None or cand_id in kept_ids:
+                continue
+            if row_base is not None and row_base == cand_id:
+                # (c) — this candidate IS the kept row's declared base.
+                before.append(cand)
+            elif cand.get("baseModel") == row["id"] or (
+                row_mirror is not None and _mirror_key(cand) == row_mirror
+            ):
+                # (a) — the candidate declares this kept row as its base.
+                # (b) — the candidate mirrors this kept row's untagged triple.
+                after.append(cand)
+            else:
+                continue
+            kept_ids.add(cand_id)
+            added_here += 1
+        total_added += added_here
+        result.extend(before)
+        result.append(row)
+        result.extend(after)
+    return result
 
 
 @router.post("/api/ai-models/hub/search")
@@ -663,12 +1706,59 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     if guard is not None:
         return guard
     q, task = body.get("q"), body.get("task")
-    sort = body.get("sort") or "downloads"
+    # D843: `capability` is the search screen's own scope now that the left
+    # pane, not this screen's own (now-removed) Task menu, picks the job — a
+    # capability key (`ai/registry.py`'s constants), never a Hub tag. `task`
+    # stays accepted for whatever still sends a single tag (an old saved URL,
+    # `tests/test_hub_models.py`'s existing pins) and wins ties with
+    # `capability` never arising in practice (the frontend sends exactly one).
+    capability = body.get("capability")
+    # D780: the composite match score, not raw downloads, is the default —
+    # see that decision for why downloads-first rewards age and CI traffic
+    # over usefulness. `downloads` stays a fully explicit choice, unchanged.
+    sort = body.get("sort") or _BEST_SORT
     limit = body.get("limit")
     query = (q or "").strip()[:120] if isinstance(q, str) else ""
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
-    if sort not in _SORTS:
+    capability_filter = (capability or "").strip()[:60] if isinstance(capability, str) else ""
+    # Item 7 (fix round 5): the "Show models that will not fit" toggle is
+    # gone from the frontend — every row is always shown now (the per-row
+    # red "Will not fit" line, untouched by this change, is the only warning
+    # left). `includeUnfit` is still accepted on the wire (an old saved page,
+    # or a stale client) but is ignored: this always behaves as if it were
+    # true, never dropping a `verdict: "no"` row.
+    include_unfit = True
+    # Part 3's three explicit filters. All server-side, and for the SAME
+    # reason `includeUnfit` already is (see the `fetch` comment below): each
+    # one only removes rows AFTER the Hub's own answer, so filtering them
+    # client-side over an already-truncated page would under-fill it exactly
+    # the way the unfit drop used to before that bug was fixed.
+    fit_level = (body.get("fitLevel") or "any").strip() if isinstance(body.get("fitLevel"), str) else "any"
+    # Capped like `q`/`task` above (code review F6) — a real quant token
+    # (`Q4_K_M`, `4-bit`, a dtype name) is short, so an uncapped string here
+    # was never functional, only an unbounded value nothing else in this
+    # section had.
+    quant_filter = (body.get("quant") or "").strip().upper()[:40] if isinstance(body.get("quant"), str) else ""
+    params_band = (body.get("paramsBand") or "any").strip() if isinstance(body.get("paramsBand"), str) else "any"
+    # Publisher/org is the one exception: `author` is a real Hub query
+    # parameter (verified against `huggingface_hub.HfApi.list_models`'s own
+    # `params["author"] = author`), so this narrows the WIRE request itself
+    # rather than the join — the Hub does the filtering, before this route's
+    # own overfetch multiplier even applies. Capped (code review F6): unlike
+    # `q`/`task`/`file`, this had no length limit at all before this fix, and
+    # it is the one of these four that goes straight onto the OUTBOUND Hub
+    # URL as `params["author"]` — a hand-written megabyte-long value became a
+    # megabyte-long URL this server would actually go and fetch, and would
+    # sit in the cache key forever within the TTL. No real Hub org name
+    # approaches `_MAX_ID_LEN`, the same cap `file`/a repo id already use.
+    publisher = body.get("publisher")
+    publisher = publisher.strip()[:_MAX_ID_LEN] if isinstance(publisher, str) and publisher.strip() else None
+    if sort not in _SORTS and sort not in (_FIT_SORT, _BEST_SORT):
         return _error(f"unknown sort {sort!r}", status=400)
+    if fit_level not in _FIT_LEVELS:
+        return _error(f"unknown fitLevel {fit_level!r}", status=400)
+    if params_band not in _PARAMS_BANDS:
+        return _error(f"unknown paramsBand {params_band!r}", status=400)
     # A task nothing here can run is refused rather than searched for. The menu
     # only offers supported tags, so reaching this is either a stale page or a
     # hand-written request — and answering it with an empty grid would look
@@ -676,26 +1766,63 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # run them".
     if task_filter and task_filter not in supported_tags():
         return _error(f"nothing here runs {task_filter!r}", status=400)
+    # D843: a capability that resolves to no tags (a typo, or a capability
+    # nothing here serves) gets the identical 400 an unsupported `task`
+    # already does — `tags_for_capability` is total (empty tuple for
+    # anything it does not recognise), so this is the one place that has to
+    # turn "no tags" into an error rather than a silent zero-result search.
+    capability_tags: tuple[str, ...] = ()
+    if capability_filter and not task_filter:
+        capability_tags = ai_tasks.tags_for_capability(capability_filter)
+        if not capability_tags:
+            return _error(f"nothing here runs {capability_filter!r}", status=400)
     try:
         count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
 
-    sort_field, direction = _SORTS[sort]
-    # With a task filter the Hub already returns only rows we keep, so asking
-    # for `count` is asking for what will be shown. WITHOUT one, the
-    # supported-tag pass runs here and throws most of a page away — a search for
-    # "small" sorted by downloads is mostly embedding models — so the request
-    # over-fetches and the reply is truncated after filtering.
-    fetch = count if task_filter else min(count * _OVERFETCH, _MAX_FETCH)
-    params: dict[str, object] = {
+    # "fit" is not a Hub field: the candidate set the Hub is asked for is the
+    # same honest default `size` uses on the frontend — most-downloaded — and
+    # this route reorders it below, over `fit.verdict`'s own score, once every
+    # row's fit is known.
+    sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
+    # With a task filter AND `includeUnfit`, the Hub already returns only rows
+    # we keep and nothing here drops any more of them, so asking for `count`
+    # is asking for what will be shown. In every OTHER case something between
+    # here and the reply can still throw rows away: WITHOUT a task filter, the
+    # supported-tag pass runs here and throws most of a page away (a search
+    # for "small" sorted by downloads is mostly embedding models); and by
+    # DEFAULT (`includeUnfit` false) the verdict:"no" drop below removes rows
+    # a task filter alone cannot see coming (fit is a fact about this
+    # machine, not about the pipeline tag). Either reason over-fetches, or
+    # the reply truncates to fewer than `count` rows with headroom left
+    # unused on the Hub's own answer.
+    #
+    # Part 3's fitLevel/quant/paramsBand filters widen the same problem: each
+    # one runs in this same post-join, pre-truncation section (below) and can
+    # throw away MORE of the candidate set than the unfit drop alone would —
+    # a `quant=Q4_K_M` filter over a page of mostly-BF16 results, say. Any of
+    # them being active forces the full overfetch multiplier, the same as an
+    # unfiltered query already gets by default.
+    # D851: a `capability_filter` also throws away rows now (the per-row
+    # capability check just above), so it forces the same full overfetch the
+    # other three explicit filters already get — otherwise a page under a
+    # capability scope would under-fill exactly like the unfit drop used to.
+    extra_filters_active = (fit_level != "any" or bool(quant_filter)
+                             or params_band != "any" or bool(capability_filter))
+    single_tag_task = task_filter or (capability_tags[0] if len(capability_tags) == 1 else "")
+    fetch = (count if single_tag_task and include_unfit and not extra_filters_active
+             else min(count * _OVERFETCH, _MAX_FETCH))
+    base_params: dict[str, object] = {
         "sort": sort_field,
         "direction": direction,
         "limit": fetch,
         "expand[]": list(_EXPAND),
     }
     if query:
-        params["search"] = query
+        base_params["search"] = query
+    if publisher:
+        base_params["author"] = publisher
     # (D412) When a task filter is set AND the runner actually serving that
     # capability HERE declares a format tag (`Runner.hub_filter_tags`), the
     # Hub is asked to AND it onto the pipeline-tag filter already sent —
@@ -706,26 +1833,55 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # spans every supported tag at once), so this narrowing is skipped and
     # `_model_row`'s own per-row check is the only gate — the same
     # two-layer shape the pipeline-tag filter itself already has.
-    extra_tags: tuple[str, ...] = ()
-    if task_filter:
-        filter_capability = ai_tasks.capability_for_tag(task_filter)
-        filter_runner = for_capability(filter_capability) if filter_capability else None
-        if filter_runner is not None:
-            extra_tags = filter_runner.hub_filter_tags
-        params["filter"] = [task_filter, *extra_tags] if extra_tags else task_filter
+    #
+    # D843: `capability_tags` widens this from "one tag" to "one tag per
+    # request, merged" — the Hub's own `filter=` params are ANDed together
+    # (confirmed live, see above), so there is no single request that asks
+    # for "feature-extraction OR sentence-similarity OR
+    # zero-shot-image-classification". Embeddings is the one capability more
+    # than one tag reaches (`ai_tasks.tags_for_capability`'s docstring), so
+    # this is one `_fetch` call per tag, merged and de-duped by repo id
+    # below — the simplest shape that keeps a single Hub request's
+    # AND-semantics intact for every other capability, which still resolves
+    # to exactly one tag and takes the old one-request path.
+    query_tags: tuple[str, ...] = capability_tags if capability_tags else ((task_filter,) if task_filter else ())
+    filter_capability = (
+        capability_filter if capability_tags
+        else (ai_tasks.capability_for_tag(task_filter) if task_filter else None)
+    )
+    filter_runner = for_capability(filter_capability) if filter_capability else None
+    extra_tags: tuple[str, ...] = filter_runner.hub_filter_tags if filter_runner is not None else ()
 
     # `extra_tags` is part of the cache key because it is part of the
     # ANSWER: a preference switched live (CT-5, no restart needed) changes
     # which runner serves the capability and therefore what this narrows to,
     # so the SAME query/task/sort/count must not be served from a cache
-    # entry built under a different engine choice.
-    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()), extra_tags)
+    # entry built under a different engine choice. `fetch` is in the key for
+    # the same reason: it is exactly how many raw rows the cached payload
+    # holds, and `include_unfit` (the only other thing `fetch` depends on
+    # besides `task_filter`, already in the key) can flip within the TTL —
+    # toggling it off after an on request must not hand back the smaller
+    # `count`-sized payload the "on" request fetched, or the verdict:"no"
+    # drop below runs with no headroom left to backfill from.
+    # `publisher` joins the key for the identical `extra_tags` reason: it
+    # changes the WIRE request (`params["author"]`), so two different values
+    # are genuinely two different Hub answers. `fit_level`/`quant_filter`/
+    # `params_band` do NOT need to — they never reach the Hub, they run fresh
+    # every request in the post-join section below exactly like
+    # `include_unfit` already does, and their only effect on what gets FETCHED
+    # is already captured by `fetch`'s own value, which is already here.
+    # `query_tags` (D843) replaces `task_filter` in the key for the same
+    # reason as `extra_tags`: it is the actual set of tags fetched, and two
+    # different capabilities that happened to share a `task_filter` string
+    # can never occur, but a capability resolving to different tags across a
+    # runner change must not share a cache entry with the old tag set.
+    key = (hub_endpoint(), query, query_tags, sort, count, bool(_token()),
+           extra_tags, fetch, publisher)
     payload = _cached(key)
     if payload is None:
-        rows, error = _fetch(params)
-        if error:
-            # Not a 5xx: the request was fine, the far side was not, and the
-            # page has a sentence to show for it.
+        rows, error = _fetch_query_tags(base_params, query_tags, extra_tags,
+                                        sort_field, direction)
+        if not rows and error:
             return {"models": [], "error": error, "query": {
                 "q": query, "task": task_filter, "sort": sort, "limit": count}}
         payload = {"raw": rows}
@@ -739,26 +1895,217 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # only the handful of repos that turned out to be present.
     cache_dir = hub_cache_dir()
     dirs = _cached_dirs()
+    # Read ONCE per request, exactly like `ai_runtime.py:906-923` — both are a
+    # `storage.read_json` open plus a parse (`hw_detect.cached_hardware()` also
+    # re-checks machine identity), and this join answers as many rows as the
+    # Hub sent back before truncation. `_model_row` threads both straight
+    # through to `fit.verdict`/`speed.estimate_tok_s` rather than letting
+    # either call resolve its own reading per row.
+    footprint_store = footprints.load_store()
+    hardware = hw_detect.cached_hardware()
     # `_model_row` is also the supported-tag filter (see its docstring): a row
     # this app could not download and run comes back None and never reaches the
-    # page. Truncation is AFTER that pass, so `limit` means "rows you will be
-    # shown" rather than "rows the Hub was asked for".
+    # page. Both the "cannot run here" drop below and the fit reorder run
+    # BEFORE truncation, so `limit` keeps meaning "rows you will be shown"
+    # rather than "rows the Hub was asked for".
     models = [row
-              for row in (_model_row(r, cache_dir, dirs)
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
                           for r in payload["raw"] if isinstance(r, dict))
-              if row is not None][:count]
+              if row is not None]
+
+    # D851 (fix round 6, item 1): the Hub's own `filter=<tag>` matches ANY tag
+    # in a repo's tag list, not only its `pipeline_tag` — a repo classified as
+    # text-generation or image-text-to-image that merely CARRIES
+    # `feature-extraction` among its other tags still comes back from a
+    # `filter=feature-extraction` request. `_model_row`'s classified
+    # `capability` (the same ground truth the Local tab's own Load button
+    # reads) is authoritative, so a mismatch here means the Hub's tag match
+    # over-matched — drop it BEFORE count/limit truncation (`extra_filters_active`
+    # above already forces the full overfetch multiplier whenever
+    # `capability_filter` is set, so a filtered page still fills). The legacy
+    # `task` path is untouched: `task` names one Hub tag directly and never
+    # goes through this extra check.
+    if capability_filter:
+        models = [row for row in models if row.get("capability") == capability_filter]
+
+    # D853 (fix round 6, item 5): publisher/quant option lists for the two
+    # new dropdown menus, computed over this same row set BEFORE the
+    # quant/fitLevel/paramsBand filters below narrow it further — narrowing
+    # first would make picking a quant collapse the menu to just that one
+    # value, with no way back to "any" without reloading. `publisher`
+    # narrows differently: it already went out on the WIRE (`base_params
+    # ["author"]`), so `models` here is already scoped to one publisher
+    # whenever one is picked — the SAME collapse problem, one step earlier.
+    # Rather than re-fetch the whole candidate set unscoped (a second full
+    # multi-tag fetch, cache-shared with the un-pinned key), the publisher
+    # narrowing is undone by a second `_fetch_query_tags` call with `author`
+    # dropped, cached under a `publisher=None` key so an unpinned search for
+    # the same query/tags/sort reuses it directly instead of paying twice.
+    if publisher:
+        facet_key = (hub_endpoint(), query, query_tags, sort, count, bool(_token()),
+                     extra_tags, fetch, None)
+        facet_payload = _cached(facet_key)
+        if facet_payload is None:
+            facet_params = dict(base_params)
+            facet_params.pop("author", None)
+            facet_rows, facet_error = _fetch_query_tags(
+                facet_params, query_tags, extra_tags, sort_field, direction)
+            facet_payload = {"raw": [] if facet_error and not facet_rows else facet_rows}
+            _store(facet_key, facet_payload)
+        facet_models = [row
+                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                                    for r in facet_payload["raw"] if isinstance(r, dict))
+                        if row is not None]
+        if capability_filter:
+            facet_models = [row for row in facet_models
+                             if row.get("capability") == capability_filter]
+    else:
+        facet_models = models
+    facets = _facets(facet_models)
+    _pin_publisher_facets(facets, facet_models, capability_filter, hardware)
+
+    # D780: every row gets a `matchScore` regardless of which sort was asked
+    # for — the merged Fit+Score cell renders it on every row, not only when
+    # ranking by it. Computed once per request off a single `machine_ram_gb()`
+    # reading (already `lru_cache`d, like `fit.verdict`'s own per-row reads
+    # of the same value), never per-row.
+    #
+    # `raw_scores` (fix for code review finding 8) keeps the UNCLAMPED blend
+    # beside the displayed, clamped `matchScore` — keyed by `id(row)` rather
+    # than written onto the row itself, so it never reaches the JSON reply
+    # (an internal sort key, not a wire field). See `_composite_raw_score`'s
+    # own docstring for why sorting on the clamped number ties a real slice
+    # of a GPU-less machine's tail at exactly 0.0.
+    ram_gb = fit.machine_ram_gb()
+    raw_scores: dict[int, float] = {}
+    for row in models:
+        raw_score = _composite_raw_score(row, ram_gb)
+        raw_scores[id(row)] = raw_score
+        row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+
+    if sort == _BEST_SORT:
+        # Descending composite score, on the UNCLAMPED figure (finding 8) —
+        # stable sort keeps the Hub's own most-downloaded order as the
+        # tie-break, same guarantee `_FIT_SORT` documents below.
+        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
+    elif sort == _FIT_SORT:
+        # Descending score, nulls (nothing to judge) sorted last — `sort` is
+        # Python's own stable sort, so ties (including every null-fit row
+        # among themselves) keep the Hub's own most-downloaded ordering as
+        # the tie-break, the same guarantee `bySizeAscending` documents for
+        # the frontend's own page-side sort. Sorted BEFORE the unfit drop
+        # below so the "would have been shown" window it counts against, and
+        # the page actually returned, agree on one order.
+        models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
+                    reverse=True)
+
+    # Part 3's three explicit filters — run BEFORE the unfit-hide-by-default
+    # block below, so a reader who has already narrowed to (say) "easy fits
+    # under 4B" sees `hiddenUnfit` counted against THAT window, not the wider
+    # one they asked to leave behind. A row with nothing to judge a filter
+    # against (no fit, no quant, no params) is dropped rather than kept: these
+    # are the reader's own explicit ask, unlike the unfit-by-default hide
+    # below, which carries the on-disk exemption because IT is a default
+    # nobody asked for.
+    if fit_level != "any":
+        allowed = {"easy"} if fit_level == "easy" else {"easy", "tight"}
+        # D806: a row with NO verdict (`fit` missing, or present with
+        # `verdict: None` — the Hub never said how big the file is, so
+        # `fit.verdict` had nothing to judge) now PASSES this filter instead
+        # of being dropped. Before this fix an unknown-fit row read
+        # identically to a `verdict: "no"` row here — both failed `in
+        # allowed` — so "Easy fit only" silently hid every unmeasured repo
+        # alongside the ones that actually would not fit, with no count and
+        # no way to ask for them back (the unfit-hidden counter below only
+        # ever watched `verdict == "no"`). Unknown is not a claim that the
+        # model will not fit; it is the absence of a claim, and the two-pane
+        # search screen renders it with its own `?` glyph specifically so a
+        # reader can tell "measured, and it's bad" from "not measured yet"
+        # apart — a filter that conflated them upstream would make that
+        # on-screen distinction a lie about what was even offered.
+        models = [
+            row for row in models
+            if (row.get("fit") or {}).get("verdict") in allowed
+            or (row.get("fit") or {}).get("verdict") is None
+        ]
+    if quant_filter:
+        models = [row for row in models if (row.get("quant") or "").upper() == quant_filter]
+    if params_band != "any":
+        models = [row for row in models if _params_band(row.get("params")) == params_band]
+
+    def _on_disk(row: dict) -> bool:
+        return (row.get("local") or {}).get("state", "none") != "none"
+
+    # A `verdict: "no"` row is a fact about THIS MACHINE's memory, not about
+    # how popular or well-classified the model is — dropped by default so a
+    # search does not fill a page with models nothing here could hold, but
+    # never silently: `hiddenUnfit` says how many, and `includeUnfit` asks for
+    # them back. A row already on this disk — downloaded, or a fetch still in
+    # flight — is NEVER dropped by this filter regardless of verdict: this
+    # search's local join exists so someone can find a model they already
+    # have (HubResults.tsx's own header comment), and a 70B repo pulled
+    # months ago must still turn up when its name is searched, verdict or no.
+    if include_unfit:
+        hidden_unfit = 0
+    else:
+        # Counted only against the WINDOW this page would have shown absent
+        # any hiding (`models[:count]`, in the order fixed above), not the
+        # whole overfetched candidate set behind it. A search can fetch up to
+        # `_OVERFETCH`x a page's worth just to backfill after this drop, and
+        # counting hidden rows across that entire buffer reports a number far
+        # bigger than un-hiding could ever add back to THIS page — 96 rows
+        # fetched behind a 24-row page reading "71 hidden" when un-hiding only
+        # ever adds a handful. This is therefore a floor on the true count
+        # across the query, not an exact total: rows past the window are
+        # never inspected.
+        window = models[:count]
+        hidden_unfit = sum(
+            1 for row in window
+            if (row.get("fit") or {}).get("verdict") == "no" and not _on_disk(row))
+        models = [row for row in models
+                  if (row.get("fit") or {}).get("verdict") != "no" or _on_disk(row)]
+
+    # `limit` means "this many MODELS", not "this many rows the Hub sent" —
+    # see `_pull_in_family_members`'s own docstring for the full reasoning.
+    # Reordering the response over rows already fetched, so this costs
+    # nothing beyond the loop itself: no second Hub call, no extra join.
+    #
+    # `_pull_in_family_members` decides membership only, never placement
+    # (D859) — so the union it returns is re-sorted here by the identical key
+    # `models` was already ranked on before truncation, the same
+    # `(value is not None, value)`-with-nulls-last convention `_sort_key`
+    # uses for a Hub sort. `HubSearchScreen.tsx` draws every row flat in
+    # payload order with no family grouping, so this is the only ordering
+    # rule left that the page actually honours.
+    if sort in (_BEST_SORT, _FIT_SORT):
+        def _rank_key(row: dict) -> tuple[bool, float]:
+            value = row.get("matchScore")
+            return (value is not None, value if value is not None else 0.0)
+        rank_reverse = True
+    else:
+        def _rank_key(row: dict) -> tuple[bool, object]:
+            value = row.get(sort_field)
+            return (value is not None, value if value is not None else 0)
+        rank_reverse = direction == -1
+
+    models = _pull_in_family_members(models[:count], models[count:])
+    models.sort(key=_rank_key, reverse=rank_reverse)
     return {
         "models": models,
-        "query": {"q": query, "task": task_filter, "sort": sort, "limit": count},
+        "query": {"q": query, "task": task_filter, "capability": capability_filter,
+                  "sort": sort, "limit": count},
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
+        "hiddenUnfit": hidden_unfit,
+        "facets": facets,
     }
 
 
 @router.post("/api/ai-models/hub/size")
 def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
-    """One repo's TOTAL size on the Hub, for a card the dtype map could not
-    measure.
+    """One repo's size on the Hub, for a card the dtype map could not measure
+    — the repo's TOTAL by default, or one named FILE's own bytes when the
+    caller already knows which single file a row would download.
 
     **Guarded POST for exactly the reason search is** — see `api_hub_search`:
     the cost of this request is in the REQUEST, not the reply, because it leaves
@@ -767,14 +2114,34 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
     second exception.
 
     **One repo per call, and the page asks lazily.** The Hub only expands
-    `usedStorage` on the per-repo detail endpoint, so a page of two dozen
-    results is two dozen round trips — which is why this is not folded into
-    search and why the frontend calls it only for a row with no estimate whose
-    card has actually scrolled into view (see the module docstring).
+    `usedStorage` (or, for a named `file`, per-file sizes via `blobs=true`) on
+    the per-repo detail endpoint, so a page of two dozen results is two dozen
+    round trips — which is why this is not folded into search and why the
+    frontend calls it only for a row with no estimate whose card has actually
+    scrolled into view (see the module docstring).
 
-    The number is NOT the search's `estimatedSize` and must not be presented as
-    one: it is everything in the repo — tokenizer, configs, every quantised copy
-    the author published — rather than the weights a load would read.
+    **`usedStorage` is NOT the search's `estimatedSize` and must not be
+    presented as one**: it is everything in the repo — tokenizer, configs,
+    every quantised copy the author published — rather than the weights a load
+    would read. This is exactly why a GGUF row must NOT be sized off it: the
+    row already knows (`_model_row`'s own `file`, via `formats.pick_gguf_file`)
+    which ONE file it would actually download, and passing that back as `file`
+    here gets that file's own bytes off the SAME endpoint instead of the whole
+    repo's total.
+
+    **`fit`/`speedEstimate` ride the SAME round trip, when they can be judged
+    at all.** `_model_row` cannot compute either for a GGUF row during SEARCH
+    — there is no safetensors dtype map to size it from, and resolving this
+    very lookup per row inside a search reply would be exactly the per-row Hub
+    round trip the module docstring forbids. But this lookup already happens,
+    lazily, once a card scrolls into view — so the verdict is judged off
+    whatever size THIS call resolved, at no extra cost, rather than left null
+    forever. Two conditions, both load-bearing: a `capability` must be given
+    (the caller's own row says what ladder to judge against — a bare byte
+    count is not enough), and a `file`-specific size must have resolved (the
+    repo-wide `usedStorage` total is deliberately NOT judged: it counts every
+    quantization the author published, not the weights a load would read, so
+    judging fit off it would be more likely wrong than showing nothing).
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -790,18 +2157,51 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
         # Echoed back so a caller can see WHICH id was refused, truncated so a
         # megabyte of junk in the body is not a megabyte of error message.
         return _error(f"{model_id[:80]!r} is not a repo id of the form org/name", status=400)
+    raw_file = body.get("file")
+    file = raw_file.strip() if isinstance(raw_file, str) and raw_file.strip() else None
+    if file is not None and len(file) > _MAX_ID_LEN:
+        return _error("file is too long", status=400)
+    raw_capability = body.get("capability")
+    capability = raw_capability if isinstance(raw_capability, str) and raw_capability else None
 
-    key = ("size", hub_endpoint(), model_id, bool(_token()))
+    key = ("size", hub_endpoint(), model_id, file, bool(_token()))
     payload = _cached(key)
     if payload is None:
-        used, error = _fetch_used_storage(model_id)
-        if error:
-            # Not a 5xx, and not cached: the request was fine, the far side was
-            # not, and the next card into view should find out for itself.
-            return {"id": model_id, "usedStorage": None, "error": error}
-        payload = {"usedStorage": used}
+        if file:
+            size, error = _fetch_file_size(model_id, file)
+            if error:
+                # Not a 5xx, and not cached: the request was fine, the far side
+                # was not, and the next card into view should find out for itself.
+                return {"id": model_id, "usedStorage": None, "fileSize": None,
+                        "fit": None, "speedEstimate": None, "error": error}
+            payload = {"usedStorage": None, "fileSize": size}
+        else:
+            used, error = _fetch_used_storage(model_id)
+            if error:
+                return {"id": model_id, "usedStorage": None, "fileSize": None,
+                        "fit": None, "speedEstimate": None, "error": error}
+            payload = {"usedStorage": used, "fileSize": None}
         _store(key, payload)
-    return {"id": model_id, "usedStorage": payload["usedStorage"], "error": None}
+
+    # Judged FRESH every request, never cached alongside the raw byte count —
+    # the same reason `api_hub_search`'s own join runs outside its cache:
+    # hardware and the footprint store can change between two requests for the
+    # same repo within the TTL, and baking a verdict into the cached payload
+    # would let one go stale under the other.
+    fit_verdict = None
+    speed_estimate = None
+    if file and capability and isinstance(payload.get("fileSize"), int):
+        size_gb = payload["fileSize"] / fit.GB_BYTES
+        footprint_store = footprints.load_store()
+        hardware = hw_detect.cached_hardware()
+        fit_verdict = fit.verdict(capability, model_id, size_gb, params=None,
+                                  footprint_store=footprint_store, hardware=hardware)
+        if capability == TEXT_GENERATION:
+            speed_estimate = speed.estimate_tok_s(size_gb, params=None, hardware=hardware)
+
+    return {"id": model_id, "usedStorage": payload["usedStorage"],
+            "fileSize": payload.get("fileSize"), "fit": fit_verdict,
+            "speedEstimate": speed_estimate, "error": None}
 
 
 @router.get("/api/ai-models/hub/tasks")

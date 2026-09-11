@@ -2050,6 +2050,26 @@ def for_capability(capability: str) -> Runner | None:
     return resolve(capability).runner
 
 
+def available_runners(capability: str) -> tuple[Runner, ...]:
+    """Every runner that serves `capability` and CAN run here, right now —
+    not only the one `for_capability` prefers.
+
+    `for_capability` answers "which one runner is ACTIVE", which is exactly
+    the question a load or a download needs and exactly the wrong question
+    for a search result asking "could ANYTHING here load this repo". Two
+    runners of one capability can serve genuinely different on-disk FORMATS
+    (`llamacpp-text`'s GGUF against `mlx-text`'s safetensors, D412's own
+    case) — a GGUF repo on a machine whose ACTIVE engine is `mlx-text` is
+    not unloadable here, it is loadable by the OTHER registered runner for
+    the same capability, which is available even though nothing has
+    preferred it. In registration order, so a caller choosing the first
+    match sees the same tie-break `_first_available`'s own AUTO fallback
+    would use.
+    """
+    return tuple(r for r in _RUNNERS
+                if r.capability == capability and r.available().ok)
+
+
 def unavailable_reason(capability: str) -> str | None:
     """Why nothing here serves `capability`, in words — or None when something does.
 

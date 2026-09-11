@@ -4,11 +4,15 @@
 // false claim about itself.
 import { describe, expect, it } from "bun:test";
 import {
+  activeFitLevel,
+  activeParamsBand,
   activeSort,
   activeTask,
   bySizeAscending,
+  FIT_LEVELS,
   gateChrome,
   needsHubLogin,
+  PARAMS_BANDS,
   resultsSummary,
   searchChrome,
   SORTS,
@@ -252,33 +256,46 @@ describe("wireSort", () => {
     expect(wireSort("likes")).toBe("likes");
     expect(wireSort("updated")).toBe("updated");
     expect(wireSort("created")).toBe("created");
+    // "trending" and "fit" are both real `HubSort` values the SERVER accepts —
+    // "trending" is a genuine Hub field, and "fit" is the one the server
+    // resolves itself over `downloads` — so neither is this mapper's business
+    // to rewrite, unlike "size", which is page-only and never reaches the wire.
+    expect(wireSort("trending")).toBe("trending");
+    expect(wireSort("fit")).toBe("fit");
   });
 
   it("only ever produces a sort the server's allowlist holds", () => {
     // Stated over the whole menu rather than value by value, because the failure
     // this prevents is a sort ADDED to the menu and not to the mapper: a new
     // page-level ordering would reach the API as itself and be rejected there.
-    const allowed = ["downloads", "likes", "updated", "created"];
+    const allowed = ["downloads", "likes", "updated", "created", "trending", "fit", "best"];
     for (const s of SORTS) expect(allowed).toContain(wireSort(s.value));
   });
 
   it("knows which orderings the page has to do itself", () => {
     // What decides whether the results have to be MEASURED before they can be
-    // shown in order (HubResults' size pass).
+    // shown in order (HubResults' size pass). Fit is server-side and needs no
+    // measuring pass, unlike size.
     expect(sortsOnPage("size")).toBe(true);
     expect(sortsOnPage("downloads")).toBe(false);
     expect(sortsOnPage("created")).toBe(false);
+    expect(sortsOnPage("fit")).toBe(false);
+    expect(sortsOnPage("trending")).toBe(false);
+    expect(sortsOnPage("best")).toBe(false);
   });
 
-  it("offers size, and offers it last", () => {
-    // It is the only ordering that costs a measurement, so the cheap answers
-    // come first — and it exists, which is the half of D426's refinement a
-    // reader of this table would come here to check.
+  it("offers 'best' first (D780's default) and size last", () => {
+    // Size is the only ordering that costs a measurement, so the cheap
+    // answers come first; "best" leads because index 0 is what `activeSort`
+    // falls back to for a missing/unrecognised sort — see `SORTS`'s own doc.
     expect(SORTS.map((s) => s.value)).toEqual([
+      "best",
       "downloads",
       "likes",
       "updated",
       "created",
+      "trending",
+      "fit",
       "size",
     ]);
     // Every row says what its ordering MEANS: "Downloads" does not say over what
@@ -350,10 +367,23 @@ describe("activeTask", () => {
     // before) or a runner can be unregistered between the two. Falling back to
     // "Any task" there would make this the one control on the row describing a
     // different page than the one on screen — the results ARE narrowed.
-    expect(activeTask("automatic-speech-recognition", []).label).toBe(
-      "automatic-speech-recognition",
-    );
+    expect(activeTask("some-unregistered-task", []).label).toBe("some-unregistered-task");
     expect(activeTask("summarization", tasks).label).not.toBe("Any task");
+  });
+
+  it("item 3/11 (fix round 3): wears the standard capability name, not the wire's own label, for a tag this app's five capabilities cover", () => {
+    // Live bug: the wire's own `label` for this tag was seen lower-cased
+    // ("text generation"), which disagreed with the "Text generation" the
+    // nav/pane heading/back link build from `capabilityLabel` for the exact
+    // same tag. The task menu now reads off that same table, ignoring the
+    // glossary's own `label` for the five tags it covers, so a server that
+    // sends a differently-cased (or missing) label cannot make this one
+    // control describe a different capability than the rest of the screen.
+    expect(
+      activeTask("automatic-speech-recognition", [
+        { tag: "automatic-speech-recognition", label: "transcription", help: null },
+      ]).label,
+    ).toBe("Speech to text");
   });
 });
 
@@ -415,5 +445,37 @@ describe("bySizeAscending", () => {
   it("has nothing to say about an empty or single answer", () => {
     expect(order([])).toEqual([]);
     expect(order(["unasked"])).toEqual(["unasked"]);
+  });
+});
+
+describe("activeFitLevel", () => {
+  it("names the no-op default", () => {
+    expect(activeFitLevel("any")).toEqual(FIT_LEVELS[0]);
+    expect(activeFitLevel("any").value).toBe("any");
+  });
+
+  it("finds the option for each real level", () => {
+    expect(activeFitLevel("tight").value).toBe("tight");
+    expect(activeFitLevel("easy").value).toBe("easy");
+  });
+
+  it("falls back to the no-op default for a value this menu does not offer", () => {
+    expect(activeFitLevel("bogus" as never)).toEqual(FIT_LEVELS[0]);
+  });
+});
+
+describe("activeParamsBand", () => {
+  it("names the no-op default", () => {
+    expect(activeParamsBand("any")).toEqual(PARAMS_BANDS[0]);
+  });
+
+  it("finds the option for each real band", () => {
+    expect(activeParamsBand("under4b").value).toBe("under4b");
+    expect(activeParamsBand("4to15b").value).toBe("4to15b");
+    expect(activeParamsBand("over15b").value).toBe("over15b");
+  });
+
+  it("falls back to the no-op default for a value this menu does not offer", () => {
+    expect(activeParamsBand("bogus" as never)).toEqual(PARAMS_BANDS[0]);
   });
 });

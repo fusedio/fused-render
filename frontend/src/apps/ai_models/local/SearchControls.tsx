@@ -1,299 +1,489 @@
-// The search row at the TOP of the Local tab: a query box, a task filter and a
-// sort, above everything the page has to show about this machine.
+// The controls row for the full Hub search screen (`HubSearchScreen.tsx`):
+// Fit / Size / Sort menus, the two free-text filters (quant, publisher), and
+// the result line beneath them.
 //
-// **At the top, because it is the one control that changes what the page IS.**
-// The rest of the tab answers "what do I have and what should I get"; this row
-// answers "what else is out there", and a query replaces the sections below it
-// with one grid of Hub results (`HubResults`, the either/or in `LocalTab`).
-// A control that swaps the whole page cannot sit halfway down it.
+// Ported from the approved mockup's `controls()`. Item B (fix round 2):
+// the app's one shared dropdown (the platform menu surface) has no slot for
+// the mockup's hover SENTENCE under every option (`<p class="h">`) — its
+// entries carry a label and an icon, nothing else. Rather than grow that
+// shared surface a field only this one screen uses, `ControlMenu` below is
+// its own small dropdown, matching the mockup's `.menubtn`/`.dd`/`.l`/`.h`/
+// `.chk` markup verbatim (CSS in ai-models.css, scoped to `.tp`).
 //
-// Lifted out of the Discover tab, whose whole surface this was (D426). What
-// moved is the machinery and not a second copy of it: the debounce, the settled
-// object and the ✕ that clears BOTH inputs are the same pieces, now hanging off
-// a page that already had the cards to draw the answers on.
+// Item 1 (fix round 7): open/close is now OWNED by `SearchControls`, one
+// `openMenu` id for the whole row, not by each `ControlMenu`/`SearchMenu`
+// instance — round 6's version gave each menu its own independent `open`
+// state, so opening Sort didn't close an already-open Fit/Quant/Publisher
+// menu and up to four could be open at once. `SearchControls` registers a
+// single document-level `mousedown`+`Escape` listener (only while a menu is
+// open) that closes `openMenu` on an outside mousedown or Escape, checking
+// against the open menu's own root element (via each menu's `rootRef`
+// prop) — the same dismissal contract the app's shared menu surface gives
+// every other menu on this page, just centralized to one open slot instead
+// of one per menu.
 //
-// **The two menus are the app's own dropdown, not native selects** (D426). They
-// were `<select className="field-control">`, which is the one control that
-// renders as the PLATFORM's rather than as this app's — and, worse for these
-// two, a control that cannot carry an icon. These menus are a vocabulary: the
-// task filter and five orderings are the whole of what this row can be asked,
-// and a row of glyphs is how a reader learns a vocabulary at a glance. So the
-// trigger is a bordered button wearing the active option's icon, its label and a
-// caret (the `.field-control` select skin's own metrics, so it sits in the row
-// as a sibling of the search box), and the menu is `@platform/ui/ContextMenu` —
-// the app's ONE menu surface, with `active` for radio semantics. Not the
-// explorer's visually-closer ModeMenu: an app may not import another app's
-// components (`scripts/check-boundaries.mjs`), and a third hand-rolled dropdown
-// is exactly the drift the shared one exists to prevent.
+// **No Task menu** (D843, round 5): the left pane already scopes this whole
+// screen to one capability (`HubSearchScreen`'s own `capabilityKey` prop,
+// sent to the server as `capability`), so a second, independent task filter
+// inside the search controls had no job left — see D843 for the search-scope
+// change this followed from. The server-driven task glossary this file used
+// to fetch (D313) and `activeTask` (`hubSearchView.ts`) are unused here now;
+// both stay for whatever else still reads them.
 //
-// **This component is only the controls.** The state lives in `LocalTab`,
-// because `settled` is what decides which face of the page is rendered and the
-// ✕ here and the "← Back to models" control in the results heading are one act
-// (`clearSearch`). What IS this component's is the task glossary, which nothing
-// else on the page reads, and which menu is open.
-import { useEffect, useState, type ReactNode, type RefObject } from "react";
+// No query box in this file any more — `HubSearchScreen` owns the one
+// `.bigsearch` input the mockup gives the whole screen, above this row.
+import { useEffect, useRef, useState } from "react";
 import {
+  activeFitLevel,
+  activeParamsBand,
   activeSort,
-  activeTask,
+  FIT_LEVELS,
+  PARAMS_BANDS,
   SORTS,
   type ResultSort,
 } from "@apps/ai_models/lib/hubSearchView";
-import { getHubTasks, type HubTask } from "@platform/lib/api";
-import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
-import { MenuIcons } from "@platform/ui/MenuIcons";
+import {
+  type HubFacetOption,
+  type HubFitLevel,
+  type HubParamsBand,
+  type HubSearchFacets,
+} from "@platform/lib/api";
 
-/** Which glyph each ordering wears. Beside the table rather than in it because
- *  `hubSearchView` is a `.ts` module that can be unit-tested and an icon is JSX
- *  — the part with a rule in it is which sorts exist and what they mean, and it
- *  stays there.
- *
- *  `downloads` reuses the shared `download` glyph (an arrow into a tray) rather
- *  than getting one of its own: that is exactly what a download count counts.
- *  `updated` does NOT reuse `refresh`, whose two circular arrows already mean
- *  "fetch this again" everywhere else in the app — this is a fact about the
- *  repo, not an action. */
-const SORT_ICONS: Record<ResultSort, ReactNode> = {
-  downloads: MenuIcons.download,
-  likes: MenuIcons.heart,
-  updated: MenuIcons.clock,
-  created: MenuIcons.sparkle,
-  size: MenuIcons.drive,
-};
+/** One row of an open `ControlMenu` dropdown — the mockup's own shape: a
+ *  label, the hover sentence explaining its consequence (`<p class="h">`,
+ *  shown for every option, not just on hover), and whether it is the option
+ *  currently in force. */
+export interface MenuOption {
+  label: string;
+  hint: string;
+  active: boolean;
+  onClick: () => void;
+}
 
-/** The caret, drawn here rather than taken from `@platform/ui/Chevron` (which
- *  only points left/right — it is a pager's control). Same geometry, weight and
- *  muted colour as the one `select.field-control` paints as a background image,
- *  so a menu trigger and a select in the same row wear the same affordance. */
-function Caret({ open }: { open: boolean }) {
+/** One of the row's menus: a `.menubtn` trigger reading `Key: value`, and
+ *  the mockup's own `.dd` dropdown hanging off its bottom-left corner.
+ *  `keyLabel` is the muted prefix inside the trigger ("Task:", "Fit:",
+ *  "Size:", "Sort:"); `onClear`, when given, draws the `.x` remover for a
+ *  non-default selection and resets it without opening the menu. */
+export function ControlMenu({
+  keyLabel,
+  valueLabel,
+  title,
+  ariaLabel,
+  active,
+  onClear,
+  items,
+  align,
+  open,
+  onOpenChange: setOpen,
+  rootRef,
+}: {
+  keyLabel: string;
+  valueLabel: string;
+  title: string;
+  ariaLabel: string;
+  /** Whether a non-default option is in force — draws `.menubtn.active`. */
+  active: boolean;
+  onClear?: () => void;
+  items: MenuOption[];
+  /** Item 6 (fix round 6): "right" anchors the `.dd` to its trigger's RIGHT
+   *  edge (`.dd.right`) instead of the default left — for a menu whose
+   *  trigger sits in the controls row's right half, where a left-anchored
+   *  dropdown runs past the scrolling pane's edge and is clipped. */
+  align?: "left" | "right";
+  /** Item 1 (fix round 7): open state is now owned by `SearchControls` — at
+   *  most one dropdown in the row is open at a time, and one shared
+   *  document listener (there, not here) closes it on an outside mousedown
+   *  or Escape. `rootRef` registers this menu's root element so that shared
+   *  listener can tell an inside click from an outside one. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rootRef: (el: HTMLDivElement | null) => void;
+}) {
   return (
-    <svg
-      className="am-hub-menu-caret"
-      viewBox="0 0 12 12"
-      width="12"
-      height="12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d={open ? "M3 7.5l3-3 3 3" : "M3 4.5l3 3 3-3"} />
-    </svg>
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        className={"menubtn" + (active ? " active" : "")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        title={title}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="k">{keyLabel}</span>
+        {valueLabel}
+        <span className="caret">▾</span>
+        {active && onClear && (
+          <span
+            className="x"
+            role="button"
+            aria-label={`Clear ${keyLabel.replace(":", "")} filter`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClear();
+              setOpen(false);
+            }}
+          >
+            ×
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className={"dd" + (align === "right" ? " right" : "")} role="menu">
+          {items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitemradio"
+              aria-checked={it.active}
+              className={it.active ? "on" : undefined}
+              onClick={() => {
+                it.onClick();
+                setOpen(false);
+              }}
+            >
+              <span className="l">
+                <span className="chk">{it.active ? "✓" : ""}</span>
+                {it.label}
+              </span>
+              <p className="h">{it.hint}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
-/** One of the row's two menus: a bordered trigger showing what is in force, and
- *  the app's menu hanging off its bottom-left corner.
- *
- *  The open/close dance is the one thing worth reading twice. `ContextMenu`
- *  dismisses itself on any outside pointerdown, and the trigger is outside it —
- *  so a click on an open menu's own trigger would close it and then re-open it,
- *  leaving a control that cannot be dismissed by the obvious act. The toggle
- *  therefore lives on `pointerdown`, where the menu's own document-capture
- *  listener has already run: `at` read in this handler is the state from BEFORE
- *  that close, so a non-null value means this pointerdown was the dismissal and
- *  there is nothing to do. Keyboard opens it too, since a control reachable by
- *  Tab that only answers a pointer is a control with no keyboard at all.
- */
-function ControlMenu({
-  icon,
-  label,
-  title,
+/** Item 5 (fix round 6): a searchable dropdown replacing a free-text input
+ *  for Publisher/Quant — the trigger reads `Key: value` exactly like
+ *  `ControlMenu`, but its `.dd` opens with a filter `<input>` on top (matches
+ *  `.am-hub-textfilter`'s own metrics, reused as `.dd .textfilter`) that
+ *  narrows `options` by a case-insensitive substring match, plus a muted
+ *  count next to each. Typing a value that never appears in the list and
+ *  pressing Enter still applies it as free text — the Hub has far more
+ *  publishers/quants than any one search's facets will enumerate, and this
+ *  keeps that reachable without a second, separate input. */
+function SearchMenu({
+  keyLabel,
+  value,
+  options,
+  placeholder,
   ariaLabel,
-  items,
+  title,
+  onChange,
+  align,
+  open,
+  onOpenChange: setOpen,
+  rootRef,
 }: {
-  icon: ReactNode;
-  label: string;
-  title: string;
+  keyLabel: string;
+  value: string;
+  options: HubFacetOption[];
+  placeholder: string;
   ariaLabel: string;
-  items: MenuEntry[];
+  title: string;
+  onChange: (v: string) => void;
+  align?: "left" | "right";
+  /** Item 1 (fix round 7): see `ControlMenu`'s matching props — open state
+   *  and outside-click/Escape dismissal moved up to `SearchControls`, one
+   *  `openMenu` for the whole row. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rootRef: (el: HTMLDivElement | null) => void;
 }) {
-  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
-  // Anchored to the trigger's rect, not to the pointer: this is a menu ABOUT
-  // this button, and ContextMenu clamps it into the viewport from there.
-  const openUnder = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    setAt({ x: r.left, y: r.bottom + 4 });
+  const [filter, setFilter] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setFilter("");
+    inputRef.current?.focus();
+  }, [open]);
+
+  const narrowed = filter
+    ? options.filter((o) => o.id.toLowerCase().includes(filter.toLowerCase()))
+    : options;
+
+  const apply = (v: string) => {
+    onChange(v);
+    setOpen(false);
   };
+
+  // Item 1 (fix round 11): mlx-community has exactly one row in the ~200
+  // most-downloaded window `_facets` (hub_models.py) counts over, so it
+  // sorts behind the top-40 cutoff and never appears here — the dropdown
+  // then shows nothing for a value that DOES exist on the Hub (Enter still
+  // sends it and gets a full page back). Whenever the typed text has no
+  // exact case-insensitive match among `options`, offer it as a search: one
+  // extra row at the top doing exactly what Enter does, reusing the same
+  // option-row markup so it reads as just another row, not a new affordance.
+  const trimmed = filter.trim();
+  const hasExactMatch = options.some(
+    (o) => o.id.toLowerCase() === trimmed.toLowerCase(),
+  );
+  const showSearchRow = trimmed !== "" && !hasExactMatch;
+  const searchKind = keyLabel.replace(":", "").trim().toLowerCase();
+
   return (
-    <>
+    <div ref={rootRef} style={{ position: "relative" }}>
       <button
         type="button"
-        className={"am-hub-menu" + (at ? " open" : "")}
+        className={"menubtn" + (value ? " active" : "")}
         aria-haspopup="menu"
-        aria-expanded={at !== null}
+        aria-expanded={open}
         aria-label={ariaLabel}
         title={title}
-        onPointerDown={(e) => {
-          if (at) return; // this pointerdown already closed it — see above
-          openUnder(e.currentTarget);
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          // Otherwise the browser turns the key into a click, which lands as a
-          // second toggle on the button we just opened from.
-          e.preventDefault();
-          if (at) {
-            setAt(null);
-            return;
-          }
-          openUnder(e.currentTarget);
-        }}
+        onClick={() => setOpen(!open)}
       >
-        <span className="am-hub-menu-icon" aria-hidden="true">
-          {icon}
-        </span>
-        <span className="am-hub-menu-label">{label}</span>
-        <Caret open={at !== null} />
+        <span className="k">{keyLabel}</span>
+        {value || "Any"}
+        <span className="caret">▾</span>
+        {value && (
+          <span
+            className="x"
+            role="button"
+            aria-label={`Clear ${keyLabel.replace(":", "")} filter`}
+            onClick={(e) => {
+              e.stopPropagation();
+              apply("");
+            }}
+          >
+            ×
+          </span>
+        )}
       </button>
-      {at && <ContextMenu x={at.x} y={at.y} items={items} onClose={() => setAt(null)} />}
-    </>
+      {open && (
+        <div className={"dd" + (align === "right" ? " right" : "")} role="menu">
+          <input
+            ref={inputRef}
+            className="textfilter"
+            type="text"
+            value={filter}
+            placeholder={placeholder}
+            aria-label={ariaLabel}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && filter.trim()) {
+                e.preventDefault();
+                apply(filter.trim());
+              }
+            }}
+          />
+          {showSearchRow && (
+            <button
+              key="__search__"
+              type="button"
+              role="menuitemradio"
+              aria-checked={false}
+              onClick={() => apply(trimmed)}
+            >
+              <span className="l">
+                <span className="chk"></span>
+                {`Search ${searchKind} "${trimmed}"`}
+              </span>
+            </button>
+          )}
+          {narrowed.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={o.id === value}
+              className={o.id === value ? "on" : undefined}
+              onClick={() => apply(o.id)}
+            >
+              <span className="l">
+                <span className="chk">{o.id === value ? "✓" : ""}</span>
+                {o.id}
+                <span className="count">{o.count}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 export function SearchControls({
-  query,
-  task,
   sort,
-  showsReset,
-  searchBox,
-  onQuery,
-  onTask,
+  fitLevel,
+  paramsBand,
+  quant,
+  publisher,
   onSort,
-  onClear,
+  onFitLevel,
+  onParamsBand,
+  onQuant,
+  onPublisher,
+  loading,
+  matchCount,
+  facets,
 }: {
-  query: string;
-  task: string;
   sort: ResultSort;
-  /** Whether the ✕ is offered — asked of the LIVE controls rather than of the
-   *  settled query, because it belongs to the box: appearing 350ms after the
-   *  first keystroke, or lingering that long after a clear, is the control
-   *  disagreeing with the field it sits in. Everything else on the page
-   *  describes what is RENDERED and waits for the debounce. */
-  showsReset: boolean;
-  /** The page's handle on the input, so the control in the results heading can
-   *  put the cursor back where the next thing happens. */
-  searchBox: RefObject<HTMLInputElement>;
-  onQuery: (q: string) => void;
-  onTask: (task: string) => void;
+  fitLevel: HubFitLevel;
+  paramsBand: HubParamsBand;
+  quant: string;
+  publisher: string;
   onSort: (sort: ResultSort) => void;
-  /** Query AND task filter, in one act. See `clearSearch` in LocalTab. */
-  onClear: () => void;
+  onFitLevel: (v: HubFitLevel) => void;
+  onParamsBand: (v: HubParamsBand) => void;
+  onQuant: (v: string) => void;
+  onPublisher: (v: string) => void;
+  /** The result line's own three-way state — loading, a count, or nothing
+   *  yet asked. */
+  loading: boolean;
+  matchCount: number | null;
+  /** Item 5 (fix round 6): the Publisher/Quant menus' option lists, computed
+   *  server-side pre-narrowing. `null` before the first search response. */
+  facets?: HubSearchFacets | null;
 }) {
-  const [tasks, setTasks] = useState<HubTask[]>([]);
+  const activeS = activeSort(sort);
+  const activeFit = activeFitLevel(fitLevel);
+  const activeParams = activeParamsBand(paramsBand);
+
+  // Item 1 (fix round 7): a single `openMenu` for the whole row — opening
+  // one dropdown closes any other that was open, instead of each menu
+  // owning its own independent `open` state (the round-6 bug: Fit, Sort,
+  // Quant and Fit could all be open at once). One shared document-level
+  // `mousedown`/`Escape` listener, registered only while a menu is open,
+  // closes the open menu when the event lands outside ITS root — `roots`
+  // holds each menu's root element, keyed by the same id used for
+  // `openMenu`, filled in by the `rootRef` callback each menu is given.
+  type MenuId = "fit" | "params" | "quant" | "publisher" | "sort";
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+  const roots = useRef<Partial<Record<MenuId, HTMLDivElement | null>>>({});
+  const setRoot = (id: MenuId) => (el: HTMLDivElement | null) => {
+    roots.current[id] = el;
+  };
 
   useEffect(() => {
-    // The filter list is small and comes from the server because only the
-    // server knows which pipeline tags a registered runner can serve (D313) —
-    // a hardcoded menu here would offer filters for models the app cannot load,
-    // which is the whole complaint this constraint answers. It is a static
-    // glossary and touches no network (`hub/tasks` is a GET over a table), so
-    // asking for it when the tab opens does not make this page reach the Hub
-    // before something is typed. A failure is not worth a banner: the search
-    // still works, it just has no task menu.
-    let alive = true;
-    getHubTasks().then(
-      (d) => alive && setTasks(d.tasks),
-      () => alive && setTasks([]),
-    );
-    return () => {
-      alive = false;
+    if (!openMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const root = roots.current[openMenu];
+      if (root && !root.contains(e.target as Node)) setOpenMenu(null);
     };
-  }, []);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenMenu(null);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openMenu]);
 
-  const activeT = activeTask(task, tasks);
-  const activeS = activeSort(sort);
+  const fitItems: MenuOption[] = FIT_LEVELS.map((l) => ({
+    label: l.label,
+    hint: l.title,
+    active: l.value === fitLevel,
+    onClick: () => onFitLevel(l.value),
+  }));
 
-  // ONE glyph for the whole task group, and that is a choice rather than a gap.
-  // A per-task icon would have to be invented for every pipeline tag the server
-  // registers — and the tags are the server's, not this file's (HS-7), so the
-  // next runner someone registers would arrive iconless or, worse, get an
-  // arbitrary glyph that reads as a claim about what it does. The funnel says
-  // the true thing about every row in this menu: it narrows the results.
-  const taskItems: MenuEntry[] = [
-    {
-      label: "Any task",
-      icon: MenuIcons.filter,
-      active: !task.trim(),
-      // "Any task" means any task THIS APP RUNS — the menu below holds only
-      // those (D313), and so does an unfiltered search.
-      onClick: () => onTask(""),
-    },
-    ...(tasks.length ? (["separator"] as MenuEntry[]) : []),
-    ...tasks.map(
-      (t): MenuEntry => ({
-        label: t.label,
-        icon: MenuIcons.filter,
-        active: t.tag === task,
-        onClick: () => onTask(t.tag),
-      }),
-    ),
-  ];
+  const paramsItems: MenuOption[] = PARAMS_BANDS.map((b) => ({
+    label: b.label,
+    hint: b.title,
+    active: b.value === paramsBand,
+    onClick: () => onParamsBand(b.value),
+  }));
 
-  const sortItems: MenuEntry[] = SORTS.map((s) => ({
+  const sortItems: MenuOption[] = SORTS.map((s) => ({
     label: s.label,
-    icon: SORT_ICONS[s.value],
+    hint: s.title,
     active: s.value === sort,
     onClick: () => onSort(s.value),
   }));
 
   return (
-    <div className="am-hub-controls">
-      <div className="am-hub-field">
-        <input
-          ref={searchBox}
-          className="am-hub-search"
-          type="search"
-          value={query}
-          placeholder="Search models on the Hub…"
-          aria-label="Search models on the Hugging Face Hub"
-          onChange={(e) => onQuery(e.target.value)}
-          // Escape is the reflex for "put this back", and in this box it
-          // clears the TASK FILTER too — the same one act the ✕ performs, for
-          // the same reason. Not stopPropagation: nothing else on this page
-          // listens for Escape while a text field has focus, and swallowing
-          // it would break the next overlay that does. (An OPEN menu does
-          // listen, on document capture, and stops the key there — so Escape
-          // dismisses the menu first and clears the search second, which is
-          // the order a reader expects of the thing most recently opened.)
-          onKeyDown={(e) => {
-            if (e.key !== "Escape" || !showsReset) return;
-            e.preventDefault();
-            onClear();
-          }}
+    <div data-part="controls">
+      <div className="am-hub-controls">
+        <ControlMenu
+          keyLabel="Fit:"
+          valueLabel={activeFit.label}
+          title={activeFit.title}
+          ariaLabel={"Filter by fit: " + activeFit.label}
+          active={fitLevel !== "any"}
+          onClear={() => onFitLevel("any")}
+          items={fitItems}
+          open={openMenu === "fit"}
+          onOpenChange={(v) => setOpenMenu(v ? "fit" : null)}
+          rootRef={setRoot("fit")}
         />
-        {/* Inside the box, and it clears BOTH inputs. The native type="search"
-            ✕ is hidden in CSS precisely because it does not: it empties the
-            text and leaves a task filter behind, which is the exact failure
-            that looks broken — the box is empty, the reader has done the
-            obvious thing, and the models still are not back (D317). */}
-        {showsReset && (
-          <button
-            type="button"
-            className="am-hub-clear"
-            onClick={onClear}
-            aria-label="Clear the search and show this machine's models"
-            title="Clear the search and the task filter (Esc)"
-          >
-            ✕
-          </button>
-        )}
+        <ControlMenu
+          keyLabel="Size:"
+          valueLabel={activeParams.label}
+          title={activeParams.title}
+          ariaLabel={"Filter by parameter count: " + activeParams.label}
+          active={paramsBand !== "any"}
+          onClear={() => onParamsBand("any")}
+          items={paramsItems}
+          open={openMenu === "params"}
+          onOpenChange={(v) => setOpenMenu(v ? "params" : null)}
+          rootRef={setRoot("params")}
+        />
+        <SearchMenu
+          keyLabel="Quant:"
+          value={quant}
+          options={facets?.quants ?? []}
+          placeholder="Type to filter, e.g. Q4_K_M…"
+          ariaLabel="Filter by exact quantization"
+          title="Show only results with this exact measured quantization"
+          onChange={onQuant}
+          open={openMenu === "quant"}
+          onOpenChange={(v) => setOpenMenu(v ? "quant" : null)}
+          rootRef={setRoot("quant")}
+        />
+        <SearchMenu
+          keyLabel="Publisher:"
+          value={publisher}
+          options={facets?.publishers ?? []}
+          placeholder="Type to filter…"
+          ariaLabel="Filter by publisher or organization"
+          title="Show only results published by this Hub user or organization"
+          onChange={onPublisher}
+          open={openMenu === "publisher"}
+          onOpenChange={(v) => setOpenMenu(v ? "publisher" : null)}
+          rootRef={setRoot("publisher")}
+        />
+        <span className="am-hub-controls-push" />
+        <ControlMenu
+          keyLabel="Sort:"
+          valueLabel={activeS.label}
+          title={activeS.title}
+          ariaLabel={"Sort results: " + activeS.label}
+          active={false}
+          items={sortItems}
+          align="right"
+          open={openMenu === "sort"}
+          onOpenChange={(v) => setOpenMenu(v ? "sort" : null)}
+          rootRef={setRoot("sort")}
+        />
       </div>
-      <ControlMenu
-        icon={MenuIcons.filter}
-        label={activeT.label}
-        title={activeT.title}
-        ariaLabel={"Filter by task: " + activeT.label}
-        items={taskItems}
-      />
-      <ControlMenu
-        icon={SORT_ICONS[activeS.value]}
-        label={activeS.label}
-        title={activeS.title}
-        ariaLabel={"Sort results: " + activeS.label}
-        items={sortItems}
-      />
+      {/* Item 6 (fix round 3): also wears the mockup's own `.resultline`
+       *  class — a live check for that exact selector found nothing, since
+       *  this row only ever carried `am-hub-controls`'s own naming. */}
+      {/* Item 7 (fix round 5): the "Show models that will not fit" toggle
+       *  and the "N hidden" count are gone — every model is always shown,
+       *  and the per-row red "Will not fit" line (HubSearchScreen.tsx) is
+       *  the only warning left, so the result line states only the count. */}
+      <div className="am-hub-resultline resultline" data-part="resultline">
+        <span>
+          {loading ? (
+            "Searching…"
+          ) : matchCount === null ? (
+            ""
+          ) : matchCount === 0 ? (
+            "0 matches"
+          ) : (
+            <>
+              <b>{matchCount}</b> match{matchCount === 1 ? "" : "es"}
+            </>
+          )}
+        </span>
+      </div>
     </div>
   );
 }

@@ -146,8 +146,8 @@ describe("the four buckets", () => {
   it("sub-groups models by capability, in the reading order", () => {
     const g = groupRepos(ALL);
     expect(g.models.groups.map((s) => s.label)).toEqual([
-      "Image generation",
       "Text generation",
+      "Image generation",
       "Speech to text",
       "Unrecognised",
     ]);
@@ -301,14 +301,13 @@ const sectionsOf = (repos: AiModelRepo[], loaded = resident()) =>
 describe("a capability's row is disk then recommended", () => {
   // The one order the whole row rests on. Loaded is the only state that costs
   // something continuously, so it leads; recommended is the only half that is
-  // not on this machine, so it trails; and the disk rows in between run most
-  // recently used first, falling back to the server's size sort when atime has
-  // nothing to say.
+  // not on this machine, so it trails; and the disk rows in between run
+  // smallest first.
   it("puts what is loaded first, then the rest of the disk, then recommendations", () => {
     const sections = sectionsOf(ALL, resident("mlx-community/Qwen3-8B-4bit"));
     const text = sections.find((s) => s.key === "text-generation");
-    // Qwen3-8B-4bit is the SMALLER of the two and the server sorted it second;
-    // being resident is what moves it.
+    // Qwen3-8B-4bit is already the smaller of the two, so residency doesn't
+    // change its position here — see the next test for the case where it does.
     expect(text?.disk.map((r) => r.id)).toEqual([
       "mlx-community/Qwen3-8B-4bit",
       "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -318,17 +317,17 @@ describe("a capability's row is disk then recommended", () => {
     ]);
   });
 
-  it("keeps the listing's order when nothing is resident and atime is silent", () => {
+  it("orders by size, smallest first, when nothing is resident", () => {
     const text = sectionsOf(ALL).find((s) => s.key === "text-generation");
     expect(text?.disk.map((r) => r.id)).toEqual([
-      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
       "mlx-community/Qwen3-8B-4bit",
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
     ]);
   });
 
-  // Behind the resident card the row is MRU: a horizontal row is read a few
-  // cards deep, so the front holds what the user actually reaches for.
-  it("orders the unloaded disk rows by last use, newest first", () => {
+  // Behind the resident card the row is smallest-first: the quickest to load,
+  // the one a basic user actually reaches for.
+  it("orders the unloaded disk rows by size, smallest first", () => {
     const stale = repo({
       id: "a/stale",
       capability: "text-generation",
@@ -342,11 +341,11 @@ describe("a capability's row is disk then recommended", () => {
       lastUsed: 2_000,
     });
     const text = sectionsOf([stale, fresh]).find((s) => s.key === "text-generation");
-    // The server sorted a/stale first (bigger); recency is what flips them.
+    // Size wins even though a/stale was used less recently.
     expect(text?.disk.map((r) => r.id)).toEqual(["z/fresh", "a/stale"]);
   });
 
-  it("sorts a null lastUsed after every dated row, in the listing's order", () => {
+  it("ignores lastUsed entirely — size order, nulls included", () => {
     const dated = repo({
       id: "a/dated",
       capability: "text-generation",
@@ -358,7 +357,7 @@ describe("a capability's row is disk then recommended", () => {
     const text = sectionsOf([neverBig, neverSmall, dated]).find(
       (s) => s.key === "text-generation",
     );
-    expect(text?.disk.map((r) => r.id)).toEqual(["a/dated", "b/never-big", "c/never-small"]);
+    expect(text?.disk.map((r) => r.id)).toEqual(["a/dated", "c/never-small", "b/never-big"]);
   });
 
   // Residency still beats recency: the model costing memory RIGHT NOW leads
@@ -407,8 +406,8 @@ describe("a capability's row is disk then recommended", () => {
     expect(sections.flatMap((s) => s.recommended)).toEqual([]);
     // …and the disk half is untouched by that: what is here is here.
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       UNRECOGNISED,
     ]);
@@ -436,8 +435,8 @@ describe("video generation's place in the reading order", () => {
       groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
     );
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       "text-to-video",
     ]);
@@ -493,8 +492,8 @@ describe("which rows exist at all", () => {
   it("renders a capability with no disk models but something to recommend", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
     ]);
     expect(sections.every((s) => s.disk.length === 0)).toBe(true);
@@ -529,8 +528,8 @@ describe("which rows exist at all", () => {
       WHISPER,
     ]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-to-image",
       "text-generation",
+      "text-to-image",
       "automatic-speech-recognition",
       "text-ranking",
       UNRECOGNISED,
@@ -671,8 +670,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
   it("carries the catalog's runner so a recommended card can wear its engine tag", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.runner?.shortLabel)).toEqual([
-      "MLX FLUX",
       "MLX LM",
+      "MLX FLUX",
       "MLX Whisper",
     ]);
     expect(sections.every((s) => s.runner?.available)).toBe(true);
@@ -699,8 +698,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
 
   it("labels a recommended-only capability the way every other heading is labelled", () => {
     expect(sectionsOf([]).map((s) => s.label)).toEqual([
-      "Image generation",
       "Text generation",
+      "Image generation",
       "Speech to text",
     ]);
   });

@@ -12,7 +12,7 @@ import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
-import { capabilityIcon } from "./capabilityIcons";
+import { capabilityIcon } from "@apps/ai_models/lib/capabilityIcons";
 
 /** The stage's one-line title, with the config cog right-aligned on the same
  *  row. The cog lives up here rather than under the input because the title

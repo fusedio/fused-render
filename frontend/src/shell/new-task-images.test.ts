@@ -3,7 +3,7 @@
 // tested as the functions they are; the wiring that no pure function holds — what
 // a paste intercepts, when the upload is awaited, where an Edit's attachments come
 // from — is pinned to the source, this repo's habit for exactly that kind of claim
-// (see new-task-form.test.ts and repoCardControls.test.ts).
+// (see new-task-form.test.ts and local/ModelRow.test.ts).
 //
 // ANY FILE, NO CAPS (D618): the count cap, the byte cap, the image-only MIME gate
 // and the ＋ picker are all gone, and each absence is asserted AS an absence —
