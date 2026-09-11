@@ -291,6 +291,10 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     if (popup && popup.id === replaceId && !popup.leaving) {
       const updated = toStored(input, replaceId);
       popup = { ...updated, leaving: popup.leaving };
+      // A retained row for the SAME id (finding #7a) must reflect the
+      // update too — otherwise the panel keeps showing stale content the
+      // live popup has already moved past. (A no-op if no such row exists.)
+      retained = retained.map((n) => (n.id === replaceId ? updated : n));
       // Re-arm, not merely re-stamp: a caller that keeps replacing the SAME
       // id (a paste's "Copying N of M…", an undo's repeated "Still
       // undoing…") is saying "this is still going", and the card must not
@@ -308,12 +312,27 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     const idx = retained.findIndex((n) => n.id === replaceId);
     if (idx !== -1) {
       const updated = toStored(input, replaceId);
-      retained = retained.map((n) => (n.id === replaceId ? updated : n));
       if (updated.tier === "attention" || updated.tier === "trail") {
+        retained = retained.map((n) => (n.id === replaceId ? updated : n));
+        // This re-pops the entry as the live popup, replacing whatever was
+        // showing before — always clear any timer that popup had armed for
+        // ITSELF first (finding #6): left running, it fires against
+        // whatever `popup` now IS (this updated entry), not the content it
+        // was actually armed for, silently breaking the IS_TOP_EMBED
+        // no-expiry guarantee (or, off that path, just firing early/late
+        // against the wrong content).
+        clearTimer(exitTimer);
+        exitTimer = null;
         popup = updated;
         if (!(effectiveIsTopEmbed() && updated.tier === "attention")) {
           armExitTimer(JOB_POPUP_VISIBLE_MS);
         }
+      } else {
+        // Finding #7b: the new content no longer resolves to a retained
+        // tier (e.g. an "attention" row updated into a plain transient
+        // note) — it must not keep sitting in the retained list just
+        // because that's where its old id happened to live.
+        retained = retained.filter((n) => n.id !== replaceId);
       }
       refreshSnapshot();
       emit();

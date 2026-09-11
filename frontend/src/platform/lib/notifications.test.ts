@@ -211,6 +211,66 @@ test("replaceId against an id that already left starts a fresh notification", as
   expect(popupSnapshot()?.title).toBe("second");
 });
 
+// ---- replaceId against a RETAINED (not live) entry -------------------------
+
+test(
+  "replaceId against a retained (not live) entry clears a stale timer instead of letting it fire against the new popup (finding #6)",
+  async () => {
+    _setIsTopEmbedForTest(true);
+
+    // A: an attention message under IS_TOP_EMBED — pops, retained, and (per
+    // the no-expiry rule) never gets an exit timer armed for it.
+    const idA = notify({ title: "first attention", tone: "error" });
+
+    // B: an ordinary transient popup that DOES get a real exit timer, and
+    // replaces A as the live popup — A is now retained-but-not-live.
+    notify({ title: "just passing through", tone: "info" });
+    expect(popupSnapshot()?.title).toBe("just passing through");
+
+    // Update A via replaceId. A is not the live popup, so this hits the
+    // RETAINED branch (not the live-popup branch above) — it re-pops A as
+    // the live popup again, still attention under IS_TOP_EMBED, so its own
+    // rule says this must never auto-expire either.
+    notify({ title: "first attention (updated)", tone: "error" }, idA);
+    expect(popupSnapshot()?.title).toBe("first attention (updated)");
+
+    // B's own timer, if left running (the bug: nothing clears/re-evaluates
+    // it when the retained branch takes over), fires around now and marks
+    // whatever `popup` currently IS — no longer B, but A's updated content —
+    // as leaving, then removes it entirely: a silent violation of "never
+    // auto-expires under IS_TOP_EMBED".
+    await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
+    expect(popupSnapshot()?.title).toBe("first attention (updated)");
+    expect(popupSnapshot()?.leaving).toBe(false);
+  },
+  10_000,
+);
+
+test("replaceId against a retained entry that resolves to a non-retained tier removes it from the retained list (finding #7b)", () => {
+  const id = notify({ title: "was attention", tone: "error" });
+  expect(getRetainedNotifications().map((n) => n.id)).toEqual([id]);
+
+  // Not the live popup any more, so this hits the retained branch — and the
+  // new content resolves to "transient" (no tone/tier at all), which must
+  // never sit in the retained list regardless of what it is replacing.
+  notify({ title: "just passing through", tone: "info" });
+  notify({ title: "no longer worth keeping" }, id);
+
+  expect(getRetainedNotifications().map((n) => n.id)).toEqual([]);
+});
+
+test("replaceId against the LIVE popup also updates the matching retained entry, if one exists (finding #7a)", () => {
+  const id = notify({ title: "original", tone: "error" });
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["original"]);
+
+  // Still the live popup, so this hits the FIRST (live-popup) branch — the
+  // retained row for the same id must reflect the update too, not keep
+  // showing stale content the popup itself has moved past.
+  notify({ title: "updated", tone: "error" }, id);
+
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["updated"]);
+});
+
 // ---- IS_TOP_EMBED no-expiry path ---------------------------------------------
 
 test("an attention popup never auto-expires under IS_TOP_EMBED", async () => {
