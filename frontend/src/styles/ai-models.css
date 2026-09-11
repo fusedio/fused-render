@@ -3395,6 +3395,16 @@ button.am-bench-model:focus-visible {
   font-weight: 600;
 }
 
+.tp .row-name a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tp .row-name a:hover,
+.tp .row-name a:focus-visible {
+  text-decoration: underline;
+}
+
 .tp .row-note {
   margin: 3px 0 0;
   font-size: 12px;

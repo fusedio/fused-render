@@ -14,7 +14,7 @@
 import type { ReactNode } from "react";
 
 import type { AiFitVerdict } from "@platform/lib/api";
-import { navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { tabHref } from "@apps/ai_models/routes";
@@ -123,7 +123,6 @@ export interface ModelRowHandlers {
   onStop?: (id: string) => void;
   onDelete?: (id: string) => void;
   onToggleInfo?: (id: string) => void;
-  onShowInFinder?: (id: string) => void;
 }
 
 function Unknown() {
@@ -378,7 +377,15 @@ export function ModelRow({
       >
         <div>
           <div className="row-name">
-            <b>{model.name}</b>
+            <a
+              href={hubModelUrl(model.id)}
+              target="_blank"
+              rel="noreferrer"
+              title="Open on huggingface.co"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <b>{model.name}</b>
+            </a>
             {model.curated && <CuratedMark />}
             {chips}
           </div>
