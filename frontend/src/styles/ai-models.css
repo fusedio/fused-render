@@ -3552,11 +3552,11 @@ button.am-bench-model:focus-visible {
   border-color: var(--ctl-quiet-border-hover);
 }
 
-/* Item 9: every row's action button is the same box regardless of whether
-   it reads "Download" or "Accept terms" — Try/Download in the pane rows
-   share `.row-act` too (already flex-end, per the mockup), so this aligns
-   those as a side effect. */
-.tp .row-act .btn {
+/* Item 9: every search-hit row's action button is the same box regardless
+   of whether it reads "Download" or "Accept terms". Scoped to hit rows only
+   (`.row.hit.rich`) — the capability pane's Try/Download share `.row-act`
+   too but must stay natural width (D831 regressed this, see item 6/D838). */
+.tp .row.hit.rich .row-act .btn {
   min-width: 108px;
   justify-content: center;
   text-align: center;
