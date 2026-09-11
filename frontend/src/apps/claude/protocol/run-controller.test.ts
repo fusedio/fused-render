@@ -1339,6 +1339,74 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.length).toBe(2);
   });
 
+  // …AND A WAKE GROWING THE TURN ALREADY ON SCREEN DOES NOT SPEND THE WAIT
+  // (Bugbot, PR #1119). A D415 wake appends to the PREVIOUS turn, so the
+  // payload grows past `priorReply`'s text while this send's own echo is still
+  // outstanding. Treating any growth as "this turn has started" spent the
+  // arming on one of those polls, and the real seam — which lands with the
+  // echo a poll later — was then read as this send's own follow-up instead of
+  // as the base, putting the old reply back in the new bubble.
+  test("a wake growing the previous turn does not spend the wait for the seam", async () => {
+    const A = text("The answer from before the reload.");
+    const WAKE = text(" And the background task finished.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // The wake appends to the turn already on screen: the payload grows
+          // past `priorReply`'s text, and none of it is ours.
+          if (n === 0) return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          // Now the echo lands and agent.py names the boundary — past the
+          // wake's own continuation, which belongs to the previous turn.
+          if (n === 1) {
+            return poll({
+              segments: [A, WAKE, B],
+              text: A.text + WAKE.text + B.text,
+              turn_breaks: [{ segments: 2, text: A.text.length + WAKE.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    // The new bubble never carries the old reply OR the wake's continuation.
+    const newBubbleFrames = seen.map((t) => t[t.length - 1] || []);
+    expect(
+      newBubbleFrames.filter((segs) =>
+        segs.some((s) => s.includes(A.text) || s.includes(WAKE.text)),
+      ),
+    ).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect((reply[1]!.segments || []).map(bodyOf)).toEqual([B.text]);
+    expect(reply.length).toBe(2);
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and

@@ -1263,10 +1263,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // reconciliation.
             baseSegTrusted = true;
             adoptFirstSeam = false;
-          } else if (!baseText || !fullText.startsWith(baseText) || fullText.length > baseText.length) {
-            // Nothing to keep waiting behind: either there is no base at all
-            // (every body is this turn's), or the payload has moved past the
-            // one there is. Any seam from here on is this turn's own.
+          } else if (!baseText || !fullText.startsWith(baseText) || followupSeq !== seenFollowupSeq) {
+            // Nothing left to wait behind, or waiting is no longer safe:
+            //
+            //   * no base at all — every body is this turn's (a fresh chat);
+            //   * the window no longer OPENS on the base — the cursor stepped
+            //     past it, so the payload is this turn alone and a later seam
+            //     would be its own;
+            //   * a follow-up landed in THIS loop — from here a seam can be
+            //     the `result` closing a reply that follow-up was folded
+            //     into, which belongs to a bubble, not to the base.
+            //
+            // GROWTH ALONE IS NOT ON THAT LIST (Bugbot, PR #1119). A D415 wake
+            // appends to the turn ALREADY on screen, so the payload grows past
+            // `baseText` while this send's own echo is still outstanding — the
+            // very busy-host wait this arming exists for. Spending it there
+            // left the real seam, which lands with the echo a poll later, read
+            // as this send's own follow-up instead of as the base.
             adoptFirstSeam = false;
           }
         }

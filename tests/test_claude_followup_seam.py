@@ -287,6 +287,28 @@ def test_a_wake_continued_turn_reports_its_seam_too(agent):
     assert seam["text"] == len("A.") + len("And the task is done.")
 
 
+def test_an_absorbed_follow_ups_echo_does_not_split_the_reply_it_landed_in(agent):
+    """Bugbot, PR #1119. The echo of a follow-up the CLI drained MID-REPLY has
+    the same row shape as a genuine new turn's, and the reply it landed in
+    keeps streaming past it — so breaking the segment there would cut one
+    answer's prose in two, settling the first half as finished and leaving
+    markdown that spanned the echo rendering as two documents instead of one.
+
+    A `result` closing a reply since the last echo is what tells the two
+    apart, which is the same test `_absorbed_turn_breaks` and
+    `_read_current_turn` already make."""
+    rows = [
+        _user_row("q1"), _text_row("Reply A, first half. "),
+        _user_row("q2"),                       # absorbed mid-reply: no result yet
+        _text_row("Reply A, second half."),
+        _result_row("Reply A."),
+        _text_row("Reply B."),
+    ]
+    texts = [sg["text"] for sg in agent._segments_from_rows(rows)
+             if sg["kind"] == "text"]
+    assert texts == ["Reply A, first half. Reply A, second half.", "Reply B."]
+
+
 def test_any_row_between_the_result_and_the_echo_still_leaves_a_seam(agent):
     """The shape a SECOND WINDOW on one conversation hits (PR #1119).
 

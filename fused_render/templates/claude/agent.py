@@ -3493,6 +3493,10 @@ def _segments_from_rows(rows: list, shape: tuple = (),
     # continues past one — a D415 wake — puts a `notice` segment in between, so
     # the tail was already a different kind and no merge was happening.
     hard_break = False
+    # Whether a main-turn `result` has closed a reply since the last echo —
+    # what tells a GENUINE new turn's echo from a follow-up the CLI drained
+    # into the reply still streaming. See the `user` branch that reads it.
+    closed_since_echo = False
 
     def tail(kind):
         return segments[-1] if segments and segments[-1]["kind"] == kind else None
@@ -3660,6 +3664,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         elif t == "result" and not row.get("parent_tool_use_id"):
             # See `hard_break`. Nothing is emitted for a `result` row itself.
             hard_break = True
+            closed_since_echo = True
         elif t == "user" and isinstance(content, list):
             # A GENUINE NEW TURN ENDS THE SEGMENT BEFORE IT, exactly as a
             # `result` does and for the same reason: the prose after a message
@@ -3681,8 +3686,22 @@ def _segments_from_rows(rows: list, shape: tuple = (),
             # `_starts_new_turn` is what tells this row apart from the far
             # commoner `tool_result` row below, which is a `user` row too and
             # must NOT break: it belongs to the reply that called the tool.
+            #
+            # AND A `result` HAS TO HAVE CLOSED A REPLY SINCE THE LAST ECHO —
+            # the same test `_absorbed_turn_breaks` and `_read_current_turn`
+            # both make, and for the same reason. `_send` exists so a follow-up
+            # can be absorbed into a turn still in flight: the CLI echoes it
+            # back mid-reply, in exactly this shape, with no `result` in
+            # between, and the answer then KEEPS STREAMING past it. Breaking
+            # there splits one reply's prose into two segments mid-thought —
+            # the first half settling as finished, and markdown that spanned
+            # the echo no longer rendering as one document (Bugbot, PR #1119).
+            # An echo with a `result` before it is a genuinely new turn; an
+            # echo without one was folded into the reply still being written.
             if _starts_new_turn(row):
-                hard_break = True
+                if closed_since_echo:
+                    hard_break = True
+                closed_since_echo = False
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
