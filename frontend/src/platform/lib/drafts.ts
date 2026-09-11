@@ -245,12 +245,36 @@ export function saveChatDraft(
   return write("PUT", chatUrl(key), { text, attachments }, opts);
 }
 
+/**
+ * DELETES STILL IN THE AIR, one per key at most — what `rekeyChatDraft` waits
+ * on so a move cannot overtake the removal of the thing it is moving (Bugbot,
+ * PR #1118, 2026-09-11).
+ *
+ * `spent` already stops a REMOUNT from reading the sent words back; this stops
+ * the SERVER from being asked to copy them. The two requests the first send
+ * fires — `DELETE new:<file>` and `POST /api/drafts/chat/rekey` — are otherwise
+ * unordered, and the order that loses is the one where the rekey arrives first:
+ * the record is still there, so the route copies it onto the session id, and a
+ * sent message becomes an unsent draft on the session's own row.
+ *
+ * A key drops out the moment its own request answers, and only if it is still
+ * the one being tracked — a second delete for the same key while the first is
+ * running is the later one's to own.
+ */
+const pendingDeletes = new Map<string, Promise<boolean>>();
+
 /** On send, and on an explicit clear. The key is marked spent BEFORE the
  *  request goes out — see `spent` for the remount that would otherwise read the
- *  draft back out from under the delete. */
+ *  draft back out from under the delete — and the request is remembered while
+ *  it runs, for the rekey that must not pass it (see `pendingDeletes`). */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
   spent.add(key);
-  return write("DELETE", chatUrl(key), undefined, opts);
+  const done: Promise<boolean> = write("DELETE", chatUrl(key), undefined, opts).then((ok) => {
+    if (pendingDeletes.get(key) === done) pendingDeletes.delete(key);
+    return ok;
+  });
+  pendingDeletes.set(key, done);
+  return done;
 }
 
 /**
@@ -269,18 +293,31 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  * standing contract, and doubly right here: the thing being renamed is a draft
  * that the send is about to delete anyway (Akshil, 2026-09-11).
  *
- * NO SPENT-KEY GUARD IS NEEDED HERE, and that is worth writing down rather than
- * re-deriving (Bugbot, PR #1118). This never moves spent words: the route
- * deletes `from` unconditionally and only copies text across when `from` still
- * HAS a record, which after a send it does not — the send's DELETE went out
- * first, and it is ordered behind `settle()` precisely so the last PUT cannot
- * land after it. And if the reader typed ON after sending, that PUT carried
- * content, which un-spent the key (`saveChatDraft`) — those words really do
- * belong to the conversation the send created, which is the one case the route's
- * copy exists for.
+ * IT WAITS FOR THE SEND'S DELETE, AND IT CARRIES SPENT-NESS ACROSS (Bugbot,
+ * PR #1118, 2026-09-11). Going out first was never enough: `DELETE new:<file>`
+ * and this POST are two requests with no order between them, and if the rekey
+ * is served first the record is still sitting there — the route copies it onto
+ * the session id, and the composer that just remounted seeds from the SESSION
+ * key, which nothing had marked spent. The sentence the reader sent is back in
+ * their box, one key to the right of where the fix was looking.
+ *
+ * So: await whatever DELETE for `from` is still running (`pendingDeletes` —
+ * nothing to wait for in the ordinary case, where the chat simply learned its
+ * id without a send), and mark `to` spent whenever `from` is, BEFORE either
+ * request, because the window being covered is the one they are in. Spent on
+ * the new key means the same as on the old one: the words were just sent, and
+ * nothing is restored under it until somebody types again — a PUT with content
+ * un-spends it exactly as before (`saveChatDraft`).
+ *
+ * The reader who typed ON after sending is still served: that PUT carried
+ * content, so it had already un-spent `from`, and this copies no spent-ness
+ * onto `to`. Those words belong to the conversation the send created, which is
+ * the one case the route's copy exists for.
  */
-export function rekeyChatDraft(from: string, to: string): Promise<boolean> {
-  if (!from || !to || from === to) return Promise.resolve(false);
+export async function rekeyChatDraft(from: string, to: string): Promise<boolean> {
+  if (!from || !to || from === to) return false;
+  if (spent.has(from)) spent.add(to);
+  await pendingDeletes.get(from);
   return write("POST", "/api/drafts/chat/rekey", { from, to });
 }
 
@@ -338,11 +375,19 @@ export async function fetchDrafts(): Promise<DraftsSnapshot> {
  *
  *  A SPENT KEY IS ALWAYS NULL, whatever the server still holds: this is the
  *  call a remounting composer seeds from, and it is the one that would put a
- *  sent message back in the box (see `spent`). Checked before the request
- *  rather than after it, so the resurrection costs not even a round trip. */
+ *  sent message back in the box (see `spent`).
+ *
+ *  CHECKED TWICE — before the request, so the ordinary resurrection costs not
+ *  even a round trip, and AGAIN once the answer is in hand (Bugbot, PR #1118,
+ *  2026-09-11). A GET dispatched a moment before the send is a GET that passed
+ *  the first check while the key was still live, and it answers out of a
+ *  snapshot taken before the DELETE landed. Whether the key went spent at the
+ *  start of the wait or in the middle of it makes no difference to the reader:
+ *  the words came back after they were sent. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
   if (spent.has(key)) return null;
   const all = await fetchDrafts();
+  if (spent.has(key)) return null;
   return all.chat[key] ?? null;
 }
 
@@ -362,6 +407,15 @@ export interface Autosave<T> {
    * state write that empties the box has not been applied yet at the moment
    * this is called.
    *
+   * `next` becomes BOTH what counts as written and what a later write would
+   * send. Saying only the first left the sent sentence behind in the ref every
+   * write reads from, and the unmount flush — which is the one the first send
+   * from the landing always runs, since gaining a session remounts the chat —
+   * found it different from the empty value just recorded and PUT the words
+   * straight back, un-spending the key on the way (Bugbot, PR #1118,
+   * 2026-09-11). Assigning both makes a flush after a reset a flush with
+   * nothing to say.
+   *
    * `reset` ONLY cancels the PENDING timer — a write already dispatched (a
    * `fetch` awaiting its response) cannot be cancelled by anything short of
    * the network, and keeps running underneath. See `settle` for that half
@@ -373,6 +427,11 @@ export interface Autosave<T> {
    * server deletes the draft as part of `POST /api/schedule`, so a debounced
    * write still in the pipe would resurrect a draft for a task that now exists
    * (Akshil, 2026-09-11 — "stop autosave so a late flush can't resurrect it").
+   *
+   * PERMANENTLY includes the unmount flush: every write goes through one
+   * function and that function reads this flag first, so a stopped autosave
+   * writes nothing again for the life of the mount — no timer, no blur, no
+   * pagehide, no teardown (Bugbot, PR #1118, 2026-09-11).
    *
    * Same caveat as `reset`: this stops the NEXT write from being armed, not
    * one already in flight. See `settle`.
@@ -528,6 +587,10 @@ export function useAutosave<T>(
   }, []);
   const reset = useCallback((next: T) => {
     clear();
+    // The VALUE as well as the bookkeeping — see `Autosave.reset`. Until the
+    // render that empties the box arrives, `valueRef` still holds the sentence
+    // that was just sent, and the unmount flush would write it back.
+    valueRef.current = next;
     written.current = JSON.stringify(next) ?? "";
   }, []);
   const settle = useCallback((): Promise<void> => inflight.current.then(() => undefined), []);
@@ -560,7 +623,9 @@ export function useAutosave<T>(
       window.removeEventListener("pagehide", onHide);
       document.removeEventListener("visibilitychange", onVisibility);
       // THE UNMOUNT FLUSH, and it is the important one: leaving a chat for
-      // another unmounts the composer without any window event at all.
+      // another unmounts the composer without any window event at all. It goes
+      // through `writeNow` like every other write, so a `stop()` disarms it and
+      // a `reset()` leaves it nothing to write.
       flush();
     };
   }, [flush]);

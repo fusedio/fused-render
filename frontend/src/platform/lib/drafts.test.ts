@@ -220,6 +220,62 @@ describe("useAutosave().settle()", () => {
   });
 });
 
+// ---- the unmount flush that follows the first send --------------------------
+//
+// THE BUG (Bugbot, PR #1118, 2026-09-11). The first send from a session-less
+// chat calls `reset({ text: "", attachments: [] })` and then, one tick later,
+// gains a session — which remounts the whole chat. The composer going away runs
+// the unmount flush, and that flush reads the value REF, which at that instant
+// still holds the render before the clear: the sentence that was just sent. It
+// differed from the empty value `reset` had just recorded, so it was written —
+// a PUT with content, which un-spends the key and puts the message back on the
+// server under it. `reset` has to move the value too, not only the bookkeeping.
+
+describe("the unmount flush after a send", () => {
+  test("reset() leaves it nothing to write", () => {
+    const calls: string[] = [];
+    const box = renderAutosave({ text: "" }, (value) => {
+      calls.push(JSON.stringify(value));
+      return true;
+    });
+    // A sentence typed, then sent: `reset` is told what the box is ABOUT to
+    // hold, because the state write that empties it has not landed yet.
+    box.rerender({ text: "ship the release notes" });
+    box.current().reset({ text: "" });
+    // The session arrives and the chat remounts.
+    box.unmount();
+    expect(calls).toEqual([]);
+  });
+
+  test("…and so does a flush by hand in the same tick", () => {
+    const calls: string[] = [];
+    const box = renderAutosave({ text: "" }, (value) => {
+      calls.push(JSON.stringify(value));
+      return true;
+    });
+    box.rerender({ text: "ship the release notes" });
+    box.current().reset({ text: "" });
+    box.current().flush();
+    expect(calls).toEqual([]);
+    box.unmount();
+    expect(calls).toEqual([]);
+  });
+
+  test("stop() disarms it outright, words in the box or not", () => {
+    // Schedule's half: the server deletes the draft as it creates the task, so
+    // the teardown must not write one back either.
+    const calls: string[] = [];
+    const box = renderAutosave({ text: "" }, (value) => {
+      calls.push(JSON.stringify(value));
+      return true;
+    });
+    box.rerender({ text: "half a thought" });
+    box.current().stop();
+    box.unmount();
+    expect(calls).toEqual([]);
+  });
+});
+
 // ---- the opening value, when it arrived already typed -------------------------
 // design.md, Round 2: the Schedule hop hands the task form the sentence the
 // composer was holding, so the card mounts on words that are already a draft.
@@ -493,5 +549,144 @@ describe("a spent chat key reads back as empty", () => {
     expect(await fetchChatDraft(sent)).toBeNull();
     expect((await fetchChatDraft(other))?.text).toBe("still unsent");
     f.restore();
+  });
+});
+
+// ---- the rekey cannot pass the send's delete ---------------------------------
+//
+// THE BUG (Bugbot, PR #1118, 2026-09-11). `spent` covers `new:<file>` and only
+// that key. The first send fires `DELETE new:<file>` and, on learning the
+// session, `POST /api/drafts/chat/rekey` — two requests in no order at all. If
+// the rekey is served first the record is still there, so the route copies it
+// onto the session id, and the composer that just remounted seeds from the
+// SESSION key, which nothing had marked spent. Same resurrection, one key over.
+
+describe("the rekey cannot pass the send's delete", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+
+  /** `fetch` that records every call and answers `GET /api/drafts` out of
+   *  `chat` — but holds every request until `release()`, which is how one is
+   *  kept "in flight" without a clock. After the release the gate is open:
+   *  later requests answer at once, so a test can order what it cares about
+   *  and then let the rest run. */
+  function gate(chat: Record<string, ChatDraft> = {}) {
+    const calls: string[] = [];
+    const waiting: (() => void)[] = [];
+    let holding = true;
+    const answer = () => ({ ok: true, json: () => Promise.resolve({ chat, task: {} }) }) as unknown as Response;
+    const real = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (!holding) return Promise.resolve(answer());
+      return new Promise<Response>((resolve) => {
+        waiting.push(() => resolve(answer()));
+      });
+    }) as typeof fetch;
+    return {
+      calls,
+      release: () => {
+        holding = false;
+        for (const unblock of waiting.splice(0)) unblock();
+      },
+      restore: () => {
+        globalThis.fetch = real;
+      },
+    };
+  }
+
+  const posts = (calls: string[]) => calls.filter((c) => c.startsWith("POST /api/drafts/chat/rekey"));
+
+  test("it waits for a DELETE still in flight before posting the move", async () => {
+    const g = gate();
+    const from = "new:/Users/me/moving";
+    // The send. Not awaited — the DELETE being in the air is the whole race.
+    void deleteChatDraft(from);
+    const moved = rekeyChatDraft(from, "sess-moving");
+    await Promise.resolve();
+    await Promise.resolve();
+    // Nothing posted while the delete is unanswered: the route would have found
+    // the record and copied the sent words onto the session.
+    expect(posts(g.calls)).toEqual([]);
+
+    g.release();
+    await moved;
+    expect(posts(g.calls).length).toBe(1);
+    g.restore();
+  });
+
+  test("a spent `from` hands its spent-ness to `to`", async () => {
+    // Belt and braces for the copy that happens anyway (another tab, a server
+    // that already moved it): whatever is under the new key, it is not restored
+    // into the box the send just emptied.
+    const from = "new:/Users/me/handed";
+    const to = "sess-handed";
+    const g = gate({ [to]: held("ship the release notes") });
+    void deleteChatDraft(from);
+    const moved = rekeyChatDraft(from, to);
+    g.release();
+    await moved;
+    expect(await fetchChatDraft(to)).toBeNull();
+    g.restore();
+  });
+
+  test("…until the reader types under the new key, which brings it back", async () => {
+    const from = "new:/Users/me/typed-on-after";
+    const to = "sess-typed-on-after";
+    const g = gate({ [to]: held("a second thought") });
+    void deleteChatDraft(from);
+    const moved = rekeyChatDraft(from, to);
+    g.release();
+    await moved;
+    await saveChatDraft(to, "a second thought");
+    expect((await fetchChatDraft(to))?.text).toBe("a second thought");
+    g.restore();
+  });
+
+  test("a `from` nobody spent says nothing about `to`", async () => {
+    // The ordinary rekey: a chat that learned its session without a send. Its
+    // draft is a real unsent draft and must survive the move.
+    const from = "new:/Users/me/never-sent";
+    const to = "sess-never-sent";
+    const g = gate({ [to]: held("still unsent") });
+    const moved = rekeyChatDraft(from, to);
+    g.release();
+    await moved;
+    expect((await fetchChatDraft(to))?.text).toBe("still unsent");
+    g.restore();
+  });
+});
+
+// ---- a read already in the air when the send lands ---------------------------
+
+describe("fetchChatDraft re-checks spent after the answer", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+
+  test("a GET dispatched before the send still answers null", async () => {
+    // THE BUG (Bugbot, PR #1118, 2026-09-11): the guard ran before the request
+    // only. A seed that passed it while the key was still live answers out of a
+    // snapshot taken before the DELETE landed — and hands the composer the
+    // sentence that was sent in the meantime.
+    const key = "new:/Users/me/mid-flight";
+    const waiting: (() => void)[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        waiting.push(() =>
+          resolve({
+            ok: true,
+            json: () => Promise.resolve({ chat: { [key]: held("ship the release notes") }, task: {} }),
+          } as unknown as Response),
+        );
+      })) as unknown as typeof fetch;
+
+    // The remount's seed goes out while the key is still live…
+    const reading = fetchChatDraft(key);
+    await Promise.resolve();
+    // …and the send marks it spent while that GET is still unanswered.
+    void deleteChatDraft(key);
+    for (const answer of waiting.splice(0)) answer();
+
+    expect(await reading).toBeNull();
+    globalThis.fetch = real;
   });
 });
