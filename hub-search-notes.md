@@ -1773,3 +1773,48 @@ To verify in the browser:
   tab, without also opening that row's info drawer.
 - The embeddings capability reads "Search & similarity" in the nav,
   pane heading, Task menu, and Playground — not "Embeddings".
+
+### Round 4: user-reported regression + code-review fixes (2026-09-11)
+
+- Item 6 (regression, fixed first): D831 (round 3, item 9)'s
+  `.tp .row-act .btn { min-width: 108px; … }` unintentionally widened the
+  capability pane's Try/Download buttons too (mockup wants natural width,
+  ~46px for "Try"). Rescoped to `.tp .row.hit.rich .row-act .btn` — search
+  hit rows only. CSS-only, no test.
+- Item 1: Size sort ranked a GGUF row by its repo-wide `usedStorage` total
+  (`lookupTotalSize(id, null)`) instead of the single file the row's cell
+  actually shows — the "17 bytes/param" bug. `measureSizes` now takes
+  `{id, file}` pairs, looks up the per-file size for rows with a file, and
+  skips the lookup entirely for file-less rows (their cell always renders
+  null). New tests in `HubSearchScreen.test.ts` call the exported
+  `measureSizes` directly against a seeded multi-quant cache.
+- Item 2: the debounce effect fired an extra `searchHubModels` call on
+  every mount (settling `liveQuery === settled.q` still built a new
+  `settled` object identity) and separately reverted a filter/sort click
+  made within the 350ms window (the timer's `setTimeout` closed over a
+  stale `settled`, deps being `[liveQuery]` only). Fixed with an early
+  return when unchanged, and a `settledRef` kept current every render so
+  the timer merges into the latest settled state, not a stale one.
+- Items 3 & 4: the empty-result message rendered `matches ""` when a pane
+  opened with a task filter but no typed query (default state from a
+  pane's "Search Hugging Face for more…" door) — now branches on
+  `settled.q.trim()`. Also deleted a `summary` computation
+  (`resultsSummary`) rendered into a `display: "none"` paragraph — dead
+  output left over from the `HubResults` port; `resultsSummary` itself
+  stays in `hubSearchView.ts`, still used/tested elsewhere.
+- Item 5: `capabilityMeta.tsx`'s text-generation `searchNoun` was still
+  "chat models", the last leftover of the pre-D825 vocabulary; changed to
+  "text generation models" to match the "image models"/"video models"
+  style the other capabilities use. `embeddings`'s "embedding models"
+  stays as-is. CSS/markup-only; the one test assertion of the old string
+  was updated to match.
+
+To verify in the browser:
+- Capability pane's "Try"/"Download" buttons are back to natural width
+  (not stretched to 108px); search-hit row action buttons are still all
+  the same fixed width.
+- Open a pane via its "Search Hugging Face for more…" door (task filter
+  set, no typed query) with zero results — the empty-state message should
+  NOT read `matches ""`.
+- The text-generation pane's search placeholder/copy reads "text
+  generation models", not "chat models".
