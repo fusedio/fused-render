@@ -211,6 +211,21 @@ function SearchMenu({
     setOpen(false);
   };
 
+  // Item 1 (fix round 11): mlx-community has exactly one row in the ~200
+  // most-downloaded window `_facets` (hub_models.py) counts over, so it
+  // sorts behind the top-40 cutoff and never appears here — the dropdown
+  // then shows nothing for a value that DOES exist on the Hub (Enter still
+  // sends it and gets a full page back). Whenever the typed text has no
+  // exact case-insensitive match among `options`, offer it as a search: one
+  // extra row at the top doing exactly what Enter does, reusing the same
+  // option-row markup so it reads as just another row, not a new affordance.
+  const trimmed = filter.trim();
+  const hasExactMatch = options.some(
+    (o) => o.id.toLowerCase() === trimmed.toLowerCase(),
+  );
+  const showSearchRow = trimmed !== "" && !hasExactMatch;
+  const searchKind = keyLabel.replace(":", "").trim().toLowerCase();
+
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
@@ -256,6 +271,20 @@ function SearchMenu({
               }
             }}
           />
+          {showSearchRow && (
+            <button
+              key="__search__"
+              type="button"
+              role="menuitemradio"
+              aria-checked={false}
+              onClick={() => apply(trimmed)}
+            >
+              <span className="l">
+                <span className="chk"></span>
+                {`Search ${searchKind} "${trimmed}"`}
+              </span>
+            </button>
+          )}
           {narrowed.map((o) => (
             <button
               key={o.id}

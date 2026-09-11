@@ -157,3 +157,31 @@ describe("SearchControls Publisher/Quant menus (item 5)", () => {
     expect(SRC).toContain("apply(\"\");");
   });
 });
+
+// Item 1 (fix round 11): mlx-community has exactly one row in the ~200
+// most-downloaded window `_facets` counts over, so it sorts behind the
+// top-40 cutoff and the Publisher dropdown shows nothing for a value that
+// DOES exist on the Hub. Typing text with no matching option now renders an
+// extra row offering it as a search, which calls the same `apply` path as
+// Enter.
+describe("SearchControls no-match search row (item 1, fix round 11)", () => {
+  it("renders a search row when the typed filter matches no option, using the same apply/onClick path as Enter", () => {
+    expect(SRC).toContain(
+      "const showSearchRow = trimmed !== \"\" && !hasExactMatch;",
+    );
+    expect(SRC).toContain('`Search ${searchKind} "${trimmed}"`');
+    expect(SRC).toContain("onClick={() => apply(trimmed)}");
+  });
+
+  it("suppresses the search row once the typed text exactly matches an option (case-insensitive)", () => {
+    expect(SRC).toContain(
+      "const hasExactMatch = options.some(\n    (o) => o.id.toLowerCase() === trimmed.toLowerCase(),\n  );",
+    );
+  });
+
+  it("derives the search-row label from the menu's own keyLabel (\"Quant:\" / \"Publisher:\")", () => {
+    expect(SRC).toContain(
+      'const searchKind = keyLabel.replace(":", "").trim().toLowerCase();',
+    );
+  });
+});
