@@ -85,18 +85,6 @@ function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => P
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
-describe("the plan window on the poll", () => {
-  test("rides into state and survives a poll without one", async () => {
-    const warn: Quota = { ...rejected(), status: "allowed_warning", utilization: 0.93 };
-    const c = make({
-      start: () => ({ run_id: "r1" }),
-      poll: (_f, n) => (n === 0 ? poll({ quota: warn }) : poll({ done: true, text: "ok" })),
-    });
-    await c.sendMessage("hi");
-    expect(c.getState().quota).toEqual(warn);
-  });
-});
-
 describe("a limit hit", () => {
   test("schedules the comeback on the session at the reset, and notes it", async () => {
     const posted: unknown[] = [];
@@ -220,13 +208,3 @@ describe("a limit hit", () => {
   });
 });
 
-describe("a run repaired after the fact", () => {
-  test("still hands its plan window to state — the pill for a comeback that finished off-frame", async () => {
-    const warn: Quota = { ...rejected(), status: "allowed_warning", utilization: 0.93 };
-    const c = make({
-      poll: () => poll({ done: true, message: "continue", text: "back at it", quota: warn }),
-    });
-    await c.resumeRun("r1");
-    expect(c.getState().quota).toEqual(warn);
-  });
-});

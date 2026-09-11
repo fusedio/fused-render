@@ -16,8 +16,6 @@
 // TASK-023 is the identifier every other surface in this app prints, so a
 // reader can carry it to the Tasks page and quote it to someone (T:12660-12672).
 import "../styles/composer.css";
-import { quotaPill, quotaTitle } from "../protocol/quota";
-import type { Quota } from "../protocol/types";
 import { ClaudeMark } from "./ClaudeMark";
 import { knownTaskId } from "./Kebab";
 
@@ -30,13 +28,9 @@ export interface TopbarProps {
   /** A turn is live: one source of truth for the mark and the composer's stop
    *  square (T:1342-1349). */
   running: boolean;
-  /** The plan window off the newest poll. Draws a pill ONLY when the CLI
-   *  itself flagged `allowed_warning`; every ordinary turn draws nothing. */
-  quota?: Quota | null;
 }
 
-export function Topbar({ sessionId, subtitle, taskId, running, quota }: TopbarProps) {
-  const pill = quotaPill(quota);
+export function Topbar({ sessionId, subtitle, taskId, running }: TopbarProps) {
   // The number, or the session hash until it lands (T:12698 — the answer to a
   // slow listing is the old label, never a gap).
   const label =
@@ -62,13 +56,6 @@ export function Topbar({ sessionId, subtitle, taskId, running, quota }: TopbarPr
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
-      {pill && quota ? (
-        // The CLI's own threshold, in its own words: "5h 93% · resets 3:45pm".
-        // A reader who knows /usage reads it without a legend.
-        <span className="c-tb-quota" title={quotaTitle(quota)}>
-          {pill}
-        </span>
-      ) : null}
       {running ? (
         <span className="c-tb-run" aria-live="polite">
           running

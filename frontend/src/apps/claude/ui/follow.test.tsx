@@ -61,7 +61,6 @@ function state(over: Partial<ChatState> = {}): ChatState {
     skills: [],
     working: null,
     trouble: null,
-    quota: null,
     permissionMode: "prompt",
     queued: [],
     historyLoading: false,

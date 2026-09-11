@@ -2855,7 +2855,6 @@ function ChatBody(props: ChatBodyProps) {
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
-                quota={state.quota}
               />
             ) : null}
             <Transcript
