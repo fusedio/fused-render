@@ -79,7 +79,9 @@ export function CapabilityPane({
 
   const head = (
     <div className="tp-head" data-part="pane.head">
-      <span className="capicon" style={{ color: "var(--fg-muted)" }} dangerouslySetInnerHTML={{ __html: meta.icon }} />
+      <span className="capicon" style={{ color: "var(--fg-muted)" }}>
+        {meta.icon}
+      </span>
       <div>
         <h4>{meta.plain}</h4>
         <p>{meta.blurb}</p>
@@ -218,7 +220,9 @@ export function EngineFilesPane({ parts, totalBytes, onDelete }: EngineFilesPane
   return (
     <div className="tp-pane" data-part="pane">
       <div className="tp-head" data-part="pane.head">
-        <span className="capicon" style={{ color: "var(--fg-muted)" }} dangerouslySetInnerHTML={{ __html: PARTS_ICON }} />
+        <span className="capicon" style={{ color: "var(--fg-muted)" }}>
+          {PARTS_ICON}
+        </span>
         <div>
           <h4>Engine files</h4>
           <p>Downloaded automatically so a model could run. Safe to delete — they come back the next time they are needed.</p>

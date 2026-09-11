@@ -32,7 +32,9 @@ describe("capabilityMeta", () => {
     ]) {
       const meta = capabilityMeta(key);
       expect(meta.blurb.length).toBeGreaterThan(0);
-      expect(meta.icon).toContain("<svg");
+      // Item 13 (fix round 3): `icon` is now a `ReactNode` (the same
+      // component the Playground sidebar draws), not a raw SVG string.
+      expect(meta.icon).toBeTruthy();
     }
   });
 
@@ -41,7 +43,7 @@ describe("capabilityMeta", () => {
     expect(meta.plain).toBe("some-future-capability");
     expect(meta.blurb).toBe("");
     expect(meta.searchNoun).toBe("models");
-    expect(meta.icon).toContain("<svg");
+    expect(meta.icon).toBeTruthy();
   });
 
   it("agrees with engines.ts's own capability label for a capability it recognises", () => {
@@ -52,7 +54,7 @@ describe("capabilityMeta", () => {
   });
 
   it("exports a distinct icon for the non-capability Engine files bucket", () => {
-    expect(PARTS_ICON).toContain("<svg");
+    expect(PARTS_ICON).toBeTruthy();
     expect(PARTS_ICON).not.toBe(capabilityMeta("text-generation").icon);
   });
 });

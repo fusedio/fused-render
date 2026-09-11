@@ -1,7 +1,19 @@
-// One glyph per playground capability, worn by the sidebar's section headers
-// (D428). Its own file, not `groups.ts`: Home imports that module eagerly and
-// JSX here would drag React markup into the front-door bundle — the exact
-// pull groups.ts exists to avoid.
+// One glyph per capability, shared by every AI Models surface that draws one
+// (D428; moved here from playground/capabilityIcons.tsx in fix round 3 item
+// 13 so the Local tab's nav could reuse the exact same components the
+// Playground sidebar draws, instead of the separate 24-viewBox string-SVG set
+// `capabilityMeta.ts` used to keep for itself — see that file for how it now
+// composes these with `PARTS_ICON`, the one nav row ("Engine files") that has
+// no Playground counterpart and so is not in this map).
+//
+// Lives in `lib/`, next to `engines.ts`'s `capabilityLabel()` (same
+// directory, same capability-tag keys) rather than inside `engines.ts`
+// itself: `engines.ts` is on `playground/groups.ts`'s import graph, and
+// `groups.ts` is what Home imports eagerly — JSX here would drag React
+// markup into the front-door bundle, the exact pull this file was kept
+// separate to avoid before the move. Neither `groups.ts` nor `engines.ts`
+// imports this file; only components that already render JSX do
+// (`PlaygroundTab.tsx`, `controls.tsx`, `capabilityMeta.tsx`).
 //
 // Same grammar as platform/ui/MenuIcons: 16px on a 0 0 24 24 viewBox,
 // stroke-only, currentColor, strokeWidth 1.5 — so the glyphs sit beside the

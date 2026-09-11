@@ -8,6 +8,7 @@
 // approved mockup's `nav()`/`item()` functions verbatim: markup, class
 // names and copy match, only the data source changed (the mockup's `mine()`
 // fixture becomes a `count` prop the caller derives from `mergeSections`).
+import type { ReactNode } from "react";
 import { capabilityMeta, PARTS_ICON } from "@apps/ai_models/lib/capabilityMeta";
 import type { SectionRunner } from "@apps/ai_models/lib/aiModelGroups";
 
@@ -44,7 +45,7 @@ function NavRow({
   onSelect,
 }: {
   navKey: string;
-  icon: string;
+  icon: ReactNode;
   title: string;
   count: number;
   off: boolean;
@@ -66,7 +67,7 @@ function NavRow({
       title={hint}
       onClick={() => onSelect(navKey)}
     >
-      <span className="capicon" dangerouslySetInnerHTML={{ __html: icon }} />
+      <span className="capicon">{icon}</span>
       <span className="n">{title}</span>
       <span className={`c${count ? "" : " none"}`}>{off ? "n/a" : count || 0}</span>
     </button>

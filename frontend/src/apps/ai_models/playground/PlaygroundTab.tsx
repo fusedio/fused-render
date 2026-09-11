@@ -37,7 +37,7 @@ import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { buildAppAnnotation, modelName } from "./appSeed";
-import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
+import { capabilityIcon, unsupportedIcon } from "@apps/ai_models/lib/capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
