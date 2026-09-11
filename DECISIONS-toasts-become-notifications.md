@@ -96,7 +96,7 @@ table.
 | `apps/explorer/listing/useFileOps.ts:514` | `${paths.length} paths copied` | info | transient | tone: "info" default → transient |
 | `apps/explorer/listing/useFileOps.ts:524` | "Command copied — paste it in your terminal" | info | transient | tone: "info" default → transient |
 | `apps/explorer/listing/useFileOps.ts:618` | friendlyFsError(e, { verb: "rename", … }) | error | attention | tone: "error" default → attention |
-| `apps/explorer/listing/useFileOps.ts:715` | "Deleted" / `Deleted ${trashed.length} items` | info | trail | Destructive-but-successful (batch trash) — spec's own named example |
+| `apps/explorer/listing/useFileOps.ts:715` | ~~"Deleted" / `Deleted ${trashed.length} items`~~ | ~~info~~ | ~~trail~~ | **Reverted, see below** — no longer notifies at all |
 | `apps/explorer/listing/useFileOps.ts:735` | friendlyFsError(failed.message, { verb: "delete", … }) | error | attention | tone: "error" default → attention |
 | `apps/explorer/listing/useFileOps.ts:819` | "Could not export " + row.name + ": " + e.message | error | attention | tone: "error" default → attention |
 | `apps/claude_config/bits.tsx:43` (`toastOk`) | msg | info | transient | tone: "info" default → transient |
@@ -104,6 +104,123 @@ table.
 | `apps/ai_models/benchmark/ShareChartButton.tsx:82` | msg (share outcome) | info | transient | tone: "info" default → transient |
 | `apps/ai_models/benchmark/ShareChartButton.tsx:85` | (e as Error).message | error | attention | tone: "error" default → attention |
 | `apps/ai_models/local/LocalTab.tsx:333` | "Freed X — deleted…" / "Nothing deleted…" | conditional | trail / attention | Spec's own named motivating example for destructive-but-successful: trail on a clean run (`tier: "trail"` set explicitly); a run with failures stays attention via the tone: "error" default — no override needed on that branch |
+
+## Reversal: file-deletion success no longer notifies at all
+
+`useFileOps.ts:721`'s batch-trash success card — this migration's own named
+motivating example for `trail` (a bare "Deleted" / "Deleted N items", no
+name, no context) — is removed outright, per the user: "lets not send
+notifications for file deletion (no need)". The user's own screenshot showed
+exactly the failure mode the spec worried about for OTHER destructive
+successes (freed disk space, a completed move) but concluded the opposite
+way for this one: a delete confirmation with no name and no context is not
+worth a card, however it's tiered.
+
+This makes the "spec's own motivating example" line in the code comment
+above the removed block stale — the delete case is no longer an example of
+anything `trail` does; it's an example of a message that should never have
+been sent. The comment is rewritten in place to point at this decision
+instead of repeating the now-false claim.
+
+`trail` is not deprecated by this — two other explorer call sites still use
+it: `apps/explorer/lib/fs-move.ts:122` ("Moved X to Y") and
+`apps/explorer/listing/useFileOps.ts:424` (the undo/redo `relocationToast`
+success branch, which is a *different* gesture — it confirms a Cmd+Z
+worked, not that a delete happened, and stays).
+
+The error path immediately below (`useFileOps.ts:735`, `friendlyFsError(...,
+{ verb: "delete", ... })`) is unchanged: a failed delete still raises an
+`attention` notification. `Preview.tsx`'s own delete paths (`startDelete`,
+`doTrash`, ~lines 337–379) were already silent on success before this
+change — confirmed, not assumed, by reading both call sites — so nothing
+there needed touching. Task deletion (`shell/TaskCards.tsx`,
+`shell/ScheduleTaskViews.tsx`) and AI-model deletion (`LocalTab.tsx`'s
+"Freed X — deleted…") are unrelated surfaces with real context in their
+messages and are unaffected.
+
+## Reversal: file-indexing completion no longer pops a card
+
+`fused_render/server/routers/index.py`'s Explorer index-scan row (the
+`sys:index:<run_id>` bridge row, `mirror_index_jobs_once`) moves from
+`jobs.TRANSIENT` to `jobs.SILENT`. User: "similarly remove notification for
+file indexing completion" — same reasoning as the delete-toast reversal
+above: a scan finishing carries nothing the user needs to act on or
+remember, so even the ~2.5s pop `TRANSIENT` still produced was unwanted.
+`SILENT` is the one tier that pops no card at all (`jobs.py`'s own tier
+table) while everything else about the row is unaffected:
+
+- **Failures stay visible.** `effective_tier` (`fused_render/jobs.py`,
+  mirrored by `effectiveTier` in `frontend/src/platform/lib/jobs.ts`)
+  promotes any `error`/`cancelled` row to `attention` by reading
+  `job.state`, never the stored tier — so a failed or cancelled scan is
+  promoted identically whether the producer declared `TRANSIENT` or
+  `SILENT`. Verified by reading `effective_tier` (it branches on
+  `job.state in ("error", "cancelled")` alone) and pinned by a new test,
+  `test_a_failed_scan_is_still_attention_despite_the_silent_tier`
+  (`tests/test_index_jobs.py`).
+- **The running row is unaffected.** Tier only ever governs a TERMINAL
+  row's popping/retention — `jobRows` (`platform/lib/jobs.ts`) short-
+  circuits `!isTerminal(j)` before it ever consults tier, so a live scan
+  keeps reporting progress in the Activity dock under `SILENT` exactly as
+  it did under `TRANSIENT`. Verified by reading `jobRows` and pinned by
+  `test_a_running_scan_still_shows_in_the_activity_list_despite_silent_tier`.
+
+The long comment that used to sit above `"tier": jobs.TRANSIENT` (explaining
+why a finished scan ages out on the read-gated clock rather than waiting on
+a dismiss) is rewritten in place rather than replaced outright — that
+reasoning still holds for `SILENT`, which is `_sweep`'s own documented
+"even stronger case than `TRANSIENT`" for the same read-gated age-out
+(see `tests/test_jobs_api.py`'s `SILENT` age-out tests, pre-existing).
+
+## Notification column narrowed to 300px, dead `.toast` CSS removed
+
+User: "also reduce the card width for notifications. it is too wide. or
+ensure the card has more context info." Took both halves rather than
+picking one:
+
+- **Width.** `.notif-host` (`frontend/src/styles/notifications.css`) drops
+  from `min(360px, calc(100vw - 32px))` to `min(300px, calc(100vw - 32px))`.
+  The deliberate fixed-width design from the comment above it (real `width`
+  + `align-items: stretch`, not `max-width` + `flex-end` — see that comment
+  for why) is unchanged; only the number moved. 300px sits comfortably above
+  `.dl-row`'s own 238px floor, and every title in the column already
+  wraps/ellipsizes rather than forcing width open — `NotificationCard`'s
+  `titleMode: "id"` clips a long model/engine id to one line,
+  its default `"wrap"` mode clamps a sentence to two lines, and
+  `.server-status-body`/`ServerStatusBanner`'s own text is ordinary wrapping
+  prose (version strings, short sentences — no unbroken long tokens).
+  Cross-checked the other cards riding this column: `JobPopupCard` and
+  `MessagePopupCard` both render through the same `NotificationCard`/
+  `.dl-row` machinery, so they inherit the same wrap/ellipsis behavior for
+  free; `ServerStatusBanner`'s `.server-status*` family uses `max-width:
+  100%` and normal line-height text, no overflow risk. `RepoUpdatesDock.tsx`
+  does NOT live in this column at all (D563 moved it into `StatusBar`/
+  `#main`, see `NotificationHost.tsx`'s own header comment) so it is
+  unaffected by this change.
+- **Context/title audit.** Went through every `notify()` call site's title
+  for the same bare-word problem "Deleted" had (see the reversal above).
+  None qualify: every remaining title either names its specific target
+  (`` `Deleted ${task.task_id}` ``, `` `Moved ${what} to ${basename(dir)}` ``,
+  `` `${engineLabel(prev)} retired (idle)` ``, `` `Duplicated as ${...}` ``)
+  or is already a full, specific sentence (`MISSING_FOLDER_TOAST`,
+  `FDA_COPY.deniedToast`/`grantedToast`, "Fixed — reloading this file's
+  preview…", "Nothing to repair — the registry file already reads fine.").
+  "Path copied" (three call sites) reads as fine, not ambiguous the way
+  "Deleted" was: there is exactly one path in play at the moment it fires,
+  unlike "Deleted" which gave no count-independent identity to what was
+  gone. No title changes made here beyond the "Deleted" removal already
+  covered above.
+- **Dead CSS.** `platform/lib/toast.ts`/`platform/ui/Toast.tsx` were deleted
+  earlier in this migration; `.toast`, `.toast-info`, `.toast-msg`,
+  `.toast-close`, `.toast-action`, `.toast.toast-leaving` were the CSS for
+  that deleted component and had zero remaining `.ts`/`.tsx` references
+  (grepped before removing) — deleted. `.toast-slot`, `.toast-slot > .dl-row`,
+  `.toast-slot.leaving` and `@keyframes toast-in` are NOT dead — verified via
+  grep that `JobPopupCard.tsx`/`MessagePopupCard.tsx` both still render
+  `className="toast-slot"` and their child `.dl-row` still plays the
+  `toast-in` entrance — kept, with the header comment above `.toast-slot`
+  rewritten to stop describing the deleted `.toast` card as the thing this
+  slot wraps.
 
 ## Decisions the spec left open, resolved here
 
