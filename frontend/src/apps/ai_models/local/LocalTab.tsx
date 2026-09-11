@@ -556,7 +556,15 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
                 totalBytes={section?.size ?? 0}
                 offReason={offReason ?? null}
                 handlers={handlers}
-                onOpenSearch={() => setSearching(true)}
+                onOpenSearch={(capabilityKey) => {
+                  // Item A: land in the search screen already asking for this
+                  // capability's own task, rather than the blank "Any task" —
+                  // the capability key IS the Hub's own pipeline tag (see
+                  // `capabilityMeta.ts`'s doc on `CAPABILITY_ORDER`), so no
+                  // separate lookup table is needed here.
+                  setSettled((prev) => ({ ...prev, task: capabilityKey }));
+                  setSearching(true);
+                }}
               />
             ) : null}
           </div>

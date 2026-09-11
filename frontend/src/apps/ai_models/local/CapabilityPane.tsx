@@ -39,7 +39,11 @@ export interface CapabilityPaneProps {
    *  capability, or null when it does. */
   offReason: string | null;
   handlers: ModelRowHandlers;
-  onOpenSearch: () => void;
+  /** Item A: opens the Hub search screen, handing back this pane's own
+   *  capability key so the caller can seed the Task filter with it — a
+   *  reader who came here FOR chat models should not have to re-pick "Chat"
+   *  from the Task menu the moment the search screen opens. */
+  onOpenSearch: (capabilityKey: string) => void;
 }
 
 /** The caller (`LocalTab`) must mount this with `key={capabilityKey}` — the
@@ -178,7 +182,7 @@ export function CapabilityPane({
         </div>
       )}
       <p className="hubdoor" data-part="pane.door">
-        <button type="button" className="btn-link" data-adv="1" onClick={onOpenSearch}>
+        <button type="button" className="btn-link" data-adv="1" onClick={() => onOpenSearch(capabilityKey)}>
           Search Hugging Face for more {meta.searchNoun} →
         </button>
         <span className="why">Thousands of community uploads, ranked by what this Mac can run. Not curated by us.</span>
