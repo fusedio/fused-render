@@ -446,3 +446,34 @@ call sites. Tests assert actual rendered output (JSON tree from
   `notifications.ts`) — zero references found; nothing to update there.
 - No full `bun test` suite run performed this round either, per the working
   agreement.
+
+## CI-red fix: the width test still asserted the pre-narrowing number
+
+The 300px narrowing commit (`Narrow the notification column to 300px, drop
+dead Toast CSS`) changed `.notif-host`'s `width` in `notifications.css` but
+missed updating `src/styles/notifications-width.test.ts`, which literal-
+matches `width: min(360px, calc(100vw - 32px))` — CI's `frontend` job went
+red. Fixed by updating the assertion to `min(300px, ...)` and the two prose
+spots in that test file's header comment and its first test's lead-in that
+narrated "360px" as the live ceiling (now marked "(then-)360px", with a note
+that the ceiling was later narrowed to 300px and that the `max-width`-vs-
+`width` reasoning is unaffected by which number is current).
+
+`notifications.css`'s own header comment quotes "360px" too (line 12) but
+that one stays as-is — it is deliberately narrating the OLD bug's numbers as
+history ("...stretched toward the 360px ceiling, so the stack read as a
+ragged pile..."), immediately followed by its own paragraph explaining the
+300px narrowing as a separate, later change. Nothing there is stale.
+
+Grepped the whole repo (`frontend/src` and `tests/`) for any other literal
+on this column's width or on `360px` tied to notifications — every other
+`360px` hit (`ai-models.css`, `schedule.css`, `explorer.css`, several
+`apps/explorer/listing/*.test.ts` files) belongs to an unrelated feature
+(AI Models page width floor, schedule panel width, explorer search-chip
+container queries) and was left untouched. No Python test asserts this
+number.
+
+**Takeaway for the next width change:** `src/styles/notifications-width.test.ts`
+is the literal guard on `.notif-host`'s `width` — a future change to that
+number must update both `notifications.css` and this test file's assertion
+(and, if the prose narrates the number, its comments) in the same commit.

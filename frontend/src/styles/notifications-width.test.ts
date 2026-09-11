@@ -5,8 +5,11 @@
 // card's own markup — `.notif-host` only ever set a `max-width` (a ceiling),
 // paired with `align-items: flex-end` (which shrink-wraps each child to its
 // own content underneath that ceiling), so a short caption sat at `.dl-row`'s
-// 238px floor while a long title stretched toward the 360px ceiling and the
-// stack read as a ragged pile.
+// 238px floor while a long title stretched toward the (then-)360px ceiling and
+// the stack read as a ragged pile. The ceiling was later narrowed to 300px
+// (user: "reduce the card width for notifications. it is too wide"), which
+// does not change any of the reasoning below — a `max-width` is still only a
+// ceiling regardless of its number.
 //
 // A stylesheet test rather than a computed-style one, the same reasoning
 // `apps/claude/styles/refusal.test.ts` and `parity.test.ts` already argue at
@@ -42,7 +45,7 @@ function block(selector: string): string {
 
 test("the column sets a real width, not only a cap, and stretches its entries to it", () => {
   const rule = block(".notif-host");
-  expect(rule).toContain("width: min(360px, calc(100vw - 32px))");
+  expect(rule).toContain("width: min(300px, calc(100vw - 32px))");
   expect(rule).toContain("align-items: stretch");
   // Not the old shrink-wrap behaviour that caused the bug in the first place.
   expect(rule).not.toContain("align-items: flex-end");
