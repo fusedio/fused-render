@@ -1187,6 +1187,28 @@ test("a message row draws with its detail, like a terminal job's failure message
   expect(text(row)).toContain("Disk full");
 });
 
+// Code review finding on PR #1104: `terminal` was passed off `tone` with no
+// `status`, which (pre-fix) never rendered the glyph, and this row also
+// carried no `role`, losing the deleted `Toast.tsx`'s own
+// `role={tone === "info" ? "status" : "alert"}` distinction.
+test("an error-tone message row gets role=alert and the terminal glyph; a non-error one gets role=status and no glyph", () => {
+  const errorTree = renderView({
+    rows: [],
+    messages: [message({ title: "Could not save", tone: "error" })],
+  });
+  const errorRow = findAll(errorTree, "dl-row")[0];
+  expect(errorRow.props.role).toBe("alert");
+  expect(findAll(errorTree, "dl-status")).toHaveLength(1);
+
+  const infoTree = renderView({
+    rows: [],
+    messages: [message({ title: "Moved 3 items", tier: "trail", tone: "info" })],
+  });
+  const infoRow = findAll(infoTree, "dl-row")[0];
+  expect(infoRow.props.role).toBe("status");
+  expect(findAll(infoTree, "dl-status")).toHaveLength(0);
+});
+
 test("a message with a page is a click target that navigates", () => {
   withNav((pushed) => {
     const m = message({ page: "/tasks/42", title: "Export ready" });

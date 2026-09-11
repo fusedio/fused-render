@@ -119,6 +119,14 @@ export interface NotificationCardProps {
   onDismiss?: NotificationCardDismiss;
   /** The whole row as one click target — see `NotificationCardRowClick`. */
   rowClick?: NotificationCardRowClick;
+  /** ARIA role for the whole row — `"alert"` for a message that should
+   *  interrupt (an error), `"status"` for one that shouldn't (an ordinary
+   *  confirmation). Mirrors the deleted `Toast.tsx`'s own
+   *  `role={tone === "info" ? "status" : "alert"}`; a caller with nothing to
+   *  say here (every long-lived panel row that isn't a popup) simply omits
+   *  it. Wins over `rowClick`'s own implicit `role="button"` when both are
+   *  given — a caller that sets this explicitly means it. */
+  role?: "alert" | "status";
 }
 
 export default function NotificationCard({
@@ -141,6 +149,7 @@ export default function NotificationCard({
   extraAction,
   onDismiss,
   rowClick,
+  role,
 }: NotificationCardProps) {
   const rowClassName = [
     "dl-row",
@@ -168,16 +177,23 @@ export default function NotificationCard({
 
   const rowClickProps = rowClick
     ? {
-        role: "button" as const,
+        role: role ?? ("button" as const),
         tabIndex: 0,
         onClick: rowClick.onClick,
         onKeyDown,
         title: rowClick.title,
         "aria-label": rowClick.ariaLabel,
       }
-    : {};
+    : role !== undefined
+      ? { role }
+      : {};
 
-  const statusClassName = status != null
+  // `status != null` OR `terminal` — NOT `status != null` alone: a caller
+  // with a tone but no status text to go with it (a message popup, a
+  // retained message row) still needs the glyph to render, or "error" and
+  // "info" draw completely identically (code review finding on PR #1104).
+  const showStatusLine = status != null || terminal !== undefined;
+  const statusClassName = showStatusLine
     ? ["dl-status", statusOneLine ? "dl-status-one" : "", terminal ? "with-glyph" : ""]
         .filter(Boolean)
         .join(" ")
@@ -258,12 +274,12 @@ export default function NotificationCard({
           />
         </div>
       )}
-      {status != null && (
+      {showStatusLine && (
         <div className={statusClassName} title={statusTooltip}>
           {terminal ? (
             <>
               <TerminalGlyph state={terminal} />
-              <span className="dl-status-text">{status}</span>
+              {status != null && <span className="dl-status-text">{status}</span>}
             </>
           ) : (
             status

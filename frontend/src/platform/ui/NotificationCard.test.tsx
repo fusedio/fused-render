@@ -76,6 +76,33 @@ test("terminal status wraps its text in its own clamp span, separate from the fl
   expect(clampSpans[0].children).toEqual(["a long failure message"]);
 });
 
+// Code review finding (PR #1104): `terminal` alone, with no `status` text,
+// used to render NOTHING — the glyph only ever appeared inside the
+// `status != null` block, so a caller that only has a tone (not a status
+// string to go with it — MessagePopupCard.tsx, RepoUpdatesDock.tsx's
+// MessageRowView) got an error row that looked identical to an info one.
+test("terminal renders its glyph even when there is no status text to go with it (finding #3)", () => {
+  const tree = render({ title: "a", terminal: "error" });
+  expect(findAll(tree, "dl-status")).toHaveLength(1);
+  // No text was given — the status line carries the glyph alone, no empty
+  // .dl-status-text span rendered beside it.
+  expect(findAll(tree, "dl-status-text")).toHaveLength(0);
+
+  const noTerminal = render({ title: "a" });
+  expect(findAll(noTerminal, "dl-status")).toHaveLength(0);
+});
+
+test("an explicit `role` sets the row's aria role, distinct from rowClick's own implicit button role (finding #3)", () => {
+  const alert = render({ title: "a", role: "alert" });
+  expect(findAll(alert, "dl-row")[0].props.role).toBe("alert");
+
+  const status = render({ title: "a", role: "status" });
+  expect(findAll(status, "dl-row")[0].props.role).toBe("status");
+
+  const none = render({ title: "a" });
+  expect(findAll(none, "dl-row")[0].props.role).toBeUndefined();
+});
+
 test("liveAction and navAction render as distinct classes, never merged", () => {
   const tree = render({
     title: "a",

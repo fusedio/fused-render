@@ -67,6 +67,7 @@ export default function MessagePopupCard() {
         title={notification.title}
         secondary={notification.detail}
         terminal={notification.tone === "error" ? "error" : undefined}
+        role={notification.tone === "error" ? "alert" : "status"}
         navAction={notification.action}
         onDismiss={{ onClick: () => dismissPopup() }}
       />
