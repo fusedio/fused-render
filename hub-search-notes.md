@@ -1652,3 +1652,76 @@ To verify in the browser:
   "text-generation".
 - The drawer's Hugging Face link has no permanent underline, only on
   hover/focus, matching every other `.btn-link` on the page.
+
+## Fix round 3 (2026-09-11)
+
+Twelve items from `fix-brief-3.md` plus two mid-round additions (item 11:
+standard capability names, superseding item 3's label half; item 12: label
+the match-cell score), committed one per item (D822-D833 in
+`DECISIONS.md`):
+
+- Item 1: pinned every `.row.hit.rich` to a uniform 73px so rows with and
+  without a `from <base>` line no longer produce a ragged list.
+- Item 2: `HitRow`'s row-meta line drops the DASH glyph (`"—"`) along with
+  null/empty segments, so an unknown params/quant field no longer leaves a
+  dangling `"· —"`.
+- Item 3 (superseded in its label by item 11): the Task menu's active
+  label now reads through `capabilityLabel()` for any of the five
+  capabilities this app runs, instead of the Hub's own per-runner string.
+- Item 11: standard, Title Case capability names ("Text generation",
+  "Image generation", "Speech to text", "Embeddings", "Video generation")
+  now come from ONE table (`engines.ts`'s `CAPABILITY_LABELS`), with
+  `capabilityMeta.ts`'s `plain` field reading straight off it — so nav,
+  pane heading, back-link, Task menu, and the drawer's "why we suggest it"
+  sentence all agree by construction. The old friendly names ("Chat &
+  writing" etc.) are gone from the Local tab.
+- Item 4: removed the "Searching huggingface.co, limited to models an
+  engine here can load." line — not in the mockup — and its now-unused
+  CSS.
+- Item 5: quant/publisher text filters were already wired in a prior
+  round; confirmed only, no diff.
+- Item 6: class/CSS parity pass against the mockup's selector list found
+  one real gap (`.resultline` was missing from the controls row) and
+  fixed it; every other listed selector was already present and applied.
+- Item 7: both round-2 nits verified already correct (the drawer sentence
+  now inherits the standard name via item 11; `.tp .btn-link` already has
+  no permanent underline).
+- Item 8: dropped the long "Fit not measured yet" italic sentence and its
+  now-unused CSS; `.row-meta.reason` (the "Will not fit" text) is
+  untouched.
+- Item 9: `.tp .btn` no longer inherits a browser underline, and
+  `.row-act .btn` now has a fixed min-width/centred text so "Accept
+  terms" lines up with "Download".
+- Item 10: `.tp .btn` rebuilt to match `.menubtn`'s exact metrics (28px
+  height, 6px radius, quiet border/fill, 12px/500 type), explicitly
+  overriding every property the global `.btn` sets; `.btn-primary`'s
+  accent fill is untouched.
+- Item 12: the match-cell number now carries a small uppercase "match"
+  caption underneath it (`<span class="score"><b>84</b><small>match</small></span>`),
+  the cell's existing `title` (`matchTitle`) already explained the score
+  correctly, and the sorthint legend now opens by naming the number
+  ("Match score (0–100) is ranked for this Mac: …").
+
+Verification this round: `bun test` scoped to the touched files
+(`hubSearchView.test.ts`, `capabilityMeta.test.ts`) green after items 3
+and 11 (91 pass, 0 fail across 7 files); every other item is CSS/markup
+only per the brief, so ran no tests. `bun run --cwd frontend typecheck`
+run clean at the end of the round.
+
+To verify in the browser:
+- Every hit row in the results list is the same height (73px), whether
+  or not it shows a "from <base>" line.
+- No row-meta line ends with a dangling "· —"; no row shows an italic
+  "Fit not measured yet…" sentence.
+- The left nav, the pane heading, the "← Back to …" link, the Task menu,
+  and the drawer's "Why we suggest it" sentence all say the SAME standard
+  name for a capability (e.g. "Text generation"), not "Chat & writing".
+- No "Searching huggingface.co…" line above the controls row.
+- "Accept terms" and "Download" buttons in the row-act column are the
+  same width and both centred; plain `.btn`s throughout the two-pane
+  screen look identical in size/border/radius to the `.menubtn` triggers
+  above them.
+- Each match-cell number (e.g. "84") has a small "MATCH" caption under
+  it, and hovering the cell still shows the memory/speed/freshness
+  explanation; the legend line below the list now opens by naming the
+  score.
