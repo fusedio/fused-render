@@ -345,6 +345,22 @@ export interface RetryInfo {
   error: string;
 }
 
+/**
+ * The plan window as of the last API response (agent.py `_quota_info`, off the
+ * CLI's own `rate_limit_event` row — one per response). `status` is the CLI's
+ * word: `allowed`, `allowed_warning` (it crossed its own threshold; `utilization`
+ * says how far), `rejected` (the turn just died on the limit; `resets_at` is the
+ * epoch second the window reopens, and the comeback is scheduled on it).
+ * `windows` is every window at once, keyed `five_hour` / `seven_day`.
+ */
+export interface Quota {
+  status: "allowed" | "allowed_warning" | "rejected" | string;
+  type: "five_hour" | "seven_day" | string;
+  resets_at: number;
+  utilization: number | null;
+  windows: Record<string, { utilization: number; resets_at: number }>;
+}
+
 export interface ActivityTool {
   id: string;
   name: string;
@@ -385,6 +401,8 @@ export interface PollResponse {
   retry: RetryInfo | null;
   retry_total: number;
   retry_status: number;
+  /** Absent on an older agent.py. */
+  quota?: Quota | null;
   cancelled: boolean;
   tasks_pending: boolean;
   activity: Activity;
@@ -517,6 +535,8 @@ export interface HistoryAssistantTurn {
 export interface HistoryErrorTurn {
   role: "error";
   text: string;
+  /** The transcript's `quotaLimits` on a failed row — only a limit hit has it. */
+  quota?: Quota;
 }
 export type HistoryTurn = HistoryUserTurn | HistoryAssistantTurn | HistoryErrorTurn;
 export interface TranscriptStat {

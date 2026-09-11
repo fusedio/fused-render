@@ -78,6 +78,7 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         key: "h:" + i,
         text: t.text || "",
         kind: troubleFromMessage(t.text || "", true).kind,
+        ...(t.quota ? { quota: t.quota } : {}),
       };
     }
     if (t.stopped && i !== last && typeof console !== "undefined") {

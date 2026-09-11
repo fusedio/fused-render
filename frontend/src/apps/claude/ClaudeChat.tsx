@@ -2855,11 +2855,13 @@ function ChatBody(props: ChatBodyProps) {
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
+                quota={state.quota}
               />
             ) : null}
             <Transcript
               followRef={transcriptFollow}
               state={state}
+              comebackPending={sched.blocked}
               actions={actions}
               liveMode={state.permissionMode}
               tail={tail}

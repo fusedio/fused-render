@@ -115,6 +115,8 @@ export interface ErrorTurn {
   key: string;
   text: string;
   kind: TroubleKind;
+  /** The plan window the failure carried (kind `limit` only). */
+  quota?: import("./types").Quota;
 }
 
 export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn;
@@ -145,6 +147,12 @@ export interface Trouble {
   message: string;
   /** Verbatim traceback / stderr when present. */
   detail?: string;
+  /** For `limit`: the window that refused the turn, so the card can say WHEN
+   *  it reopens (and that the comeback is already scheduled) instead of
+   *  pointing the reader at the CLI's own sentence for the time. */
+  quota?: import("./types").Quota;
+  /** For `limit`: the comeback is on the schedule (server confirmed). */
+  scheduled?: boolean;
 }
 
 /** Working-line input (T:14782-14943 activityVerb/activityDetail/retryVerb). */
@@ -175,6 +183,12 @@ export interface ChatState {
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
+  /**
+   * The plan window as of the newest poll (`PollResponse.quota`), kept across
+   * the run's end so the topbar's warning pill outlives the turn that raised
+   * it. Null until a poll carries one.
+   */
+  quota: import("./types").Quota | null;
   /**
    * The permission mode the RUN is actually in — never the picker's param, which
    * applies to the next spawn (T:13884-13886). Seeded from the mode the run was
@@ -475,6 +489,16 @@ export interface ControllerDeps {
     file: string,
     sessionId: string,
   ) => Promise<import("./types").HistoryResponse & { error?: string }>;
+  /** ADDED: the comeback after a usage limit. Injectable so bun tests see the
+   *  body without a server; defaults to `@platform/lib/api`'s `scheduleMessage`
+   *  (POST /api/schedule). */
+  schedule?: (body: {
+    target: string;
+    message: string;
+    due: string;
+    session_id: string;
+    title: string;
+  }) => Promise<unknown>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */
   sleep?: (ms: number) => Promise<void>;

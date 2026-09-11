@@ -83,6 +83,10 @@ export interface TranscriptProps {
   paneNoun?: string;
   /** What the app was doing, for a trouble card's report. */
   what?: string;
+  /** Whether a scheduled message is still pending on this conversation
+   *  (`useSchedule.blocked`) — the limit card's "a follow-up is scheduled"
+   *  sentence is only true while it is. */
+  comebackPending?: boolean;
   /**
    * THE FOLLOW FLAG, LENT OUT (T:12758, T:17211-17213).
    *
@@ -113,6 +117,7 @@ export const Transcript = memo(function Transcript({
   onOpenShot,
   paneNoun,
   what,
+  comebackPending,
   followRef,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
@@ -507,7 +512,11 @@ export const Transcript = memo(function Transcript({
                 turn had stopped — "last line = the error" is the request. The
                 row is the log entry, the card is what the user can act on. */}
             {state.trouble ? (
-              <TroubleView trouble={state.trouble} {...(what ? { what } : {})} />
+              <TroubleView
+                trouble={state.trouble}
+                {...(what ? { what } : {})}
+                {...(comebackPending !== undefined ? { comebackPending } : {})}
+              />
             ) : null}
             {/* THE TAIL PIN (#17). An OPEN card sticks to the bottom of the
                 scrollport for as long as it is open, because the run cannot

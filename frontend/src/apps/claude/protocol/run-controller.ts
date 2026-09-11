@@ -31,6 +31,7 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
+import { scheduleMessage } from "@platform/lib/api";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
@@ -51,6 +52,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
+import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
 import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
@@ -67,6 +69,7 @@ import type {
   PermissionRow,
   Phase,
   PollResponse,
+  Quota,
   RetryInfo,
   RunIdResponse,
   SendResponse,
@@ -196,6 +199,7 @@ function emptyState(file: string | null): ChatState {
     skills: [],
     working: null,
     trouble: null,
+    quota: null,
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
     historyLoading: false,
@@ -604,6 +608,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       key: nextKey("e"),
       text: trouble.message,
       kind: trouble.kind,
+      ...(trouble.quota ? { quota: trouble.quota } : {}),
     };
     emit({ trouble, turns: [...state.turns, row] });
   };
@@ -611,6 +616,51 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** T:13698 `addError(message)` — classify, then report. */
   const addError = (message: string, fromAgent = false) =>
     reportTrouble(troubleFromMessage(message, fromAgent));
+
+  /**
+   * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
+   * session and continues the task when the plan window reopens; a headless
+   * `-p` run gets no such wait — the turn ends on the limit and the process is
+   * reaped. So the chat does the same thing with the infrastructure it already
+   * has: one scheduled message on THIS session, due at the reset the CLI
+   * reported (+ a minute), carrying the CLI's own fixed continuation prompt.
+   * The schedule banner (`SchedBlock`) then shows the row with its time and
+   * its cancel, exactly like any other pending message, and the fired run
+   * resumes the conversation in place.
+   *
+   * Reported as trouble FIRST, with the window on it, so the card says when
+   * the reset is even if the POST fails; the note and the card's "scheduled"
+   * line land only once the server has the row. Once per run: `poll.done`
+   * repeats on a re-attached loop and a second row would fire twice.
+   */
+  const scheduledRuns = new Set<string>();
+  const scheduleComeback = (runId: string, error: string, quota: Quota) => {
+    const trouble: Trouble = { ...troubleFromMessage(error), quota };
+    reportTrouble(trouble);
+    const sessionId = state.sessionId;
+    if (!FILE || !sessionId || scheduledRuns.has(runId)) return;
+    scheduledRuns.add(runId);
+    const post = deps.schedule ?? scheduleMessage;
+    void post({
+      target: FILE,
+      message: CONTINUE_PROMPT,
+      due: continueDue(quota),
+      session_id: sessionId,
+      title: CONTINUE_TITLE,
+    })
+      .then(() => {
+        // The card's line about the scheduled follow-up, and the CLI's own
+        // wait sentence as a note in the log where the failure sits.
+        if (state.trouble === trouble) emit({ trouble: { ...trouble, scheduled: true } });
+        addNote(continueNote(quota), "\u25f7");
+        announceTasksChanged();
+      })
+      .catch((err: unknown) => {
+        addError(
+          "Could not schedule the follow-up: " + (err instanceof Error ? err.message : String(err)),
+        );
+      });
+  };
 
   // ---- skills / app_state (T:15771-15837) --------------------------------
 
@@ -1030,6 +1080,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
+        // The plan window rides on every poll that saw a `rate_limit_event`;
+        // a poll without one (the turn's first, an older agent.py) keeps the
+        // last known rather than blanking the pill.
+        if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
 
@@ -1316,7 +1370,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
               });
             }
           }
-          if (end.error) addError(end.error);
+          if (end.error && limitHit(poll.quota)) scheduleComeback(runId, end.error, poll.quota);
+          else if (end.error) addError(end.error);
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -2465,6 +2520,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // road can be added later that forgets to.
       if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
+      // THE PLAN WINDOW OFF A PROBE TOO. A scheduled comeback that finishes
+      // before the 15 s watch attaches never reaches `pollLoop` — the repair
+      // branch below appends its turns and returns — so the warning the CLI
+      // raised on that turn has to be taken here or the pill never shows.
+      if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
       if (poll.session_id) noteSessionId(String(poll.session_id));
       const probeMsg = stripBlocks(poll.message || "");
       const users = state.turns.filter((t): t is UserTurn => t.role === "user");

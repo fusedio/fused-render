@@ -12,6 +12,8 @@ import { useState } from "react";
 
 import { TroubleCard } from "@platform/ui/TroubleCard";
 
+import { limitExplain } from "../protocol/quota";
+
 import type { Trouble, TroubleKind } from "../protocol/controller-api";
 import { platformKindOf, splitTroubleMessage, troubleExplain } from "../protocol/trouble";
 
@@ -105,6 +107,11 @@ export interface TroubleViewProps {
   /** Words for a caller that knows more than the kind does — the boot failure's
    *  two shapes share one kind and differ only in these (P3R1-8). */
   said?: { title: string; explain: string };
+  /** For a `limit`: whether the comeback row is STILL on the schedule. The
+   *  trouble's own `scheduled` flag says the POST landed; this says the banner
+   *  is still up — false once the user cancels it, so the card stops promising
+   *  a follow-up that will not come. Absent = trust the flag. */
+  comebackPending?: boolean;
 }
 
 export function TroubleView({
@@ -113,6 +120,7 @@ export function TroubleView({
   onRetry,
   retryLabel,
   said: saidProp,
+  comebackPending,
 }: TroubleViewProps) {
   const said = saidProp ?? SAID[trouble.kind];
   const lines = splitTroubleMessage(trouble.message);
@@ -120,7 +128,16 @@ export function TroubleView({
   // message — which is a better description than the classifier's generic one
   // for exactly the messages that carry one. Neither present: the card's own
   // fallback copy stands, so nothing is passed at all.
-  const explain = said?.explain ?? troubleExplain(lines);
+  //
+  // A LIMIT WITH ITS WINDOW says when: the CLI reported the reset as an epoch
+  // beside the failure (`Trouble.quota`), so the card prints the clock and the
+  // distance itself — and, once the server holds the comeback row, that a
+  // follow-up is scheduled — instead of telling the reader to find the time
+  // in the CLI's sentence below.
+  const explain =
+    trouble.kind === "limit" && trouble.quota
+      ? limitExplain(trouble.quota, Date.now(), !!trouble.scheduled && comebackPending !== false)
+      : (said?.explain ?? troubleExplain(lines));
   return (
     <div className="turn trouble">
       <TroubleCard
