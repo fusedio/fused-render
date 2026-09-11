@@ -176,11 +176,24 @@ export async function getJson<T>(
 // One mutating-request helper for both PUT and POST — they differ only in the
 // method. X-Fused forces a CORS preflight so a foreign page can't write blind
 // (the D3 guard the reveal/write/clone endpoints require).
-async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown): Promise<T> {
+async function mutateJson<T>(
+  method: "PUT" | "POST",
+  url: string,
+  body: unknown,
+  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    // Extra headers go AFTER the two fixed ones but cannot replace them: the
+    // caller's are attribution, and `X-Fused` is the CSRF-ish marker every
+    // mutation carries.
+    headers: {
+      ...(opts?.headers ?? {}),
+      "Content-Type": "application/json",
+      "X-Fused": "1",
+    },
     body: JSON.stringify(body),
+    signal: opts?.signal,
   });
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
@@ -188,7 +201,11 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
 }
 
 const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
-export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
+export const postJson = <T>(
+  url: string,
+  body: unknown,
+  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
+) => mutateJson<T>("POST", url, body, opts);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
@@ -460,14 +477,29 @@ export interface UpdateStatus {
   // path for every install type and no terminal command to hand the user, so
   // no surface reads this field any more.
   manual_command: string | null;
+  // True only for the dev-run manager (mac.DEV_MANAGER_ENV): it looks but never
+  // swaps, so the badge draws "Update available" without its Update button.
+  // Absent on a packaged app's older server; treat missing as false.
+  check_only?: boolean;
+  // Why the LAST CHECK could not answer (offline, a manifest that did not
+  // verify), or null. Distinct from `error`, which belongs to an install. The
+  // manual check reads it to say "Couldn't check" instead of "Up to date".
+  check_error?: string | null;
 }
 
 export function updateCheck(): Promise<UpdateStatus> {
   return postJson<UpdateStatus>("/api/update/check", {});
 }
 
-export function updateInstall(): Promise<UpdateStatus> {
-  return postJson<UpdateStatus>("/api/update/install", {});
+// `expectedVersion`: the `latest_version` the caller had on screen — the
+// server compares it against what its own pre-install recheck confirms is
+// actually current and defers instead of installing on a mismatch, so a
+// stale button can never land a different version than the one the user
+// saw and clicked (fused_render/update/mac.py's UpdateManager.install).
+export function updateInstall(expectedVersion?: string | null): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/install", {
+    expected_version: expectedVersion ?? null,
+  });
 }
 
 export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
@@ -552,87 +584,23 @@ export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<Wa
   return getJson<WalkResult>(url);
 }
 
-// Terminal record of a streamed walk (the server's final NDJSON line).
-export interface WalkStreamEnd {
-  truncated: boolean;
-  total: number;
-}
-
-// Streaming walk: GET /api/fs/walk?stream=1 returns NDJSON — `{"entries":
-// [...]}` batch lines then one `{"done": true, truncated, total}` line.
-// `onBatch` fires once per network chunk (all complete lines in it, merged)
-// with the new entries and the running total, so the caller can score/render
-// progressively while the server is still walking. Resolves with the terminal
-// record; rejects on HTTP errors, malformed/absent terminal line, or abort
-// (an AbortError, which also cancels the server-side walk — Starlette closes
-// the generator when the client goes away).
-export async function walkDirStream(
-  fsPath: string,
-  opts: {
-    hidden?: boolean;
-    signal?: AbortSignal;
-    onBatch: (entries: WalkEntry[], total: number) => void;
-  }
-): Promise<WalkStreamEnd> {
-  let url = "/api/fs/walk?stream=1&path=" + encodeURIComponent(fsPath);
-  if (opts.hidden) url += "&hidden=1";
-  const res = await fetch(url, { signal: opts.signal });
-  if (!res.ok) {
-    // Error responses are plain JSON (the _error shape), not NDJSON.
-    const data = await res.json().catch(() => null);
-    throw new Error((data && data.error) || `HTTP ${res.status}`);
-  }
-  if (!res.body) throw new Error("streaming not supported by this browser");
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let total = 0;
-  let end: WalkStreamEnd | null = null;
-  const consume = (raw: string) => {
-    const chunkEntries: WalkEntry[] = [];
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      const msg = JSON.parse(line);
-      if (msg.done) end = { truncated: !!msg.truncated, total: msg.total ?? total };
-      else if (Array.isArray(msg.entries)) chunkEntries.push(...msg.entries);
-    }
-    if (chunkEntries.length) {
-      total += chunkEntries.length;
-      opts.onBatch(chunkEntries, total);
-    }
-  };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const cut = buffer.lastIndexOf("\n");
-    if (cut === -1) continue; // no complete line yet
-    consume(buffer.slice(0, cut + 1));
-    buffer = buffer.slice(cut + 1);
-  }
-  buffer += decoder.decode(); // flush any trailing bytes
-  if (buffer.trim()) consume(buffer);
-  if (!end) throw new Error("walk stream ended without a terminal record");
-  return end;
-}
-
 // GET /api/index/search (`fmt=columns`) has no client here any more.
 //
 // It served the in-folder search's whole-folder corpus, which the browser then
-// ranked; the box asks `/api/index/rank` per query now, and the only corpus
-// left in the app is the live walk's, for the folders no scan can cover. The
-// SERVER route stays regardless: it is the `fused.fileIndex.search` bridge
-// contract that user pages are written against.
+// ranked; both the home box and the in-folder box ask `/api/index/rank` per
+// query now, and there is no browser-side ranker left to feed a corpus to.
+// The SERVER route stays regardless: it is the `fused.fileIndex.search`
+// bridge contract that user pages are written against.
 
-// GET /api/index/rank — the home search: the server filters AND ranks, and
-// answers with the top ~200 rows.
+// GET /api/index/rank — filters AND ranks server-side, and answers with the
+// top rows. Both search boxes in the app call this, and only this: the home
+// box, and the in-folder box (listing/useListingSearch).
 //
 // The corpus route above is the other shape of the same index, and the
 // difference is the whole point: `indexSearch` hands the browser every entry
 // under the root (19.8 MB on a 164k-entry home, capped so most of a big home
 // was unfindable) and ranks locally; this is a few KB per query and can see
-// the whole index. The in-folder search keeps the corpus, because it also has
-// a live walk to rank and only a browser-side ranker can rank a stream.
+// the whole index.
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
@@ -654,13 +622,14 @@ export interface IndexRankHit {
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
 // other three never. Two places switch on this: listing/index-source picks the
-// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
-// turns it into what the home box tells the user. `disabled` is the one of
-// those three that can become
-// fixable again — turning the indexing preference back on — but the client
-// does not wait around for that: it walks, exactly as it does for `mount` /
-// `package` / `ignored`, because there is no server signal to poll for "the
-// user flipped a switch in Preferences".
+// in-folder box's next STEP from it, and explorer/lib/home-search's
+// `indexGap` turns it into what either box tells the user. `mount` /
+// `package` / `ignored` / `disabled` / `fda` are all permanently uncoverable
+// from here — none of them is fixed by scanning, so both boxes just report
+// the gap and wait for a real boundary rather than polling for one. `disabled`
+// is nominally fixable (turning the indexing preference back on), but there is
+// no server signal to poll for "the user flipped a switch in Preferences", so
+// it is treated the same as the rest.
 // `fda` is `disabled`'s sibling: the packaged mac app has no Full Disk Access,
 // so no scan may start (shell/index_gate.py — a home walk would prompt per
 // protected folder). Fixable by the user, but only through a grant plus a
@@ -685,11 +654,25 @@ export interface IndexRankResult {
   reason: RankReason;
   hits: IndexRankHit[];
   // More matched than were returned: more than `limit` survived ranking.
-  // (Was ALSO true when the server's candidate cap bit before D708 — that
-  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
-  // matched row in one SQL statement with no candidate cap to hit.)
+  // Index-backed search scores every matched row in one SQL statement with
+  // no candidate cap to hit — this is the only way `truncated` can be true.
   truncated: boolean;
   total: number;
+  // The directory `hits` are relative to — the box's own root for a plain
+  // query, or wherever `resolve_query` (fused_render/index/query.py) walked a
+  // `~`/`/`-leading query out to. Not the box's root in general: a caller
+  // that joins `rel` onto a path (`answerFrom`, home-search.ts) must join it
+  // onto THIS, not onto whatever it asked with.
+  base: string;
+  // Which matcher actually ran: "substring" (today's `LIKE`-style pass,
+  // scored and ordered by `_rank_sql`) or "glob" (a `*`/`**` pattern,
+  // full-matched with no scoring at all — `_glob_sql`). Callers that
+  // recompute highlight positions client-side (`answerFrom`/`narrowAnswer`,
+  // `listing/ranked-hits.ts`) need this: a glob hit is not necessarily a
+  // substring of the query text at all (`*.csv` matching `report.csv` has no
+  // literal `"*.csv"` anywhere in the path), so re-running a substring test
+  // over it and dropping what fails would silently discard real hits.
+  mode: "substring" | "glob";
   // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
   // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
   // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
@@ -943,10 +926,69 @@ export interface RunResult {
   stderr?: string;
   duration_ms?: number;
   resolved_py?: string;
+  // Pre-flight answer for a project whose venv is not built yet (PY-18 /
+  // D173, engine.py _needs_install_dict). `error` is populated alongside it.
+  needs_install?: NeedsInstall;
 }
 
-export function runPy(py: string, params: Record<string, unknown>): Promise<RunResult> {
-  return postJson<RunResult>("/api/run", { py, params });
+// engine.py `_needs_install_dict`: what the loader needs to title a progress
+// row and drive /api/env/install. Additive fields beyond these are ignored.
+export interface NeedsInstall {
+  key: string;
+  requirements: string[];
+  py: string;
+  project: string;
+  name: string;
+  pyproject: string;
+  // Only when the interpreter itself is the first round (D214).
+  python?: string;
+  // Only when the consent prompt has something to name.
+  nonstandard?: string[];
+}
+
+/**
+ * WHO IS MAKING THIS CALL, for the call log (`fused_render/calls.py`, SPEC
+ * CL-5). `runtime.js`'s `callHeaders` (R:1434-1448) sends the same four off an
+ * embedded page's own URL; a native app has no such URL, so it says so itself.
+ *
+ * `page` is what makes a request an "app call" at all — without it `calls.py`
+ * records nothing — and the two PATH values arrive percent-encoded, which is
+ * `_header_path`'s contract on the other side.
+ */
+export interface RunAttribution {
+  /** `X-Fused-Page`: the page this call belongs to, as a filesystem path. */
+  page: string;
+  /** `X-Fused-Target`: what the page is open ON (`_file`). */
+  target?: string | null;
+  /** `X-Fused-Call`: this call's correlation id. */
+  callId?: string;
+  /** `X-Fused-Supersedes`: comma-separated ids this call abandoned to be made.
+   *  Rides the SUPERSEDING request, because that leaves in the same task as the
+   *  abort — so the mark lands before the abandoned call's record is written. */
+  supersedes?: string;
+}
+
+/** The four headers, built from an attribution. Exported for the test that pins
+ *  the exact set — the names are a contract with `calls.py`, which reads them
+ *  lower-cased. */
+export function runHeaders(attr: RunAttribution | undefined): Record<string, string> {
+  if (!attr || !attr.page) return {};
+  const out: Record<string, string> = { "X-Fused-Page": encodeURIComponent(attr.page) };
+  if (attr.target) out["X-Fused-Target"] = encodeURIComponent(attr.target);
+  if (attr.callId) out["X-Fused-Call"] = attr.callId;
+  if (attr.supersedes) out["X-Fused-Supersedes"] = attr.supersedes;
+  return out;
+}
+
+export function runPy(
+  py: string,
+  params: Record<string, unknown>,
+  opts?: { signal?: AbortSignal; attribution?: RunAttribution },
+): Promise<RunResult> {
+  return postJson<RunResult>("/api/run", { py, params }, {
+    ...(opts?.signal ? { signal: opts.signal } : {}),
+    ...(opts?.attribution ? { headers: runHeaders(opts.attribution) } : {}),
+  });
 }
 
 // `signal` matters for callers that stat on a user's behalf and then navigate:
@@ -1116,6 +1158,23 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Whether chat embeds render the native React chat (beta) instead of the
+  // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
+  // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
+  // switch cannot win then, so the UI disables itself and says so
+  // (shell/prefs.py `native_chat_enabled`, same shape as `engine.forced_by`).
+  //
+  // OPTIONAL, because the readers treat it as optional: `feature-flag.ts` reads
+  // `p.chat?.native`, and an older server (or a test fixture built before this
+  // field existed) answers without it. A required field here would only make
+  // every `Prefs` literal in the suites over-constrained while the runtime read
+  // stayed defensive anyway.
+  //
+  // `recap` is the native chat's "While you were away" fold — the ONE pref
+  // here that defaults ON (shell/prefs.py `chat_recap_enabled`), so every
+  // reader asks `chat?.recap !== false` rather than `=== true`: an older
+  // server answers without the field and that server's chat still shows it.
+  chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1333,6 +1392,14 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
+export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
+}
+
 export interface LanDevice {
   id: string;
   name: string; // "iPhone · Safari", derived from the user agent at pairing
@@ -1473,6 +1540,43 @@ export function writeFile(path: string, content = "", create = false): Promise<S
     // An overwrite is not re-indexed (the index stores names), so the box must
     // not claim it is. An older server that does not answer `created` is
     // treated as having created something, which errs toward the caption.
+    (out) => out.created !== false,
+  );
+}
+
+// Write BYTES to a path — the shell-side twin of runtime.js's `fused.uploadFile`
+// (R:3182-3190), mirrored down to the transport so a page and the shell cannot
+// disagree about what an upload is:
+//
+//   * MULTIPART, and the Content-Type header is deliberately NOT set — the
+//     browser generates `multipart/form-data; boundary=…`, and setting the
+//     header by hand drops the boundary and makes the body unparseable;
+//   * X-Fused forces the CORS preflight the write guard requires (D3);
+//   * a read-only refusal (403 `{"error":"readonly"}`) reaches the caller as an
+//     ordinary thrown HttpError carrying `status` — there is no optimistic lock
+//     and no `create`, since a freshly serialized blob has no prior version to
+//     conflict with.
+//
+// It goes through `noteAfter` like every other mutation here, which is the
+// shell-side half of runtime.js's `noteFsChanged()` (R:849-865): that walks the
+// same-origin ancestor chain calling `_fusedFsChanged`, which main.tsx wires to
+// `clearListPrefetch` — a listing prefetched before this write must not repaint
+// the folder as it stood before it.
+//
+// First caller: the chat's app-state DOM outline, moved out to a JSON file in
+// the shots dir (apps/claude/pane/appState.ts, T:5177-5218).
+export function uploadFile(path: string, blob: Blob, filename = "upload"): Promise<StatResult> {
+  const form = new FormData();
+  form.append("path", path);
+  form.append("file", blob, filename);
+  return noteAfter(
+    path,
+    fetch("/api/fs/upload", { method: "POST", headers: { "X-Fused": "1" }, body: form })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok) throw httpError(data, res.status);
+        return data as StatResult;
+      }),
     (out) => out.created !== false,
   );
 }
@@ -2793,6 +2897,34 @@ export function getHomeClaudeSessionFolders(
   );
 }
 
+// -- One transcript's liveness (GET /api/claude-sessions/liveness) ------------
+// `(mtime, size, running)` for ONE transcript file — the cheapest possible "has
+// this conversation moved, and is it moving right now?" (D415, and
+// claude_sessions.py's own docstring for why the PATH is the parameter).
+//
+// The native chat's standing live watch is the only caller: a turn driven from
+// OUTSIDE this app (an interactive `claude` in a terminal, a `claude --resume`)
+// creates no run dir, so `live_run` is blind to it by construction and the pair
+// below is the only reason the chat has to re-render. `running` is the
+// transcript's LAST MESSAGE, not the 45 s activity window the Inbox badge uses.
+//
+// A transcript that is not there yet answers `exists: false` rather than 404 —
+// a chat can be open on a session whose first turn is still being written.
+export interface ClaudeSessionLiveness {
+  exists: boolean;
+  mtime: number;
+  size: number;
+  running: boolean;
+}
+
+export function getClaudeSessionLiveness(
+  path: string,
+): Promise<ClaudeSessionLiveness> {
+  return getJson<ClaudeSessionLiveness>(
+    `/api/claude-sessions/liveness?path=${encodeURIComponent(path)}`,
+  );
+}
+
 // -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------
 // Every Claude Code session on this machine, for the Schedule page's task views
 // (shell/ScheduleTaskViews.tsx). A scheduled task and a chat are the same kind
@@ -2988,6 +3120,10 @@ export interface Task {
   // same (bounded) answer they gave before these existed.
   next_run?: number;
   next_run_entry?: string;
+  // Whether that run is an occurrence of a repeating template (tasks.py
+  // `_next_run`, 2026-09-11) — the next-run chip's repeat glyph. Absent on an
+  // older server; tasks-lib.nextRunRepeats then reads the window.
+  next_run_repeats?: boolean;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.
@@ -3026,6 +3162,7 @@ export type TaskPulseTask = Pick<
   | "session_id"
   | "next_run"
   | "next_run_entry"
+  | "next_run_repeats"
 >;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
@@ -3523,17 +3660,90 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** Will this fit on THIS machine — the same judgement a downloaded model's
+   *  card carries, over the same `fit.verdict` ladder server-side. Null when
+   *  there is nothing to judge (no safetensors size, no params). */
+  fit: AiFitVerdict | null;
+  /** Text-generation rows only — see `AiSpeedEstimate`'s own contract. */
+  speedEstimate: AiSpeedEstimate | null;
+  /** ISO8601, or null when the Hub did not say. The field the "New" sort
+   *  orders by, now actually drawn rather than fetched and discarded. */
+  created: string | null;
+  /** What this repo was derived from, parsed off the Hub's own
+   *  `base_model:<relation>:<id>` tag — null/null for a row standing alone.
+   *  See `hubFamilies.ts` for the grouping rule this feeds. */
+  baseModel: string | null;
+  /** e.g. "quantized", "finetune", "merge", "adapter" — free text on the
+   *  Hub's side, so this is not a closed union. Null exactly when `baseModel`
+   *  is. */
+  relation: string | null;
+  /** The repo's weight format when the Hub said something amounting to one —
+   *  `"gguf"` for a repo shipping `.gguf` with no safetensors metadata, null
+   *  otherwise (a mixed repo that publishes both counts as null: its
+   *  safetensors upload is what every other field here describes). Not a
+   *  closed union on purpose, the same way `relation` is not.
+   *
+   *  Part of `hubFamilies.ts`'s grouping key, which is the only thing that
+   *  reads it — a GGUF republish is a different download from a 4-bit
+   *  safetensors republish of the same base, so the two get their own
+   *  family rows instead of one swallowing the other. */
+  format: string | null;
+  /** Item 9c (fix round 5): how many distinct weight variants this repo
+   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded) or
+   *  bit-width/dtype subfolders, whichever the repo's own layout shows.
+   *  Best-effort and never 0; see `hub_models.py::_count_variants`'s own
+   *  docstring for the exact rule. Undefined only for a response shape that
+   *  predates this field — a running server always sends it. */
+  variants?: number;
+  /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
+   *  for every other row (D412's own field). Threaded back into
+   *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask
+   *  about the file this row would actually download rather than the
+   *  repo-wide total. */
+  file: string | null;
+  /** Measured quantization — a real dtype off the safetensors map, or a
+   *  GGUF file's own published quant token — never a guess from the repo's
+   *  name. Null when nothing measured it. */
+  quant: string | null;
+  /** 0-100, D780 — the composite the DEFAULT sort ranks by and the merged
+   *  Fit+Score cell (D781) both bars and prints. Blends memory fit,
+   *  params-as-capability, speed, recency and popularity, plus a small
+   *  on-disk bonus — see `hub_models.py::_composite_score`'s own docstring
+   *  and DECISIONS.md's D780 for the weights and why. Always present:
+   *  every axis has an honest default for missing evidence, so this is
+   *  never null the way `fit`/`speedEstimate` can be. */
+  matchScore: number;
   local: HubModelLocal;
   url: string;
 }
 
+/** One facet option — `HubSearchResult.facets`'s own row shape (fix round 6,
+ *  item 5): an `id` (publisher name, or a measured quant token) and how many
+ *  of THIS query's rows carry it. */
+export interface HubFacetOption {
+  id: string;
+  count: number;
+}
+
+/** Publisher/quant option lists for the search screen's dropdown menus,
+ *  computed server-side over the rows THIS query fetched, before the
+ *  quant filter and (for publisher) the wire-level `author` narrowing — see
+ *  `hub_models.py`'s own `_facets` docstring for why picking a value must
+ *  not collapse the list down to it. Absent only for a response predating
+ *  this field (an old cached page reload); a running server always sends it. */
+export interface HubSearchFacets {
+  publishers: HubFacetOption[];
+  quants: HubFacetOption[];
+}
+
 export interface HubSearchResult {
   models: HubModel[];
-  query: { q: string; task: string; sort: string; limit: number };
+  query: { q: string; task: string; capability?: string; sort: string; limit: number };
   /** Present INSTEAD of results when the Hub could not be reached or refused. */
   error?: string;
   endpoint?: string;
   authenticated?: boolean;
+  facets?: HubSearchFacets;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -3543,14 +3753,51 @@ export interface HubSearchResult {
  *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
  *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
  *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
- *  it reaches this function only through `wireSort`. */
-export type HubSort = "downloads" | "likes" | "updated" | "created";
+ *  it reaches this function only through `wireSort`.
+ *
+ *  "fit" is a real value the SERVER accepts even though it is not a field the
+ *  HUB has: the server asks the Hub for `downloads` (the same honest default
+ *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
+ *  "trending" IS a Hub field (`trendingScore`), sent straight through.
+ *
+ *  "best" (D780) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
+ *  is the identical shape as "fit": not a Hub field, same downloads
+ *  candidate set, reordered by the composite score after the join. */
+export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit" | "best";
+
+/** Fit level — Part 3's own filter, the same three-way ladder `AiFitVerdict`
+ *  reports. "any" is the no-op default: nothing is excluded on it. */
+export type HubFitLevel = "easy" | "tight" | "any";
+
+/** Params band — Part 3's own size filter, over the measured `params` a row
+ *  carries. "any" is the no-op default. */
+export type HubParamsBand = "under4b" | "4to15b" | "over15b" | "any";
 
 export function searchHubModels(opts: {
   q?: string;
   task?: string;
+  /** D843: the capability the search screen's left pane is scoped to
+   *  (`registry.py`'s keys) — resolved server-side to every Hub `pipeline_tag`
+   *  that capability reaches (`ai_tasks.tags_for_capability`), which is more
+   *  than one for `embeddings`. `task` stays accepted alongside this for a
+   *  single-tag request; the two are never both sent by this app's own
+   *  screen (it sends `capability` since the Task menu was removed). */
+  capability?: string;
   sort?: HubSort;
   limit?: number;
+  /** Part 3's three explicit filters, all server-side (see `hub_models.py`'s
+   *  own `api_hub_search` for why: each one only removes rows AFTER the
+   *  Hub's own answer, so filtering client-side over an already-truncated
+   *  page would under-fill it). */
+  fitLevel?: HubFitLevel;
+  /** Exact match against a row's own measured `quant` — case-insensitive on
+   *  the server, so this is not normalized here. */
+  quant?: string;
+  paramsBand?: HubParamsBand;
+  /** The repo owner (`mlx-community`, `unsloth`, …) — sent to the Hub as its
+   *  own `author` query parameter, a real narrowing of the WIRE request
+   *  rather than a post-join filter (unlike the three above). */
+  publisher?: string;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
@@ -3559,28 +3806,57 @@ export function searchHubModels(opts: {
   return postJson<HubSearchResult>("/api/ai-models/hub/search", {
     q: opts.q,
     task: opts.task,
+    capability: opts.capability,
     sort: opts.sort,
     limit: opts.limit,
+    fitLevel: opts.fitLevel,
+    quant: opts.quant,
+    paramsBand: opts.paramsBand,
+    publisher: opts.publisher,
   });
 }
 
-/** One repo's TOTAL size on the Hub — everything in it, not just the weights.
+/** One repo's size on the Hub — the whole repo's TOTAL by default, or one
+ *  named FILE's own bytes when the caller already knows which single file a
+ *  row would download (a GGUF row's own resolved `HubModel.file`).
  *
  *  The fallback for a row whose `estimatedSize` is null (GGUF, mflux, a
  *  LoRA): no dtype map means nothing for the search to measure, and the Hub
  *  will only expand this field one repo at a time. `usedStorage` is null when
- *  the Hub does not measure the repo either. */
+ *  the Hub does not measure the repo either; `fileSize` is null unless a
+ *  `file` was asked for AND the Hub still lists it.
+ *
+ *  `fit`/`speedEstimate` ride the SAME round trip, judged off `fileSize` —
+ *  never off the repo-wide `usedStorage`, which counts every quantization the
+ *  author published rather than the weights a load would read. Both are null
+ *  unless `capability` was given AND a file-specific size resolved. */
 export interface HubModelSizeResult {
   id: string;
   usedStorage: number | null;
+  fileSize: number | null;
+  fit: AiFitVerdict | null;
+  speedEstimate: AiSpeedEstimate | null;
   error?: string;
 }
 
-/** One repo's total size. ONE round trip per call — the Hub's list endpoint
+/** One repo's size. ONE round trip per call — the Hub's list endpoint
  *  refuses this field, so callers ask lazily (a card that has scrolled into
- *  view) and never for a whole page of results at once. */
-export function getHubModelSize(id: string): Promise<HubModelSizeResult> {
-  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", { id });
+ *  view) and never for a whole page of results at once.
+ *
+ *  `file` and `capability` are both optional and travel together: passing
+ *  `file` (a GGUF row's own resolved filename) switches the server from the
+ *  repo-wide total to that one file's own bytes, and passing `capability`
+ *  alongside it additionally asks for a fit/speed judgement riding the same
+ *  request — see `HubModelSizeResult`'s own docstring for why judging either
+ *  requires a `file`, not just a `capability`. */
+export function getHubModelSize(
+  id: string,
+  file?: string | null,
+  capability?: string | null,
+): Promise<HubModelSizeResult> {
+  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", {
+    id, file: file || undefined, capability: capability || undefined,
+  });
 }
 
 export interface HubTask {

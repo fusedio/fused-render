@@ -12,8 +12,8 @@
 // length, one empty-state shape.
 //
 // Nothing here re-invents something the shell already ships. Toasts are
-// @platform/lib/toast (the app-root NotificationHost surface — the original
-// app's own fixed-position #toast would have been a second one), the modal
+// @platform/lib/notifications (the app-root NotificationHost surface — the
+// original app's own fixed-position #toast would have been a second one), the modal
 // chassis is @platform/ui/modal/Modal (focus trap, Esc, backdrop, portal),
 // loading is @platform/ui/Skeleton and failures @platform/ui/ErrorBanner. What
 // IS local is the vocabulary the old app invented — .card/.pill/.row/.group and
@@ -26,7 +26,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
@@ -40,11 +40,11 @@ export interface SectionProps {
 }
 
 export function toastOk(msg: string): void {
-  pushToast({ msg, tone: "info" });
+  notify({ title: msg, tone: "info" });
 }
 
 export function toastErr(msg: string): void {
-  pushToast({ msg, tone: "error" });
+  notify({ title: msg, tone: "error" });
 }
 
 // Await a module call, reporting a transport failure as a toast and resolving

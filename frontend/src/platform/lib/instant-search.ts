@@ -3,7 +3,7 @@
 //
 // Both of the app's search boxes now work that way — the home page's
 // (FilesHome/lib/home-search) and the listing's in-folder one
-// (listing/useWalkSearch) — and neither can afford to feel hesitant: the
+// (listing/useListingSearch) — and neither can afford to feel hesitant: the
 // version each replaced held a corpus in the browser and repainted within a
 // frame. A round trip per keystroke is only an improvement if it never reads
 // as one, so the same three pieces are used in both places, and they live here

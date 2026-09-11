@@ -291,6 +291,32 @@ def test_a_recording_is_a_server_owned_job_row_the_manager_can_stop(backend,
     assert row["unit"] == "s" and row["total"] == started["maxSeconds"]
     assert "discards" in row["detail"]   # the ✕'s meaning, in words
     assert client.get("/api/capture").json()["active"][0]["id"] == started["id"]
+    # `fused.capture.*` is callable from any page's own script, so no single
+    # hosting page names this row's source honestly — "Capture" names the
+    # FEATURE that raised it instead, the same way `benchmark.py`'s own row
+    # names itself "Benchmark".
+    assert row["origin"] == "Capture"
+
+
+def test_the_row_opens_the_page_that_started_the_capture(backend, client, home):
+    """SPEC-actionable-notifications.md: the capture job's destination is
+    threaded from `X-Fused-Page`, the same header/unquote channel
+    `routers/jobs.py` already uses for a page-owned row's own `page`."""
+    started = client.post(
+        "/api/capture/start", json={"mode": "screen"},
+        headers={**H, "X-Fused-Page": "/tmp/my%20app/index.html"},
+    ).json()
+    row = next(j for j in client.get("/api/jobs").json()["jobs"]
+              if j["id"] == started["jobId"])
+    assert row["page"] == "/tmp/my app/index.html"
+
+
+def test_no_page_header_leaves_the_row_with_no_destination(backend, client, home):
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    row = next(j for j in client.get("/api/jobs").json()["jobs"]
+              if j["id"] == started["jobId"])
+    assert row["page"] == ""
 
 
 def test_stop_keeps_the_file_and_finishes_the_row(backend, client, home):

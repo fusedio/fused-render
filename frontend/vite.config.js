@@ -47,6 +47,17 @@ export default defineConfig({
         // Third-party deps change far less often than the app itself — their
         // own chunk means a shell code change doesn't bust the browser's
         // cache of react/react-dom/driver.js on every rebuild.
+        // NO `markdown` GROUP HERE, deliberately. Naming a package in
+        // `manualChunks` makes its chunk a STATIC node of the entry graph, so
+        // marked + DOMPurify + highlight.js shipped as a `modulepreload` on
+        // BOTH entries — 75 kB gzipped downloaded by Home, Preferences, Mounts,
+        // Scheduled and the LAN phone grid to render no chat at all. (Naming CJS
+        // packages also hoisted rollup's commonjs interop helper in there, which
+        // is how even the LAN entry came to pull it.) The split the chat wants
+        // is a DYNAMIC one, and it lives where the decision is: `ChatMount`
+        // imports `ClaudeChat` behind `React.lazy`, so rollup gives the whole
+        // native chat and its markdown stack a chunk of their own and no route
+        // fetches it until a chat actually mounts.
         manualChunks: {
           vendor: ["react", "react-dom", "driver.js"],
         },

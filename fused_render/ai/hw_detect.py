@@ -22,8 +22,7 @@ plain `storage.read_json` and nothing else — the only thing `fit.py` and
 `benchmark.py` are meant to call, once a later phase wires either of them
 up to read it.
 
-**Three traps, each hit by the study this module is modelled on and each with
-its own test:**
+**Four traps, each with its own test:**
 
 * **Windows `Win32_VideoController.AdapterRAM` is a 32-bit `uint32`.** A card
   with 4GB or more reports the field capped at (or wrapped past) that width —
@@ -48,6 +47,17 @@ its own test:**
   timeout, malformed output) rather than raising — `detect_hardware` composes
   them with `or`, so one vendor's absence falls through to the next rather
   than aborting the whole probe.
+* **A vendor tool is optional, and its output drifts.** "Degrades to None"
+  only helps if something else can still answer, and for a long time nothing
+  could: an AMD box read as GPU-less if `rocm-smi` was off PATH (ROCm installs
+  to `/opt/rocm/bin` and exports nothing), and read as GPU-less AGAIN if it
+  ran but title-cased its JSON keys the way ROCm 6 does. Both are now covered
+  — the fallback path, a case-insensitive read — and behind them sits
+  `_sysfs_gpus`, which needs no vendor package at all because the kernel
+  already publishes VRAM under `/sys/class/drm`. The failure this closes is
+  not cosmetic: `fit._select_pool` reads "no GPU" as `cpu-only`, so a single
+  missing binary made every row in the model catalog claim the machine had no
+  accelerator.
 """
 from __future__ import annotations
 
@@ -55,10 +65,12 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from fused_render.shell import storage
 
@@ -184,6 +196,28 @@ def _nvidia_gpus() -> list[GpuDevice] | None:
 # ------------------------------------------------------------------- AMD
 
 
+def _card_field(card: dict, *names: str) -> Any:
+    """One of `names` out of a `rocm-smi` card object, matched WITHOUT
+    regard to key case.
+
+    rocm-smi's JSON key casing is not stable across ROCm releases: the
+    build this parser was first written against emitted `"Card series"`,
+    while ROCm 6's emits `"Card Series"` / `"Card Model"` title-cased. An
+    exact-key read of the older spelling silently skipped every card on a
+    newer install — `gpus or None` then returned None, `detect_hardware`
+    fell through to the next vendor, and a real discrete Radeon reported as
+    no GPU at all, which `fit._select_pool` turns into `cpu-only` for every
+    row in the catalog. Matching case-insensitively costs one dict rebuild
+    per card and survives both spellings (and any future re-casing).
+    """
+    folded = {key.lower(): value for key, value in card.items() if isinstance(key, str)}
+    for name in names:
+        value = folded.get(name.lower())
+        if value is not None:
+            return value
+    return None
+
+
 def _parse_rocm_smi(payload: str) -> list[GpuDevice] | None:
     """`rocm-smi --showproductname --showmeminfo vram --json` output —
     one object per card, keyed by an opaque `cardN` id — into `GpuDevice`s,
@@ -198,8 +232,8 @@ def _parse_rocm_smi(payload: str) -> list[GpuDevice] | None:
     for card in data.values():
         if not isinstance(card, dict):
             continue
-        name = card.get("Card series") or card.get("Card model")
-        total = card.get("VRAM Total Memory (B)")
+        name = _card_field(card, "Card series", "Card model")
+        total = _card_field(card, "VRAM Total Memory (B)")
         if not isinstance(name, str) or total is None:
             continue
         try:
@@ -210,11 +244,172 @@ def _parse_rocm_smi(payload: str) -> list[GpuDevice] | None:
     return gpus or None
 
 
+#: Where a ROCm install puts `rocm-smi` when it is not on PATH. ROCm's own
+#: packages (and Arch's `rocm-smi-lib`) install to `/opt/rocm/bin` and add
+#: NOTHING to the default PATH — a desktop-launched fused-render inherits a
+#: login PATH that has never sourced a ROCm profile script, so the bare-name
+#: spawn below raises `FileNotFoundError` on a machine where the tool is
+#: installed and working. Tried in order after the bare name, which stays
+#: first so a user's own PATH (a newer ROCm, a versioned `/opt/rocm-6.2`)
+#: still wins.
+_ROCM_SMI_FALLBACK_PATHS = ("/opt/rocm/bin/rocm-smi",)
+
+
 def _amd_gpus() -> list[GpuDevice] | None:
-    out = _run(["rocm-smi", "--showproductname", "--showmeminfo", "vram", "--json"])
-    if out is None:
+    args = ["--showproductname", "--showmeminfo", "vram", "--json"]
+    for binary in ("rocm-smi", *_ROCM_SMI_FALLBACK_PATHS):
+        out = _run([binary, *args])
+        if out is not None:
+            return _parse_rocm_smi(out)
+    return None
+
+
+# ------------------------------------------------------------ Linux DRM sysfs
+#
+# The vendor tools above are the RICHER readings and stay first, but each of
+# them is a separate install a user may simply not have: `rocm-smi` ships in
+# ROCm, a multi-GB SDK nobody installs to run a GGUF through llama.cpp's
+# Vulkan backend. The kernel, meanwhile, has already published the one number
+# that matters — `/sys/class/drm/cardN/device/mem_info_vram_total`, exported
+# by `amdgpu` on every machine the driver is bound to, no userspace package
+# required. Reading it is what makes a plain Linux desktop with a discrete
+# Radeon stop reporting itself as GPU-less.
+
+#: The kernel's DRM class directory, as its own constant so tests can point
+#: the probe at a fixture tree instead of the real `/sys` (which does not
+#: exist on macOS/Windows CI at all, and on Linux CI describes the runner's
+#: hardware rather than the case under test).
+_DRM_CLASS_DIR = "/sys/class/drm"
+
+#: `/sys/class/drm` holds one entry per CARD (`card1`) plus one per connector
+#: (`card1-DP-1`) and per render node (`renderD128`). Only the bare `cardN`
+#: entries have a `device/` with the VRAM file under it, so the others are
+#: filtered out by shape rather than by probing each one and failing.
+_CARD_DIR_RE = re.compile(r"^card\d+$")
+
+
+def _read_sysfs(path: str) -> str | None:
+    """One sysfs file's contents, stripped, or None on any read failure —
+    the same "degrade to None, never raise" contract `_run` holds for the
+    subprocess probes. A `/sys` file can vanish between the listing and the
+    read (a card unbinding), and some are root-only."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
         return None
-    return _parse_rocm_smi(out)
+
+
+def _parse_lspci_names(payload: str) -> dict[str, str]:
+    """`lspci -mm -nn -D` output into `{pci slot: device name}`.
+
+    `-mm` is the machine-readable form, which quotes each field so a device
+    name containing the commas and brackets these names are full of
+    (`Advanced Micro Devices, Inc. [AMD/ATI]`) survives splitting; `-D`
+    prints the full domain-qualified slot (`0000:03:00.0`), which is the
+    exact spelling sysfs's own `uevent` uses, so the two join without any
+    reformatting. A line this cannot parse is skipped, never raised on:
+    lspci's output format is a compatibility surface we do not control, and
+    a missing NAME costs a bandwidth-table lookup, not the VRAM figure.
+    """
+    names: dict[str, str] = {}
+    for line in payload.splitlines():
+        try:
+            fields = shlex.split(line)
+        except ValueError:
+            continue
+        # slot, class, vendor, device, ... — anything shorter is not a
+        # device line (a blank line, a warning lspci printed to stdout).
+        if len(fields) < 4:
+            continue
+        names[fields[0]] = _clean_pci_device_name(fields[3])
+    return names
+
+
+#: The `[1002]`-style hex id `-nn` appends to every vendor/device field.
+_PCI_ID_SUFFIX_RE = re.compile(r"\s*\[[0-9a-fA-F]{4}\]$")
+
+#: The marketing name inside a codename-plus-brackets device string —
+#: `Navi 44 [Radeon RX 9060 XT]` -> `Radeon RX 9060 XT`.
+_PCI_MARKETING_NAME_RE = re.compile(r"\[([^\[\]]+)\]\s*$")
+
+
+def _clean_pci_device_name(raw: str) -> str:
+    """An lspci device field reduced to the name a human (and
+    `_BANDWIDTH_TABLE`) would recognise.
+
+    lspci reports a discrete GPU by its SILICON codename with the retail
+    name in brackets — `Navi 44 [Radeon RX 9060 XT]`, `Navi 21 [Radeon RX
+    6800/6800 XT / 6900 XT]`. The bracketed half is the half that matches
+    the bandwidth table (whose keys are retail names, `rx 7900 xtx`), so it
+    is preferred when present; a field with no brackets (some cards report
+    a plain name) is kept whole rather than dropped.
+    """
+    name = _PCI_ID_SUFFIX_RE.sub("", raw).strip()
+    marketing = _PCI_MARKETING_NAME_RE.search(name)
+    return marketing.group(1).strip() if marketing else name
+
+
+def _uevent_field(uevent: str, key: str) -> str | None:
+    for line in uevent.splitlines():
+        name, _, value = line.partition("=")
+        if name == key:
+            return value.strip() or None
+    return None
+
+
+def _sysfs_gpus() -> list[GpuDevice] | None:
+    """Every DRM card that publishes a non-zero VRAM total, or None when
+    there are none (or no `/sys/class/drm` at all — every non-Linux
+    platform, where this probe is simply a no-op the `or` chain falls
+    through).
+
+    A card whose `mem_info_vram_total` is absent or `0` is skipped rather
+    than reported with a zero pool: an integrated `i915`/`xe` display device
+    has no VRAM file, and `fit._select_pool` reads `total_vram_gb <= 0` as
+    "no GPU" anyway — emitting a 0GB device would only make the aggregate
+    across a real second card harder to reason about.
+    """
+    try:
+        entries = sorted(os.listdir(_DRM_CLASS_DIR))
+    except OSError:
+        return None
+
+    cards = [entry for entry in entries if _CARD_DIR_RE.match(entry)]
+    if not cards:
+        return None
+
+    # ONE lspci spawn for the whole listing, and only when there is at least
+    # one card to name — this probe's whole point is working on a machine
+    # with no vendor tooling, so it must not become another per-card
+    # subprocess storm on the way there.
+    lspci = _run(["lspci", "-mm", "-nn", "-D"])
+    names = _parse_lspci_names(lspci) if lspci else {}
+
+    gpus = []
+    for card in cards:
+        device_dir = os.path.join(_DRM_CLASS_DIR, card, "device")
+        total = _read_sysfs(os.path.join(device_dir, "mem_info_vram_total"))
+        if total is None:
+            continue
+        try:
+            vram_gb = float(total) / 1e9
+        except ValueError:
+            continue
+        if vram_gb <= 0:
+            continue
+        uevent = _read_sysfs(os.path.join(device_dir, "uevent")) or ""
+        slot = _uevent_field(uevent, "PCI_SLOT_NAME")
+        name = names.get(slot or "")
+        if not name:
+            # No lspci and no name for this slot: the DRIVER is still a
+            # truthful, if coarse, label ("amdgpu"), and it keeps the device
+            # identifiable in the cache rather than blank. It matches nothing
+            # in `_BANDWIDTH_TABLE`, which is the honest outcome — an
+            # unnamed device gets the per-backend speed constant.
+            name = _uevent_field(uevent, "DRIVER") or "GPU"
+        gpus.append(GpuDevice(name=name, vram_gb=vram_gb))
+    return gpus or None
 
 
 # --------------------------------------------------------------- Windows
@@ -467,8 +662,10 @@ def _bandwidth_for(device_name: str) -> float | None:
 def detect_hardware(ram_gb: float | None = None) -> HardwareInfo:
     """The slow probe — subprocess spawns, never called on the verdict path
     (see module docstring). Composes every vendor probe with `or` so one
-    absent tool falls through to the next: NVIDIA, then AMD, then Windows
-    WMI, then Apple Silicon's unified pool. `ram_gb` — pass
+    absent tool falls through to the next: NVIDIA, then AMD, then the Linux
+    DRM sysfs reading (the tool-free fallback for a box with no ROCm
+    installed — see `_sysfs_gpus`), then Windows WMI, then Apple Silicon's
+    unified pool. `ram_gb` — pass
     `fit.machine_ram_gb()` — feeds both the Apple-Silicon reading and the
     unified-APU override; without it those two degrade to "no GPU" and "no
     override" respectively rather than guessing a pool size.
@@ -477,7 +674,8 @@ def detect_hardware(ram_gb: float | None = None) -> HardwareInfo:
     and an empty result here is a legitimate answer (a CPU-only machine),
     not a caller-visible error.
     """
-    gpus = _nvidia_gpus() or _amd_gpus() or _windows_gpus() or _apple_gpu(ram_gb) or []
+    gpus = (_nvidia_gpus() or _amd_gpus() or _sysfs_gpus() or _windows_gpus()
+            or _apple_gpu(ram_gb) or [])
     if sys.platform == "darwin":
         cpu_name = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or ""
     elif sys.platform.startswith("linux"):

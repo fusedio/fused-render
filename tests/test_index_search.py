@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig, load_config
+from fused_render.index.ignore import norm
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
 from fused_render.shell import prefs
@@ -317,7 +318,7 @@ def test_rank_route_preserves_search_ranked_s_order_exactly(
 
     def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
         return {"covered": True, "reason": "", "scanned_partitions": 0,
-                "of_partitions": 0,
+                "of_partitions": 0, "base": root, "mode": "substring",
                 "hits": [{"rel": r, "is_dir": False, "size": 1, "mtime": 1.0,
                           "score": 0, "longest_run": 0, "tier": 1, "depth": 1}
                          for r in order],
@@ -370,7 +371,7 @@ def test_rank_route_answers_a_disconnected_client_with_a_quiet_499(
         if token is not None and token.cancelled:
             raise Cancelled()
         return {"covered": True, "hits": [], "truncated": False, "total": 0,
-                "reason": ""}
+                "reason": "", "base": root, "mode": "substring"}
 
     monkeypatch.setattr(index_router, "_rank_body", slow_cancellable_rank)
 
@@ -422,7 +423,8 @@ def test_rank_route_defaults_to_ranked(home, tmp_path, monkeypatch):
     def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
         seen["ranked"] = ranked
         return {"covered": True, "reason": "", "scanned_partitions": 0,
-                "of_partitions": 0, "hits": [], "truncated": False, "total": 0}
+                "of_partitions": 0, "base": root, "mode": "substring",
+                "hits": [], "truncated": False, "total": 0}
 
     monkeypatch.setattr(index_router, "_rank_body", fake_rank_body)
     root = str(tmp_path / "proj")
@@ -1054,6 +1056,108 @@ def test_rank_route_names_a_folder_the_ignore_list_excludes(home, tmp_path):
     assert body["covered"] is False and body["reason"] == "ignored"
 
 
+# -- one search language: base resolution and glob mode, end to end ------------
+#
+# The behaviour table from the spec, run through the real HTTP route rather
+# than `resolve_query`/`search_ranked` directly — this is what pins the
+# wiring in `_rank_body` (base/mode round-tripping onto the response,
+# `_rank_reason` consulting the resolved base rather than the box's own
+# root), not just the pieces it's built from.
+
+def test_rank_route_reports_the_resolved_base_and_mode(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["base"] == root
+    assert body["mode"] == "substring"
+
+
+def test_rank_route_glob_with_no_slash_reaches_any_depth(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/report.csv", root + "/sub/report.csv", root + "/other.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "*.csv"}).json()
+    assert body["mode"] == "glob" and body["base"] == root
+    assert sorted(h["rel"] for h in body["hits"]) == [
+        "report.csv", "sub/report.csv"]
+
+
+def test_rank_route_glob_leading_slash_anchors_at_depth_one(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/report.csv", root + "/sub/report.csv"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "/*.csv"}).json()
+    assert [h["rel"] for h in body["hits"]] == ["report.csv"]
+
+
+def test_rank_route_glob_one_slash_reaches_exactly_two(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/report.csv", root + "/sub/report.csv",
+         root + "/sub/deep/report.csv"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "*/*.csv"}).json()
+    assert [h["rel"] for h in body["hits"]] == ["sub/report.csv"]
+
+
+def test_rank_route_absolute_glob_escapes_the_box_root(home, tmp_path):
+    """A leading `/` whose first segment is a real directory walks as an
+    absolute path — the resolved `base` leaves the box's own root behind
+    entirely, and coverage/hits both answer for the escaped-to base."""
+    root = str(tmp_path / "proj")
+    escaped = tmp_path / "elsewhere"
+    escaped.mkdir()
+    client = _ranked_client(tmp_path, str(escaped),
+                            [str(escaped) + "/x.conf",
+                             str(escaped) + "/sub/y.conf"])
+    body = client.get(
+        "/api/index/rank",
+        params={"root": root, "q": f"{escaped}/*/y.conf"}).json()
+    # `body["base"]` travels through `norm()` (forward slashes, the canonical
+    # form the index stores and compares every path as) — normalized here
+    # too, rather than comparing against `str(escaped)`'s own platform-native
+    # spelling.
+    assert body["base"] == norm(str(escaped))
+    assert [h["rel"] for h in body["hits"]] == ["sub/y.conf"]
+
+
+def test_rank_route_tilde_escapes_to_home(home, tmp_path, monkeypatch):
+    root = str(tmp_path / "proj")
+    userhome = str(tmp_path / "userhome")
+    os.makedirs(userhome, exist_ok=True)
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: userhome if p in ("~", "~/") else p)
+    client = _ranked_client(tmp_path, userhome, [userhome + "/note.csv"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "~/*.csv"}).json()
+    assert body["base"] == norm(userhome)
+    assert body["mode"] == "glob"
+    assert [h["rel"] for h in body["hits"]] == ["note.csv"]
+
+
+def test_rank_route_a_missing_named_folder_widens_the_substring_search(
+    home, tmp_path, monkeypatch,
+):
+    root = str(tmp_path / "proj")
+    userhome = str(tmp_path / "userhome")
+    os.makedirs(userhome, exist_ok=True)
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: userhome if p in ("~", "~/") else p)
+    client = _ranked_client(tmp_path, userhome,
+                            [userhome + "/nope-elsewhere/x.csv"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "~/nope/x.csv"}).json()
+    assert body["base"] == norm(userhome)
+    assert body["mode"] == "substring"
+    assert body["hits"] == []
+
+
 def test_a_cancelled_run_is_not_a_scan_in_flight(home, tmp_path, monkeypatch):
     """A run told to stop still reads `running` in its log for a moment — the
     worker notices the flag a couple of hundred directories later. Reporting it
@@ -1082,6 +1186,8 @@ def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monke
     run — and this fires on EVERY ranked request, which is one per keystroke in
     two search boxes. The answer cannot change meaningfully inside a poll
     interval, so it is cached for a beat."""
+    import threading
+
     from fused_render.index import runner
     from fused_render.server.routers import index as index_routes
 
@@ -1089,21 +1195,39 @@ def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monke
     client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
     calls = []
     real = runner.list_runs
-    monkeypatch.setattr(runner, "list_runs",
-                        lambda cfg, limit=20: (calls.append(1), real(cfg, limit=limit))[1])
+
+    def recording(cfg, limit=20):
+        # `runner.list_runs` is shared process-wide, and `_live_runs` (the
+        # cache under test) is not its only caller: the Activity job bridge
+        # (`mirror_index_jobs_once`, `_index_job_loop`) reads through it
+        # directly, on its own timer, bypassing `_live_runs`'s cache
+        # entirely by design (its own docstring explains why). That timer
+        # runs on a daemon thread (`INDEX_JOB_BRIDGE_THREAD_NAME`) that
+        # `start_index_job_bridge` starts once per process and never stops,
+        # so any earlier test in the same worker whose app entered a full
+        # lifespan (`with TestClient(...) as client:`) leaves it ticking for
+        # the rest of the run. Re-patching `mirror_index_jobs_once` below
+        # stops FUTURE ticks from reaching this function, but not a tick
+        # already inside the real one's body when the patch lands: its own
+        # `runner.list_runs(...)` call resolves this name fresh, at call
+        # time, on the bridge's own thread, regardless of which version of
+        # `mirror_index_jobs_once` is executing — so a call landing on that
+        # thread is never one the five requests below caused, and is
+        # excluded by origin rather than raced against.
+        if threading.current_thread().name != index_routes.INDEX_JOB_BRIDGE_THREAD_NAME:
+            calls.append(1)
+        return real(cfg, limit=limit)
+
+    monkeypatch.setattr(runner, "list_runs", recording)
+    # Still silences the bridge's steady-state ticking (the common case);
+    # the thread-origin filter above is what makes a tick that was already
+    # in flight when this lands harmless too.
+    monkeypatch.setattr(index_routes, "mirror_index_jobs_once", lambda cfg=None: False)
     index_routes._forget_runs()
-    # The shipped window has to be a real one, or the assertion below is a
-    # tautology — so it is checked rather than replaced…
     assert index_routes.RUNS_CACHE_S >= 1.0
-    # …and then widened, because HOW MANY keystrokes fit inside it is a fact
-    # about the machine, not about the cache. `_live_runs` compares
-    # `time.monotonic()` against the window on every ranked request, so where
-    # five round trips take longer than RUNS_CACHE_S the entry expires
-    # mid-loop and this reads `assert 2 == 1`, `len([1, 1])`. That is what
-    # `test-python-windows` printed on two separate runs. What is under test
-    # is that a keystroke arriving INSIDE the window is served from the cache;
-    # `test_the_cached_run_listing_expires` below owns the other half, and
-    # forces the clock rather than waiting on it for the same reason.
+    # Widened so a slow round trip through five real HTTP requests cannot age
+    # the entry out from under the loop below — this test owns the "inside
+    # the window" half of the contract, not eviction timing.
     monkeypatch.setattr(index_routes, "RUNS_CACHE_S", 3600.0)
     for q in ("a", "al", "alp", "alph", "alpha"):
         client.get("/api/index/rank", params={"root": root, "q": q})

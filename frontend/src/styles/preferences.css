@@ -192,6 +192,18 @@
   color: var(--fg);
 }
 
+/* Position only — chassis and hover come from `.files-hero-cta` untouched
+   (same reasoning as `.fh-index-cta-btn` above): this is the same "open the
+   home directory" action as that tab-strip button, now offered a second time
+   from inside the search bar, so it should look like the same control. `flex:
+   none` keeps it from stretching in the row `.files-search` gives its other
+   children; the negative margin cancels that pill's own bottom margin, which
+   exists only to clear the tab strip it doesn't sit in here. */
+.files-search-allfiles {
+  flex: none;
+  margin: 0;
+}
+
 /* The results panel: attached to the bar, not a separate card floating below
    it — hence the small gap and no border of its own. */
 .fh-panel {

@@ -36,9 +36,8 @@ import { fitNote } from "@apps/ai_models/shared/fitNote";
 import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
-import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppAnnotation, modelName } from "./appSeed";
-import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
+import { capabilityIcon, unsupportedIcon } from "@apps/ai_models/lib/capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
@@ -63,18 +62,16 @@ import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
 import { Binary, Check, Copy, Cpu, HardDriveDownload, Sparkles } from "lucide-react";
 
-// What the groups are called HERE: the capability vocabulary is exact
-// ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
-// ("Speech to text") — this tab names the WORK instead ("Text generation"),
-// which is the vocabulary the Home strip's cards already use
-// (PLAYGROUND_GROUPS, shared with them so one capability has one name). An
-// unknown capability falls back to the shared label, so a new runner appears
-// (plainly named) instead of vanishing.
-const GROUP_LABELS: Record<string, string> = Object.fromEntries(
-  PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
-);
+// Item 11 extension (fix round 3): `groupLabel` used to read PLAYGROUND_GROUPS'
+// own hand-picked names, which is what let this tab's "Transcription"/"Video"
+// disagree with every other tab's "Speech to text"/"Video generation" for the
+// same capability. `groups.ts` now derives its `label` from `capabilityLabel`
+// itself (the one shared source, D-standard-capability-names), so calling
+// `capabilityLabel` straight from here is the same string PLAYGROUND_GROUPS
+// carries — and it also covers a capability with no Home card (no group
+// entry), so a new runner still appears named instead of vanishing.
 function groupLabel(capability: string): string {
-  return GROUP_LABELS[capability] ?? capabilityLabel(capability);
+  return capabilityLabel(capability);
 }
 
 // A sidebar row's download, counting. The row has one 20px corner for this and

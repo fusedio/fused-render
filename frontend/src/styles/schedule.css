@@ -304,13 +304,19 @@
   gap: 6px;
 }
 
-.schedule-view-btn > svg {
-  flex: 0 0 auto;
+/* ONE COLOUR PER HALF (Akshil, 2026-09-11: "icon and text same color when
+   inactive and same color when active"). The glyph used to be muted on its own
+   while the word beside it kept the button's full colour, so an inactive half
+   read as two weights. The button carries the muted colour and the svg inherits
+   it — one declaration, one hue for both marks; the active half drops the rule
+   and both take the label colour the fill already pairs with. */
+.schedule-view-btn:not(.is-active),
+.prefs-section .schedule-view-btn:not(.is-active) {
   color: var(--fg-muted);
 }
 
-.schedule-view-btn.is-active > svg,
-.prefs-section .schedule-view-btn.is-active > svg {
+.schedule-view-btn > svg {
+  flex: 0 0 auto;
   color: inherit;
 }
 

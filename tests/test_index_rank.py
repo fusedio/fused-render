@@ -32,6 +32,8 @@ import pytest
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.query import (
+    MAX_GLOB_RANK_LIMIT,
+    MAX_RANK_LIMIT,
     is_hidden_rel,
     query_wants_hidden,
     search_ranked,
@@ -315,6 +317,19 @@ def test_no_more_than_limit_rows_come_back_from_the_database(tmp_path):
     assert len(out["hits"]) == 10
     assert out["truncated"] is True
     assert out["total"] == 10
+
+
+def test_glob_mode_clamps_to_its_own_wider_ceiling(tmp_path):
+    files = [f"/r/alpha-{i}.txt" for i in range(50)]
+    cfg = _index(tmp_path, "/r", files)
+    # A substring request asking past MAX_RANK_LIMIT is clamped to it...
+    out = search_ranked(cfg, "/r", "alpha", limit=MAX_GLOB_RANK_LIMIT)
+    assert len(out["hits"]) == min(50, MAX_RANK_LIMIT)
+    # ...but a glob request for the SAME count of matches is not: every glob
+    # hit is an equal match with no tail to trim, so its own ceiling is wider.
+    out = search_ranked(cfg, "/r", "*.txt", limit=MAX_GLOB_RANK_LIMIT, glob=True)
+    assert len(out["hits"]) == 50
+    assert out["truncated"] is False
 
 
 def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_path):

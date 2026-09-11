@@ -6,15 +6,18 @@
 // against one read as a mistake, so the search row moved INTO the bar: crumbs
 // at the left, the box and the `···` at its right end, one strip per column.
 //
-// Breadcrumb.tsx renders the target div (only while a folder holds the chrome
-// claim — a file view's bar has no search); Listing.tsx portals its existing
-// `.listing-search` row into it, unchanged. A portal rather than moving the
-// markup, because the row is woven into the listing's state: the query, the
-// walk's live counts, the selection readout and `searchInputRef` (which the
-// keyboard focuses from anywhere in the listing) all belong to Listing.
+// Breadcrumb.tsx renders the target div (only while the bar holds the chrome
+// claim — Listing.tsx over a folder, FileSearchField.tsx over a plain file);
+// the claimant portals its own SearchField into it, unchanged. A portal
+// rather than moving the markup, because the row is woven into the caller's
+// own state: the query, the walk's live counts and `searchInputRef` (which
+// the keyboard focuses from anywhere in the view) belong to whichever of the
+// two claimed the bar.
 //
 // Hosts with no crumb bar — the app builder — publish nothing, and the row
 // renders where it always did, as the column's own first strip.
+import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { createNodeSlot } from "@apps/explorer/node-slot";
 
 const slot = createNodeSlot();
@@ -24,3 +27,10 @@ export const retractSearchSlot = slot.retract;
 export const searchSlot = slot.get;
 export const subscribeSearchSlot = slot.subscribe;
 export const resetSearchSlot = slot.reset;
+
+// Portals `row` into the slot when one is published, or hands it back as-is
+// otherwise (a host with no crumb bar at all). One helper so a claimant's own
+// render never has to spell out the `slot ? createPortal(...) : row` branch.
+export function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
+  return slot ? createPortal(row, slot) : row;
+}

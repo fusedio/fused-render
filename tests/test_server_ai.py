@@ -431,6 +431,52 @@ def test_relay_remote_job_row_closes_on_missing_binary(monkeypatch):
     assert jobs.list_jobs() == []
 
 
+def test_relay_remote_job_row_page_defaults_to_claude_config(monkeypatch):
+    # No caller page (a direct module-level call, or a test, may never set
+    # X-Fused-Page at all) falls back to where this model is configured
+    # rather than leaving the row with nowhere to go.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["page"] == "/claude-config"
+
+
+def test_relay_remote_job_row_page_is_the_callers_page_when_given(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))
+    row = jobs.list_jobs()[0]
+    assert row["page"] == "/tasks"
+
+
+def test_relay_remote_job_row_origin_defaults_to_playground(monkeypatch):
+    # `_ai_relay` is the generic remote-Claude path for `/api/ai`, reachable
+    # from the Playground, Claude annotations, and any future caller alike —
+    # no single literal would be honest for all of them, so the row's
+    # `origin` is derived from the caller's own page instead of stated. The
+    # empty-page case here is NOT the same fallback as the row's `page`
+    # field ("/claude-config", a defensible click destination): the actual
+    # caller that reaches this relay with no X-Fused-Page at all is the AI
+    # Models Playground itself, which runs in the shell rather than inside a
+    # page iframe, so the caption defaults to "Playground" — the same
+    # default `_start_render`/`text_row_fields` use for their own identical
+    # empty-page case.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["origin"] == "Playground"
+
+
+def test_relay_remote_job_row_origin_names_the_callers_page_when_given(
+        monkeypatch):
+    # A caller with its own real page (here, the Scheduler) gets its own
+    # honest caption rather than "Claude setup" — the same derivation
+    # `_ai_relay`'s `page` argument already drives for the row's `page`.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))
+    row = jobs.list_jobs()[0]
+    assert row["origin"] == "Scheduler"
+
+
 def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):
     _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
     resp, frames = _stream({"prompt": "hello", "stream": True})
@@ -491,7 +537,7 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         _server_ai, "_local_relay",
-        lambda model, prompt, system_prompt, stream, body, warnings=None:
+        lambda model, prompt, system_prompt, stream, body, warnings=None, page="":
             _server_ai.JSONResponse({"ok": True, "result": {
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})

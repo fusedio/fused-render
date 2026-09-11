@@ -107,6 +107,22 @@ def test_newest_activity_first(agent, target):
     assert [r["id"] for r in rows] == ["cli-new", "cli-mid", "cli-old"]
 
 
+def test_a_running_chat_sorts_above_a_newer_finished_one(agent, target, monkeypatch):
+    """The Tasks list's rule (LIST_ORDER): what is still doing something sits
+    above what is over, and time orders within. A transcript is written in one
+    burst when the turn ENDS, so a chat mid-turn carries an OLDER mtime than one
+    that finished after it started — by time alone it sat under a finished chat
+    while wearing "running" (Akshil, 2026-09-11)."""
+    _, workdir = target
+    rows = [{"id": "done-4m", "preview": "p", "last_used": 100.0, "running": False},
+            {"id": "running-old", "preview": "p", "last_used": 40.0, "running": True},
+            {"id": "done-1h", "preview": "p", "last_used": 10.0, "running": False},
+            {"id": "running-older", "preview": "p", "last_used": 30.0, "running": True}]
+    monkeypatch.setattr(agent, "_cli_sessions", lambda f: list(rows))
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == \
+        ["running-old", "running-older", "done-4m", "done-1h"]
+
+
 def test_a_null_last_used_does_not_crash_the_sort(agent, target, monkeypatch):
     """The sort reads `last_used or created_at or 0`; a row missing both — or
     carrying explicit nulls — must fall to 0, not into a None comparison."""

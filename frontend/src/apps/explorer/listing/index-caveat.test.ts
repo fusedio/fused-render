@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { indexCaveat, searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { indexCaveat, searchCaveat } from "@apps/explorer/listing/index-caveat";
 import type { IndexStatus } from "@platform/lib/api";
 
 function status(over: Partial<IndexStatus> = {}): IndexStatus {
@@ -73,20 +73,19 @@ describe("indexCaveat", () => {
     // something is coming.
     expect(indexCaveat(status({ scanning: false }), true, true)!.note).toBe("indexing…");
   });
-});
 
-describe("withCaveat", () => {
-  it("keeps both facts in one chip", () => {
-    expect(withCaveat("62 matches", indexCaveat(status()))).toBe("62 matches · indexing…");
+  it("says the search failed rather than merely 'not refreshed'", () => {
+    // A failed request with rows on screen is a `behind` case too (see
+    // `useListingSearch.ts`'s `behind`), but "not refreshed… run it again"
+    // promises a plain re-run will catch up, which is false right after one
+    // just failed — this caption has to say what actually happened.
+    const c = indexCaveat(status({ scanning: false }), true, false, true)!;
+    expect(c.note).toBe("search failed");
+    expect(c.title).toContain("failed");
   });
 
-  it("stands alone when there is no count yet", () => {
-    expect(withCaveat(null, indexCaveat(status()))).toBe("indexing…");
-  });
-
-  it("leaves the count untouched when nothing is scanning", () => {
-    expect(withCaveat("62 matches", null)).toBe("62 matches");
-    expect(withCaveat(null, null)).toBeNull();
+  it("a running scan still outranks a failed request", () => {
+    expect(indexCaveat(status(), true, false, true)!.note).toBe("indexing…");
   });
 });
 
@@ -116,5 +115,19 @@ describe("searchCaveat", () => {
 
   it("keeps quiet when there is nothing to say", () => {
     expect(searchCaveat(status({ scanning: false }), state())).toBeNull();
+  });
+
+  it("says the search failed when told the rows are behind a failed request", () => {
+    expect(
+      searchCaveat(status({ scanning: false }), state({ behind: true, failed: true }))!.note,
+    ).toBe("search failed");
+  });
+
+  it("defaults to the generic caption when the caller never passes failed", () => {
+    // FilesHome.tsx's own search can fail the same way but reports it
+    // through its own banner, not this chip — omitting `failed` must not
+    // crash and must not silently claim "search failed" on its behalf.
+    expect(searchCaveat(status({ scanning: false }), state({ behind: true }))!.note)
+      .toBe("not refreshed");
   });
 });

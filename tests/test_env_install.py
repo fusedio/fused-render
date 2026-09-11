@@ -40,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from fused_render import engine, envinstall, projectenv
+from fused_render._view_url_codec import canonical_fs_path
 
 # The engine these tests describe is 3.11+ (the `[fused]` extra's wheel is
 # marked `python_version >= "3.11"`), so on 3.10 the backend is never
@@ -933,11 +934,11 @@ def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
 
 
 @requires_fused
-def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
-    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`)
-    must always reach a real worker — a user who chose to compile from source
-    must not be told "no" by a record left over from a `--no-build` run that
-    never even tried that."""
+def test_user_confirmed_build_bypasses_the_poison_record(tmp_path, monkeypatch):
+    """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`,
+    which now also sets `user_confirmed_build`) must always reach a real
+    worker — a user who chose to compile from source must not be told "no" by
+    a record left over from a `--no-build` run that never even tried that."""
     proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
     key = envinstall.venv_key_for(proj)
     poisoned = {
@@ -955,10 +956,50 @@ def test_allow_build_bypasses_the_poison_record(tmp_path, monkeypatch):
     spawned = []
     monkeypatch.setattr(envinstall, "_spawn",
                         lambda k, p, **kw: spawned.append((k, p, kw)) or os.getpid())
-    rec = envinstall.start(proj, allow_build=True)
-    assert spawned, "allow_build=True must bypass the poison record"
+    rec = envinstall.start(proj, allow_build=True, user_confirmed_build=True)
+    assert spawned, "user_confirmed_build=True must bypass the poison record"
     assert rec["claimed"] is True
     assert spawned[0][2].get("allow_build") is True
+
+
+@requires_fused
+def test_a_declarative_allow_build_does_not_bypass_the_poison_record(tmp_path, monkeypatch):
+    """The bug code review caught: `allow_build=True` with no
+    `user_confirmed_build` is exactly the shape `ai/supervisor.py._ensure_venv`
+    now passes automatically, every load, for a runner that declares
+    `[tool.fused-render.runner] allow_build = true` (ltx_video) — with no
+    click, ever. If that alone bypassed the poison record, a user whose ltx
+    install fails for a repeatable reason would get a fresh detached `uv
+    sync` worker spawned on every single model load, forever, with no
+    short-circuit — where every other runner would have stopped retrying.
+    Only an actual "install anyway" click (`user_confirmed_build=True`) may
+    bypass a poisoned record; a folder's own manifest declaring it wants to
+    build is not that."""
+    proj = _project(tmp_path, deps=["pyobjc-framework-applicationservices"])
+    key = envinstall.venv_key_for(proj)
+    poisoned = {
+        "stage": "done", "pct": 100, "detail": "", "done": True,
+        "error": "error: marked as `--no-build`",
+        "pid": os.getpid(), "ts": time.time(),
+        "platform_incompatible": {
+            "package": "pyobjc-framework-applicationservices",
+            "platform": "macOS", "current_platform": "Linux",
+        },
+        "manifest_digest": projectenv.state_digest(proj),
+    }
+    envinstall._write(key, poisoned)
+
+    def never(*a, **kw):
+        raise AssertionError(
+            "a poisoned key must not spawn attempt N+1 from a declarative "
+            "allow_build alone"
+        )
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    rec = envinstall.start(proj, allow_build=True)
+    assert rec["key"] == key
+    assert rec["platform_incompatible"] == poisoned["platform_incompatible"]
+    assert rec["done"] is True and rec["error"]
 
 
 # --- a jobs-dock row for every venv install -----------------------------------
@@ -1030,6 +1071,80 @@ def test_start_mirrors_the_install_into_a_jobs_dock_row(
 
     row = _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
     assert row["state"] == "done"
+
+
+@requires_fused
+def test_the_mirrored_row_points_at_the_app_folder(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The row's destination is the project folder whose environment is
+    being installed — already resolved as `project_dir` for the row's title,
+    so a failed install's row in Notifications opens the app it belongs to."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+
+    row = _wait_until(lambda: _job(job_id))
+    # Canonical (forward-slash) form: `project_dir` can reach the mirror
+    # OS-native (backslashed on Windows), and a page is compared against the
+    # canonical spelling everywhere else it is stored or read.
+    assert row["page"] == canonical_fs_path(str(proj))
+
+
+def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
+    """`envinstall.start` is typed to take a `str`, but `ai/supervisor.py`
+    calls it with `runner.folder`, a `pathlib.Path` — and `_mirror_into_jobs`
+    passes `project_dir` straight through to `canonical_fs_path` uncoerced.
+    A `Path` whose string form is drive-shaped reaches `canonical_fs_path`'s
+    `.replace("\\\\", "/")` call, but `Path.replace` takes one argument (a
+    rename target), not two — a `TypeError` that kills the mirror thread
+    silently before the jobs-dock row is ever created. Coercing to `str`
+    first, like the sibling call sites in `ai/supervisor.py` already do,
+    is what a POSIX test host can still catch this on: a `Path` built from a
+    Windows-shaped string is a `PosixPath` here, not a real `WindowsPath`,
+    but it fails the same `.replace` call the same way."""
+    monkeypatch.setattr(envinstall, "progress", lambda key: {"done": True})
+    captured = []
+    from fused_render import jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod, "upsert",
+                        lambda body, **kw: captured.append(kw) or {})
+    monkeypatch.setattr(jobs_mod, "clear_cancel_requested", lambda job_id: None)
+
+    key = "0123456789abcdef"
+    envinstall._mirror_into_jobs(key, Path(r"C:\Users\runner\app"))
+    deadline = time.monotonic() + 5.0
+    while not captured and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert captured, "the mirror thread never reported (crashed uncoercing the Path?)"
+    assert captured[0].get("page") == "C:/Users/runner/app"
+
+
+def test_the_mirrored_row_canonicalizes_a_windows_shaped_project_dir(monkeypatch):
+    """`_mirror_into_jobs` can be handed an OS-native `project_dir` whatever
+    the CALLER'S own spelling was — `ai/supervisor.py`'s
+    `envinstall.start(runner.folder, ...)` passes one straight through — so a
+    Windows-shaped path reaches its opening `jobs.upsert` even on a POSIX
+    test host. The row's `page` still has to be the canonical spelling."""
+    monkeypatch.setattr(envinstall, "progress", lambda key: {"done": True})
+    captured = []
+    from fused_render import jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod, "upsert",
+                        lambda body, **kw: captured.append(kw) or {})
+    monkeypatch.setattr(jobs_mod, "clear_cancel_requested", lambda job_id: None)
+
+    key = "0123456789abcdef"
+    envinstall._mirror_into_jobs(key, r"C:\Users\runner\app")
+    deadline = time.monotonic() + 5.0
+    while len(captured) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert captured, "the mirror thread never reported"
+    assert captured[0].get("page") == "C:/Users/runner/app"
 
 
 @requires_fused

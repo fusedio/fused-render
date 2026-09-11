@@ -33,6 +33,7 @@ const JOB: Job = {
   unit: "",
   message: "",
   page: "",
+  origin: "",
   owner: "server",
   cancellable: true,
   cancel_requested: false,
@@ -41,6 +42,7 @@ const JOB: Job = {
   finished_at: null,
   stalled: false,
   waiting_for: "",
+  tier: "trail",
 };
 
 /** Drive one watch over a scripted sequence of polls. A string entry is a

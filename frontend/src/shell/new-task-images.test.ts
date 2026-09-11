@@ -3,7 +3,7 @@
 // tested as the functions they are; the wiring that no pure function holds — what
 // a paste intercepts, when the upload is awaited, where an Edit's attachments come
 // from — is pinned to the source, this repo's habit for exactly that kind of claim
-// (see new-task-form.test.ts and repoCardControls.test.ts).
+// (see new-task-form.test.ts and local/ModelRow.test.ts).
 //
 // ANY FILE, NO CAPS (D618): the count cap, the byte cap, the image-only MIME gate
 // and the ＋ picker are all gone, and each absence is asserted AS an absence —
@@ -355,5 +355,47 @@ describe("the wiring the pure tests cannot see", () => {
 
   it("attaching arms the dirty guard — an added file must not be lost to a silent ✕", () => {
     expect(MODAL).toContain('images.map((i) => i.path || "pending").join("\\n") !== initial.images');
+  });
+});
+
+// ---- the chat's tray arrives as this card's chips --------------------------
+// owner E2E R1, F4 (2026-09-10): a draft carrying three screenshots is one thing
+// the user assembled, and the handoff used to bring the words without them.
+const SCHEDULED = readFileSync(join(HERE, "Scheduled.tsx"), "utf8");
+
+describe("the chat handoff's attachments", () => {
+  it("seed IDENTICAL chips to an edit's — one restore function, not two", () => {
+    const carried = [
+      { path: "/h/task-shots/20260910-a.png", name: "screenshot.png", kind: "image" as const },
+      { path: "/h/task-shots/20260910-b.csv", name: "rows.csv", kind: "file" as const },
+    ];
+    expect(restoredAttachments({ images: [], attachments: carried })).toEqual(
+      restoredAttachments({ attachments: carried }),
+    );
+    expect(restoredAttachments({ images: [], attachments: carried })
+      .map((c) => [c.name, c.kind, c.thumb]))
+      .toEqual([["screenshot.png", "image", null], ["rows.csv", "file", null]]);
+  });
+
+  it("an EDIT still outranks them — the entry's own attachments are the ones on the card", () => {
+    // Pinned to the source because it is a branch in a `useState` initialiser,
+    // which runs once and cannot be observed from a pure call.
+    expect(MODAL).toContain("editing\n      ? restoredAttachments(editing)");
+    expect(MODAL).toContain(
+      'restoredAttachments({ images: [], attachments: initialAttachments ?? [] })');
+  });
+
+  it("Save sends them, in the field the backend reads names off", () => {
+    // Already the case for a dropped file, and a seeded chip is the same chip:
+    // both are rows of `imagesRef`, so nothing about the payload changes.
+    expect(MODAL).toContain(".map((i) => ({ path: i.path, name: i.name, kind: i.kind }))");
+  });
+
+  it("the Tasks page parses the param through the chat's own parser and CONSUMES it", () => {
+    expect(SCHEDULED).toContain(
+      'setNewAttachments(parseAttachmentsParam(q.get("attachments")));');
+    // Deleted with the rest, or a reload reopens the modal forever.
+    expect(SCHEDULED).toContain('q.delete("attachments");');
+    expect(SCHEDULED).toContain("initialAttachments={newAttachments}");
   });
 });

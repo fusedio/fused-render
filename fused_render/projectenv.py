@@ -678,6 +678,54 @@ def has_project_env(project_dir: str) -> bool:
     return bool(applicable_dependencies_of(project_dir))
 
 
+def runner_allows_build(project_dir: str) -> bool:
+    """Does this folder's own manifest opt into a source build?
+
+    `[tool.fused-render.runner]` follows the same shape `background_apps.py`'s
+    `[tool.fused-render.app]` already uses: a declarative table the FOLDER
+    carries next to the dependency that needs it, rather than a hardcoded name
+    list in Python that a new runner's author would have no reason to know
+    about. Every bundled AI runner installs through `envinstall.start` with
+    `allow_build` defaulting to False (PY-18's wheels-only rule) — this is the
+    one, folder-declared way a runner can ask for the opposite, for the one
+    reason that ever justifies it: a dependency with no PyPI release and no
+    wheels, where `--no-build` cannot possibly succeed (see
+    `ai/runners/ltx_video/pyproject.toml`'s header for the worked example).
+
+    Absent, not a table, or `allow_build` missing/falsy all read as False —
+    the safe default for the hundred-odd folders that never touch this table
+    at all. Only `allow_build = true` (a literal bool; `"true"` the string
+    does not count, same discipline `background_apps.py` applies to its own
+    flags) opts in.
+
+    **Coupling a caller must not miss:** `_env_install_worker._build` appends
+    `--no-build` and `--no-install-project` TOGETHER, only when `allow_build`
+    is False (see that function's own docstring for why they ride together —
+    `--no-build` alone would also refuse to build the local project the
+    instant it declares `[build-system]`, which a bare `uv init` scaffold
+    does by default). So opting in here also drops `--no-install-project`,
+    which re-enables installing the RUNNER'S OWN FOLDER as a project into its
+    venv. That is harmless only when the folder also declares
+    `[tool.uv] package = false` (a folder of scripts, not a distribution) —
+    true of `ai/runners/ltx_video/pyproject.toml` today, but for an unrelated
+    reason nothing here enforces. A runner that opts into `allow_build`
+    without also declaring `package = false` gets its own folder built and
+    installed, and in a packaged app that folder is read-only.
+    `tests/test_ai_runner_deps.py`'s
+    `test_an_opted_in_runner_also_declares_package_false` checks this pairing
+    for every runner folder; this function only reads `allow_build` itself.
+    """
+    meta = _load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return False
+    tool = meta.get("tool")
+    table = tool.get("fused-render") if isinstance(tool, dict) else None
+    runner = table.get("runner") if isinstance(table, dict) else None
+    if not isinstance(runner, dict):
+        return False
+    return runner.get("allow_build") is True
+
+
 def dependencies_of(project_dir: str) -> list[str]:
     """`[project].dependencies` verbatim, markers included.
 

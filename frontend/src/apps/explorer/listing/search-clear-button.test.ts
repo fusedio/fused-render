@@ -1,0 +1,160 @@
+// A real clear-search control, not the suppressed native WebKit cancel
+// button (that collision with the count chip is why it was hidden in the
+// first place). Same CSS-parsing pattern as search-bar-expand.test.ts: read
+// explorer.css and SearchField.tsx as text, no DOM in this suite. The box's
+// own markup lives in SearchField.tsx (both the folder host, Listing.tsx, and
+// the file host, FileSearchField.tsx, render it) rather than in either host.
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const CSS = readFileSync(join(import.meta.dir, "../../../styles/explorer.css"), "utf8").replace(
+  /\/\*[\s\S]*?\*\//g,
+  "",
+);
+const LISTING = readFileSync(join(import.meta.dir, "../SearchField.tsx"), "utf8");
+
+function rulesFor(selectorExact: string): string[] {
+  const out: string[] = [];
+  const re = /([^{}]+)\{([^{}]*)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(CSS)) !== null) {
+    if (m[1].trim() === selectorExact) out.push(m[2]);
+  }
+  return out;
+}
+
+test("the clear button sits between the count chip and the star, and the star stays last", () => {
+  const countAt = LISTING.indexOf('className="listing-search-count"');
+  const clearAt = LISTING.indexOf('className="listing-search-clear"');
+  const starAt = LISTING.indexOf("<BookmarkStar");
+  expect(countAt).toBeGreaterThan(-1);
+  expect(clearAt).toBeGreaterThan(-1);
+  expect(starAt).toBeGreaterThan(-1);
+  expect(clearAt).toBeGreaterThan(countAt);
+  expect(starAt).toBeGreaterThan(clearAt);
+});
+
+test("shown only while the query is non-empty, nothing else claiming its else-branch", () => {
+  const at = LISTING.indexOf('className="listing-search-clear"');
+  const before = LISTING.slice(Math.max(0, at - 200), at);
+  expect(before).toMatch(/hasClear\s*&&\s*\(/);
+  const hasClearDef = LISTING.indexOf("const hasClear = query !== \"\";");
+  expect(hasClearDef).toBeGreaterThan(-1);
+});
+
+test("carries the required aria-label", () => {
+  const at = LISTING.indexOf('className="listing-search-clear"');
+  const nearby = LISTING.slice(at, at + 300);
+  expect(nearby).toMatch(/aria-label="Clear search"/);
+});
+
+test("clicking it clears via mousedown+preventDefault, never a click handler that would fire after blur", () => {
+  const at = LISTING.indexOf('className="listing-search-clear"');
+  const nearby = LISTING.slice(at, at + 500);
+  expect(nearby).toMatch(/onMouseDown=/);
+  expect(nearby).not.toMatch(/onClick=/);
+  expect(nearby).toMatch(/preventDefault\(\)/);
+  expect(nearby).toMatch(/clearSearchQuery\(\)/);
+});
+
+// ITEM 2 fix (2026-09-10): the clear button used to leave the field
+// focused (its own onMouseDown calls preventDefault(), which suppresses
+// the browser's native mousedown-blur), so an empty, cleared query still
+// satisfied the teaching panel's `fieldActive && pristine` gate and the
+// panel stayed on screen over the resting crumb display — the button
+// meant "get me out" but summoned the very thing being left. The shared
+// teardown now blurs unconditionally, so Escape and the clear button
+// really do share ONE full exit rather than Escape alone remembering to
+// blur afterward.
+test("the shared teardown clears the query, unpins, drops fieldActive, and blurs — one full exit for both callers", () => {
+  const at = LISTING.indexOf("const clearSearchQuery = () => {");
+  expect(at).toBeGreaterThan(-1);
+  const body = LISTING.slice(at, LISTING.indexOf("};", at));
+  expect(body).toMatch(/setQuery\(""\)/);
+  expect(body).toMatch(/setPinnedOpen\(false\)/);
+  expect(body).toMatch(/setFieldActive\(false\)/);
+  expect(body).toMatch(/searchInputRef\.current\?\.blur\(\)/);
+});
+
+// Escape must not carry a SECOND, redundant blur of its own now that the
+// shared teardown does it — two teardown paths for the same gesture is
+// exactly what the task ruled out.
+test("Escape defers entirely to the shared teardown — no separate blur call of its own", () => {
+  const at = LISTING.indexOf('if (e.key === "Escape")');
+  expect(at).toBeGreaterThan(-1);
+  const body = LISTING.slice(at, LISTING.indexOf("return;", at));
+  expect(body).toMatch(/clearSearchQuery\(\)/);
+  expect(body).not.toMatch(/e\.currentTarget\.blur\(\)/);
+});
+
+test("styled as a quiet pill matching the star's own token pair", () => {
+  const decls = rulesFor(".listing-search-clear");
+  expect(decls.length).toBe(1);
+  const decl = decls[0];
+  expect(decl).toMatch(/background:\s*var\(--ctl-quiet-bg\)/);
+  const hoverDecls = rulesFor(".listing-search-clear:hover");
+  expect(hoverDecls.length).toBe(1);
+  expect(hoverDecls[0]).toMatch(/background:\s*var\(--ctl-quiet-bg-hover\)/);
+});
+
+test("sits inboard of the star inside the claimed-folder crumb bar", () => {
+  const decls = rulesFor(".crumb-search-slot .listing-search-box .listing-search-clear");
+  expect(decls.length).toBe(1);
+  expect(decls[0]).toMatch(/right:\s*38px/);
+});
+
+// The trailing decorative magnifier is gone: the mode chip at the field's
+// leading edge (search-mode-chip.test.ts) now carries that meaning, and two
+// magnifiers in one field would say the same thing twice. Nothing with
+// class "listing-search-glyph" is emitted or styled any more — the clear
+// button's own else-branch is empty, not a second glyph.
+test("no trailing magnifier survives, in markup or in CSS", () => {
+  expect(LISTING).not.toMatch(/listing-search-glyph/);
+  expect(rulesFor(".listing-search-glyph").length).toBe(0);
+  expect(rulesFor(".crumb-search-slot .listing-search-box .listing-search-glyph").length).toBe(0);
+});
+
+test("the input reserves no left gutter keyed to the magnifier's old name", () => {
+  const decls = rulesFor(".listing-search .listing-search-input");
+  expect(decls.length).toBe(1);
+  expect(decls[0]).not.toMatch(/padding-left/);
+});
+
+// SPEC-omnibox-search-affordance.md scope item 3: the keyboard hint is a
+// real pressable button now, not decoration — it takes over the vacated
+// trailing slot only once the field is both unfocused and empty
+// (`hasClear` alone would leave it painting over a blurred-with-a-query
+// field's clear button), same gate as before.
+test("the search button occupies the trailing slot only when unfocused and empty, and IS a control", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
+  expect(at).toBeGreaterThan(-1);
+  const before = LISTING.slice(Math.max(0, at - 200), at);
+  expect(before).toMatch(/!pinnedOpen\s*&&\s*!hasClear\s*&&\s*\(/);
+  // A real control now: it carries its own click handler, reusing the
+  // existing ⌘L focus path rather than a decoration a press falls through.
+  const nearby = LISTING.slice(at, at + 700);
+  expect(nearby).toMatch(/onClick=/);
+});
+
+test("the search button sits at the box's trailing edge, sharing the clear button's own position", () => {
+  // Two exact matches for this selector: the base rule and the narrow-width
+  // `display: none` override nested under the container query — the base
+  // rule is the one written first in the file.
+  const decls = rulesFor(".listing-search-shortcut-hint");
+  expect(decls.length).toBe(2);
+  const base = decls[0];
+  expect(base).toMatch(/position:\s*absolute/);
+  expect(base).toMatch(/right:\s*8px/);
+  // No `pointer-events: none` any more — unlike the decoration it replaces,
+  // this one IS the control and a press must land on it.
+  expect(base).not.toMatch(/pointer-events:\s*none/);
+  // No left-gutter rule of its own.
+  expect(base).not.toMatch(/left:/);
+});
+
+test("the keyboard hint moves in to clear the star inside the claimed-folder crumb bar, same offset as the clear button", () => {
+  const decls = rulesFor(".crumb-search-slot .listing-search-box .listing-search-shortcut-hint");
+  expect(decls.length).toBe(1);
+  expect(decls[0]).toMatch(/right:\s*38px/);
+});

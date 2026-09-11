@@ -115,7 +115,16 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     allow_build = bool(body.get("allow_build"))
 
     try:
-        record = envinstall.start(project, allow_build=allow_build)
+        # `user_confirmed_build` mirrors `allow_build` here on purpose: this
+        # endpoint's `allow_build` IS the explicit "install anyway" click
+        # (see the comment above), so it is also the one thing that may
+        # bypass a poisoned record. `ai/supervisor.py._ensure_venv`'s own
+        # `envinstall.start` call — the runner's declarative opt-in, no click
+        # involved — leaves `user_confirmed_build` at its default False; see
+        # `start`'s own docstring for why the two parameters must not be
+        # conflated.
+        record = envinstall.start(
+            project, allow_build=allow_build, user_confirmed_build=allow_build)
         # The key comes back FROM `start`, never recomputed here: when this machine
         # has no pinned Python yet the install reports under
         # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a

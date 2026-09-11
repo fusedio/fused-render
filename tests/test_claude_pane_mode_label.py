@@ -55,5 +55,5 @@ def test_the_labels_the_picker_already_agreed_on_still_hold():
     than shipping two names a strip apart. An unknown key still gets the
     humanizer rather than a guess."""
     want = _shell_label("_render")
-    assert want == "Render", "read from the shell; update the template if this changed"
+    assert want == "Preview", "read from the shell; update the template if this changed"
     assert _pane_label(["_render", "duckdb"]) == [want, "Duckdb"]

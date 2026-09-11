@@ -63,6 +63,14 @@ import type {
   Task,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
+// The chat's own handoff module, not a second reading of its URL shape: the
+// param is written by `schedulerUrl` and there must be exactly one parser for it
+// (owner E2E R1, F4 (2026-09-10)). A leaf module with no imports of its own, so
+// this costs the shell chunk nothing but the function.
+import {
+  parseAttachmentsParam,
+  type SchedAttachment,
+} from "@apps/claude/ui/sched-draft";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -112,6 +120,11 @@ import { isUnderDir } from "./current-apps-lib";
 export interface TasksScope {
   /** The app folder, canonical forward-slash — the value `Task.project` carries. */
   project: string;
+  /** That folder's entry page when it has one, already resolved by the app page
+   *  (AppPage asks `getAppEntry` to frame the Overview). PREFILLS a new task's
+   *  target and nothing else — never the filter, which stays on `project` so
+   *  the tab keeps listing every task in the folder. */
+  entry?: string | null;
 }
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
@@ -253,6 +266,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [newMessage, setNewMessage] = useState<string | null>(null);
   const [newSession, setNewSession] = useState<string | null>(null);
   const [newBack, setNewBack] = useState<string | null>(null);
+  // The chips the chat's tray was holding, already copied into the task-shots
+  // dir by the composer's Schedule button — so what arrives here is exactly the
+  // shape a saved entry's `attachments` has, and the card seeds from it the same
+  // way an Edit does (owner E2E R1, F4 (2026-09-10)).
+  const [newAttachments, setNewAttachments] = useState<SchedAttachment[]>([]);
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
@@ -293,6 +311,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     setNewMessage(q.get("message"));
     setNewSession(q.get("session_id"));
     setNewBack(q.get("back"));
+    // Defensive by contract, not by suspicion: this is a URL a user can edit
+    // and a param an older build may not have written — `parseAttachmentsParam`
+    // answers [] for anything it cannot read, because a parse error here would
+    // cost the folder, the draft and the session as well as the files.
+    setNewAttachments(parseAttachmentsParam(q.get("attachments")));
     openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
     q.delete("new");
     q.delete("target");
@@ -300,6 +323,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     q.delete("session_id");
     q.delete("back");
     q.delete("edit");
+    q.delete("attachments");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -778,11 +802,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // `openSeq` above.
           key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
-          // Scoped, a new task is a task FOR THIS APP: the folder is prefilled
-          // so the modal opens ready to type. A deep link's own target still
-          // wins — it named a folder on purpose.
-          initialTarget={newTarget ?? scope?.project ?? null}
+          // Scoped, a new task is a task FOR THIS APP: the entry page is
+          // prefilled so the modal opens ready to type, because a task made
+          // from inside an app is nearly always about the page, not the folder
+          // around it. The folder is the fallback when the app has no entry.
+          // Prefill only — the field shows exactly what will be saved, and
+          // deleting the filename back to the folder is the user's to make. A
+          // deep link's own target still wins: it named a path on purpose.
+          initialTarget={newTarget ?? scope?.entry ?? scope?.project ?? null}
           initialMessage={newMessage}
+          initialAttachments={newAttachments}
           chatSessionId={newSession}
           chatBack={newBack}
           editing={editing}

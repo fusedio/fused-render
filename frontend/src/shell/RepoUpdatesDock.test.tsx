@@ -17,7 +17,7 @@ import type { Job } from "@platform/lib/jobs";
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
 // router.ts (`{navigate: () => {}}`), which broke TWO unrelated files
-// (useWalkSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
+// (useListingSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
 // three ran in the same `bun test` invocation. `mock.module` replaces a
 // specifier for the WHOLE process, not just this file — first-registration
 // wins, so a stub written for THIS file's needs quietly became the module
@@ -45,10 +45,45 @@ import type { Job } from "@platform/lib/jobs";
   pushState: () => {},
 };
 
+// A rowClick's `onClick` calls `navigateUrl`, which touches `history` and
+// `window` — both deleted right after the import below, the same as
+// `location` (see the block comment above). Most tests never press a
+// rowClick, so they never need these back; the few that do restore them only
+// for the press itself, via this helper, so nothing here leaks between tests.
+function withNav<T>(run: (pushed: string[]) => T): T {
+  const pushed: string[] = [];
+  const realHistory = (globalThis as Record<string, unknown>).history;
+  const realWindow = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).history = {
+    state: null,
+    replaceState: () => {},
+    pushState: (_s: unknown, _t: string, u: string) => pushed.push(u),
+  };
+  (globalThis as Record<string, unknown>).window = { dispatchEvent: () => true };
+  try {
+    return run(pushed);
+  } finally {
+    (globalThis as Record<string, unknown>).history = realHistory;
+    (globalThis as Record<string, unknown>).window = realWindow;
+  }
+}
+
 const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
 import type { AttentionRow } from "@shell/tasks-lib";
+// notifications.ts (and its router.ts import) is already evaluated by the
+// dynamic import above — RepoUpdatesDock.tsx imports it — so this second
+// `await import` just reads the cached module; it does NOT re-run
+// router.ts's module-init `location` read, and is safe after the
+// `location`/`window`/`history` globals above are deleted. Used only by the
+// "messages" tests below, to drive the real store the way `MessageRowView`'s
+// dismiss button does (it calls `dismissNotification` directly, not through
+// a prop — see RepoUpdatesDock.tsx's own header comment on that row kind).
+const { notify, getRetainedNotifications, _resetNotificationsForTest } = await import(
+  "@platform/lib/notifications"
+);
+import type { StoredNotification } from "@platform/lib/notifications";
 
 // The globals above exist only to get router.ts's module-init code through
 // ITS one-time evaluation above (triggered by the dynamic import) — nothing
@@ -95,6 +130,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   unit: "",
   message: "GDAL ran out of memory",
   page: "",
+  origin: "",
   owner: "server",
   cancellable: false,
   cancel_requested: false,
@@ -103,6 +139,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   finished_at: 0,
   stalled: false,
   waiting_for: "",
+  tier: "trail",
   ...over,
 });
 
@@ -155,12 +192,14 @@ function renderInstance(
       attention={props.attention ?? []}
       attentionDismissed={props.attentionDismissed ?? {}}
       onAttentionDismiss={props.onAttentionDismiss}
+      messages={props.messages ?? []}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
       onTerminalPatch={props.onTerminalPatch}
+      onPairingGone={props.onPairingGone}
     />,
   );
 }
@@ -783,17 +822,21 @@ test("the footer is absent at one repo row and present at two", () => {
   expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
-test("repo rows come before failures — the actionable rows first", () => {
+test("a failure comes before an ordinary repo row — Needs you precedes Worth keeping (item 3)", () => {
   // Both row kinds share `.dl-row` now (status-bar merge, brief item 4), so
   // ordering is asserted by what each kind carries rather than by class name:
   // a repo row's own action button is `.q-all` (kept — see this row's own
   // header comment for why it did not migrate to `.dl-row-cancel`), which a
-  // terminal-job row (`JobRow`) never renders.
+  // terminal-job row (`JobRow`) never renders. `failedJob()`'s `state: "error"`
+  // makes its `effectiveTier` "attention" regardless of its declared tier, so
+  // it lands in "Needs you" — the section item 3 draws FIRST — ahead of the
+  // ordinary repo row in "Worth keeping", reversing what used to be true when
+  // every terminal job shared one flat list with the repo rows.
   const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), terminal: [failedJob()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(2);
-  expect(findAll(rows[0], "q-all")).toHaveLength(1);
-  expect(findAll(rows[1], "q-all")).toHaveLength(0);
+  expect(findAll(rows[0], "q-all")).toHaveLength(0);
+  expect(findAll(rows[1], "q-all")).toHaveLength(1);
 });
 
 // D673 (supersedes D574/D586's "repo arrivals auto-open, failures are
@@ -929,14 +972,37 @@ test("a dismissed waiting-task row comes back once the question changes", () => 
   expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
-test("a task with nowhere to go still draws, as a row that is not a button", () => {
-  // The news is true whether or not there is a door; an inert row beats
-  // dropping it, and beats a button that navigates nowhere.
-  const tree = renderView({ rows: [], attention: [asking({ href: null })] });
-  const row = findAll(tree, "dl-row")[0];
-  expect(row.type).toBe("div");
-  expect(text(row)).toContain("TASK-097 needs your input");
-  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+test("clicking a pairing row opens LAN preferences and clears the row", () => {
+  withNav((pushed) => {
+    const onPairingGone = mock(() => {});
+    const tree = renderInstance({
+      rows: [],
+      pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
+      onPairingGone,
+    });
+    const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
+    expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/preferences?tab=lan");
+    expect(onPairingGone).toHaveBeenCalledWith("p1");
+  });
+});
+
+test("a task naming no folder still opens as a row — its door is /tasks itself", () => {
+  // `attentionRows` falls back to "/tasks" when a task names no folder at all
+  // (tasks-lib.ts) — every row here is clickable now, so there is no more
+  // inert case to draw around.
+  withNav((pushed) => {
+    const tree = renderView({ rows: [], attention: [asking({ href: "/tasks" })] });
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/tasks");
+  });
 });
 
 test("waiting tasks fill the numeral like every other source, and end the idle state", () => {
@@ -990,4 +1056,243 @@ test("Clear never counts a waiting row — there is nothing there to clear", () 
   });
   expect(findAll(tree, "dl-head")).toHaveLength(0);
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
+});
+
+// ---------------------------------------------------------- item 3: two sections, one chip
+
+test("rows split into 'Needs you' and 'Worth keeping', each drawn only when non-empty", () => {
+  // A waiting task and a failed job both land in "Needs you"; a repo row
+  // lands in "Worth keeping" — the two sections never mix. Both headings show
+  // here because both sections are actually present at once — the same
+  // "2+ sections" rule ActivityDock's own Running/Background split follows.
+  const tree = renderView({
+    rows: repoRows([status({ root: "/a/one" })]),
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  const titles = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(titles).toEqual(["Needs you", "Worth keeping"]);
+});
+
+test("a lone section draws no heading at all — nothing here needs disambiguating", () => {
+  // Same "PLURALITY, NOT PRESENCE" rule this file already follows for the
+  // Clear-all footer and ActivityDock follows for its own section headings:
+  // with only "Worth keeping" ever populated, a label distinguishing it from
+  // an empty sibling is a redundant header.
+  const onlyTrail = renderView({ rows: repoRows([status()]) });
+  expect(findAll(onlyTrail, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyTrail, "dl-row")).toHaveLength(1);
+
+  const onlyAttention = renderView({ rows: [], attention: [asking()] });
+  expect(findAll(onlyAttention, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyAttention, "dl-row")).toHaveLength(1);
+});
+
+test("an attention-tier terminal job never folds behind the trail cap, however many trail jobs there are", () => {
+  // 8 ordinary (done, trail-tier) jobs plus 1 failed (attention-tier) job:
+  // TERMINAL_VISIBLE_CAP (5) folds the trail jobs down to 5, with 3 folded —
+  // but the failed job is never part of that count at all, because it never
+  // reaches `terminalTrail` in the first place.
+  const trail = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal: [...trail, failedJob()] });
+  const rows = findAll(tree, "dl-row");
+  // 5 shown trail jobs + 1 attention job, never folded.
+  expect(rows).toHaveLength(6);
+  expect(text(rows[0])).toContain("Pyramid build"); // attention section first
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
+});
+
+test("the chip reads 'N needs you' and turns loud the moment anything needs a look", () => {
+  const idle = renderView({ rows: repoRows([status()]) });
+  expect(text(findAll(idle, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(idle)).not.toContain("is-failure");
+
+  const oneNeedsYou = renderView({ rows: [], terminal: [failedJob()] });
+  expect(text(findAll(oneNeedsYou, "dl-summary")[0])).toBe("1 needs you");
+  expect(toggleClasses(oneNeedsYou)).toContain("is-failure");
+
+  const twoNeedYou = renderView({
+    rows: [],
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  expect(text(findAll(twoNeedYou, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("'N needs you' counts a waiting task and an attention-tier job together, not just one source", () => {
+  const tree = renderView({
+    rows: repoRows([status()]), // a repo row must never count toward "needs you"
+    terminal: [failedJob(), doneJob()], // one attention-tier, one trail-tier
+    attention: [asking()],
+  });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("a done (trail-tier) job alone never turns the label loud — only attention rows do", () => {
+  const tree = renderView({ rows: [], terminal: [doneJob()] });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(tree)).not.toContain("is-failure");
+});
+
+// ---- messages (SPEC-toasts-become-notifications.md §3) ---------------------
+//
+// A 5th row source: client-raised notifications retained by
+// `@platform/lib/notifications`, split the same way `terminal` already is —
+// `attention` into "Needs you", everything else that made it into `messages`
+// into "Worth keeping". Retention narrowed (user: "don't keep this in the
+// list. just show popup. anything non actionable or error doesn't belong in
+// the list") from "attention or trail" to "attention, or carries an
+// action/page" — `trail` is no longer even a type a client call site can
+// pass (`ClientNotificationTier` in notifications.ts), so a real
+// "Worth keeping" message today resolves to `tier: "transient"` while still
+// being retained, because it carries an action/page. These tests still build
+// mock `StoredNotification`s with `tier: "trail"` for the "not attention"
+// half of the split — that continues to work (the dock's own split is just
+// "attention vs. not"), but the more important, more regression-prone case
+// is the plain-transient-but-actionable one, covered separately below with a
+// message built by the REAL store rather than a hand-built mock. A message
+// the store would never retain (no tone: "error", no action, no page) never
+// reaches this component at all — the store itself refuses to retain it
+// (notifications.ts) — so there is nothing to test here for that case.
+let messageId = 0;
+const message = (over: Partial<StoredNotification> = {}): StoredNotification => ({
+  id: ++messageId,
+  title: "Could not save",
+  tier: "attention",
+  leaving: false,
+  ...over,
+});
+
+test("an attention-tier message fills the numeral and the needs-you count, like a failure does", () => {
+  const tree = renderView({ rows: [], messages: [message({ tier: "attention" })] });
+  expect(numeral(tree)).toBe("1");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
+test("a trail-tier message fills the numeral but not the needs-you count", () => {
+  const tree = renderView({ rows: [], messages: [message({ tier: "trail", title: "Moved 3 items" })] });
+  expect(numeral(tree)).toBe("1");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+});
+
+test("an attention message draws in 'Needs you', a trail message in 'Worth keeping'", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [
+      message({ tier: "attention", title: "Could not save" }),
+      message({ tier: "trail", title: "Moved 3 items" }),
+    ],
+  });
+  const headings = findAll(tree, "dl-section-head").map((h) => text(h));
+  expect(headings).toEqual(["Needs you", "Worth keeping"]);
+  const rows = findAll(tree, "dl-row").map((r) => text(r));
+  expect(rows[0]).toContain("Could not save");
+  expect(rows[1]).toContain("Moved 3 items");
+});
+
+// The half most likely to regress: a `tone: "info"` message with NO error
+// and NO explicit `tier` at all — it resolves to `tier: "transient"` — is
+// still retained (and lands in "Worth keeping") purely because it carries a
+// `page`. Built through the REAL store (`notify`), not the hand-rolled
+// `message()` mock above, so this exercises `isRetained` end to end rather
+// than assuming the dock trusts whatever mock tier a test hands it.
+test("a tone: info, non-error message with a page is retained and drawn in 'Worth keeping', not dropped", () => {
+  _resetNotificationsForTest();
+  try {
+    notify({ title: "Could not save", tone: "error" }); // gives "Needs you" a row too
+    notify({ title: "Export ready", tone: "info", page: "/tasks/42" });
+    const stored = getRetainedNotifications();
+    expect(stored.map((n) => n.tier)).toEqual(["attention", "transient"]);
+
+    const tree = renderView({ rows: [], messages: stored });
+    const headings = findAll(tree, "dl-section-head").map((h) => text(h));
+    expect(headings).toEqual(["Needs you", "Worth keeping"]);
+    const rows = findAll(tree, "dl-row").map((r) => text(r));
+    expect(rows[0]).toContain("Could not save");
+    expect(rows[1]).toContain("Export ready");
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
+
+test("a message row draws with its detail, like a terminal job's failure message", () => {
+  const tree = renderView({ rows: [], messages: [message({ title: "Could not save", detail: "Disk full" })] });
+  const row = findAll(tree, "dl-row")[0];
+  expect(text(row)).toContain("Could not save");
+  expect(text(row)).toContain("Disk full");
+});
+
+// Code review finding on PR #1104: `terminal` was passed off `tone` with no
+// `status`, which (pre-fix) never rendered the glyph, and this row also
+// carried no `role`, losing the deleted `Toast.tsx`'s own
+// `role={tone === "info" ? "status" : "alert"}` distinction.
+test("an error-tone message row gets role=alert and the terminal glyph; a non-error one gets role=status and no glyph", () => {
+  const errorTree = renderView({
+    rows: [],
+    messages: [message({ title: "Could not save", tone: "error" })],
+  });
+  const errorRow = findAll(errorTree, "dl-row")[0];
+  expect(errorRow.props.role).toBe("alert");
+  expect(findAll(errorTree, "dl-status")).toHaveLength(1);
+
+  const infoTree = renderView({
+    rows: [],
+    messages: [message({ title: "Moved 3 items", tier: "trail", tone: "info" })],
+  });
+  const infoRow = findAll(infoTree, "dl-row")[0];
+  expect(infoRow.props.role).toBe("status");
+  expect(findAll(infoTree, "dl-status")).toHaveLength(0);
+});
+
+test("a message with a page is a click target that navigates", () => {
+  withNav((pushed) => {
+    const m = message({ page: "/tasks/42", title: "Export ready" });
+    const tree = renderView({ rows: [], messages: [m] });
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/tasks/42");
+  });
+});
+
+test("a message with no page draws no row-open marker — nothing to click through to", () => {
+  const tree = renderView({ rows: [], messages: [message({ title: "Could not save" })] });
+  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+});
+
+// `MessageRowView` calls the real `dismissNotification` directly (it is not
+// plumbed through a prop, unlike every other row kind's dismiss — see
+// RepoUpdatesDock.tsx's header comment on this row), so this test drives the
+// real store instead of a mock: seed it with a real retained notification,
+// render that SAME `StoredNotification`, press its ✕, and check the store's
+// own retained list rather than a callback.
+test("pressing a message row's ✕ dismisses it from the real notification store", () => {
+  _resetNotificationsForTest();
+  try {
+    const id = notify({ title: "Could not save", tone: "error" });
+    const [stored] = getRetainedNotifications();
+    const tree = renderView({ rows: [], messages: [stored] });
+    const x = findAll(tree, "dl-x")[0];
+    expect(x).toBeDefined();
+    act(() => {
+      (x.props as { onClick: () => void }).onClick();
+    });
+    expect(getRetainedNotifications().map((n) => n.id)).not.toContain(id);
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
+
+test("Clear all's threshold and count include messages alongside repo rows and terminal jobs", () => {
+  const one = renderView({ rows: [], terminal: [], messages: [message({ tier: "trail" })] });
+  expect(findAll(one, "dl-clear")).toHaveLength(0);
+
+  const two = renderView({
+    rows: [],
+    terminal: [doneJob()],
+    messages: [message({ tier: "trail" })],
+  });
+  expect(findAll(two, "dl-clear")).toHaveLength(1);
 });

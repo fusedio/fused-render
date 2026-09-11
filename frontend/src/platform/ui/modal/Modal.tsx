@@ -28,6 +28,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
+import { isTopmost, popModal, pushModal } from "./esc-stack";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -44,6 +45,23 @@ const FOCUSABLE =
 
 export interface ModalProps {
   title: ReactNode;
+  /**
+   * The dialog's ACCESSIBLE NAME, when it is not the visible title.
+   *
+   * The visible bar is often the short form — a heading has the surrounding
+   * page for context, while a spoken dialog name has nothing. T:4405 is the
+   * case this exists for: the record's bar says "What was sent" and its
+   * `aria-label` says "What was sent to the agent", which is the half that says
+   * WHOSE record it is.
+   *
+   * OPTIONAL AND OFF BY DEFAULT: with it absent the dialog keeps
+   * `aria-labelledby` pointing at the `h2`, so every existing caller — and the
+   * whole flag-off shell — renders byte-identical markup. Only a caller that
+   * passes it gets `aria-label` instead, which is the correct precedence (an
+   * explicit `aria-label` wins over `aria-labelledby`, so setting both would
+   * leave the weaker one dead in the tree).
+   */
+  ariaLabel?: string;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -53,6 +71,15 @@ export interface ModalProps {
   width?: number | string;
   footer?: ReactNode;
   initialFocus?: RefObject<HTMLElement | null>;
+  // RE-RUN `initialFocus` WHEN THE REF FILLS LATE. The mount effect below reads
+  // `initialFocus.current` once, during the dialog's own commit — which is the
+  // right moment for a render-time ref (an iframe element) and too early for one
+  // an effect inside a LAZY child fills (TaskPeek's native chat: the composer's
+  // textarea does not exist until the chat chunk resolves, so focus fell back to
+  // the head's ✕). A caller that knows when its ref is ready bumps this, and the
+  // focus is taken then — but only if nothing in the body has the caret yet, so
+  // a reader who has already clicked or typed somewhere is never yanked away.
+  focusSignal?: number;
   // When dirty, the first close attempt is intercepted with an inline hint and
   // the next one actually closes (RowEditorModal). Arming is cleared by
   // interacting with the form again, not by a timeout.
@@ -78,12 +105,14 @@ export interface ModalProps {
 
 export function Modal({
   title,
+  ariaLabel,
   onClose,
   children,
   busy = false,
   width,
   footer,
   initialFocus,
+  focusSignal = 0,
   dirty = false,
   dialogClassName,
   closeTitle,
@@ -132,6 +161,22 @@ export function Modal({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The late half of the above: `focusSignal` changed, so the ref the caller
+  // handed us may have filled since the mount effect read it. Skipped while the
+  // caret is already on something in the BODY (the reader got there first, or
+  // the ref was live at mount and this is the same element); taken when focus
+  // sits on the chassis' own head — the ✕ the fallback lands on — or nowhere.
+  useEffect(() => {
+    if (!focusSignal) return;
+    const el = initialFocus?.current;
+    if (!el) return;
+    const active = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (active && dialog?.contains(active) && !active.closest(".modal-head")) return;
+    el.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSignal]);
 
   // DISARM ON RETURNING TO THE FORM — the other half of the guard.
   //
@@ -219,9 +264,22 @@ export function Modal({
   // Nested popovers (TemplatePicker, chip-draft inputs) stopPropagation on
   // their own Esc, which also stops the native event before it reaches this
   // document listener, so they close themselves without closing the modal.
+  //
+  // ONLY THE TOPMOST MODAL REACTS, which is what makes one press peel one
+  // layer when a dialog is nested inside another (see `openModals`). The token
+  // is this instance's own identity, registered for the life of the mount — the
+  // exit animation included, since a dialog still on screen is still a layer.
+  const token = useRef({});
+  useEffect(() => {
+    const mine = token.current;
+    pushModal(mine);
+    return () => popModal(mine);
+  }, []);
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") attemptClose();
+      if (e.key !== "Escape") return;
+      if (!isTopmost(token.current)) return;
+      attemptClose();
     };
     document.addEventListener("keydown", onDocKey);
     return () => document.removeEventListener("keydown", onDocKey);
@@ -272,7 +330,13 @@ export function Modal({
         style={dialogStyle}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        {...(ariaLabel
+          ? // An explicit name WINS over `aria-labelledby`, so the two are
+            // mutually exclusive rather than both set — leaving the heading
+            // reference in place beside an `aria-label` would put a dead
+            // attribute in the tree for the next reader to puzzle over.
+            { "aria-label": ariaLabel }
+          : { "aria-labelledby": titleId })}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
       >

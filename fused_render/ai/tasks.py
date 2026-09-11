@@ -426,6 +426,93 @@ def capability_for_tag(tag: str | None) -> str | None:
     return classify(tag).capability
 
 
+#: Hub `tags` entries that name a task in this table under a different
+#: spelling. NOT aliases for `pipeline_tag` — that slot always holds one of
+#: the vendored tags, so `classify` needs none of this. These are the
+#: free-text task claims that appear in the `tags` LIST, where the Hub does
+#: not constrain the vocabulary: `image-generation` is what
+#: `black-forest-labs/FLUX.2-klein-9B` calls text-to-image, while its 4B
+#: sibling spells the same claim `text-to-image`.
+#:
+#: Deliberately tiny, and deliberately not a general synonym table. An entry
+#: earns its place by appearing on a real repo this app can run, because the
+#: value of `classify_repo` is that it widens the vocabulary by one
+#: well-understood step and no further.
+_TAG_ALIASES = {
+    "image-generation": IMAGE_GENERATION,
+}
+
+
+def classify_repo(pipeline_tag: str | None, tags=None) -> Classification:
+    """Classify a Hub REPO — its `pipeline_tag` first, then its own `tags` (D801).
+
+    `classify` answers about a tag. This answers about a repo, and the
+    difference matters because `pipeline_tag` is a single slot holding one of
+    the several tasks a repo may legitimately claim. When an author fills that
+    slot with a task we do not serve, the repo's `tags` list still carries the
+    others, and dropping the repo on the strength of the one slot throws away
+    a model this app has a runner — sometimes a hand-written recipe — for.
+
+    **The case this exists for.** Every `black-forest-labs/FLUX.2-klein-*`
+    repo sets `pipeline_tag: "image-to-image"`, because FLUX.2 accepts an
+    image as well as a prompt. `image-to-image` has no capability here (no
+    runner takes a base image; see `engine_options._DIFFUSERS_NO_EDIT`), so
+    all thirteen were dropped from search — including the one the image
+    runner names explicitly in `torch_image._GGUF_RECIPES` and the ones
+    `catalog.py` recommends. Their own `tags` say `text-to-image` (or
+    `image-generation`, per `_TAG_ALIASES`), which is the claim the app can
+    act on, and their community quants — which put `text-to-image` in the
+    slot — were surviving the same query all along. A search that shows
+    fifteen conversions of a model but not the model is answering a question
+    nobody asked.
+
+    **Why this cannot rescue a ruled-out repo into a lie.** The fallback only
+    lands on a tag `supported_tags()` already contains, so the capability it
+    produces is one some runner declares — never a format guess, never a new
+    capability, and never through `UNKNOWN`'s open vocabulary (see
+    `classify`). A repo that genuinely only does the unsupported job does not
+    claim the supported one: checked against the Hub's own answers for
+    `esrgan`, where this rescues nothing at all, because a real upscaler says
+    `image-to-image` and stops. What it does admit at the margin is the
+    occasional controlnet or edit LoRA whose card claims `text-to-image` —
+    the author's own claim, which is exactly what `pipeline_tag` is too, and
+    this tab already lists LoRAs.
+
+    **The primary slot still wins whenever it says anything we serve**, so
+    this is purely additive: a repo `classify` already supported is
+    classified identically, and only a null capability reaches the `tags`
+    pass. A repo whose tags say nothing keeps `classify`'s own answer —
+    `NO_RUNNER` or `UNKNOWN`, reason intact — because that answer is still
+    the most precise thing known about it.
+
+    Scanned in `supported_tags()` order rather than the repo's own tag order:
+    the Hub does not promise a stable order within `tags`, and a classifier
+    whose answer depended on it would be unreproducible for one repo. The
+    order used instead is the menu's (text, then multimodal, then vision,
+    then audio), so a repo claiming two supported tasks resolves the same way
+    every time — and to the one a person scanning the filter menu meets first.
+    """
+    primary = classify(pipeline_tag)
+    if primary.capability is not None:
+        return primary
+    if not isinstance(tags, list):
+        return primary
+    claimed = {t for t in tags if isinstance(t, str)}
+    for tag in supported_tags():
+        if tag in claimed:
+            return classify(tag)
+    for spelling, capability in _TAG_ALIASES.items():
+        if spelling not in claimed:
+            continue
+        # The alias names a CAPABILITY, so re-enter the table through a tag
+        # that carries it rather than trusting the alias's own spelling to be
+        # a key — `image-generation` is not a row here.
+        for task in _TASKS:
+            if task.capability == capability:
+                return classify(task.tag)
+    return primary
+
+
 def supported_tags() -> tuple[str, ...]:
     """The tags this app can download AND run, in menu order.
 
@@ -439,6 +526,27 @@ def supported_tags() -> tuple[str, ...]:
 
 def label_for(tag: str | None) -> str | None:
     return classify(tag).label
+
+
+def tags_for_capability(capability: str | None) -> tuple[str, ...]:
+    """Every `pipeline_tag` that reaches this capability, in table order.
+
+    D843: the search screen's left pane is scoped by a CAPABILITY
+    (`fused_render/ai/registry.py`'s keys), not by a single Hub tag, and
+    `embeddings` is the capability `supported_tags()`'s docstring already
+    flags as unusual — it is reached by THREE tags
+    (`zero-shot-image-classification`, `feature-extraction`,
+    `sentence-similarity`), so no single `task=` filter can express "search
+    for embedding models" at all. `capability_for_tag` inverts a tag into its
+    capability for a single row already in hand; this is the other
+    direction, needed once — here — to turn a capability BACK into every tag
+    a search must OR together. Empty for a string that names no capability
+    here (a typo, or a capability nothing serves), which the caller turns
+    into the same 400 an unsupported `task` already gets.
+    """
+    if not capability:
+        return ()
+    return tuple(task.tag for task in _TASKS if task.capability == capability)
 
 
 def help_for(tag: str | None) -> str | None:

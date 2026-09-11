@@ -741,7 +741,8 @@ def api_app_doctor_fix(body: dict = Body(...),
     else:
         row = app_doctor.report_one(folder, check_id)
         findings = row["findings"] if row else []
-        prompt = app_doctor.doctor_prompt(entry_html, check_id, findings)
+        detail = row["detail"] if row else ""
+        prompt = app_doctor.doctor_prompt(entry_html, check_id, findings, detail)
     task, task_error = _create_app_task(entry_html, prompt, model, effort)
     return {
         "path": folder,

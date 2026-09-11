@@ -35,6 +35,7 @@ module; keep it acyclic.
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import time
@@ -67,6 +68,33 @@ STATES = (RUNNING, WAITING) + TERMINAL_STATES
 # bytes and has a bar; a task may have no numbers at all and reads as a
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
+
+# The four notification tiers a producer picks for its own row (SPEC
+# actionable-notifications). This governs both RETENTION (whether a
+# terminal row is KEPT once it lands) and, for "silent" alone, whether the
+# frontend's floating column pops a card for it at all
+# (frontend/src/platform/lib/jobs.ts `popupJobs`) — every other tier still
+# pops on its way to terminal, `transient` included; what a non-silent tier
+# decides is what happens AFTER that pop:
+#   "attention"  — kept in the panel until dismissed, and drawn there
+#                  without the panel having to be opened.
+#   "trail"      — kept in the panel until dismissed.
+#   "transient"  — kept nowhere; its card is the only trace it leaves.
+#   "silent"     — kept nowhere AND pops nothing: a producer declares this
+#                  when finishing is not news (a resident model load/unload,
+#                  say — the running row was already visible, and turning
+#                  "done" says nothing new). Silence is a property of
+#                  SUCCESS only: `effective_tier`/`effectiveTier` still
+#                  promotes an `error`/`cancelled` row to "attention"
+#                  regardless of the declared tier, so a silent job that
+#                  fails is always news and still pops and sticks around.
+# "trail" is the default on purpose: a producer that sets nothing behaves
+# exactly like every row did before this field existed.
+ATTENTION = "attention"
+TRAIL = "trail"
+TRANSIENT = "transient"
+SILENT = "silent"
+TIERS = (ATTENTION, TRAIL, TRANSIENT, SILENT)
 
 # Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D498).
 # "phase" is the default a bare `download_snapshot` reporter has always sent
@@ -164,19 +192,6 @@ MAX_JOBS = 64
 # token so it stays safe as a dict key, a URL path segment, and a React key.
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
-# `schedule.py`'s own row id prefix (mirrors `SCHEDULE_JOB_PREFIX` in
-# frontend/src/platform/lib/jobs.ts — keep the two spellings in step). A row
-# under this prefix is deliberately excluded from every frontend surface
-# (`isScheduleJob`/`jobRows` drops it from Activity, and `terminalJobs` is
-# applied AFTER `jobRows` in `ActivityDock.tsx`, so it never reaches
-# Notifications either) — a scheduled run already gets its own toast
-# (`schedule-toast.ts`) and its own row on the Scheduled page. `_sweep`'s
-# keep-until-dismissed exemption (below) exists so a row a human still needs
-# to SEE is not swept out from under them; a row no surface shows or lets
-# them dismiss has no claim on that exemption; see `_sweep` for what it gets
-# instead.
-SCHEDULE_JOB_PREFIX = "sys:schedule:"
-
 # Ids under this prefix belong to the SERVER (SPEC §40): a model download, a
 # generation — work this process runs and can therefore really stop. A page may
 # READ and CANCEL them like any other row, but it may not WRITE one: the ids are
@@ -184,6 +199,16 @@ SCHEDULE_JOB_PREFIX = "sys:schedule:"
 # `state: "done"` for a download that is still running and the manager would
 # believe it.
 SERVER_ID_PREFIX = "sys:"
+
+# A scheduled message's own row, by id (`fused_render/schedule.py`'s
+# `_JOB_PREFIX`, mirrored the same way the frontend already mirrors it in
+# `frontend/src/platform/lib/jobs.ts`'s own `SCHEDULE_JOB_PREFIX` — jobs.py
+# is a leaf module with no imports of its own, so the string is restated
+# here rather than imported, the same cross-boundary duplication the
+# frontend copy already accepts). `_sweep` reads this to single out the one
+# family of rows drawn on NO surface at all, in any terminal state — see
+# `_sweep`'s own comment.
+SCHEDULE_JOB_PREFIX = "sys:schedule:"
 
 # Who is running the work, which decides what the manager's ✕ can do:
 #   "page"   — only the page knows what stopping means, so cancel is a REQUEST
@@ -198,12 +223,94 @@ TITLE_MAX = 120
 DETAIL_MAX = 200
 MESSAGE_MAX = 4000
 PAGE_MAX = 1024
+# `origin` is a couple of words ("Playground", "Local models"), not a path —
+# same room as `title`/`model` since it renders in the same kind of small
+# caption.
+ORIGIN_MAX = TITLE_MAX
 # The model name is a dimmed SUFFIX on the title row, never the detail line —
 # detail is the one thing a running worker's progress ticks own, and a model
 # name concatenated in there would get overwritten by the next "step 2/4" and
 # vanish. Same cap as `title`: a full repo id ("black-forest-labs/FLUX.1-schnell")
 # is exactly the kind of thing this field carries, so it gets the same room.
 MODEL_MAX = TITLE_MAX
+
+# The default `origin` for a page-owned report hosted at one of the shell's
+# own SPA routes — one of a handful of routes a few server producers name
+# directly, never an fs path (an ordinary page's own X-Fused-Page is almost
+# always an fs path, which `origin_for_page` below names after the PROJECT
+# it belongs to instead of guessing from this table). This is the SAME
+# closed set of routes as `JOB_PAGE_ROUTES` in
+# `frontend/src/platform/lib/router.ts` — kept here, in one place, rather
+# than as a second competing table; if the two drift, the fix is a one-line
+# addition on whichever side is behind.
+_ORIGIN_BY_ROUTE: dict[str, str] = {
+    "/ai-models/local": "Local models",
+    "/ai-models/benchmark": "Benchmark",
+    "/claude-config": "Claude setup",
+    "/preferences": "Preferences",
+    "/preferences?tab=indexing": "Explorer",
+    "/tasks": "Scheduler",
+}
+
+
+def origin_for_page(page: str, *, default: str = "") -> str:
+    """The `origin` caption a report from *page* should carry — the ONE place
+    every producer derives its row's caption from, rather than each stating a
+    literal that is only ever true for whichever caller happened to write it
+    first (SPEC actionable-notifications: a render or a local-text generation
+    raised from a user's own app page used to be captioned "Playground"
+    regardless, because the producer had no way to name the real caller).
+
+    *page* is whatever the caller already has for `X-Fused-Page` — same
+    string `Job.page` is built from, just not persisted as one, since a
+    report can change `origin` on a tick that carries no `page` at all
+    (`upsert`'s `origin=` argument is applied independently of `page=`).
+
+    - A KNOWN SHELL ROUTE (`_ORIGIN_BY_ROUTE`) names its own label — these
+      are the shell's own SPA surfaces, which already have real names a page
+      can't be asked to guess.
+    - Anything else truthy is an fs path — the overwhelming majority of real
+      `X-Fused-Page` values, one of the user's own app pages. Named after the
+      PROJECT the file belongs to, the same pair (`projectenv.project_root_for`
+      + `projectenv.display_name`) a runner's own venv-build row already
+      names its "Preparing <app>…" detail after — reused rather than
+      inventing a second spelling of "what do we call this folder". A path
+      outside any project this process recognizes (nothing under the
+      workspace, no `pyproject.toml` on the way up — the common case in a
+      test, and a real possibility for a one-off script) falls back to the
+      bare filename with its extension dropped, the next best thing to a
+      project name when there is no project.
+    - A non-absolute (or otherwise malformed) *page* is refused BEFORE the
+      project lookup, not treated as an fs path at all:
+      `projectenv.project_root_for` starts with `os.path.abspath(path)`, so
+      a relative or garbled `X-Fused-Page` (a typo, never a real page) would
+      resolve against THIS SERVER's own cwd and caption the row after
+      whatever project happens to contain it — a project the page has
+      nothing to do with. `default` here too, same as the empty-page case:
+      there is nothing honest to derive from a value that was never a real
+      path.
+    - EMPTY means no page raised this report at all — the one caller-named
+      case this function cannot answer on its own, since it is *default*
+      that carries the honest answer: only a shell surface running with no
+      iframe of its own (the AI Models Playground, Claude Code's own
+      settings page) sends no `X-Fused-Page`, and each such producer already
+      knows which surface it is.
+    """
+    if not page:
+        return default
+    label = _ORIGIN_BY_ROUTE.get(page)
+    if label:
+        return label
+    if not os.path.isabs(page):
+        return default
+    from fused_render import projectenv
+
+    root = projectenv.project_root_for(page)
+    if root:
+        return projectenv.display_name(root)
+    stem = os.path.splitext(os.path.basename(page.rstrip("/\\")))[0]
+    return stem or default
+
 
 # Dismissed ids, bounded. A reporter that keeps posting after its job finished
 # would otherwise resurrect the row the user just closed, and "it came back"
@@ -274,10 +381,24 @@ class Job:
     total_estimated: bool = False
     unit: str = ""
     message: str = ""
-    # The .html that raised it, from the X-Fused-Page header. Attribution only
-    # — the manager shows which page a row belongs to, and clicking it goes
-    # back there.
+    # Where clicking this row goes, once it lands in Notifications — an
+    # absolute fs path (from the X-Fused-Page header, or a server producer's
+    # own repo root/output folder) or one of a handful of shell routes a few
+    # server producers name directly. "" when no destination applies.
     page: str = ""
+    # A short, human-readable label naming WHAT RAISED this job — "Playground",
+    # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+    # "Scheduler", "App install", or a user app's own name. Not stored as a
+    # function of `page` — `page` answers "where does clicking this row go",
+    # `origin` answers "who asked for this", and the two move independently
+    # (a scheduled run's `page` can point at its own output while its
+    # `origin` stays "Scheduler") — but a page-owned report's `origin` is
+    # itself DERIVED, at report time, from that same report's calling page
+    # (`origin_for_page`) rather than trusted as a literal the reporter typed
+    # in; see that function and `upsert`'s `origin=` argument for how. ""
+    # when no producer named one — a caption with nothing to say renders no
+    # element at all, never a placeholder (DownloadManager.tsx's `JobRow`).
+    origin: str = ""
     # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
     # report body: it follows from the id, so a page cannot claim to be the
     # server by saying so.
@@ -308,6 +429,17 @@ class Job:
     # THEN fails is not left invisible — D266's guarantee that both rows can
     # show a real failure only holds if the merge does not outlive the wait.
     waiting_for: str = ""
+    # Which of the four tiers this row belongs to — see `TIERS` above.
+    # Chosen by the PRODUCER, because only the producer knows whether the
+    # event it is reporting left anything behind. SERVER-ONLY (see `upsert`'s
+    # `server` gate below), for the same reason `waiting_for` is: a page
+    # could otherwise hide its own failed row by declaring itself transient.
+    # Sticky across ticks on one id like every other field — see
+    # `job_id_for` in `ai/supervisor.py` for the id family this bites: a
+    # resident load, a weights-only download and an unload all report
+    # through the SAME id, so each must restate its own tier explicitly
+    # rather than relying on what an earlier report on that id left behind.
+    tier: str = TRAIL
 
 
 _lock = threading.Lock()
@@ -333,6 +465,22 @@ def _text(value: object, cap: int, *, one_line: bool = True) -> str:
     if one_line:
         text = " ".join(text.split())
     return text[:cap]
+
+
+def _page_text(value: object) -> str:
+    """A navigation target, bounded but otherwise byte-for-byte.
+
+    `page` is a filesystem path or a shell route, not prose — `_text`'s
+    one-line collapse (`" ".join(text.split())`) is right for a label
+    headed for `textContent`, but wrong here: it folds a genuine double
+    space or a leading/trailing space in a real path into something that no
+    longer resolves, which `navigate()` would then silently 404 on. Only
+    accidental surrounding whitespace (a header value with stray padding) is
+    trimmed; anything internal is left exactly as the reporter sent it.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()[:PAGE_MAX]
 
 
 def _number(value: object, name: str) -> float | None:
@@ -374,8 +522,8 @@ def clean_id(value: object) -> str:
 # -------------------------------------------------------------------- mutation
 
 
-def upsert(body: dict, *, page: str = "", now: float | None = None,
-           server: bool = False) -> dict:
+def upsert(body: dict, *, page: str = "", origin: str | None = None,
+           now: float | None = None, server: bool = False) -> dict:
     """Create or update one record from a reporter's POST body.
 
     Upsert rather than create+update: a reporter's every progress tick is the
@@ -393,6 +541,16 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
     endpoint never passes it, so a page cannot post progress for a job the
     server owns — those ids are deterministic, and a forged "done" on a download
     still running is exactly the lie the manager would have no way to catch.
+
+    `origin=`, like `page=`, is threaded in as its own argument rather than
+    trusted from the body — a page could otherwise attribute its own row to
+    "Claude setup" or "Scheduler" by typing one of those strings into its
+    report, and the whole point of the field is that the caption can be
+    trusted. The HTTP endpoint computes it server-side, from the report's own
+    `X-Fused-Page` (`origin_for_page`), and passes the verdict in here; a
+    truthy value always wins, on every tick, the same way a truthy `page=`
+    always overwrites. See the `"origin" in body` gate below for the one
+    other channel that can still set it.
     """
     if not isinstance(body, dict):
         raise JobError("request body must be a JSON object")
@@ -471,8 +629,35 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             # would break the manager's lookup silently.
             value = body.get("waiting_for")
             job.waiting_for = clean_id(value) if value else ""
+        if "tier" in body and server:
+            # Same gate as `waiting_for` above, and for the same reason: a
+            # page-declared tier could hide its own failed row, so only the
+            # server's own report may set it. A page report carrying it is
+            # silently dropped rather than rejected, matching the rest of
+            # this function's treatment of a server-only field. Unlike the
+            # drop, an OUT-OF-SET value from the server itself is a real
+            # validation error, not a silent fallback — `_one_of` raises for
+            # that case, same as every other closed-set field.
+            job.tier = _one_of(body.get("tier"), TIERS, "tier", job.tier)
+        if "origin" in body and server:
+            # Same gate as `tier`/`waiting_for` above, and for the same
+            # reason: attribution is exactly what a page could otherwise
+            # forge (`{"origin": "Claude setup"}` on a row it started
+            # itself), so a page's own `origin` in the body is silently
+            # dropped, same treatment as the rest of this function's
+            # server-only fields. A server-side producer's own report (a
+            # download, a generation, a worker restating its row's identity)
+            # is exempt, the same as it is for `waiting_for`.
+            job.origin = _text(body.get("origin"), ORIGIN_MAX)
+        if origin:
+            # The report's OWN derived attribution — see `upsert`'s
+            # docstring. Applied after the body gate above and regardless of
+            # `server`, so it always wins for a page-owned report (whose body
+            # value was just dropped) without needing a second `server=True`
+            # that would also unlock `tier`/`waiting_for` for that same page.
+            job.origin = _text(origin, ORIGIN_MAX)
         if page:
-            job.page = _text(page, PAGE_MAX)
+            job.page = _page_text(page)
 
         if "state" in body:
             state = _one_of(body.get("state"), STATES, "state", job.state)
@@ -695,6 +880,25 @@ def is_stalled(job: Job, now: float) -> bool:
     return job.state == RUNNING and (now - job.updated_at) > STALE_AFTER_S
 
 
+def effective_tier(job: Job) -> str:
+    """The tier a reader should actually treat this row as — DERIVED, never
+    stored. `job.tier` is what the producer declared; this is what the row
+    means right now.
+
+    The one override: a terminal job in `error` or `cancelled` is always
+    `attention`, regardless of what its producer declared. A failed run is
+    news even for a producer that otherwise declares itself `transient` (an
+    index scan, a text generation, a resident model load) — the thing that
+    makes those tiers correct on SUCCESS (nothing survives it) is exactly
+    what is no longer true on a failure: the user did not get what they
+    asked for, which is always worth a look. A `done` row, or a still-running
+    one, is unaffected and reads its stored tier as-is.
+    """
+    if job.state in ("error", "cancelled"):
+        return ATTENTION
+    return job.tier
+
+
 def _public(job: Job, now: float) -> dict:
     """The wire shape: the record plus what only the reader can know.
 
@@ -742,28 +946,68 @@ def _sweep(now: float) -> None:
     `cancelled` get the same unconditional exemption `error`/`WAITING`
     already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
 
-    **A `sys:schedule:*` row does NOT get this exemption, even though it is
-    terminal.** The exemption's whole premise is "a human still needs to SEE
-    this row, so do not sweep it out from under them" — but `jobRows`
-    (frontend) drops every `sys:schedule:*` id from what Activity draws, and
-    `ActivityDock.tsx` applies `jobRows` before `terminalJobs`, so a schedule
-    row never reaches Notifications either. No surface shows it and none can
-    dismiss it, so it has no claim on a "kept until dismissed" rule — kept
-    that way regardless, it is one permanent row per turn on a schedule (a
-    5-minute schedule saturates `MAX_JOBS` within hours, with only eviction
-    pressure to shed it). A schedule run already gets `schedule-toast.ts`'s
-    own toast and its own row on the Scheduled page, so nothing is lost by
-    letting the registry row age out on the ORIGINAL read-gated
-    `FINISHED_TTL_S` clock every terminal row had before D663 — the readers
-    that clock exists for (`fused.watchJob`, the Scheduled page's own poll)
-    are exactly the ones still reading this row.
+    **Two families of terminal row do NOT get this exemption, for two
+    different reasons, and this branch must not conflate them:**
+
+    - **A `sys:schedule:*` row (`SCHEDULE_JOB_PREFIX`) ages out in ANY
+      terminal state — `done`, `error`, or `cancelled` alike.** The reason
+      is that nothing ever draws it: `jobRows` in
+      `frontend/src/platform/lib/jobs.ts` excludes this id prefix
+      unconditionally, and `ActivityDock.tsx`'s own header comment records
+      that exclusion as deliberate (D661) — the row is invisible on every
+      surface regardless of what state it ends in or what tier it declares.
+      A scheduled run already has its own row on the Scheduled page, and a
+      missed or failed one also gets a toast
+      (`platform/lib/schedule-toast.ts`'s `toastForEvent`, `null` for a
+      successful run); the registry row here is a copy nobody can see or
+      dismiss, so it ages out on the ORIGINAL read-gated `FINISHED_TTL_S`
+      clock every terminal row had before D663, unconditionally on id alone
+      — not on tier, not on outcome.
+
+    - **Every other row whose STORED `job.tier` is `TRANSIENT` OR `SILENT`
+      ages out only once its state is `done`.** Every producer besides the
+      scheduler IS drawn somewhere the moment it lands in a non-silent
+      terminal state — a resident model load and an index scan surface in
+      Notifications (`terminalNotifications`), a text/image/video
+      generation surfaces in Activity while running and, on a failure, in
+      Notifications too — so a failed transient/silent row is not an orphan
+      the way a scheduled tick is: it is a row someone can see, with a
+      working ✕, describing exactly why their request did not come back
+      with what they asked for (a `SILENT` producer's own failure is
+      promoted to `attention` by `effective_tier` well before it ever
+      reaches this branch — see below — so the only `SILENT` rows this
+      branch ever sees in a terminal state are `done` ones). Ageing that out
+      on the same read-gated clock a `done` row uses would forget a
+      resident model's failed load, a failed index scan, or a failed text
+      generation a few seconds after the next poll stamps `first_read_at` —
+      the vanishing-row bug D663 already settled against, reintroduced under
+      a different gate. A `TRANSIENT`/`SILENT` producer only earns age-out
+      on SUCCESS, because success is what leaves nothing behind to look at;
+      a failure is attention, and stays until an explicit dismiss like any
+      other row a surface can show.
+
+    Both halves read the STORED `job.tier`/id, never `effective_tier` —
+    retention and visibility are different questions. Visibility asks "what
+    does this row mean right now" (`effectiveTier`/`effective_tier`'s
+    error/cancelled override, read by `jobRows` and `terminalNotifications`
+    in the frontend). Retention asks "does ANY surface draw this row at
+    all, and if so, did its run actually finish with nothing left to show."
+    Reading `effective_tier` here instead would turn every failed/cancelled
+    transient row into `attention` and fall it through to the
+    keep-until-dismissed branch below regardless of which of the two
+    families it belongs to — right by accident for the schedule family (it
+    is never drawn, so nothing would ever dismiss it, and it would sit
+    forever) and wrong for every other transient producer (whose failure
+    the read-gated clock would then silently forget instead of holding for
+    the ✕ that can actually reach it).
 
     `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
     place rather than deleted for this reason — `list_jobs`'s `mark_read`
     still has other callers (`routers/jobs.py`, `supervisor.py`,
     `capture/__init__.py`) whose own read-vs-poll distinction does not
-    depend on this branch, and the schedule carve-out above is exactly the
-    one reachable state that still exercises this read-gated clock.
+    depend on this branch, and a genuinely transient row on either family
+    is exactly the one reachable state that still exercises this read-gated
+    clock.
 
     **`WAITING` is exempt from the cap below (`evictable`), not only from
     ageing out here.** Its reporter has already exited (the sole producer,
@@ -787,11 +1031,14 @@ def _sweep(now: float) -> None:
             # is still exactly as open as when it appeared.
             continue
         elif job.state in TERMINAL_STATES:
-            if job_id.startswith(SCHEDULE_JOB_PREFIX):
-                # No surface shows this row or lets it be dismissed — see
-                # this function's own docstring — so it ages out on the
-                # ORIGINAL read-gated clock every terminal row had before
-                # D663, instead of the keep-until-dismissed rule below.
+            # Two independent reasons a row ages out on the read-gated clock
+            # instead of waiting on a dismiss nobody can send — see this
+            # function's own docstring for why each is scoped the way it is:
+            unattended_per_tick = job_id.startswith(SCHEDULE_JOB_PREFIX)
+            spent_transient = (
+                job.tier in (TRANSIENT, SILENT) and job.state == "done"
+            )
+            if unattended_per_tick or spent_transient:
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)
@@ -800,7 +1047,8 @@ def _sweep(now: float) -> None:
             else:
                 # A row some surface can show and let the user dismiss —
                 # kept until they do (see this function's own docstring for
-                # why that is now every non-schedule terminal state).
+                # why that is every other terminal row, failed transient
+                # producers included).
                 continue
 
     # **The cap counts only what it could actually shed.** Measuring it against

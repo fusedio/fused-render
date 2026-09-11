@@ -358,7 +358,7 @@ export function viewUrlForFsPath(fsPath: string, search?: string): string {
 
 export function navigate(
   fsPath: string,
-  opts?: { isDir?: boolean; mode?: string; sel?: string | null },
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
 ): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
@@ -446,6 +446,13 @@ export function navigate(
   // concept (D264).
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
+  // `opts.q` carries a query straight onto the destination folder's own box —
+  // the file view's merged field pushes here once its query is already
+  // committed (typed, or gate-open by itself for a non-escaping pattern), and
+  // the destination is meant to show results immediately rather than making
+  // the user press Enter a second time. See `qCommitted` below for the half
+  // of this that rides in history.state instead of the URL.
+  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
@@ -454,7 +461,21 @@ export function navigate(
   // blank screen. Restored on back/forward (popstate carries the state), and
   // simply absent (null) for callers that don't know, which falls back to a
   // plain header scaffold. See navHintIsDir below.
-  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  //
+  // `qCommitted` rides beside it for the same reason: `?q=` alone is just
+  // text, the same mirror a live-typed, uncommitted query writes into the
+  // address bar (useListingSearch's own URL sync). Only a caller that already
+  // resolved its own commit question — here, always, since `opts.q` is only
+  // ever handed a query that already cleared that gate — may say so, and only
+  // that says the destination's own gate opens immediately instead of asking
+  // for a second Enter.
+  const state: { fsDir?: boolean; qCommitted?: boolean } | null =
+    typeof opts?.isDir === "boolean" || typeof opts?.q === "string"
+      ? {
+          ...(typeof opts?.isDir === "boolean" ? { fsDir: opts.isDir } : null),
+          ...(typeof opts?.q === "string" ? { qCommitted: true } : null),
+        }
+      : null;
   history.pushState(state, "", urlForFsPath(fsPath, search));
   notifyNavigate();
 }
@@ -468,6 +489,18 @@ export function navigate(
 export function navHintIsDir(): boolean | null {
   const s = history.state as { fsDir?: boolean } | null;
   return s && typeof s.fsDir === "boolean" ? s.fsDir : null;
+}
+
+// Companion to navHintIsDir, for `?q=`: was the query this URL carries ALREADY
+// committed by the navigation that landed here (navigate's `opts.q`), so
+// useListingSearch's own commit gate should open immediately instead of
+// showing "Press Enter to search" for a query nobody has pressed Enter for on
+// THIS page? Read once, the same way and for the same reason — Back/Forward
+// restores it because it rides history.state, and an in-place URL sync must
+// go through replaceSearch to avoid dropping it.
+export function navHintQCommitted(): boolean {
+  const s = history.state as { qCommitted?: boolean } | null;
+  return !!s?.qCommitted;
 }
 
 // In-place view-param sync (sort/search/_mode/session replay) on the CURRENT
@@ -498,4 +531,68 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
 
 export function currentUrl(): string {
   return location.pathname + location.search;
+}
+
+// A Job's `page` (fused_render/jobs.py) is where clicking this row in
+// Notifications should go, and it comes in two shapes a caller cannot tell
+// apart by looking: an absolute fs path (the vast majority — a page-raised
+// job's own X-Fused-Page, or a server producer's repo root/output folder) or
+// one of a handful of SHELL ROUTES a few server producers name directly (the
+// AI Models page for a model load, Claude Code's settings page for an
+// install, Preferences' Indexing tab for a re-index run). Both start with
+// "/", so there is no syntactic tell.
+//
+// THE FIX IS A CLOSED TABLE, not a heuristic: every route a producer may set
+// is known in advance, so checking exact membership here is no different
+// from LEGACY_SENTINELS above — a route this table has not caught up to is a
+// one-line fix, not a guess this function has to make correctly forever.
+// Everything else is treated as an fs path, opened as a directory unless it
+// names an .html/.htm file — the same test the GitHub-publish repo-root case
+// and an ordinary page both pass.
+// This same closed set keys `_ORIGIN_BY_ROUTE` in `fused_render/jobs.py`,
+// which `origin_for_page` reads to name a page-owned job's `origin` caption
+// from its own X-Fused-Page header — kept there rather than duplicated as a
+// second table; a route added here needs a matching entry there to get a
+// label.
+const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set([
+  "/ai-models/local",
+  "/ai-models/benchmark",
+  "/claude-config",
+  "/preferences",
+  "/preferences?tab=indexing",
+  "/tasks",
+]);
+
+export function navigateToJobPage(page: string): void {
+  if (JOB_PAGE_ROUTES.has(page)) {
+    navigateUrl(page);
+    return;
+  }
+  // The paint hint only: is this an fs path that names a FILE (an .html view,
+  // a rendered .png/.mp4) or a directory? A rendered output's own path is now
+  // a real destination (an image/video job with no X-Fused-Page opens the
+  // file itself), so the old `/\.html?$/i` test — which called every non-html
+  // path a directory, .png included — is wrong for it.
+  //
+  // A CLOSED LIST, not "any dot with no further '/' or '.' after it" — that
+  // looser test paints a real dotted FOLDER name as a file (`site.com`,
+  // `app.v2`, `.config`; the same shape `github_setup.py`'s repo root,
+  // `envinstall.py`'s `project_dir`, and `_start_render`'s failure `out_dir`
+  // can all legitimately be), which is a new wrong answer where the old
+  // `.html?` test happened to be right. Only the extensions a real producer
+  // is known to write get to say "file": `.html`/`.htm` (a page's own
+  // X-Fused-Page) and `.png`/`.mp4` (an image/video render's output path,
+  // `routers/ai_runtime.py`). Anything else is painted as a directory —
+  // cosmetic either way, so the safe default when in doubt.
+  const base = page.slice(page.lastIndexOf("/") + 1);
+  const KNOWN_FILE_EXTENSIONS = /\.(html?|png|mp4)$/i;
+  navigate(page, { isDir: !KNOWN_FILE_EXTENSIONS.test(base) });
+}
+
+// Whether `page` is one of the shell routes above rather than an fs path —
+// the one thing a caller displaying `job.page` as text (a tooltip, say)
+// cannot tell on its own, since both shapes start with "/". `JOB_PAGE_ROUTES`
+// itself stays unexported: this is the one question about it a caller needs.
+export function isJobPageRoute(page: string): boolean {
+  return JOB_PAGE_ROUTES.has(page);
 }

@@ -139,3 +139,27 @@ def test_the_page_recovers_from_a_mismatch_like_a_stale_param(html_pane):
     assert re.search(
         r'probe\.error === "unknown run_id" \|\| probe\.error === "run is for another target"',
         html_pane)
+
+
+def test_a_folders_run_polled_by_its_ENTRY_FILE_is_not_another_target(
+        agent, tmp_path):
+    """The other half of the cards-wall fix (R2-11/R2-13). Once `_live_run`
+    stopped comparing the two spellings exactly, the tile DID adopt its run —
+    and its very first poll was refused for "another target", so the tile
+    polled twice and went idle with no card ever arriving. A folder and a file
+    inside it are one chat; a SIBLING file still is not (the refusal test
+    above stays green)."""
+    folder = tmp_path / "app"
+    folder.mkdir()
+    entry = folder / "app.html"
+    entry.write_text("<html></html>", encoding="utf-8")
+    _run_dir(agent, "20260908-120000-ggg", meta={"file": str(folder),
+                                                 "message": "hi"})
+    out = agent._poll("20260908-120000-ggg", file=str(entry))
+    assert out["error"] != MISMATCH
+    # …and the other way round, which is the chat-on-a-file/tile-on-a-project
+    # direction.
+    _run_dir(agent, "20260908-120000-hhh", meta={"file": str(entry),
+                                                 "message": "hi"})
+    assert agent._poll("20260908-120000-hhh",
+                       file=str(folder))["error"] != MISMATCH

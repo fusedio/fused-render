@@ -229,7 +229,9 @@ def test_cancel_kills_the_tree_with_taskkill_on_windows(tmp_path, monkeypatch):
         agent.os, "killpg",
         lambda *a: pytest.fail("os.killpg does not exist on Windows"),
         raising=False)
-    assert agent._cancel("r1") == {"cancelled": "r1"}
+    # `still_queued` rides EVERY road out of `_cancel` now, empty where
+    # the inbox held nothing — see agent.py's `stranded` note.
+    assert agent._cancel("r1") == {"cancelled": "r1", "still_queued": []}
     assert [cmd for cmd, _ in calls] == [["taskkill", "/PID", "4242", "/T", "/F"]]
     # taskkill is a console program and this worker has no console to lend it,
     # so without the flag a cancel flashes the window _DETACH just removed
@@ -251,7 +253,9 @@ def test_cancel_signals_the_process_group_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent.subprocess, "run",
         lambda *a, **kw: pytest.fail("taskkill is the Windows-only path"))
-    assert agent._cancel("r1") == {"cancelled": "r1"}
+    # `still_queued` rides EVERY road out of `_cancel` now, empty where
+    # the inbox held nothing — see agent.py's `stranded` note.
+    assert agent._cancel("r1") == {"cancelled": "r1", "still_queued": []}
     assert killed == [(4242, signal.SIGTERM)]
 
 

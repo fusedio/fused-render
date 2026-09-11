@@ -35,7 +35,6 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
-import { ChatFrame } from "@platform/ui/ChatFrame";
 import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
 import {
   publishPreviewSideSlot,
@@ -109,6 +108,7 @@ export default function PreviewSidebar({
   src,
   onSelect,
   onClose,
+  chat,
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -130,6 +130,15 @@ export default function PreviewSidebar({
   // Clears `_side`. The title bar's opener is hidden while this column is up
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
+  /**
+   * THE CHAT COMPANION, mounted by the caller. It is the one companion that is
+   * no longer necessarily an iframe (`apps/claude/ChatMount` decides on the
+   * flag), and the caller is the only place that knows the rest of what the
+   * native chat needs — the target, the params source, the pending "Fix with
+   * AI" ask. This column still owns WHERE it goes and its remount `key`, which
+   * is the whole of what this component ever did for it.
+   */
+  chat?: ReactNode;
 }) {
   // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
   // is what makes the divider hold still while you walk from file to file, since
@@ -343,12 +352,12 @@ export default function PreviewSidebar({
              exchange for a fix nobody asked for there. The key stays on the
              outer component, so a mode switch still replaces the document. */
           active === CHAT_MODE ? (
-            <ChatFrame
-              key={frameKey}
-              className="preview-side-frame"
-              src={src}
-              title={modeTitle(active)}
-            />
+            // Rendered as GIVEN, with no box of its own: the caller's
+            // `ChatMount` carries both the remount `key` and the
+            // `.preview-side-frame` class, so the flag-off path is the exact
+            // iframe this branch used to build and the flag-on path fills the
+            // same parent (`.chat-mount`, apps/claude/styles/chat.css).
+            chat
           ) : (
             <iframe
               key={frameKey}

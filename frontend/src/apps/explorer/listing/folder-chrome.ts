@@ -1,5 +1,6 @@
-// Who owns the explorer's CRUMB BAR right now — the shell, or the folder
-// listing underneath it.
+// Who owns the explorer's CRUMB BAR right now — the shell, or whichever view
+// underneath it has the merged field (a folder's Listing, or a plain file's
+// FileSearchField).
 //
 // Over a FOLDER the bar is wrong in two different ways. Its layout zone offers
 // to tear the window in half at the moment the view is already a split (list +
@@ -8,14 +9,18 @@
 // hundred pixels from the search box that is the folder's actual control. So a
 // folder view CLAIMS the bar: the splits go away and the `···` re-renders
 // inside the listing's search row, next to the thing it acts on (Listing.tsx).
+// A plain FILE claims the bar too (FileSearchField.tsx), for the same reason
+// the star and the click-to-edit path give way to the field's own copies —
+// but claims no slot: a file has no split column for the bar to move into, so
+// it stays exactly where it always rendered, spanning the shell's full width.
 //
-// The claim also carries a SLOT — a node inside the listing's left column that
-// the whole bar portals into (Breadcrumb.tsx `BreadcrumbBar`). That is what
-// makes the preview pane full height: with the bar confined to the left
+// The claim can also carry a SLOT — a node inside the listing's left column
+// that the whole bar portals into (Breadcrumb.tsx `BreadcrumbBar`). That is
+// what makes the preview pane full height: with the bar confined to the left
 // column, the pane's own header is the topmost thing on the right and the pane
-// runs from the top of the window to the bottom. A file/preview claims
-// nothing, and its bar renders at shell level spanning the full width, exactly
-// as before.
+// runs from the top of the window to the bottom. Only a folder's own claim
+// carries one; a file's claim (and a folder rendered inside a panel pane,
+// which never claims at all) leaves it null.
 //
 // A module store rather than a prop because the two components are SIBLINGS —
 // App renders <Breadcrumb> above <Listing>/<Preview>, and which of those the

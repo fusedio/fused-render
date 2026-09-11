@@ -1,0 +1,612 @@
+# Decisions — SPEC-toasts-become-notifications.md
+
+This build replaces `platform/lib/toast.ts` + `platform/ui/Toast.tsx` (the
+old always-visible, always-timed, never-retained toast stack) with
+`platform/lib/notifications.ts`'s `notify()`/`dismissNotification()`/
+`dismissPopup()`, which reuses the status-bar Notifications panel's
+`JobTier` retention model (`attention`/`trail`/`transient`/`silent`) for
+client-raised messages. This document records every call-site tier
+assignment, the decisions the spec left open, the dead ends ruled out
+along the way, and everywhere the spec's own text was wrong or
+self-contradictory.
+
+## How a tier is resolved (recap, see `notifications.ts`)
+
+- `tone: "error"` with no explicit `tier` → `attention`, and `tone:
+  "error"` **always** promotes to `attention` even over an explicit lower
+  tier (mirrors `jobs.ts`'s `effectiveTier()` error/cancelled promotion).
+- `tone: "info"` (or no tone at all) with no explicit `tier` → `transient`
+  — pops, never retained.
+- An explicit `tier` on a non-error message wins over the tone default —
+  this is how "destructive-but-successful" messages (spec's own examples:
+  a completed move, a batch delete, "Freed X — deleted…") get `tier:
+  "trail"` so they can be found again in "Worth keeping" after the popup
+  is gone.
+- `silent` is never used by any of the 69 call sites below — no migrated
+  message needed to skip the popup entirely.
+
+## The full call-site table (69 sites, 22 files)
+
+All 69 `notify()` call sites this migration produced, found by walking
+every `notify({...})` call under `frontend/src` (excluding `*.test.*`).
+`pushToast`/`dismissToast`/`toast.ts`/`Toast.tsx`/`toast.test.ts` have
+zero remaining references anywhere in `frontend/` or `tests/` as of this
+table.
+
+| File:line | Message (abridged) | tone | tier | why |
+|---|---|---|---|---|
+| `shell/AppPage.tsx:336` | "Could not change the icon: " + (e as Error).message | error | attention | tone: "error" default → attention (always promotes, even over a lower explicit tier) |
+| `shell/AppPage.tsx:490` | "Could not export " + slug + ": " + (e as Error).message | error | attention | tone: "error" default → attention |
+| `shell/ScheduleTaskViews.tsx:2851` | `Deleted ${task.task_id}` | info | trail | Destructive-but-successful ('Deleted <task>') — explicit trail override so it can be found again after the popup is gone |
+| `shell/ScheduleTaskViews.tsx:3589` | `Deleted ${task.task_id}` | info | trail | Destructive-but-successful — explicit trail override |
+| `shell/CurrentAppsSection.tsx:646` | "Could not rename " + app.name + ": " + (e as Error).message | error | attention | tone: "error" default → attention |
+| `shell/ActivityDock.tsx:144` | `${engineLabel(prev)} retired (idle)` | info | transient | tone: "info" default → transient (ordinary confirmation, popup only) |
+| `shell/useMissingFolders.ts:53` | MISSING_FOLDER_TOAST | error | attention | tone: "error" default → attention; dedup target changed from the old toast queue to `getRetainedNotifications()` since `notify()` is "latest wins, one at a time" by construction — but repeated presses would otherwise stack duplicate attention rows (nothing there auto-expires) |
+| `shell/TaskCards.tsx:472` | said | error | attention | tone: "error" default → attention |
+| `shell/TaskCards.tsx:686` | `Deleted ${task.task_id}` | info | trail | Destructive-but-successful — explicit trail override |
+| `shell/TaskCards.tsx:963` | `Deleted ${task.task_id}` | info | trail | Destructive-but-successful — explicit trail override |
+| `platform/ui/FdaStrip.tsx:58` | FDA_COPY.deniedToast | error | attention | tone: "error" default → attention |
+| `platform/ui/FdaStrip.tsx:72` | FDA_COPY.grantedToast | info | transient | tone: "info" default → transient |
+| `platform/ui/AppPreviewCard.tsx:453` | "Could not export " + app.name + ": " + err.message | error | attention | tone: "error" default → attention |
+| `platform/lib/scheduleEvents.ts:104` | t.msg | error | attention | Failed schedule event, actionable (Open action) — attention via tone default; dismiss handler retracts fully (`dismissPopup()` + `dismissNotification(id)`) before navigating |
+| `platform/lib/mountHealth.ts:61` | `${e.name} reconnected` | info | transient | tone: "info" default → transient |
+| `platform/lib/mountHealth.ts:69` | `${name} disconnected` | error | attention | Actionable failure (Reconnect action) — attention via tone default; dismiss handler calls both `dismissPopup()` and `dismissNotification(id)` since the reconnect attempt raises its own fresh outcome notification |
+| `platform/lib/mountHealth.ts:83` | `${name} reconnected` | info | transient | tone: "info" default → transient |
+| `platform/lib/mountHealth.ts:85` | `${name} — reconnect failed: ${(err as Error).message}` | error | attention | tone: "error" default → attention |
+| `platform/lib/appCardMenu.ts:63` | "Could not reveal " + app.name + ": " + e.message | error | attention | tone: "error" default → attention |
+| `platform/lib/appCardMenu.ts:81` | "Could not export " + app.name + ": " + e.message | error | attention | tone: "error" default → attention |
+| `platform/lib/appCardMenu.ts:96` | "Path copied" | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:243` | (e as Error).message \|\| "clone failed" | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:327` | `Duplicated as ${basename(dst)}` | info | transient | Ordinary confirmation, not destructive — resolves the spec's own "Duplicated as X" contradiction (see below) in favor of the more specific bullet; duplication deletes nothing |
+| `apps/explorer/Preview.tsx:329` | friendlyFsError(e, { verb: "duplicate", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:352` | friendlyFsError(e, { verb: "delete", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:376` | friendlyFsError(r.message, { verb: "delete", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:392` | err | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:414` | friendlyFsError(e, { verb: "rename", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:421` | "Path copied" | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:427` | friendlyFsError(e, { verb: "reveal", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:457` | "Command copied — paste it in your terminal" | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:503` | "Preview not captured — the app frame has to be fully on screen" | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:511` | "Preview not captured — nothing was changed" | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:516` | "Preview replaced/saved — " + name + "/preview.png" | info | transient | tone: "info" default → transient (a saved preview file is a routine confirmation, not framed by the spec as destructive) |
+| `apps/explorer/Preview.tsx:521` | "Could not save preview: " + (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:528` | "preview.png here is a folder — move it first" | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:579` | friendlyFsError(e, { verb: "reveal", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/Preview.tsx:2436` | "Fixed — reloading this file's preview…" | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:2448` | "Nothing to repair — the registry file already reads fine." | info | transient | tone: "info" default → transient |
+| `apps/explorer/Preview.tsx:2650` | "Your template registry could not be read, so your own view bindings are not applying: …" | error | attention | Registry read failure with a Copy-details action — attention via tone default; its `syncRegistryToast` dismiss path calls both `dismissPopup()` and `dismissNotification(id)` as a **correction** (the registry claim is now false), not a record |
+| `apps/explorer/EntryActionsMenu.tsx:199` | "Could not export " + name + ": " + (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/explorer/Breadcrumb.tsx:478` | (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/explorer/Breadcrumb.tsx:489` | (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/explorer/Breadcrumb.tsx:493` | `Can't open ${scheme}:// URLs in the explorer` | error | attention | tone: "error" default → attention |
+| `apps/explorer/lib/fs-move.ts:111` | friendlyFsError(report.failed.error, { verb: "move", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/lib/fs-move.ts:122` | `Moved ${what} to ${basename(dir)}` | info | trail | Destructive-but-successful — spec's own named example ("a completed move") |
+| `apps/explorer/listing/row-drag.ts:575` | `"${basename(target.path)}" isn't a folder — nothing was moved.` | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useListingShortcuts.ts:148` | `Still ${undo/redo}…` | info | transient | tone: "info" default → transient; `replaceId`-updated repeatedly against the same live popup while undo/redo runs (see the notify() timer fix below) |
+| `apps/explorer/listing/useDirListing.ts:99` | err.message | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:132` | ctx ? friendlyFsError(e, ctx) : (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:142` | err | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:192` | `Copying 1 of ${paths.length}…` | info | transient | tone: "info" default → transient; paste-progress popup, `replaceId`-updated repeatedly (same timer-fix relevance as above) |
+| `apps/explorer/listing/useFileOps.ts:215` | `Copying ${i + 1} of ${paths.length}…` | info | transient | same as above — `replaceId` update of the same popup |
+| `apps/explorer/listing/useFileOps.ts:278` | `Copy cancelled — ${pasted.length} of ${paths.length} copied` | info | transient | tone: "info" default → transient |
+| `apps/explorer/listing/useFileOps.ts:324` | friendlyFsError(e, { verb: "move", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:418` | t.msg (relocationToast wrap) | conditional | trail / attention | Undo/redo outcome: success (tone info) → trail (a completed move/delete/copy record, same reasoning as fs-move.ts's own confirmation); failure (tone error) → attention via the tone default, no explicit override needed |
+| `apps/explorer/listing/useFileOps.ts:497` | friendlyFsError(e, { verb: "reveal", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:506` | "Path copied" | info | transient | tone: "info" default → transient |
+| `apps/explorer/listing/useFileOps.ts:514` | `${paths.length} paths copied` | info | transient | tone: "info" default → transient |
+| `apps/explorer/listing/useFileOps.ts:524` | "Command copied — paste it in your terminal" | info | transient | tone: "info" default → transient |
+| `apps/explorer/listing/useFileOps.ts:618` | friendlyFsError(e, { verb: "rename", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:715` | ~~"Deleted" / `Deleted ${trashed.length} items`~~ | ~~info~~ | ~~trail~~ | **Reverted, see below** — no longer notifies at all |
+| `apps/explorer/listing/useFileOps.ts:735` | friendlyFsError(failed.message, { verb: "delete", … }) | error | attention | tone: "error" default → attention |
+| `apps/explorer/listing/useFileOps.ts:819` | "Could not export " + row.name + ": " + e.message | error | attention | tone: "error" default → attention |
+| `apps/claude_config/bits.tsx:43` (`toastOk`) | msg | info | transient | tone: "info" default → transient |
+| `apps/claude_config/bits.tsx:47` (`toastErr`) | msg | error | attention | tone: "error" default → attention |
+| `apps/ai_models/benchmark/ShareChartButton.tsx:82` | msg (share outcome) | info | transient | tone: "info" default → transient |
+| `apps/ai_models/benchmark/ShareChartButton.tsx:85` | (e as Error).message | error | attention | tone: "error" default → attention |
+| `apps/ai_models/local/LocalTab.tsx:333` | "Freed X — deleted…" / "Nothing deleted…" | conditional | trail / attention | Spec's own named motivating example for destructive-but-successful: trail on a clean run (`tier: "trail"` set explicitly); a run with failures stays attention via the tone: "error" default — no override needed on that branch |
+
+## Reversal: file-deletion success no longer notifies at all
+
+`useFileOps.ts:721`'s batch-trash success card — this migration's own named
+motivating example for `trail` (a bare "Deleted" / "Deleted N items", no
+name, no context) — is removed outright, per the user: "lets not send
+notifications for file deletion (no need)". The user's own screenshot showed
+exactly the failure mode the spec worried about for OTHER destructive
+successes (freed disk space, a completed move) but concluded the opposite
+way for this one: a delete confirmation with no name and no context is not
+worth a card, however it's tiered.
+
+This makes the "spec's own motivating example" line in the code comment
+above the removed block stale — the delete case is no longer an example of
+anything `trail` does; it's an example of a message that should never have
+been sent. The comment is rewritten in place to point at this decision
+instead of repeating the now-false claim.
+
+`trail` is not deprecated by this — two other explorer call sites still use
+it: `apps/explorer/lib/fs-move.ts:122` ("Moved X to Y") and
+`apps/explorer/listing/useFileOps.ts:424` (the undo/redo `relocationToast`
+success branch, which is a *different* gesture — it confirms a Cmd+Z
+worked, not that a delete happened, and stays).
+
+The error path immediately below (`useFileOps.ts:735`, `friendlyFsError(...,
+{ verb: "delete", ... })`) is unchanged: a failed delete still raises an
+`attention` notification. `Preview.tsx`'s own delete paths (`startDelete`,
+`doTrash`, ~lines 337–379) were already silent on success before this
+change — confirmed, not assumed, by reading both call sites — so nothing
+there needed touching. Task deletion (`shell/TaskCards.tsx`,
+`shell/ScheduleTaskViews.tsx`) and AI-model deletion (`LocalTab.tsx`'s
+"Freed X — deleted…") are unrelated surfaces with real context in their
+messages and are unaffected.
+
+## Reversal: file-indexing completion no longer pops a card
+
+`fused_render/server/routers/index.py`'s Explorer index-scan row (the
+`sys:index:<run_id>` bridge row, `mirror_index_jobs_once`) moves from
+`jobs.TRANSIENT` to `jobs.SILENT`. User: "similarly remove notification for
+file indexing completion" — same reasoning as the delete-toast reversal
+above: a scan finishing carries nothing the user needs to act on or
+remember, so even the ~2.5s pop `TRANSIENT` still produced was unwanted.
+`SILENT` is the one tier that pops no card at all (`jobs.py`'s own tier
+table) while everything else about the row is unaffected:
+
+- **Failures stay visible.** `effective_tier` (`fused_render/jobs.py`,
+  mirrored by `effectiveTier` in `frontend/src/platform/lib/jobs.ts`)
+  promotes any `error`/`cancelled` row to `attention` by reading
+  `job.state`, never the stored tier — so a failed or cancelled scan is
+  promoted identically whether the producer declared `TRANSIENT` or
+  `SILENT`. Verified by reading `effective_tier` (it branches on
+  `job.state in ("error", "cancelled")` alone) and pinned by a new test,
+  `test_a_failed_scan_is_still_attention_despite_the_silent_tier`
+  (`tests/test_index_jobs.py`).
+- **The running row is unaffected.** Tier only ever governs a TERMINAL
+  row's popping/retention — `jobRows` (`platform/lib/jobs.ts`) short-
+  circuits `!isTerminal(j)` before it ever consults tier, so a live scan
+  keeps reporting progress in the Activity dock under `SILENT` exactly as
+  it did under `TRANSIENT`. Verified by reading `jobRows` and pinned by
+  `test_a_running_scan_still_shows_in_the_activity_list_despite_silent_tier`.
+
+The long comment that used to sit above `"tier": jobs.TRANSIENT` (explaining
+why a finished scan ages out on the read-gated clock rather than waiting on
+a dismiss) is rewritten in place rather than replaced outright — that
+reasoning still holds for `SILENT`, which is `_sweep`'s own documented
+"even stronger case than `TRANSIENT`" for the same read-gated age-out
+(see `tests/test_jobs_api.py`'s `SILENT` age-out tests, pre-existing).
+
+## Notification column narrowed to 300px, dead `.toast` CSS removed
+
+User: "also reduce the card width for notifications. it is too wide. or
+ensure the card has more context info." Took both halves rather than
+picking one:
+
+- **Width.** `.notif-host` (`frontend/src/styles/notifications.css`) drops
+  from `min(360px, calc(100vw - 32px))` to `min(300px, calc(100vw - 32px))`.
+  The deliberate fixed-width design from the comment above it (real `width`
+  + `align-items: stretch`, not `max-width` + `flex-end` — see that comment
+  for why) is unchanged; only the number moved. 300px sits comfortably above
+  `.dl-row`'s own 238px floor, and every title in the column already
+  wraps/ellipsizes rather than forcing width open — `NotificationCard`'s
+  `titleMode: "id"` clips a long model/engine id to one line,
+  its default `"wrap"` mode clamps a sentence to two lines, and
+  `.server-status-body`/`ServerStatusBanner`'s own text is ordinary wrapping
+  prose (version strings, short sentences — no unbroken long tokens).
+  Cross-checked the other cards riding this column: `JobPopupCard` and
+  `MessagePopupCard` both render through the same `NotificationCard`/
+  `.dl-row` machinery, so they inherit the same wrap/ellipsis behavior for
+  free; `ServerStatusBanner`'s `.server-status*` family uses `max-width:
+  100%` and normal line-height text, no overflow risk. `RepoUpdatesDock.tsx`
+  does NOT live in this column at all (D563 moved it into `StatusBar`/
+  `#main`, see `NotificationHost.tsx`'s own header comment) so it is
+  unaffected by this change.
+- **Context/title audit.** Went through every `notify()` call site's title
+  for the same bare-word problem "Deleted" had (see the reversal above).
+  None qualify: every remaining title either names its specific target
+  (`` `Deleted ${task.task_id}` ``, `` `Moved ${what} to ${basename(dir)}` ``,
+  `` `${engineLabel(prev)} retired (idle)` ``, `` `Duplicated as ${...}` ``)
+  or is already a full, specific sentence (`MISSING_FOLDER_TOAST`,
+  `FDA_COPY.deniedToast`/`grantedToast`, "Fixed — reloading this file's
+  preview…", "Nothing to repair — the registry file already reads fine.").
+  "Path copied" (three call sites) reads as fine, not ambiguous the way
+  "Deleted" was: there is exactly one path in play at the moment it fires,
+  unlike "Deleted" which gave no count-independent identity to what was
+  gone. No title changes made here beyond the "Deleted" removal already
+  covered above.
+- **Dead CSS.** `platform/lib/toast.ts`/`platform/ui/Toast.tsx` were deleted
+  earlier in this migration; `.toast`, `.toast-info`, `.toast-msg`,
+  `.toast-close`, `.toast-action`, `.toast.toast-leaving` were the CSS for
+  that deleted component and had zero remaining `.ts`/`.tsx` references
+  (grepped before removing) — deleted. `.toast-slot`, `.toast-slot > .dl-row`,
+  `.toast-slot.leaving` and `@keyframes toast-in` are NOT dead — verified via
+  grep that `JobPopupCard.tsx`/`MessagePopupCard.tsx` both still render
+  `className="toast-slot"` and their child `.dl-row` still plays the
+  `toast-in` entrance — kept, with the header comment above `.toast-slot`
+  rewritten to stop describing the deleted `.toast` card as the thing this
+  slot wraps.
+
+## Decisions the spec left open, resolved here
+
+- **"Duplicated as X" tier — spec self-contradiction.**
+  `SPEC-toasts-become-notifications.md`'s tier guidance names "a
+  duplicate" under its "destructive-but-successful → trail" bullet, then
+  two sentences later names "Duplicated as foo.py" — the exact string
+  `Preview.tsx` produces — under its "ordinary confirmations → transient"
+  bullet. Both cannot be right for the same message. Resolved in favor of
+  **transient**: the more specific/explicit bullet (verbatim message
+  text beats a generic category word), and because duplicating a file is
+  not actually destructive — nothing is deleted, unlike every other
+  `trail` example in the spec (a move, a batch delete, freed disk space).
+  If this reading is wrong, the fix is a one-line `tier: "trail"` at
+  `apps/explorer/Preview.tsx:327`.
+- **`useMissingFolders.ts`'s dedup target.** The old code deduplicated
+  against the toast queue (`getToasts().some(...)`) because up to
+  `MAX_TOASTS` (5) identical toasts could stack. `notify()`'s popup is
+  "latest wins, one at a time" by construction, so a second press can no
+  longer stack a second POPUP — but every call still pushes a fresh
+  `attention` row into the RETAINED list, and nothing there auto-expires
+  (D663). Three quick presses on a missing-folder row would otherwise
+  leave three identical "Needs you" rows forever. Dedup now checks
+  `getRetainedNotifications()` instead.
+- **`dismissToast(id)`'s "fully retract this one" behavior has no 1:1
+  replacement.** The old single call removed a toast whichever queue slot
+  it was in. The new store splits this into `dismissPopup()` (ends only
+  the currently-showing popup) and `dismissNotification(id)` (removes
+  only a retained row). Three call sites need "fully retract THIS
+  specific notification" and now call both together:
+  `mountHealth.ts`'s Reconnect handler, `scheduleEvents.ts`'s Open
+  handler, and `Preview.tsx`'s `syncRegistryToast` dismiss wiring (a
+  correction, since the registry claim being retracted is now false —
+  contrast the `trail`-tier messages elsewhere in the file, which are
+  meant to leave a trace). `useFileOps.ts`'s paste-progress toast only
+  ever needed `dismissPopup()` alone, since it is transient and never
+  retained.
+- **D663 reversed for client-raised messages, not for job/repo rows.**
+  See `DECISIONS-actionable-notifications.md`'s newest entry ("Fifteenth
+  round") and `SPEC-actionable-notifications.md`'s updated Constraints
+  section. Short version: a job row is watched server-side
+  (`fused.watchJob`) and D663 protects that watcher; a client-raised
+  message has no server row and nothing watches it, so its transient
+  POPUP is allowed to expire — but once a message is retained
+  (`attention`/`trail`), it is governed by the same no-auto-dismiss rule
+  as every other retained row from that point on.
+
+## A regression found and fixed during this migration
+
+`notify()`'s `replaceId` path had two branches: one for updating a
+RETAINED row (re-armed the popup's exit timer on every content update)
+and one for updating a currently-LIVE POPUP (updated content but left
+the *original* exit timer — armed on the very first `notify()` call —
+running). Two of the newly-migrated call sites repeatedly call
+`notify(..., id)` against the same live popup while a potentially
+long-running operation is in flight: `useFileOps.ts`'s paste-progress
+toast ("Copying N of M…") and `useListingShortcuts.ts`'s "Still
+undoing…/redoing…". Under the old code, an operation slower than
+`JOB_POPUP_VISIBLE_MS` (2.5s) could see its progress card silently start
+leaving mid-operation, regardless of how recently its content had been
+updated. Fixed in `platform/lib/notifications.ts` by re-arming the exit
+timer in the live-popup branch too (mirroring the retained-row branch),
+with new coverage in `notifications.test.ts` ("replaceId against a live
+popup re-arms the exit timer…", "replaceId against a live, never-retained
+popup does not re-arm once it has left").
+
+## Dead ends ruled out
+
+- **Module-caching for `notifications.topEmbed.test.ts`.** An earlier
+  attempt to test `IS_TOP_EMBED` behavior via a second test file that
+  re-imported `notifications.ts` under a different global flag value hit
+  bun's module cache — the second import saw the first test file's
+  already-initialized module state, not a fresh one. `_setIsTopEmbedForTest`
+  (a test-only setter in the same module) replaced this approach; no
+  second test file exists for this.
+- **A double-timer race in `MessagePopupCard.tsx`.** An early draft had
+  both the popup's own mount-effect timer and `notify()`'s store-owned
+  `armExitTimer()` racing to decide when the card starts leaving. Caught
+  before landing — the store now owns the timer exclusively (`notify()`/
+  `dismissPopup()` call `armExitTimer()`/`clearTimeout` directly), and
+  `MessagePopupCard`/`JobPopupCard` are purely presentational, reading
+  `leaving` off the store's own snapshot rather than keeping any timer
+  state of their own.
+- **Keeping `Toast.tsx` as a shared component under a new name.** Ruled
+  out once `JobPopupCard.tsx` and `MessagePopupCard.tsx` were confirmed
+  independently to render their own markup (`NotificationCard`'s
+  `.dl-row`, not `Toast`'s `.toast-msg`/`.toast-action`/`.toast-close`
+  structure) — `Toast.tsx` had zero remaining importers by the end of the
+  migration and was deleted outright rather than renamed.
+
+## CSS left untouched, deliberately
+
+Per the spec: "Keep the `.toast-slot` / `.toast` CSS that `JobPopupCard`
+still depends on; rename only if every reference moves in lockstep."
+`JobPopupCard.tsx` and `MessagePopupCard.tsx` both still use
+`.toast-slot` as their outer wrapper class (`src/styles/notifications.css`).
+The bare `.toast`/`.toast-info`/`.toast-leaving`/`.toast-msg`/
+`.toast-action`/`.toast-close` rules were only ever consumed by the now-
+deleted `Toast.tsx` component and are technically dead CSS after this
+migration — left in place rather than pruned, taking the instruction
+literally and avoiding CSS-cleanup scope creep in a call-site-migration
+pass; a follow-up pass can remove them along with their entries in
+`src/styles/base.css`'s shared transition/press-feedback selector lists
+if desired.
+
+## Test state at the end of this build
+
+- `bun test src/platform/lib/notifications.test.ts` — 19 pass, 0 fail
+  (includes the two new `replaceId`-timer tests).
+- `bun test src/shell/tasks-lib.test.ts` — 485 pass, 0 fail (two
+  literal-source-line assertions updated for the new `notify()` call
+  shapes: the `ScheduleTaskViews.tsx`/`TaskCards.tsx` "Deleted <task>"
+  trail-tier call, and `useMissingFolders.ts`'s retained-list dedup).
+- `bun test src/apps/explorer/Listing.test.tsx src/shell/AppPage.test.tsx
+  src/shell/ActivityDock.test.tsx src/shell/tasks-lib.test.ts
+  src/shell/current-apps-lib.test.ts src/apps/explorer/lib/fs-move.test.ts
+  src/platform/lib/appCardMenu.test.ts src/platform/lib/schedule-toast.test.ts`
+  — 553 pass, 0 fail.
+- `bun test src/shell/RepoUpdatesDock.test.tsx` — 62 pass, 0 fail
+  (covers the messages 5th-row-source addition from earlier in this
+  build).
+- `bun run typecheck` (`tsc --noEmit`) — clean, run after every batch of
+  edits including the final deletion of `toast.ts`/`Toast.tsx`/
+  `toast.test.ts`.
+- `node scripts/check-boundaries.mjs` — clean (743 files).
+- `python3 -m pytest tests/test_theme.py` — 133 pass, 0 fail (no new
+  literal color hex was introduced by this build).
+- Grepped `tests/` (Python) for every deleted/renamed frontend symbol —
+  `pushToast`, `dismissToast`, `Toast`, `ToastTone`, `ToastAction`,
+  `MAX_TOASTS`, `getToasts`, `useToasts` — zero references found.
+- No full `bun test` suite run was performed mid-build, per the working
+  agreement; the orchestrator runs the full suite once at the end.
+
+## Code-review round (PR #1104), all 8 findings
+
+Fixed all 8 findings from the review, each with a test confirmed red
+against the pre-fix code and green after, one commit per logical group.
+Nothing was pushed back on — every finding held up on inspection.
+
+**#1/#2/#8 — pane→shell forwarding (`notifications.ts`), one commit.**
+`installIngest()`'s handler now takes a plain `NotificationInput` and mints
+its OWN id from its OWN `nextId` sequence (was: a `StoredNotification` with
+the SENDER's id baked in, colliding across documents since every document's
+`nextId` starts at 1 — #2), then calls `refreshSnapshot()` before `emit()`
+(was: `emit()` alone, so `useSyncExternalStore`'s reference-identity check
+never saw a change and forwarded messages silently never appeared — #1). A
+new `forwardedIds: Map<localId, shellId>` plus a new `_fusedDismissNotification`
+global lets a pane's `dismissNotification(localId)` reach across and remove
+the shell's own, independently-minted copy — previously it only ever cleared
+the pane's own invisible retained entry (#8; the `Preview.tsx` dismiss
+wiring needed ZERO changes for its `dismissNotification(id)` half — the fix
+lives entirely inside `notifications.ts`).
+
+Test rigor note: the first draft of finding #2's test injected an id-less
+payload (`{ title, tone }`) and only checked `ingestedId !== localId` —
+this passed even against the UNFIXED code, vacuously, because the old
+handler pushed `n.id === undefined` into `retained` and `undefined` trivially
+differs from a real number. Caught before implementing the fix; strengthened
+to inject the SAME id the local `notify()` had just minted
+(`{ id: localId, title, tone }`), which is genuinely red against the old
+code (both ids read `1` from independent `nextId` counters) and green only
+once the receiving side mints its own id instead of trusting the payload's.
+
+**#5 (+ the rest of #4) — `dismissPopup(id?)`, one commit.** Every real call
+site (`mountHealth.ts`'s Reconnect, `scheduleEvents.ts`'s Open,
+`Preview.tsx`'s registry-error dismiss, `useFileOps.ts`'s two paste-cleanup
+calls) is a delayed action holding an id captured when its own popup first
+appeared; a bare `dismissPopup()` closed whatever was CURRENTLY showing by
+the time that action fired, almost always something unrelated by then.
+`dismissPopup(id?: number)` is now a no-op once `id` no longer names the
+live popup; the popup's own ✕/outside-press (`MessagePopupCard.tsx`) keeps
+calling it with no id on purpose — "whatever's showing right now" IS what
+that one means. This also completes #4: `useFileOps.ts`'s two calls now
+target the SAME id the reassigned `progressToastId` holds, not a stale one.
+
+**#6/#7 — retained-`replaceId` branch, one commit.** The branch that updates
+a `replaceId` matching a RETAINED (not live) entry: (#6) set `popup =
+updated` under `IS_TOP_EMBED && attention` but never cleared whatever timer
+was already running for the PREVIOUS popup — that stale timer's closure only
+reads the module-level `popup` variable, so it fired against the re-popped
+entry regardless of its own content, silently breaking the no-auto-expiry
+guarantee. Now clears/re-evaluates the timer before deciding whether to arm
+it, same shape the fresh-item path already used. (#7b) the branch always
+wrote its update into `retained` even when the new tier resolved to
+transient/silent; now routes a non-retained-tier update through a removal
+instead. (#7a, latent — no caller triggers it today) the LIVE-popup
+`replaceId` branch never synced a matching `retained` entry; now does,
+a no-op when none exists.
+
+**#3 — error notifications actually look like errors, one commit.**
+`NotificationCard`'s status line (and the glyph inside it) now renders
+whenever EITHER `status` or `terminal` is given, not only when `status` is —
+previously `terminal` alone (both `MessagePopupCard.tsx` and
+`RepoUpdatesDock.tsx`'s `MessageRowView` passed it with no `status`) drew
+nothing at all, so an error notification looked pixel-identical to an info
+one. `NotificationCard` also gained an explicit `role` prop (wins over
+`rowClick`'s own implicit `role="button"`), restoring the deleted
+`Toast.tsx`'s own `role={tone === "info" ? "status" : "alert"}` distinction,
+now set from the same tone check that already drives `terminal` at both
+call sites. Tests assert actual rendered output (JSON tree from
+`react-test-renderer`), not props handed to a mock.
+
+## Test state at the end of this round
+
+- `bun test src/platform/lib/notifications.test.ts` — 27 pass, 0 fail.
+- `bun test src/platform/ui/NotificationCard.test.tsx` — 15 pass, 0 fail.
+- `bun test src/platform/ui/MessagePopupCard.test.tsx` (new file) — 1 pass,
+  0 fail.
+- `bun test src/platform/ui/NotificationHost.test.tsx` — unaffected, still
+  green.
+- `bun test src/shell/RepoUpdatesDock.test.tsx` — 63 pass, 0 fail.
+- `bun test src/apps/explorer/listing/useFileOps.paste.test.tsx` (new file)
+  — 1 pass, 0 fail; confirmed red before the `progressToastId` reassignment
+  fix (3 distinct popup ids observed across 3 files instead of ≤2).
+- `bun test src/platform/lib/schedule-toast.test.ts` — 7 pass, 0 fail
+  (unaffected by the `dismissPopup(id)` signature change — still calls it
+  the same way).
+- Combined run of all of the above — 115 pass, 0 fail, 283 `expect()`
+  calls.
+- `bunx tsc --noEmit -p .` — clean.
+- Grepped `tests/` (Python) for every symbol touched this round
+  (`dismissPopup`, `_fusedIngestNotification`, `forwardToShell`,
+  `notifications.ts`) — zero references found; nothing to update there.
+- No full `bun test` suite run performed this round either, per the working
+  agreement.
+
+## CI-red fix: the width test still asserted the pre-narrowing number
+
+The 300px narrowing commit (`Narrow the notification column to 300px, drop
+dead Toast CSS`) changed `.notif-host`'s `width` in `notifications.css` but
+missed updating `src/styles/notifications-width.test.ts`, which literal-
+matches `width: min(360px, calc(100vw - 32px))` — CI's `frontend` job went
+red. Fixed by updating the assertion to `min(300px, ...)` and the two prose
+spots in that test file's header comment and its first test's lead-in that
+narrated "360px" as the live ceiling (now marked "(then-)360px", with a note
+that the ceiling was later narrowed to 300px and that the `max-width`-vs-
+`width` reasoning is unaffected by which number is current).
+
+`notifications.css`'s own header comment quotes "360px" too (line 12) but
+that one stays as-is — it is deliberately narrating the OLD bug's numbers as
+history ("...stretched toward the 360px ceiling, so the stack read as a
+ragged pile..."), immediately followed by its own paragraph explaining the
+300px narrowing as a separate, later change. Nothing there is stale.
+
+Grepped the whole repo (`frontend/src` and `tests/`) for any other literal
+on this column's width or on `360px` tied to notifications — every other
+`360px` hit (`ai-models.css`, `schedule.css`, `explorer.css`, several
+`apps/explorer/listing/*.test.ts` files) belongs to an unrelated feature
+(AI Models page width floor, schedule panel width, explorer search-chip
+container queries) and was left untouched. No Python test asserts this
+number.
+
+**Takeaway for the next width change:** `src/styles/notifications-width.test.ts`
+is the literal guard on `.notif-host`'s `width` — a future change to that
+number must update both `notifications.css` and this test file's assertion
+(and, if the prose narrates the number, its comments) in the same commit.
+
+## Reversal: retention narrows to error-or-actionable — `trail` retention is gone
+
+User, looking at "Undid the delete." and "Redid the delete." sitting in the
+Notifications panel: "don't keep this in the list. just show popup. anything
+non actionable or error doesn't belong in the list."
+
+This reverses the "destructive-but-successful → `trail`" decision this
+migration made earlier and named as its own motivating example — "Freed
+1.4 GB — deleted superwhisper/s1-mini", a completed move, a completed
+undo/redo. All three no longer stay in the panel; each now pops for the
+normal `JOB_POPUP_VISIBLE_MS` window via the plain `tone: "info"` default
+(`transient`) and leaves no trace. The earlier delete-toast and
+file-indexing reversals (above) already established the principle for two
+specific surfaces; this generalizes it into the retention rule itself.
+
+**The new rule**, `isRetained(input, tier)` in `notifications.ts`:
+
+- `tier === "silent"` → never retained, no exception.
+- `tier === "attention"` (any `tone: "error"` message, or an explicit
+  `tier: "attention"` override) → always retained.
+- everything else → retained only if the message carries something to act
+  on: `input.action` or `input.page`.
+
+One shared helper, used at all three retention-check sites inside `notify()`
+(the fresh-item path, and both places the `replaceId` path re-checks
+whether an in-place update should join/leave the retained list) — replacing
+the old `tier === "attention" || tier === "trail"` check that was inlined at
+each of those sites separately.
+
+**`trail` in `NotificationInput["tier"]`: deliberately made unrepresentable.**
+`jobs.ts`'s server-side `JobTier` (`"attention" | "trail" | "transient" |
+"silent"`) is untouched — the server still has a real `trail` default
+(`fused_render/jobs.py`'s `Job.tier`), and a server-produced job row still
+reaches the panel exactly as before. What changed is only the CLIENT
+input type: `NotificationInput.tier` narrows from `JobTier` to a new
+`ClientNotificationTier = Exclude<JobTier, "trail">`. A client call site
+that types `tier: "trail"` today is trying to say "keep this even though it
+isn't an error and carries no action/page" — exactly the case this reversal
+closes off — so making it a compile error is more honest than leaving it
+type-legal and silently downgrading it at runtime. (The alternative
+considered and rejected: leave `tier` as the full `JobTier` and let
+`isRetained` simply stop special-casing `"trail"`, so a stray `tier: "trail"`
+call site would keep compiling but silently stop being retained. Rejected
+because that is exactly the kind of "quietly wrong" a type system exists to
+prevent — the next engineer reaching for `tier: "trail"` on a call site that
+really does want retention would get no signal that the tier no longer
+does what its name says.) `forwardToShell()` (panel → embed shell, for
+`IS_TOP_EMBED`) bridges back from the full `JobTier` a `StoredNotification`
+carries to `ClientNotificationTier` with a type-safe ternary
+(`n.tier === "trail" ? undefined : n.tier`) rather than a cast — in
+practice that branch is dead code, since only `resolveTier` (fed a
+`ClientNotificationTier` input) ever produces a client-side
+`StoredNotification`, but the ternary keeps that true by construction
+rather than by convention.
+
+**Call sites migrated** (all dropped their `tier: "trail"` override — the
+plain `tone: "info"` default already lands on `transient`, which pops and is
+not retained):
+
+- `apps/explorer/lib/fs-move.ts:122` — "Moved X to Y".
+- `apps/explorer/listing/useFileOps.ts:424` — the undo/redo `relocationToast`
+  success branch. This is the literal "Undid the delete." row the user
+  pointed at. Its failure branch (line ~431) is untouched — `tone: "error"`
+  already promotes to `attention` regardless of tier, so no override was
+  ever needed there, and a new integration test
+  (`useFileOps.undo.test.tsx`) drives the real hook through a real
+  `doUndo()` against a stubbed failing `/api/fs/rename` to prove that,
+  rather than assume it.
+- `apps/ai_models/local/LocalTab.tsx:333` — "Freed X — deleted…" /
+  "Nothing deleted…". Its failure branch (`result.failures.length`) is
+  likewise untouched and relies on the same `tone: "error"` promotion;
+  verified by code inspection against the now-integration-tested
+  `useFileOps.ts` call site, which is structurally identical
+  (`tone: failures ? "error" : "info"`, no tier), plus the exhaustive
+  general-rule coverage in `notifications.test.ts` — not by a fresh
+  dedicated render test for `LocalTab`, which has no existing test harness
+  and would need a non-trivial `CacheScan`/`useAiRuntime` mock to build one
+  from scratch; judged disproportionate to what is otherwise a two-line,
+  non-branching `notify()` call.
+- `shell/TaskCards.tsx:686`, `:963` and `shell/ScheduleTaskViews.tsx:2851`,
+  `:3589` — all four "Deleted `<task_id>`" call sites. `tasks-lib.test.ts`
+  had a literal-source assertion pinning the old
+  `tier: "trail"` call (line ~4140) — updated to assert the new,
+  tier-less call and to assert `tier: "trail"` is absent from both source
+  files.
+
+**`RepoUpdatesDock.tsx`'s "Worth keeping" split** changes from
+`m.tier === "trail"` to `m.tier !== "attention"`. This was a real bug
+caught during this round, not a cosmetic rename: once client input can no
+longer produce `tier: "trail"`, a retained-but-not-attention message
+resolves to whatever `resolveTier` actually landed on — in practice almost
+always `"transient"` (an actionable `tone: "info"` message with no explicit
+tier) — and the old literal `=== "trail"` check would have silently dropped
+every such message from BOTH panel sections the moment this reversal
+shipped. Fixed as part of the same commit as the retention narrowing, not
+as a follow-up.
+
+**What was verified vs. inspected, for the three things this round was
+asked to check:**
+
+- **The dock collapses correctly** when client `trail` messages disappear —
+  verified with a test. `hasTrailSection` already OR-combines every
+  trail-eligible source (pairings/visible/terminalTrail/`messagesTrail`),
+  so no code change was needed there; `RepoUpdatesDock.test.tsx` still
+  passes in full (64/64) including a new test that drives an actionable
+  `tone: "info"` message through the REAL store (`notify()` +
+  `getRetainedNotifications()`) to prove it resolves to `tier: "transient"`
+  yet still renders under "Worth keeping".
+- **The chip's numeral/red-state still add up** — verified by existing,
+  already-passing tests, not a new one: `attentionCount` (the number on the
+  chip, and what turns "Notifications" into "N needs you") is computed from
+  `messagesAttention.length` alone, a filter this round never touched
+  (`m.tier === "attention"`, unchanged). `"the chip reads 'N needs you'..."`
+  and `"an attention-tier message fills the numeral and the needs-you
+  count..."` (pre-existing tests) cover exactly this and stayed green
+  through the whole round.
+- **Python `tests/` grepped** for stale literals tied to this round's
+  specific changes (`"Undid the delete."`, `"Freed"`/`"Moved"` notification
+  text, `tier: "trail"` at any of the migrated line numbers) — none found.
+  Every Python `tier`/`trail` hit in `tests/` (`test_jobs_api.py`,
+  `test_ai_runtime.py`, `test_index_jobs.py`) is server-side `jobs.py`
+  vocabulary (`jobs.TRAIL`, `jobs.SILENT`, ...), which this round
+  deliberately left untouched — see the `ClientNotificationTier` decision
+  above.
+
+Discrepancies found against this round's task brief, for the record: the
+brief's call-site line numbers had drifted slightly from actual (e.g.
+`useFileOps.ts:418` → `:424`, `LocalTab.tsx:333` → `338` at dispatch time,
+though `git blame` churn later put it back near 333 — always re-grepped
+rather than trusted); and the "destructive-but-successful" bullet the brief
+asked to be corrected lives in `SPEC-toasts-become-notifications.md`
+(§5, "Migrate the 69 call sites"), not `SPEC-actionable-notifications.md`.

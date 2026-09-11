@@ -15,6 +15,7 @@ which is guarded by the per-recording token from its own start reply plus an
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import unquote
 
 from fastapi import (APIRouter, Body, Header, Response, WebSocket,
                      WebSocketDisconnect)
@@ -39,14 +40,22 @@ def api_capture_list():
 
 @router.post("/api/capture/start")
 def api_capture_start(body: dict = Body(...),
-                      x_fused: str | None = Header(default=None)):
-    """Begin a recording. `mode` is "screen" or "audio"."""
+                      x_fused: str | None = Header(default=None),
+                      x_fused_page: str | None = Header(default=None)):
+    """Begin a recording. `mode` is "screen" or "audio".
+
+    `X-Fused-Page` names the page that started the capture — the same header
+    and `unquote` channel `routers/jobs.py` uses for a page-owned job's own
+    `page` field — so the row this creates knows where a click on it in
+    Notifications should go.
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     mode = body.get("mode") or "screen"
+    page = unquote(x_fused_page) if x_fused_page else ""
     try:
-        return capture.start(mode, body)
+        return capture.start(mode, body, page=page)
     except capture.CaptureError as e:
         return _error(str(e), status=400)
     except capture.Unsupported as e:

@@ -106,7 +106,7 @@ describe("the span bound", () => {
     // would have killed them.
     for (const [q, t] of [
       ["index.md", REL],
-      ["explorersearch", "frontend/src/apps/explorer/listing/useWalkSearch.ts"],
+      ["explorersearch", "frontend/src/apps/explorer/listing/useListingSearch.ts"],
       ["fusedindex", "fused_render/index/freshness.py"],
       ["indexstore", "fused_render/index/specs/index-store.md"],
       ["storepy", "fused_render/shell/mounts/store.py"],

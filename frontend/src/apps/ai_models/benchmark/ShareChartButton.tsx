@@ -20,12 +20,12 @@
 // a second heading rather than a receipt for one click. A toast has neither
 // problem: it renders in `NotificationHost` at the app root, entirely outside
 // this row's layout, so nothing beside the button ever moves — and it is
-// unambiguously a transient system message, not a second title. `pushToast`
-// already owns auto-dismiss (`lib/toast.ts`'s ~6s TTL), so there is no local
-// timer to keep in step with it here.
+// unambiguously a transient system message, not a second title. `notify()`
+// already owns auto-dismiss (`lib/notifications.ts`'s JOB_POPUP_VISIBLE_MS
+// popup window), so there is no local timer to keep in step with it here.
 import { useEffect, useRef, useState } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import {
   deliverShareCard,
   renderShareCard,
@@ -41,7 +41,7 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
   // state afterwards — that is all `alive` still guards. It used to guard
   // the receipt too, back when the receipt WAS local state (an inline
   // `<span>` next to this button); now that the receipt is a global
-  // `pushToast` (D480), gating it on `alive` silently drops it in exactly
+  // `notify()` call (D480), gating it on `alive` silently drops it in exactly
   // the case the comment below names — a capability switch remounts this
   // component while the PNG is still encoding, `alive.current` goes false,
   // and the toast that should have said where the card went never fires,
@@ -79,10 +79,10 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
       // unconditionally (no `alive` check) — see the guard's own comment
       // above for why a global toast survives this component unmounting.
       const msg = shareOutcomeNote(outcome);
-      if (msg) pushToast({ msg, tone: "info" });
+      if (msg) notify({ title: msg, tone: "info" });
     } catch (e) {
       // Also unconditional, for the same reason the success path is.
-      pushToast({ msg: (e as Error).message, tone: "error" });
+      notify({ title: (e as Error).message, tone: "error" });
     } finally {
       if (alive.current) setBusy(false);
     }

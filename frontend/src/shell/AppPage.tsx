@@ -81,7 +81,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
@@ -211,7 +211,11 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
   tasks: {
     label: "Tasks",
     Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
-    render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
+    // `entry` is this page's ALREADY-RESOLVED entry page (the Overview frames
+    // it), handed down so a new task opens on the app's page rather than the
+    // folder — a prefill in a field the user can still edit, not a rewrite.
+    // The filter stays on `dir`: the tab lists every task in the folder.
+    render: ({ dir, entry }) => <Scheduled scope={{ project: dir, entry }} />,
   },
   files: {
     label: "Files",
@@ -336,8 +340,8 @@ export default function AppPage({
       // Louder than the sidebar's silent swallow: this mark is a deliberate
       // click on a page-level action, and a header that simply doesn't change
       // reads as the page being broken rather than the write having failed.
-      pushToast({
-        msg: "Could not change the icon: " + (e as Error).message,
+      notify({
+        title: "Could not change the icon: " + (e as Error).message,
         tone: "error",
       });
     }
@@ -490,8 +494,8 @@ export default function AppPage({
         null,
       );
     } catch (e) {
-      pushToast({
-        msg: "Could not export " + slug + ": " + (e as Error).message,
+      notify({
+        title: "Could not export " + slug + ": " + (e as Error).message,
         tone: "error",
       });
     } finally {

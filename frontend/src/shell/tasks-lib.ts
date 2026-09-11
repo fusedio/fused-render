@@ -1457,7 +1457,9 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   // is still Claude's output, and the way out is answering the card in the
   // chat — a drag cannot say yes on somebody's behalf.
   needs_attention: [],
-  // Retry, or file it away.
+  // Retry, or file it away. The retry is a RE-RUN (Akshil, 2026-09-11: "allow
+  // moving from blocked to in progress and trigger a rerun"): laneAction picks
+  // what is sent again — see `rerunAction`.
   blocked: ["in_progress", "archived"],
   // Done only (Akshil, 2026-09-07 — "we don't allow dragging from archive to
   // done, enable that"). The drop is the Unarchive button as a gesture: it
@@ -1830,6 +1832,13 @@ export function isDraggable(task: Task): boolean {
  */
 export type DropAction =
   | { kind: "run"; entryId: string; messageId: string }
+  /** Send a scheduled message that already went again, as a new one in the
+   *  same thread (`api.resendScheduledMessage`). */
+  | { kind: "resend"; entryId: string; messageId: string }
+  /** Say a TYPED message again: the schedule has no entry to copy, so the words
+   *  travel — a new immediate message into the same session
+   *  (`api.scheduleMessage`). */
+  | { kind: "resay"; body: string; sessionId: string; target: string; messageId: string }
   | { kind: "archive" }
   | { kind: "unarchive" };
 
@@ -1864,7 +1873,55 @@ function laneAction(
   // a scheduled task that has never run may be dragged there and a pure-chat
   // task with nothing pending may not.
   const m = runNowTarget(task);
-  return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
+  if (m) return { kind: "run", entryId: m.entryId, messageId: m.messageId };
+  // OUT OF BLOCKED, WITH NOTHING PENDING, THE DROP IS A RE-RUN (Akshil,
+  // 2026-09-11). Upcoming keeps the stricter rule: a task that has not run yet
+  // has nothing to run AGAIN, and its drop means "now" or nothing.
+  return here === "blocked" ? rerunAction(task) : null;
+}
+
+/**
+ * WHAT A RE-RUN SENDS, for a Blocked card dropped on In Progress with nothing
+ * pending to bring forward (Akshil, 2026-09-11: "trigger a rerun when that
+ * happens [rerun what? … last message? a stored prompt, what?]").
+ *
+ * The answer is THE MESSAGE WHOSE RUN BROKE — the newest one that went out,
+ * which is the one the lane is red about — sent again into the same
+ * conversation, so the thread reads as a person asking once more rather than
+ * as history rewritten. Nothing is stored for this: the message is the prompt.
+ *
+ * Two shapes, because the schedule knows one of them and not the other:
+ *
+ *   * a SCHEDULED message has an entry the server can copy verbatim
+ *     (`resendTarget` → `/api/schedule/resend`, the List's own Re-run) —
+ *     attachments, model and permission mode travel with it;
+ *   * a TYPED message has no entry, so its words go as a new immediate message
+ *     into the session (`api.scheduleMessage` with `session_id`) — the same
+ *     road the New task form's "continue this conversation" takes.
+ *
+ * Newest first across BOTH kinds, by the window's order: re-asking means the
+ * last thing that was asked for, whichever way it was asked. Null when the
+ * window holds nothing that went — then the card stays where it is, exactly as
+ * before (dropLanes offers no In Progress).
+ */
+export function rerunAction(task: Task): DropAction | null {
+  for (const m of task.messages ?? []) {
+    if (m.state === "pending" || m.state === "sending") continue;
+    if (m.entry_id) {
+      if (m.state === "sent" || m.state === "error")
+        return { kind: "resend", entryId: m.entry_id, messageId: m.message_id };
+      continue;
+    }
+    if (m.kind === "chat" && m.body.trim() && task.session_id)
+      return {
+        kind: "resay",
+        body: m.body,
+        sessionId: task.session_id,
+        target: task.target || task.project,
+        messageId: m.message_id,
+      };
+  }
+  return null;
 }
 
 // ---- filing, without the drag ------------------------------------------------
@@ -2934,13 +2991,115 @@ export interface TaskCardSet {
   hidden: number;
 }
 
-/** What a Cards-view pane says when there is no frame to draw (TaskCards).
- *  `folderMissing` is a folder the server answered 404 for: nothing will ever
- *  be framed for it, and "Starting…" would be a promise the card cannot keep
- *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
-export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+/**
+ * What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *
+ * `folderMissing` is a folder the server answered 404 for: nothing will ever be
+ * framed for it, and "Starting…" would be a promise the card cannot keep
+ * (Akshil, 2026-09-06: "some cards are stuck at starting").
+ *
+ * AND THE SAME PROMISE IS BROKEN FROM THE OTHER SIDE. "Starting…" is only
+ * honest while a run is IN FLIGHT — the window between "claimed and sent" and
+ * "we know which chat that is", which the card's own comment calls "a few
+ * seconds to a few minutes long". A task that has SETTLED (blocked / done /
+ * archived) with no session never recorded one and never will: `schedule.py`'s
+ * `_turn_tick` writes `claude_session_id` on the first watcher tick that
+ * reports one, so a child that dies before its first status line leaves it
+ * empty for good. That row is then unreachable from every session-keyed
+ * surface, the explorer does not list it (it lists transcripts), and the card
+ * spun on "Starting…" for a run that ended a day earlier (P4R1-1, diagnosis
+ * FIX-A). Nothing will ever be framed here — the same fact `folderMissing`
+ * carries, arrived at from the other side — so it says so instead.
+ *
+ * `failed` picks WHICH sentence: a run that broke says it broke, and the card
+ * paints it in the error colour. A settled row that simply has no chat on file
+ * (a done entry whose session was never written) is not an error and does not
+ * wear one.
+ */
+export function emptyPaneText(
+  task: EmptyPaneTask,
+  folderMissing: boolean,
+): string {
   if (folderMissing) return "Folder no longer exists";
-  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
+  if (task.status === "upcoming") return "Not started yet";
+  if (isSettledLane(task.status)) {
+    if (task.failed) return "The run failed before it started a chat";
+    // ASK THE ROW, NOT ONLY THE LANE (L1). `tasks.py:_status` ranks
+    // `if filed: return "archived"` above `_waiting`'s `upcoming`, so filing a
+    // task whose message has not run takes it OUT of the lane the test above
+    // keys on — and the settled sentence would then assert a run happened for a
+    // message still sitting in the future. A row holding a pending message has
+    // one thing that has not run, whatever lane it was filed into.
+    if (hasPendingMessage(task)) return "Not started yet";
+    return "No chat was recorded for this run";
+  }
+  return "Starting…";
+}
+
+/** The lanes where "nothing will ever be framed here" is a FACT and not a
+ *  guess, named one by one (L2).
+ *
+ *  It was an exclusion, and it was read off `taskColumn` — two mistakes in the
+ *  same line. `statusColumn` floors every status this bundle does not know into
+ *  `"done"`, so a lane a future server adds that MEANS in-flight ("resuming",
+ *  say) was BOTH outside the two names the exclusion spared and flattened into
+ *  one that is settled — and the card told the reader no chat was ever recorded
+ *  for a run happening as they read it. Hence the RAW status: the flooring is
+ *  right for a board that must file every row into one of six columns, and
+ *  wrong for a question whose honest answer about an unrecognised lane is "I
+ *  don't know". An unknown lane falls through to "Starting…", which is what
+ *  this card said before FIX-A and is wrong only in being optimistic.
+ *
+ *  One list, asked in both directions, so the sentence and the error colour
+ *  cannot disagree about which lanes are settled. */
+const SETTLED_LANES = new Set<string>(["blocked", "done", "archived"]);
+
+function isSettledLane(status: string): boolean {
+  return SETTLED_LANES.has(status);
+}
+
+/**
+ * Whether the task's RING paints red off `failed`.
+ *
+ * `failed` is history — the newest SETTLED run broke — and `status` is now.
+ * They part in one direction: a blocked task the user just spoke to is
+ * `in_progress` with `failed` still true (the new turn has no verdict yet).
+ * Painting that row red and captioning it "Blocked" put a "just now" row under
+ * every real Blocked row — it sat in the In progress rank, where it belongs,
+ * wearing the wrong ring (Akshil, 2026-09-11, TASK-017). So the flag repaints
+ * SETTLED lanes only: a Done ring gone red says "finished badly", which is the
+ * one thing `status` alone cannot; a live ring says what is happening. Same
+ * gate `emptyPaneFailed` applies to the card's empty pane, for the same reason.
+ */
+export function ringFailed(task: Pick<Task, "status" | "failed">): boolean {
+  return !!task.failed && isSettledLane(task.status);
+}
+
+/** What the two empty-pane readings need of a row: its status, its verdict, and
+ *  whether anything on it has yet to run. */
+type EmptyPaneTask = Pick<Task, "status" | "failed"> & Pick<Partial<Task>, "messages">;
+
+/** Does this row still hold a message that HAS NOT RUN — the question that
+ *  separates "nothing was recorded" from "nothing has happened yet".
+ *
+ *  The listing window (`PREVIEW_MESSAGES`, the three newest) is all there is to
+ *  ask, and that is enough for the case this exists for: a task whose ONLY
+ *  message is the pending entry cannot have it pushed out of a window of
+ *  three. A busier row that has genuinely recorded runs has a session, and a
+ *  row with a session never draws this pane at all. */
+function hasPendingMessage(task: EmptyPaneTask): boolean {
+  return (task.messages ?? []).some((m) => m.state === "pending");
+}
+
+/** Whether the sentence `emptyPaneText` answers with is a FAILURE — the one the
+ *  card draws in the error colour, beside "Folder no longer exists". Kept here,
+ *  next to the sentence it describes, so the class and the words cannot drift:
+ *  the view asks one question of one module rather than re-deriving the lane. */
+export function emptyPaneFailed(task: EmptyPaneTask, folderMissing: boolean): boolean {
+  if (folderMissing) return true;
+  // The same whitelist the sentence uses, over the same raw status (L2), so the
+  // colour can never outrun the words.
+  return !!task.failed && isSettledLane(task.status);
 }
 
 /**
@@ -3041,6 +3200,11 @@ export function cardsForTasks(
   const seen = new Set<string>();
   const all: Task[] = [];
   for (const task of sortByLane(tasks, now)) {
+    // NOT YET DUE IS NOT A CARD (Akshil, 2026-09-10, E2E R1): an upcoming
+    // task has no chat to show, so its tile was a sentence in a frame — the
+    // Calendar and the List are where a future run is read. The wall shows
+    // work that has happened or is happening.
+    if (task.status === "upcoming") continue;
     const id = cardKey(task);
     if (seen.has(id)) continue;
     seen.add(id);
@@ -3067,10 +3231,32 @@ export function cardsForTasks(
 export interface NextRunChip {
   /** Epoch seconds, so a caller can order or test by it. */
   at: number;
-  /** What the chip prints: "next in 2h". */
+  /** What the chip prints: "in 2h". The word "next" went (Akshil, 2026-09-11):
+   *  the chip sits apart from the row's own stamp, and that is what says it. */
   text: string;
   /** The tooltip: which run, and exactly when. */
   title: string;
+  /** Whether that run is an OCCURRENCE of a repeating template — the row draws
+   *  a repeat glyph after the time (Akshil, 2026-09-11: "for repeating tasks we
+   *  say 'in 1h [repeat icon, arrow circle]'"). The server's `next_run_repeats`
+   *  where it sends one; the window's pending occurrence (`template_id`) where
+   *  it does not. */
+  repeats: boolean;
+}
+
+/**
+ * Whether the run `nextRunAt` names repeats. The server decides it over every
+ * pending entry (tasks.py `_next_run`), which is the only place the answer is
+ * always in hand; the window is the fallback for an older server, and it can
+ * only say yes for an occurrence it happens to hold.
+ */
+export function nextRunRepeats(task: Task): boolean {
+  if (typeof task.next_run_repeats === "boolean") return task.next_run_repeats;
+  const at = nextRunAt(task);
+  if (at === null) return false;
+  return (task.messages ?? []).some(
+    (m) => m.state === "pending" && m.at === at && !!m.template_id,
+  );
 }
 
 /**
@@ -3089,10 +3275,94 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
   if (taskWhen(task, now).kind === "next") return null;
   const at = nextRunAt(task);
   if (at === null || at * 1000 <= now) return null;
+  const repeats = nextRunRepeats(task);
+  // ON A BLOCKED ROW THE CHIP SAYS THE WORD (Akshil, 2026-09-11: "it should
+  // remain blocked because we don't know why it is blocked, but we should show
+  // that there is a scheduled message here"). The task stays in Blocked — a
+  // pending message has no verdict, so the failure still speaks — and the chip
+  // is where the row says a retry is booked. Elsewhere the time alone is
+  // enough; the lane already says the task is not over.
+  const blocked = taskColumn(task) === "blocked";
+  const when = relativeWhen(at, now);
   return {
     at,
-    text: `next ${relativeWhen(at, now)}`,
-    title: `Next run ${messageStamp(at)}`,
+    text: blocked ? `scheduled ${when}` : when,
+    title: blocked
+      ? `Stays Blocked until this runs · ${messageStamp(at)}${repeats ? " · repeats" : ""}`
+      : `Next run ${messageStamp(at)}${repeats ? " · repeats" : ""}`,
+    repeats,
+  };
+}
+
+// ---- "and this one is on a schedule" ----------------------------------------
+// The chip above says WHEN the next run is, and only on the rows whose own time
+// is not already that run. What no row said at all is the plainer fact one step
+// up from it: this task has a run booked. That is what a reader scanning a
+// hundred rows for "which of these fire by themselves" is asking, and reading it
+// off a time in the last column means reading every last column.
+//
+// So the List wears a glyph for it (Akshil, 2026-09-10: "for scheduled tasks in
+// the list view, let's show a icon that shows it's scheduled"), beside the file
+// mark, in the slot that already answers "what kind of task is this".
+//
+// A FUTURE RUN is the test, not "has a schedule entry": a task whose every
+// occurrence has fired is not scheduled any more, and a pending run whose time
+// has gone by is overdue work the Upcoming lane surfaces — neither is news about
+// what this task does next. Same rule as nextRunChip, deliberately: two marks on
+// one row must not disagree about whether a run is coming.
+//
+// NOT a second clock on the message rows inside the thread. That pair
+// (ICON_CLOCK/ICON_CHAT, ScheduleTaskViews) was pulled on 2026-08-18 for being a
+// third glyph on a 12.5px line whose first two already carried the state and the
+// id. This is one glyph on the TASK row, where nothing else states it.
+
+export interface ScheduledMark {
+  /** Epoch seconds of the run that makes this task scheduled. */
+  at: number;
+  /** The tooltip: the fact, and exactly when. */
+  title: string;
+  /** The same fact as prose, for anything that cannot see the glyph — no
+   *  middle dot, which a screen reader either names or drops. The file mark
+   *  splits its two strings the same way (path in the hint, sentence in the
+   *  label). */
+  label: string;
+  /** Whether that run is a template's occurrence — circle arrows rather than a
+   *  clock (Akshil, 2026-09-11: "if it is repeating we show repeat icon, if
+   *  scheduled once we show clock icon, we don't show both"). */
+  repeats: boolean;
+}
+
+/**
+ * Whether this task has a run ahead of it, and the instant it is.
+ *
+ * `nextRunAt` is the source — the row's own `next_run` where the server named
+ * one, the window's earliest pending where it did not — so the mark, the chip
+ * and the Upcoming lane's order are all reading the same field.
+ */
+export function scheduledMark(task: Task, now: number = Date.now()): ScheduledMark | null {
+  const at = nextRunAt(task);
+  if (at === null || at * 1000 <= now) return null;
+  const stamp = messageStamp(at);
+  const repeats = nextRunRepeats(task);
+  const word = repeats ? "Repeats" : "Scheduled";
+  // ON A BLOCKED ROW THE TOOLTIP SAYS THE LANE'S RULE (Akshil, 2026-09-11: "it
+  // should remain blocked because we don't know why it is blocked, but we
+  // should show that there is a scheduled message here"). The task stays in
+  // Blocked — a pending message has no verdict, so the failure still speaks —
+  // and this mark is where the row says a retry is booked.
+  if (taskColumn(task) === "blocked") {
+    return {
+      at,
+      title: `${word} · stays Blocked until this runs · ${stamp}`,
+      label: `${word}, stays Blocked until this runs, ${stamp}`,
+      repeats,
+    };
+  }
+  return {
+    at,
+    title: `${word} · next run ${stamp}`,
+    label: `${word}, next run ${stamp}`,
+    repeats,
   };
 }
 
@@ -3366,7 +3636,10 @@ export function popoverPill(
   day: Date,
   now: Date,
 ): RunStatus {
-  if (!recurring) return taskStatus(taskColumn(task), task.failed);
+  // ringFailed, not the raw flag: the calendar has no lane header either, so a
+  // live one-off whose LAST settled run broke would otherwise still read
+  // "Blocked" here after the List ring stopped saying so (Bugbot, PR #1105).
+  if (!recurring) return taskStatus(taskColumn(task), ringFailed(task));
   return dayPill(dayMessages, day, now, live);
 }
 
@@ -3533,8 +3806,8 @@ export interface AttentionRow {
   taskId: string;
   /** The task's own title, for the row's second line. */
   title: string;
-  /** Where clicking the row lands, or null when there is nowhere to go. */
-  href: string | null;
+  /** Where clicking the row lands — always a real destination (see below). */
+  href: string;
 }
 
 /**
@@ -3552,9 +3825,10 @@ export interface AttentionRow {
  * `folderHref`): `taskHref` is null until the run reports a session id, and a run
  * that has parked on a question inside that window is exactly the one somebody
  * needs to reach. The folder with the Claude pane on it is where the answer can
- * be given, so it is a better answer than an inert row. Null only when the task
- * names no folder at all, which the section draws as an unclickable row rather
- * than dropping the news.
+ * be given, so it is a better answer than an inert row. And when the task names
+ * no folder at all, the row still needs a door — every row in the Notifications
+ * panel is clickable, so the last resort is the Tasks page itself, which is
+ * always a correct place to land on "a task needs you".
  */
 export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
   const rows: AttentionRow[] = [];
@@ -3564,7 +3838,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
-      href: taskHref(task) ?? folderHref(task),
+      href: taskHref(task) ?? folderHref(task) ?? "/tasks",
     });
   }
   return rows;
@@ -3634,12 +3908,12 @@ export function runningLabel(n: number): string {
 
 /** The collapsed dot's tooltip, and the expanded chip's — the sidebar's ONE
  *  sentence about the page, so the two modes cannot describe it differently. */
-/** "2 tasks need input" — the attention half of the same readout. A separate
- *  sentence from `runningLabel` because it asks for something: "running" is a
- *  report, this is a request. Singular at one ("1 task needs input"), because
- *  one is the common case here and a rail that says "1 tasks" reads as broken. */
+/** "2 blocked" — the attention half of the same readout. The word is the
+ *  Blocked lane's own (Akshil, 2026-09-11: "instead just say 1 blocked"): the
+ *  rail and the board then name one state with one word, and a count with no
+ *  noun needs no singular/plural fork. */
 export function attentionLabel(n: number): string {
-  return n === 1 ? "1 task needs input" : `${n} tasks need input`;
+  return `${n} blocked`;
 }
 
 export function pulseTitle(pulse: TasksPulse): string {
@@ -3716,6 +3990,7 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     // is not sorted by — so the time alone changed nothing (Bugbot).
     next_run: row.next_run,
     next_run_entry: row.next_run_entry,
+    next_run_repeats: row.next_run_repeats,
     messages: [],
     provisional: true,
   }));

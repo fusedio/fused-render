@@ -18,7 +18,7 @@ import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
 import { canRedo, canUndo, isFsUndoInFlight } from "@apps/explorer/lib/fs-undo";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import type { RowCtx } from "@apps/explorer/listing/types";
 import { targetDirOf } from "@apps/explorer/listing/row-utils";
@@ -145,9 +145,9 @@ export function useListingShortcuts({
       // did nothing, said nothing, and read as "undo is broken".
       if (isFsUndoInFlight()) {
         e.preventDefault();
-        inFlightToastId.current = pushToast(
+        inFlightToastId.current = notify(
           {
-            msg: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
+            title: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
             tone: "info",
           },
           inFlightToastId.current,

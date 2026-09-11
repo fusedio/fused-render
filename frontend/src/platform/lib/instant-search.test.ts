@@ -26,7 +26,7 @@ const answer = (over: Partial<Answer> = {}): Answer => ({
 // with the previous pending timer cleared on every new keystroke (the same
 // shape an effect's cleanup gives it) — so the debounce SHAPE itself is
 // exercised against the real constant rather than duplicated by re-mounting
-// FilesHome or useWalkSearch here. Those two files still own the "this wired
+// FilesHome or useListingSearch here. Those two files still own the "this wired
 // into the actual box" coverage (FilesHome.render.test.tsx); this is the
 // "this constant, used the documented way, behaves like a trailing debounce"
 // coverage, which nothing here asserted before.

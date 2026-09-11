@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { clearListPrefetch, listDir, prefetchListDir, type HttpError } from "@platform/lib/api";
 import { appearedKeys } from "@platform/lib/flip";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
 import { subscribeFsChanged } from "@apps/explorer/listing/fsChangeBus";
 
@@ -96,7 +96,7 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
       (err: Error) => {
         if (refreshRef.current !== gen) return; // stale: the fetch effect reset state
         setLoadingMore(false);
-        pushToast({ msg: err.message, tone: "error" });
+        notify({ title: err.message, tone: "error" });
       }
     );
   };

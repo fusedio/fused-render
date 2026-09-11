@@ -171,7 +171,8 @@ def _unavailable(reason: str) -> dict:
 class _Session:
     """One live capture: the backend's handle, its job row, its watchdog."""
 
-    def __init__(self, cid: str, mode: str, path: str, handle, spec: dict):
+    def __init__(self, cid: str, mode: str, path: str, handle, spec: dict,
+                 page: str = ""):
         self.id = cid
         self.mode = mode
         self.path = path
@@ -180,6 +181,12 @@ class _Session:
         self.started_at = time.time()
         self.max_seconds = spec["maxSeconds"]
         self.state = "recording"
+        # Where clicking this row goes in Notifications (SPEC-actionable-
+        # notifications.md): the page that started the capture, from the
+        # `X-Fused-Page` header on the `start` POST — the same channel and
+        # the same spoof-proofing `routers/jobs.py` already uses for a
+        # page-owned job's own `page` field.
+        self.page = page
 
     @property
     def job(self) -> str:
@@ -344,7 +351,7 @@ def _ext(backend, mode: str, spec: dict) -> str:
     return hook(mode, spec)
 
 
-def start(mode: str, body: dict) -> dict:
+def start(mode: str, body: dict, *, page: str = "") -> dict:
     """Begin a recording. Returns the record — path included — immediately.
 
     The path is decided HERE, before a single frame exists, which is what lets a
@@ -412,16 +419,21 @@ def start(mode: str, body: dict) -> dict:
 
     handle = (backend.start_screen(out, spec) if mode == "screen"
               else backend.start_audio(out, spec))
-    session = _Session(cid, mode, out, handle, spec)
+    session = _Session(cid, mode, out, handle, spec, page=page)
     with _lock:
         _sessions[cid] = session
 
     title = body.get("title") or (
         "Screen recording" if mode == "screen" else "Audio recording")
+    # `origin="Capture"`: `fused.capture.*` is callable from any page's own
+    # script, so no single hosting page names this row's source honestly —
+    # "Capture" names the FEATURE that raised it instead, the same way
+    # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
+    # page happened to start the run.
     _report(session, state=jobs.RUNNING, title=str(title)[:120],
             kind="task", unit="s", done=0, total=spec["maxSeconds"],
             cancellable=True,
-            detail="Recording — ✕ discards it")
+            detail="Recording — ✕ discards it", origin="Capture")
     threading.Thread(target=_watch, args=(session,), daemon=True,
                      name=f"capture-{cid}").start()
     # `opening()`, not `public()`: this is the ONE reply allowed to carry the
@@ -440,7 +452,7 @@ def _report(session: _Session, **fields) -> None:
     `_watch` costs a tick (see the guard there).
     """
     try:
-        jobs.upsert({"id": session.job, **fields}, server=True)
+        jobs.upsert({"id": session.job, **fields}, page=session.page, server=True)
     except Exception:                            # noqa: BLE001 - a row, not the work
         logger.warning("reporting the capture job row failed for %s",
                        session.id, exc_info=True)

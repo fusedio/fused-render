@@ -18,8 +18,8 @@
 // a browser (see the report).
 //
 // This is about the PLAIN listing. Search mode never mounts SIZE/MODIFIED at
-// all (listing/search-columns), so these rules simply have nothing to match
-// there — and the one-width-less-column invariant holds trivially.
+// all (Listing.tsx's columnCount), so these rules simply have nothing to
+// match there — and the one-width-less-column invariant holds trivially.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

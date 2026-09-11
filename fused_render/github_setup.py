@@ -45,6 +45,7 @@ import zipfile
 from typing import Optional
 
 from fused_render import jobs
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import storage
 
@@ -591,7 +592,15 @@ def _report_install(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        }, server=True)
+            "origin": "GitHub",
+        # No repo root applies to an install (there is nothing to publish
+        # yet), and there is no dedicated GitHub-settings tab to send this
+        # to — /preferences is
+        # already where the legacy `_account` sentinel in router.ts lands,
+        # and it is the most defensible destination available, not one
+        # validated against any live caller: an exhaustive grep of the
+        # frontend found no UI that calls any /api/github/* route at all.
+        }, page="/preferences", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the install
         logger.debug("could not report the gh install job")
 
@@ -867,7 +876,7 @@ def _validate_repo_name(name: str) -> str:
 
 _publish_lock = threading.Lock()
 _publish_state: dict = {"state": "idle", "detail": "", "error": None,
-                        "started_at": None, "finished_at": None}
+                        "started_at": None, "finished_at": None, "root": ""}
 
 
 def _report_publish(snapshot: dict) -> None:
@@ -883,7 +892,14 @@ def _report_publish(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        }, server=True)
+            "origin": "GitHub",
+        # This row's destination is the repository it publishes, not a page
+        # — `_resolve_repo_root`'s own containment-checked, realpath'd root,
+        # set once at claim time (below), never the raw string a page
+        # happened to send. Canonical (forward-slash) form: `os.path.realpath`
+        # comes back backslashed on Windows, and a page is compared against
+        # the canonical spelling everywhere else it is stored or read.
+        }, page=canonical_fs_path(snapshot.get("root") or ""), server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the publish
         logger.debug("could not report the gh publish job")
 
@@ -897,9 +913,18 @@ def _set_publish(**fields) -> None:
 
 
 def publish_status() -> dict:
-    """The record as the endpoint answers it. `error` is `gh`'s own words —
-    a name collision and an org permission refusal are different, actionable
-    problems, and a generic message would erase the difference."""
+    """The full record, `root` included. `error` is `gh`'s own words — a name
+    collision and an org permission refusal are different, actionable
+    problems, and a generic message would erase the difference.
+
+    This is exactly what `GET /api/github/publish` answers with, `root`
+    included: this is a local-first app, `GET /api/jobs` already hands every
+    page the same repo root back as `page` on the published job's own row
+    (`_report_publish` below), and `error` routinely carries `gh`'s stderr,
+    which itself names the path — so withholding `root` from this one route
+    while every other route on this origin already answers with filesystem
+    paths protects nothing.
+    """
     with _publish_lock:
         return dict(_publish_state)
 
@@ -1007,7 +1032,7 @@ def publish_start(root: str, name: str, visibility: str) -> dict:
             raise PublishError("a GitHub publish is already running")
         _publish_state.update(
             state="running", detail=f"Creating {repo_name}…", error=None,
-            started_at=time.time(), finished_at=None)
+            started_at=time.time(), finished_at=None, root=real_root)
         claimed = dict(_publish_state)
     _report_publish(claimed)  # mirrored to the job registry outside the lock
 
@@ -1030,4 +1055,5 @@ def publish_reset() -> None:
     """Test seam — the record is module state and suites share a module."""
     with _publish_lock:
         _publish_state.update({"state": "idle", "detail": "", "error": None,
-                               "started_at": None, "finished_at": None})
+                               "started_at": None, "finished_at": None,
+                               "root": ""})

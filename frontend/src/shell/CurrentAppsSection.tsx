@@ -37,7 +37,7 @@ import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -643,8 +643,8 @@ export default function CurrentAppsSection() {
         navigateUrl(appPageUrl(r.path, appPageTabFromSearch(location.search)));
       }
     } catch (e) {
-      pushToast({
-        msg: "Could not rename " + app.name + ": " + (e as Error).message,
+      notify({
+        title: "Could not rename " + app.name + ": " + (e as Error).message,
         tone: "error",
       });
     } finally {

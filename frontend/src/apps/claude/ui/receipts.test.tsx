@@ -1,0 +1,442 @@
+// The receipt a sent turn wears, restored from the wire it was sent on, and the
+// two overlays behind it (inventory 03 §C/§D/§E).
+//
+// The FIXTURE is the point of this suite: one composed message carrying all
+// three blocks, read back exactly as a reopened session reads it — so a receipt
+// that is visible while the session lasts is provably there when it is reopened.
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import { expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+
+const { Receipts } = await import("./Receipts");
+// The dialogs' BODIES: a Base UI dialog portals itself, and this suite has no
+// document to portal into — the body is the whole content either way.
+const { ShotViewerBody, ShotViewerFooter, shotViewerTitle } = await import("./ShotViewer");
+const { SentPopBody } = await import("./SentPop");
+
+const HERE = dirname(new URL(import.meta.url).pathname);
+const { composeOutgoing, formatAnnotations, paneShotBlock, APP_STATE_TAG } = await import(
+  "../protocol/wire"
+);
+type UserTurn = import("../protocol/controller-api").UserTurn;
+type Receipt = import("../shots/types").Receipt;
+type Viewable = import("./attachApi").Viewable;
+
+/** A turn as a reopened session hands it over: nothing but `raw`. */
+const OUTGOING = composeOutgoing("have a look at this", [
+  "<" + APP_STATE_TAG + ">\n{}\n</" + APP_STATE_TAG + ">",
+  paneShotBlock(
+    [
+      { kind: "overview", view: "/shots/20260908-over.png", viewNote: "the footer was cut off" },
+      { kind: "pane", view: "/shots/20260908-view.png" },
+      { kind: "image", view: "/shots/pasted.png", name: "pasted.png" },
+      { kind: "file", view: "/home/me/data/rows.csv", name: "rows.csv", size: 4096 },
+      { kind: "image", view: null, why: "could not be saved" },
+    ],
+    "preview",
+  ),
+  formatAnnotations(
+    [
+      { label: "A", kind: "element", tag: "button", content: "this is the wrong colour", t: 65 },
+      { label: "B", kind: "point", x: 12, y: 40, content: "" },
+    ],
+    "file",
+  ),
+]);
+
+const turn: UserTurn = { role: "user", key: "u:1", text: "have a look at this", raw: OUTGOING };
+
+function mount(node: React.ReactElement) {
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(node);
+  });
+  return renderer!;
+}
+
+/** ELEMENT nodes only: `findAll` also matches the composite component whose
+ *  props carry the same className, and a composite has no `onClick` to fire. */
+function els(root: ReactTestRenderer, className: string) {
+  return root.root.findAll(
+    (n) => typeof n.type === "string" && n.props.className === className,
+  );
+}
+
+const panes = (root: ReactTestRenderer) => els(root, "annsum-pane");
+
+function texts(root: ReactTestRenderer, className: string): string[] {
+  return root.root
+    .findAll((n) => typeof n.type === "string" && n.props.className === className)
+    .map((n) => String(n.props.children));
+}
+
+test("a restored turn rebuilds every receipt row from its own wire (T:10903)", () => {
+  const r = mount(<Receipts turn={turn} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  expect(texts(r, "annsum-txt")).toEqual([
+    "annotated overview attached",
+    "screenshot attached",
+    "image attached: pasted.png",
+    "file attached: rows.csv",
+    "no image — could not be saved",
+    // The comment rows, with the user's own words (and nothing for the wordless
+    // spot — the placeholder is a wire token, not a receipt's line).
+    "this is the wrong colour",
+    "",
+  ]);
+  // Pictures are drawn; a file and a refusal are not (an <img> pointed at a .csv
+  // is a broken-image glyph, which reads as a bug).
+  expect(panes(r).length).toBe(3);
+});
+
+test("a pruned copy is said in words, once the probe answers (T:10875)", async () => {
+  const asked: Receipt[] = [];
+  const r = mount(
+    <Receipts
+      turn={turn}
+      paneNoun="preview"
+      onOpenShot={() => {}}
+      probe={async (receipt) => {
+        asked.push(receipt);
+        return true;
+      }}
+    />,
+  );
+  await act(async () => {
+    await Promise.resolve();
+  });
+  // Only the rows with a path and nothing to draw have a question at all: the
+  // file. A refusal has no path, and a picture's 404 announces itself.
+  expect(asked.map((a) => a.view)).toEqual(["/home/me/data/rows.csv"]);
+  expect(texts(r, "annsum-gone")).toEqual([" — file pruned"]);
+});
+
+test("a live send wears the receipts it was given, not a re-read of the wire", () => {
+  const live: UserTurn = {
+    ...turn,
+    attachments: [
+      { kind: "pane", label: "screenshot attached", view: "/shots/x.png", thumb: "blob:live" },
+    ],
+  };
+  const r = mount(<Receipts turn={live} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  expect(texts(r, "annsum-txt")).toEqual([
+    "screenshot attached",
+    "this is the wrong colour",
+    "",
+  ]);
+  const img = r.root.findAll((n) => n.type === "img");
+  expect(img[0]!.props.src).toBe("blob:live");
+});
+
+test("the blob → disk hand-off is not a pruned file (Bugbot, PR #1064)", () => {
+  // A live send's receipt is drawn with the attachment's own object URL and is
+  // re-pointed at the copy on disk the moment the bytes are written. The handle
+  // is released on the way past, and the <img> showing it errors — which used to
+  // be read as "the pruner deleted this", so EVERY successful send of a pasted
+  // or captured picture ended in "screenshot no longer on disk".
+  //
+  // A `blob:` handle is this page's own and the pruner cannot touch one, so its
+  // error says nothing about the file. And the verdict is keyed on the src, so
+  // one reached before the swap does not outlive it.
+  const live: UserTurn = {
+    ...turn,
+    attachments: [
+      { kind: "pane", label: "screenshot attached", view: "/shots/x.png", thumb: "blob:live" },
+    ],
+  };
+  const row = (t: UserTurn) => (
+    <Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />
+  );
+  const r = mount(row(live));
+  const img = () => r.root.findAllByType("img")[0]!;
+  act(() => img().props.onError());
+  expect(texts(r, "annsum-gone")).toEqual([]);
+  expect(img().props.src).toBe("blob:live");
+
+  // The settled turn: the same row, now pointed at the server's copy.
+  const onDisk = "/api/fs/raw?path=%2Fshots%2Fx.png";
+  const settled: UserTurn = {
+    ...live,
+    attachments: [{ ...live.attachments![0]!, thumb: onDisk }],
+  };
+  act(() => {
+    r.update(row(settled));
+  });
+  expect(img().props.src).toBe(onDisk);
+  expect(texts(r, "annsum-gone")).toEqual([]);
+
+  // …and a copy that really is gone still says so, in words.
+  act(() => img().props.onError());
+  expect(texts(r, "annsum-gone")).toEqual(["screenshot no longer on disk"]);
+});
+
+test("a turn that carried nothing draws no receipt", () => {
+  const bare: UserTurn = { role: "user", key: "u:2", text: "hello", raw: "hello" };
+  const r = mount(<Receipts turn={bare} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  expect(r.toJSON()).toBe(null);
+});
+
+test("comments ride the message, so every row opens the popup instead (T:11068)", () => {
+  let opened = 0;
+  const r = mount(
+    <Receipts
+      turn={turn}
+      paneNoun="preview"
+      onOpenShot={() => {}}
+      onShowSent={() => {
+        opened += 1;
+      }}
+      probe={async () => false}
+    />,
+  );
+  const note = els(r, "annsum-row annsum-note")[0]!;
+  expect(note.props.role).toBe("button");
+  expect(note.props.tabIndex).toBe(0);
+  act(() => note.props.onClick());
+  // Space and Enter reach it too: a div with an onclick is invisible to a
+  // keyboard (T:11061-11065).
+  let prevented = false;
+  act(() =>
+    note.props.onKeyDown({
+      key: " ",
+      preventDefault: () => {
+        prevented = true;
+      },
+    }),
+  );
+  expect(prevented).toBe(true);
+  // ... and so does the screenshot thumb, because the picture belongs to the
+  // comments here.
+  const thumb = panes(r)[0]!;
+  act(() => thumb.props.onClick());
+  expect(opened).toBe(3);
+});
+
+test("a picture-only send keeps the plain viewer on its thumb (T:11075)", () => {
+  const pics = composeOutgoing("", [paneShotBlock([{ kind: "pane", view: "/shots/a.png" }], "preview")]);
+  const only: UserTurn = { role: "user", key: "u:3", text: "pane screenshot", raw: pics };
+  const shots: Viewable[] = [];
+  const r = mount(
+    <Receipts
+      turn={only}
+      paneNoun="preview"
+      onOpenShot={(s) => shots.push(s)}
+      onShowSent={() => {
+        throw new Error("a send with no comments must not be wired to the popup");
+      }}
+      probe={async () => false}
+    />,
+  );
+  const thumb = panes(r)[0]!;
+  act(() => thumb.props.onClick());
+  expect(shots.length).toBe(1);
+  expect(shots[0]!.view).toBe("/shots/a.png");
+});
+
+// ---- the viewer ------------------------------------------------------------
+
+const pending: Viewable = {
+  kind: "pane",
+  view: "/shots/view.png",
+  src: "blob:v",
+  viewNote: "the map did not render",
+  pending: true,
+};
+
+test("the viewer shows nothing at all until it is given a picture", () => {
+  const r = mount(<ShotViewerBody shot={null} paneNoun="preview" />);
+  expect(r.toJSON()).toBe(null);
+});
+
+test("the picture toggles fitted ⇄ actual size on click (T:10937)", () => {
+  const r = mount(<ShotViewerBody shot={pending} paneNoun="preview" />);
+  const box = () => r.root.findByProps({ className: "c-shotview-box" });
+  expect(box().props["data-zoom"]).toBe(undefined);
+  act(() => r.root.findByProps({ className: "c-shotview-img" }).props.onClick());
+  expect(box().props["data-zoom"]).toBe("");
+  act(() => r.root.findByProps({ className: "c-shotview-img" }).props.onClick());
+  expect(box().props["data-zoom"]).toBe(undefined);
+});
+
+// P2-3: the viewer is a `platform/ui/modal/Modal` now, so the path, Discard and
+// Close are the chassis' FOOTER and the name is its TITLE. The chassis portals
+// itself and this suite has no document, so the seams are the footer and the
+// title function.
+test("Discard is offered for a PENDING shot only, and closes with it (T:4392)", () => {
+  let discarded = 0;
+  let closed = 0;
+  const r = mount(
+    <ShotViewerFooter
+      shot={pending}
+      paneNoun="preview"
+      onClose={() => (closed += 1)}
+      onDiscard={() => (discarded += 1)}
+    />,
+  );
+  const drop = () =>
+    r.root.findAll(
+      (n) => n.type === "button" && String(n.props.className).includes("c-shotview-drop"),
+    );
+  expect(drop().length).toBe(1);
+  act(() => drop()[0]!.props.onClick());
+  expect(discarded).toBe(1);
+  expect(closed).toBe(1);
+  // A SENT picture is already in the agent's hands, and a Discard that cannot
+  // un-send it would be a lie.
+  act(() => {
+    r.update(
+      <ShotViewerFooter
+        shot={{ ...pending, pending: false }}
+        paneNoun="preview"
+        onClose={() => {}}
+        onDiscard={() => {}}
+      />,
+    );
+  });
+  expect(drop().length).toBe(0);
+  // Close is always there, and it is the app's own secondary button rather than
+  // a pill of this component's own.
+  const close = r.root.findAll(
+    (n) => n.type === "button" && String(n.props.className) === "btn btn-secondary",
+  );
+  expect(close.length).toBe(1);
+});
+
+test("the caveat rides the pixels and the path rides the footer (T:1094, 1084)", () => {
+  const body = mount(<ShotViewerBody shot={pending} paneNoun="preview" />);
+  expect(texts(body, "c-shotview-note")).toEqual(["the map did not render"]);
+  const foot = mount(<ShotViewerFooter shot={pending} paneNoun="preview" onClose={() => {}} />);
+  expect(texts(foot, "c-shotview-path c-mono")).toEqual(["/shots/view.png"]);
+});
+
+test("the HEAD names it: a picture by its noun, a file by name and size", () => {
+  // A picture says how big it is by being looked at (T:7099), so no size.
+  expect(shotViewerTitle(pending, "preview")).toBe("preview screenshot");
+  expect(
+    shotViewerTitle(
+      { kind: "file", view: "/home/me/data/rows.csv", name: "rows.csv", size: 4096 },
+      "preview",
+    ),
+  ).toBe("rows.csv · 4 KB");
+});
+
+test("a FILE has no pixels, so it gets its own template framed in the body", async () => {
+  const file: Viewable = {
+    kind: "file",
+    view: "/home/me/data/rows.csv",
+    name: "rows.csv",
+    size: 4096,
+    pending: false,
+  };
+  const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
+  // The line that promises a preview is up while the stat is in flight: a blank
+  // box for those seconds reads as a preview that failed (T:4384).
+  expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
+  expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
+  // No stat answer here (no server): the promise settles to null and the line
+  // goes, which is the D616 "no template for this extension" case — and the
+  // glyph takes the empty body, so the viewer never shows nothing at all.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(els(r, "c-shotview-loading").length).toBe(0);
+  expect(els(r, "c-shotview-blank").length).toBe(1);
+});
+
+// ---- "what was sent" -------------------------------------------------------
+
+test("the popup's sections are the wire's, in T's order (T:10973-11040)", () => {
+  const r = mount(<SentPopBody outgoing={OUTGOING} paneNoun="preview" />);
+  const heads = r.root.findAll((n) => n.type === "h4").map((n) => String(n.props.children));
+  expect(heads).toEqual([
+    "Overview screenshot (badges mark each comment)",
+    // One per other picture, named by what it IS (`shotNoun`).
+    "preview screenshot",
+    "pasted.png",
+    "rows.csv",
+    "pasted image",
+    "Comments",
+    "Exact message the agent received",
+  ]);
+  // The overview's caveat is prefixed, because there is a picture above it.
+  expect(texts(r, "c-sent-caveat")).toEqual(["caveat: the footer was cut off"]);
+  // A file is never drawn, and neither is a refusal.
+  expect(els(r, "c-sent-shot").length).toBe(3);
+});
+
+test("each comment carries its label, its words and its context", () => {
+  const r = mount(<SentPopBody outgoing={OUTGOING} paneNoun="preview" />);
+  expect(texts(r, "c-sent-note-lbl")).toEqual(["A", "B"]);
+  expect(texts(r, "c-sent-note-meta")).toEqual(["<button> · at 1:05", "exact spot (12, 40)"]);
+  // A spot the user marked without saying anything still gets a row.
+  const rows = els(r, "c-sent-note-row");
+  expect(String(rows[1]!.props.children[1].props.children)).toBe("(no words)");
+});
+
+test("the exact message is the wire itself, blocks and all", () => {
+  const r = mount(<SentPopBody outgoing={OUTGOING} paneNoun="preview" />);
+  const pre = r.root.findByProps({ className: "c-sent-wire" });
+  expect(String(pre.props.children)).toBe(OUTGOING);
+});
+
+test("a send with no blocks still has the one section that always exists", () => {
+  const r = mount(<SentPopBody outgoing="just words" />);
+  expect(r.root.findAll((n) => n.type === "h4").map((n) => String(n.props.children))).toEqual([
+    "Exact message the agent received",
+  ]);
+});
+
+test("a picture inside the popup opens the viewer over it (T:1147)", () => {
+  const shots: Viewable[] = [];
+  const r = mount(
+    <SentPopBody
+      outgoing={OUTGOING}
+      paneNoun="preview"
+      onOpenShot={(s) => shots.push(s)}
+    />,
+  );
+  const img = els(r, "c-sent-shot")[0]!;
+  act(() => img.props.onClick());
+  expect(shots.length).toBe(1);
+  expect(shots[0]!.view).toBe("/shots/20260908-over.png");
+  expect(shots[0]!.pending).toBe(false);
+});
+
+
+// ---- the record's own name, spoken (P3-23, T:4405) ------------------------
+//
+// SOURCE-LEVEL, and it has to be: `Modal` portals into `document.body`, and
+// this suite runs under react-test-renderer with a shim whose `document` is not
+// a DOM — `createPortal` refuses it outright ("Target container is not a DOM
+// element"). What can still be pinned is the CONTRACT, which is where the copy
+// loss actually was: the chassis takes the name, and this caller passes the full
+// sentence. The rendered attribute is checked in the browser.
+
+test("SentPop names the dialog in FULL while the bar keeps the short form", () => {
+  // T:4405 `aria-label="What was sent to the agent"` against T:4407's visible
+  // "What was sent". The short form is right on screen, where the receipt the
+  // reader just clicked supplies the rest; spoken on its own it dropped the half
+  // that says WHOSE record this is. The receipt rows that open it were already
+  // saying it in full.
+  const src = readFileSync(join(HERE, "SentPop.tsx"), "utf8");
+  expect(src).toContain('title="What was sent"');
+  expect(src).toContain('ariaLabel="What was sent to the agent"');
+});
+
+test("the Modal chassis takes a name, and without one is byte-identical (flag-off SAFE)", () => {
+  // The prop is additive: with it absent the dialog keeps `aria-labelledby`
+  // pointing at its own `h2`, so every existing caller — and the whole flag-off
+  // shell — renders exactly as before. And the two are MUTUALLY EXCLUSIVE: an
+  // explicit `aria-label` wins over `aria-labelledby`, so setting both would
+  // leave the weaker one dead in the tree.
+  const modal = readFileSync(join(HERE, "..", "..", "..", "platform", "ui", "modal", "Modal.tsx"), "utf8");
+  expect(modal).toContain("ariaLabel?: string;");
+  expect(modal).toContain('{ "aria-label": ariaLabel }');
+  expect(modal).toContain("{ \"aria-labelledby\": titleId }");
+  // No unconditional `aria-labelledby` left behind beside the spread.
+  expect(modal).not.toContain("aria-labelledby={titleId}");
+});

@@ -2224,6 +2224,7 @@ export default function NewJobModal({
   initialTime,
   initialTarget,
   initialMessage,
+  initialAttachments,
   chatSessionId,
   chatBack,
   editing,
@@ -2245,6 +2246,14 @@ export default function NewJobModal({
   // — first line to the title, the rest to the description (splitDraft), which
   // Save composes back into one message…
   initialMessage?: string | null;
+  // …and the chat's TRAY arrives as this card's chips (owner E2E R1, F4
+  // (2026-09-10)). Already copied into the task-shots dir by the composer's
+  // Schedule button — the chat's own copies live in a tempdir on a 12 h TTL and
+  // POST /api/schedule refuses any path outside the shots dir — so what lands
+  // here is the same three fields a saved entry's `attachments` carries, and it
+  // is seeded through the identical function an Edit uses. An Edit outranks it:
+  // that entry's own attachments are the ones being changed.
+  initialAttachments?: { path: string; name: string; kind: "image" | "file" }[];
   // …the open conversation arrives as a session to CONTINUE — but only a
   // one-off resumes it; a repeating task always opens fresh chats, because
   // resuming the same conversation every day compounds context forever.
@@ -2292,8 +2301,15 @@ export default function NewJobModal({
   // in this card's own chrome). An Edit opens on the entry's stored paths, kind
   // decided by extension since there is no File to ask; a fresh attach shows
   // its chip immediately and swaps in the uploaded path when the POST answers.
+  // …and a CHAT HANDOFF opens on the tray it came from, through the same
+  // function and therefore as the same chips: a restored path with no blob, its
+  // picture drawn through /api/fs/raw (owner E2E R1, F4 (2026-09-10)). Only when
+  // this is not an Edit — an entry being changed already has attachments of its
+  // own, and they are the ones on the card.
   const [images, setImages] = useState<TaskImage[]>(() =>
-    restoredAttachments(editing));
+    editing
+      ? restoredAttachments(editing)
+      : restoredAttachments({ images: [], attachments: initialAttachments ?? [] }));
   // THE REF IS THE AUTHORITY, the state is its mirror for rendering — and that
   // asymmetry is load-bearing twice (Bugbot, PR #865). Save awaits the uploads
   // and then has to read the paths they wrote; a `setImages` updater only

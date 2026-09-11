@@ -23,10 +23,12 @@ from fused_render.server.routers import index as index_router
 def _reset():
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._seen_running.clear()
     index_router._index_job_wake.clear()
     yield
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._seen_running.clear()
     index_router._index_job_wake.clear()
 
 
@@ -58,6 +60,22 @@ def test_active_run_creates_an_indeterminate_job_keyed_by_run_id(monkeypatch):
     assert row["kind"] == "task"
     assert row["total"] is None
     assert row["done"] == 12.0
+
+
+def test_the_row_points_at_the_indexing_tab(monkeypatch):
+    """A click on an index run's row in Notifications has nowhere else to
+    go but Preferences > Indexing — the run's own root list and toggle, and
+    the only place a scan can be cancelled or retried from outside this row."""
+    _tick(monkeypatch, [_run("r1")])
+    assert jobs.list_jobs()[0]["page"] == "/preferences?tab=indexing"
+
+
+def test_the_row_names_the_explorer_as_its_own_origin(monkeypatch):
+    """This row is always the Explorer's own indexing scan, never anything
+    a different feature raises against the same id, so its origin is a
+    constant rather than anything derived from the run."""
+    _tick(monkeypatch, [_run("r1")])
+    assert jobs.list_jobs()[0]["origin"] == "Explorer"
 
 
 def test_two_concurrent_runs_produce_two_distinct_jobs(monkeypatch):
@@ -94,6 +112,34 @@ def test_run_going_done_writes_terminal_state(monkeypatch):
     assert row["state"] == "done"
 
 
+def test_the_row_declares_silent_so_a_finished_scan_pops_no_card(monkeypatch):
+    """User: "similarly remove notification for file indexing completion" —
+    same reasoning as the delete-toast reversal (see
+    DECISIONS-toasts-become-notifications.md). SILENT is the tier that skips
+    the pop entirely; TRANSIENT still pops for ~2.5s before leaving nowhere,
+    which is exactly the card the user asked to stop seeing."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    row = jobs.list_jobs()[0]
+    assert row["tier"] == jobs.SILENT
+
+
+def test_a_running_scan_still_shows_in_the_activity_list_despite_silent_tier(
+    monkeypatch,
+):
+    """`tier` governs retention/popping of a TERMINAL row only
+    (`jobs.py`'s own `_sweep`/`effective_tier` docs) — a still-RUNNING scan
+    must keep reporting progress in the Activity dock regardless of which
+    tier it declares. Frontend-side, `jobRows` (platform/lib/jobs.ts) only
+    filters a row by tier once `isTerminal(j)` is true, so a non-terminal
+    SILENT row is unaffected by construction; this pins the server-side half
+    of that contract — the row exists and reads RUNNING while the tier is
+    already SILENT."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == jobs.RUNNING
+    assert row["tier"] == jobs.SILENT
+
+
 def test_run_going_error_writes_terminal_state(monkeypatch):
     _tick(monkeypatch, [_run("r1", running=True)])
     _tick(monkeypatch, [_run(
@@ -103,11 +149,57 @@ def test_run_going_error_writes_terminal_state(monkeypatch):
     assert row["message"] == "disk full"
 
 
+def test_a_failed_scan_is_still_attention_despite_the_silent_tier(monkeypatch):
+    """The whole point of `effective_tier`'s error/cancelled override: a
+    producer that declares SILENT because success leaves nothing worth
+    keeping is wrong the moment the run fails — the user's own request
+    (stop notifying on a CLEAN finish) must not also silence a genuine
+    failure. Reads `job.state`, not the stored tier, so this promotion is
+    identical for SILENT and TRANSIENT rows alike."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    _tick(monkeypatch, [_run("r1", running=False, error="disk full")])
+    job = jobs._jobs["sys:index:r1"]
+    assert job.tier == jobs.SILENT
+    assert jobs.effective_tier(job) == jobs.ATTENTION
+
+
 def test_run_going_cancelled_writes_terminal_state(monkeypatch):
     _tick(monkeypatch, [_run("r1", running=True)])
     _tick(monkeypatch, [_run("r1", running=False, cancelled=True)])
     row = jobs.list_jobs()[0]
     assert row["state"] == "cancelled"
+
+
+def test_a_run_already_done_before_this_process_started_draws_no_row(monkeypatch):
+    """`list_runs` reads run directories off disk (KEEP_RUNS=20), so a run
+    that finished in an earlier process is still there on this process's
+    very first tick — nothing here ever watched it happen. Mirroring it now
+    would manufacture a notification for a run this session never saw run."""
+    _tick(monkeypatch, [_run("r1", running=False, summary={"files": 12})])
+    assert jobs.list_jobs() == []
+
+
+def test_a_run_already_errored_before_this_process_started_draws_no_row(monkeypatch):
+    """Same as the done case above, but for the specific shape that used to
+    resurrect as a permanent Notification: a worker that died mid-scan in an
+    earlier process, surfaced by `_with_liveness` as a synthetic 'no activity'
+    error on the very first tick that ever reads its run directory."""
+    _tick(monkeypatch, [_run(
+        "r1", running=False,
+        error="the scan worker died without finishing (no activity for 300s)")])
+    assert jobs.list_jobs() == []
+
+
+def test_a_run_seen_running_by_this_process_still_draws_its_terminal_row(monkeypatch):
+    """The carve-out above must not swallow a run that genuinely ran during
+    this process's own lifetime — only a run never witnessed as live here is
+    suppressed."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    _tick(monkeypatch, [_run(
+        "r1", running=False,
+        error="the scan worker died without finishing (no activity for 300s)")])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
 
 
 def test_terminal_state_is_written_exactly_once(monkeypatch):

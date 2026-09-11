@@ -108,6 +108,10 @@ def test_a_send_opens_a_running_job_row(target, sent):
     # this process owns the run, so the manager's ✕ is an action, not a request
     assert row["cancellable"] is True
     assert row["owner"] == "server"
+    # the row names the feature that raised it, not the project it targets —
+    # `page` already carries the project, so `origin` stays constant across
+    # every entry this scheduler ever sends
+    assert row["origin"] == "Scheduler"
 
 
 def test_a_spawn_failure_reports_everywhere_at_once(target, monkeypatch):

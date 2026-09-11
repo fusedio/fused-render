@@ -30,7 +30,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { dismissFdaNudge, openFdaSettings } from "@platform/lib/api";
 import { FDA_COPY, RELAUNCH_HREF, pokeFda, useFda } from "@platform/lib/fda";
-import { pushToast } from "@platform/lib/toast";
+import { notify } from "@platform/lib/notifications";
 
 //: One toast per DENIAL EPISODE, not per tab lifetime: the strip re-detects
 //: `denied` on every remount, so the flag suppresses repeats — but a
@@ -55,7 +55,7 @@ export function FdaStrip() {
       wasShowing.current = true;
       if (!toastShown) {
         toastShown = true;
-        pushToast({ msg: FDA_COPY.deniedToast, tone: "error" });
+        notify({ title: FDA_COPY.deniedToast, tone: "error" });
       }
       return;
     }
@@ -69,7 +69,7 @@ export function FdaStrip() {
       wasShowing.current = false;
       // "info" is this app's confirmation tone — there is no green toast
       // (Toast.tsx), and every other success ("Path copied") is info too.
-      pushToast({ msg: FDA_COPY.grantedToast, tone: "info" });
+      notify({ title: FDA_COPY.grantedToast, tone: "info" });
     }
   }, [showing, fda]);
 

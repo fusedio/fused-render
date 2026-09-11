@@ -1,0 +1,219 @@
+// The seat's four faces and the strings on them. Verbatim matters here: the
+// aria-label is what a live recording announced as "Done" got wrong (Bugbot,
+// PR #664), and the inert states are what a click during a settle used to
+// disarm the mode through (Bugbot, PR #665).
+//
+// react-test-renderer, the cards.test.tsx pattern: no DOM, so the tests read
+// the rendered props and drive `onClick` directly.
+import { afterEach, expect, test } from "bun:test";
+import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
+import { installDomShim } from "@platform/lib/testDomShim";
+
+installDomShim();
+
+import { RecControls, commentSeatName } from "./RecControls";
+import type { RecSnapshot, RecState } from "./rec";
+
+const mounted: Array<ReturnType<typeof create>> = [];
+function mount(el: React.ReactElement): ReturnType<typeof create> {
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(el);
+  });
+  mounted.push(r);
+  return r;
+}
+afterEach(() => {
+  for (const r of mounted.splice(0)) act(() => r.unmount());
+});
+
+type Json = ReactTestRendererJSON;
+type Props = Record<string, unknown>;
+
+function buttons(node: Json | Json[] | null): Props[] {
+  const out: Props[] = [];
+  const walk = (n: Json | string | null) => {
+    if (!n || typeof n === "string") return;
+    if (n.type === "button") out.push(n.props as Props);
+    for (const kid of n.children || []) walk(kid as Json | string);
+  };
+  for (const n of Array.isArray(node) ? node : [node]) walk(n);
+  return out;
+}
+
+function text(node: Json | Json[] | null): string {
+  const parts: string[] = [];
+  const walk = (n: Json | string | null) => {
+    if (!n) return;
+    if (typeof n === "string") {
+      parts.push(n);
+      return;
+    }
+    for (const kid of n.children || []) walk(kid as Json | string);
+  };
+  for (const n of Array.isArray(node) ? node : [node]) walk(n);
+  return parts.join("|");
+}
+
+const snap = (state: RecState, over: Partial<RecSnapshot> = {}): RecSnapshot => ({
+  state,
+  status: "",
+  marks: 0,
+  seconds: 0,
+  busy: state === "stopping" || state === "transcribing" || state === "discarding",
+  ...over,
+});
+
+function draw(rec: RecSnapshot, props: Partial<React.ComponentProps<typeof RecControls>> = {}) {
+  const fired: string[] = [];
+  const r = mount(
+    <RecControls
+      rec={rec}
+      onBegin={() => fired.push("begin")}
+      onEnd={() => fired.push("end")}
+      onDiscard={() => fired.push("discard")}
+      {...props}
+    />,
+  );
+  const json = r.toJSON() as Json | Json[] | null;
+  return { fired, seats: buttons(json), words: text(json) };
+}
+
+test("at rest: the mic, the resting word, and the resting name (T:3995, 8422)", () => {
+  const { seats, words } = draw(snap("off"));
+  expect(seats).toHaveLength(1);
+  expect(seats[0]["aria-label"]).toBe("Annotate with a spoken walkthrough");
+  expect(seats[0].title).toBe(
+    "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note",
+  );
+  expect(seats[0]["aria-pressed"]).toBe("false");
+  expect(seats[0].disabled).toBe(false);
+  expect(words).toBe("Annotate");
+});
+
+test("recording: the MIC, still worded, drawn active — the ■ is the bar's (P3R1-4)", () => {
+  // OWNER DECISION over T's own clock face (2026-09-10): the seat keeps the mic
+  // and the word "Annotate" and simply goes accent, exactly as the Comment seat
+  // does. It used to swap in a ■, which made the row's one live control look
+  // like a different control, and the ■ that ends a walkthrough is already on
+  // the bar over the app. `#annreclbl` rides along and the stylesheet hides it
+  // outside `.busy` (T:310), so the clock on screen is the bar's.
+  const { seats, words, fired } = draw(snap("recording", { status: "0:12 · 3", marks: 3 }));
+  expect(seats).toHaveLength(2);
+  expect(seats[0]["aria-label"]).toBe("Stop the recording");
+  expect(seats[0].title).toBe("Recording — click to stop · Esc also stops it");
+  expect(seats[0]["aria-pressed"]).toBe("true");
+  expect(seats[0].className).toContain("on");
+  expect(words).toBe("Annotate|0:12 · 3");
+  expect(seats[1]["aria-label"]).toBe("Discard the recording");
+  expect(seats[1].title).toBe("Discard the recording — nothing is transcribed or sent");
+  (seats[0].onClick as () => void)();
+  (seats[1].onClick as () => void)();
+  expect(fired).toEqual(["end", "discard"]);
+});
+
+// `disabled` is the assertion, not an unfired handler: react-test-renderer
+// hands back the prop and will happily call it, where a browser will not — so
+// the inert tests below check the ATTRIBUTES that make it inert (the `aria`
+// mirror included, T:6826), and `ann/rec.ts`'s own guards are what refuse a
+// call that gets through anyway.
+test("the start request's own width is inert: a second click cannot open two recordings (T:7868)", () => {
+  const { seats } = draw(snap("starting"));
+  expect(seats[0].disabled).toBe(true);
+  expect(seats[0]["aria-disabled"]).toBe("true");
+});
+
+test("a settle is a STATUS, never an enabled button (Bugbot PR #665, T:8167)", () => {
+  for (const [state, label, status] of [
+    ["stopping", "Stopping the recording", "Stopping…"],
+    ["transcribing", "Transcribing the walkthrough", "Transcribing…"],
+    ["discarding", "Discarding the recording", "Discarding…"],
+  ] as Array<[RecState, string, string]>) {
+    const { seats, words } = draw(snap(state, { status }));
+    expect(seats).toHaveLength(1); // the trash is gone with the clicks (T:6233)
+    expect(seats[0].disabled).toBe(true);
+    expect(seats[0]["aria-disabled"]).toBe("true");
+    expect(seats[0]["aria-label"]).toBe(label);
+    expect(words).toBe(status); // the resting word yields the space (T:312)
+  }
+});
+
+test("a typed comment mode makes the mic inert — one mode at a time (T:8329)", () => {
+  const { seats } = draw(snap("off"), { commentArmed: true });
+  expect(seats[0].disabled).toBe(true);
+  expect(seats[0]["aria-disabled"]).toBe("true");
+});
+
+test("no pane to annotate: HIDDEN, not dead (T:238)", () => {
+  const { seats } = draw(snap("off"), { shown: false });
+  expect(seats).toHaveLength(0);
+});
+
+test("commentSeatName names the neighbour for whichever half owns the mode", () => {
+  expect(commentSeatName(snap("recording"))?.label).toBe(
+    "Comment — unavailable while recording",
+  );
+  expect(commentSeatName(snap("transcribing"))?.label).toBe(
+    "Comment — unavailable while the recording settles",
+  );
+  // The mic prompt's window belongs to the recording, not to Comment: the seat
+  // beside a mic that is about to open must not come alive for the width of it
+  // (Bugbot, PR #1074 — the same fact `AnnRecorder.recording()` now reports).
+  expect(commentSeatName(snap("starting"))?.label).toBe(
+    "Comment — unavailable while recording",
+  );
+  expect(commentSeatName(snap("off"))).toBeNull();
+});
+
+test("the start window keeps the RESTING mic face — nothing to stop, nothing to throw", () => {
+  const { seats, words } = draw(snap("starting"));
+  expect(seats).toHaveLength(1); // no trash: there are no marks yet
+  expect(seats[0]["aria-pressed"]).toBe("false");
+  expect(words).toBe("Annotate");
+});
+
+test("a dismissed start being put back down is inert too — `begin()` refuses for its width", () => {
+  // `cancelling`: the mic came up behind a reader who had already left and its
+  // `cancel()` is in flight. The mode is handed back by then, so nothing else
+  // marks the seat unavailable — and the recorder refuses a second `begin()`
+  // until the teardown resolves, so a live-looking seat here is a dead click
+  // (Bugbot, PR #1074).
+  const { seats, words } = draw(snap("cancelling"));
+  expect(seats).toHaveLength(1);
+  expect(seats[0].disabled).toBe(true);
+  expect(seats[0]["aria-disabled"]).toBe("true");
+  // No status of its own: the walkthrough did not happen.
+  expect(words).toBe("Annotate");
+  expect(commentSeatName(snap("cancelling"))).toBeNull();
+});
+
+test("`discardable={false}` leaves the strip with ONE seat while recording", () => {
+  // Discard moved off the strip and onto the bar over the app on 2026-09-06
+  // (T:6240-6248): the strip is Screenshot · Comment · Annotate in every state.
+  // The branch stays for a host with no bar to put a trash on, but the chat's
+  // own mount passes `false`, because two identical destructive controls on
+  // screen at once is that decision undone.
+  const { seats, words } = draw(snap("recording", { status: "0:12 · 3", marks: 3 }), {
+    discardable: false,
+  });
+  expect(seats).toHaveLength(1);
+  expect(seats[0]["aria-label"]).toBe("Stop the recording");
+  expect(words).toBe("Annotate|0:12 · 3");
+  // The default is unchanged for whoever still wants both.
+  expect(draw(snap("recording"), { discardable: true }).seats).toHaveLength(2);
+});
+
+test("a schedule block makes the mic inert, but never mid-recording (P4R1-2)", () => {
+  // The walkthrough's notes go out through the composer, which the block has
+  // shut — so a fresh start is refused for the wait. NOT the stop: a block
+  // landing while the mic is live may not take away the only control that ends
+  // it, the same rule the composer's Stop follows (T:17193-17195).
+  const rest = draw(snap("off"), { blocked: true }).seats[0]!;
+  expect(rest.disabled).toBe(true);
+  expect(rest["aria-disabled"]).toBe("true");
+  const live = draw(snap("recording"), { blocked: true }).seats[0]!;
+  expect(live.disabled).toBe(false);
+  expect(live["aria-pressed"]).toBe("true");
+  // Unblocked, the seat is exactly as PR3 has it.
+  expect(draw(snap("off")).seats[0]!.disabled).toBe(false);
+});

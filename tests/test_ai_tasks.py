@@ -180,3 +180,94 @@ def test_supported_tags_is_derived_and_ordered():
     # Text first: the tab opens on it, and a menu ordered by an enum's accident
     # reads as random.
     assert supported[0] == "text-generation"
+
+
+# -- classify_repo: the repo's `tags` get a say when the slot does not --------
+#
+# `pipeline_tag` is ONE slot and a repo may claim several tasks. Reading only
+# the slot dropped every `black-forest-labs/FLUX.2-klein-*` repo out of search
+# — `image-to-image` in the slot, `text-to-image` in the tags — while the
+# fifteen community quants OF those repos, which put the runnable task in the
+# slot, sailed through the same query.
+
+
+def test_the_primary_slot_still_decides_whenever_it_names_something_we_run():
+    """Purely additive: a repo `classify` already answers for is answered
+    identically, and the `tags` list is never even consulted. Asserted with
+    tags that WOULD change the answer if they were read, so the test fails if
+    the precedence ever inverts."""
+    for tag in tasks.supported_tags():
+        by_tag = tasks.classify(tag)
+        by_repo = tasks.classify_repo(tag, ["text-to-image", "text-generation"])
+        assert by_repo == by_tag, tag
+
+
+def test_a_flux_klein_repo_is_rescued_by_its_own_text_to_image_tag():
+    """`black-forest-labs/FLUX.2-klein-4B`'s real shape, live on 2026-09-03:
+    the slot says a task no runner here serves, the tags say the one the image
+    runner has a hand-written `_GGUF_RECIPES` entry for."""
+    reading = tasks.classify_repo("image-to-image", [
+        "diffusers", "safetensors", "text-to-image", "image-editing", "flux",
+        "diffusion-single-file", "image-to-image", "en", "license:apache-2.0",
+        "diffusers:Flux2KleinPipeline", "region:us",
+    ])
+    assert reading.capability == registry.IMAGE_GENERATION
+    assert reading.supported
+    assert not reading.ruled_out
+
+
+def test_image_generation_is_read_as_the_same_claim():
+    """`FLUX.2-klein-9B` spells it `image-generation` where its 4B sibling
+    spells it `text-to-image` — one alias, because the Hub does not constrain
+    the vocabulary inside the `tags` LIST the way it does the slot."""
+    reading = tasks.classify_repo("image-to-image", [
+        "diffusers", "safetensors", "image-generation", "image-editing",
+        "flux", "image-to-image", "license:other",
+    ])
+    assert reading.capability == registry.IMAGE_GENERATION
+    assert reading.tag == "text-to-image", "re-entered the table through a real row"
+
+
+def test_a_genuine_upscaler_is_still_dropped():
+    """The discrimination the whole fallback rests on: a repo that only does
+    the unsupported job does not claim the supported one. Checked against the
+    Hub's own answers for `esrgan`, where this rescues nothing at all."""
+    reading = tasks.classify_repo("image-to-image", [
+        "pytorch", "image-to-image", "super-resolution", "esrgan",
+        "license:apache-2.0",
+    ])
+    assert reading.capability is None
+    assert reading.ruled_out, "the ruled-out reason survives the fallback"
+    assert reading.reason
+
+
+def test_a_repo_with_no_usable_tags_keeps_the_slots_own_verdict():
+    """Including the three shapes that are not a list at all — the Hub omits
+    `tags` on some rows, and a classifier that crashed on that would take the
+    whole search down rather than one row."""
+    ruled_out = tasks.classify("image-to-image")
+    for tags in (None, [], "text-to-image", 7, [None, 3, {}]):
+        assert tasks.classify_repo("image-to-image", tags) == ruled_out, tags
+
+
+def test_an_unknown_slot_can_still_be_rescued_but_stays_unknown_otherwise():
+    """`UNKNOWN` is not a licence to guess — but a repo whose slot holds a tag
+    we never vendored, and whose tags name a task we DO serve, is the same
+    situation as the FLUX one and gets the same answer."""
+    rescued = tasks.classify_repo("holographic-telepathy", ["text-generation"])
+    assert rescued.capability == registry.TEXT_GENERATION
+    stranded = tasks.classify_repo("holographic-telepathy", ["telepathy"])
+    assert stranded.capability is None
+    assert stranded.support == tasks.UNKNOWN
+
+
+def test_two_supported_claims_resolve_in_menu_order_not_hub_order():
+    """The Hub does not promise an order within `tags`, so a classifier that
+    read the repo's own order would give one repo two different answers. Menu
+    order (text first) is the tie-break, and it is stable under shuffling."""
+    tags = ["text-to-image", "text-generation"]
+    first = tasks.classify_repo("image-to-image", tags)
+    second = tasks.classify_repo("image-to-image", list(reversed(tags)))
+    assert first == second
+    assert first.capability == registry.TEXT_GENERATION
+

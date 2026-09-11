@@ -1,0 +1,22 @@
+# `bun test` runs the shell's suites in ONE process with bun's own module
+# loader — not vite's — and bun has no built-in opinion about a `.png` import.
+# Two source files import one (`@assets/logo-black-bg-transparent.png`: the
+# benchmark share card's watermark, and the explorer's bookmark cards), so bun
+# reached for its default loader and tried to PARSE the PNG as JavaScript:
+#
+#   1 | <89>PNG
+#       ^ error: Unexpected <89>
+#
+# which arrives as an "Unhandled error between tests" attributed to whichever
+# suite happened to be running, and — this is the part that mattered — left the
+# runner spinning at 100% CPU forever instead of reporting. `bun test src` (CI's
+# own step) therefore never terminated, and the pair that reproduced it was
+# `apps/explorer/FilesHome.render.test.tsx` + `apps/ai_models/benchmark/
+# shareCard.test.ts`: each file passes alone, and together they hang.
+#
+# `file` is exactly what vite does with the same import — the module's default
+# export is a URL string, which is all either consumer ever does with it
+# (`img.src = logoMark`). So this makes bun agree with the bundler rather than
+# working around it.
+[loader]
+".png" = "file"

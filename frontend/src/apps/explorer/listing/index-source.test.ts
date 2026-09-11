@@ -10,31 +10,30 @@ import {
 } from "@apps/explorer/listing/index-source";
 
 const at = (over: Partial<Parameters<typeof nextStep>[0]> = {}) =>
-  nextStep({ reason: "", asked: false, sinceAsk: 0, polls: 0, covered: true, ...over });
+  nextStep({ reason: "", asked: false, sinceAsk: 0, polls: 0, ...over });
 
 describe("what to do with a ranked answer", () => {
   test("a covered folder is simply answered", () => {
     expect(at({ reason: "" })).toBe("answer");
   });
 
-  test("the folders no scan can ever cover go to the live walk", () => {
+  test("the folders no scan can ever cover are answered with the index gap", () => {
     // The one client rule, and it is not a copy of the mount policy: the
-    // client never works out WHY, it walks when the server has said it cannot
-    // answer and cannot be made to.
-    expect(at({ reason: "mount" })).toBe("walk");
-    expect(at({ reason: "package" })).toBe("walk");
-    expect(at({ reason: "ignored" })).toBe("walk");
+    // client never works out WHY, it reports the gap when the server has said
+    // it cannot answer and cannot be made to.
+    expect(at({ reason: "mount" })).toBe("answer");
+    expect(at({ reason: "package" })).toBe("answer");
+    expect(at({ reason: "ignored" })).toBe("answer");
   });
 
-  test("a disabled index goes to the live walk, never scan or poll", () => {
+  test("a disabled index is answered too, never scanned or polled", () => {
     // If this asked for a scan, it would burn UNCOVERED_GRACE against one
     // that will never start; if it polled, it would burn all 80 polls
     // against one that will never end. There is no server signal to poll
-    // for "the user turned indexing back on", so the walk is the only
-    // source available, same as mount/package/ignored.
-    expect(at({ reason: "disabled" })).toBe("walk");
-    expect(at({ reason: "disabled", asked: true, sinceAsk: 99 })).toBe("walk");
-    expect(at({ reason: "fda" })).toBe("walk");
+    // for "the user turned indexing back on".
+    expect(at({ reason: "disabled" })).toBe("answer");
+    expect(at({ reason: "disabled", asked: true, sinceAsk: 99 })).toBe("answer");
+    expect(at({ reason: "fda" })).toBe("answer");
   });
 
   test("an uncovered folder is scanned, once", () => {
@@ -47,13 +46,13 @@ describe("what to do with a ranked answer", () => {
     expect(at({ reason: "scanning", asked: true, sinceAsk: 9 })).toBe("poll");
   });
 
-  test("a folder still uncovered after its scan falls back to the walk", () => {
+  test("a folder still uncovered after its scan settles for the index gap", () => {
     // The scan ran and the folder is STILL not in the index — it is on another
     // filesystem, or the scan failed. Asking again would be the retry loop the
     // whole design refuses; answering "no matches" would blame the user's
-    // files for the app's state. The walk is what is left.
+    // files for the app's state. The index gap is what is left.
     expect(at({ reason: "uncovered", asked: true, sinceAsk: UNCOVERED_GRACE }))
-      .toBe("walk");
+      .toBe("answer");
   });
 
   test("the grace period exists because a scan takes a moment to be visible", () => {
@@ -73,25 +72,13 @@ describe("what to do with a ranked answer", () => {
     expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS })).toBe("answer");
   });
 
-  test("giving up on a scan that never covered the folder goes to the walk", () => {
-    // The other door into "blame the user's files for the app's state". A scan
-    // of an UNCOVERED root reports `scanning` too, so settling for what we have
-    // at the ceiling would render covered:false, hits:[] — an empty list for a
-    // folder the walk would have searched fine.
-    expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS, covered: false }))
-      .toBe("walk");
-    // ...while a covered folder really does have rows worth settling for.
-    expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS, covered: true }))
-      .toBe("answer");
-  });
-
   test("a probe answer cannot count as the on-demand scan's first look", () => {
     // The focus probe runs this with asked:false, so it can only ever come
-    // back "walk" or "answer"/"scan" — never the give-up branch.
+    // back "scan" or "answer" — never the give-up branch.
     expect(at({ reason: "uncovered", asked: false, sinceAsk: 99 })).toBe("scan");
   });
 
-  test("an unknown reason is answered, not walked", () => {
+  test("an unknown reason is answered", () => {
     // Forward compatibility: a server that grows a reason this build has never
     // heard of has still ANSWERED, and its hits are on screen.
     expect(at({ reason: "something-new" as never })).toBe("answer");
@@ -102,17 +89,17 @@ describe("what to do with a ranked answer", () => {
 //
 // Everything else this describe used to assert — the epoch tag, the poll
 // counting its ticks, the in-flight guard, the memo predicate, which rows are
-// rendered — is now driven in useWalkSearch.render.test.ts, where a wrong
+// rendered — is driven in useListingSearch.render.test.ts, where a wrong
 // condition fails instead of a renamed one. What stays is the rule that has no
 // runtime shadow: WHERE the policy lives. A hook that starts switching on
 // reasons itself would pass every behavioural test in this directory and still
 // be the bug this phase set out to remove, because the drift only shows up
 // when the server's rules change.
 
-const HOOK = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+const HOOK = readFileSync(join(import.meta.dir, "useListingSearch.ts"), "utf8");
 
 describe("who decides which source answers", () => {
-  test("the hook never spells out which reasons mean the walk", () => {
+  test("the hook never spells out which reasons are permanently uncoverable", () => {
     for (const literal of ['"mount"', '"package"', '"ignored"', '"uncovered"']) {
       expect(HOOK).not.toContain("=== " + literal);
     }
@@ -136,8 +123,8 @@ describe("remembersAnswer", () => {
     expect(remembersAnswer("answer", "scanning")).toBe(false);
   });
 
-  test("nothing is remembered for a folder handed to the walk", () => {
-    expect(remembersAnswer("walk", "mount")).toBe(false);
+  test("nothing is remembered for a folder the index cannot cover", () => {
+    expect(remembersAnswer("answer", "mount")).toBe(false);
   });
 });
 
@@ -145,8 +132,7 @@ describe("remembersAnswer", () => {
 
 describe("searchProgress", () => {
   const p = (over: Partial<Parameters<typeof searchProgress>[0]> = {}) =>
-    searchProgress({ searching: true, walkMode: false, pending: false,
-                     polling: false, scanning: false, ...over });
+    searchProgress({ searching: true, pending: false, polling: false, ...over });
 
   test("a scan landing rows means an answer is still coming", () => {
     // THE regression: the first uncovered answer clears `pending` while the
@@ -163,13 +149,6 @@ describe("searchProgress", () => {
     // job ("indexing…"), not a dim calibrated for a moment.
     expect(p({ polling: true }).inFlight).toBe(false);
     expect(p({ pending: true }).inFlight).toBe(true);
-  });
-
-  test("the walk reports its own scoring pass, and never the poll", () => {
-    // A walk-backed folder has no ranked request and no scan to wait for.
-    expect(p({ walkMode: true, scanning: true }).answerComing).toBe(true);
-    expect(p({ walkMode: true, scanning: true }).inFlight).toBe(true);
-    expect(p({ walkMode: true, polling: true, pending: true }).answerComing).toBe(false);
   });
 
   test("nothing is coming when nobody is searching", () => {

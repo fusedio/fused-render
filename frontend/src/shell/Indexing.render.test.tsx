@@ -2,7 +2,7 @@
 // on change via a real PUT /api/prefs, and publishes the new value into the
 // module-level cache the explorer's two search boxes read
 // (ranked-search-pref.ts) — same coverage shape as the pref-threading tests
-// in listing/useWalkSearch.render.test.ts, but for the control itself.
+// in listing/useListingSearch.render.test.ts, but for the control itself.
 //
 // A stubbed `globalThis.fetch`, not `mock.module` — `putRankedSearchEnabled`
 // is a thin fetch wrapper (api.ts), and `mock.module` replacing the whole

@@ -26,11 +26,16 @@ import type { CapabilityEngine, EngineChoice, Prefs } from "@platform/lib/api";
 // especially readable. Keyed off the server's list rather than replacing it —
 // an unknown capability renders as itself, so a capability added server-side
 // appears here (ugly but present) instead of vanishing from the page.
+//
+// `embeddings` is a deliberate exception to "standard capability name
+// everywhere" (fix round 3, item 11 amendment): the user asked to keep
+// "Search & similarity" for it specifically — every OTHER entry uses the
+// registered task's own standard name.
 const CAPABILITY_LABELS: Record<string, string> = {
   "text-generation": "Text generation",
   "text-to-image": "Image generation",
   "automatic-speech-recognition": "Speech to text",
-  "embeddings": "Embeddings",
+  "embeddings": "Search & similarity",
   "text-to-video": "Video generation",
 };
 

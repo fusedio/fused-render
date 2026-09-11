@@ -15,7 +15,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import type { Job } from "@platform/lib/jobs";
+import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
@@ -509,6 +509,27 @@ export default function App({ config }: { config: Config }) {
   // its children are. `ActivityDock` only calls up when the terminal-id SET
   // changes, so this does not re-render the shell on every poll.
   const [terminalJobs, setTerminalJobs] = useState<Job[]>([]);
+
+  // A real, server-side dismissal `platform/ui/JobPopupCard.tsx` cannot patch
+  // `terminalJobs` for itself (it is several components below here, with no
+  // other reach into this state) reports through `jobs.ts`'s
+  // `noteJobDismissed` instead — this is its one subscriber, dropping the id
+  // the moment the popup card's own row click really deletes it, rather than
+  // leaving the panel showing a row until the next Activity poll notices it
+  // gone.
+  useEffect(
+    () => subscribeJobDismissed((id) => setTerminalJobs((jobs) => jobs.filter((j) => j.id !== id))),
+    [],
+  );
+
+  // THE FLOATING JOB POP-UP (SPEC actionable-notifications) — the one
+  // currently-shown card, or `null`. `ActivityDock`'s own `popupTick` already
+  // enforces "latest wins", so a fresh call here always REPLACES rather than
+  // queues; `NotificationHost` clears it back to `null` once the card's own
+  // countdown (or an early open/dismiss) finishes. Lives beside `terminalJobs`
+  // for the identical reason: `ActivityDock` is the one place with the full
+  // poll snapshot, and `NotificationHost` is the one column that draws it.
+  const [popupJob, setPopupJob] = useState<Job | null>(null);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -1052,14 +1073,16 @@ export default function App({ config }: { config: Config }) {
                scope. Plain prop wiring on purpose — the alternative was a
                shared store, which would be a new subsystem for a list that
                one section already polls and the other only reads. */
-            activity={<ActivityDock onTerminalJobs={setTerminalJobs} />}
+            activity={
+              <ActivityDock onTerminalJobs={setTerminalJobs} onJobPopup={setPopupJob} />
+            }
             repoUpdates={
               <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
             }
           />
         )}
       </div>
-      <NotificationHost />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

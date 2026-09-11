@@ -79,6 +79,37 @@ def test_a_warm_model_completion_opens_a_row_and_reaches_done(monkeypatch):
     assert rows[0]["state"] == "done"
 
 
+def test_a_completion_with_no_calling_page_is_captioned_playground(monkeypatch):
+    """`text_row_fields` derives `origin` from `page` (`jobs.origin_for_page`)
+    rather than a bare "Playground" literal — an empty `page` is the one
+    case only the Playground itself produces (it runs in the shell, with no
+    `X-Fused-Page` of its own), which is exactly what the derivation's own
+    default names it."""
+    reports = _spy(monkeypatch)
+    _local(monkeypatch, [{"type": "done", "ok": True, "tokens": 0}])
+
+    _server_ai._local_relay("org/chat", "hi", "", False, {"prompt": "hi"})
+
+    ticks = _text_rows(reports)
+    assert ticks[0]["origin"] == "Playground"
+
+
+def test_a_completion_raised_from_a_page_is_captioned_with_that_page(monkeypatch):
+    """A user app calling `fused.ai("…")` from its own page must not have its
+    generation captioned "Playground" — that caption belongs to the shipped
+    Playground alone. With no recognized project above it, the fs path
+    falls back to its own filename stem (`origin_for_page`'s documented
+    fallback)."""
+    reports = _spy(monkeypatch)
+    _local(monkeypatch, [{"type": "done", "ok": True, "tokens": 0}])
+
+    _server_ai._local_relay("org/chat", "hi", "", False, {"prompt": "hi"},
+                            page="/tmp/my-app/index.html")
+
+    ticks = _text_rows(reports)
+    assert ticks[0]["origin"] == "index"
+
+
 def test_the_title_is_the_prompts_first_line_not_the_model(monkeypatch):
     reports = _spy(monkeypatch)
     _local(monkeypatch, [{"type": "done", "ok": True, "tokens": 0}])

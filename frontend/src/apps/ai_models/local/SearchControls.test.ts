@@ -1,0 +1,187 @@
+// ---- what the reworked controls row OFFERS, pinned against the source -----
+// Same discipline as CapabilityPane.test.ts: the ContextMenu-based menu
+// surface (never a second hand-rolled dropdown) is a one-line fact a
+// screenshot does not distinguish from a hardcoded menu that happens to look
+// the same today.
+import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const SRC = readFileSync(join(import.meta.dir, "SearchControls.tsx"), "utf8");
+
+describe("SearchControls task menu", () => {
+  it("has no Task menu (D843) — the capability the pane was opened for is the only scope now", () => {
+    expect(SRC).not.toContain("getHubTasks()");
+    expect(SRC).not.toContain('keyLabel="Task:"');
+    expect(SRC).not.toContain("Any task");
+    expect(SRC).not.toContain("taskItems");
+  });
+});
+
+describe("SearchControls menu surface", () => {
+  it("uses one ControlMenu component for every dropdown, mockup-shaped (item B)", () => {
+    expect(SRC).not.toContain("@platform/ui/ContextMenu");
+    expect(SRC).toContain('"menubtn" + (active ? " active" : "")');
+    // Item 6 (fix round 6): the dropdown's class is now conditional on
+    // `align` (`.dd.right` for the Sort menu) rather than a hardcoded
+    // literal — assert the anchoring logic exists instead of the old fixed
+    // string.
+    expect(SRC).toContain('"dd" + (align === "right" ? " right" : "")');
+    const menuCalls = SRC.match(/<ControlMenu/g) ?? [];
+    // Fit, Size (params), Sort — three ControlMenu-based menus in this row
+    // now the Task menu is gone (D843); Publisher/Quant are `SearchMenu`
+    // now (item 5, round 6), not `ControlMenu`.
+    expect(menuCalls.length).toBe(3);
+    // Item 6: the Sort menu (the row's right-most trigger, after the `.push`
+    // spacer) anchors its dropdown to the right so it can't run past the
+    // scrolling pane's edge.
+    expect(SRC).toContain('align="right"');
+  });
+
+  it("shows every option's hover sentence as a <p class=\"h\"> line, not just on the trigger", () => {
+    expect(SRC).toContain('<p className="h">{it.hint}</p>');
+  });
+});
+
+describe("SearchControls result line", () => {
+  it("has no unfit toggle or hidden count (item 7, D843 round 5) — every model is always shown", () => {
+    expect(SRC).not.toContain("includeUnfit");
+    expect(SRC).not.toContain("hiddenUnfit");
+    expect(SRC).not.toContain('type="checkbox"');
+  });
+
+  it("shows Searching… before a count exists, never a stale one", () => {
+    expect(SRC).toContain('loading ? (\n            "Searching…"');
+  });
+
+  it("bolds the match count, mockup-style (item E)", () => {
+    expect(SRC).toContain("<b>{matchCount}</b> match");
+  });
+});
+
+// Item 5 (fix round 6): Publisher/Quant free-text inputs became searchable
+// dropdowns (`SearchMenu`) fed by the server's `facets`. This is the same
+// source-pinning discipline as the rest of the file — there is no
+// React-rendering test setup wired into this package's `bun test` — so the
+// three behaviors the brief calls out (narrows on typing, Enter applies free
+// text, picking an option settles) are asserted against the actual narrowing
+// predicate, Enter handler, and click handler in the source, not just their
+// presence.
+// Item 1 (fix round 7): round 6 left each menu owning its own `open`
+// state, so opening Sort didn't close an already-open Fit/Quant/Publisher
+// menu — up to four `.tp .dd` dropdowns could be open at once, and neither
+// an outside click nor Escape closed any of them. Fixed by lifting a single
+// `openMenu` id up to `SearchControls`, with one shared document listener.
+// Same no-DOM-harness discipline as the rest of this file: pin the fix by
+// source, not by rendering.
+describe("SearchControls single open menu (item 1, fix round 7)", () => {
+  it("owns one openMenu id for the whole row, not a per-menu open state", () => {
+    expect(SRC).toContain(
+      'const [openMenu, setOpenMenu] = useState<MenuId | null>(null);',
+    );
+    // Every menu instance is wired to the shared id, not its own state.
+    expect(SRC).toContain('open={openMenu === "fit"}');
+    expect(SRC).toContain('onOpenChange={(v) => setOpenMenu(v ? "fit" : null)}');
+    expect(SRC).toContain('open={openMenu === "params"}');
+    expect(SRC).toContain('open={openMenu === "quant"}');
+    expect(SRC).toContain('open={openMenu === "publisher"}');
+    expect(SRC).toContain('open={openMenu === "sort"}');
+    // Neither menu component keeps its own `useState(false)` for open any
+    // more — that state now lives only in `SearchControls`.
+    expect(SRC).not.toContain("const [open, setOpen] = useState(false);");
+  });
+
+  it("closes on an outside mousedown, checked against the open menu's own root", () => {
+    expect(SRC).toContain('document.addEventListener("mousedown", onMouseDown);');
+    expect(SRC).toContain(
+      "if (root && !root.contains(e.target as Node)) setOpenMenu(null);",
+    );
+  });
+
+  it("closes on Escape", () => {
+    expect(SRC).toContain('if (e.key === "Escape") setOpenMenu(null);');
+  });
+
+  it("the outside-click/Escape listener is registered only while a menu is open, and removed on close", () => {
+    expect(SRC).toContain("useEffect(() => {\n    if (!openMenu) return;");
+    expect(SRC).toContain('document.removeEventListener("mousedown", onMouseDown);');
+    expect(SRC).toContain('document.removeEventListener("keydown", onKeyDown);');
+  });
+
+  it("a click inside the SearchMenu filter input does not close the menu (it sits inside the registered root)", () => {
+    // The filter <input> is rendered inside the same rootRef'd <div> the
+    // outside-mousedown check tests against, so a mousedown there is an
+    // "inside" click and never reaches `setOpenMenu(null)` — no separate
+    // stopPropagation is needed. Pin that the input has no dismissal
+    // handler of its own that would fight the shared one.
+    expect(SRC).not.toMatch(/textfilter[\s\S]{0,200}onMouseDown/);
+  });
+
+  it("picking an option or applying the SearchMenu filter still closes it via the shared setOpen", () => {
+    expect(SRC).toContain("onOpenChange: setOpen,");
+    expect(SRC).toContain(
+      "const apply = (v: string) => {\n    onChange(v);\n    setOpen(false);\n  };",
+    );
+  });
+});
+
+describe("SearchControls Publisher/Quant menus (item 5)", () => {
+  it("replaced the two free-text inputs with SearchMenu, fed by facets", () => {
+    expect(SRC).not.toContain('className="am-hub-textfilter"');
+    expect(SRC).toContain('keyLabel="Quant:"');
+    expect(SRC).toContain('keyLabel="Publisher:"');
+    expect(SRC).toContain("options={facets?.quants ?? []}");
+    expect(SRC).toContain("options={facets?.publishers ?? []}");
+  });
+
+  it("narrows the option list by a case-insensitive substring match on the typed filter", () => {
+    expect(SRC).toContain(
+      "const narrowed = filter\n    ? options.filter((o) => o.id.toLowerCase().includes(filter.toLowerCase()))\n    : options;",
+    );
+  });
+
+  it("applies typed free text on Enter even when it matches no option", () => {
+    expect(SRC).toContain('if (e.key === "Enter" && filter.trim())');
+    expect(SRC).toContain("apply(filter.trim())");
+  });
+
+  it("picking a listed option calls the settle handler (onChange) with its id", () => {
+    expect(SRC).toContain("onClick={() => apply(o.id)}");
+    // `apply` is the one path both Enter and a click go through, and it is
+    // the function that actually calls the `onChange` prop threaded in as
+    // `onQuant`/`onPublisher` from `HubSearchScreen`.
+    expect(SRC).toContain("const apply = (v: string) => {\n    onChange(v);\n    setOpen(false);\n  };");
+  });
+
+  it("clearing (the trigger's × ) settles an empty value, same contract as ControlMenu's onClear", () => {
+    expect(SRC).toContain("apply(\"\");");
+  });
+});
+
+// Item 1 (fix round 11): mlx-community has exactly one row in the ~200
+// most-downloaded window `_facets` counts over, so it sorts behind the
+// top-40 cutoff and the Publisher dropdown shows nothing for a value that
+// DOES exist on the Hub. Typing text with no matching option now renders an
+// extra row offering it as a search, which calls the same `apply` path as
+// Enter.
+describe("SearchControls no-match search row (item 1, fix round 11)", () => {
+  it("renders a search row when the typed filter matches no option, using the same apply/onClick path as Enter", () => {
+    expect(SRC).toContain(
+      "const showSearchRow = trimmed !== \"\" && !hasExactMatch;",
+    );
+    expect(SRC).toContain('`Search ${searchKind} "${trimmed}"`');
+    expect(SRC).toContain("onClick={() => apply(trimmed)}");
+  });
+
+  it("suppresses the search row once the typed text exactly matches an option (case-insensitive)", () => {
+    expect(SRC).toContain(
+      "const hasExactMatch = options.some(\n    (o) => o.id.toLowerCase() === trimmed.toLowerCase(),\n  );",
+    );
+  });
+
+  it("derives the search-row label from the menu's own keyLabel (\"Quant:\" / \"Publisher:\")", () => {
+    expect(SRC).toContain(
+      'const searchKind = keyLabel.replace(":", "").trim().toLowerCase();',
+    );
+  });
+});

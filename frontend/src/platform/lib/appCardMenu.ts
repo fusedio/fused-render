@@ -19,7 +19,7 @@ import { openApp } from "./appEntry";
 import { exportAppFile } from "./appShot";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
-import { pushToast } from "./toast";
+import { notify } from "./notifications";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 
@@ -60,7 +60,7 @@ export function appCardMenu(
       icon: MenuIcons.reveal,
       onClick: () => {
         revealPath(app.path).catch((e: Error) =>
-          pushToast({ msg: "Could not reveal " + app.name + ": " + e.message, tone: "error" }),
+          notify({ title: "Could not reveal " + app.name + ": " + e.message, tone: "error" }),
         );
       },
     },
@@ -78,8 +78,8 @@ export function appCardMenu(
               // exportAppFile also bakes a native screen shot in as the
               // file's preview.png when the folder has no authored one (D396).
               exportAppFile(app, captureEl).catch((e: Error) =>
-                pushToast({
-                  msg: "Could not export " + app.name + ": " + e.message,
+                notify({
+                  title: "Could not export " + app.name + ": " + e.message,
                   tone: "error",
                 }),
               );
@@ -93,7 +93,7 @@ export function appCardMenu(
       // explorer — the path is still reachable through Reveal in Finder.
       onClick: () => {
         copyToClipboard(app.path).then((ok) => {
-          if (ok) pushToast({ msg: "Path copied", tone: "info" });
+          if (ok) notify({ title: "Path copied", tone: "info" });
         });
       },
     },

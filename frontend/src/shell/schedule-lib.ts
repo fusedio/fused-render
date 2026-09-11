@@ -544,7 +544,18 @@ export function explorerUrl(target: string, sessionId: string): string {
 // caller now, and this fallback is exactly what a run with no session yet needs
 // — a state the Notifications section's rows meet as often as the popover does.
 export function folderHref(task: Pick<Task, "target" | "project">): string | null {
-  const target = task.target || task.project;
+  // `project` FIRST, deliberately: this door is the run's FOLDER, and `project`
+  // is a folder by construction — `routers/tasks.py:_place` fills it from the
+  // transcript's own `cwd`, falling back to `_workdir(target)` (the target
+  // itself when it is a directory, its parent when it is a file) and, last, to
+  // the decoded project dir. Reading `target` first was the same answer for as
+  // long as a task's target was nearly always a folder; now that a task made
+  // from inside an app targets the app's ENTRY PAGE, target-first sent this to
+  // a file preview — which has none of the sessions this door promises — and
+  // this is reached only when `taskHref` declined, i.e. `session_id` is "",
+  // i.e. there is no transcript to open instead. `target` stays the fallback
+  // for a row whose project never got filled in.
+  const target = task.project || task.target;
   return target ? explorerUrl(target, "") : null;
 }
 
@@ -582,31 +593,13 @@ export function folderHref(task: Pick<Task, "target" | "project">): string | nul
  * one `session_id` on `/tasks`. With it, each frame is its own param target and
  * each card reads the one session it was given.
  */
-export function cardFrameSrc(template: string, target: string, sessionId: string): string {
-  return (
-    `/render?path=${encodeURIComponent(template)}` +
-    `&_file=${encodeURIComponent(target)}` +
-    `&chat_only=1&compact=1` +
-    `&session_id=${encodeURIComponent(sessionId)}`
-  );
-}
-
-/** The same chat, framed at FULL size for the card's popup (TaskCards
- *  `TaskPeek`; Akshil, 2026-09-05: a preview "so the user can directly type in
- *  a message"). `chat_only` still — the popup is about the conversation, not
- *  the folder — but NOT `compact`: compact is the card's read-only cut of the
- *  template and hides its composer (`#inputbox`), which is the one thing the
- *  popup exists to give back. `peek=1` instead, the template's third host cut:
- *  its own strip (← Chats, ⋮) and top bar go, because the popup's head already
- *  says which task this is and carries the doors (template.html `PEEK`). */
-export function peekFrameSrc(template: string, target: string, sessionId: string): string {
-  return (
-    `/render?path=${encodeURIComponent(template)}` +
-    `&_file=${encodeURIComponent(target)}` +
-    `&chat_only=1&peek=1` +
-    `&session_id=${encodeURIComponent(sessionId)}`
-  );
-}
+/** Both URLs now live in `apps/claude/legacy-src.ts`, beside the other four
+ *  frame shapes and the byte-for-byte parity test that pins all six: the flag
+ *  OFF has to be the address these two sites loaded before `ChatMount` existed.
+ *  Imported from the MODULE and not the app's barrel — the barrel re-exports
+ *  `ClaudeChat`, and a string builder must not drag the whole chat (and the
+ *  markdown chunk) into every bundle that touches the schedule library. */
+export { cardFrameSrc, peekFrameSrc } from "@apps/claude/legacy-src";
 
 // ---- Calendar: the task chip grid ---------------------------------------------
 // The calendar shows the same unit the List and the Board show — a TASK — and

@@ -12,7 +12,7 @@
 import { useEffect, useRef } from "react";
 import { getMountsHealth, reconnectMount } from "@platform/lib/api";
 import { IS_EMBED } from "@platform/lib/router";
-import { dismissToast, pushToast } from "@platform/lib/toast";
+import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 
 const POLL_MS = 15_000;
 
@@ -58,7 +58,7 @@ export function useMountHealth(): void {
         if (e.kind === "disconnected") {
           pushMountDisconnected(e.mount_id, e.name);
         } else if (e.kind === "reconnected") {
-          pushToast({ msg: `${e.name} reconnected`, tone: "info" });
+          notify({ title: `${e.name} reconnected`, tone: "info" });
         }
       }
     };
@@ -66,19 +66,24 @@ export function useMountHealth(): void {
     // A persistent error toast whose "Reconnect" action repairs the mount and
     // re-polls; success/failure each raise their own follow-up toast.
     const pushMountDisconnected = (mountId: string, name: string) => {
-      const id = pushToast({
-        msg: `${name} disconnected`,
+      const id = notify({
+        title: `${name} disconnected`,
         tone: "error",
         action: {
           label: "Reconnect",
           onClick: async () => {
-            dismissToast(id);
+            // Removes the retained "disconnected" row AND ends the popup's
+            // own visible window early if it is still up — the reconnect
+            // attempt's own success/failure raises its own fresh
+            // notification below, so this one's job is done.
+            dismissPopup(id);
+            dismissNotification(id);
             try {
               await reconnectMount(mountId);
-              pushToast({ msg: `${name} reconnected`, tone: "info" });
+              notify({ title: `${name} reconnected`, tone: "info" });
             } catch (err) {
-              pushToast({
-                msg: `${name} — reconnect failed: ${(err as Error).message}`,
+              notify({
+                title: `${name} — reconnect failed: ${(err as Error).message}`,
                 tone: "error",
               });
             }

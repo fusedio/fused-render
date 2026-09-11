@@ -56,8 +56,10 @@ import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
-import { clearFinishedJobs, isFailure, jobsAfterClear } from "@platform/lib/jobs";
+import { clearFinishedJobs, effectiveTier, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
+import { dismissNotification, useRetainedNotifications } from "@platform/lib/notifications";
+import type { StoredNotification } from "@platform/lib/notifications";
 import {
   attentionRows,
   attentionDismissSignature,
@@ -179,6 +181,13 @@ function useRepoUpdates() {
 // A device that just paired over the LAN (lan.py): title is the device's
 // UA-derived name, the sentence says what pairing means, the ✕ dismisses the
 // EVENT server-side (the device itself stays; revoking lives in Preferences).
+//
+// THE ROW ITSELF ALSO OPENS Preferences → Render local network, where the
+// paired device can actually be managed — the only row kind here whose click
+// target is a fixed shell route rather than something specific to the event.
+// Clicking clears the row exactly as the ✕ does (reuses `dismiss`): the news
+// was "a device paired", and having read it (by going to look) is as much an
+// acknowledgement as swatting it would have been.
 function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id: string) => void }) {
   const dismiss = async () => {
     // Optimistic: the row is news, and news the user swatted must go now.
@@ -194,6 +203,13 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
       title={`${event.name} paired`}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
       status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
+      rowClick={{
+        onClick: () => {
+          navigateUrl("/preferences?tab=lan");
+          void dismiss();
+        },
+        title: "Open Preferences → Render local network",
+      }}
     />
   );
 }
@@ -204,8 +220,8 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // decides what it says and where it goes, off the pulse poll the shell already
 // runs — no endpoint and no second loop of this card's own.
 //
-// THE WHOLE ROW IS ALSO A CLICK TARGET, when it has somewhere to go — rather
-// than a corner "Open" control on an otherwise inert row. Every other row here
+// THE WHOLE ROW IS ALSO A CLICK TARGET — rather than a corner "Open" control
+// on an otherwise inert row. Every other row here
 // has something to do BESIDES being read (fix the repo, dismiss the failure),
 // so its controls have to be aimed at individually; this row has exactly one
 // thing to do besides dismiss, and a row with one action should not make a
@@ -221,6 +237,47 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // waiting; dismissing here never dims it. `tasks-lib.attentionDismissSignature`
 // keys the dismissal on the question's own title, so a run asking something
 // NEW earns a fresh row even if its key is unchanged.
+// A CLIENT-RAISED MESSAGE, RETAINED (SPEC toasts-become-notifications §3) —
+// the fifth row kind, and the only one that never touches the server at all:
+// `lib/notifications.ts`'s own store decided this message's tier (attention
+// or trail; transient/silent messages never reach here) when it popped, and
+// this row is that same decision's after-image, drawn through the identical
+// `NotificationCard` every other row here uses. `dismissNotification` is
+// purely client-side and in-memory (SPEC's own Constraints: no server store,
+// no localStorage) — there is no request to await, no optimistic-then-revert
+// shape the way a pairing or a repo row needs.
+//
+// A MESSAGE WITH A `page` IS CLICKABLE, THE SAME WAY A WAITING TASK IS
+// (SPEC-actionable-notifications' "every row goes somewhere"): the whole row
+// navigates and clears itself. One without a `page` is dismiss-only — no
+// worse than a repo row before D572, just not as good as it could be; call
+// sites are encouraged to set one where an obvious destination exists (SPEC
+// §3), not required to.
+function MessageRowView({ notification }: { notification: StoredNotification }) {
+  const dismiss = () => dismissNotification(notification.id);
+  return (
+    <NotificationCard
+      title={notification.title}
+      secondary={notification.detail}
+      terminal={notification.tone === "error" ? "error" : undefined}
+      role={notification.tone === "error" ? "alert" : "status"}
+      navAction={notification.action}
+      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
+      rowClick={
+        notification.page
+          ? {
+              onClick: () => {
+                navigateUrl(notification.page as string);
+                dismiss();
+              },
+              title: `Open ${notification.title}`,
+            }
+          : undefined
+      }
+    />
+  );
+}
+
 function AttentionRowView({
   row,
   onDismiss,
@@ -233,20 +290,6 @@ function AttentionRowView({
     onClick: onDismiss,
     ariaLabel: `Dismiss ${row.taskId} needs your input`,
   };
-  // Nowhere to go — a task naming no folder at all — is drawn as a plain row
-  // rather than dropped: the news is still true, and a button that navigates
-  // nowhere is worse than text (`attentionRows` on why `href` can be null).
-  if (!row.href) {
-    return (
-      <NotificationCard
-        title={title}
-        status={row.title}
-        statusOneLine
-        statusTooltip={row.title}
-        onDismiss={dismiss}
-      />
-    );
-  }
   const href = row.href;
   return (
     <NotificationCard
@@ -255,12 +298,11 @@ function AttentionRowView({
       statusOneLine
       statusTooltip={row.title}
       onDismiss={dismiss}
-      // `navigateUrl`, not `navigate`: these hrefs are whole /explorer urls with
-      // the `_side=claude` handoff and the session id on the query string, and
-      // `navigate` takes an fs path and builds its own. No `isDir` hint, for
-      // the same reason the calendar popover's thread button — the identical
-      // call on the identical value — gives none: a task's target is a folder
-      // OR the file the chat was on, and this row cannot tell which.
+      // `navigateUrl`, not `navigate`: `attentionRows` hands back either a whole
+      // /explorer url with the `_side=claude` handoff and the session id on the
+      // query string, or the plain "/tasks" fallback when the task names no
+      // folder at all — both are URLs, never an fs path, so `navigate` (which
+      // takes an fs path and builds its own url) is the wrong call here.
       rowClick={{ onClick: () => navigateUrl(href), title: `Open ${row.taskId}` }}
     />
   );
@@ -454,6 +496,7 @@ export function RepoUpdatesCardView({
   attentionDismissed = {},
   onAttentionDismiss,
   onPairingGone,
+  messages = [],
   onJobsChanged,
   onTerminalPatch,
 }: {
@@ -465,6 +508,13 @@ export function RepoUpdatesCardView({
   pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
+  /** Client-raised messages retained by `lib/notifications.ts` — the fifth
+   *  row kind (SPEC toasts-become-notifications §3). Already filtered by the
+   *  store itself to "error, or carries something to act on" (`isRetained`
+   *  in notifications.ts) — never `trail` from a client call site any more,
+   *  see DECISIONS-toasts-become-notifications.md's retention-narrowing
+   *  entry; split the same way `terminal` is split below. */
+  messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides — keyed and expired the
    *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
   attentionDismissed?: Record<string, string>;
@@ -487,8 +537,31 @@ export function RepoUpdatesCardView({
 }) {
   const visible = visibleRepoRows(rows, dismissed);
   const visibleAttention = visibleAttentionRows(attention, attentionDismissed);
-  // ONLY TERMINAL JOBS FOLD — a waiting task, a repo row and a
-  // pairing are always shown in full below, never counted toward this cap.
+  // THE THREE-TIER MODEL (SPEC actionable-notifications) SPLITS `terminal`
+  // INTO ITS OWN TWO SECTIONS — a job whose `effectiveTier` reads "attention"
+  // (declared that way, or a terminal row in `error`/`cancelled` regardless
+  // of what it declared) joins the waiting tasks in "Needs you"; everything
+  // else joins the repo rows and pairings in "Worth keeping". This is the
+  // SAME override `jobs.ts`'s `jobRows` already reads for the Jobs section —
+  // a producer's declared tier is a default, not the last word, once a run
+  // has actually failed.
+  const terminalAttention = terminal.filter((job) => effectiveTier(job) === "attention");
+  const terminalTrail = terminal.filter((job) => effectiveTier(job) !== "attention");
+  // MESSAGES SPLIT THE SAME WAY — but NOT by `tier === "trail"` any more.
+  // `lib/notifications.ts`'s `isRetained` already decided every entry in
+  // `messages` belongs here — an error (always "attention"), or a message
+  // carrying an action/page (any OTHER resolved tier, most commonly
+  // "transient", since `trail` is no longer even a type a client call site
+  // can pass — see DECISIONS-toasts-become-notifications.md). So the split
+  // here is simply "attention" vs. "everything else that made it into this
+  // already-retained list" — not a re-check of a specific tier value.
+  const messagesAttention = messages.filter((m) => m.tier === "attention");
+  const messagesTrail = messages.filter((m) => m.tier !== "attention");
+  // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
+  // an attention-tier terminal job are always shown in full, never counted
+  // toward this cap: the cap exists to bound how tall "Worth keeping" gets
+  // on a machine that has finished a great many ordinary jobs, not to hide
+  // something that still needs a look.
   // `olderShown` is local UI state, not a prop: once the reader opens the
   // fold there is no reason for anything outside this view to know or care.
   const [olderShown, setOlderShown] = useState(false);
@@ -499,47 +572,63 @@ export function RepoUpdatesCardView({
   // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
   // themselves, so the panel's reading order never changes.
   const shownTerminal = olderShown
-    ? terminal
-    : terminal.slice(Math.max(0, terminal.length - TERMINAL_VISIBLE_CAP));
-  const olderTerminalCount = terminal.length - shownTerminal.length;
+    ? terminalTrail
+    : terminalTrail.slice(Math.max(0, terminalTrail.length - TERMINAL_VISIBLE_CAP));
+  const olderTerminalCount = terminalTrail.length - shownTerminal.length;
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
-  // in this change.
+  // in this change. Unaffected by the attention/trail split above: `terminal`
+  // is still every terminal job, whichever section it lands in.
   const total =
-    visible.length + terminal.length + pairings.length + visibleAttention.length;
+    visible.length +
+    terminal.length +
+    pairings.length +
+    visibleAttention.length +
+    messages.length;
   const idle = total === 0;
-  // The failure tint MOVED HERE from the Jobs chip (D586), and D662 broadened
-  // `terminal` to hold every finished job — done and cancelled as well as
-  // error — none of which need the tint. So this stays scoped to `isFailure`
-  // (jobs.ts), a real `error`, rather than to "this section holds anything
-  // terminal": a `done` row landing here must not turn the chip red just for
-  // existing.
-  const hasFailure = terminal.some(isFailure);
+  // HOW MANY ROWS NEED A LOOK, ACROSS BOTH ATTENTION SOURCES (SPEC
+  // actionable-notifications item 3) — a waiting task and a failed/cancelled
+  // job are the same kind of fact from the chip's point of view: something
+  // the person asked for, or something that happened to them, that nobody
+  // has looked at yet.
+  const attentionCount =
+    visibleAttention.length + terminalAttention.length + messagesAttention.length;
+  const hasAttentionSection = attentionCount > 0;
+  const hasTrailSection =
+    pairings.length > 0 ||
+    visible.length > 0 ||
+    terminalTrail.length > 0 ||
+    messagesTrail.length > 0;
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
-  // THE CHIP READS (D673): "Notifications" with a count pill whenever anything
-  // waits — a repo update, a pairing, a finished/failed job, a task asking a
-  // question — and the pill turns red when one of those is a failure OR a task
-  // is waiting on the person (Akshil, 2026-09-03: a plain count was "not
-  // prominent enough to let user know it needs attention"). Muted at zero. The
-  // sidebar's Tasks dot is red for the same state; the two agree rather than
-  // one of them staying quiet — this corner is where the reader looks for
-  // what wants them, and a neutral pill there read as "nothing urgent".
-  const asking = visibleAttention.length > 0;
-  const tone = hasFailure || asking ? "failure" : total > 0 ? "on" : "idle";
+  // THE CHIP READS (D673, extended by item 3): "Notifications" with a count
+  // pill whenever anything waits — a repo update, a pairing, a finished job —
+  // but the moment anything needs a person's attention (a failed/cancelled
+  // job, a task asking a question) the label itself SAYS so ("N needs you")
+  // and takes the same loud, red treatment the failure tint always did
+  // (Akshil, 2026-09-03: a plain count was "not prominent enough to let user
+  // know it needs attention"). Muted "Notifications" at zero attention rows,
+  // whether or not other, non-attention rows exist. The sidebar's Tasks dot
+  // is red for the same state; the two agree rather than one of them staying
+  // quiet — this corner is where the reader looks for what wants them, and a
+  // neutral pill there read as "nothing urgent".
+  const tone = hasAttentionSection ? "failure" : total > 0 ? "on" : "idle";
+  const label = hasAttentionSection ? `${attentionCount} needs you` : "Notifications";
   const ariaLabel =
     total === 0
       ? "Notifications, none"
       : `Notifications, ${total}${
-          asking ? ", including a task waiting on you" : hasFailure ? ", including a failure" : ""
+          hasAttentionSection
+            ? `, ${attentionCount} needing you`
+            : ""
         }`;
 
   return (
     <div className="dl-host" {...hostProps}>
       <StatusChip
-        label="Notifications"
+        label={label}
         count={total}
         tone={tone}
         open={!collapsed}
@@ -561,83 +650,133 @@ export function RepoUpdatesCardView({
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
-              {/* ONE list, FOUR row kinds now — D586's two, plus pairings, plus
-                  2026-09-03's waiting tasks — ordered by how much of each fact
-                  is still ahead of the reader: a parked run is waiting on THEM,
-                  a repo row is actionable (Update / Switch), a pairing is news
-                  to read, and a failure is a record of something that already
-                  ended. `JobRow` is reused verbatim rather than a new row shape
+              {/* TWO SECTIONS, NOT ONE FLAT LIST (SPEC actionable-notifications
+                  item 3) — "Needs you" first, "Worth keeping" second, each
+                  drawn only when it actually holds a row. A waiting task and
+                  a failed/cancelled job are the same kind of fact (something
+                  nobody has looked at yet) and now share one section rather
+                  than the job living in the same flat list as a repo update
+                  or a pairing, which have nothing left to act on. `JobRow` is
+                  reused verbatim in BOTH sections rather than a new row shape
                   being invented for this — it already draws the title, the
                   failure sentence and the ✕, and it already carries D572's
                   rejected-request surfacing, which is the behaviour a dismiss
                   here most needs to keep. */}
-              {/* THE VOLUME CAP: only TERMINAL jobs ever collapse — a waiting
-                  task, a repo row and a pairing are always drawn in full
-                  below, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
-                  them pile up the way a finished job does (a repo stays
-                  behind until fixed, one row; a pairing is dismissed the
-                  moment it is read). Nothing is dropped, only folded: the
-                  count names exactly how many more `JobRow`s are one click
-                  away, and clicking it is the only thing that changes
-                  `olderShown` — a fresh terminal job arriving never
-                  re-collapses a panel the user already opened wide.
-                  ABOVE `.dl-rows`, not inside it (D762): `terminal` arrives
-                  oldest-first and the fold keeps the newest rows visible, so
-                  the folded rows are chronologically earlier than every
-                  rendered one — a pinned line above the scrolling list keeps
-                  the panel reading top-to-bottom in time order whether it is
-                  folded or open, and keeps `.dl-rows` holding nothing but the
-                  rows it scrolls. */}
-              {olderTerminalCount > 0 && (
-                <button type="button" className="dl-panel-more" onClick={() => setOlderShown(true)}>
-                  {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
-                </button>
+              {hasAttentionSection && (
+                <div className="dl-section">
+                  {/* The heading itself only when 2+ sections are present at
+                      once — the same rule ActivityDock's own "Running" /
+                      "Background tasks" split already follows
+                      (`.dl-section-head` in notifications.css): a single
+                      section carrying a label nobody needed to disambiguate
+                      is a redundant header. */}
+                  {hasAttentionSection && hasTrailSection && (
+                    <div className="dl-section-head">Needs you</div>
+                  )}
+                  <div className="dl-rows">
+                    {/* A WAITING TASK GOES ABOVE EVERY OTHER ATTENTION ROW
+                        (2026-09-03): it is the only row anywhere in this panel
+                        whose subject has not finished happening — a failed
+                        job is a record of something that already ended, a
+                        parked run is a person being waited on right now. */}
+                    {visibleAttention.map((row) => (
+                      <AttentionRowView
+                        key={row.key}
+                        row={row}
+                        onDismiss={() =>
+                          (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))
+                        }
+                      />
+                    ))}
+                    {/* An attention-tier terminal job — declared that way, or a
+                        run that ended in `error`/`cancelled` regardless of what
+                        it declared (`effectiveTier`). Never capped: this
+                        section is exactly the rows worth a look, so there is
+                        nothing here for `TERMINAL_VISIBLE_CAP` to fold. */}
+                    {terminalAttention.map((job) => (
+                      <JobRow
+                        key={job.id}
+                        job={job}
+                        onChanged={onJobsChanged ?? NOOP}
+                        onPatch={onTerminalPatch ?? NOOP_PATCH}
+                      />
+                    ))}
+                    {/* Client-raised messages last — the newest row kind,
+                        appended rather than interleaved so the existing
+                        reading order (waiting task, then a failed run) never
+                        shuffles for a caller that never sees one. */}
+                    {messagesAttention.map((m) => (
+                      <MessageRowView key={m.id} notification={m} />
+                    ))}
+                  </div>
+                </div>
               )}
-              <div className="dl-rows">
-                {/* A WAITING TASK GOES ABOVE EVERYTHING (2026-09-03). It is the
-                    only row in this panel whose subject has not finished
-                    happening: a repo is behind, a device paired, a job ended —
-                    all facts about the past, which will still be true in ten
-                    minutes. A parked run is a person being waited on, and the
-                    thing being waited on goes first. */}
-                {visibleAttention.map((row) => (
-                  <AttentionRowView
-                    key={row.key}
-                    row={row}
-                    onDismiss={() =>
-                      (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))
-                    }
-                  />
-                ))}
-                {/* Then pairings: the newest kind of news, and the only one
-                    with nothing to act on beyond reading it. */}
-                {pairings.map((event) => (
-                  <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
-                ))}
-                {visible.map((row) => (
-                  <RepoRowView
-                    key={row.repo.root}
-                    row={row}
-                    onDone={onDone}
-                    onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
-                  />
-                ))}
-                {shownTerminal.map((job) => (
-                  <JobRow
-                    key={job.id}
-                    job={job}
-                    onChanged={onJobsChanged ?? NOOP}
-                    // A REAL patcher (D586): `JobRow`'s dismiss calls
-                    // `onPatch(js => js.filter(...))` on success, and the
-                    // shell's own `terminal` state is exactly that list — so the
-                    // row goes the instant the server confirms, instead of
-                    // lingering until the next poll. D572's rejected-request
-                    // sentence still shows on failure, because the patch only
-                    // runs when the request landed.
-                    onPatch={onTerminalPatch ?? NOOP_PATCH}
-                  />
-                ))}
-              </div>
+              {hasTrailSection && (
+                <div className="dl-section">
+                  {hasAttentionSection && hasTrailSection && (
+                    <div className="dl-section-head">Worth keeping</div>
+                  )}
+                  {/* THE VOLUME CAP: only TERMINAL-TRAIL jobs ever collapse —
+                      a repo row and a pairing are always drawn in full below,
+                      uncounted by `TERMINAL_VISIBLE_CAP`, because neither
+                      piles up the way a finished job does (a repo stays
+                      behind until fixed, one row; a pairing is dismissed the
+                      moment it is read). Nothing is dropped, only folded: the
+                      count names exactly how many more `JobRow`s are one
+                      click away, and clicking it is the only thing that
+                      changes `olderShown` — a fresh terminal job arriving
+                      never re-collapses a panel the user already opened wide.
+                      ABOVE `.dl-rows`, not inside it (D762): `terminalTrail`
+                      arrives oldest-first and the fold keeps the newest rows
+                      visible, so the folded rows are chronologically earlier
+                      than every rendered one — a pinned line above the
+                      scrolling list keeps the section reading top-to-bottom
+                      in time order whether it is folded or open, and keeps
+                      `.dl-rows` holding nothing but the rows it scrolls. */}
+                  {olderTerminalCount > 0 && (
+                    <button
+                      type="button"
+                      className="dl-panel-more"
+                      onClick={() => setOlderShown(true)}
+                    >
+                      {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                    </button>
+                  )}
+                  <div className="dl-rows">
+                    {/* Pairings first: the newest kind of news, and the only
+                        one with nothing to act on beyond reading it. */}
+                    {pairings.map((event) => (
+                      <PairingRowView key={event.id} event={event} onGone={onPairingGone ?? NOOP} />
+                    ))}
+                    {visible.map((row) => (
+                      <RepoRowView
+                        key={row.repo.root}
+                        row={row}
+                        onDone={onDone}
+                        onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
+                      />
+                    ))}
+                    {shownTerminal.map((job) => (
+                      <JobRow
+                        key={job.id}
+                        job={job}
+                        onChanged={onJobsChanged ?? NOOP}
+                        // A REAL patcher (D586): `JobRow`'s dismiss calls
+                        // `onPatch(js => js.filter(...))` on success, and the
+                        // shell's own `terminal` state is exactly that list — so the
+                        // row goes the instant the server confirms, instead of
+                        // lingering until the next poll. D572's rejected-request
+                        // sentence still shows on failure, because the patch only
+                        // runs when the request landed.
+                        onPatch={onTerminalPatch ?? NOOP_PATCH}
+                      />
+                    ))}
+                    {messagesTrail.map((m) => (
+                      <MessageRowView key={m.id} notification={m} />
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
                   up"). These bulk actions used to render ABOVE the rows, where
                   a full-width padded band holding one small right-aligned
@@ -666,8 +805,13 @@ export function RepoUpdatesCardView({
                   either counted alone: one stuck repo plus one failed job is
                   two dismissable rows, and a reader looking at two rows and
                   no bulk action has the same "did this break" reaction a
-                  count of two of the SAME kind would give them. */}
-              {visible.length + terminal.length > 1 && (
+                  count of two of the SAME kind would give them. MESSAGES join
+                  the same combined count (not pairings/attention, unchanged):
+                  a retained message is dismissed the same client-side,
+                  in-memory way a repo row's dismissal already is, so it costs
+                  this button nothing extra to fold in — see
+                  DECISIONS-toasts-become-notifications.md for this call. */}
+              {visible.length + terminal.length + messages.length > 1 && (
                 <div className="dl-head">
                   <button
                     className="dl-clear"
@@ -678,6 +822,7 @@ export function RepoUpdatesCardView({
                           .then(() => onTerminalPatch?.(jobsAfterClear))
                           .catch(() => {});
                       }
+                      for (const m of messages) dismissNotification(m.id);
                     }}
                     title="Dismiss every notification"
                   >
@@ -730,6 +875,7 @@ export function RepoUpdatesDockView({
   attentionDismissed,
   onAttentionDismiss,
   onPairingGone,
+  messages = [],
   onDismiss,
   onDismissAll,
   onDone,
@@ -753,6 +899,11 @@ export function RepoUpdatesDockView({
    *  panel open over the chat holding the answer — hover or click still
    *  decide when it shows. */
   attention?: AttentionRow[];
+  /** Client-raised messages, retained — the fifth row kind. Same "hover or
+   *  click only" rule as pairings/attention: nothing here throws the panel
+   *  open on arrival, the chip's own numeral (and its red state, once one is
+   *  `attention`) is what announces it. */
+  messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides. */
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
@@ -791,6 +942,7 @@ export function RepoUpdatesDockView({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
+      messages={messages}
       collapsed={!chip.open}
       onToggle={chip.toggle}
       pinned={chip.pinned}
@@ -823,6 +975,11 @@ export default function RepoUpdatesDock({
   // the answer changes, and it means the notification and the sidebar's red dot
   // can never disagree — they are reading the same array.
   const attention = attentionRows(useTasksPulseRows());
+  // `lib/notifications.ts`'s own store — the fifth row source (SPEC
+  // toasts-become-notifications §3). Read reactively so a message popping
+  // and landing in the retained list re-renders this card the same way a new
+  // repo row or terminal job already does.
+  const messages = useRetainedNotifications();
   const pairingGone = useCallback(
     (id: string) => setPairings((list) => list.filter((p) => p.id !== id)),
     [setPairings],
@@ -838,6 +995,7 @@ export default function RepoUpdatesDock({
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
+      messages={messages}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}

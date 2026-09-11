@@ -8,6 +8,7 @@
 import React from "react";
 import { rawUrl } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
+import { AppStar } from "@platform/ui/AppStar";
 
 // Sentinel modes the shell renders without a template folder (SPEC PT-12/D81):
 // `_render` (the target file itself, in an iframe) and `_listing` (the shell's
@@ -23,16 +24,14 @@ export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 export { modeTitle } from "@platform/lib/mode-name";
 
 // Shell-baked icon for the "_render" sentinel (PT-12) — sentinels have no
-// template folder, so there's no icon.svg to fetch. Component-local; the same
-// play-in-a-rounded-box glyph as the folder pane's Preview side
-// (PREVIEW_SIDE_ICON, SideChrome.tsx), because the two are the same "look at
-// the rendered thing" idea and used to wear different icons (an eye here).
-const RENDER_SENTINEL_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="3" />
-    <path d="M10 8.75 15.5 12 10 15.25Z" />
-  </svg>
-);
+// template folder, so there's no icon.svg to fetch. The brand's four-point
+// star (AppStar: the same mark the Projects row, the app cards and the app
+// page wear for an app with no icon.svg), because this mode IS the app as
+// shipped — the file's own HTML, nothing of ours wrapped around it. Named
+// "Preview" (mode-name.ts) to match. The folder pane's Preview side
+// (PREVIEW_SIDE_ICON, SideChrome.tsx) keeps its play-in-a-box glyph: that one
+// means "whatever this row's default view is", which is not always this mode.
+const RENDER_SENTINEL_ICON = <AppStar width={16} height={16} />;
 
 // Shell-baked icon for the "_listing" sentinel (PT-12/D81) — the built-in
 // directory listing; sentinels have no template folder to ship icon.svg.

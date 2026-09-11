@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { modeTitle } from "./mode-name";
 
 test("sentinel modes read as their shell names, not as underscore junk", () => {
-  expect(modeTitle("_render")).toBe("Render");
+  expect(modeTitle("_render")).toBe("Preview");
   expect(modeTitle("_listing")).toBe("Listing");
 });
 

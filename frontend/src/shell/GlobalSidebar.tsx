@@ -495,7 +495,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // answers, so the poll it arms sees "installing" and runs at the busy
     // interval — poked first it would still read "available" and arm the 60s
     // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
-    void updateInstall()
+    // Send what THIS row actually shows — `updateStatus.latest_version` —
+    // not just "install whatever's latest": see UpdateBadge.install and
+    // UpdateManager.install's docstring for why a version the caller didn't
+    // pass can't be trusted to match what was on screen.
+    void updateInstall(updateStatus.latest_version)
       .then(setUpdateStatus)
       .catch(() => {
         // Fall through — the re-armed poll picks up the real state.
@@ -898,7 +902,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
-          <UpdateBadge />
+          {/* `version` for the idle row's "Up to date · vX": the same number the
+              chip on the Settings row shows, from the config this sidebar holds. */}
+          <UpdateBadge version={config.version ?? null} />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
