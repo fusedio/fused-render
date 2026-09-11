@@ -15,6 +15,42 @@ import type { ReactNode } from "react";
 
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 
+/** D813 (item P): the pre-port curated mark, restored verbatim from
+ *  `origin/main`'s `RepoCard.tsx` after the user asked for "the older green
+ *  tick thing we were using before this PR" — the two-pane port had replaced
+ *  it with a plain `<span className="tick">✔</span>` in `--success-bright`
+ *  (the branch's own "loaded" green), which is a different claim in a
+ *  different hue from what curation used to mean here. Filled rather than
+ *  stroked: at 14px a hairline check is a smudge, and a solid accent mark is
+ *  the one thing on the row that pops without competing with a "Loaded"
+ *  badge (filled green — a genuinely different claim). Focusable and hinted
+ *  rather than `title`d on purpose in the original; kept as `title` here
+ *  since `ModelRow.tsx`'s other inline marks use `title`, and this file has
+ *  no `data-hint` hover-card mechanism of its own to reuse. */
+function CuratedMark() {
+  return (
+    <span className="am-card-pick" tabIndex={0} aria-label="Curated by Fused" title="Curated by Fused">
+      <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+        {/* The seal. Lucide's `badge-check` outline, filled instead of stroked. */}
+        <path
+          d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"
+          fill="currentColor"
+        />
+        {/* …and the check knocked out of it in the row's own ground, so the
+            mark reads as one solid object rather than two overlapping ones. */}
+        <path
+          d="m9 12 2 2 4-4"
+          fill="none"
+          stroke="var(--bg-alt)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+}
+
 export interface ModelRowModel {
   id: string;
   /** Nickname, or the model half of the repo id — never the bare repo id. */
@@ -254,11 +290,7 @@ export function ModelRow({
         <div>
           <div className="row-name">
             <b>{model.name}</b>
-            {model.curated && (
-              <span className="tick" title="One of our suggestions">
-                ✔
-              </span>
-            )}
+            {model.curated && <CuratedMark />}
             {chips}
           </div>
           <p className="row-note mono">{model.id}</p>

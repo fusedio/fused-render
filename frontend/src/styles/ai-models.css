@@ -3252,10 +3252,24 @@ button.am-bench-model:focus-visible {
   font-size: 11px;
 }
 
-.tp .tick {
-  color: var(--success-bright);
-  font-size: 11px;
-  line-height: 1;
+/* D813 (item P): `.tp .tick` deleted — the two-pane port's plain ✔ in
+   `--success-bright` (this branch's own "loaded" green) is gone, replaced by
+   `CuratedMark` (`ModelRow.tsx`) restored verbatim from origin/main, styled
+   by `.am-card-pick` below in `--accent`. The user asked for "the older
+   green tick thing we were using before this PR" by name. */
+.tp .am-card-pick {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: -2px;
+  color: var(--accent);
+  cursor: default;
+}
+
+.tp .am-card-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .tp .row-facts {
