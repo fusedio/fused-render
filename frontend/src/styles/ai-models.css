@@ -3062,10 +3062,10 @@ button.am-bench-model:focus-visible {
      is an index INSIDE the page — a rule, not a slab. */
   background: transparent;
   border-right: 1px solid var(--border);
-  padding: 2px 10px 10px 2px;
+  padding: 16px 10px 16px 2px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
   /* Item 8 (fix round 5): `.tp` itself no longer scrolls (only `.tp-pane`,
      the right column, does) so this does not need to stick against a
@@ -3077,21 +3077,21 @@ button.am-bench-model:focus-visible {
 }
 
 .tp-nav h5 {
-  margin: 2px 8px 6px;
+  margin: 0 8px var(--am-gap-tight);
   font-size: 11.5px;
   font-weight: 400;
   color: var(--fg-muted);
 }
 
 .tp-nav button {
-  /* One line, 28px tall. The count sits at the right edge as a quiet number:
+  /* One line, 37px tall. The count sits at the right edge as a quiet number:
      a status dot on every row said nothing, since every capability had one. */
   display: flex;
   align-items: center;
   gap: 9px;
   width: 100%;
   text-align: left;
-  padding: 5px 8px;
+  padding: 9px 12px;
   border-radius: 6px;
   border: 0;
   background: transparent;
@@ -3171,7 +3171,7 @@ button.am-bench-model:focus-visible {
 .tp-nav .rule {
   height: 1px;
   background: var(--border);
-  margin: 8px 8px;
+  margin: var(--am-gap-head) 8px;
 }
 
 .offpane {
@@ -3266,7 +3266,7 @@ button.am-bench-model:focus-visible {
 }
 
 .tp-group h5 {
-  margin: 0 0 var(--am-gap-tight);
+  margin: 0 0 var(--am-gap-head);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -3368,14 +3368,14 @@ button.am-bench-model:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--am-gap-head);
-  padding: 10px 12px;
+  padding: 12px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--am-surface-none);
 }
 
 .tp .row + .row {
-  margin-top: 6px;
+  margin-top: var(--am-gap-tight);
 }
 
 .tp .row.partial {
@@ -3454,7 +3454,7 @@ button.am-bench-model:focus-visible {
    panel — so the identity facts stay attached to the thing they describe and
    closing it costs nothing. */
 .tp .rowwrap + .rowwrap {
-  margin-top: 6px;
+  margin-top: var(--am-gap-tight);
 }
 
 .tp .rowwrap.open .row {
@@ -3835,6 +3835,12 @@ button.am-bench-model:focus-visible {
      every `.row.hit.rich` is 73px, base model or not) keeps that
      centring and stops the list's outer edge from stair-stepping. */
   min-height: 73px;
+  /* The pane's roomier `.tp .row` padding-block (12px) is for a 2-line card
+     whose height is content-driven. A hit row is PINNED to 73px and its
+     right-hand column already stacks three 11px lines into exactly that —
+     so 12px pushed every hit past the pin and un-did the fixed height the
+     comment above exists to keep. Horizontal padding stays the shared 16px. */
+  padding-block: 10px;
 }
 
 .tp .row.hit.rich .row-act {
