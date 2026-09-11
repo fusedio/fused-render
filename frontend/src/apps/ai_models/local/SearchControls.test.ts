@@ -67,6 +67,64 @@ describe("SearchControls result line", () => {
 // text, picking an option settles) are asserted against the actual narrowing
 // predicate, Enter handler, and click handler in the source, not just their
 // presence.
+// Item 1 (fix round 7): round 6 left each menu owning its own `open`
+// state, so opening Sort didn't close an already-open Fit/Quant/Publisher
+// menu — up to four `.tp .dd` dropdowns could be open at once, and neither
+// an outside click nor Escape closed any of them. Fixed by lifting a single
+// `openMenu` id up to `SearchControls`, with one shared document listener.
+// Same no-DOM-harness discipline as the rest of this file: pin the fix by
+// source, not by rendering.
+describe("SearchControls single open menu (item 1, fix round 7)", () => {
+  it("owns one openMenu id for the whole row, not a per-menu open state", () => {
+    expect(SRC).toContain(
+      'const [openMenu, setOpenMenu] = useState<MenuId | null>(null);',
+    );
+    // Every menu instance is wired to the shared id, not its own state.
+    expect(SRC).toContain('open={openMenu === "fit"}');
+    expect(SRC).toContain('onOpenChange={(v) => setOpenMenu(v ? "fit" : null)}');
+    expect(SRC).toContain('open={openMenu === "params"}');
+    expect(SRC).toContain('open={openMenu === "quant"}');
+    expect(SRC).toContain('open={openMenu === "publisher"}');
+    expect(SRC).toContain('open={openMenu === "sort"}');
+    // Neither menu component keeps its own `useState(false)` for open any
+    // more — that state now lives only in `SearchControls`.
+    expect(SRC).not.toContain("const [open, setOpen] = useState(false);");
+  });
+
+  it("closes on an outside mousedown, checked against the open menu's own root", () => {
+    expect(SRC).toContain('document.addEventListener("mousedown", onMouseDown);');
+    expect(SRC).toContain(
+      "if (root && !root.contains(e.target as Node)) setOpenMenu(null);",
+    );
+  });
+
+  it("closes on Escape", () => {
+    expect(SRC).toContain('if (e.key === "Escape") setOpenMenu(null);');
+  });
+
+  it("the outside-click/Escape listener is registered only while a menu is open, and removed on close", () => {
+    expect(SRC).toContain("useEffect(() => {\n    if (!openMenu) return;");
+    expect(SRC).toContain('document.removeEventListener("mousedown", onMouseDown);');
+    expect(SRC).toContain('document.removeEventListener("keydown", onKeyDown);');
+  });
+
+  it("a click inside the SearchMenu filter input does not close the menu (it sits inside the registered root)", () => {
+    // The filter <input> is rendered inside the same rootRef'd <div> the
+    // outside-mousedown check tests against, so a mousedown there is an
+    // "inside" click and never reaches `setOpenMenu(null)` — no separate
+    // stopPropagation is needed. Pin that the input has no dismissal
+    // handler of its own that would fight the shared one.
+    expect(SRC).not.toMatch(/textfilter[\s\S]{0,200}onMouseDown/);
+  });
+
+  it("picking an option or applying the SearchMenu filter still closes it via the shared setOpen", () => {
+    expect(SRC).toContain("onOpenChange: setOpen,");
+    expect(SRC).toContain(
+      "const apply = (v: string) => {\n    onChange(v);\n    setOpen(false);\n  };",
+    );
+  });
+});
+
 describe("SearchControls Publisher/Quant menus (item 5)", () => {
   it("replaced the two free-text inputs with SearchMenu, fed by facets", () => {
     expect(SRC).not.toContain('className="am-hub-textfilter"');

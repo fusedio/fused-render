@@ -8,9 +8,19 @@
 // entries carry a label and an icon, nothing else. Rather than grow that
 // shared surface a field only this one screen uses, `ControlMenu` below is
 // its own small dropdown, matching the mockup's `.menubtn`/`.dd`/`.l`/`.h`/
-// `.chk` markup verbatim (CSS in ai-models.css, scoped to `.tp`). It owns
-// its own outside-click/Escape dismissal, the same contract that shared
-// surface gives every other menu on this page.
+// `.chk` markup verbatim (CSS in ai-models.css, scoped to `.tp`).
+//
+// Item 1 (fix round 7): open/close is now OWNED by `SearchControls`, one
+// `openMenu` id for the whole row, not by each `ControlMenu`/`SearchMenu`
+// instance — round 6's version gave each menu its own independent `open`
+// state, so opening Sort didn't close an already-open Fit/Quant/Publisher
+// menu and up to four could be open at once. `SearchControls` registers a
+// single document-level `mousedown`+`Escape` listener (only while a menu is
+// open) that closes `openMenu` on an outside mousedown or Escape, checking
+// against the open menu's own root element (via each menu's `rootRef`
+// prop) — the same dismissal contract the app's shared menu surface gives
+// every other menu on this page, just centralized to one open slot instead
+// of one per menu.
 //
 // **No Task menu** (D843, round 5): the left pane already scopes this whole
 // screen to one capability (`HubSearchScreen`'s own `capabilityKey` prop,
@@ -64,6 +74,9 @@ export function ControlMenu({
   onClear,
   items,
   align,
+  open,
+  onOpenChange: setOpen,
+  rootRef,
 }: {
   keyLabel: string;
   valueLabel: string;
@@ -78,28 +91,15 @@ export function ControlMenu({
    *  trigger sits in the controls row's right half, where a left-anchored
    *  dropdown runs past the scrolling pane's edge and is clipped. */
   align?: "left" | "right";
+  /** Item 1 (fix round 7): open state is now owned by `SearchControls` — at
+   *  most one dropdown in the row is open at a time, and one shared
+   *  document listener (there, not here) closes it on an outside mousedown
+   *  or Escape. `rootRef` registers this menu's root element so that shared
+   *  listener can tell an inside click from an outside one. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rootRef: (el: HTMLDivElement | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  // Same dismissal contract `ContextMenu` gave every menu on this page:
-  // any outside pointerdown or Escape closes it.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
@@ -109,7 +109,7 @@ export function ControlMenu({
         aria-expanded={open}
         aria-label={ariaLabel}
         title={title}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
       >
         <span className="k">{keyLabel}</span>
         {valueLabel}
@@ -174,6 +174,9 @@ function SearchMenu({
   title,
   onChange,
   align,
+  open,
+  onOpenChange: setOpen,
+  rootRef,
 }: {
   keyLabel: string;
   value: string;
@@ -183,28 +186,20 @@ function SearchMenu({
   title: string;
   onChange: (v: string) => void;
   align?: "left" | "right";
+  /** Item 1 (fix round 7): see `ControlMenu`'s matching props — open state
+   *  and outside-click/Escape dismissal moved up to `SearchControls`, one
+   *  `openMenu` for the whole row. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rootRef: (el: HTMLDivElement | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setFilter("");
     inputRef.current?.focus();
-    const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
   }, [open]);
 
   const narrowed = filter
@@ -225,7 +220,7 @@ function SearchMenu({
         aria-expanded={open}
         aria-label={ariaLabel}
         title={title}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
       >
         <span className="k">{keyLabel}</span>
         {value || "Any"}
@@ -320,6 +315,38 @@ export function SearchControls({
   const activeFit = activeFitLevel(fitLevel);
   const activeParams = activeParamsBand(paramsBand);
 
+  // Item 1 (fix round 7): a single `openMenu` for the whole row — opening
+  // one dropdown closes any other that was open, instead of each menu
+  // owning its own independent `open` state (the round-6 bug: Fit, Sort,
+  // Quant and Fit could all be open at once). One shared document-level
+  // `mousedown`/`Escape` listener, registered only while a menu is open,
+  // closes the open menu when the event lands outside ITS root — `roots`
+  // holds each menu's root element, keyed by the same id used for
+  // `openMenu`, filled in by the `rootRef` callback each menu is given.
+  type MenuId = "fit" | "params" | "quant" | "publisher" | "sort";
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+  const roots = useRef<Partial<Record<MenuId, HTMLDivElement | null>>>({});
+  const setRoot = (id: MenuId) => (el: HTMLDivElement | null) => {
+    roots.current[id] = el;
+  };
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const root = roots.current[openMenu];
+      if (root && !root.contains(e.target as Node)) setOpenMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenMenu(null);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openMenu]);
+
   const fitItems: MenuOption[] = FIT_LEVELS.map((l) => ({
     label: l.label,
     hint: l.title,
@@ -352,6 +379,9 @@ export function SearchControls({
           active={fitLevel !== "any"}
           onClear={() => onFitLevel("any")}
           items={fitItems}
+          open={openMenu === "fit"}
+          onOpenChange={(v) => setOpenMenu(v ? "fit" : null)}
+          rootRef={setRoot("fit")}
         />
         <ControlMenu
           keyLabel="Size:"
@@ -361,6 +391,9 @@ export function SearchControls({
           active={paramsBand !== "any"}
           onClear={() => onParamsBand("any")}
           items={paramsItems}
+          open={openMenu === "params"}
+          onOpenChange={(v) => setOpenMenu(v ? "params" : null)}
+          rootRef={setRoot("params")}
         />
         <SearchMenu
           keyLabel="Quant:"
@@ -370,6 +403,9 @@ export function SearchControls({
           ariaLabel="Filter by exact quantization"
           title="Show only results with this exact measured quantization"
           onChange={onQuant}
+          open={openMenu === "quant"}
+          onOpenChange={(v) => setOpenMenu(v ? "quant" : null)}
+          rootRef={setRoot("quant")}
         />
         <SearchMenu
           keyLabel="Publisher:"
@@ -379,6 +415,9 @@ export function SearchControls({
           ariaLabel="Filter by publisher or organization"
           title="Show only results published by this Hub user or organization"
           onChange={onPublisher}
+          open={openMenu === "publisher"}
+          onOpenChange={(v) => setOpenMenu(v ? "publisher" : null)}
+          rootRef={setRoot("publisher")}
         />
         <span className="am-hub-controls-push" />
         <ControlMenu
@@ -389,6 +428,9 @@ export function SearchControls({
           active={false}
           items={sortItems}
           align="right"
+          open={openMenu === "sort"}
+          onOpenChange={(v) => setOpenMenu(v ? "sort" : null)}
+          rootRef={setRoot("sort")}
         />
       </div>
       {/* Item 6 (fix round 3): also wears the mockup's own `.resultline`
