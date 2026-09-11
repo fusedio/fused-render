@@ -2935,6 +2935,31 @@ button.am-bench-model:focus-visible {
   padding-top: 14px;
 }
 
+/* D815 (item R): "full screen" turned out to mean full HEIGHT, not width
+   (user correction: "by full screen I mean full height. Do not touch
+   widths") — the pane fell short of the window by however much the tab's
+   content came up short, because `.tp` is an ordinary block child of
+   `.cc-main` (height:auto) even though `.cc-main` itself already stretches
+   to the viewport (flex:1 1 0% inside `.cc-root`'s column, claude-config.css)
+   when content is short. Same fix `.pg-fill` already uses for the Playground
+   tab (ai-playground.css) — scoped to Local only, one extra class on
+   `.cc-main` rather than making EVERY `.cc-main` a flex column (the other
+   tabs' multi-section pages have no single "the rest of the page" child to
+   stretch, and `.cc-main`'s comment there is explicit that it is meant to
+   just grow to content). Unlike `.pg-fill`, no `overflow-y: hidden` here:
+   Local has no inner scroller of its own, so a `.tp` taller than the
+   available space should keep scrolling the page exactly as it does today,
+   not clip. */
+.tp-page-fill {
+  display: flex;
+  flex-direction: column;
+}
+
+.tp-page-fill > .tp {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 @media (max-width: 760px) {
   .tp {
     grid-template-columns: 1fr;
