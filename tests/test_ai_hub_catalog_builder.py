@@ -179,3 +179,75 @@ def test_ensure_build_started_builds_in_background(monkeypatch):
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert hub_catalog.pool_exists(cfg, "text-generation")
+
+
+# -- refresh_capability_pool_delta (spec item 4) ------------------------------
+
+
+def test_delta_refresh_skips_a_capability_with_no_pool_built():
+    cfg = load_config()
+    result = builder.refresh_capability_pool_delta(cfg, "text-generation")
+    assert result == {"skipped": "no-pool"}
+
+
+def test_delta_refresh_skips_a_blocked_pool(monkeypatch):
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ])
+    hub_catalog.set_blocked_until(cfg, "text-generation", time.time() + 1000)
+
+    def _boom(*a, **k):
+        raise AssertionError("must not reach the Hub while blocked")
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    result = builder.refresh_capability_pool_delta(cfg, "text-generation")
+    assert result == {"skipped": "blocked"}
+
+
+def test_delta_refresh_widens_the_pool_with_newer_rows_only(monkeypatch):
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "",
+         "raw": _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")},
+    ])
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    new_row = _hit("org/new", lastModified="2026-01-05T00:00:00.000Z")
+    old_row_again = _hit("org/old", lastModified="2026-01-01T00:00:00.000Z")
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([new_row, old_row_again]))
+
+    result = builder.refresh_capability_pool_delta(cfg, "text-generation")
+    assert result["rows"] == 2
+    ids = {r["id"] for r in hub_catalog.query_pool(cfg, "text-generation")}
+    assert ids == {"org/old", "org/new"}
+
+
+def test_delta_refresh_invalidates_hub_metadata_for_changed_repos_only(monkeypatch):
+    """item 4/5 hook: a repo the delta actually saw (its `lastModified` is
+    newer than the pool's watermark) must be invalidated in `hub_metadata` so
+    its harvested `config.json` reading gets re-checked, while an untouched
+    repo already in the pool is left alone."""
+    from fused_render.ai import hub_metadata
+
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "",
+         "raw": _hit("org/untouched", lastModified="2026-01-01T00:00:00.000Z")},
+    ])
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+
+    # Seed hub_metadata entries for both repos so invalidate() has something
+    # to act on (a no-entry repo is a documented no-op, not useful here).
+    hub_metadata._upsert("org/untouched", {"meta": {"modelType": "a"}, "fetchedAt": time.time()})
+    hub_metadata._upsert("org/changed", {"meta": {"modelType": "b"}, "fetchedAt": time.time()})
+
+    new_row = _hit("org/changed", lastModified="2026-01-05T00:00:00.000Z")
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([new_row]))
+
+    builder.refresh_capability_pool_delta(cfg, "text-generation")
+
+    untouched_fetched_at = hub_metadata._load()["repos"]["org/untouched"]["fetchedAt"]
+    changed_fetched_at = hub_metadata._load()["repos"]["org/changed"]["fetchedAt"]
+    assert untouched_fetched_at > 0.0  # never invalidated
+    assert changed_fetched_at == 0.0  # invalidate() resets to 0.0

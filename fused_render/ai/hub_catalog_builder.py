@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 import httpx
 
 from fused_render.ai import hub_catalog
+from fused_render.ai import hub_metadata
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.hub_catalog_config import HubCatalogConfig, load_config
 from fused_render.ai.registry import for_capability
@@ -327,6 +328,7 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     format_list: tuple[str | None, ...] = formats if formats else (None,)
 
     rate_limit_reset_s: float | None = None
+    changed_ids: set[str] = set()
     for tag in tags:
         for fmt in format_list:
             new_rows, reset_s, _error = _fetch_delta_pages(tag, fmt, watermark)
@@ -334,6 +336,7 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
                 repo_id = raw.get("id") if isinstance(raw, dict) else None
                 if isinstance(repo_id, str):
                     by_id[repo_id] = raw
+                    changed_ids.add(repo_id)
             if reset_s is not None:
                 rate_limit_reset_s = reset_s
                 break
@@ -348,6 +351,21 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
     hub_catalog.write_pool(cfg, capability, merged)
     if rate_limit_reset_s is not None:
         hub_catalog.set_blocked_until(cfg, capability, time.time() + rate_limit_reset_s)
+
+    # SPEC item 5's TTL replacement: a repo whose `lastModified` the delta
+    # just showed us has moved may now have a stale harvested `config.json`
+    # reading in `hub_metadata`'s store even though its own wall-clock TTL
+    # has not elapsed yet — force it to refetch on next `get()` rather than
+    # waiting out the full TTL. A repo this delta never touched (unchanged
+    # `lastModified`, or belonging to no pool at all) is untouched here and
+    # keeps relying on `hub_metadata`'s own TTL fallback.
+    for repo_id in changed_ids:
+        try:
+            hub_metadata.invalidate(repo_id)
+        except Exception:  # noqa: BLE001 - one repo's invalidation failing
+            # must not stop the pool write above, which already succeeded.
+            pass
+
     return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
 
 
