@@ -33,6 +33,7 @@ import {
   matchCell,
   matchRowTip,
   paramsLabel,
+  poolBuildBanner,
   popLabel,
   quantLabel,
   verdictGlyph,
@@ -47,6 +48,7 @@ import {
   type HubModel,
   type HubParamsBand,
   type HubSearchFacets,
+  type HubSearchResult,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
@@ -476,6 +478,15 @@ export function HubSearchScreen({
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
+  // SPEC item 2: while this capability's on-device pool is still building (or
+  // sitting out a 429 backoff), the server answers over the live Hub path and
+  // reports that in `poolState`/`poolPagesDone` so the pane can say so rather
+  // than silently look like the finished catalog.
+  const [poolState, setPoolState] = useState<HubSearchResult["poolState"]>(undefined);
+  const [poolPagesDone, setPoolPagesDone] = useState<number | null>(null);
+  // Bumped to force a one-off refetch (see the poll effect below) without
+  // otherwise touching `settled`/`limit`/`authEpoch`.
+  const [pollEpoch, setPollEpoch] = useState(0);
   const debounce = useRef<number | null>(null);
   // Item 2 (fix round 4): the timer must merge into whatever `settled` is
   // CURRENT when it fires, not the value closed over when it was scheduled —
@@ -535,7 +546,7 @@ export function HubSearchScreen({
       quant: settled.quant || undefined,
       publisher: settled.publisher || undefined,
     }).then(
-      (data) => {
+      (data: HubSearchResult) => {
         if (!alive) return;
         setLoading(false);
         setError(data.error ?? null);
@@ -543,6 +554,8 @@ export function HubSearchScreen({
         setEndpoint(data.endpoint ?? null);
         setAuthenticated(!!data.authenticated);
         setFacets(data.facets ?? null);
+        setPoolState(data.poolState);
+        setPoolPagesDone(data.poolPagesDone ?? null);
       },
       (e: Error) => {
         if (!alive) return;
@@ -553,7 +566,22 @@ export function HubSearchScreen({
     return () => {
       alive = false;
     };
-  }, [settled, limit, authEpoch]);
+    // `pollEpoch` is intentionally in the deps: it is bumped ONLY by the
+    // poll-while-building effect below (every 15s while `poolState ===
+    // "building"`, and once more on the transition out of it), so it never
+    // fires on its own outside that loop.
+  }, [settled, limit, authEpoch, pollEpoch]);
+
+  // SPEC item 2: re-poll while the pool is building so the banner's page
+  // count moves and the pane picks up the finished catalog the moment it is
+  // ready, without the reader doing anything. `blockedUntil` isn't part of
+  // the response today, so the copy for that state just says "shortly" via
+  // `poolBuildBanner`'s own fallback.
+  useEffect(() => {
+    if (poolState !== "building") return;
+    const id = window.setInterval(() => setPollEpoch((e) => e + 1), 15_000);
+    return () => window.clearInterval(id);
+  }, [poolState]);
 
   useEffect(() => {
     if (!sortsOnPage(settled.sort) || !models || models.length === 0) {
@@ -642,6 +670,11 @@ export function HubSearchScreen({
         not fit ? not measured yet.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {!error &&
+        (() => {
+          const banner = poolBuildBanner(poolState, poolPagesDone, null, Date.now());
+          return banner && <p className="pool-build-banner">{banner}</p>;
+        })()}
       {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
       {models !== null && models.length === 0 && !error && (
         <p className="cc-empty">

@@ -212,3 +212,58 @@ def test_live_path_still_used_and_fires_hub_request_when_no_pool_exists(client, 
     assert any("text-generation" in url for url, _kwargs in fake.calls)
     body = resp.json()
     assert [m["id"] for m in body["models"]] == ["org/live-model"]
+    assert body["poolState"] == "none"
+    assert "poolPagesDone" not in body
+
+
+def test_catalog_path_reports_pool_state_ready(client, monkeypatch):
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION, [
+        {"capability": registry.TEXT_GENERATION, "format": "",
+         "raw": {"id": "org/pooled", "pipeline_tag": "text-generation", "downloads": 5}},
+    ])
+
+    def _boom(*a, **k):
+        raise AssertionError("catalog path must not call the Hub")
+    monkeypatch.setattr(httpx, "get", _boom)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert resp.json()["poolState"] == "ready"
+
+
+def test_live_path_reports_pool_state_building(client, monkeypatch):
+    from fused_render.ai import hub_catalog_builder as real_builder
+    from fused_render.server.routers import hub_models as hub_models_mod
+
+    monkeypatch.setattr(hub_models_mod, "hub_catalog_builder", types.SimpleNamespace(
+        ensure_build_started=lambda *a, **k: True,
+        build_status=lambda *a, **k: {"state": "building", "pagesDone": 4,
+                                       "startedAt": 1.0, "blockedUntil": None},
+    ))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(
+        200, content=b"[]", request=httpx.Request("GET", "https://hub.test")))
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["poolState"] == "building"
+    assert body["poolPagesDone"] == 4
+
+
+def test_live_path_reports_pool_state_blocked(client, monkeypatch):
+    from fused_render.server.routers import hub_models as hub_models_mod
+
+    monkeypatch.setattr(hub_models_mod, "hub_catalog_builder", types.SimpleNamespace(
+        ensure_build_started=lambda *a, **k: False,
+        build_status=lambda *a, **k: {"state": "blocked", "pagesDone": None,
+                                       "startedAt": None, "blockedUntil": 123.0},
+    ))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(
+        200, content=b"[]", request=httpx.Request("GET", "https://hub.test")))
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["poolState"] == "blocked"
+    assert "poolPagesDone" not in body

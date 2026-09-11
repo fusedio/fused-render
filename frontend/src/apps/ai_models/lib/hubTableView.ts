@@ -320,3 +320,48 @@ export function verdictGlyph(verdict: AiFitVerdict["verdict"] | "unknown"): stri
   }
 }
 
+// ---------------------------------------------------------------------------
+// SPEC docs/HUB_CATALOG_SPEC.md item 2 — the on-device catalog build banner.
+//
+// A capability pane's FIRST search always serves live Hub results while its
+// pool builds behind it (or sits out a 429 backoff) — this is the one-line,
+// non-modal text for that state, read from the search response's
+// `poolState`/`poolPagesDone`. `null` means "no banner" (poolState is
+// "ready" or "none" — the pane is either already on the fast catalog path or
+// has never tried to build one for this capability/no-capability search).
+
+/** Seconds until `until` (a `blockedUntil` epoch-seconds deadline) reads as
+ *  a short clock time, or "a bit" if it has already passed / is absent —
+ *  never a negative or nonsensical duration. */
+function untilLabel(blockedUntil: number | null | undefined, nowMs: number): string {
+  if (typeof blockedUntil !== "number") return "shortly";
+  const seconds = Math.round(blockedUntil - nowMs / 1000);
+  if (seconds <= 0) return "shortly";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+
+/** The banner text for the current `poolState`, or `null` for no banner.
+ *  `nowMs`: caller-supplied `Date.now()` so this stays a pure function
+ *  testable without faking the clock globally. */
+export function poolBuildBanner(
+  poolState: "ready" | "building" | "blocked" | "none" | undefined,
+  poolPagesDone: number | null | undefined,
+  blockedUntil: number | null | undefined,
+  nowMs: number,
+): string | null {
+  if (poolState === "building") {
+    const pages = typeof poolPagesDone === "number" ? poolPagesDone : 0;
+    return (
+      `Building the full catalog for this capability (${pages} page${pages === 1 ? "" : "s"} so far)… ` +
+      `showing live Hub results until it finishes.`
+    );
+  }
+  if (poolState === "blocked") {
+    const when = untilLabel(blockedUntil, nowMs);
+    return `Hub rate limit hit; the full catalog resumes after ${when}. Showing live results.`;
+  }
+  return null;
+}
+

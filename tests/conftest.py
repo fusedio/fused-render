@@ -691,7 +691,11 @@ def _no_hub_catalog_background_build(monkeypatch):
     from fused_render.server.routers import hub_models
 
     monkeypatch.setattr(hub_models, "hub_catalog_builder",
-                        types.SimpleNamespace(ensure_build_started=lambda *a, **k: False))
+                        types.SimpleNamespace(
+                            ensure_build_started=lambda *a, **k: False,
+                            build_status=lambda *a, **k: {
+                                "state": "none", "pagesDone": None,
+                                "startedAt": None, "blockedUntil": None}))
 
 
 @pytest.fixture(scope="session", autouse=True)

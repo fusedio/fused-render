@@ -77,6 +77,15 @@ _DEFAULT_BACKOFF_S = 5 * 60
 _building: dict[str, threading.Thread] = {}
 _building_lock = threading.Lock()
 
+# capability -> {"pagesDone": <shared list[int]>, "startedAt": <float>} for a
+# build currently in flight, so `build_status` can report live progress
+# without the request thread reaching into the build thread's locals. Set at
+# the start of `build_capability_pool` and cleared in a `finally` so a
+# crashed/finished build never leaves stale progress behind (the manifest
+# entry `write_pool` wrote, if any, is the source of truth once this is gone).
+_progress: dict[str, dict] = {}
+_progress_lock = threading.Lock()
+
 
 def _token() -> str | None:
     from fused_render.server.routers.hub_models import _token as _hub_token
@@ -224,6 +233,17 @@ def build_capability_pool(cfg: HubCatalogConfig, capability: str) -> dict:
     by a build that silently skipped a pair (D1241)."""
     started_at = time.time()
     page_counter = [0]
+    with _progress_lock:
+        _progress[capability] = {"pagesDone": page_counter, "startedAt": started_at}
+    try:
+        return _build_capability_pool_inner(cfg, capability, started_at, page_counter)
+    finally:
+        with _progress_lock:
+            _progress.pop(capability, None)
+
+
+def _build_capability_pool_inner(cfg: HubCatalogConfig, capability: str,
+                                  started_at: float, page_counter: list[int]) -> dict:
     tags = ai_tasks.tags_for_capability(capability)
     formats = _formats_for_capability(capability)
     format_list: tuple[str | None, ...] = formats if formats else (None,)
@@ -443,6 +463,52 @@ def refresh_capability_pool_delta(cfg: HubCatalogConfig, capability: str) -> dic
             pass
 
     return {"rows": len(merged), "rateLimited": rate_limit_reset_s is not None}
+
+
+def build_status(capability: str, *, cfg: HubCatalogConfig | None = None) -> dict:
+    """This capability's build/refresh state, for the search route's
+    `poolState` (spec item 2): `{"state": "building"|"blocked"|"none",
+    "pagesDone": int | None, "startedAt": float | None, "blockedUntil":
+    float | None}`.
+
+    `"blocked"` wins over `"building"` if somehow both were true (should not
+    happen — a build clears its own progress entry before a caller could
+    observe it mid-backoff, but the manifest's `blockedUntil` is the more
+    conservative fact to report if it ever did). `"none"` covers both "no
+    build has ever run" and "a build just finished/failed and left nothing
+    in flight" — the route only calls this when `pool_exists` is already
+    False, so `"none"` here means "still on the live path, nothing to wait
+    for" rather than "pool is ready"."""
+    cfg = cfg or load_config()
+    entry = hub_catalog.pool_entry(cfg, capability)
+    blocked_until = entry.get("blockedUntil") if entry else None
+    is_blocked_now = (isinstance(blocked_until, (int, float))
+                      and time.time() < blocked_until)
+
+    with _progress_lock:
+        progress = _progress.get(capability)
+        pages_done = progress["pagesDone"][0] if progress else None
+        started_at = progress["startedAt"] if progress else None
+    # A build in flight (whatever thread started it — `ensure_build_started`
+    # or a direct call) always has a `_progress` entry, registered before
+    # its first Hub request and cleared in a `finally` when it exits by any
+    # path (success, error, 429). That is a more direct "is one running
+    # right now" signal than the `_building` thread registry, which only
+    # `ensure_build_started` populates.
+    is_building = progress is not None
+
+    if started_at is None and entry:
+        started_at = entry.get("startedAt")
+
+    if is_blocked_now:
+        state = "blocked"
+    elif is_building:
+        state = "building"
+    else:
+        state = "none"
+
+    return {"state": state, "pagesDone": pages_done, "startedAt": started_at,
+            "blockedUntil": blocked_until}
 
 
 def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None) -> bool:

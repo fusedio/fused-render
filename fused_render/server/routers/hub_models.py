@@ -1916,6 +1916,10 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
         "authenticated": bool(_token()),
         "hiddenUnfit": hidden_unfit,
         "facets": facets,
+        # SPEC item 2: the pool backing THIS response is already built and
+        # being served from, so the pane never shows the "still building"
+        # banner over rows that already came from the finished pool.
+        "poolState": "ready",
     }
 
 
@@ -2030,11 +2034,16 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     if capability_filter and hub_catalog.pool_exists(hub_catalog.load_config(), capability_filter):
         return _catalog_search(capability_filter, query, publisher, count, sort,
                                 fit_level, quant_filter, params_band, task_filter)
+    pool_state = "none"
+    pool_pages_done: int | None = None
     if capability_filter:
         # Non-blocking: kicks off a background build if none is running,
         # blocked on a 429 backoff, or already built. The pane stays on the
         # live path below for this and every request until the build lands.
         hub_catalog_builder.ensure_build_started(capability_filter)
+        status = hub_catalog_builder.build_status(capability_filter)
+        pool_state = status["state"]
+        pool_pages_done = status["pagesDone"]
 
     # "fit" is not a Hub field: the candidate set the Hub is asked for is the
     # same honest default `size` uses on the frontend — most-downloaded — and
@@ -2348,7 +2357,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
 
     models = _pull_in_family_members(models[:count], models[count:])
     models.sort(key=_rank_key, reverse=rank_reverse)
-    return {
+    response = {
         "models": models,
         "query": {"q": query, "task": task_filter, "capability": capability_filter,
                   "sort": sort, "limit": count},
@@ -2356,7 +2365,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         "authenticated": bool(_token()),
         "hiddenUnfit": hidden_unfit,
         "facets": facets,
+        # SPEC item 2: "none" when there is no capability filter (no pool is
+        # ever built for a bare `task` search) or nothing has started yet;
+        # "building"/"blocked" mirror `hub_catalog_builder.build_status`.
+        "poolState": pool_state,
     }
+    if pool_state == "building":
+        response["poolPagesDone"] = pool_pages_done
+    return response
 
 
 @router.post("/api/ai-models/hub/size")

@@ -3740,6 +3740,15 @@ export interface HubSearchResult {
   endpoint?: string;
   authenticated?: boolean;
   facets?: HubSearchFacets;
+  /** On-device catalog build state for this response's `capability` (SPEC
+   *  docs/HUB_CATALOG_SPEC.md item 2): "ready" served from a built pool,
+   *  "building"/"blocked" served from the live-Hub fallback while a pool
+   *  builds or sits out a 429 backoff, "none" when there is no capability
+   *  filter or nothing has ever started. Optional so a response predating
+   *  this field still typechecks. */
+  poolState?: "ready" | "building" | "blocked" | "none";
+  /** Only present when `poolState === "building"` — pages fetched so far. */
+  poolPagesDone?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own

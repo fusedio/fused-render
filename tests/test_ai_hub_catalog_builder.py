@@ -373,3 +373,56 @@ def test_delta_refresh_also_records_instrumentation(monkeypatch):
     assert entry["pages"] == 1
     assert "buildSeconds" in entry
     assert "startedAt" in entry
+
+
+# -- build_status (spec item 2) ----------------------------------------------
+
+
+def test_build_status_none_when_nothing_has_ever_happened():
+    cfg = load_config()
+    status = builder.build_status("text-generation", cfg=cfg)
+    assert status == {"state": "none", "pagesDone": None, "startedAt": None,
+                       "blockedUntil": None}
+
+
+def test_build_status_blocked_reports_deadline():
+    cfg = load_config()
+    until = time.time() + 500
+    hub_catalog.set_blocked_until(cfg, "text-generation", until)
+    status = builder.build_status("text-generation", cfg=cfg)
+    assert status["state"] == "blocked"
+    assert status["blockedUntil"] == until
+
+
+def test_build_status_building_reports_live_pages_done(monkeypatch):
+    import threading
+
+    cfg = load_config()
+    gate = threading.Event()
+    released = threading.Event()
+
+    def fake_page(url, headers):
+        gate.set()
+        released.wait(timeout=5)
+        return [], httpx.Response(200, content=b"[]",
+                                   request=httpx.Request("GET", url)), None
+
+    monkeypatch.setattr(builder, "_page", fake_page)
+    monkeypatch.setattr(builder, "for_capability", lambda cap: None)
+    monkeypatch.setattr(builder.ai_tasks, "tags_for_capability",
+                         lambda cap: ("text-generation",))
+
+    thread = threading.Thread(
+        target=lambda: builder.build_capability_pool(cfg, "text-generation"))
+    thread.start()
+    try:
+        assert gate.wait(timeout=5)
+        status = builder.build_status("text-generation", cfg=cfg)
+        assert status["state"] == "building"
+        assert status["startedAt"] is not None
+    finally:
+        released.set()
+        thread.join(timeout=5)
+
+    status_after = builder.build_status("text-generation", cfg=cfg)
+    assert status_after["state"] == "none"

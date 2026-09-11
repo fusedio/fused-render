@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, matchCell, matchRowTip, matchTitle, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
+import { ageLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -294,6 +294,57 @@ describe("verdictGlyph", () => {
 
   it("is the question mark for a verdict this repo never got", () => {
     expect(verdictGlyph("unknown")).toBe("?");
+  });
+});
+
+describe("poolBuildBanner", () => {
+  const now = 1_700_000_000_000;
+
+  it("is null when the pool is ready", () => {
+    expect(poolBuildBanner("ready", null, null, now)).toBeNull();
+  });
+
+  it("is null when there is no pool at all", () => {
+    expect(poolBuildBanner("none", null, null, now)).toBeNull();
+  });
+
+  it("is null when poolState is undefined (older API response)", () => {
+    expect(poolBuildBanner(undefined, null, null, now)).toBeNull();
+  });
+
+  it("reports pages built so far while building", () => {
+    expect(poolBuildBanner("building", 4, null, now)).toBe(
+      "Building the full catalog for this capability (4 pages so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("singularizes 'page' for exactly one page done", () => {
+    expect(poolBuildBanner("building", 1, null, now)).toBe(
+      "Building the full catalog for this capability (1 page so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("treats a missing pagesDone as zero while building", () => {
+    expect(poolBuildBanner("building", null, null, now)).toBe(
+      "Building the full catalog for this capability (0 pages so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("reports a short countdown when blocked", () => {
+    const blockedUntil = now / 1000 + 45; // epoch seconds, 45s out
+    expect(poolBuildBanner("blocked", null, blockedUntil, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after 45s. Showing live results.",
+    );
+  });
+
+  it("falls back to 'shortly' when blockedUntil is missing or already past", () => {
+    expect(poolBuildBanner("blocked", null, null, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after shortly. Showing live results.",
+    );
+    const past = now / 1000 - 10;
+    expect(poolBuildBanner("blocked", null, past, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after shortly. Showing live results.",
+    );
   });
 });
 

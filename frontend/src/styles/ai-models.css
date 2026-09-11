@@ -3807,6 +3807,21 @@ button.am-bench-model:focus-visible {
   font-size: 10.5px;
 }
 
+/* SPEC docs/HUB_CATALOG_SPEC.md item 2 — the on-device catalog build banner.
+ * Deliberately neutral (not the red ErrorBanner styling): the live results
+ * shown underneath are correct, just slower/narrower than the finished
+ * catalog will be. */
+.pool-build-banner {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  border-radius: 8px;
+}
+
 .advfoot {
   margin-top: 14px;
   display: flex;
