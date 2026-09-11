@@ -20,10 +20,21 @@ import { statPath } from "@platform/lib/api";
 import { getRetainedNotifications, notify } from "@platform/lib/notifications";
 import type { HttpError, Task } from "@platform/lib/api";
 
-/** The folder a task's conversation lives in — the same field every href on
- *  this page opens (schedule-lib.folderHref, tasks-lib.taskHref). */
+/** The folder a task's conversation lives in — the same field, in the same
+ *  order, as the folder door this page opens (schedule-lib.folderHref).
+ *
+ *  `project` FIRST, because this asks "is the FOLDER still there": a task made
+ *  from inside an app targets the app's entry page, and target-first stat'd
+ *  that FILE — so renaming index.html while the folder sat right there marked
+ *  every one of the folder's tasks "Folder missing", disabled their Explorer
+ *  door and toasted "This task's folder was deleted". It also split the
+ *  one-stat-per-folder dedup below into one stat per entry file. `target` stays
+ *  the fallback for a row carrying no project.
+ *
+ *  `tasks-lib.taskHref` deliberately still reads `target` first — it wants the
+ *  file, and opens it with `_file=`. This one wants the place. */
 export function taskFolder(task: Pick<Task, "target" | "project">): string {
-  return task.target || task.project || "";
+  return task.project || task.target || "";
 }
 
 /** The hover caption on the "Folder missing" mark: the one place the path is
