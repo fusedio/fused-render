@@ -15,9 +15,16 @@ import { Clock, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import type { RowCtx } from "@apps/explorer/listing/types";
 
 const navigated: string[] = [];
+// `navHintQCommitted` included even though this file never mounts
+// `useListingSearch`: `mock.module` replaces the module process-wide (bun
+// runs every test file in one process), so a mock here missing an export
+// another file's `mock.module("@platform/lib/router", …)` DOES provide can
+// still break that file if this one's mock wins the race — see
+// useListingSearch.render.test.ts's own comment on this same export.
 mock.module("@platform/lib/router", () => ({
   navigate: (p: string) => void navigated.push(p),
   replaceSearch: () => {},
+  navHintQCommitted: () => false,
 }));
 mock.module("@platform/lib/ui-overlay", () => ({ isOverlayOpen: () => false }));
 
@@ -119,6 +126,56 @@ describe("Enter with nothing selected", () => {
     box.rerender(true);
     await flush(() => press("Enter"));
     expect(navigated).toEqual([box.top]);
+    box.unmount();
+  });
+});
+
+describe("Enter on the zero-match glob-broadening offer", () => {
+  // No navRows at all: the settled-zero-hits state this offer renders in
+  // (Listing.tsx) never has real rows on screen. The offer is passed in
+  // through `zeroMatchOffer`, not folded into `navRows` — this exercises the
+  // one added branch inside the pre-existing `!rows.length` guard.
+  function mountOffer() {
+    const dir = "/d" + folder++;
+    const activated: string[] = [];
+    const box = renderHook(() =>
+      useListingSelection({
+        fsPath: dir,
+        navRows: [],
+        listingLoaded: true,
+        rowsAnswerQuery: true,
+        searchInputRef: { current: null },
+        rowCtxByPathRef: { current: new Map() },
+        overlayOpenRef: { current: false },
+        zeroMatchOffer: { path: "\0zero-match-broaden-offer", onActivate: () => activated.push("rerun") },
+      }),
+    );
+    return { box, activated };
+  }
+
+  test("runs the offer's callback instead of navigating anywhere", async () => {
+    const { box, activated } = mountOffer();
+    await flush(() => press("Enter"));
+    expect(activated).toEqual(["rerun"]);
+    expect(navigated).toEqual([]);
+    box.unmount();
+  });
+
+  test("does nothing when there is no offer (plain empty rows)", async () => {
+    const dir = "/d" + folder++;
+    const box = renderHook(() =>
+      useListingSelection({
+        fsPath: dir,
+        navRows: [],
+        listingLoaded: true,
+        rowsAnswerQuery: true,
+        searchInputRef: { current: null },
+        rowCtxByPathRef: { current: new Map() },
+        overlayOpenRef: { current: false },
+      }),
+    );
+    await flush(() => press("Enter"));
+    expect(navigated).toEqual([]);
     box.unmount();
   });
 });

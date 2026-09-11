@@ -118,11 +118,13 @@ EXPECTED_STARTUP = [
     "_startup_sync_user_plugin",
     "_startup_schedule",
     "_startup_tasks_watch",
+    "_startup_tasks_warm",
     "_startup_ai_idle_reaper",
     "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
     "_startup_gc_project_venvs",
     "_startup_index_scan",
+    "_startup_update_dev_manager",
 ]
 
 #: `_startup_shutdown_ai` is a SHUTDOWN handler despite the name — read the

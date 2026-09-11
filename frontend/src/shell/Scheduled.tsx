@@ -63,6 +63,14 @@ import type {
   Task,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
+// The chat's own handoff module, not a second reading of its URL shape: the
+// param is written by `schedulerUrl` and there must be exactly one parser for it
+// (owner E2E R1, F4 (2026-09-10)). A leaf module with no imports of its own, so
+// this costs the shell chunk nothing but the function.
+import {
+  parseAttachmentsParam,
+  type SchedAttachment,
+} from "@apps/claude/ui/sched-draft";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -82,10 +90,25 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
-import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
+import {
+  forgetListing,
+  publishTasks,
+  readListing,
+  readTasksRows,
+  rememberListing,
+  TASKS_POKE_EVENT,
+  useTasksFeeder,
+} from "./tasksPulse";
+import {
+  TASK_VIEWS,
+  mergeTaskChanges,
+  provisionalTasks,
+  viewFromSearch,
+  viewUrl,
+} from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
+import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
 import { isUnderDir } from "./current-apps-lib";
 
@@ -136,8 +159,35 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // make no calls", so the shared store stands down until this unmounts.
   useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  // NOT `[]`, because this page remounts on every navigation and /api/tasks is
+  // 2.9s on the first call of a server process — so a bare `[]` meant List →
+  // Home → List went back to a skeleton over a listing this session had already
+  // read, and a cold first visit showed nothing while the sidebar beside it
+  // already knew every task's name (see .claude-design/tasks-cold-load.md).
+  //
+  // Two seeds, best first: the last full listing of this JS session, else rows
+  // upcast from the pulse store the sidebar has been filling all along. Both
+  // are replaced whole by the poll below — this is what the page paints WHILE
+  // that call is in the air, not a cache it trusts.
+  const [tasks, setTasks] = useState<Task[]>(
+    () => readListing() ?? provisionalTasks(readTasksRows()),
+  );
   const [tasksFailed, setTasksFailed] = useState(false);
+  // Has ANY listing been on this page yet — a seed above, a poll's answer, or a
+  // poll's failure? Until one has, `tasks` being `[]` means "not asked yet",
+  // not "none", and the view below must not say "No tasks yet" over it: a
+  // reload straight onto /tasks (or the app launching onto it) showed that
+  // empty state for the whole cold listing — up to seconds after a server
+  // start — then filled in, which reads as the page having lost the tasks and
+  // found them again (Akshil, 2026-09-09). A skeleton is the honest state.
+  //
+  // A remembered listing counts even when it is EMPTY: a machine with no tasks
+  // asked once and got `[]`, and a remount must show the empty state it earned,
+  // not a skeleton over it (Bugbot, #1079). Provisional rows count only when
+  // there are some — an empty pulse store is exactly "not asked yet".
+  const [tasksLoaded, setTasksLoaded] = useState(
+    () => readListing() !== null || tasks.length > 0,
+  );
   // The rows as the changes loop below last saw them, and the server
   // generation they answer to. Refs, not state: the loop is one long-lived
   // effect and must read the newest value without re-subscribing on every
@@ -211,6 +261,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [newMessage, setNewMessage] = useState<string | null>(null);
   const [newSession, setNewSession] = useState<string | null>(null);
   const [newBack, setNewBack] = useState<string | null>(null);
+  // The chips the chat's tray was holding, already copied into the task-shots
+  // dir by the composer's Schedule button — so what arrives here is exactly the
+  // shape a saved entry's `attachments` has, and the card seeds from it the same
+  // way an Edit does (owner E2E R1, F4 (2026-09-10)).
+  const [newAttachments, setNewAttachments] = useState<SchedAttachment[]>([]);
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
@@ -251,6 +306,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     setNewMessage(q.get("message"));
     setNewSession(q.get("session_id"));
     setNewBack(q.get("back"));
+    // Defensive by contract, not by suspicion: this is a URL a user can edit
+    // and a param an older build may not have written — `parseAttachmentsParam`
+    // answers [] for anything it cannot read, because a parse error here would
+    // cost the folder, the draft and the session as well as the files.
+    setNewAttachments(parseAttachmentsParam(q.get("attachments")));
     openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
     q.delete("new");
     q.delete("target");
@@ -258,6 +318,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     q.delete("session_id");
     q.delete("back");
     q.delete("edit");
+    q.delete("attachments");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -288,6 +349,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        setTasksLoaded(true);
         if (typeof r.generation === "number") generationRef.current = r.generation;
         // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
         // dot and the counts beside the label are this answer, not a second poll
@@ -295,10 +357,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // twenty seconds at a time. Publishing also restarts that module's own
         // timer, so while this page is open nothing else calls /api/tasks.
         publishTasks(r.tasks ?? []);
+        // And keep it for the next mount: this page is remounted on every
+        // navigation, and the seed above is what saves the trip back from
+        // paying for the listing twice.
+        rememberListing(r.tasks ?? []);
       },
       () => {
         setTasks([]);
         setTasksFailed(true);
+        setTasksLoaded(true);
+        forgetListing();
       },
     );
     getScheduleQueue().then(
@@ -384,6 +452,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             tasksRef.current = merged;
             setTasks(merged);
             publishTasks(merged);
+            // The merge is now the freshest full listing there is, so it — not
+            // the poll's older answer — is what a remount should seed from.
+            rememberListing(merged);
           }
         } catch {
           if (stopped) return;
@@ -459,6 +530,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // folder, so a row can say "Folder missing" instead of opening an Explorer
   // that can only answer with a stat error (useMissingFolders).
   const missing = useMissingFolders(shown);
+  // ONE sentence for "there is nothing here", handed to all four views, so a
+  // reader flipping List → Board → Cards → Calendar over the same empty set
+  // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
+  // is the page's call, not a view's: only the page knows whether the set is
+  // empty because the machine has no tasks, this app has none, or the filters
+  // matched none.
+  const emptyLabel =
+    inScope.length === 0
+      ? scope
+        ? "No tasks for this app yet."
+        : "No tasks yet. Everything Claude runs for you shows up here."
+      : "Nothing matches these filters.";
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -618,8 +701,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
-          {view === "calendar" ? (
+          {!tasksLoaded ? (
+            // The view's own ghost, under the toolbar the schedule already let
+            // us draw: the page has its final shape from the first paint, and
+            // the reader can tell which view they are on before a row lands.
+            <TasksSkeleton view={view} />
+          ) : view === "calendar" ? (
             <ScheduleCalendar
+              emptyLabel={emptyLabel}
               // The FILTERED set, same as the other two views get: the toolbar's
               // three controls are live here now, and a filter that is shown but
               // does nothing is worse than one that is hidden.
@@ -632,9 +721,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
-            <TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />
+            <TaskBoard
+              tasks={shown}
+              home={home}
+              onReload={reload}
+              missing={missing}
+              emptyLabel={emptyLabel}
+            />
           ) : view === "cards" ? (
             <TaskCards
+              emptyLabel={emptyLabel}
               // The FILTERED set, like every other view: Cards only ORDERS it
               // (tasks-lib.cardsForTasks — every lane, Archive last), and a
               // Project, Status or Search the reader set on another view is a
@@ -675,13 +771,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
-              emptyLabel={
-                inScope.length === 0
-                  ? scope
-                    ? "No tasks for this app yet."
-                    : "No tasks yet. Everything Claude runs for you shows up here."
-                  : "Nothing matches these filters."
-              }
+              emptyLabel={emptyLabel}
             />
           )}
         </section>
@@ -712,6 +802,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // wins — it named a folder on purpose.
           initialTarget={newTarget ?? scope?.project ?? null}
           initialMessage={newMessage}
+          initialAttachments={newAttachments}
           chatSessionId={newSession}
           chatBack={newBack}
           editing={editing}

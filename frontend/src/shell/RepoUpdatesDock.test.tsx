@@ -17,7 +17,7 @@ import type { Job } from "@platform/lib/jobs";
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
 // router.ts (`{navigate: () => {}}`), which broke TWO unrelated files
-// (useWalkSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
+// (useListingSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
 // three ran in the same `bun test` invocation. `mock.module` replaces a
 // specifier for the WHOLE process, not just this file — first-registration
 // wins, so a stub written for THIS file's needs quietly became the module
@@ -44,6 +44,29 @@ import type { Job } from "@platform/lib/jobs";
   replaceState: () => {},
   pushState: () => {},
 };
+
+// A rowClick's `onClick` calls `navigateUrl`, which touches `history` and
+// `window` — both deleted right after the import below, the same as
+// `location` (see the block comment above). Most tests never press a
+// rowClick, so they never need these back; the few that do restore them only
+// for the press itself, via this helper, so nothing here leaks between tests.
+function withNav<T>(run: (pushed: string[]) => T): T {
+  const pushed: string[] = [];
+  const realHistory = (globalThis as Record<string, unknown>).history;
+  const realWindow = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).history = {
+    state: null,
+    replaceState: () => {},
+    pushState: (_s: unknown, _t: string, u: string) => pushed.push(u),
+  };
+  (globalThis as Record<string, unknown>).window = { dispatchEvent: () => true };
+  try {
+    return run(pushed);
+  } finally {
+    (globalThis as Record<string, unknown>).history = realHistory;
+    (globalThis as Record<string, unknown>).window = realWindow;
+  }
+}
 
 const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
@@ -95,6 +118,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   unit: "",
   message: "GDAL ran out of memory",
   page: "",
+  origin: "",
   owner: "server",
   cancellable: false,
   cancel_requested: false,
@@ -103,6 +127,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   finished_at: 0,
   stalled: false,
   waiting_for: "",
+  tier: "trail",
   ...over,
 });
 
@@ -161,6 +186,7 @@ function renderInstance(
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
       onTerminalPatch={props.onTerminalPatch}
+      onPairingGone={props.onPairingGone}
     />,
   );
 }
@@ -783,17 +809,21 @@ test("the footer is absent at one repo row and present at two", () => {
   expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
-test("repo rows come before failures — the actionable rows first", () => {
+test("a failure comes before an ordinary repo row — Needs you precedes Worth keeping (item 3)", () => {
   // Both row kinds share `.dl-row` now (status-bar merge, brief item 4), so
   // ordering is asserted by what each kind carries rather than by class name:
   // a repo row's own action button is `.q-all` (kept — see this row's own
   // header comment for why it did not migrate to `.dl-row-cancel`), which a
-  // terminal-job row (`JobRow`) never renders.
+  // terminal-job row (`JobRow`) never renders. `failedJob()`'s `state: "error"`
+  // makes its `effectiveTier` "attention" regardless of its declared tier, so
+  // it lands in "Needs you" — the section item 3 draws FIRST — ahead of the
+  // ordinary repo row in "Worth keeping", reversing what used to be true when
+  // every terminal job shared one flat list with the repo rows.
   const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), terminal: [failedJob()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(2);
-  expect(findAll(rows[0], "q-all")).toHaveLength(1);
-  expect(findAll(rows[1], "q-all")).toHaveLength(0);
+  expect(findAll(rows[0], "q-all")).toHaveLength(0);
+  expect(findAll(rows[1], "q-all")).toHaveLength(1);
 });
 
 // D673 (supersedes D574/D586's "repo arrivals auto-open, failures are
@@ -929,14 +959,37 @@ test("a dismissed waiting-task row comes back once the question changes", () => 
   expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
-test("a task with nowhere to go still draws, as a row that is not a button", () => {
-  // The news is true whether or not there is a door; an inert row beats
-  // dropping it, and beats a button that navigates nowhere.
-  const tree = renderView({ rows: [], attention: [asking({ href: null })] });
-  const row = findAll(tree, "dl-row")[0];
-  expect(row.type).toBe("div");
-  expect(text(row)).toContain("TASK-097 needs your input");
-  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+test("clicking a pairing row opens LAN preferences and clears the row", () => {
+  withNav((pushed) => {
+    const onPairingGone = mock(() => {});
+    const tree = renderInstance({
+      rows: [],
+      pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
+      onPairingGone,
+    });
+    const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
+    expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/preferences?tab=lan");
+    expect(onPairingGone).toHaveBeenCalledWith("p1");
+  });
+});
+
+test("a task naming no folder still opens as a row — its door is /tasks itself", () => {
+  // `attentionRows` falls back to "/tasks" when a task names no folder at all
+  // (tasks-lib.ts) — every row here is clickable now, so there is no more
+  // inert case to draw around.
+  withNav((pushed) => {
+    const tree = renderView({ rows: [], attention: [asking({ href: "/tasks" })] });
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/tasks");
+  });
 });
 
 test("waiting tasks fill the numeral like every other source, and end the idle state", () => {
@@ -990,4 +1043,80 @@ test("Clear never counts a waiting row — there is nothing there to clear", () 
   });
   expect(findAll(tree, "dl-head")).toHaveLength(0);
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
+});
+
+// ---------------------------------------------------------- item 3: two sections, one chip
+
+test("rows split into 'Needs you' and 'Worth keeping', each drawn only when non-empty", () => {
+  // A waiting task and a failed job both land in "Needs you"; a repo row
+  // lands in "Worth keeping" — the two sections never mix. Both headings show
+  // here because both sections are actually present at once — the same
+  // "2+ sections" rule ActivityDock's own Running/Background split follows.
+  const tree = renderView({
+    rows: repoRows([status({ root: "/a/one" })]),
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  const titles = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(titles).toEqual(["Needs you", "Worth keeping"]);
+});
+
+test("a lone section draws no heading at all — nothing here needs disambiguating", () => {
+  // Same "PLURALITY, NOT PRESENCE" rule this file already follows for the
+  // Clear-all footer and ActivityDock follows for its own section headings:
+  // with only "Worth keeping" ever populated, a label distinguishing it from
+  // an empty sibling is a redundant header.
+  const onlyTrail = renderView({ rows: repoRows([status()]) });
+  expect(findAll(onlyTrail, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyTrail, "dl-row")).toHaveLength(1);
+
+  const onlyAttention = renderView({ rows: [], attention: [asking()] });
+  expect(findAll(onlyAttention, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyAttention, "dl-row")).toHaveLength(1);
+});
+
+test("an attention-tier terminal job never folds behind the trail cap, however many trail jobs there are", () => {
+  // 8 ordinary (done, trail-tier) jobs plus 1 failed (attention-tier) job:
+  // TERMINAL_VISIBLE_CAP (5) folds the trail jobs down to 5, with 3 folded —
+  // but the failed job is never part of that count at all, because it never
+  // reaches `terminalTrail` in the first place.
+  const trail = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal: [...trail, failedJob()] });
+  const rows = findAll(tree, "dl-row");
+  // 5 shown trail jobs + 1 attention job, never folded.
+  expect(rows).toHaveLength(6);
+  expect(text(rows[0])).toContain("Pyramid build"); // attention section first
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
+});
+
+test("the chip reads 'N needs you' and turns loud the moment anything needs a look", () => {
+  const idle = renderView({ rows: repoRows([status()]) });
+  expect(text(findAll(idle, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(idle)).not.toContain("is-failure");
+
+  const oneNeedsYou = renderView({ rows: [], terminal: [failedJob()] });
+  expect(text(findAll(oneNeedsYou, "dl-summary")[0])).toBe("1 needs you");
+  expect(toggleClasses(oneNeedsYou)).toContain("is-failure");
+
+  const twoNeedYou = renderView({
+    rows: [],
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  expect(text(findAll(twoNeedYou, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("'N needs you' counts a waiting task and an attention-tier job together, not just one source", () => {
+  const tree = renderView({
+    rows: repoRows([status()]), // a repo row must never count toward "needs you"
+    terminal: [failedJob(), doneJob()], // one attention-tier, one trail-tier
+    attention: [asking()],
+  });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("a done (trail-tier) job alone never turns the label loud — only attention rows do", () => {
+  const tree = renderView({ rows: [], terminal: [doneJob()] });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(tree)).not.toContain("is-failure");
 });

@@ -89,6 +89,10 @@ export interface NotificationCardProps {
   /** `.dl-model` — its own line under the head. */
   secondary?: ReactNode;
   secondaryTooltip?: string;
+  /** `.dl-origin` — a dimmed one-line caption naming who raised this row
+   *  (`Job.origin`, jobs.ts), on its own line under `secondary`/the head.
+   *  Undefined/"" draws no element at all, same as `secondary`. */
+  caption?: ReactNode;
   /** `.dl-row-figures` — the Models row's memory cells. */
   figures?: ReactNode;
   /** `.dl-bar`/`.dl-bar-fill`. `number` (0–1) is the fill; `null` draws the
@@ -124,6 +128,7 @@ export default function NotificationCard({
   trailing,
   secondary,
   secondaryTooltip,
+  caption,
   figures,
   progress,
   stalled = false,
@@ -242,6 +247,7 @@ export default function NotificationCard({
           {secondary}
         </div>
       )}
+      {caption != null && caption !== "" && <div className="dl-origin">{caption}</div>}
       {figures != null && <div className="dl-row-figures">{figures}</div>}
       {progress !== undefined && (
         <div className={"dl-bar" + (stalled ? " is-stalled" : "")}>

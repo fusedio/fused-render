@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Task, TaskMessage } from "@platform/lib/api";
+import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf, peekFrameSrc } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
@@ -86,6 +86,7 @@ import {
   projectOptions,
   relativeWhen,
   ranOffSchedule,
+  scheduledMark,
   readKey,
   settleMarkAllRead,
   resendTarget,
@@ -110,6 +111,8 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  provisionalTasks,
+  emptyPaneFailed,
   emptyPaneText,
 } from "./tasks-lib";
 
@@ -2302,10 +2305,15 @@ describe("the unread mark", () => {
     const stripped = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(stripped).not.toContain(".tasks-rail");
     expect(stripped).not.toContain(".tasks-msg-kind");
-    // The two glyphs it drew are gone from the file as well, rather than left as
-    // unused constants for the next reader to wonder about.
-    expect(VIEWS).not.toContain("const ICON_CLOCK");
+    // ICON_CHAT, the speech bubble it drew, is gone from the file as well rather
+    // than left as an unused constant for the next reader to wonder about.
     expect(VIEWS).not.toContain("const ICON_CHAT");
+    // ICON_CLOCK IS BACK (2026-09-10) and this test still holds, because the
+    // fact above is about the MESSAGE row: the clock is drawn on the TASK row
+    // now, where it says the task has a run booked (tasks-lib.scheduledMark)
+    // and nothing else on the line states it. No message row wears it.
+    const msgRow = thread.slice(0, thread.indexOf("{why && <p"));
+    expect(msgRow).not.toContain("{ICON_CLOCK}");
     // The body is the row's ink and carries the row's caption (`data-hint`), so
     // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
@@ -3159,7 +3167,10 @@ describe("the one-message row's missing chevron", () => {
     // The guard is in the derived value, not in the render: a row in the List's
     // expanded set that stops being expandable closes, instead of being stuck open
     // with nothing left to close it.
-    expect(VIEWS).toContain("const expandable = isExpandable(task);");
+    // `&& !task.provisional` since 2026-09-09: a row painted from pulse has a
+    // DEFAULT message_count, not a count, so it is not an accordion until the
+    // full listing replaces it (tasks-lib.provisionalTasks).
+    expect(VIEWS).toContain("const expandable = isExpandable(task) && !task.provisional;");
     expect(VIEWS).toContain("const open = expandable && requested;");
     // The toggle is the CHEVRON's press now (2026-08-18) — the row's own press
     // opens the conversation — so the guard is the arm that renders the button at
@@ -4099,7 +4110,12 @@ describe("the delete affordance", () => {
   });
 
   it("goes through ONE dialog, which names what it destroys and cannot be undone", () => {
-    const MODAL = readFileSync(join(SHELL, "EraseTaskModal.tsx"), "utf8");
+    // LIFTED to platform/ui so the Claude chat's kebab can use the same dialog
+    // (Akshil, 2026-09-08); shell/EraseTaskModal.tsx is a re-export.
+    const MODAL = readFileSync(
+      join(SHELL, "..", "platform", "ui", "EraseTaskModal.tsx"),
+      "utf8",
+    );
     // One endpoint, called in one place on the client.
     expect(API_TYPES).toContain('"/api/tasks/erase"');
     expect(MODAL).toContain("await eraseTask(task.key);");
@@ -6472,7 +6488,9 @@ describe("the tasks toolbar", () => {
     // and the scope is applied BEFORE these filters (`tasks` unscoped = what
     // publishTasks hands the sidebar).
     expect(PAGE).toContain("filterTasks(inScope, filtersForView(filters, view))");
-    expect(PAGE).toContain("<TaskBoard tasks={shown}");
+    // Multi-line since the Board took the page's `emptyLabel` (2026-09-09).
+    const board = PAGE.slice(PAGE.indexOf("<TaskBoard"));
+    expect(board.slice(0, board.indexOf("/>"))).toContain("tasks={shown}");
   });
 
   it("hides the dead Archive option from Status only on the calendar", () => {
@@ -6782,7 +6800,9 @@ describe("cardsForTasks", () => {
     ];
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
     // "e" — archived — is drawn too, in the bottom lane.
-    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b", "e"]);
+    // Upcoming ("c") is not a card (Akshil, 2026-09-10): a run that has not
+    // happened has no chat to show. It keeps its lane on the List and Calendar.
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "a", "b", "e"]);
   });
 
   it("is the List's order, exactly — sortByLane, not a second opinion", () => {
@@ -6840,7 +6860,7 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
   });
 
-  it("runs Upcoming soonest first, overdue at the very top — the List's rule", () => {
+  it("does not draw Upcoming at all — a run that has not happened has no chat to show", () => {
     // The old clock ran every lane newest-created first, which on Upcoming put
     // the run due in ten minutes under one due in October if it was scheduled
     // later. The List sorts that lane by the run ahead, ascending; so does this.
@@ -6854,7 +6874,12 @@ describe("cardsForTasks", () => {
         messages: [msg({ at, ran_at: 0, state: "pending" })],
       });
     const rows = [soon("october", NOW_S + 30 * 86_400), soon("tenmin", NOW_S + 600), soon("late", NOW_S - 600)];
-    expect(cardsForTasks(rows, CARD_PAGE, NOW).cards.map((t) => t.key)).toEqual(["late", "tenmin", "october"]);
+    expect(cardsForTasks(rows, CARD_PAGE, NOW)).toEqual({ cards: [], hidden: 0 });
+    // Nor does a hidden Upcoming count toward "Show more".
+    expect(cardsForTasks([...rows, running("a", 100)], 1, NOW)).toEqual({
+      cards: [expect.objectContaining({ key: "a" })],
+      hidden: 0,
+    });
   });
 
   it("does not re-sort when a run merely writes", () => {
@@ -6985,9 +7010,11 @@ describe("the Cards view's frame", () => {
 
   it("says the empty state in the Board's own words and styling", () => {
     expect(CARDS).toContain('"Nothing to show here."');
-    // A task with no session yet: "Starting…" for a run in flight, and the
-    // honest phrase for a scheduled one that is simply not due.
-    expect(LIB).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
+    // A task with no session yet: "Starting…" only for a run in flight, and the
+    // honest phrase for a scheduled one that is simply not due — or for one that
+    // has already settled without ever recording a chat (FIX-A, below).
+    expect(LIB).toContain('if (task.status === "upcoming") return "Not started yet";');
+    expect(LIB).toContain('return "Starting…";');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
@@ -7163,14 +7190,110 @@ describe("the Cards view's frame", () => {
     expect(fade).toContain("pointer-events: none");
     expect(CARDS).not.toContain("export function emptyPaneText");
     expect(emptyPaneText(task({ status: "done" }), true)).toBe("Folder no longer exists");
-    expect(emptyPaneText(task({ status: "done" }), false)).toBe("Starting…");
     expect(emptyPaneText(task({ status: "upcoming" }), false)).toBe("Not started yet");
     expect(CARDS.split("{emptyPaneText(task, gone)}").length).toBe(3);
-    // ...in the error colour every other view gives the same fact.
-    expect(CARDS.split('className={"task-card-starting" + (gone ? " is-missing" : "")}').length).toBe(3);
+    // ...in the error colour every other view gives the same fact, and the view
+    // ASKS which sentence is a failure rather than re-deriving the lane.
+    expect(
+      CARDS.split('"task-card-starting" + (emptyPaneFailed(task, gone) ? " is-missing" : "")').length,
+    ).toBe(3);
     expect(block(CARDS_CSS, ".task-card-starting.is-missing")).toContain("color: var(--error)");
     // ...on the card's own ground, not the page's darker one (screenshot).
     expect(CARDS_CSS).toContain(".task-card-body:has(> .task-card-starting),\n.task-peek > .modal-body:has(> .task-card-starting) {\n  background: var(--tasks-card-bg);");
+  });
+
+  it("never promises 'Starting…' for a task that has already settled with no chat", () => {
+    // P4R1-1: a scheduled entry whose child died before its first status line
+    // records no `claude_session_id`, so nothing will ever be framed for its
+    // card — and the tile spun on "Starting…" for a run that had ended a day
+    // earlier. Only a run actually IN FLIGHT may make that promise.
+    expect(emptyPaneText(task({ status: "blocked", failed: true }), false)).toBe(
+      "The run failed before it started a chat",
+    );
+    expect(emptyPaneText(task({ status: "done", failed: false }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    expect(emptyPaneText(task({ status: "archived", failed: false }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    // ...and the two lanes where a session really is still on its way keep it.
+    expect(emptyPaneText(task({ status: "in_progress" }), false)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "needs_attention" }), false)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "upcoming" }), false)).toBe("Not started yet");
+    // The failed sentence wears the error colour; the merely-empty one does not,
+    // and a missing folder still does whatever its lane says.
+    expect(emptyPaneFailed(task({ status: "blocked", failed: true }), false)).toBe(true);
+    expect(emptyPaneFailed(task({ status: "done", failed: false }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "in_progress", failed: true }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "upcoming", failed: true }), false)).toBe(false);
+    expect(emptyPaneFailed(task({ status: "done", failed: false }), true)).toBe(true);
+  });
+
+  it("asks the ROW, not only the lane: a filed task whose message has not run has not started", () => {
+    // L1. `tasks.py:_status` ranks `if filed: return "archived"` ABOVE
+    // `_waiting`'s `upcoming`, so filing a task whose only message is next
+    // Tuesday's pending entry takes it out of the lane the settled test keys
+    // on — and the tile then said "No chat was recorded for this run" about a
+    // message that has not been sent yet. Both the old and the new sentence
+    // were wrong; this one is not.
+    const pending = [msg({ state: "pending", turn: "", ran_at: 0 })];
+    expect(emptyPaneText(task({ status: "archived", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    expect(emptyPaneText(task({ status: "done", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    expect(emptyPaneText(task({ status: "blocked", messages: pending }), false)).toBe(
+      "Not started yet",
+    );
+    // The verdict still wins over the promise: a row that broke says so.
+    expect(
+      emptyPaneText(task({ status: "archived", failed: true, messages: pending }), false),
+    ).toBe("The run failed before it started a chat");
+    expect(
+      emptyPaneFailed(task({ status: "archived", failed: true, messages: pending }), false),
+    ).toBe(true);
+    // ...and a missing folder still outranks everything.
+    expect(emptyPaneText(task({ status: "archived", messages: pending }), true)).toBe(
+      "Folder no longer exists",
+    );
+    // A settled row whose messages all RAN keeps the settled sentence — the
+    // pending read must not swallow the case FIX-A was for.
+    expect(emptyPaneText(task({ status: "archived" }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+    expect(emptyPaneText(task({ status: "archived", messages: [] }), false)).toBe(
+      "No chat was recorded for this run",
+    );
+  });
+
+  it("names the settled lanes, so a lane this bundle has never heard of is not called settled", () => {
+    // L2. `statusColumn` floors every unknown status into "done", so the old
+    // exclusion (`!== "in_progress" && !== "needs_attention"`) filed a future
+    // server lane that MEANS in-flight into the settled bucket and told the
+    // reader no chat was ever recorded for a run happening as they read it.
+    // Unknown falls back to "Starting…" — optimistic, which is the safe way to
+    // be wrong here, and what this card said before FIX-A.
+    const unknown = { status: "resuming", failed: false } as unknown as Task;
+    expect(emptyPaneText(unknown, false)).toBe("Starting…");
+    expect(emptyPaneFailed(unknown, false)).toBe(false);
+    const brokeUnknown = { status: "resuming", failed: true } as unknown as Task;
+    expect(emptyPaneText(brokeUnknown, false)).toBe("Starting…");
+    expect(emptyPaneFailed(brokeUnknown, false)).toBe(false);
+    // ...but a missing folder is still a fact about the folder, whatever lane.
+    expect(emptyPaneText(unknown, true)).toBe("Folder no longer exists");
+    expect(emptyPaneFailed(unknown, true)).toBe(true);
+    // The whitelist is exactly three, and the source says them by name in one
+    // place both readings share.
+    expect(LIB).toContain('new Set<string>(["blocked", "done", "archived"])');
+    expect(LIB).not.toContain('col !== "in_progress" && col !== "needs_attention"');
+    // ...and it is asked of the RAW status, not of `taskColumn`, which floors
+    // every lane this bundle does not know into "done" — the flooring is why
+    // the exclusion was wrong in both halves.
+    expect(LIB).toContain("if (isSettledLane(task.status))");
+    expect(LIB).toContain("return !!task.failed && isSettledLane(task.status);");
+    // Both readings ask the same list: two call sites, one declaration.
+    expect(LIB.split("isSettledLane").length).toBe(4);
   });
 
   it("says 'Folder missing' on the List row and the Board card, and its press prints the sentence instead of leaving", () => {
@@ -7185,7 +7308,8 @@ describe("the Cards view's frame", () => {
     expect(HOOK).toContain("This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.");
     expect(HOOK).toContain('pushToast({ msg: MISSING_FOLDER_TOAST, tone: "error" });');
     expect(SCHEDULED).toContain("const missing = useMissingFolders(shown);");
-    expect(SCHEDULED).toContain("<TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />");
+    const board = SCHEDULED.slice(SCHEDULED.indexOf("<TaskBoard"));
+    expect(board.slice(0, board.indexOf("/>"))).toContain("missing={missing}");
     expect(SCHEDULED).toContain("home={home}\n              missing={missing}");
     expect(VIEWS).toContain("folderMissing={missing?.has(taskFolder(task)) ?? false}");
     // A TOAST, not a line under the row (Akshil, 2026-09-06, screenshot).
@@ -7259,7 +7383,17 @@ describe("the Cards view's frame", () => {
     // type into, with buttons for the List, the Explorer and Archive.
     const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
     expect(head).toContain('role="button"');
-    expect(head).toContain("onClick={() => onPeek(task)}");
+    // The head still opens the popup, and stops the press there — the CARD is
+    // the door now too (Akshil, 2026-09-10, E2E R1 F3), so a head press must
+    // not open it twice.
+    expect(head).toContain("e.stopPropagation();");
+    expect(head).toContain("onPeek(task);");
+    // THE WHOLE CARD IS THE DOOR: the body is a picture of the chat — no
+    // pointer events, no scroll — and any press on the card opens the popup.
+    expect(CARDS).toContain('className="task-card task-card--door"');
+    expect(CARDS).toContain("onClick={() => onPeek(task)}");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
+    expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
     // ...for keys pressed on the head itself: the folder chip inside it is a
     // button whose Enter/Space bubble up (Bugbot, #1011).
@@ -7345,7 +7479,11 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain("setPeek(peekLive);");
     const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
     expect(emptyBranch).toContain("{popup}");
-    expect(CARDS).toContain("initialFocus={frameRef}");
+    // FLAG-AWARE since the native chat landed (apps/claude/ChatMount): with the
+    // native chat there is no frame, and the thing worth focusing is the
+    // composer's own textarea — which is where the reader wanted the caret all
+    // along. The legacy branch still hands the chassis the iframe.
+    expect(CARDS).toContain("initialFocus={native ? boxRef : frameRef}");
     expect(readFileSync(join(SHELL, "../platform/ui/modal/Modal.tsx"), "utf8")).toContain("select:not([disabled]),iframe,");
     // The dialog clips its own corners: the frame must not paint over the radius.
     expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("overflow: hidden");
@@ -7360,6 +7498,10 @@ describe("the Cards view's frame", () => {
     // a key pressed inside the frame (measured, 2026-09-05).
     expect(CARDS).toContain('doc?.addEventListener("keydown", onKey);');
     expect(CARDS).toContain('if (e.key === "Escape") onClose();');
+    // ...and that whole hop is LEGACY-ONLY: the native chat is in this document,
+    // so its root hands Escape back up through `onEscape` instead.
+    expect(CARDS).toContain("if (native) return;");
+    expect(CARDS).toContain("onEscape={onClose}");
   });
 });
 
@@ -8095,6 +8237,106 @@ describe("the file mark after a task's title", () => {
   });
 });
 
+describe("the schedule mark on a List row", () => {
+  const AHEAD = Math.floor(NOW / 1000) + 3600;
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("marks a task with a run ahead of it, and names the instant", () => {
+    const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
+    const mark = scheduledMark(t, NOW)!;
+    expect(mark.at).toBe(AHEAD);
+    // The word first, so a bare glyph is decodable by hovering it, then the
+    // exact instant — the shape every other tooltip on this row has.
+    expect(mark.title).toContain("Scheduled");
+    expect(mark.title).toContain(messageStamp(AHEAD));
+  });
+
+  it("marks an Upcoming row too — the row the next-run CHIP stays quiet on", () => {
+    // Which is the whole reason the mark is not drawn inside that chip:
+    // nextRunChip is null on Upcoming, whose own time already IS the next run,
+    // and those are the most scheduled rows on the page.
+    const t = upcoming([AHEAD]);
+    expect(nextRunChip(t, NOW)).toBe(null);
+    expect(scheduledMark(t, NOW)?.at).toBe(AHEAD);
+  });
+
+  it("says nothing about a task with no run ahead, or one already due", () => {
+    // The same test nextRunChip applies, deliberately: two marks on one row
+    // must not disagree about whether a run is coming. An overdue pending is
+    // not what the task does NEXT — it is work the Upcoming lane surfaces.
+    expect(scheduledMark(task({ status: "done" }), NOW)).toBe(null);
+    const past = task({
+      status: "done",
+      next_run: Math.floor(NOW / 1000) - 60,
+      next_run_entry: "e2",
+    });
+    expect(scheduledMark(past, NOW)).toBe(null);
+  });
+
+  it("is built, and hidden behind one flag (Akshil, 2026-09-11)", () => {
+    // Same arrangement as SHOW_ROW_ACTIONS: everything stays, one constant
+    // decides. Flip it and the row wears the mark again with no other change.
+    expect(VIEWS).toContain("const SHOW_SCHEDULE_MARK: boolean = false;");
+    expect(VIEWS).toContain("{SHOW_SCHEDULE_MARK && sched ? (");
+    expect((VIEWS.match(/SHOW_SCHEDULE_MARK &&/g) ?? []).length).toBe(1);
+  });
+
+  it("is a glyph beside the file mark, with the fact in the tooltip", () => {
+    const mark = scheduledMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)!;
+    expect(VIEWS).toContain('className="tasks-row-sched"');
+    expect(VIEWS).toContain("{ICON_CLOCK}");
+    expect(VIEWS).toContain("data-hint={sched.title}");
+    // …and read out to anything that cannot see the clock — as prose, without
+    // the hint's middle dot, which AT either names or drops.
+    expect(VIEWS).toContain("aria-label={sched.label}");
+    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
+    expect(mark.label).not.toContain("·");
+    // The pair's order: what the task is about, then how it is run.
+    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(
+      ROW.indexOf('className="tasks-row-sched"'),
+    );
+    expect(ROW.indexOf('className="tasks-row-sched"')).toBeLessThan(
+      ROW.indexOf('className="tasks-grow"'),
+    );
+  });
+
+  it("spends the row's own gesture, so it is not a dead run of pixels", () => {
+    // The mark sits above `.tasks-rowlink` for its tooltip, which is exactly
+    // what made the file icon unclickable (Akshil, 2026-08-27). Same three
+    // handlers here, not a second answer to the same bug.
+    const mark = ROW.slice(ROW.indexOf('className="tasks-row-sched"'));
+    const body = mark.slice(0, mark.indexOf("{ICON_CLOCK}"));
+    expect(body).toContain("if (opensElsewhere(e)) {");
+    expect(body).toContain("activate();");
+    expect(body).toContain("onAuxClick");
+    expect(body).toContain("if (e.button === 1 && href) e.preventDefault();");
+  });
+
+  it("wears the file mark's own box, declaration for declaration", () => {
+    // The two are one pair of captions on the title; a second set of numbers
+    // for the second glyph is how a pair drifts apart.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-sched {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    // Above the stretched link, or it never receives the pointer at all.
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+    // Not what gives way when a long title runs out of room.
+    expect(body).toContain("flex: 0 0 auto");
+    // Full-height hit zone, every pixel of it given back.
+    expect(body).toContain("align-self: stretch");
+    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
+    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
+    // Pulled toward the group it belongs to, by one full row gap.
+    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
+    // And no cursor of its own: a mark that announces a press the row's press
+    // does not make looks broken (the file mark's rule, same argument).
+    expect(body).not.toContain("cursor:");
+  });
+});
+
 describe("mergeTaskChanges", () => {
   const row = (key: string, last_active: number): Task =>
     ({ key, last_active, status: "done", messages: [] }) as unknown as Task;
@@ -8207,12 +8449,161 @@ describe("attentionRows", () => {
     expect(noSession[0].href)
       .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
 
-    // Nowhere at all: the news is still true, so the row exists and says so by
-    // being unclickable rather than by not being drawn.
+    // Nowhere at all: the news is still true, so the row still gets a door —
+    // the Tasks page itself, which is always a valid destination for "a task
+    // needs you" even when this particular task names no folder.
     const nowhere = attentionRows([
       task({ key: "x", status: "needs_attention", session_id: "", target: "",
              project: "" }),
     ]);
-    expect(nowhere[0].href).toBeNull();
+    expect(nowhere[0].href).toBe("/tasks");
+  });
+});
+
+describe("provisionalTasks", () => {
+  const row = (over: Partial<TaskPulseTask> = {}): TaskPulseTask => ({
+    key: "sess-1",
+    status: "in_progress",
+    unread: 2,
+    last_active: 1_700_000_000,
+    happened_at: 1_699_999_000,
+    project: "/Users/me/proj",
+    task_id: "TASK-002",
+    title: "Pull today's news",
+    target: "/Users/me/proj/news.py",
+    session_id: "sess-1",
+    next_run: 0,
+    next_run_entry: "",
+    ...over,
+  });
+
+  it("carries every pulse field through untouched", () => {
+    // The point of the seed: these ten fields are what a row DRAWS — its link,
+    // its ring, its chip, its title, its time — so a provisional row and the
+    // listing row that replaces it say the same things about all of them.
+    const [t] = provisionalTasks([row()]);
+    expect(t.key).toBe("sess-1");
+    expect(t.task_id).toBe("TASK-002");
+    expect(t.project).toBe("/Users/me/proj");
+    expect(t.target).toBe("/Users/me/proj/news.py");
+    expect(t.session_id).toBe("sess-1");
+    expect(t.title).toBe("Pull today's news");
+    expect(t.status).toBe("in_progress");
+    expect(t.unread).toBe(2);
+    expect(t.last_active).toBe(1_700_000_000);
+    expect(t.happened_at).toBe(1_699_999_000);
+  });
+
+  it("fills everything pulse does not carry with a neutral default", () => {
+    // NEUTRAL, not plausible: a guessed `live` or `failed` would put a shimmer
+    // or a red ring on a row this client knows nothing about, and every one of
+    // these is replaced whole when /api/tasks lands.
+    const [t] = provisionalTasks([row()]);
+    expect(t.messages).toEqual([]);
+    expect(t.message_count).toBe(0);
+    expect(t.live).toBe(false);
+    expect(t.failed).toBe(false);
+    expect(t.attention).toBeNull();
+    expect(t.description).toBe("");
+    expect(t.title_source).toBe("message");
+    expect(t.blocked_reason).toBe("");
+    expect(t.next_run_entry).toBe("");
+    expect(nextRunAt(t)).toBeNull();
+    expect(t.started).toBe(0);
+  });
+
+  it("carries the next run, so an Upcoming card sorts where the real one will", () => {
+    // The Board's Upcoming lane orders by next run (LANE_SORTS); a default of
+    // 0 sent every provisional card to the bottom and then moved it when the
+    // listing landed — the one reorder the seed was meant to avoid.
+    // Time AND entry: nextRunAt names the run only when both are there.
+    const [t] = provisionalTasks([row({ next_run: 1_700_100_000, next_run_entry: "e-9" })]);
+    expect(t.next_run).toBe(1_700_100_000);
+    expect(t.next_run_entry).toBe("e-9");
+    expect(nextRunAt(t)).toBe(1_700_100_000);
+  });
+
+  it("marks the row provisional, and is not expandable", () => {
+    // The flag is the whole contract with the views: the count cell and the
+    // caret read it and draw placeholders rather than printing `message_count`
+    // as if it were a count (ScheduleTaskViews).
+    const [t] = provisionalTasks([row()]);
+    expect(t.provisional).toBe(true);
+    expect(isExpandable(t)).toBe(false);
+  });
+
+  it("keeps pulse's unread on the ring: taskUnread does not read the empty window as read", () => {
+    // `message_count` 0 with no messages is how a fully read empty thread ALSO
+    // looks, and the exact-thread arm of taskUnread would answer 0 — a hollow
+    // ring on a task the server says has two unread, for the whole wait the seed
+    // covers (Bugbot on #1079). A provisional row hands back the pulse number.
+    const [t] = provisionalTasks([row({ unread: 2 })]);
+    expect(taskUnread(t, new Set())).toBe(2);
+    const [none] = provisionalTasks([row({ unread: 0 })]);
+    expect(taskUnread(none, new Set())).toBe(0);
+  });
+
+  it("the four views print the PAGE's one empty sentence, full width, centred", () => {
+    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards
+    // and Calendar; each prints it as the same `.schedule-tv-empty` paragraph.
+    // The Board used to show five bare rails and the Calendar a bare grid.
+    const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(4);
+    // The Board keeps its `note` beside the sentence: a move that emptied the
+    // board is when "where did it go" matters most (Bugbot).
+    const boardEmpty = VIEWS.slice(VIEWS.indexOf("if (tasks.length === 0) {"));
+    expect(boardEmpty.slice(0, boardEmpty.indexOf("return (\n    <>"))).toContain(
+      '{note && <p className="schedule-tv-note">{note}</p>}\n        <p className="schedule-tv-empty">{emptyLabel}</p>',
+    );
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    expect(CAL).toContain('return <p className="schedule-tv-empty">{emptyLabel}</p>;');
+    // ...and the Calendar forgets its aim while the grid is gone, so a remount
+    // scrolls to the now-line again instead of opening at midnight (Bugbot).
+    expect(CAL).toContain('if (tasks.length === 0) aimed.current = { key: "", withChips: false };');
+    const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    expect(CARDS_SRC).toContain('<p className="schedule-tv-empty">{emptyLabel}</p>');
+    expect(block(SCHEDULE_CSS, ".schedule-tv-empty")).toContain("width: 100%");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-empty")).toContain("text-align: center");
+  });
+
+  it("the page waits behind a ghost of the CURRENT view, not eight bars", () => {
+    // One ghost per view (TasksSkeleton), each built from the real view's
+    // container classes so the swap to rows moves nothing. Gated on the same
+    // `tasksLoaded` as before; the toolbar above it is already real.
+    const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+    expect(SCHED).toContain("{!tasksLoaded ? (");
+    expect(SCHED).toContain("<TasksSkeleton view={view} />");
+    const SKEL = readFileSync(join(SHELL, "TasksSkeleton.tsx"), "utf8");
+    for (const cls of ["tasks-list-frame", "schedule-tv-board", "schedule-tv-lane",
+                       "task-cards", "schedule-cal-grid"]) {
+      expect(SKEL).toContain(`"${cls}`);
+    }
+    // The a11y attrs ride the ghost's ROOT, which is the view's own container
+    // class — `.schedule-main > .task-cards-scroll` and friends must match it.
+    expect(SKEL).toContain('role: "status"');
+    expect(SKEL).toContain('"aria-label": "Loading tasks"');
+    expect(SKEL).toContain('ghost("cards", "task-cards-scroll")');
+  });
+
+  it("the List blanks the count AND the time cell of a provisional row", () => {
+    // Both cells would otherwise print a default as a fact: `message_count` is
+    // 0 by construction, and taskWhen, with no message window to read, falls
+    // through to `last_active` — which on a live session is "just now" while
+    // the listing's last run is an hour ago. Ink hidden, box kept, so the swap
+    // to the real row moves nothing.
+    expect(VIEWS).toContain('className="tasks-row-msgs tasks-row-msgs--blank"');
+    expect(VIEWS).toContain('className="tasks-row-time tasks-row-time--blank"');
+    expect(TASKS_CSS).toMatch(/\.tasks-row-msgs--blank,\s*\.tasks-row-time--blank \{\s*visibility: hidden;/);
+  });
+
+  it("is empty for an empty store, and keeps the store's order", () => {
+    // A fresh reload straight to /tasks has nothing in the pulse store yet, and
+    // the seed is then exactly the `[]` the page used to start from.
+    expect(provisionalTasks([])).toEqual([]);
+    const keys = provisionalTasks([
+      row({ key: "a", task_id: "TASK-001" }),
+      row({ key: "b", task_id: "TASK-002" }),
+    ]).map((t) => t.key);
+    expect(keys).toEqual(["a", "b"]);
   });
 });

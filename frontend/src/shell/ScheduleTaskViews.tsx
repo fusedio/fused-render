@@ -93,6 +93,7 @@ import {
   parseListMemory,
   projectOptions,
   relativeWhen,
+  scheduledMark,
   settleMarkAllRead,
   spansProjects,
   taskColumn,
@@ -178,6 +179,13 @@ export type { TaskFilters };
  * change rather than a value change.
  */
 const SHOW_ROW_ACTIONS: boolean = false;
+// THE SCHEDULE MARK IS BUILT AND HIDDEN (Akshil, 2026-09-11: "quick can we hide
+// the task list icon we just added"). Same arrangement as the strip above: the
+// glyph, its handlers, its CSS and tests all stay, and one flag decides whether
+// the row wears it. tasks-lib.scheduledMark is still computed — the tooltip
+// text and the predicate are the part worth keeping warm — so turning it back
+// on is this one line.
+const SHOW_SCHEDULE_MARK: boolean = false;
 
 
 // ---- icons -------------------------------------------------------------------
@@ -218,6 +226,25 @@ const ICON_FILE = icon(
 // from. Removed at Akshil's request: it is a third glyph on a 12.5px line whose
 // first two already carry the state and the id, and nothing on the page acts on
 // the distinction. `.tasks-msg-kind` went from tasks.css with it.
+//
+// THE CLOCK BELOW IS NOT THAT CLOCK, and the difference is the whole reason it is
+// allowed back on the page. That one sat on every MESSAGE row and said which kind
+// each message was — a distinction the row's other two glyphs already carried.
+// This one sits on the TASK row and says the task has a run booked
+// (tasks-lib.scheduledMark), which nothing else on that line states: the "next
+// 2h" chip is absent on exactly the rows whose own time already IS the next run,
+// and a time in the last column is not a mark a list can be scanned by.
+/** A schedule, for a task with a run ahead of it.
+ *
+ *  lucide `clock`, at the file mark's 12px and drawn beside it: the two are the
+ *  same kind of statement about the task — what it is about, and that it runs by
+ *  itself — so they read as one pair of captions on the title rather than as two
+ *  unrelated symbols. Boxy is not on offer here (a clock is a circle), but the
+ *  stroke, the size and the muted register are the file mark's exactly. */
+const ICON_CLOCK = icon(
+  <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 16 14" /></>,
+  12,
+);
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 13);
@@ -1636,7 +1663,13 @@ function TaskNode({
   // stops being expandable closes itself instead of being stuck open with no
   // control to close it. That cannot happen today (a thread never shrinks), but
   // "cannot happen" is not a thing to leave a render depending on.
-  const expandable = isExpandable(task);
+  // A PROVISIONAL row is never an accordion: its `message_count` is a default
+  // (tasks-lib.provisionalTasks), not a count, so "does this thread have more
+  // than one message in it" is a question pulse cannot answer yet. The gutter
+  // still draws — only the chevron goes — which is the same placeholder a
+  // one-message row already gets, and the row becomes expandable on its own
+  // when the listing lands and replaces it.
+  const expandable = isExpandable(task) && !task.provisional;
   const open = expandable && requested;
   const view = threadView(task, loaded);
   // Everything this thread holds, one list: the listing window before Show more,
@@ -1690,6 +1723,10 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and that there IS one at all — the mark beside the file glyph, drawn on
+  // every row with a run ahead of it including the Upcoming ones the chip stays
+  // quiet on. tasks-lib.scheduledMark owns the test and the tooltip.
+  const sched = scheduledMark(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2319,6 +2356,45 @@ function TaskNode({
           </span>
         ) : null}
 
+        {/* THE SCHEDULE MARK, next to the file mark and for the reason that one
+            is there: both answer "what kind of task is this" about the title
+            they sit against, so they belong in one pair of captions rather than
+            at opposite ends of the row (Akshil, 2026-09-10, on the List view).
+            tasks-lib.scheduledMark decides it — a run strictly ahead, the same
+            test nextRunChip applies, so the glyph and the chip cannot disagree
+            about whether one is coming.
+
+            A PRESS HERE IS A PRESS ON THE ROW, exactly as on the file mark
+            above: the mark sits over the stretched link (`z-index: 2`, for its
+            tooltip) and would otherwise be a second dead pixel-run on the row
+            (Akshil, 2026-08-27, about the file icon — same bug, so the same
+            three handlers rather than a second answer to it). */}
+        {SHOW_SCHEDULE_MARK && sched ? (
+          <span
+            className="tasks-row-sched"
+            data-hint={sched.title}
+            aria-label={sched.label}
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
+          >
+            {ICON_CLOCK}
+          </span>
+        ) : null}
+
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
@@ -2527,6 +2603,19 @@ function TaskNode({
             because none of its user entries is typed prose. This default is the
             preventive fix; the counter is a separate job.) */}
         {(() => {
+          // A PROVISIONAL row has no count to show — /api/tasks/pulse does not
+          // carry `message_count`, so the floor of one below would be a number
+          // this client invented. The cell is still DRAWN, with its ink hidden
+          // rather than its box removed: an absent chip would widen the title
+          // beside it and snap it back the moment the listing lands, and the
+          // whole point of painting early is that nothing jumps when it does.
+          if (task.provisional) {
+            return (
+              <span className="tasks-row-msgs tasks-row-msgs--blank" aria-hidden>
+                1<span className="tasks-row-msgs-icon">{ICON_MSG}</span>
+              </span>
+            );
+          }
           const shown = Math.max(1, task.message_count);
           return (
             <span
@@ -2581,9 +2670,22 @@ function TaskNode({
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" data-hint={when.title}>
-          {when.text}
-        </span>
+        {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
+            run off the three-message window, and pulse carries no window, so it
+            falls through to `last_active` — the session's clock, which on a live
+            session says "just now" while the listing a beat later says "56m
+            ago" for the last run (cmux-ux-tester, 2026-09-09). Two different
+            answers to one cell reads as a bug. Same treatment as the count cell
+            above: drawn, ink hidden, width held. */}
+        {task.provisional ? (
+          <span className="tasks-row-time tasks-row-time--blank" aria-hidden>
+            {when.text}
+          </span>
+        ) : (
+          <span className="tasks-row-time" data-hint={when.title}>
+            {when.text}
+          </span>
+        )}
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own
@@ -2853,7 +2955,12 @@ export function TaskBoard({
   home = "",
   onReload,
   missing,
+  emptyLabel = "Nothing to show here.",
 }: {
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`). Five bare
+   * rails said nothing about WHY the board was empty; the List's sentence does,
+   * and the four views now share it. */
+  emptyLabel?: string;
   /** Already filtered, in the SERVER's order — the LANES re-order it
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
    * order it is handed and the one place it is decided. */
@@ -3083,6 +3190,22 @@ export function TaskBoard({
       return next.size === cur.size ? cur : next;
     });
   }, [byLane]);
+
+  // After every hook above, so a set that empties and refills does not change
+  // the hook order. The List's element and class, for the List's reason: one
+  // page, one way of saying there is nothing here.
+  if (tasks.length === 0) {
+    return (
+      <>
+        {/* The note rides along: an unarchive or a refused drop that removed
+            the LAST matching card is exactly when "where did it go" needs
+            answering, and the empty sentence alone read as a disappearance
+            (Bugbot, #1079). */}
+        {note && <p className="schedule-tv-note">{note}</p>}
+        <p className="schedule-tv-empty">{emptyLabel}</p>
+      </>
+    );
+  }
 
   return (
     <>

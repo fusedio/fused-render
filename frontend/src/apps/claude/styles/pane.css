@@ -1,0 +1,356 @@
+/* THE LEFT APP PANE's styles, ported from T's stylesheet with the chat's own
+   `--c-*` token aliases (styles/chat.css) and the ids turned into `c-`-prefixed
+   classes — a native component may be mounted more than once per document, so an
+   id-keyed rule is not available to it.
+
+   Everything is scoped under `.chat-root`, and the narrow rules key off the
+   `narrow` / `view-*` classes that `useNarrowView` puts THERE rather than on
+   `<body>`: the body belongs to the whole shell now, and two chats on one page
+   (a cards wall) must not fight over it.
+
+   Cites are `T:<line>` into fused_render/templates/claude/template.html. */
+
+/* ── split layout (T:119-139) ─────────────────────────────── */
+.chat-root .c-left {
+  position: relative;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The iframe's box, and the offset parent for everything that floats over the
+   app — the annotate bar, the pins, the highlight, the note composer.
+   `min-height: 0` because a flex child's default `min-height: auto` would let
+   the iframe refuse to shrink (T:120-124). */
+.chat-root .c-leftview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.chat-root .c-leftview iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--c-bg);
+}
+
+.chat-root .c-divider {
+  flex-shrink: 0;
+  width: 4px;
+  cursor: col-resize;
+  background: var(--c-border);
+  transition: background 0.15s;
+}
+/* T:1254-1255. `.dragging` is stamped on the chat root while a drag is live: the
+   handle wears its hover colour, and the framed document stops taking pointer
+   events so it cannot swallow the drag. */
+.chat-root .c-divider:hover,
+.chat-root.dragging .c-divider {
+  background: var(--c-handle-hover);
+}
+.chat-root.dragging .c-leftview iframe {
+  pointer-events: none;
+}
+
+/* The error panel that replaces the frame (T:1256). */
+.chat-root .c-msg {
+  margin: auto;
+  color: var(--c-dim);
+  text-align: center;
+  padding: 24px;
+}
+
+/* ── the pane's own bar ───────────────────────────────────────
+   The same row as the chat's control strip on the other side of the divider,
+   and the two must agree on height or the pane's bottom border runs a few pixels
+   off and the row reads as broken (T:155-172). The strip itself belongs to the
+   chat shell (another agent); this is the pane's half, declared with the same
+   metrics so a drift is visible in one file. */
+.chat-root .c-leftbar {
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+/* ── the leftmode picker (T:420-516) ──────────────────────────
+   Quiet to the same degree as the annotate switch: borderless, transparent,
+   12px, muted ink until hovered. Loud chrome here would read as the pane's TITLE
+   rather than as a switch on it. */
+.chat-root .c-leftmode {
+  position: relative;
+  flex-shrink: 0;
+}
+/* THE RIGHT-HAND END of the pane's own bar. The bar exists to carry this one
+   control, and a lone control hard against the left edge reads as a label for
+   the pane rather than as a switch on it. Scoped to the bar: in the narrow
+   layout the picker shares the control strip, where the annotate switch already
+   owns the row's one auto margin and a second would split the free space
+   between them and float the picker into the middle (T:424-429). */
+.chat-root .c-leftbar .c-leftmode {
+  margin-left: auto;
+}
+.chat-root .c-leftmodebtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 160px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+/* Open is a state the trigger has to WEAR: with the popup drawn below it, a
+   trigger that goes back to looking untouched reads as a menu belonging to
+   nothing (T:449-454). Base UI stamps `data-popup-open` where the template read
+   `aria-expanded`; both are matched so the rule survives either. */
+.chat-root .c-leftmodebtn:hover,
+.chat-root .c-leftmodebtn[aria-expanded="true"],
+.chat-root .c-leftmodebtn[data-popup-open] {
+  color: var(--c-fg);
+  background: var(--c-surface);
+}
+.chat-root .c-leftmodebtn .c-mode-lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-root .c-mode-chev {
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+/* The template's own icon.svg, drawn the way the shell draws it
+   (`mode-icon-mask`): a MASK filled with currentColor, so one flat glyph
+   inherits the row's ink and both themes instead of shipping two colourways
+   (T:457-472). */
+.chat-root .c-mode-ic {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+/* A template folder with no icon.svg (and the `_render` sentinel, which is not a
+   folder at all) gets the shell's own fallback: a lettered box, so the column of
+   icons never goes ragged (T:473-482). */
+.chat-root .c-mode-ic-letter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  background-color: transparent;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+/* The popup. Base UI portals it out of `.chat-root`, so it carries the tokens
+   itself rather than inheriting them — same box and same shadow as the kebab
+   menu, because to the user they are the same kind of thing (T:483-498). */
+.c-leftmodepop {
+  z-index: 30;
+  min-width: 172px;
+  padding: 4px;
+  background: var(--c-panel, var(--popover, #1e2025));
+  border: 1px solid var(--c-border-strong, #4a4d57);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow, rgba(0, 0, 0, 0.4));
+  color: var(--c-fg, #ececf1);
+}
+.c-leftmodepop .c-mode-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--c-fg, #ececf1);
+  cursor: pointer;
+  text-align: left;
+}
+.c-leftmodepop .c-mode-opt:hover,
+.c-leftmodepop .c-mode-opt:focus-visible,
+.c-leftmodepop .c-mode-opt[data-highlighted] {
+  background: var(--c-surface-2, #2d3038);
+}
+/* T:516 — the current view's row takes the accent, glyph included (the mask is
+   filled with currentColor). Base UI's radio item stamps `data-checked` where
+   the template wrote `aria-selected`. */
+.c-leftmodepop .c-mode-opt[aria-selected="true"],
+.c-leftmodepop .c-mode-opt[data-checked] {
+  color: var(--c-accent, #d97757);
+}
+
+/* ── the narrow layout's view toggle (T:605-628) ──────────────
+   `display: none` until the narrow rules reveal it: while both columns are on
+   screen there is nothing to toggle. Drawn like the Back button (bordered,
+   quiet) rather than like the annotate switch — it navigates between views, it
+   is not a mode. `flex-shrink: 0` and the tighter padding are what let the
+   longer labels live in a 220px row: this is the control that must never be
+   half-readable, because a truncated "Back to cha…" is the only way out of the
+   preview. */
+.chat-root .c-viewbtn {
+  display: none;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    border-color 0.12s,
+    background 0.12s;
+}
+.chat-root .c-viewbtn:hover {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+  background: var(--c-surface);
+}
+
+/* ── the narrow single-view layout ───────────────────────────
+   T declares this in `@media (max-width: 800px)`; here the same rules key off
+   the `narrow` class `useNarrowView` writes from the SAME media query
+   (NARROW_MQ_QUERY). One definition of the breakpoint, evaluated once — a
+   `matchMedia` object rather than a width comparison, because `innerWidth < 800`
+   and a media query disagree about a scrollbar's width and that disagreement is
+   a half-collapsed layout (T:5888-5891). Class-driven rather than a second media
+   block for a second reason: the chat can be mounted in a PANE narrower than the
+   window, and a media query would then answer about the wrong box.
+
+   The breakpoint's own derivation — 420px of framed preview + 4px of divider +
+   440px of transcript prose — is in useNarrowView's header (T:3690-3717). */
+.chat-root.narrow {
+  flex-direction: column;
+  position: relative;
+}
+/* Nothing to drag when only one view is on screen (T:3745). */
+.chat-root.narrow .c-divider {
+  display: none;
+}
+/* And no bar over the left pane: below the breakpoint there is no persistent
+   left column to put one on, so the picker goes back to the shared strip. This
+   is the layout half of that fact; `pickerHost` is the other (T:3751). */
+.chat-root.narrow .c-leftbar {
+  display: none;
+}
+/* NOTE what is NOT here: a width for the column. `useSplit` refrains from
+   writing the inline percentage while narrow (`splitWidth` returns undefined),
+   because an inline declaration outranks any stylesheet rule and the CSS force
+   flag is not used here (D146). The `split` PARAM is never touched by the
+   collapse, so the wide layout returns with the user's own ratio and no reload.
+   `min-width` IS a stylesheet declaration and does need clearing: the 200px
+   floor is a promise about the wide layout (T:3752-3768). */
+.chat-root.narrow .c-left {
+  min-width: 0;
+}
+/* AND THE CHAT COLUMN'S OWN HALF OF T:3772 — `#chat { min-width: 0; order: -1 }`
+   inside the narrow media block. Only the sibling above was ported, so the DOM
+   order (`.c-left`, `.c-divider`, `.c-chat`) won the column flex and the 43px
+   control strip rendered at the BOTTOM of the screen in the preview view
+   (measured `[44,835,736,43]` in a 900px viewport) — Back to chat, Screenshot,
+   Comment, Annotate and `⋮` under the app instead of over it (visual pass 2,
+   FIX-2B).
+
+   `min-width: 0` is the other half and it is load-bearing now that the wide
+   column floors at 340px (FIX-2A): a 220px pane must be allowed to be 220px,
+   or the column overflows horizontally rather than collapsing to one view. */
+.chat-root.narrow .c-chat {
+  min-width: 0;
+  order: -1;
+}
+
+/* Chat view — the default. The preview column is taken OUT OF FLOW and parked,
+   full size, behind the chat rather than `display: none`d, and that is not a
+   stylistic choice: an iframe with no layout box gives its content document a
+   0×0 viewport, which would (a) make a pane screenshot rasterise a 1×1 image of
+   the app, and (b) collapse every element rect the pins are anchored to, so
+   arming annotate mode from here would find nothing to point at. Parked and
+   `visibility: hidden` it keeps a real viewport and a real layout, costs one
+   out-of-flow box, and shows nothing. `pointer-events: none` so the invisible
+   pane cannot swallow a click meant for the chat (T:3776-3789).
+
+   The pin overlay needs no rule of its own: its nodes are children of the
+   column, so parking takes them with it — `visibility` inherits and the parked
+   box cannot intercept a click. A stray `visibility: visible` anywhere under the
+   column would float it over the chat (T:3845-3853). */
+.chat-root.narrow.view-chat .c-left {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* A control that acts on the OTHER half is ABSENT here, not disabled: with no
+   preview on screen there is nothing to choose a view FOR, and a disabled control
+   still claims the space and still says "this view has that feature", which is a
+   worse lie than not offering it (T:3822-3824). */
+.chat-root.narrow.view-chat .c-leftmode {
+  display: none;
+}
+/* AND THE SLACK IS SPLIT IN TWO IN THIS VIEW, which is what legacy DRAWS: T
+   gives `#anncta` and `#viewbtn` an auto margin each, so with the picker and
+   the Comment seat gone the spare space divides between them and the seats sit
+   MID-STRIP (measured on :1777 at a 736px pane: `#anncta` x=172.4 with a
+   156.36px auto margin, `#viewbtn` x=548.3 with its own). One auto margin puts
+   the same group at 328.7 — everything else in the row already lands on
+   legacy's pixel (`#viewbtn` 548.3, `⋮` 698), so this is the last one.
+   Scoped to the CHAT view: the preview view orders the toggle first
+   (`.c-viewbtn { order: -1 }`, below) and matches legacy there unaided. */
+.chat-root.narrow.view-chat .c-viewbtn {
+  margin-left: auto;
+}
+/* Preview view: the column owns the screen, and the toggle moves to the row's
+   left edge — the way out of a view sits where the way back always sits. Flex
+   `order` rather than moving DOM nodes (T:3843, 3871). */
+.chat-root.narrow.view-preview .c-left {
+  flex: 1;
+  min-height: 0;
+}
+.chat-root.narrow.view-preview .c-viewbtn {
+  order: -1;
+}
+.chat-root.narrow .c-viewbtn {
+  display: flex;
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .c-divider,
+  .chat-root .c-leftmodebtn,
+  .chat-root .c-viewbtn {
+    transition: none;
+  }
+}

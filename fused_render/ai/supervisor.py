@@ -55,6 +55,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,11 @@ VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
 #: answers, and a shared id would have the second overwrite the first's row
 #: mid-stream.
 TEXT_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-text:"
+#: `ai/benchmark.py`'s own row prefix, minted here rather than as an inline
+#: literal there — both of its call sites (the watched row and the unwatched
+#: fallback id) use this, and `_job_page` below reads it, so the mapping from
+#: a benchmark job to its destination has one owner.
+BENCHMARK_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-benchmark-"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -895,10 +901,42 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 # --------------------------------------------------------------- bring-up flow
 
 
+def _job_page(job: str) -> str:
+    """Where clicking this row goes, once it reaches Notifications, for the
+    two prefix families that have exactly one destination regardless of who
+    is asking: `sys:ai-model:*` goes to the Local models page, where a load
+    in progress is shown, and `sys:ai-benchmark-*` (`ai/benchmark.py`, which
+    reports through this same `_report`) goes to the Benchmark page.
+
+    Every other prefix this module reports through (`ai-image:`,
+    `ai-transcribe:`, `ai-video:`, `ai-text:`) has no fixed destination here —
+    the caller knows it instead (the page that made the request, carried in
+    over `X-Fused-Page`) and passes it as an explicit `page=` to `_report`,
+    which takes that over this function entirely. This function only answers
+    for the rows a caller never has an opinion about.
+    """
+    if job.startswith(JOB_PREFIX):
+        return "/ai-models/local"
+    if job.startswith(BENCHMARK_JOB_PREFIX):
+        return "/ai-models/benchmark"
+    return ""
+
+
 def _report(job: str, **fields) -> None:
-    """One progress tick, best-effort. Reporting must never break the load."""
+    """One progress tick, best-effort. Reporting must never break the load.
+
+    `page`, if a caller passes one, wins over `_job_page(job)` — the explicit
+    kwarg is popped out of `fields` first so it never collides with the one
+    `jobs.upsert` accepts by name. Absent, `_job_page(job)` answers instead
+    (still "" for a prefix family with no fixed destination), and `upsert`
+    only ever writes a truthy `page`, so a tick that has nothing to say about
+    it leaves whatever the opening report already set untouched.
+    """
+    page = fields.pop("page", None)
+    if page is None:
+        page = _job_page(job)
     try:
-        jobs.upsert({"id": job, **fields}, server=True)
+        jobs.upsert({"id": job, **fields}, page=page, server=True)
     except (jobs.JobError, ValueError):
         pass
 
@@ -1194,7 +1232,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     # window between becoming ready and someone asking —
                     # which is exactly the window a slow bring-up ate.
                     worker.last_activity = time.monotonic()
-                    _report(job, state="done", detail="Model loaded")
+                    _report(job, state="done", detail="Model loaded", tier=jobs.SILENT)
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
@@ -1221,10 +1259,18 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
             if _workers.get(worker.capability) is worker:
                 del _workers[worker.capability]
         _terminate(worker)
+        # `tier=jobs.TRAIL`, restated explicitly the same way the success
+        # report above restates `SILENT`: `job_id_for(model)` is shared
+        # with `_fetch_only`'s download and `_remove`'s unload, so this
+        # report cannot lean on whatever an earlier one left on the id (see
+        # `Job.tier`'s own comment). A failed load left a reason to look —
+        # the resident row now says why the model isn't there — so it
+        # declares `TRAIL`, not `SILENT`: a failure is always news, even
+        # when a successful load/unload of the same model raises none.
         if message == "cancelled":
-            _report(job, state="cancelled")
+            _report(job, state="cancelled", tier=jobs.TRAIL)
         else:
-            _report(job, state="error", message=message)
+            _report(job, state="error", message=message, tier=jobs.TRAIL)
 
 
 # ---------------------------------------------------------------- public façade
@@ -1287,7 +1333,14 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
-        _report(job, state="done", detail="Downloaded")
+        # `tier=jobs.TRAIL` restated explicitly: `job` here is
+        # `job_id_for(model)`, the same row a RESIDENT load of this model
+        # reports through, and `Job.tier` sticks until a report says
+        # otherwise (`upsert`'s `"tier" in body` gate) — a weights-only
+        # download wrote gigabytes to disk, which is real news regardless of
+        # whatever this id's row said the last time it was a load's own
+        # success report.
+        _report(job, state="done", detail="Downloaded", tier=jobs.TRAIL)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
         message = _failure_text(e)
         _report(job, state="cancelled" if message == "cancelled" else "error",
@@ -1424,8 +1477,22 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             with _lock:
                 _draining.pop(current.token, None)
 
+    # `tier=jobs.SILENT` restated explicitly: `job` is `job_id_for(model)`,
+    # the same row a weights-only download or an unload of this model reports
+    # through, and `Job.tier` sticks until a report says otherwise (`upsert`'s
+    # `"tier" in body` gate) — without restating it here, a load started right
+    # after a download runs its entire "running" phase under that download's
+    # stale `TRAIL`, not the `SILENT` this row's own success (`_bring_up`)
+    # declares (its failure restates `TRAIL` instead — a failure is always
+    # news, even though loading successfully raises none).
+    #
+    # `origin="Local models"` rides along even though this row raises no
+    # notification: the AI Models > Local page's running Activity list shows
+    # this row live, before it ever reaches a terminal state a tier decides
+    # the fate of, so it still needs a caption naming where it came from.
     _report(job, title=model, model=model, state="running", kind="download",
-            cancellable=True, detail="Preparing…", done=None, total=None)
+            cancellable=True, detail="Preparing…", done=None, total=None,
+            tier=jobs.SILENT, origin="Local models")
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -1456,9 +1523,14 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             return {"jobId": job, "model": model, "state": "downloading"}
         _downloads[model] = {"model": model, "capability": capability,
                              "jobId": job, "startedAt": time.time()}
+    # `tier=jobs.TRAIL` restated explicitly, for the same reason the resident
+    # load's own opening report above restates `SILENT`: this row may still
+    # carry a stale tier from an earlier load or unload of the same model.
+    # `origin="Local models"` for the same reason it rides along on that
+    # report too — the Activity row is visible while this runs, tier aside.
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
-            total=None)
+            total=None, tier=jobs.TRAIL, origin="Local models")
     threading.Thread(target=_fetch_only, args=(runner, model, job),
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
@@ -1475,7 +1547,7 @@ def image_job_id(uid: str) -> str:
 
 
 def _start_render(capability: str, model: str, request: dict, job: str,
-                   generate, *, noun: str, thread_name: str) -> None:
+                   generate, *, noun: str, thread_name: str, page: str = "") -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1488,6 +1560,18 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     machine with no runner for `capability` answers with the reason instead
     of opening a job row that immediately fails — the caller gets an error
     it can show, rather than a progress bar it has to watch die.
+
+    `page` is set both on this opening report AND on the terminal one — the
+    only two ticks that can name a destination this row did not already have.
+    A caller-supplied `page` (Playground's own app, an app that raised the
+    render over `X-Fused-Page`) wins outright and is set once, at open; a
+    render with NO caller page instead gets one on the CLOSING report, once
+    the output path is actually known — the rendered file itself on success,
+    or the folder that would have held it on a failure or a cancellation (the
+    file may not exist, but its parent directory always does — the caller
+    already created it before starting this render). Either way `jobs.upsert`
+    keeps a truthy `page` already on the row through every later tick that
+    does not repeat it, so the two writes never race each other.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
@@ -1499,8 +1583,35 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
     # overwrite a model name concatenated there on the very next tick).
+    # `origin` is DERIVED from `page` (`jobs.origin_for_page`) rather than a
+    # bare literal: `start_image`/`start_video` are reached from
+    # `POST /api/ai/image|video`, the public `fused.ai.image()`/
+    # `fused.ai.video()` runtime API any app page can call, so a hardcoded
+    # "Playground" would caption a user app's own render as though the
+    # shipped Playground had raised it — false the moment a second caller
+    # exists. `default="Playground"` is what makes an EMPTY `page` still
+    # read correctly: the AI Models Playground runs in the shell, not in a
+    # page iframe, and has no `X-Fused-Page` of its own (see the comment on
+    # `out_dir` below), so an empty `page` here really does mean "the
+    # Playground raised this". Restated only here, at open — `origin` is
+    # sticky like every other field, so the terminal reports below need not
+    # repeat it.
     _report(job, title=title[:80], model=model, state="running", kind="task",
-            cancellable=True, unit="", detail="Preparing…", done=None, total=None)
+            cancellable=True, unit="", detail="Preparing…", done=None, total=None,
+            page=page, origin=jobs.origin_for_page(page, default="Playground"))
+
+    # Where the row opens when NOBODY raised this render from a page — the
+    # AI Models Playground runs in the shell, not in a page iframe, and has no
+    # `X-Fused-Page` of its own to send (see `client.ts`'s own comment on the
+    # call this row traces back to). The output path the route already picked
+    # (`request["out"]`) is the only destination available in that case, so it
+    # becomes one: the file itself once it exists, its folder if it never did.
+    #
+    # Canonical (forward-slash) form, like every other fs path this API hands
+    # a page — `os.path.dirname` comes back backslashed on Windows, and a page
+    # is compared against the canonical spelling everywhere else it is stored
+    # or read (`ai_runtime.canonical_fs_path`, `X-Fused-Page`, `/view` URLs).
+    out_dir = canonical_fs_path(os.path.dirname(str(request.get("out") or ""))) or None
 
     def run() -> None:
         try:
@@ -1508,20 +1619,30 @@ def _start_render(capability: str, model: str, request: dict, job: str,
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
-                _report(job, state="cancelled")
+                _report(job, state="cancelled", page=page or out_dir or "")
             else:
-                _report(job, state="error", message=message)
+                _report(job, state="error", message=message, page=page or out_dir or "")
             return
+        # `result["path"]` is the worker's own field, written with `os.path` on
+        # its side of the boundary — canonicalized here for the same reason
+        # `out_dir` is, so a Windows worker's spelling still matches the one
+        # `/api/ai/image`'s and `/api/ai/video`'s own `path` reply carries.
+        done_page = canonical_fs_path(str(result.get("path"))) if result.get("path") else ""
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}",
+                page=page or done_page or out_dir or "")
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
 
-def start_image(model: str, request: dict, job: str) -> None:
-    """Open `job` and render an image on a thread. See `_start_render`."""
+def start_image(model: str, request: dict, job: str, page: str = "") -> None:
+    """Open `job` and render an image on a thread. See `_start_render`.
+
+    `page` is the caller's own page (`/api/ai/image`'s `X-Fused-Page`) — the
+    destination a click on this row should go to.
+    """
     _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
-                  noun="image", thread_name="ai-image")
+                  noun="image", thread_name="ai-image", page=page)
 
 
 #: What a queued transcription's row says while it waits.
@@ -1539,7 +1660,7 @@ _QUEUED_DETAIL = "Queued behind another transcription…"
 _JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
 
-def transcribe_row_fields(title: str, model: str = "") -> dict:
+def transcribe_row_fields(title: str, model: str = "", page: str = "") -> dict:
     """Everything a report must carry for a transcription row to survive being
     RE-CREATED — the row's identity, as opposed to its progress.
 
@@ -1568,14 +1689,41 @@ def transcribe_row_fields(title: str, model: str = "") -> dict:
     `model` rides along the same way, for the same reason: a dimmed suffix on
     the title row (jobs.py `Job.model`) that a rebuilt row must not lose any
     more than it may lose its title.
+
+    `page` rides along for the identical reason — the destination a click on
+    this row should go to (the page that started the transcription, over
+    `X-Fused-Page`) is exactly as much this row's identity as its title is,
+    and a rebuilt row that dropped it would send the next click nowhere.
+
+    `origin` is `jobs.origin_for_page(page)` — no literal, and no shared
+    default either. Unlike `text_row_fields`, this payload is shared by more
+    than one caller with genuinely different origins: the Playground's
+    transcribe stage AND `apps/claude/ann/transcribe.ts`'s annotation
+    transcription both build a request through this same row shape
+    (`start_transcribe`, `apple/speech.py`'s `start`), so a single hardcoded
+    label would be right for one and wrong for the other. The annotation
+    caller runs inside a page and has a real `page` to derive from; the
+    Playground's transcribe stage runs in the shell like every other
+    Playground stage and sends none — `test_the_worker_is_given_the_row_
+    identity_to_restate` pins exactly that case (`"page": "", "origin": ""`).
+    With no default to fall back on for that caller, `origin` is left out of
+    this dict ENTIRELY when there is nothing real to derive, rather than
+    written as `""` — a worker's restate tick (this dict spread straight
+    into its `report` body) is a `"origin" in body and server` write in
+    `jobs.upsert`, so a present-but-empty key would blank an origin an
+    earlier report on the same row already set, every single tick.
     """
-    return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "s"}
+    fields = {"title": title, "model": model, "kind": "task",
+              "cancellable": True, "unit": "s", "page": page}
+    origin = jobs.origin_for_page(page)
+    if origin:
+        fields["origin"] = origin
+    return fields
 
 
-def _transcribe_row(title: str, detail: str, model: str = "") -> dict:
+def _transcribe_row(title: str, detail: str, model: str = "", page: str = "") -> dict:
     """`transcribe_row_fields` plus the progress of a row that has none yet."""
-    return {**transcribe_row_fields(title, model), "state": "running",
+    return {**transcribe_row_fields(title, model, page), "state": "running",
             "done": None, "total": None, "detail": detail}
 
 
@@ -1600,7 +1748,7 @@ def text_job_id(uid: str) -> str:
     return TEXT_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def text_row_fields(title: str, model: str = "") -> dict:
+def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     """Everything a report must carry for a text-generation row to survive
     being REBUILT — see `transcribe_row_fields`'s docstring for the full
     argument (a row can be recreated from scratch on any tick, so every
@@ -1619,17 +1767,48 @@ def text_row_fields(title: str, model: str = "") -> dict:
     `unit="tokens"`: the row counts chunks emitted, not bytes or seconds —
     unlike a transcription's `"s"` or a download's `"bytes"`, the useful
     number here is how much has been said so far.
+
+    `page` is the destination a click on this row should go to — the page
+    that made the `/api/ai` request, over `X-Fused-Page` — restated here for
+    the same reason `transcribe_row_fields` restates it: this dict is the
+    row's identity, resent on every tick, and a tick that dropped it would
+    leave a rebuilt row with nowhere to send a click.
+
+    `tier=jobs.TRANSIENT`: the Playground's text stage keeps no history and
+    persists nothing (`TextStage.tsx` sends `history: []`), so a finished
+    generation has no destination a click could open and nothing a
+    Notification would be keeping around — `_sweep` ages a `done` transient
+    row like this one out on the read-gated clock rather than waiting on a
+    dismiss. A failed one is different on both counts: `effective_tier`'s
+    override turns it `attention` for VISIBILITY, and `_sweep` only ages a
+    transient row out once its state is `done` — an error/cancelled
+    generation is kept until dismissed, same as any other row a surface can
+    show and let the user clear.
+
+    `origin` is derived from `page` (`jobs.origin_for_page`), not a bare
+    "Playground" literal: `server/ai.py`'s `_local_relay` is the generic
+    local-model path for `POST /api/ai`, reachable from any page that calls
+    `fused.ai("…")`, so a hardcoded label would caption a user app's own
+    generation as though the shipped Playground had raised it.
+    `default="Playground"` covers the one caller that has no page to name —
+    the AI Models Playground runs in the shell, not a page iframe, and sends
+    no `X-Fused-Page` of its own — so an empty `page` here still reads
+    correctly.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "tokens"}
+            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT,
+            "origin": jobs.origin_for_page(page, default="Playground")}
 
 
-def start_transcribe(model: str, request: dict, job: str) -> None:
+def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:
     """Open `job` and transcribe on a thread. Raises before starting if it cannot.
 
     The runner check is synchronous here for the reason `start_image` explains:
     a request a machine cannot serve should answer with the reason, not open a
-    row that immediately dies.
+    row that immediately dies. `page` is the caller's own page
+    (`/api/ai/transcribe`'s `X-Fused-Page`) and travels inside the row
+    identity (`transcribe_row_fields`) rather than as a one-off, the same as
+    every other field a rebuilt row must not lose.
     """
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
@@ -1639,21 +1818,21 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     # relabels itself under the user. The payload is shared with the queue
     # ticks so an evicted row is rebuilt as the same row, not a partial one.
     title = _transcribe_title(request, model)
-    _report(job, **_transcribe_row(title, "Preparing…", model))
+    _report(job, **_transcribe_row(title, "Preparing…", model, page))
     # The worker reports to this same row for the whole decode, so it needs the
     # row's identity to restate — it is a different PROCESS, and a tick of its
     # that arrives after an eviction would otherwise be dropped outright
     # (`upsert` refuses a first report with no title) and take the ✕, the
     # progress and the terminal state with it. Sent rather than re-spelled
     # there, so the two cannot disagree about what this row is.
-    request = {**request, "row": transcribe_row_fields(title, model)}
+    request = {**request, "row": transcribe_row_fields(title, model, page)}
 
     def run() -> None:
         # Every terminal report carries the identity too: the row may have been
         # evicted at any point during a decode that ran for hours, and a bare
         # `state="done"` would be refused, leaving the page watching a row that
         # never finishes for a transcript that is already on disk.
-        fields = transcribe_row_fields(title, model)
+        fields = transcribe_row_fields(title, model, page)
         try:
             result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
@@ -1701,7 +1880,25 @@ def _remove(targets: list[Worker], reason: str) -> None:
     race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail=reason)
+        # `tier=jobs.SILENT` restated explicitly, not left to default: this
+        # id is the same row `_bring_up`'s success report already set
+        # `tier=jobs.SILENT` on, and `Job.tier` sticks until a later report
+        # says otherwise (see `upsert`'s `"tier" in body` gate) — the
+        # explicit restatement is what stops a WEIGHTS DOWNLOAD's `TRAIL` on
+        # this same id from leaking into the next unload's row. Nobody asked
+        # for this row and nothing survives it: unloading frees memory, it
+        # does not write anything a click could open, so it raises no
+        # notification at all, like the load it is undoing.
+        #
+        # `origin="Local models"` restated for the identical reason: this
+        # would otherwise inherit whatever the last report on this id left
+        # (usually already "Local models", from `_start_resident`/`load`'s
+        # own opening reports) — restating rather than relying on that
+        # keeps the unload row correctly captioned even for a worker this
+        # process never itself reported a load for (e.g. one discovered
+        # already running and torn down by the idle reaper).
+        _report(job_id_for(worker.model), state="done", detail=reason,
+                tier=jobs.SILENT, origin="Local models")
 
 
 def unload(model: str | None = None, capability: str | None = None,
@@ -2484,15 +2681,16 @@ def video_job_id(uid: str) -> str:
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_video(model: str, request: dict, job: str) -> None:
+def start_video(model: str, request: dict, job: str, page: str = "") -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
     serve (no Apple Silicon) answers with the reason instead of opening a
-    row that immediately dies.
+    row that immediately dies. `page` is the caller's own page
+    (`/api/ai/video`'s `X-Fused-Page`).
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
-                  noun="video", thread_name="ai-video")
+                  noun="video", thread_name="ai-video", page=page)
 
 
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,
@@ -2549,7 +2747,7 @@ def generate_video(model: str, request: dict, job: str) -> dict:
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
 
 
-def _await_turn(job: str, title: str, model: str = "") -> None:
+def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 
     Returns holding the lock — the caller releases it. Raises
@@ -2570,7 +2768,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
     request. A guard an optimisation can skip is a guard in the wrong place.
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
-        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
         warned = False
         next_tick = time.monotonic() + _QUEUE_TICK_S
         # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
@@ -2607,7 +2805,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
                         "transcription row %s was evicted while queued; rebuilt, "
                         "but a cancel requested just before that is lost", job)
                     warned = True  # once per wait; the sweep may do this often
-                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
                 next_tick = time.monotonic() + _QUEUE_TICK_S
                 continue
             if time.monotonic() < next_tick:
@@ -2616,7 +2814,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
             # is nothing to say but "still waiting" — which is exactly what a
             # heartbeat is (AI-5h). Deliberately slower than the running row so
             # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
-            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
             next_tick = time.monotonic() + _QUEUE_TICK_S
     # Guarded, because this runs while we HOLD the lock and before any caller's
     # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
@@ -2636,7 +2834,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
 
 
 @contextlib.contextmanager
-def _transcribe_turn(job: str, title: str, model: str = ""):
+def _transcribe_turn(job: str, title: str, model: str = "", page: str = ""):
     """`_await_turn` as a `with`, so the acquire and the release are one thing.
 
     The release used to live in a `try/finally` the CALLER opened after
@@ -2645,7 +2843,7 @@ def _transcribe_turn(job: str, title: str, model: str = ""):
     the shape that cannot regress: there is no way to take this turn without
     also giving it back, and a future caller cannot forget.
     """
-    _await_turn(job, title, model)
+    _await_turn(job, title, model, page)
     try:
         yield
     finally:
@@ -2673,7 +2871,12 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    with _transcribe_turn(job, _transcribe_title(request, model), model):
+    # The row's identity — including its destination — was already minted
+    # once, at `start_transcribe`'s opening report, and travels here inside
+    # `request["row"]` rather than being re-derived: this function has no
+    # page of its own to offer, only the one the caller already decided.
+    page = (request.get("row") or {}).get("page", "")
+    with _transcribe_turn(job, _transcribe_title(request, model), model, page):
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
             # The row identity travels into the wait too — it is the longest

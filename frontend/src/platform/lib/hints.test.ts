@@ -118,10 +118,12 @@ describe("what it cleans up after", () => {
   });
 
   it("empties the panel when it hides", () => {
-    // A stale string in a hidden panel is a string that flashes on the next
-    // show, before that show's own text lands.
+    // Stale content in a hidden panel is content that flashes on the next
+    // show, before that show's own text lands. `replaceChildren` rather than
+    // `textContent = ""`, because a columnised caption leaves an element
+    // behind, not a string.
     const hide = SRC.slice(SRC.indexOf("export function hideHint"));
-    expect(hide.slice(0, hide.indexOf("\n}"))).toContain('panel.textContent = ""');
+    expect(hide.slice(0, hide.indexOf("\n}"))).toContain("panel.replaceChildren()");
   });
 
   it("installs once", () => {

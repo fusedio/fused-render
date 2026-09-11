@@ -1830,6 +1830,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     that says so.
     """
     from fused_render import jobs, projectenv
+    from fused_render._view_url_codec import canonical_fs_path
 
     job_id = f"sys:env-install:{key}"
     # Named `app_name`, not `name`: the loop a few lines into `run()` below
@@ -1849,8 +1850,22 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
         try:
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
-                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
-                server=True,
+                 "state": jobs.RUNNING, "cancellable": True, "message": "",
+                 # A venv build is raised by the app whose environment it is
+                 # building, not by whichever page's request happened to
+                 # trigger it first — "App install" names that consistently
+                 # across every caller of `install()`.
+                 "origin": "App install"},
+                # The app folder whose environment this is — already resolved
+                # above as `project_dir` for the title, and the only sensible
+                # destination for a row that says an app's install failed: an
+                # app-doctor error or a stalled venv build points squarely at
+                # that folder. Canonical (forward-slash) form, like every
+                # other fs path a row's `page` carries — `project_dir` can
+                # reach here OS-native (backslashed on Windows) depending on
+                # the caller, and a page is compared against the canonical
+                # spelling everywhere else it is stored or read.
+                page=canonical_fs_path(str(project_dir)), server=True,
             )
             # A flag a PREVIOUS attempt's dead mirror left set (see the
             # docstring above) belongs to that attempt, not this one — clear

@@ -52,6 +52,14 @@ function subscribe(cb: () => void): () => void {
   };
 }
 
+// TIMERS THROUGH `globalThis`, not `window`. This module is imported by plenty
+// of non-DOM code paths, and an exit timer scheduled by one bun test file fired
+// inside another that had installed no DOM shim — `window is not defined`
+// aborted the run BETWEEN tests, which is what kept a whole-repo `bun test`
+// from reporting at all. `globalThis.setTimeout` is the same timer everywhere.
+const setTimer = (fn: () => void, ms: number): number =>
+  globalThis.setTimeout(fn, ms) as unknown as number;
+
 // Stable snapshot: the array reference only changes when the queue mutates, so
 // useSyncExternalStore stays render-free between pushes/dismisses. Includes
 // toasts in their exit window (`leaving: true`) — they are still on screen.
@@ -114,7 +122,7 @@ export function dismissToast(id: number): void {
   });
   if (!found) return; // already gone — stay render-free
   toasts = next;
-  exiting.set(id, window.setTimeout(() => removeToast(id), TOAST_EXIT_MS));
+  exiting.set(id, setTimer(() => removeToast(id), TOAST_EXIT_MS));
   emit();
 }
 

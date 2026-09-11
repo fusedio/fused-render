@@ -14,7 +14,14 @@
 import { describe, expect, it, test } from "bun:test";
 import { create, type ReactTestRendererJSON } from "react-test-renderer";
 
-import StatusBar from "@platform/ui/StatusBar";
+// StatusBar's bare-DownloadManager fallback pulls in router.ts (a terminal
+// row's rowClick dispatches through `navigateToJobPage`), which reads
+// `location` at module scope — so the shim has to land before the import,
+// via a dynamic import exactly like JobRow.test.tsx's own.
+import { installDomShim } from "@platform/lib/testDomShim";
+
+installDomShim();
+const { default: StatusBar } = await import("@platform/ui/StatusBar");
 
 function classesOf(node: ReactTestRendererJSON | ReactTestRendererJSON[] | null): string[] {
   const nodes = Array.isArray(node) ? node : node ? [node] : [];
