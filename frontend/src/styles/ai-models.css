@@ -3655,6 +3655,13 @@ button.am-bench-model:focus-visible {
    plain, non-rich hit row left in this screen. */
 .tp .row.hit.rich {
   grid-template-columns: 112px minmax(0, 1fr) 150px 152px;
+  /* Item 1 (fix round 3): a hit with no `from <base>` line was 54px, a
+     rich hit with one was 73px — the grid's own `align-items: center`
+     kept every cell centred either way, so the ragged edge was only ever
+     the row BOX's own height. Pinning it to the taller figure (mockup:
+     every `.row.hit.rich` is 73px, base model or not) keeps that
+     centring and stops the list's outer edge from stair-stepping. */
+  min-height: 73px;
 }
 
 .tp .row.hit.rich .row-act {
