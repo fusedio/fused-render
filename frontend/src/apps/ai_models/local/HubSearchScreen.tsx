@@ -256,8 +256,16 @@ function HitRow({
   const gate = have ? null : gateChrome(model.gated, authenticated);
   const sizeLabel = model.estimatedSize ? `≈${formatSize(model.estimatedSize)}` : null;
 
+  // Item 2 (fix round 3): `paramsLabel`/`quantLabel` return the DASH glyph
+  // ("—") for a value the Hub did not report, not null — a table CELL wants
+  // that (an empty box reads as unfetched, not as "not applicable"), but this
+  // line is built by joining known facts with a separator, and joining a
+  // dash in produces a dangling "task · 27.4B · —" with nothing after it.
+  // Filtered out here rather than in `paramsLabel`/`quantLabel` themselves,
+  // which the drawer's own `<dd>` cells still call directly and still want
+  // the dash for.
   const metaParts = [model.task, paramsLabel(model.params), quantLabel(model.quant), sizeLabel].filter(
-    (v): v is string => Boolean(v),
+    (v): v is string => Boolean(v) && v !== "—",
   );
 
   return (
