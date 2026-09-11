@@ -2418,8 +2418,16 @@ def test_search_reports_publisher_and_quant_facets(client, hub_cache, monkeypatc
     """D853 (fix round 6, item 5): `facets.publishers`/`facets.quants` — repo
     id before the `/`, and the row's own measured `quant` — sorted by count
     desc then name, so the frontend's new dropdown menus have something to
-    list."""
+    list.
+
+    Fix round 11, item 2: text-generation searches (the default, no
+    `capability` sent) now pin this machine's go-to runner publishers to the
+    front of `facets.publishers` (`_pin_publisher_facets`) — `is_apple_
+    silicon` pinned False here (matches `_pin_hardware`'s CPU-only fixture)
+    puts `bartowski`/`unsloth`/`lmstudio-community` first, `unsloth` folded
+    into that pinned block at its real count (1) rather than listed twice."""
     _pin_hardware(monkeypatch)
+    monkeypatch.setattr(hub.fit, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(httpx, "get", _reply([
         _hit("Qwen/a", safetensors={"parameters": {"BF16": 1_000_000}}),
         _hit("Qwen/b", safetensors={"parameters": {"BF16": 1_000_000}}),
@@ -2428,7 +2436,11 @@ def test_search_reports_publisher_and_quant_facets(client, hub_cache, monkeypatc
     ]))
     body = _search(client, {"includeUnfit": True}).json()
     assert body["facets"]["publishers"] == [
-        {"id": "Qwen", "count": 3}, {"id": "unsloth", "count": 1}]
+        {"id": "bartowski", "count": 0},
+        {"id": "unsloth", "count": 1},
+        {"id": "lmstudio-community", "count": 0},
+        {"id": "Qwen", "count": 3},
+    ]
     assert body["facets"]["quants"] == [
         {"id": "BF16", "count": 2}, {"id": "F16", "count": 2}]
 
@@ -2453,8 +2465,14 @@ def test_publisher_facets_do_not_collapse_once_a_publisher_is_picked(
     """Publisher narrows the WIRE request itself (`author`), so without the
     unscoped second fetch the facet list would only ever see the one
     publisher already picked — this pins that the full candidate set's
-    publishers still show up."""
+    publishers still show up.
+
+    `is_apple_silicon` pinned True (fix round 11, item 2): on a Metal
+    machine `lmstudio-community` is also pinned into the front of the list
+    alongside the real `mlx-community`/`unsloth` rows, so the expected set
+    below includes it."""
     _pin_hardware(monkeypatch)
+    monkeypatch.setattr(hub.fit, "is_apple_silicon", lambda: True)
 
     def fake(url, **kwargs):
         fake.calls.append(url)
@@ -2472,7 +2490,44 @@ def test_publisher_facets_do_not_collapse_once_a_publisher_is_picked(
     monkeypatch.setattr(httpx, "get", fake)
     body = _search(client, {"publisher": "mlx-community", "includeUnfit": True}).json()
     assert {m["id"] for m in body["models"]} == {"mlx-community/a"}
-    assert {p["id"] for p in body["facets"]["publishers"]} == {"mlx-community", "unsloth"}
+    assert {p["id"] for p in body["facets"]["publishers"]} == {
+        "mlx-community", "unsloth", "lmstudio-community"}
+
+
+def test_metal_machines_get_mlx_community_pinned_into_publisher_facets(
+        client, hub_cache, monkeypatch):
+    """Fix round 11, item 2: `mlx-community` has exactly one row in the
+    ~200 most-downloaded window `_facets` counts over in real life, so it
+    sorts alphabetically behind the top-40 cutoff and never appears in the
+    dropdown — even though a search for it by name returns a full page.
+    On a Metal-bucket machine it is pinned to the FRONT of
+    `facets.publishers` with `count: 0` when this fetch's rows have none."""
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(hub.fit, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/a", safetensors={"parameters": {"BF16": 1_000_000}}),
+    ]))
+    body = _search(client, {"includeUnfit": True}).json()
+    publishers = body["facets"]["publishers"]
+    assert publishers[0] == {"id": "mlx-community", "count": 0}
+    assert publishers[1]["id"] == "lmstudio-community"
+
+
+def test_non_metal_machines_do_not_pin_mlx_community(client, hub_cache, monkeypatch):
+    """Off Metal, the pinned set is the bartowski/unsloth/lmstudio-community
+    trio — `mlx-community` is absent from the facet list unless one of this
+    fetch's own rows actually named it."""
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(hub.fit, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/a", safetensors={"parameters": {"BF16": 1_000_000}}),
+    ]))
+    body = _search(client, {"includeUnfit": True}).json()
+    ids = [p["id"] for p in body["facets"]["publishers"]]
+    assert "mlx-community" not in ids
+    assert ids[0] == "bartowski"
+    assert ids[1] == "unsloth"
+    assert ids[2] == "lmstudio-community"
 
 
 def test_no_publisher_means_no_author_param(client, hub_cache, monkeypatch):

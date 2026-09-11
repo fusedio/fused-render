@@ -325,6 +325,51 @@ _RECENCY_HALF_LIFE_DAYS = 365.0
 # is supposed to be here.
 _POPULARITY_ANCHOR_DOWNLOADS = 5_000_000.0
 
+# Fix round 11, item 2: `_facets` counts publishers over the ~200
+# most-downloaded rows in the candidate set — a publisher with only one or
+# two rows in that window sorts alphabetically behind the top-40 cutoff and
+# never appears in the Publisher dropdown, even though a search for it by
+# name returns a full page (the Hub has far more of that publisher's repos
+# than this window ever saw). This hides the ONE publisher an Apple-Silicon
+# user looks for first (`mlx-community`) behind an arbitrary top-40 count
+# cutoff, so a small set is pinned to the FRONT of the list regardless of
+# its count in this window — keyed by this machine's backend bucket
+# (`speed.backend_bucket`, the same helper `_speed_score` already uses),
+# since the publisher someone reaches for first depends on what their
+# machine can actually run fast. Text-generation only (or no capability
+# filter, which still error toward text-gen as the common case) — an
+# image/speech/embedding search has no reason to pin a text-gen publisher.
+_PINNED_PUBLISHERS_METAL = ["mlx-community", "lmstudio-community"]
+_PINNED_PUBLISHERS_OTHER = ["bartowski", "unsloth", "lmstudio-community"]
+
+
+def _pin_publisher_facets(facets: dict, facet_models: list[dict],
+                          capability_filter: str, hardware) -> None:
+    """Mutates `facets["publishers"]` in place, pinning this machine's
+    go-to runner publishers to the front (see `_PINNED_PUBLISHERS_METAL`/
+    `_OTHER` above). No-op for any capability other than text-generation or
+    none at all (`""`, the "no capability filter yet" wire shape)."""
+    if capability_filter not in ("", "text-generation"):
+        return
+    is_apple = fit.is_apple_silicon()
+    backend = speed.backend_bucket(hardware, is_apple_unified=is_apple)
+    pinned = _PINNED_PUBLISHERS_METAL if backend == "metal-mlx" else _PINNED_PUBLISHERS_OTHER
+
+    counts: dict[str, int] = {}
+    for row in facet_models:
+        model_id = row.get("id")
+        if isinstance(model_id, str) and "/" in model_id:
+            name = model_id.split("/", 1)[0]
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+
+    publishers = facets.get("publishers")
+    if not isinstance(publishers, list):
+        return
+    rest = [p for p in publishers if p.get("id") not in pinned]
+    pinned_entries = [{"id": name, "count": counts.get(name, 0)} for name in pinned]
+    facets["publishers"] = (pinned_entries + rest)[:40]
+
 
 def _saturating(value: float, scale: float, steepness: float = 1.0) -> float:
     """0-100 via `100 * (1 - exp(-steepness * value / scale))` — the one
@@ -1917,6 +1962,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     else:
         facet_models = models
     facets = _facets(facet_models)
+    _pin_publisher_facets(facets, facet_models, capability_filter, hardware)
 
     # D780: every row gets a `matchScore` regardless of which sort was asked
     # for — the merged Fit+Score cell renders it on every row, not only when
