@@ -1291,7 +1291,8 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
 # ---------------------------------------------------------------- public façade
 
 
-def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
+def _fetch_only(runner: registry.Runner, model: str, job: str,
+                 *, file: str | None = None) -> None:
     """Download a model's weights and stop — no residency, no eviction.
 
     A separate path from `_bring_up` because it must NOT touch the worker table:
@@ -1300,6 +1301,14 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
     own worker does the fetching (`--download-only`) because what a model's
     files even ARE differs by backend — a GGUF single file for the image runner,
     a full snapshot for MLX.
+
+    `file` (item A) is passed to the worker subprocess as `--file` only when
+    given — an absent `file` means the argv this spawns is BYTE-IDENTICAL to
+    before this parameter existed, so a plain download's behaviour is
+    unchanged. The worker's own `worker_base.serve` only forwards it to
+    `download()` when that runner's `download` actually declares a `file`
+    parameter (see that function's docstring) — every other runner ignores it
+    with a debug log rather than erroring on an argument it has no use for.
     """
     # A token even though it serves nothing: the download-only worker still
     # REPORTS, and reporting is what the token authenticates.
@@ -1319,8 +1328,11 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
         env = _child_env(stub.token, model)
+        argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
+        if file:
+            argv += ["--file", file]
         proc = subprocess.Popen(
-            [python, runner.worker, "--model", model, "--job", job, "--download-only"],
+            argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
             env=env,
             **_spawn_kwargs(runner.folder, env),
@@ -1513,11 +1525,19 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     return {"jobId": job, "model": model, "state": worker.state}, worker
 
 
-def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
+def load(model: str, capability: str, *, weights_only: bool = False,
+         file: str | None = None) -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
     must not evict whatever is currently loaded.
+
+    `file` (item A, per-variant download) names a specific GGUF file to fetch
+    instead of whatever the runner's own picker would otherwise choose — only
+    meaningful with `weights_only=True`, and only actually consulted by a
+    runner whose `download` accepts it (`_fetch_only` passes it along
+    regardless; a runner that does not declare a `file` parameter on its own
+    `download` simply never receives it — see `_fetch_only`'s own docstring).
 
     Idempotent for the model already loading or loaded — a second call joins the
     first rather than starting a duplicate, which matters because two pages
@@ -1547,6 +1567,7 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
             total=None, tier=jobs.TRAIL, origin="Local models")
     threading.Thread(target=_fetch_only, args=(runner, model, job),
+                     kwargs={"file": file},
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
 

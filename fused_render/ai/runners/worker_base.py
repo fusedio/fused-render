@@ -44,7 +44,9 @@ import hashlib
 import http.client
 import http.server
 import importlib.util
+import inspect
 import json
+import logging
 import os
 import queue
 import re
@@ -4822,13 +4824,26 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     parser.add_argument("--status", default="")
     parser.add_argument("--job", default="")
     parser.add_argument("--download-only", action="store_true")
+    # Item A (per-variant download): only meaningful to a runner whose own
+    # `download` declares a `file` parameter (currently `llama_text.download`
+    # alone) — see the dispatch just below for how every other runner is
+    # kept unaware of it entirely, rather than erroring on an argument its
+    # `download(model_id)` signature has no place for.
+    parser.add_argument("--file", default="")
     args = parser.parse_args(argv)
     JOB_ID = args.job
     set_state(model=args.model)
 
     if args.download_only:
         try:
-            download(args.model)
+            if args.file and "file" in inspect.signature(download).parameters:
+                download(args.model, file=args.file)
+            else:
+                if args.file:
+                    logging.getLogger(__name__).debug(
+                        "worker %s ignores --file %r: its download() has no "
+                        "'file' parameter", args.model, args.file)
+                download(args.model)
         except Cancelled:
             # Still non-zero — the weights are not on the disk and a zero would
             # report the download DONE — but not a traceback: `_fetch_only`

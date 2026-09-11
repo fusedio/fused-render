@@ -10354,9 +10354,12 @@ def dispatched(monkeypatch):
     """
     calls = []
 
-    def fake_load(model, capability, *, weights_only=False):
-        calls.append({"model": model, "capability": capability,
-                      "weightsOnly": weights_only})
+    def fake_load(model, capability, *, weights_only=False, file=None):
+        entry = {"model": model, "capability": capability,
+                 "weightsOnly": weights_only}
+        if file is not None:
+            entry["file"] = file
+        calls.append(entry)
         return {"jobId": "job", "model": model, "state": "loading"}
 
     monkeypatch.setattr(supervisor, "load", fake_load)
@@ -11678,3 +11681,147 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
         assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
             f"_child_env at line {call.lineno} passes "
             f"{ast.unparse(call.args[1])!r} as the model")
+
+
+# -- item A: per-variant download's `file` threading through the supervisor -----
+
+
+class _FakeProc:
+    """A subprocess.Popen stand-in that has already finished successfully."""
+    def __init__(self, argv, **kwargs):
+        self.argv = argv
+        self.pid = 4242
+        self.returncode = 0
+    def poll(self):
+        return self.returncode
+
+
+def test_fetch_only_argv_gains_file_flag_when_given(fake_runner, monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(tmp_path / "log.txt"))
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job, file="model-Q4_K_M.gguf")
+    assert "--file" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--file") + 1] == "model-Q4_K_M.gguf"
+
+
+def test_fetch_only_argv_is_byte_identical_when_file_is_absent(fake_runner, monkeypatch, tmp_path):
+    """No `file` at all: the spawned argv must not gain a `--file` flag —
+    proof that an ordinary download's subprocess invocation is unchanged."""
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(tmp_path / "log.txt"))
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job)
+    assert "--file" not in captured["argv"]
+    assert captured["argv"] == [
+        sys.executable, fake_runner.worker, "--model", "org/fetched",
+        "--job", job, "--download-only",
+    ]
+
+
+# -- item A: per-variant download's `file` override on the download route -------
+
+
+def _mock_repo_files(monkeypatch, files):
+    """Fakes `huggingface_hub.list_repo_files` for `_repo_gguf_siblings`."""
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda model_id, **kw: list(files))
+
+
+def test_download_with_a_valid_file_threads_it_to_the_supervisor(
+        client, hub, dispatched, monkeypatch):
+    """A `file` naming one of the repo's own real GGUF candidates is passed
+    straight through to `supervisor.load`."""
+    repo_dir = _cached_repo(hub, "org/gguf-multi", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, ["model-Q4_K_M.gguf", "model-Q8_0.gguf"])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi", "file": "model-Q8_0.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched[0]["file"] == "model-Q8_0.gguf"
+
+
+def test_download_without_a_file_is_unaffected(client, hub, dispatched):
+    """Absent `file`: the regression proof — an ordinary download's dispatch
+    to the supervisor is unchanged (no `file` key at all)."""
+    repo_dir = _cached_repo(hub, "org/gguf-only-plain", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download", json={"model": "org/gguf-only-plain"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert "file" not in dispatched[0]
+
+
+def test_download_refuses_a_file_with_a_non_gguf_extension(
+        client, hub, dispatched):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-ext", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-ext", "file": "model.bin"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_with_a_path_traversal(client, hub, dispatched):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-trav", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-trav", "file": "../model.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_not_among_the_repos_own_candidates(
+        client, hub, dispatched, monkeypatch):
+    repo_dir = _cached_repo(hub, "org/gguf-multi-bad", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    _mock_repo_files(monkeypatch, ["model-Q4_K_M.gguf"])
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-bad", "file": "not-a-real-variant.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []
+
+
+def test_download_refuses_a_file_when_siblings_cannot_be_verified(
+        client, hub, dispatched, monkeypatch):
+    """`_repo_gguf_siblings` returns `None` on any lookup failure — the route
+    must refuse rather than trust an unverifiable filename."""
+    repo_dir = _cached_repo(hub, "org/gguf-multi-neterr", files=("model-Q4_K_M.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model-Q4_K_M.gguf").write_bytes(_gguf_bytes("qwen35"))
+    import huggingface_hub
+
+    def raise_lookup(model_id, **kw):
+        raise RuntimeError("network is down")
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", raise_lookup)
+    response = client.post(
+        "/api/ai/runtime/download",
+        json={"model": "org/gguf-multi-neterr", "file": "model-Q4_K_M.gguf"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert dispatched == []

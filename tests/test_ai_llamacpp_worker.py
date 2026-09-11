@@ -1231,3 +1231,34 @@ def test_memory_is_actually_wired_into_serve(worker):
     measurement could ever reach (code review finding 7)."""
     worker.main()
     assert worker.worker_base.serve_calls[-1]["memory"] is worker.memory
+
+
+# -- item A: `file=` overrides the picker for a curated repo's download -----
+
+
+def test_download_with_an_explicit_file_overrides_the_curated_pick(worker):
+    """A curated `model_id` normally resolves to its own curated file — an
+    explicit `file` (item A, per-variant download) must fetch THAT file
+    instead, from the same repo, not whatever `_resolve_model_id` would have
+    picked on its own."""
+    path = worker.download(
+        "gemma-4-E4B-it-Q4_K_M.gguf", file="gemma-4-E4B-it-Q8_0.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf"
+
+
+def test_download_with_no_file_is_unchanged_from_before_item_a(worker):
+    """Absent `file` (the default): `download` must remain byte-identical to
+    its pre-item-A behaviour — the curated pick, untouched."""
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_download_with_an_explicit_file_overrides_an_uncurated_repos_pick(
+        worker, monkeypatch):
+    """The same override applies to an uncurated repo (D412's generic path)
+    — `file` still wins over whatever `pick_gguf_file` would have chosen
+    from the repo's own listing."""
+    _fake_huggingface_hub(monkeypatch, files=[
+        "model-Q4_K_M.gguf", "model-Q8_0.gguf", "README.md"])
+    path = worker.download("some/uncurated-repo", file="model-Q8_0.gguf")
+    assert path == "/blobs/some/uncurated-repo/model-Q8_0.gguf"
