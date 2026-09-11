@@ -2905,13 +2905,34 @@ button.am-bench-model:focus-visible {
    distinctive; `.hubdoor` and `.hits` are likewise distinctive enough on
    their own.
    ============================================================ */
+/* D810 (item L, revised 2026-09-11): the mockup's own frame — a bordered,
+   rounded card round the whole `.tp` block — read as a card-inside-a-card
+   once this shipped inside the app: the block's only contents are MORE
+   bordered rounded cards (the `.row`s, filled `--am-surface-*` + border), the
+   nav has no fill of its own so the frame's left third enclosed empty page
+   background, and with few rows the frame hung its full forced min-height
+   around nothing. The mockup got away with the frame only because it stood
+   alone on a blank page.
+   This stylesheet's own vocabulary for "a block starts here" is a HAIRLINE,
+   not a panel (`.am-section-head`'s `border-bottom`, `.am-usage-bars`'s,
+   `.am-bench-table td`'s) — the ONLY rounded bordered boxes anywhere in this
+   file are rows, chips and controls, never a whole section. So: no border,
+   no radius, no forced min-height, no `overflow: hidden` — the grid runs its
+   natural height and one hairline stands above it, `border-top` +
+   `padding-top`, so the block hangs from the page header exactly the way
+   `.am-section-head` separates sections elsewhere. `align-items: stretch` so
+   `.tp-nav`'s own right-hand rule (kept, below) spans the pane's full height
+   and meets this top rule in a T, rather than stopping short at the nav's
+   own natural content height. Rejected alternatives: filling the nav column
+   (a second chrome beside the app's own 232px sidebar — ruled out already,
+   see `.tp-nav`'s comment) and flattening the rows to keep the frame
+   (changes the approved row design instead of the frame around it). */
 .tp {
   display: grid;
   grid-template-columns: 196px minmax(0, 1fr);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  overflow: hidden;
-  min-height: 560px;
+  align-items: stretch;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 @media (max-width: 760px) {
@@ -2974,7 +2995,14 @@ button.am-bench-model:focus-visible {
   font-weight: 600;
 }
 
-.tp-nav .capicon {
+/* D810 (item H): equal specificity to the shared `.tp .capicon` rule below
+   (both are one-class-plus-one-class selectors), and that shared rule sits
+   LATER in this file's source order — so it was winning the cascade and the
+   nav's icon rendered at the shared 18×18 rather than this rule's intended
+   15×15, live measured as an oversized icon in a 28px row. `.tp-nav button
+   .capicon` adds a third class to the selector so this always wins
+   regardless of where `.tp .capicon` moves in a future edit. */
+.tp-nav button .capicon {
   width: 15px;
   height: 15px;
   opacity: 0.75;
@@ -3350,8 +3378,28 @@ button.am-bench-model:focus-visible {
   font-size: 11.5px;
 }
 
-.hubdoor .btn-link {
+/* D810 (item M): `<button class="btn-link">` here has no `.btn` class, so
+   with nothing overriding it the browser's native `<button>` chrome (a
+   grey filled, bordered pill) shows straight through — read live as "the
+   search button is ugly". The mockup's own `.btn-link` is a PLAIN text
+   link: no border, no background, no padding, underline only on hover —
+   this rule now states that in full rather than leaving the native button
+   reset to chance. Scoped to `.tp .hubdoor` (not a bare `.btn-link`,
+   which does not otherwise exist as a class in this file) so it never
+   reaches for a button elsewhere in the app that wants real chrome. */
+.tp .hubdoor .btn-link {
+  display: inline;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
   font-size: 12px;
+  color: var(--accent-soft);
+  cursor: pointer;
+}
+
+.tp .hubdoor .btn-link:hover {
+  text-decoration: underline;
 }
 
 /* The Engine files pane's own closing note — no search here on purpose. */
@@ -3364,6 +3412,30 @@ button.am-bench-model:focus-visible {
 }
 
 /* -- the full Hub search screen, as one of the two-pane's own panes -------- */
+
+/* D810 (item F): same native-button-chrome bug as the hubdoor link above —
+   a bare `<button>` with no `.btn` class picks up the browser's own grey
+   filled pill, live read as a bordered button sitting directly on the
+   "Search Hugging Face" title with no gap. This is a quiet muted text
+   line ABOVE the title, not a control competing with it. */
+.adv-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 14px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.adv-back:hover {
+  color: var(--fg);
+}
+
 .adv-head h4 {
   margin: 0 0 3px;
   font-size: 17px;

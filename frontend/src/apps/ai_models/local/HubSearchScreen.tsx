@@ -372,7 +372,7 @@ export function HubSearchScreen({
 
   return (
     <div className="tp-pane" data-part="adv">
-      <button type="button" className="btn-link" data-adv-back="1" onClick={onBack}>
+      <button type="button" className="adv-back" data-adv-back="1" onClick={onBack}>
         ← Back to {meta.plain}
       </button>
       <div className="adv-head">
