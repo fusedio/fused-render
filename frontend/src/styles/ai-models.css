@@ -3402,6 +3402,44 @@ button.am-bench-model:focus-visible {
   text-decoration: underline;
 }
 
+/* D810 (item O, supersedes the brief's earlier "do not change .btn" rule —
+   the user asked for mockup-parity button colours after seeing the live
+   page): `buttons-modal.css`'s `.btn`/`.btn-primary` stay a deliberately
+   neutral 32px dark button for the REST of the app (its own header comment
+   says so) — this scopes the mockup's quieter 27px grey Download / accent
+   Try treatment to `.tp` alone, so the two-pane search/pane screens read
+   like the approved mockup without touching every other button in the app.
+   `.tp .btn` (0,2,0) already beats `.deploy-body .btn` (0,2,0) by source
+   order (this file loads after `buttons-modal.css`); if a future edit ever
+   reorders the stylesheets, raise this to `.tp .row .btn, .tp .hit .btn`
+   rather than reaching for `!important`. */
+.tp .btn {
+  font-size: 12px;
+  height: auto;
+  padding: 5px 11px;
+  border-radius: 7px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+  border: 1px solid var(--ctl-quiet-border);
+}
+
+.tp .btn:hover:not(:disabled) {
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+.tp .btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.tp .btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.06);
+}
+
 /* The Engine files pane's own closing note — no search here on purpose. */
 .tp .scoped {
   margin: 14px 2px 0;
