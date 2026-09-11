@@ -89,9 +89,14 @@ export function isSendableNow(
 export interface AnnStoreOptions {
   params: ParamsStore;
   /**
-   * T:6606 — the HOSTED layout boots EMPTY. A sidebar teardown is a mode switch
-   * as often as it is a reload and the param cannot say which, so re-hydrating
-   * would resurrect notes anchored to a pane the reader has since left.
+   * T:6606 had the HOSTED layout boot EMPTY, on the argument that a sidebar
+   * teardown is a mode switch as often as a reload. That cost the reload case
+   * every time (Akshil, 2026-09-11: "when I comment … and reload the page, the
+   * comments should stay because they are in url — the comment mode stays but
+   * the comments also should stay"), and the mode-switch case was never the
+   * one people hit: leaving the pane clears nothing from the URL either way.
+   * So both layouts now read the param at boot; `hosted` is kept for the
+   * target machinery and no longer decides this.
    */
   hosted?: boolean;
   /** Injected in tests. */
@@ -175,7 +180,7 @@ export function createAnnStore(opts: AnnStoreOptions): AnnStore {
         ? crypto.randomUUID()
         : "ann-" + now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
 
-  let list: Annotation[] = opts.hosted ? [] : parseAnnotations(params.get(ANN_PARAM));
+  let list: Annotation[] = parseAnnotations(params.get(ANN_PARAM));
   let round = 0;
   const subs = new Set<(list: readonly Annotation[]) => void>();
 

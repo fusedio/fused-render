@@ -39,6 +39,7 @@ import {
   markWholeTaskRead,
   resendScheduledMessage,
   runScheduledNow,
+  scheduleMessage,
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
@@ -93,7 +94,6 @@ import {
   parseListMemory,
   projectOptions,
   relativeWhen,
-  scheduledMark,
   settleMarkAllRead,
   spansProjects,
   taskColumn,
@@ -179,13 +179,6 @@ export type { TaskFilters };
  * change rather than a value change.
  */
 const SHOW_ROW_ACTIONS: boolean = false;
-// THE SCHEDULE MARK IS BUILT AND HIDDEN (Akshil, 2026-09-11: "quick can we hide
-// the task list icon we just added"). Same arrangement as the strip above: the
-// glyph, its handlers, its CSS and tests all stay, and one flag decides whether
-// the row wears it. tasks-lib.scheduledMark is still computed — the tooltip
-// text and the predicate are the part worth keeping warm — so turning it back
-// on is this one line.
-const SHOW_SCHEDULE_MARK: boolean = false;
 
 
 // ---- icons -------------------------------------------------------------------
@@ -225,25 +218,19 @@ const ICON_FILE = icon(
 // status ring and MSG-003 on every thread row, saying where the message came
 // from. Removed at Akshil's request: it is a third glyph on a 12.5px line whose
 // first two already carry the state and the id, and nothing on the page acts on
-// the distinction. `.tasks-msg-kind` went from tasks.css with it.
+// the distinction. `.tasks-msg-kind` went from tasks.css with it. A clock on the
+// TASK row (2026-09-10, "this task has a run booked") followed it out the next
+// day (Akshil, 2026-09-11: "remove that icon").
 //
-// THE CLOCK BELOW IS NOT THAT CLOCK, and the difference is the whole reason it is
-// allowed back on the page. That one sat on every MESSAGE row and said which kind
-// each message was — a distinction the row's other two glyphs already carried.
-// This one sits on the TASK row and says the task has a run booked
-// (tasks-lib.scheduledMark), which nothing else on that line states: the "next
-// 2h" chip is absent on exactly the rows whose own time already IS the next run,
-// and a time in the last column is not a mark a list can be scanned by.
-/** A schedule, for a task with a run ahead of it.
- *
- *  lucide `clock`, at the file mark's 12px and drawn beside it: the two are the
- *  same kind of statement about the task — what it is about, and that it runs by
- *  itself — so they read as one pair of captions on the title rather than as two
- *  unrelated symbols. Boxy is not on offer here (a clock is a circle), but the
- *  stroke, the size and the muted register are the file mark's exactly. */
-const ICON_CLOCK = icon(
-  <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 16 14" /></>,
-  12,
+/** A REPEATING run, inside the next-run chip (Akshil, 2026-09-11: "for repeating
+ *  tasks we say 'in 1h [repeat icon, arrow circle]'"). lucide `repeat`, at the
+ *  chip's own 11px type so it reads as part of the word rather than as a mark
+ *  beside it. Drawn only when tasks-lib.nextRunChip says the run ahead is an
+ *  occurrence of a template; a one-off says the time alone. */
+const ICON_REPEAT = icon(
+  <><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+    <path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>,
+  11,
 );
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
@@ -1016,7 +1003,7 @@ interface ReadMarks {
  * own note when a re-send was queued rather than sent, "" when there is nothing
  * to say. Refusals THROW, so each caller can put them in its own note line.
  */
-async function performRun(intent: TaskRunIntent): Promise<string> {
+async function performRun(intent: Pick<TaskRunIntent, "kind" | "entryId">): Promise<string> {
   if (intent.kind === "resend") {
     const res = await resendScheduledMessage(intent.entryId);
     return res.note ?? "";
@@ -1723,10 +1710,6 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
-  // ...and that there IS one at all — the mark beside the file glyph, drawn on
-  // every row with a run ahead of it including the Upcoming ones the chip stays
-  // quiet on. tasks-lib.scheduledMark owns the test and the tooltip.
-  const sched = scheduledMark(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2356,45 +2339,6 @@ function TaskNode({
           </span>
         ) : null}
 
-        {/* THE SCHEDULE MARK, next to the file mark and for the reason that one
-            is there: both answer "what kind of task is this" about the title
-            they sit against, so they belong in one pair of captions rather than
-            at opposite ends of the row (Akshil, 2026-09-10, on the List view).
-            tasks-lib.scheduledMark decides it — a run strictly ahead, the same
-            test nextRunChip applies, so the glyph and the chip cannot disagree
-            about whether one is coming.
-
-            A PRESS HERE IS A PRESS ON THE ROW, exactly as on the file mark
-            above: the mark sits over the stretched link (`z-index: 2`, for its
-            tooltip) and would otherwise be a second dead pixel-run on the row
-            (Akshil, 2026-08-27, about the file icon — same bug, so the same
-            three handlers rather than a second answer to it). */}
-        {SHOW_SCHEDULE_MARK && sched ? (
-          <span
-            className="tasks-row-sched"
-            data-hint={sched.title}
-            aria-label={sched.label}
-            onClick={(e) => {
-              if (!href) return;
-              if (opensElsewhere(e)) {
-                window.open(href, "_blank", "noopener");
-                return;
-              }
-              activate();
-            }}
-            onAuxClick={(e) => {
-              if (e.button !== 1 || !href) return;
-              e.preventDefault();
-              window.open(href, "_blank", "noopener");
-            }}
-            onMouseDown={(e) => {
-              if (e.button === 1 && href) e.preventDefault();
-            }}
-          >
-            {ICON_CLOCK}
-          </span>
-        ) : null}
-
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
@@ -2668,6 +2612,7 @@ function TaskNode({
         {soon && (
           <span className="tasks-row-next" data-hint={soon.title}>
             {soon.text}
+            {soon.repeats && ICON_REPEAT}
           </span>
         )}
         {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
@@ -3035,6 +2980,26 @@ export function TaskBoard({
         // left alone, so the thread reads as a run that happened early rather
         // than a schedule that was quietly rewritten.
         await runScheduledNow(action.entryId);
+      } else if (action.kind === "resend") {
+        // Blocked → In Progress, nothing pending: the scheduled message whose
+        // run broke goes again as a NEW message in the same thread
+        // (tasks-lib.rerunAction). The server's note rides along when the
+        // conversation was mid-turn and the message queued instead.
+        const said = await performRun({ kind: "resend", entryId: action.entryId });
+        if (said) setNote(said);
+      } else if (action.kind === "resay") {
+        // Same drop, typed message: no entry to copy, so the words travel as an
+        // immediate message into the session. `delay_seconds: 1` because the
+        // endpoint wants exactly one of due/delay and "now" is the smallest
+        // positive delay it takes; `immediate` keeps it off the calendar
+        // (schedule-lib.taskChips) — nobody planned this for a time.
+        await scheduleMessage({
+          target: action.target,
+          message: action.body,
+          session_id: action.sessionId,
+          delay_seconds: 1,
+          immediate: true,
+        });
       } else if (action.kind === "unarchive") {
         // Archive → anywhere else. ONE meaning whatever `lane` is: the filing is
         // dropped and the task lands in whatever lane it DERIVES to, which is
@@ -3645,6 +3610,7 @@ function TaskCard({
             {soon && (
               <span className="tasks-row-next" title={soon.title}>
                 {soon.text}
+                {soon.repeats && ICON_REPEAT}
               </span>
             )}
           </span>

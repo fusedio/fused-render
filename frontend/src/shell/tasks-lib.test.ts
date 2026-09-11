@@ -74,6 +74,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  nextRunRepeats,
   outcomeTag,
   nextRunAt,
   openMessageHref,
@@ -1209,11 +1210,62 @@ describe("dropLanes", () => {
   it("lets a failed task out to In Progress (re-run) and Archive", () => {
     const retryable = upcoming([T9], { status: FAILED });
     expect(dropLanes(retryable)).toEqual(["in_progress", "archived"]);
-    // With nothing pending there is nothing to re-run — but it can still be
-    // filed away.
+    // A pending message wins: bringing forward what was already asked for is
+    // the smaller action, and the drop is that rather than a re-send.
+    expect(dropAction(retryable, "in_progress")?.kind).toBe("run");
+    // With nothing pending the drop RE-RUNS the message whose run broke
+    // (Akshil, 2026-09-11): the factory's one message is a sent scheduled
+    // entry, so it goes again through the schedule's own re-send.
     const spent = task({ status: FAILED });
-    expect(dropLanes(spent)).toEqual(["archived"]);
+    expect(dropLanes(spent)).toEqual(["in_progress", "archived"]);
+    expect(dropAction(spent, "in_progress")).toEqual({
+      kind: "resend",
+      entryId: "e1",
+      messageId: "MSG-001",
+    });
     expect(isDraggable(spent)).toBe(true);
+  });
+
+  it("re-runs a TYPED message by saying it again into the same session", () => {
+    // No entry to copy, so the words travel (tasks-lib.rerunAction). The
+    // newest message that went is the one re-asked, whichever kind it is.
+    const chat = task({
+      status: FAILED,
+      session_id: "sess-1",
+      target: "/Users/me/proj/app.py",
+      messages: [
+        msg({ message_id: "MSG-002", kind: "chat", entry_id: "", body: "fix the bug", turn: "done" }),
+        msg({ message_id: "MSG-001" }),
+      ],
+    });
+    expect(dropLanes(chat)).toEqual(["in_progress", "archived"]);
+    expect(dropAction(chat, "in_progress")).toEqual({
+      kind: "resay",
+      body: "fix the bug",
+      sessionId: "sess-1",
+      target: "/Users/me/proj/app.py",
+      messageId: "MSG-002",
+    });
+    // A pending or cancelled message is skipped — it never went, so it is not
+    // what broke — and the one before it speaks.
+    const skipped = task({
+      status: FAILED,
+      messages: [
+        msg({ message_id: "MSG-003", state: "cancelled" }),
+        msg({ message_id: "MSG-002", kind: "chat", entry_id: "", body: "try again" }),
+        msg({ message_id: "MSG-001" }),
+      ],
+    });
+    expect(dropAction(skipped, "in_progress")?.kind).toBe("resay");
+    // Nothing that went at all: the card stays put, as before.
+    const nothing = task({
+      status: FAILED,
+      messages: [msg({ state: "cancelled" })],
+    });
+    expect(dropLanes(nothing)).toEqual(["archived"]);
+    // And Upcoming keeps the stricter rule — a task that has not run yet has
+    // nothing to run AGAIN.
+    expect(dropLanes(task({ status: "upcoming" }))).toEqual(["archived"]);
   });
 
   it("still refuses In Progress on a pending message with no entry id", () => {
@@ -1603,15 +1655,18 @@ describe("taskRunIntent", () => {
     ).toBe(null);
   });
 
-  it("leaves the DRAG on run-now only", () => {
-    // A drop on a lane says where the card belongs; it must not quietly create
-    // work that was never scheduled. So the failed task with nothing pending —
-    // the one case resend exists for — cannot be dragged into In Progress at
-    // all, exactly as before.
+  it("lets the DRAG out of Blocked re-run, and nowhere else", () => {
+    // The drag out of Blocked with nothing pending is the button's resend
+    // (Akshil, 2026-09-11: "allow moving from blocked to inprogress and trigger
+    // a rerun") — the same message, the same call, so the two gestures cannot
+    // re-ask different things.
     const spent = broke();
-    expect(dropLanes(spent)).toEqual(["archived"]);
-    expect(dropAction(spent, "in_progress")).toBe(null);
-    // And every legal drop is still a run or an archive, never a resend.
+    expect(dropLanes(spent)).toEqual(["in_progress", "archived"]);
+    const drop = dropAction(spent, "in_progress");
+    const button = taskRunIntent(spent)!;
+    expect(drop?.kind).toBe("resend");
+    expect(drop && "entryId" in drop ? drop.entryId : null).toBe(button.entryId);
+    // A pending message still wins on the same lane: run-now, never a resend.
     for (const lane of ["in_progress", "done", "archived"] as const) {
       const action = dropAction(upcoming([T9], { status: FAILED }), lane);
       if (action) expect(["run", "archive"]).toContain(action.kind);
@@ -2308,12 +2363,12 @@ describe("the unread mark", () => {
     // ICON_CHAT, the speech bubble it drew, is gone from the file as well rather
     // than left as an unused constant for the next reader to wonder about.
     expect(VIEWS).not.toContain("const ICON_CHAT");
-    // ICON_CLOCK IS BACK (2026-09-10) and this test still holds, because the
-    // fact above is about the MESSAGE row: the clock is drawn on the TASK row
-    // now, where it says the task has a run booked (tasks-lib.scheduledMark)
-    // and nothing else on the line states it. No message row wears it.
+    // A clock came back on the TASK row for a day (2026-09-10) and went again
+    // (2026-09-11); either way no message row wears one, and the file holds no
+    // ICON_CLOCK at all now.
     const msgRow = thread.slice(0, thread.indexOf("{why && <p"));
     expect(msgRow).not.toContain("{ICON_CLOCK}");
+    expect(VIEWS).not.toContain("const ICON_CLOCK");
     // The body is the row's ink and carries the row's caption (`data-hint`), so
     // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
@@ -4222,6 +4277,9 @@ describe("the run action on a board card", () => {
     // about what "Re-run" does.
     expect(NODE).toContain("performRun(intent)");
     expect(BOARD).toContain("performRun(intent)");
+    // …and the DRAG out of Blocked spends the same function for its re-send
+    // (2026-09-11), so there is still exactly one call to the endpoint.
+    expect(BOARD).toContain('performRun({ kind: "resend", entryId: action.entryId })');
     expect((VIEWS.match(/resendScheduledMessage\(/g) ?? []).length).toBe(1);
   });
 
@@ -6456,12 +6514,14 @@ describe("the tasks toolbar", () => {
     for (const name of ["ICON_VIEW_LIST", "ICON_VIEW_BOARD", "ICON_VIEW_CALENDAR"]) {
       expect(CALENDAR).toContain(`export const ${name} = icon(`);
     }
-    // The marks are muted at rest and take the label's colour on the active half,
-    // so the icon reinforces the fill's statement rather than competing with it.
-    expect(block(SCHEDULE_CSS, ".schedule-view-btn > svg")).toContain("color: var(--fg-muted)");
-    expect(
-      block(SCHEDULE_CSS, ".schedule-view-btn.is-active > svg"),
-    ).toContain("color: inherit");
+    // ONE colour per half (Akshil, 2026-09-11): the inactive BUTTON is muted
+    // and its glyph inherits, so icon and word never read as two weights; the
+    // active half drops the rule and both take the label colour.
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn:not(.is-active)")).toContain(
+      "color: var(--fg-muted)",
+    );
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn > svg")).toContain("color: inherit");
+    expect(SCHEDULE_CSS).not.toContain(".schedule-view-btn.is-active > svg");
     // Only the VIEW switcher. `.schedule-form-seg` is shared with the New task
     // form's Once / On a schedule pair, which is a choice inside a form and stays
     // text-only — so the icon rules hang off a class of their own.
@@ -7607,10 +7667,54 @@ describe("nextRunChip", () => {
     const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
     const chip = nextRunChip(t, NOW)!;
     expect(chip.at).toBe(AHEAD);
-    expect(chip.text).toBe(`next ${relativeWhen(AHEAD, NOW)}`);
-    expect(chip.text).toContain("in 1h");
+    // The time alone — "in 1h", not "next in 1h" (Akshil, 2026-09-11): the
+    // chip sits apart from the row's own stamp, and that is what says "next".
+    expect(chip.text).toBe(relativeWhen(AHEAD, NOW));
+    expect(chip.text).toBe("in 1h");
     // The exact instant is in the tooltip, like every other time on the page.
     expect(chip.title).toContain("Next run");
+    // A one-off: nothing repeats, so the chip wears no repeat glyph.
+    expect(chip.repeats).toBe(false);
+  });
+
+  it("says the run REPEATS when the server names an occurrence", () => {
+    // The same words, plus the glyph (Akshil, 2026-09-11: "in 1h [repeat icon,
+    // arrow circle]"). `next_run_repeats` is the server's, decided over every
+    // pending entry before the tail is cut — the window may not hold the run.
+    const t = task({
+      status: "done",
+      next_run: AHEAD,
+      next_run_entry: "occ-2",
+      next_run_repeats: true,
+    });
+    const chip = nextRunChip(t, NOW)!;
+    expect(chip.text).toBe("in 1h");
+    expect(chip.repeats).toBe(true);
+    expect(chip.title).toContain("repeats");
+    // The list row and the board card both draw the glyph off the same flag.
+    expect((VIEWS.match(/\{soon\.repeats && ICON_REPEAT\}/g) ?? []).length).toBe(2);
+  });
+
+  it("reads the repeat off the window when an older server names none", () => {
+    // Fallback for a server without `next_run_repeats`: the pending occurrence
+    // in the window carries its template's id, and that is what makes it a
+    // repeat. Same shape as nextRunAt's own window fallback.
+    const t = task({
+      status: "done",
+      messages: [
+        msg({ message_id: "MSG-002", state: "pending", at: AHEAD, entry_id: "occ-2", template_id: "tpl" }),
+        msg({ message_id: "MSG-001" }),
+      ],
+    });
+    expect(nextRunChip(t, NOW)?.repeats).toBe(true);
+    const once = task({
+      status: "done",
+      messages: [
+        msg({ message_id: "MSG-002", state: "pending", at: AHEAD, entry_id: "e2" }),
+        msg({ message_id: "MSG-001" }),
+      ],
+    });
+    expect(nextRunChip(once, NOW)?.repeats).toBe(false);
   });
 
   it("says nothing on an Upcoming row, whose own time is already that run", () => {
@@ -8239,34 +8343,28 @@ describe("the file mark after a task's title", () => {
 
 describe("the schedule mark on a List row", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
-  const ROW = VIEWS.slice(
-    VIEWS.indexOf('className={"tasks-row"'),
-    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
-  );
 
-  it("marks a task with a run ahead of it, and names the instant", () => {
+  // The glyph is GONE (Akshil, 2026-09-11: "we had a hidden icon after title for
+  // scheduled tasks, remove that icon"). It was built on 2026-09-10, hidden the
+  // next morning behind SHOW_SCHEDULE_MARK, and removed the same day — the row
+  // wears the file mark alone again, and the fact it carried ("a run is booked")
+  // is the next-run chip's, which now also says whether that run repeats.
+  it("is not drawn, and has no flag left to flip", () => {
+    expect(VIEWS).not.toContain("SHOW_SCHEDULE_MARK");
+    expect(VIEWS).not.toContain("tasks-row-sched");
+    expect(VIEWS).not.toContain("scheduledMark(");
+    expect(TASKS_CSS).not.toContain("tasks-row-sched");
+  });
+
+  // The predicate stays, for the tooltip text and because nextRunChip's test is
+  // the same one: two answers to "is a run coming" must not drift apart.
+  it("still knows which tasks have a run ahead, and names the instant", () => {
     const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
     const mark = scheduledMark(t, NOW)!;
     expect(mark.at).toBe(AHEAD);
-    // The word first, so a bare glyph is decodable by hovering it, then the
-    // exact instant — the shape every other tooltip on this row has.
     expect(mark.title).toContain("Scheduled");
     expect(mark.title).toContain(messageStamp(AHEAD));
-  });
-
-  it("marks an Upcoming row too — the row the next-run CHIP stays quiet on", () => {
-    // Which is the whole reason the mark is not drawn inside that chip:
-    // nextRunChip is null on Upcoming, whose own time already IS the next run,
-    // and those are the most scheduled rows on the page.
-    const t = upcoming([AHEAD]);
-    expect(nextRunChip(t, NOW)).toBe(null);
-    expect(scheduledMark(t, NOW)?.at).toBe(AHEAD);
-  });
-
-  it("says nothing about a task with no run ahead, or one already due", () => {
-    // The same test nextRunChip applies, deliberately: two marks on one row
-    // must not disagree about whether a run is coming. An overdue pending is
-    // not what the task does NEXT — it is work the Upcoming lane surfaces.
+    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
     expect(scheduledMark(task({ status: "done" }), NOW)).toBe(null);
     const past = task({
       status: "done",
@@ -8274,66 +8372,6 @@ describe("the schedule mark on a List row", () => {
       next_run_entry: "e2",
     });
     expect(scheduledMark(past, NOW)).toBe(null);
-  });
-
-  it("is built, and hidden behind one flag (Akshil, 2026-09-11)", () => {
-    // Same arrangement as SHOW_ROW_ACTIONS: everything stays, one constant
-    // decides. Flip it and the row wears the mark again with no other change.
-    expect(VIEWS).toContain("const SHOW_SCHEDULE_MARK: boolean = false;");
-    expect(VIEWS).toContain("{SHOW_SCHEDULE_MARK && sched ? (");
-    expect((VIEWS.match(/SHOW_SCHEDULE_MARK &&/g) ?? []).length).toBe(1);
-  });
-
-  it("is a glyph beside the file mark, with the fact in the tooltip", () => {
-    const mark = scheduledMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)!;
-    expect(VIEWS).toContain('className="tasks-row-sched"');
-    expect(VIEWS).toContain("{ICON_CLOCK}");
-    expect(VIEWS).toContain("data-hint={sched.title}");
-    // …and read out to anything that cannot see the clock — as prose, without
-    // the hint's middle dot, which AT either names or drops.
-    expect(VIEWS).toContain("aria-label={sched.label}");
-    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
-    expect(mark.label).not.toContain("·");
-    // The pair's order: what the task is about, then how it is run.
-    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(
-      ROW.indexOf('className="tasks-row-sched"'),
-    );
-    expect(ROW.indexOf('className="tasks-row-sched"')).toBeLessThan(
-      ROW.indexOf('className="tasks-grow"'),
-    );
-  });
-
-  it("spends the row's own gesture, so it is not a dead run of pixels", () => {
-    // The mark sits above `.tasks-rowlink` for its tooltip, which is exactly
-    // what made the file icon unclickable (Akshil, 2026-08-27). Same three
-    // handlers here, not a second answer to the same bug.
-    const mark = ROW.slice(ROW.indexOf('className="tasks-row-sched"'));
-    const body = mark.slice(0, mark.indexOf("{ICON_CLOCK}"));
-    expect(body).toContain("if (opensElsewhere(e)) {");
-    expect(body).toContain("activate();");
-    expect(body).toContain("onAuxClick");
-    expect(body).toContain("if (e.button === 1 && href) e.preventDefault();");
-  });
-
-  it("wears the file mark's own box, declaration for declaration", () => {
-    // The two are one pair of captions on the title; a second set of numbers
-    // for the second glyph is how a pair drifts apart.
-    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-sched {"));
-    const body = rest.slice(0, rest.indexOf("}"));
-    // Above the stretched link, or it never receives the pointer at all.
-    expect(body).toContain("position: relative");
-    expect(body).toContain("z-index: 2");
-    // Not what gives way when a long title runs out of room.
-    expect(body).toContain("flex: 0 0 auto");
-    // Full-height hit zone, every pixel of it given back.
-    expect(body).toContain("align-self: stretch");
-    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
-    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
-    // Pulled toward the group it belongs to, by one full row gap.
-    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
-    // And no cursor of its own: a mark that announces a press the row's press
-    // does not make looks broken (the file mark's rule, same argument).
-    expect(body).not.toContain("cursor:");
   });
 });
 
@@ -8521,6 +8559,12 @@ describe("provisionalTasks", () => {
     expect(t.next_run).toBe(1_700_100_000);
     expect(t.next_run_entry).toBe("e-9");
     expect(nextRunAt(t)).toBe(1_700_100_000);
+    // And whether it repeats, so the chip's glyph is right on the first paint.
+    const [r] = provisionalTasks([
+      row({ next_run: 1_700_100_000, next_run_entry: "occ-9", next_run_repeats: true }),
+    ]);
+    expect(r.next_run_repeats).toBe(true);
+    expect(nextRunRepeats(r)).toBe(true);
   });
 
   it("marks the row provisional, and is not expandable", () => {

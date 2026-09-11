@@ -103,8 +103,8 @@ describe("the sidebar's tasks pulse", () => {
     // reader for something goes first. Singular at one, because one is the
     // common case and "1 tasks" reads as a broken string.
     expect(pulseTitle(tasksPulse(parked, {})))
-      .toBe("1 task needs input · 2 running");
-    expect(attentionLabel(2)).toBe("2 tasks need input");
+      .toBe("1 blocked · 2 running");
+    expect(attentionLabel(2)).toBe("2 blocked");
   });
 
   it("says it in WORDS and in RED, and still nothing that moves", () => {

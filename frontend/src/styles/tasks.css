@@ -697,7 +697,7 @@ button.tasks-caret,
    press does not make. The row's own hover is the only hover here. */
 
 /* OPTICALLY CENTRED ON THE WORDS, NOT THE BOX (Akshil, 2026-09-10: "make sure
-   the clock icon is center aligned with the text"). Both title marks are
+   the clock icon is center aligned with the text"). The title mark is
    centred on the row's 36px by flex, and the title's 16px line box is too — so
    glyph centre, box centre and row centre all measure 156px on the same row.
    But a 13px mixed-case title has its ink below the box's middle: ascenders
@@ -707,41 +707,8 @@ button.tasks-caret,
    pixel down puts the clock's face and the file's page on the words' own
    middle. `transform`, not margin: it moves the ink and nothing else — the hit
    zone, the row height and the flex maths are untouched. */
-.tasks-row-file svg,
-.tasks-row-sched svg {
+.tasks-row-file svg {
   transform: translateY(1px);
-}
-
-/* THE SCHEDULE MARK AFTER THE TITLE (2026-09-10). A task with a run ahead of it
-   wears a clock, and the instant lives in the `title` — the same hover habit the
-   file mark and the folder chip already answer.
-
-   EVERY DECLARATION HERE IS THE FILE MARK'S, deliberately: the two are one pair
-   of captions on the title (what this task is about, and that it runs by
-   itself), and a second set of numbers for the second glyph is how a pair starts
-   drifting apart. So the same `z-index: 2` over `.tasks-rowlink`, the same
-   `flex: 0 0 auto` so the mark is not what gives way to a long title, the same
-   full-height hit zone paid for with matching negative margins, the same muted
-   register, and the same one-gap pull toward the group it belongs to.
-
-   It FOLLOWS the file mark rather than leading it: the file is what the task is
-   about and the schedule is how it is run, and a row that reads title, subject,
-   then habit is the order the sentence is already in. */
-.tasks-row-sched {
-  position: relative;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  margin-left: calc(var(--tasks-row-gap) * -1);
-  color: var(--fg-muted);
-  opacity: 0.75;
-  align-self: stretch;
-  padding-block: var(--tasks-row-pad-y);
-  margin-block: calc(var(--tasks-row-pad-y) * -1);
-  padding-right: 4px;
-  padding-left: 4px;
-  margin-right: -4px;
 }
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
@@ -1740,11 +1707,20 @@ button.tasks-caret,
    same tabular figures, so the pair still reads as one register. */
 .tasks-row-next {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   opacity: 0.85;
+}
+/* The repeat glyph after a repeating run's time (ScheduleTaskViews ICON_REPEAT):
+   the chip's own colour, so "in 1h ⟳" reads as one caption. */
+.tasks-row-next svg {
+  flex: 0 0 auto;
+  color: inherit;
 }
 
 /* ---- "and that one was stopped" --------------------------------------------
