@@ -1652,9 +1652,16 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
 # --------------------------------------------------------------- the endpoints
 
 
-def _next_run(entries: list[dict]) -> tuple[float, str]:
-    """When this task NEXT runs, and WHICH entry that run is — `(0.0, "")` for a
-    task with nothing pending.
+def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
+    """When this task NEXT runs, WHICH entry that run is, and whether it REPEATS
+    — `(0.0, "", False)` for a task with nothing pending.
+
+    The third is the row's repeat glyph (Akshil, 2026-09-11: "for repeating
+    tasks we say 'in 1h [repeat icon]'"): an occurrence carries its template's
+    id, and that is the whole test. Decided here, over the same entry the time
+    and the id name, so the glyph cannot describe a different run than the one
+    the chip is timing — and here rather than on the client because the window
+    may not hold the run at all (the paragraph below).
 
     This exists because the three messages a row carries cannot answer it. The
     tail is the three newest by `at`, and on this branch an OVERDUE pending is an
@@ -1691,6 +1698,7 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
     """
     best_at = 0.0
     best_id = ""
+    best_repeats = False
     for entry in entries:
         if str(entry.get("state") or "") != schedule.PENDING:
             continue
@@ -1702,7 +1710,8 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
             continue
         if not best_at or at < best_at:
             best_at, best_id = at, entry_id
-    return best_at, best_id
+            best_repeats = bool(entry.get("template_id"))
+    return best_at, best_id, best_repeats
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
@@ -1758,7 +1767,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
-    next_run, next_run_entry = _next_run(task["entries"])
+    next_run, next_run_entry, next_run_repeats = _next_run(task["entries"])
     tail = merged[-_LISTING_MESSAGES:]
     # The tail's dicts ARE the merged list's dicts (a slice shares them), so the
     # liveness this writes onto the newest chat message is visible to the status
@@ -1883,6 +1892,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # reads (`last_active`, a message's `ran_at`). See `_next_run`.
         "next_run": next_run,
         "next_run_entry": next_run_entry,
+        # ...and whether that run is an occurrence of a repeating template —
+        # the chip's repeat glyph. False when nothing is pending.
+        "next_run_repeats": next_run_repeats,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
@@ -2156,6 +2168,7 @@ _PULSE_FIELDS = (
     # entry is one nobody can fire, and is not sorted by.
     "next_run",
     "next_run_entry",
+    "next_run_repeats",
 )
 
 

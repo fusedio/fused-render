@@ -87,10 +87,15 @@ describe("the param's shape is T's, verbatim (T:6600, 6612)", () => {
     expect(store.list()).toHaveLength(1);
   });
 
-  test("HOSTED boots empty (T:6606): a sidebar teardown is a mode switch as often as a reload", () => {
+  test("HOSTED reads the param too (Akshil, 2026-09-11): a reload keeps the comments", () => {
+    // T:6606 booted the hosted layout empty, on the argument that a sidebar
+    // teardown is a mode switch as often as a reload. The reload was the case
+    // people actually hit — comment, reload, mode restored, notes gone — and
+    // leaving the pane clears nothing from the URL either way.
     const seed = JSON.stringify([{ id: "a", content: "hi", createdAt: 1 }]);
     const { store } = make({ [ANN_PARAM]: seed }, true);
-    expect(store.list()).toEqual([]);
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0].content).toBe("hi");
   });
 });
 

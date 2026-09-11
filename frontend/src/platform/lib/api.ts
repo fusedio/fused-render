@@ -3066,6 +3066,10 @@ export interface Task {
   // same (bounded) answer they gave before these existed.
   next_run?: number;
   next_run_entry?: string;
+  // Whether that run is an occurrence of a repeating template (tasks.py
+  // `_next_run`, 2026-09-11) — the next-run chip's repeat glyph. Absent on an
+  // older server; tasks-lib.nextRunRepeats then reads the window.
+  next_run_repeats?: boolean;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.
@@ -3104,6 +3108,7 @@ export type TaskPulseTask = Pick<
   | "session_id"
   | "next_run"
   | "next_run_entry"
+  | "next_run_repeats"
 >;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {

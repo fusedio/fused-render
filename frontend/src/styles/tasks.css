@@ -653,7 +653,8 @@ button.tasks-caret,
    `flex: 0 0 auto` beside a title that is the row's only shrinking element:
    the mark must not be what disappears when a long title runs out of room,
    because then it would say "about a folder" by being absent. */
-.tasks-row-file {
+.tasks-row-file,
+.tasks-row-sched {
   position: relative;
   z-index: 2;
   display: inline-flex;
@@ -710,38 +711,6 @@ button.tasks-caret,
 .tasks-row-file svg,
 .tasks-row-sched svg {
   transform: translateY(1px);
-}
-
-/* THE SCHEDULE MARK AFTER THE TITLE (2026-09-10). A task with a run ahead of it
-   wears a clock, and the instant lives in the `title` — the same hover habit the
-   file mark and the folder chip already answer.
-
-   EVERY DECLARATION HERE IS THE FILE MARK'S, deliberately: the two are one pair
-   of captions on the title (what this task is about, and that it runs by
-   itself), and a second set of numbers for the second glyph is how a pair starts
-   drifting apart. So the same `z-index: 2` over `.tasks-rowlink`, the same
-   `flex: 0 0 auto` so the mark is not what gives way to a long title, the same
-   full-height hit zone paid for with matching negative margins, the same muted
-   register, and the same one-gap pull toward the group it belongs to.
-
-   It FOLLOWS the file mark rather than leading it: the file is what the task is
-   about and the schedule is how it is run, and a row that reads title, subject,
-   then habit is the order the sentence is already in. */
-.tasks-row-sched {
-  position: relative;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  margin-left: calc(var(--tasks-row-gap) * -1);
-  color: var(--fg-muted);
-  opacity: 0.75;
-  align-self: stretch;
-  padding-block: var(--tasks-row-pad-y);
-  margin-block: calc(var(--tasks-row-pad-y) * -1);
-  padding-right: 4px;
-  padding-left: 4px;
-  margin-right: -4px;
 }
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
@@ -1740,11 +1709,26 @@ button.tasks-caret,
    same tabular figures, so the pair still reads as one register. */
 .tasks-row-next {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   opacity: 0.85;
+}
+/* THE CARD'S SCHEDULE MARK (Akshil, 2026-09-11): the List row's clock or circle
+   arrows, after the card's title in the same muted register. Inline with the
+   title's last line rather than a foot row of its own — the foot went with the
+   "in 1h" chip, and a glyph is a caption on the title, not a second fact. */
+.tasks-card-sched {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -1px;
+  margin-left: 6px;
+  color: var(--fg-muted);
+  opacity: 0.75;
 }
 
 /* ---- "and that one was stopped" --------------------------------------------

@@ -29,7 +29,15 @@ function PopoverContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
-        className="isolate z-50"
+        // ABOVE THE APP'S MODAL. The chassis (`platform/ui/modal`) sits at
+        // z-index 1000 (`styles/deploy.css`) and the screenshot viewer opened
+        // from inside one at 1100; a popover anchored to a control INSIDE a modal
+        // — the task popup's composer pills, its Schedule confirm — rendered at
+        // 50 and so painted behind the scrim it was opened from: the button
+        // looked dead (Akshil, 2026-09-11: "schedule button doesn't work, it
+        // doesn't open anything"). A popover is transient and anchored, so the
+        // one plane above every dialog is the honest place for all of them.
+        className="isolate z-[1200]"
       >
         <PopoverPrimitive.Popup
           data-slot="popover-content"
