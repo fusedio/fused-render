@@ -3378,6 +3378,11 @@ button.am-bench-model:focus-visible {
   margin-top: 6px;
 }
 
+.tp .row.partial {
+  background: color-mix(in srgb, var(--warning) 8%, var(--am-surface-none));
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+
 .tp .row-name {
   display: flex;
   align-items: center;

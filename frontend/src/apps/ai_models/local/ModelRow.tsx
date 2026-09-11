@@ -72,6 +72,9 @@ export interface ModelRowModel {
    *  the fit-verdict text. */
   fit: AiFitVerdict["verdict"] | null;
   have: boolean;
+  /** True for a repo that's partially downloaded (drives the row's amber
+   *  tint) — set from `resumable(repo)`, independent of `warnChip`'s text. */
+  partial: boolean;
   /** Formatted size, or "size not checked yet" when nothing is known. */
   sizeLabel: string;
   /** "17d ago", or null when never used / not on this Mac. */
@@ -369,7 +372,10 @@ export function ModelRow({
 
   return (
     <div className={`rowwrap${opts.info ? " open" : ""}`}>
-      <div className={`row ${model.have ? "have" : ""}`} data-part="row">
+      <div
+        className={`row${model.have ? " have" : ""}${model.partial ? " partial" : ""}`}
+        data-part="row"
+      >
         <div>
           <div className="row-name">
             <b>{model.name}</b>
