@@ -117,9 +117,12 @@ export async function moveEntriesInto(
     });
   } else if (announce && report.moved.length) {
     const what = report.moved.length === 1 ? basename(report.moved[0]) : `${report.moved.length} items`;
-    // Destructive-but-successful (spec's own motivating example): the user
-    // should be able to find out what moved after the card is gone.
-    notify({ title: `Moved ${what} to ${basename(dir)}`, tone: "info", tier: "trail" });
+    // Reversed (user: "don't keep this in the list ... anything non
+    // actionable or error doesn't belong in the list" — see
+    // DECISIONS-toasts-become-notifications.md): a completed, successful
+    // move no longer stays around as a "trail" record. It still pops for
+    // JOB_POPUP_VISIBLE_MS via the plain tone: "info" default (transient).
+    notify({ title: `Moved ${what} to ${basename(dir)}`, tone: "info" });
   }
   return report;
 }

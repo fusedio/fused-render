@@ -414,14 +414,18 @@ export function useFileOps({
         // ONE toast, always, and it tells the whole outcome — built in lib/fs-undo
         // so its arithmetic (which path is blamed, what the retry count covers) is
         // testable without a renderer.
-        // relocationToast's "Undid/Redid the <kind>" success message is a
-        // completed move/delete/copy record - the same "destructive-but-
-        // successful" case fs-move.ts's own move confirmation is (spec's
-        // motivating example); its failure branch stays attention (the
-        // default for tone: "error").
+        // relocationToast's "Undid/Redid the <kind>" success message — the
+        // literal "Undid the delete." row the user pointed at ("don't keep
+        // this in the list. just show popup.") — is no longer kept: it pops
+        // via the plain tone: "info" default (transient) and leaves no
+        // trace, same as every other non-actionable success message after
+        // the retention-narrowing reversal (DECISIONS-toasts-become-
+        // notifications.md). Its failure branch is untouched — tone:
+        // "error" still promotes to attention regardless of tier, so a
+        // failed undo/redo stays in the panel.
         {
           const t = relocationToast(verb, op.kind, report);
-          notify({ title: t.msg, tone: t.tone, tier: t.tone === "info" ? "trail" : undefined });
+          notify({ title: t.msg, tone: t.tone });
         }
       })
       .finally(() => {
@@ -724,9 +728,10 @@ export function useFileOps({
         // carried no context worth a record. The undo/redo confirmation below
         // (relocationToast, line ~424) is the one place a delete still shows up
         // in the notification surface, because that message answers "did my
-        // Cmd+Z work", not "what did I just delete". Was this migration's own
-        // named motivating example for the `trail` tier — see
-        // DECISIONS-toasts-become-notifications.md for the reversal.
+        // Cmd+Z work", not "what did I just delete" — and, as of the later
+        // retention-narrowing reversal, it only ever pops (transient) rather
+        // than staying in the panel; see DECISIONS-toasts-become-
+        // notifications.md for both reversals.
         //
         // One op for the batch, so a single Cmd+Z brings the whole selection
         // back. Guarded on emptiness EXPLICITLY even though recordFsOp's push
