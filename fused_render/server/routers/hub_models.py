@@ -1436,12 +1436,36 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # itself already calls `fit.verdict(..., params=None, ...)` for the
     # identical reason.
     real_file_size = _cached_gguf_file_size(model_id, file) if file is not None else None
+    size_source = None
     if real_file_size is not None:
         size_gb = real_file_size / fit.GB_BYTES
         judgeable = True
         verdict_params = None
+        size_source = "cached"
     else:
         verdict_params = params
+        # B (bugbot): a GGUF row with no cached byte count is not
+        # automatically ungoverned by the `judgeable` refusal above (D1249) —
+        # the reason that gate exists is `_weight_bytes` silently falling
+        # back to `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") for a quant
+        # token it does NOT recognise. D1250 filled `QUANT_BYTES_PER_PARAM`
+        # with real bytes/param figures for the GGUF suffixes this codebase
+        # already ranks, so a token `fit._quant_key` DOES recognise, paired
+        # with a real `params` count (read off the Hub's `gguf.total`/
+        # safetensors metadata above, not guessed), is a real footprint —
+        # `params x quant_bytes_per_param(token)` — not the guess the gate
+        # was written to refuse. Only fires when there is no better, real
+        # per-file size on hand (the branch above) and only for a
+        # recognised token; an unrecognised one (`IQ9_FAKE`) still leaves
+        # this row unjudgeable exactly as before.
+        if (not judgeable and quant is not None
+                and fit._quant_key(quant) is not None
+                and isinstance(params, (int, float)) and params > 0):
+            bpp = fit.quant_bytes_per_param(quant)
+            size_gb = (params * bpp) / fit.GB_BYTES
+            judgeable = True
+            verdict_params = None
+            size_source = "estimated"
     fit_verdict = (
         fit.verdict(capability, model_id, size_gb, params=verdict_params,
                     footprint_store=footprint_store, hardware=hardware)
@@ -1540,6 +1564,13 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
         "params": params,
         "estimatedSize": estimated_size,
+        # B (bugbot): whether this row's fit/speed footprint came from a real
+        # measured byte count ("cached"), a `params x quant_bytes_per_param`
+        # estimate off a recognised GGUF quant token ("estimated"), or
+        # neither (`None` — an unrecognised token, or params unknown). The
+        # client's lazy `hub/size` lookup, once it lands, still overrides
+        # whatever this says with the real measured size.
+        "sizeSource": size_source,
         "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
     }

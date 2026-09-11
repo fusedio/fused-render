@@ -3619,6 +3619,15 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** B (bugbot): where `fit`/`speedEstimate`'s footprint for a GGUF row
+   *  came from — `"cached"` (a real measured byte count, `hub/size`'s own
+   *  cache), `"estimated"` (`params x quant_bytes_per_param` off a
+   *  recognised quant token, no real bytes on hand yet), or `null` (an
+   *  unrecognised token, or params unknown — the row stays unjudgeable).
+   *  The lazy `hub/size` lookup, once it resolves, still supersedes
+   *  whatever this says with the real measured size. Optional: absent on a
+   *  response from a server that predates this field. */
+  sizeSource?: "cached" | "estimated" | null;
   /** Will this fit on THIS machine — the same judgement a downloaded model's
    *  card carries, over the same `fit.verdict` ladder server-side. Null when
    *  there is nothing to judge (no safetensors size, no params). */

@@ -549,14 +549,14 @@ def test_gguf_row_with_no_gguf_metadata_at_all_still_has_no_params(client, hub_c
 
 def test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone(
         client, hub_cache, monkeypatch):
-    """`params` (the Hub's real `gguf.total`) still moves the ranking even
-    though fit/speed derivation for a GGUF row was deleted entirely (see the
-    DECISIONS.md entry recorded alongside this test): `_capability_score`
-    reads `params` with no bytes-per-param conversion, so a row that knows
-    its real parameter count scores above one that does not, on the
-    capability axis alone, with `fit` staying `None` on BOTH — a GGUF row
-    never gets a server-derived fit verdict any more, recognized quant token
-    or not."""
+    """`params` (the Hub's real `gguf.total`) still moves the ranking: a row
+    that knows its real parameter count scores above one that does not, on
+    the capability axis alone. B (bugbot) changes what happens to `fit` for
+    the meta row specifically — a recognised quant token (`Q4_K_M`) paired
+    with a real params count is now judgeable (`params x
+    quant_bytes_per_param`, `sizeSource: "estimated"`) — but the no-meta row
+    has no params at all, so it stays unjudgeable regardless of its quant
+    token, exactly as before."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
@@ -573,29 +573,30 @@ def test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone(
     by_id = {m["id"]: m for m in body["models"]}
     with_meta = by_id["org/gguf-with-meta"]
     no_meta = by_id["org/gguf-no-meta"]
-    assert with_meta["fit"] is None
+    assert with_meta["fit"] is not None
+    assert with_meta["sizeSource"] == "estimated"
     assert no_meta["fit"] is None
-    assert with_meta["speedEstimate"] is None
     assert no_meta["speedEstimate"] is None
     assert with_meta["params"] == 7_000_000_000
     assert no_meta["params"] is None
     assert with_meta["matchScore"] > no_meta["matchScore"]
 
 
-def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
+def test_gguf_row_with_recognized_quant_and_no_cache_estimates_from_params(
         client, hub_cache, monkeypatch):
-    """The bug that survived two prior guard-based rounds: `formats.gguf_
-    quant_token`'s regex RESOLVES many tokens (`Q8_K_XL`, `FP8`, `Q5_1`,
-    `IQ4_NL`, `Q4_1`, ...) that `fit._quant_key` has no bytes-per-param entry
-    for, and `formats.pick_gguf_file` actively SELECTS files carrying them —
-    so gating the derivation on "`quant` resolved a token" (round 2's fix)
-    was never the same guarantee as "a quant this server can actually turn
-    into real bytes". A 30B `Q8_K_XL` file's real footprint is ~31.5GB
-    (~1.05 bytes/param); `_weight_bytes`'s `DEFAULT_BYTES_PER_PARAM` (0.58)
-    guess would be 17.4GB, comfortably "easy" on a 32GB machine when it is
-    not. There is no whitelist fix for this — `fit`/`speedEstimate` must be
-    unconditionally `None` for every GGUF row, recognized token or not, so
-    this specific under-report can never resurface."""
+    """B (bugbot): D1249's gate refused to turn ANY GGUF row's `params` into
+    a footprint, on the reasoning that an unrecognised quant token would
+    silently fall back to `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") — a
+    guess that could be badly wrong. D1250 then filled `QUANT_BYTES_PER_PARAM`
+    with real bytes/param figures for the GGUF suffixes this codebase already
+    ranks, which reopens exactly the case the old gate could not tell apart
+    from a guess: a RECOGNISED token paired with a REAL params count is not a
+    guess, it is `params x quant_bytes_per_param(token)` — the same formula
+    `_weight_bytes` already trusts for a curated catalog entry. A 30B
+    `Q8_K_XL` file's real bytes/param (1.06, D1250) puts its footprint at
+    ~31.8GB, which must read as unfit (`"no"`) on a 32GB machine — the OLD
+    default-bpp guess (0.58) would have read 17.4GB, comfortably "easy",
+    which is exactly the under-report this round closes."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     monkeypatch.setattr(httpx, "get", _reply([_hit(
@@ -604,13 +605,51 @@ def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
     )]))
     row = _search(client).json()["models"][0]
     assert row["file"] == "x-Q8_K_XL.gguf"
-    # The token IS recognized by the regex — this is not the round-2 case.
     assert row["quant"] == "Q8_K_XL"
-    # The real, quantization-invariant params count is still shown...
     assert row["params"] == 30_000_000_000
-    # ...but never turned into a synthesized footprint or verdict.
+    assert row["sizeSource"] == "estimated"
+    assert row["fit"] is not None
+    assert row["fit"]["verdict"] == "no"
+    assert row["fit"]["footprintBytes"] == pytest.approx(
+        30_000_000_000 * 1.06 + fit.RUNTIME_OVERHEAD_BYTES, rel=0.01)
+    assert row["speedEstimate"] is not None
+
+
+def test_gguf_row_with_unrecognized_quant_still_reports_no_derived_fit(
+        client, hub_cache, monkeypatch):
+    """An unrecognised quant token (`fit._quant_key` returns `None`) must
+    stay unjudgeable — the whole point of D1249's original gate — rather
+    than silently falling back to `DEFAULT_BYTES_PER_PARAM`."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-fake", siblings=[{"rfilename": "x-IQ9_FAKE.gguf"}],
+        gguf={"total": 30_000_000_000, "architecture": "llama"},
+    )]))
+    row = _search(client).json()["models"][0]
     assert row["fit"] is None
     assert row["speedEstimate"] is None
+    assert row["sizeSource"] is None
+
+
+def test_gguf_estimated_row_ranks_below_a_fitting_q4_row(client, hub_cache, monkeypatch):
+    """The estimated footprint must actually feed `matchScore` (D780's
+    composite), not merely be computed and discarded: a 30B Q8_K_XL row that
+    reads unfit must rank below a 7B Q4_K_M row that comfortably fits."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/big-q8", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
+             gguf={"total": 30_000_000_000, "architecture": "llama"}, **same),
+        _hit("org/small-q4", siblings=[{"rfilename": "y-Q4_K_M.gguf"}],
+             gguf={"total": 7_000_000_000, "architecture": "llama"}, **same),
+    ]))
+    body = _search(client).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/big-q8"]["fit"]["verdict"] == "no"
+    assert by_id["org/small-q4"]["fit"]["verdict"] in ("easy", "tight")
+    assert by_id["org/small-q4"]["matchScore"] > by_id["org/big-q8"]["matchScore"]
 
 
 def test_gguf_row_uses_a_cached_real_file_size_when_hub_size_already_resolved_one(
@@ -619,18 +658,17 @@ def test_gguf_row_uses_a_cached_real_file_size_when_hub_size_already_resolved_on
     cached by `api_hub_size` (the lazy per-card lookup — see its own
     docstring), is reused here rather than left on the floor — the row's
     `fit`/`speedEstimate` are judged off THOSE real bytes, never a
-    `params * DEFAULT_BYTES_PER_PARAM` guess (that guess is exactly what the
-    two tests above prove must never happen). A cache MISS (the ordinary
-    case, nothing has resolved this file yet) must leave the row exactly as
-    unjudgeable as before — proven by the sibling row below, whose id was
-    never stored in the cache."""
+    `params * bpp` estimate, even when the estimate would ALSO be judgeable
+    (B, bugbot: a recognised quant plus known params now estimates on its
+    own — this test's "unknown" row has no `params` at all, so it stays
+    unjudgeable by either path, proving a cache miss with nothing else to go
+    on is still refused)."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     monkeypatch.setattr(httpx, "get", _reply([
         _hit("org/gguf-known-size", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
              gguf={"total": 30_000_000_000}),
-        _hit("org/gguf-unknown-size", siblings=[{"rfilename": "y-Q8_K_XL.gguf"}],
-             gguf={"total": 30_000_000_000}),
+        _hit("org/gguf-unknown-size", siblings=[{"rfilename": "y-Q8_K_XL.gguf"}]),
     ]))
     # ~31.5GB real bytes for the known row — the same figure this file's own
     # docstrings use as the "real" contrast against the 17.4GB guess.
@@ -654,9 +692,11 @@ def test_gguf_row_uses_a_cached_real_file_size_when_hub_size_already_resolved_on
     guessed_weight_bytes = 30_000_000_000 * fit.quant_bytes_per_param("Q8_K_XL")
     assert known["fit"]["footprintBytes"] != guessed_weight_bytes + fit.RUNTIME_OVERHEAD_BYTES
     assert known["speedEstimate"] is not None
+    assert known["sizeSource"] == "cached"
 
     assert unknown["fit"] is None
     assert unknown["speedEstimate"] is None
+    assert unknown["sizeSource"] is None
 
 
 # -- D793: a GGUF row outside text generation is rankable and findable ------
