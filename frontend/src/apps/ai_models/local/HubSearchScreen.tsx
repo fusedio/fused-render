@@ -222,6 +222,34 @@ function HitDrawer({
         <dd className="plain">{quantLabel(model.quant)}</dd>
         <dt>Size</dt>
         <dd className="plain">{sizeLabel}</dd>
+        {/* Item 6 (round 8): list the actual GGUF files a multi-variant repo
+         *  offers, not just the count — `variants` is only ever populated for
+         *  a GGUF row (null for safetensors/MLX, which don't have a per-file
+         *  quant to pick between). The file this repo's own picker would fetch
+         *  (`model.file`, unchanged from before) and the file already on this
+         *  disk (`model.local.file`) each get a quiet marker so a reader can
+         *  tell "what I'd get" and "what I already have" apart from the rest.
+         *  Re-downloading a NON-default variant is out of scope for this
+         *  round: `supervisor.load`/`/api/ai/runtime/download` have no
+         *  mechanism today for a caller to override which GGUF file gets
+         *  fetched — see D1252 — so this is a read-only list, not a picker. */}
+        {model.variants && model.variants.length > 1 && (
+          <>
+            <dt>Variants</dt>
+            <dd className="plain">
+              <ul className="variant-list">
+                {model.variants.map((v) => (
+                  <li key={v.file}>
+                    <code>{v.file}</code>
+                    {v.quant ? ` — ${v.quant}` : ""}
+                    {v.file === model.file ? " (default)" : ""}
+                    {v.file === model.local?.file ? " (on disk)" : ""}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </>
+        )}
       </dl>
       {/* Item D: the search screen no longer shows a standing `.am-hub-login`
        *  banner over the whole results column — a login prompt over every
@@ -300,7 +328,8 @@ function HitRow({
   const formatLabel = formatToken(model);
   // Item 9a: only worth a mention once there is more than one to count —
   // "1 variant" would be true of nearly every row and add noise, not signal.
-  const variantsLabel = model.variants && model.variants > 1 ? `${model.variants} variants` : null;
+  const variantsLabel =
+    model.variantCount && model.variantCount > 1 ? `${model.variantCount} variants` : null;
   const metaParts = [
     paramsLabel(model.params),
     quantLabel(model.quant),

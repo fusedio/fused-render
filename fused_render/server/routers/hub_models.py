@@ -130,6 +130,7 @@ from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_cap
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
+    _default_snapshot,
     _entry_is_dir,
     _quantization as _config_quantization_bits,
     _scan_repo,
@@ -1036,10 +1037,25 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
         return {"state": "none"}
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
+    gguf_on_disk: list[str] = []
+    snapshot = _default_snapshot(repo_dir)
+    if snapshot is not None:
+        try:
+            gguf_on_disk = [f for f in os.listdir(snapshot) if f.lower().endswith(".gguf")]
+        except OSError:
+            gguf_on_disk = []
     return {
         "state": "partial" if _unfinished_fetch(repo_dir) else "downloaded",
         "size": scan.size,
         "files": scan.files,
+        # Item 6: WHICH GGUF file is actually on disk, when exactly one is —
+        # so a row's variant list (`_model_row`'s new `variants` array) can
+        # mark the already-downloaded one without the caller re-deriving it
+        # from `files` itself. `None` for a non-GGUF repo, an empty snapshot,
+        # or (deliberately) a repo with more than one `.gguf` present — an
+        # ambiguous case this field refuses to guess at rather than naming
+        # the wrong file as "the one you have".
+        "file": gguf_on_disk[0] if len(gguf_on_disk) == 1 else None,
         # Newest atime — "last read", the same measure the cached tab shows.
         "lastUsed": scan.atime or None,
         # Canonicalized like every other fs path the frontend gets, so it can go
@@ -1451,8 +1467,22 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "relation": relation,
         # Item 9c (fix round 5): how many weight variants this repo ships —
         # `_count_variants`'s own docstring for the (best-effort, no extra
-        # request) rule.
-        "variants": _count_variants(raw),
+        # request) rule. Renamed from `variants` (item 6): that name now
+        # belongs to the array below, and a bare count vs. a list of the
+        # actual files must not share one key.
+        "variantCount": _count_variants(raw),
+        # Item 6: the actual GGUF files this repo ships, one entry per
+        # `formats.gguf_candidate_files` result (same filter `variantCount`
+        # itself now reads, D1251) — `None` for every non-GGUF row, since
+        # there is no per-file listing to offer one for (a safetensors/MLX
+        # "variant" is a whole subfolder, not a pickable single file this
+        # download path could act on). Each entry's `quant` is `formats.
+        # gguf_quant_token`'s read of the file's OWN name — the same real,
+        # published fact `_quant` itself prefers over a repo-name guess.
+        "variants": (
+            [{"file": f, "quant": formats.gguf_quant_token(f)}
+             for f in formats.gguf_candidate_files(raw.get("siblings") or [])]
+            if weight_format == "gguf" else None),
         # "gguf" or None — the other half of that grouping key. See
         # `weight_format` above.
         "format": weight_format,

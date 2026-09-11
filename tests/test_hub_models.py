@@ -769,7 +769,7 @@ def test_a_multi_quant_gguf_repo_counts_each_quant_as_a_variant(client, hub_cach
             {"rfilename": "model-Q8_0.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 3
+    assert _search(client).json()["models"][0]["variantCount"] == 3
 
 
 def test_an_mmproj_sibling_is_not_counted_as_its_own_variant(client, hub_cache, monkeypatch):
@@ -783,7 +783,7 @@ def test_an_mmproj_sibling_is_not_counted_as_its_own_variant(client, hub_cache, 
             {"rfilename": "mmproj-model-f16.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
 
 
 def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch):
@@ -794,7 +794,7 @@ def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch
         safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
         siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "config.json"}],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 1
+    assert _search(client).json()["models"][0]["variantCount"] == 1
 
 
 def test_a_sharded_gguf_quant_counts_once_not_once_per_shard(client, hub_cache, monkeypatch):
@@ -812,7 +812,7 @@ def test_a_sharded_gguf_quant_counts_once_not_once_per_shard(client, hub_cache, 
             {"rfilename": "model-Q4_K_M.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
 
 
 def test_a_draft_or_projector_gguf_sibling_is_not_counted_as_its_own_variant(
@@ -830,7 +830,91 @@ def test_a_draft_or_projector_gguf_sibling_is_not_counted_as_its_own_variant(
             {"rfilename": "draft-model-Q4_0.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
+
+
+# -- item 6: the variant list itself -----------------------------------------
+
+
+def test_a_gguf_repos_variants_array_lists_each_file_and_its_quant(
+        client, hub_cache, monkeypatch):
+    """Item 6: a GGUF row's `variants` array names every candidate file (the
+    same set `variantCount` above counts), each paired with its own published
+    quant token off the filename — not a guess from the repo name."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/multi-quant",
+        gguf={"total": 4_000_000_000},
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+        ],
+    )]))
+    model = _search(client).json()["models"][0]
+    assert model["variantCount"] == 2
+    by_file = {v["file"]: v["quant"] for v in model["variants"]}
+    assert by_file == {
+        "model-Q4_K_M.gguf": "Q4_K_M",
+        "model-Q8_0.gguf": "Q8_0",
+    }
+
+
+def test_a_non_gguf_repos_variants_array_is_null(client, hub_cache, monkeypatch):
+    """A safetensors/MLX row has no per-file quant listing to offer — `variants`
+    is null rather than a fake single-entry list, mirroring how `_count_variants`
+    still gives it a `variantCount` of 1 from its subfolder/dtype convention."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/plain-st",
+        safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
+        siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "config.json"}],
+    )]))
+    model = _search(client).json()["models"][0]
+    assert model["variantCount"] == 1
+    assert model["variants"] is None
+
+
+def test_the_on_disk_gguf_file_is_named_in_local_state(client, hub_cache, monkeypatch):
+    """Item 6: when exactly one `.gguf` file sits in a repo's default snapshot,
+    `local.file` names it — so a variant list can mark which one is already on
+    disk without re-deriving it from `local.files`' bare count."""
+    repo_dir = hub_cache / "models--org--have-gguf"
+    blob = repo_dir / "blobs" / "b1"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 64)
+    snapshot = repo_dir / "snapshots" / "c1"
+    snapshot.mkdir(parents=True)
+    try:
+        os.symlink(blob, snapshot / "model-Q4_K_M.gguf")
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    refs = repo_dir / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("c1")
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/have-gguf")]))
+    model = _search(client).json()["models"][0]
+    assert model["local"]["file"] == "model-Q4_K_M.gguf"
+
+
+def test_local_file_is_none_when_more_than_one_gguf_is_on_disk(client, hub_cache, monkeypatch):
+    """An ambiguous multi-GGUF snapshot refuses to guess which file "is the
+    one" rather than naming the wrong one."""
+    repo_dir = hub_cache / "models--org--two-guffs"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "b1").write_bytes(b"x" * 64)
+    (blobs / "b2").write_bytes(b"y" * 64)
+    snapshot = repo_dir / "snapshots" / "c1"
+    snapshot.mkdir(parents=True)
+    try:
+        os.symlink(blobs / "b1", snapshot / "model-Q4_K_M.gguf")
+        os.symlink(blobs / "b2", snapshot / "model-Q8_0.gguf")
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    refs = repo_dir / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("c1")
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/two-guffs")]))
+    model = _search(client).json()["models"][0]
+    assert model["local"]["file"] is None
 
 
 def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub_cache, monkeypatch):
@@ -845,7 +929,7 @@ def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub
             {"rfilename": "8bit/config.json"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
 
 
 # -- the request ------------------------------------------------------------

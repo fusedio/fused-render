@@ -3539,6 +3539,16 @@ button.am-bench-model:focus-visible {
   font-style: italic;
 }
 
+.tp .drawer .variant-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
 .tp .drawer .why {
   margin: 12px 0 0;
   padding-top: 10px;
