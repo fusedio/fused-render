@@ -2020,3 +2020,31 @@ rationale on each.
   and `hubSearchView.test.ts` for `metaParts`/`model.task` source-pinning
   — none found, nothing to update.
 - `bun run --cwd frontend typecheck` — clean.
+
+### Fix round 9 (2026-09-11)
+
+- Item 1: dropped the downloaded-vs-not row background colour. The
+  section headings ("On this Mac" / "Also worth having") already carry
+  that distinction, so `.tp .row.have`'s `--am-surface-have` background
+  was redundant; every row now uses `--am-surface-none`. The `have`
+  class stays on the row (nothing else keyed off it), and the
+  `--am-surface-have` token stays in `tokens.css` unused.
+- Item 2: only a partially-downloaded repo now gets a yellowish row.
+  Added `partial: boolean` to `ModelRowModel`, set from `resumable(repo)`
+  in `diskRow()` (`LocalTab.tsx`) and `false` in `catalogRow()`. Row
+  `className` appends `partial` next to `have`. New `.tp .row.partial`
+  rule mixes `--warning` into background (8%) and border (45%) — same
+  ratio as the existing warn chip/fit-tight rules, so it reads as the
+  same faint amber in both themes.
+
+### Round 9 test results
+
+- UI-only round; no new tests. Grepped `frontend/src` for
+  `\.row\.have`/`am-surface-have`/`ModelRowModel` — no other consumer of
+  the deleted CSS rule, and neither `ModelRow.test.ts` nor
+  `CapabilityPane.test.ts` constructs a `ModelRowModel` literal, so no
+  test edits were needed.
+- `bun test frontend/src/apps/ai_models/local/ModelRow.test.ts
+  frontend/src/apps/ai_models/local/CapabilityPane.test.ts` — 23 pass,
+  0 fail.
+- `bun run --cwd frontend typecheck` — clean.
