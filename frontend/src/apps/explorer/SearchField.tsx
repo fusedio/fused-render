@@ -276,6 +276,14 @@ export function SearchField({
   // (the field was already focused, so no event fires at all) can't leave a
   // stale flag around to swallow the NEXT, unrelated plain focus.
   const focusFromRequestRef = useRef(false);
+  // A click that FOCUSES the field arrives as mousedown (focus, seed, select)
+  // and then mouseup — and the browser's own mouseup default collapses the
+  // selection we just made down to a caret where the pointer landed. Set on
+  // the mousedown that focuses an unfocused field, and read by the input's
+  // `onMouseUp` to suppress that one default; a click inside an ALREADY
+  // focused field never sets it, so ordinary caret placement and drag-select
+  // keep working once the field is live. This is what an address bar does.
+  const selectOnMouseUpRef = useRef(false);
   // Bumped on every seed request, never read for its value — only so the
   // effect below has a dependency that changes EVERY time, unlike `query`.
   // `query` doesn't change when the seed equals what is already in the box
@@ -587,6 +595,15 @@ export function SearchField({
           className="listing-search-input"
           placeholder={pinnedOpen ? (boxWide ? HINT_LONG : HINT_SHORT) : ""}
           value={query}
+          onMouseDown={() => {
+            selectOnMouseUpRef.current =
+              document.activeElement !== searchInputRef.current;
+          }}
+          onMouseUp={(e) => {
+            if (!selectOnMouseUpRef.current) return;
+            selectOnMouseUpRef.current = false;
+            e.preventDefault();
+          }}
           onFocus={() => {
             // `requestSearchFocus` already decided what this field should
             // show — the Search button's deliberate "" included — and this
@@ -606,6 +623,25 @@ export function SearchField({
               // already teaches you to expect.
               setQuery(contractHome(fsPath, home));
               seedSelectRef.current = true;
+              // The select effect below is keyed on `seedRequestToken`
+              // ALONE, so arming `seedSelectRef` without also bumping the
+              // token left a plain focus seeded but never selected — the
+              // path went in, nothing was highlighted, and the armed flag
+              // sat there waiting to fire on the next unrelated
+              // `requestSearchFocus` instead. Same reasoning as the
+              // requested-focus path: a token that changes unconditionally
+              // is the only dependency that can't be bailed out of.
+              setSeedRequestToken((t) => t + 1);
+            } else if (isPristineQuery(query, fsPath, home)) {
+              // Already holding the pre-filled path from an earlier focus
+              // that blurred without committing (searchBoxBlurAction's
+              // "unpin" keeps the text). Nothing to re-seed, but a click
+              // here is the same gesture as the one above and gets the same
+              // whole-value selection — the rule is "a plain focus on an
+              // un-typed-in field selects what's there", not "a focus that
+              // happened to do the seeding itself".
+              seedSelectRef.current = true;
+              setSeedRequestToken((t) => t + 1);
             }
             setPinnedOpen(true);
             setFieldActive(true);
