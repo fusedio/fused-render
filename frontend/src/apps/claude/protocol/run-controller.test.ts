@@ -984,6 +984,84 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply[1]!.text).not.toContain("before the reload");
   });
 
+  // THE RELOAD ROAD WITHOUT A SEAM. `_absorbed_turn_breaks` only reports a
+  // genuine boundary when the previous `result` is the row RIGHT BEFORE this
+  // send's echo — a D415 wake (or anything else) sitting between them makes it
+  // withhold the seam entirely (agent.py's own adjacency rule), and the test
+  // above assumes the seam always arrives. `priorReply` (what the restored
+  // transcript already had on screen, seeded before `turn_breaks` is even
+  // read) is the fallback for exactly this.
+  //
+  // Without it, the payload below (no `turn_breaks`, both replies' segments in
+  // one window) lands in ONE bubble carrying BOTH replies — reply A rendered a
+  // second time, alongside B, for as long as the disk cursor has not yet
+  // stepped over the boundary. The NEXT poll (cursor advanced, B alone) then
+  // silently overwrites that bubble down to just B, so a final-state assertion
+  // never sees it: the duplication is a one-tick flash, exactly "the last
+  // response gets duplicated ... before the new response starts streaming" —
+  // which is why every intermediate frame is inspected here, the same way the
+  // R4-3 test above catches it for the same-tab shape.
+  test("a send into a restored session never flashes the old reply into the new bubble (no seam)", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          // No `turn_breaks` at all — a wake sat between the old `result` and
+          // this send's echo, so agent.py cannot prove the seam. Without
+          // `priorReply` this is exactly the payload that flashes the old
+          // reply into the new bubble.
+          if (n === 1) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    // The new bubble (the last assistant turn in every frame) must never carry
+    // reply A's text alongside reply B's — whatever it holds mid-stream, it is
+    // either A alone (untouched, from before the send) or B alone/growing,
+    // never both together.
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and

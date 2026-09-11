@@ -939,7 +939,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function pollLoop(
     runId: string,
     gen: number,
-    opts: { ownTurn?: boolean } = {},
+    opts: { ownTurn?: boolean; priorReply?: { text: string } | null } = {},
   ): Promise<void> {
     const seat = ++loopSeq;
     // This run is now the one the stop button aims at. Set here, the one place a
@@ -1050,9 +1050,37 @@ export function createChatController(deps: ControllerDeps): ChatController {
     /** The already-landed prefix of this run's window — see `landedWindow`. */
     let baseSeg = 0;
     let baseText = "";
+    /**
+     * WHETHER `baseSeg` IS SAFE TO SLICE `segs` WITH. `landedWindow` is always
+     * trusted: both its numbers came from THIS controller's own reconstruction
+     * of the very same live window. `priorReply` (below) is not — it comes
+     * from `_history`, which segments a turn with NO stream deltas at all
+     * (`_segments_from_rows`'s own docstring: "reply A carrying finalized text
+     * only, followed by a reply B that streams, made `streamed` False for the
+     * prefix and True for the window, and the offset then pointed at the wrong
+     * segment entirely"). Its TEXT is still exact (byte-identical either way),
+     * so `baseText` is seeded regardless — only the segment COUNT is left at 0
+     * and marked untrusted, and the render loop below skips rather than slices
+     * `segs` on it until either a reported seam confirms a count or the prefix
+     * retires and there is nothing left to slice.
+     */
+    let baseSegTrusted = true;
     if (landedWindow && landedWindow.runId === runId) {
       baseSeg = landedWindow.segments;
       baseText = landedWindow.text;
+    } else if (opts.priorReply && opts.priorReply.text) {
+      // THE RELOAD ROAD's OWN BASE — see `priorReply`'s definition at its one
+      // call site (`sendMessage`). `landedWindow` only ever covers a reply THIS
+      // controller watched land; a page that restored its transcript from
+      // `_history` (or a second tab open on the same conversation) has never
+      // run a pollLoop to completion, so it has nothing there — but it already
+      // has the reply rendered, and that rendering is exactly the prefix the
+      // live window reopens on. Seeding it here means `adoptFirstSeam` below is
+      // no longer the ONLY thing standing between a stale reply and a
+      // duplicate bubble: it still runs, but now as a check against a base
+      // already known to be right, not as the sole source of one.
+      baseText = opts.priorReply.text;
+      baseSegTrusted = false;
     }
     // CONSUMED EITHER WAY: one settled reply, one loop that may skip it. A base
     // left standing past the loop that could use it would hide the opening of
@@ -1061,17 +1089,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     /**
      * A LOOP STARTED BY A SEND OWNS ONLY THE TURN IT SENT.
      *
-     * `landedWindow` covers the case where THIS controller watched the previous
-     * reply land. It cannot cover the reload road: a page that restored its
-     * transcript from `_history` and then sent into the still-open host has
-     * every earlier turn on screen and no memory of any payload at all. The
-     * window it gets back opens on the previous reply just the same.
+     * `landedWindow` (or, on the reload road, `priorReply` above) covers the
+     * case where the previous reply is already known. Either can miss: a fresh
+     * controller with no prior turn at all, or a `priorReply` whose text the
+     * live window's payload does not actually start with (the "already-landed
+     * prefix retires" check below resets it if so — never trust it blindly).
      *
-     * So the FIRST payload's own seams answer it: a span the payload has
+     * So the FIRST payload's own seams answer it too: a span the payload has
      * already closed off (`turn_breaks`) is a reply that ended BEFORE this send
      * — this loop was started by the send, so nothing it owns can have finished
      * yet — and the last of those seams is exactly where this turn begins. It
-     * is adopted as the base, and everything below runs unchanged from there.
+     * is adopted as the base (advancing it, never retreating it), and
+     * everything below runs unchanged from there.
      *
      * Never set for an ADOPTED run (`resumeRun`, `adoptLiveRun`): there the
      * earlier spans are a cold read of turns this page has not rendered, and
@@ -1219,6 +1248,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (last && (last.segments > baseSeg || last.text > baseText.length)) {
             baseSeg = last.segments;
             baseText = fullText.slice(0, last.text);
+            // A REPORTED SEAM IS agent.py's OWN COUNT, measured against THIS
+            // very payload's segmentation — unlike `priorReply`'s, it needs no
+            // reconciliation.
+            baseSegTrusted = true;
           }
         }
 
@@ -1241,7 +1274,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
         ) {
           baseSeg = 0;
           baseText = "";
+          baseSegTrusted = true;
         }
+        // AN UNCONFIRMED TEXT BASE WITH SEGMENTS STILL IN THE PAYLOAD IS NOT
+        // SAFE TO SLICE. `baseText` is exact either way (see `baseSegTrusted`'s
+        // own note), but a `baseSeg` of 0 left over from `priorReply` means
+        // "unknown", not "nothing to skip" — slicing `segs` on it would render
+        // the reload's old reply right alongside the new one, in the very
+        // shape this exists to prevent. So: skip this one poll rather than
+        // guess a count nobody has confirmed. It resolves within one more poll
+        // guaranteed, not a hope — THIS poll is itself proof that the new
+        // turn's echo, with a `result` already closing the reply before it,
+        // has reached the file, which is exactly what advances agent.py's
+        // cursor past the old turn (`_read_current_turn`) for every poll after
+        // this one. A payload with nothing left to slice (`segs.length === 0`,
+        // the flat-text-only path) never hits this at all — `bodyText` alone
+        // already renders it correctly.
+        if (!baseSegTrusted && anyBody && segs.length > 0) continue;
         const bodySegs = baseSeg ? segs.slice(baseSeg) : segs;
         const bodyText = baseText ? fullText.slice(baseText.length) : fullText;
         // Rebased onto the body, and a seam that falls AT the base is the
@@ -1611,6 +1660,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
     // (Bugbot, PR #1064).
     const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
+    // WHAT IS ALREADY ON SCREEN, taken BEFORE `addUser` appends this turn's own
+    // bubble — see `priorReply`'s one consumer, `pollLoop`'s base seeding. A
+    // controller that restored this conversation from `_history` (a reload, or
+    // a second tab open on the same chat) has never run a pollLoop to
+    // completion, so `landedWindow` is empty even though the reply is right
+    // there, rendered. Sending into a still-live host reopens the window on
+    // that same reply (agent.py's cursor cannot advance past it until a NEWER
+    // turn proves it closed), and without this the only defense left is
+    // `turn_breaks`, which the backend deliberately withholds whenever
+    // anything — most commonly a D415 wake — sits between the old `result` and
+    // this send's own echo (`_absorbed_turn_breaks`'s adjacency rule). Missing
+    // that seam left the old reply duplicated into the new bubble until the
+    // cursor finally stepped over it. Only the TEXT travels, never a segment
+    // count: `_history` segments a turn with no stream deltas at all, which
+    // can disagree with a live poll's reconstruction of the very same rows
+    // once a newer turn's deltas are in the same window (`pollLoop`'s
+    // `baseSegTrusted` is what makes that safe to seed anyway). Only a SETTLED
+    // assistant turn counts: a streaming one is either impossible here
+    // (`sending` is one-at-a-time) or, if seen anyway, not a safe prefix to
+    // assume closed.
+    const priorReply = (() => {
+      const last = state.turns[state.turns.length - 1];
+      if (!last || last.role !== "assistant" || last.streaming) return null;
+      return { text: last.text || "" };
+    })();
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
     //
@@ -1704,8 +1778,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         setRunParam(runId);
         // `ownTurn`: this loop was started by THIS send, so anything the first
         // payload has already closed off is a turn that ended before it — see
-        // `adoptFirstSeam`.
-        await pollLoop(runId, gen, { ownTurn: true });
+        // `adoptFirstSeam`. `priorReply`: what was already on screen before
+        // this send, in case `landedWindow` has nothing (the reload road).
+        await pollLoop(runId, gen, { ownTurn: true, priorReply });
       }
       // else: the reader left during start — the run continues server-side and
       // resumeRun can re-attach; the landing gains no run param.
