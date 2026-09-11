@@ -3167,45 +3167,51 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 
 /**
  * THE LIST'S OWN ORDER: filter → status → has-draft first → recency (design.md,
- * Round 2, "List sort"; Akshil, 2026-09-11: "the priority of sorting is status
- * first, then draft and the time").
+ * Round 2, "List sort"; Akshil, 2026-09-11: "1st layer of sort is status …
+ * inside status we sort by drafts tasks on top and non drafts below them. in
+ * both drafts and non drafts we sort them by recency, most recent on top").
  *
  * `sortByLane` above is the page's shared rank order and stays exactly as it
  * was — the Board reads it through `groupByColumn`, the Cards wall reads it
- * directly. This is the one extra pass the LIST makes INSIDE each lane: the
- * rows carrying unsent words (`hasDraft` — a task draft, a never-sent chat, or
- * an ordinary task whose composer is holding something) are lifted to the top
- * of THEIR lane, newest draft first, and the rest of the lane keeps the order
- * it already had. An In Progress task with a half-typed follow-up is still in
- * progress and stays in In Progress; it is simply the first row there, because
- * within a status the thing waiting on the reader is the thing to see first.
+ * directly. This is the one extra pass the LIST makes INSIDE each lane, and it
+ * is a stable PARTITION of what `sortRank` already ordered: the rows carrying
+ * unsent words (`hasDraft` — a task draft, a never-sent chat, or an ordinary
+ * task whose composer is holding something) come first, the rest after, and
+ * BOTH halves keep the lane's own recency — the time the row prints. So an In
+ * Progress task with a half-typed follow-up is still in In Progress, first
+ * among its lane, and two such tasks are ordered by which ran most recently,
+ * not by which draft was touched last; the draft's own clock is not a time the
+ * row shows, and ordering by a clock the reader cannot see reads as random.
  *
- * RECENCY IS `draftUpdatedAt`, newest first, with the original position as the
- * tie-break so a page of drafts the server sent in one order does not shuffle
- * between polls (the same stability `sortRank` keeps). A lane with no drafts
- * comes back byte-for-byte as `sortRank` ranked it.
+ * The draft rank itself (`LIST_ORDER` "draft", the rows that ARE drafts and
+ * have no run at all) is the one lane where the draft's clock is the only
+ * clock, so there — and only there — it is the order: newest words first.
  */
 export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
   const buckets = new Map<BoardColumn, Task[]>(
     LIST_ORDER.map((key) => [key, [] as Task[]]),
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
-  return LIST_ORDER.flatMap((key) =>
-    hoistDrafts(sortRank(buckets.get(key) ?? [], key, now)),
-  );
+  return LIST_ORDER.flatMap((key) => {
+    const lane = sortRank(buckets.get(key) ?? [], key, now);
+    return key === "draft" ? byDraftClock(lane) : hoistDrafts(lane);
+  });
 }
 
-/** One lane, drafts first by recency, everything else in the order given. */
+/** One lane, drafts first, everything in the order `sortRank` gave it. */
 function hoistDrafts(lane: Task[]): Task[] {
   const drafts: Task[] = [];
   const rest: Task[] = [];
   for (const task of lane) (hasDraft(task) ? drafts : rest).push(task);
-  if (!drafts.length) return lane;
-  const ranked = drafts
+  return drafts.length ? [...drafts, ...rest] : lane;
+}
+
+/** The draft rank: newest words first, the server's order breaking ties. */
+function byDraftClock(lane: Task[]): Task[] {
+  return lane
     .map((task, index) => ({ task, index, at: draftUpdatedAt(task) }))
     .sort((a, b) => b.at - a.at || a.index - b.index)
     .map((r) => r.task);
-  return [...ranked, ...rest];
 }
 
 // ---- the Cards view's set ----------------------------------------------------

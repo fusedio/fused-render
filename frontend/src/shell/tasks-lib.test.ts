@@ -7115,16 +7115,23 @@ describe("sortForList", () => {
       .toEqual(["ask", "form", "chat", "soon", "done-draft"]);
   });
 
-  it("puts a draft-carrying row first WITHIN its lane, by the draft's clock", () => {
+  it("puts draft-carrying rows first WITHIN their lane, in the lane's own recency", () => {
+    // Three In Progress runs. The two holding drafts come first; between them
+    // the order is the lane's — which ran most recently — NOT whose draft was
+    // touched last (Akshil, 2026-09-11: "in both drafts and non drafts we sort
+    // them by recency"). "stale-words" has the NEWER draft but the OLDER run,
+    // and it still comes second.
+    // In Progress ranks by the last run, so each row gets one message at a
+    // distinct time; the lane's clock is that message's `ran_at`.
+    const sec = LIST_NOW / 1000;
+    const ranAt = (at: number) => [msg({ message_id: "MSG-001", at, ran_at: at })];
     const rows = [
-      task({ key: "quiet", status: "in_progress", last_active: LIST_NOW / 1000 }),
-      carrying("older-words", "in_progress", 10),
-      carrying("newer-words", "in_progress", 900),
+      task({ key: "quiet", status: "in_progress", messages: ranAt(sec) }),
+      { ...carrying("stale-words", "in_progress", 900), messages: ranAt(sec - 3600) },
+      { ...carrying("fresh-run", "in_progress", 10), messages: ranAt(sec - 60) },
     ];
-    // Both carriers above the quiet run, newest words first; the lane itself
-    // does not move.
     expect(sortForList(rows, LIST_NOW).map((t) => t.key))
-      .toEqual(["newer-words", "older-words", "quiet"]);
+      .toEqual(["fresh-run", "stale-words", "quiet"]);
   });
 
   it("never lets a draft lift a row out of its lane", () => {
@@ -7133,6 +7140,11 @@ describe("sortForList", () => {
       carrying("ask", "needs_attention", 10),
     ];
     expect(sortForList(rows, LIST_NOW).map((t) => t.key)).toEqual(["ask", "done"]);
+  });
+
+  it("orders the draft rank itself by the draft's clock, server order on a tie", () => {
+    const rows = [taskDraftAt("older", 100), chatDraftAt("newer", 500)];
+    expect(sortForList(rows, LIST_NOW).map((t) => t.key)).toEqual(["newer", "older"]);
   });
 
   it("keeps the server's order among drafts whose clocks tie", () => {
