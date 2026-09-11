@@ -675,7 +675,10 @@ export function useFileOps({
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
   // warning. Since every desktop platform now has a bin backend, that dialog has
   // stopped being the ordinary Windows/Linux delete and is what it always claimed
-  // to be: the irreversible case. Success shows a low-key, count-aware info toast.
+  // to be: the irreversible case. Success is SILENT (user: "lets not send
+  // notifications for file deletion (no need)") — see the removed-notify
+  // comment at this function's own success branch below, and
+  // DECISIONS-toasts-become-notifications.md for the reversal.
   //
   // UNDOABLE WHERE THE DESTINATION IS NAMED, as one op for the whole batch: on
   // macOS-local and Linux-XDG the trash is a rename the server chose the
@@ -687,7 +690,7 @@ export function useFileOps({
     // As in startDelete: trashing a folder takes everything inside it, so a
     // selection that also holds rows from within that folder must not trash them
     // individually — the second call would hit a vanished path and be counted as
-    // a real failure, replacing the "Deleted" toast with a bogus error.
+    // a bogus failure alongside the real trash.
     const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     void (async () => {
@@ -716,13 +719,15 @@ export function useFileOps({
         }
       }
       if (trashed.length) {
-        // Destructive-but-successful (spec's own motivating example): the user
-        // should be able to find out what was deleted after the card is gone.
-        notify({
-          title: trashed.length === 1 ? "Deleted" : `Deleted ${trashed.length} items`,
-          tone: "info",
-          tier: "trail",
-        });
+        // No success notification here (user: "lets not send notifications for
+        // file deletion (no need)") — a bare "Deleted" card named nothing and
+        // carried no context worth a record. The undo/redo confirmation below
+        // (relocationToast, line ~424) is the one place a delete still shows up
+        // in the notification surface, because that message answers "did my
+        // Cmd+Z work", not "what did I just delete". Was this migration's own
+        // named motivating example for the `trail` tier — see
+        // DECISIONS-toasts-become-notifications.md for the reversal.
+        //
         // One op for the batch, so a single Cmd+Z brings the whole selection
         // back. Guarded on emptiness EXPLICITLY even though recordFsOp's push
         // already no-ops on it: a batch that was entirely Finder-trashed yields
@@ -732,11 +737,10 @@ export function useFileOps({
         if (pairs.length) recordFsOp({ kind: "delete", pairs });
         refetch();
       }
-      // A real failure raises its own toast. It used to REPLACE the info one
-      // above (one local slot, last write wins), which hid the fact that the
-      // other rows did move; the shared stack shows both, which is what a
-      // partial success actually is. The unsupported fallback only runs when
-      // nothing errored.
+      // A real failure raises its own notification (`attention`, unlike the
+      // now-silent success path above) — the one place partial failure still
+      // has to be reported. The unsupported fallback only runs when nothing
+      // errored.
       if (failed !== null) {
         notify({
           title: friendlyFsError(failed.message, { verb: "delete", name: failed.row.name }),
