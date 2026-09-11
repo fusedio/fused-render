@@ -3597,33 +3597,64 @@ button.am-bench-model:focus-visible {
   margin-top: 10px;
 }
 
-/* A Hub hit is named by its repo id, whole — nobody curated a friendly name
-   for it — so its row gets one extra cell up front for the match score;
-   everything else is the same `.row` the Local pane's own rows use. */
-.tp .row.hit {
-  grid-template-columns: 84px minmax(0, 1fr) auto auto;
+/* Item C: a Hub hit is named by its repo id, whole — nobody curated a
+   friendly name for it — so its row gets one extra cell up front for the
+   match score, and a right-hand popularity cell instead of the Local pane's
+   single `.row-facts` string, per the approved mockup's `.row.hit.rich`.
+   Every hit `HubSearchScreen.tsx` renders carries `.rich` — there is no
+   plain, non-rich hit row left in this screen. */
+.tp .row.hit.rich {
+  grid-template-columns: 112px minmax(0, 1fr) 150px 152px;
 }
 
-.tp .row-owner {
-  margin-left: 2px;
+.tp .row.hit.rich .row-act {
+  justify-content: flex-end;
 }
 
-.tp .row.unfit {
-  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+.tp .mono-name {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
 }
 
-.tp .row-reason {
+.tp .row-meta {
   margin: 3px 0 0;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
-.tp .row-reason.danger {
+.tp .row-meta .sep {
+  opacity: 0.5;
+  padding: 0 5px;
+}
+
+.tp .row-meta.reason {
   color: var(--error);
 }
 
-.tp .row-reason.mono {
+.tp .row-meta.unknown {
+  color: var(--fg-muted);
   font-style: italic;
+}
+
+.tp .row-facts.pop {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 10px;
+  text-align: right;
+  align-content: center;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.tp .row-facts.pop span:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.tp .row.unfit {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
 }
 
 .tp .match {
@@ -3633,6 +3664,12 @@ button.am-bench-model:focus-visible {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+.tp .match .glyph {
+  width: 10px;
+  font-size: 9px;
+  text-align: center;
 }
 
 .tp .match .mbar {
@@ -3647,26 +3684,53 @@ button.am-bench-model:focus-visible {
   display: block;
   height: 100%;
   background: currentColor;
+  border-radius: 3px;
 }
 
 .tp .match .mnum {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   color: var(--fg-muted);
   min-width: 2ch;
   text-align: right;
 }
 
+.tp .match.fit-easy,
 .tp .match[data-verdict="easy"] {
   color: var(--success);
 }
 
+.tp .match.fit-tight,
 .tp .match[data-verdict="tight"] {
   color: var(--warning);
 }
 
+.tp .match.fit-no,
 .tp .match[data-verdict="no"] {
   color: var(--error);
 }
 
+.tp .match.fit-unknown,
 .tp .match[data-verdict="unknown"] {
   color: var(--fg-muted);
+}
+
+/* Item C: an on-disk hit's action slot — a plain fact, not a button, so it
+   does not compete with Download/Accept-terms elsewhere in the list. */
+.tp .downloaded {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success-bright);
+}
+
+/* Item D: the device-code login flow, moved out of a standing banner over
+   every search into a gated hit's own drawer. */
+.tp .drawer-gate {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }

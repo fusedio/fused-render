@@ -21,7 +21,8 @@ describe("HubSearchScreen one row per hit", () => {
   it("never offers a Download for a repo already on this Mac", () => {
     const start = SRC.indexOf("function HitRow(");
     const body = SRC.slice(start, SRC.indexOf("\nexport function HubSearchScreen"));
-    expect(body).toContain('disk.state === "downloaded" ? (');
+    expect(body).toContain('const have = disk.state === "downloaded";');
+    expect(body).toContain("have ? (");
     expect(body).toContain("✓ Downloaded");
   });
 

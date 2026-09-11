@@ -194,3 +194,23 @@ export function paramsLabel(params: number | null): string {
   return formatParams(params) || DASH;
 }
 
+/** The mockup's own glyph ladder for a search hit's match cell (item C) —
+ *  ● easy / ▲ tight / ■ no / ? unknown. `matchCell`'s `verdict` already
+ *  carries the same four-way state (including the "unknown" case a plain
+ *  `AiFitVerdict["verdict"]` cannot express), so this is a second, tiny pure
+ *  function rather than folding a glyph into `MatchCell` itself — the glyph
+ *  is presentation for one specific screen (the dense hit row), while
+ *  `MatchCell` is shared by every place a match score renders. */
+export function verdictGlyph(verdict: AiFitVerdict["verdict"] | "unknown"): string {
+  switch (verdict) {
+    case "easy":
+      return "●";
+    case "tight":
+      return "▲";
+    case "no":
+      return "■";
+    default:
+      return "?";
+  }
+}
+

@@ -22,7 +22,6 @@ import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
   bySizeAscending,
   gateChrome,
-  needsHubLogin,
   resultsSummary,
   sortsOnPage,
   wireSort,
@@ -36,7 +35,7 @@ import {
   paramsLabel,
   popLabel,
   quantLabel,
-  splitRepoId,
+  verdictGlyph,
 } from "@apps/ai_models/lib/hubTableView";
 import {
   cancelHfLogin,
@@ -165,75 +164,168 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
   );
 }
 
-/** One hit — the mockup's own `hit()`, one repo, one row. No family grouping
- *  and no disclosure drawer: everything worth knowing about a search result
- *  is already on the row. */
+/** A hit's disclosure drawer (ⓘ) — the same `.drawer`/`dl`/`.acts` markup and
+ *  CSS `ModelRow.tsx`'s own `Drawer` uses, but with a search hit's own facts
+ *  rather than a pane row's (no curated/"why we suggest it" story — a search
+ *  result was never suggested by us, per this screen's own "Nothing here is
+ *  curated by us" line above). Kept local to this file rather than reusing
+ *  `ModelRow`'s `Drawer` component directly: that component's "why" section
+ *  is written entirely in terms of a pane row's `curated`/`ourPick` shape,
+ *  which a Hub hit does not have and should not fake. */
+function HitDrawer({
+  model,
+  authenticated,
+  onSignedIn,
+  onClose,
+}: {
+  model: HubModel;
+  authenticated: boolean;
+  onSignedIn: () => void;
+  onClose: () => void;
+}) {
+  const sizeLabel = model.estimatedSize ? `≈${formatSize(model.estimatedSize)}` : "not recorded";
+  return (
+    <div className="drawer" data-part="hit.drawer">
+      <dl>
+        <dt>Repository</dt>
+        <dd>{model.id}</dd>
+        <dt>Task</dt>
+        <dd className="plain">{model.task ?? <span className="unknown">not recorded</span>}</dd>
+        <dt>Parameters</dt>
+        <dd className="plain">{paramsLabel(model.params)}</dd>
+        <dt>Quantization</dt>
+        <dd className="plain">{quantLabel(model.quant)}</dd>
+        <dt>Size</dt>
+        <dd className="plain">{sizeLabel}</dd>
+      </dl>
+      {/* Item D: the search screen no longer shows a standing `.am-hub-login`
+       *  banner over the whole results column — a login prompt over every
+       *  search was recommending an account to a reader who never hit a
+       *  wall. The device-code flow stays reachable, just moved to the one
+       *  place it is actually relevant: a gated row's own drawer. */}
+      {model.gated && !authenticated && (
+        <div className="drawer-gate">
+          <HubLogin onSignedIn={onSignedIn} />
+        </div>
+      )}
+      <div className="acts">
+        <a className="btn-link" href={hubModelUrl(model.id)} target="_blank" rel="noreferrer">
+          View on Hugging Face ↗
+        </a>
+        <button type="button" className="btn-link" onClick={onClose}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One hit — the mockup's own `hit()`, one repo, one row: match cell first,
+ *  the full repo id in mono bold (no separate owner span — the mockup's own
+ *  "no curated name to give them" reasoning), a `from <base>` line only when
+ *  a base model is known, one `row-meta` facts line with no dangling dash,
+ *  popularity as its own right-hand cell, and Download/Accept-terms/
+ *  Downloaded plus an ⓘ opening `HitDrawer` above. */
 function HitRow({
   model,
   disk,
   authenticated,
   busy,
+  infoOpen,
   onDownload,
   onCancel,
+  onToggleInfo,
+  onSignedIn,
   job,
 }: {
   model: HubModel;
   disk: ReturnType<typeof resultDisk>;
   authenticated: boolean;
   busy: boolean;
+  infoOpen: boolean;
   onDownload: () => void;
   onCancel: (job: Job) => void;
+  onToggleInfo: () => void;
+  onSignedIn: () => void;
   job: Job | undefined;
 }) {
-  const { owner, name } = splitRepoId(model.id);
   const cell = matchCell(model.fit, model.matchScore);
   const title = matchTitle(model.fit, model.matchScore);
-  const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
+  const glyph = verdictGlyph(cell.verdict);
+  const have = disk.state === "downloaded";
+  const gate = have ? null : gateChrome(model.gated, authenticated);
   const sizeLabel = model.estimatedSize ? `≈${formatSize(model.estimatedSize)}` : null;
 
+  const metaParts = [model.task, paramsLabel(model.params), quantLabel(model.quant), sizeLabel].filter(
+    (v): v is string => Boolean(v),
+  );
+
   return (
-    <div className={`rowwrap`} data-part="hit">
-      <div className={`row hit${disk.state === "downloaded" ? " have" : ""}${disk.state === "partial" ? " unfit" : ""}`}>
-        <div>
-          <div className="row-name">
-            <b>{name}</b>
-            {owner && <span className="row-owner mono">{owner}</span>}
-            {gate && (
-              <span className="chip" title={gate.title}>
-                {gate.pill}
-              </span>
-            )}
-          </div>
-          <p className="row-note mono">
-            {[model.task, paramsLabel(model.params), quantLabel(model.quant), sizeLabel].filter(Boolean).join(" · ")}
-          </p>
-          {model.fit?.verdict === "no" && (
-            <p className="row-reason danger">
-              Will not fit — needs about {formatSize(model.fit.footprintBytes)} of memory.
-            </p>
-          )}
-          {!model.fit && (
-            <p className="row-reason mono">Fit not known yet.</p>
-          )}
-        </div>
-        <span className="match" title={title} data-verdict={cell.verdict}>
+    <div className="rowwrap" data-part="hit">
+      <div
+        className={`row hit rich${have ? " have" : ""}${model.fit?.verdict === "no" ? " unfit" : ""}`}
+      >
+        <span className={`match fit-${cell.verdict}`} title={title} data-verdict={cell.verdict}>
+          <span className="glyph">{glyph}</span>
           <span className="mbar">
             <i style={{ width: `${cell.scoreText === "—" ? 0 : cell.scoreText}%` }} />
           </span>
           <span className="mnum">{cell.scoreText}</span>
         </span>
-        <span className="row-facts">
-          {popLabel(model.downloads)} dl · {popLabel(model.likes)} likes · {ageLabel(model.created)}
+        <div>
+          <div className="row-name">
+            <b className="mono-name">{model.id}</b>
+            {gate && (
+              <span className="chip warn-chip" title={gate.title}>
+                Gated
+              </span>
+            )}
+          </div>
+          {model.baseModel && <p className="row-note mono from">from {model.baseModel}</p>}
+          {metaParts.length > 0 && (
+            <p className="row-meta">
+              {metaParts.map((part, i) => (
+                <span key={i}>
+                  {i > 0 && <span className="sep">·</span>}
+                  {part}
+                </span>
+              ))}
+            </p>
+          )}
+          {model.fit?.verdict === "no" && (
+            <p className="row-meta reason">
+              Will not fit — needs about {formatSize(model.fit.footprintBytes)} of memory.
+            </p>
+          )}
+          {cell.verdict === "unknown" && (
+            <p className="row-meta unknown">
+              Fit not measured yet — the Hub did not say how big this file is. It is shown, not hidden:
+              unmeasured is not the same as too big.
+            </p>
+          )}
+        </div>
+        <span className="row-facts pop">
+          <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
+          <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
+          <span title="Last updated">{ageLabel(model.created)}</span>
         </span>
         <span className="row-act">
-          {disk.state === "downloaded" ? (
-            <span className="chip">✓ Downloaded</span>
+          {have ? (
+            <span className="downloaded" title="Already on this Mac — use it from its capability">
+              ✓ Downloaded
+            </span>
           ) : busy ? (
             <button type="button" className="btn" onClick={() => job && onCancel(job)}>
               Stop
             </button>
           ) : gate && !gate.canDownload ? (
-            <a className="btn-link" href={hubModelUrl(model.id)} target="_blank" rel="noreferrer">
+            <a
+              className="btn"
+              href={hubModelUrl(model.id)}
+              target="_blank"
+              rel="noreferrer"
+              title="Opens the model page on huggingface.co"
+            >
               {gate.action}
             </a>
           ) : (
@@ -241,8 +333,14 @@ function HitRow({
               Download
             </button>
           )}
+          <button type="button" className="iconbtn" title="Details" onClick={onToggleInfo}>
+            ⓘ
+          </button>
         </span>
       </div>
+      {infoOpen && (
+        <HitDrawer model={model} authenticated={authenticated} onSignedIn={onSignedIn} onClose={onToggleInfo} />
+      )}
     </div>
   );
 }
@@ -285,6 +383,7 @@ export function HubSearchScreen({
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [hiddenUnfit, setHiddenUnfit] = useState(0);
+  const [openInfoId, setOpenInfoId] = useState<string | null>(null);
   const debounce = useRef<number | null>(null);
 
   useEffect(() => {
@@ -424,7 +523,6 @@ export function HubSearchScreen({
       </p>
       {chromeNote(settled, host, hostUrl)}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {needsHubLogin(models, authenticated) && <HubLogin onSignedIn={() => setAuthEpoch((n) => n + 1)} />}
       {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
       {models !== null && models.length === 0 && !error && (
         <p className="cc-empty">
@@ -445,9 +543,12 @@ export function HubSearchScreen({
               disk={resultDisk(m.id, cards)}
               authenticated={authenticated}
               busy={pulling(m.id)}
+              infoOpen={openInfoId === m.id}
               job={jobByModel.get(m.id)}
               onDownload={() => onDownload(m.id, m.capability)}
               onCancel={onCancel}
+              onToggleInfo={() => setOpenInfoId((cur) => (cur === m.id ? null : m.id))}
+              onSignedIn={() => setAuthEpoch((n) => n + 1)}
             />
           ))}
         </div>

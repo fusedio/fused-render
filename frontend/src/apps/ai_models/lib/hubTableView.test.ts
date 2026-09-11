@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, matchCell, matchTitle, popLabel, quantLabel, splitRepoId } from "./hubTableView";
+import { ageLabel, matchCell, matchTitle, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -173,6 +173,18 @@ describe("splitRepoId", () => {
       owner: "mlx-community/nested",
       name: "Qwen3-8B",
     });
+  });
+});
+
+describe("verdictGlyph", () => {
+  it("maps each fit verdict to the mockup's own glyph", () => {
+    expect(verdictGlyph("easy")).toBe("●");
+    expect(verdictGlyph("tight")).toBe("▲");
+    expect(verdictGlyph("no")).toBe("■");
+  });
+
+  it("is the question mark for a verdict this repo never got", () => {
+    expect(verdictGlyph("unknown")).toBe("?");
   });
 });
 
