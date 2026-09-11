@@ -682,8 +682,11 @@ function TaskCard({
           onDone={() => {
             setErasing(false);
             // The card is about to leave the wall, so the receipt goes to the
-            // page's toast rather than onto the card's own note line.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
+            // page's toast rather than onto the card's own note line. A
+            // clean delete now only pops (tone: "info" default) rather than
+            // staying in the panel — see DECISIONS-toasts-become-
+            // notifications.md's retention-narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -960,7 +963,10 @@ function TaskPeek({
           onClose={() => setErasing(false)}
           onDone={() => {
             setErasing(false);
-            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
+            // A clean delete now only pops (tone: "info" default) rather
+            // than staying in the panel — see DECISIONS-toasts-become-
+            // notifications.md's retention-narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
             onClose();
           }}

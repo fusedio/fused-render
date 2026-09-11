@@ -4135,10 +4135,12 @@ describe("the delete affordance", () => {
     expect(MODAL).toContain("setErr((e as Error).message);");
     expect(MODAL).toContain('className="deploy-error"');
     // The receipt is the PAGE's, because the row it is about has just gone.
+    // No tier override any more — a clean delete only pops (tone: "info"
+    // default is transient) rather than staying in the panel, per the
+    // retention-narrowing reversal (DECISIONS-toasts-become-notifications.md).
     for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
-      expect(src).toContain(
-        'notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });',
-      );
+      expect(src).toContain('notify({ title: `Deleted ${task.task_id}`, tone: "info" });');
+      expect(src).not.toContain('tier: "trail"');
     }
   });
 

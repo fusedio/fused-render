@@ -2847,8 +2847,11 @@ function TaskNode({
             setErasing(false);
             // The page, not the row: the row this was pressed on is the thing
             // that just went, so the receipt cannot live on it (the same reason
-            // Unarchive's sentence goes to the page).
-            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
+            // Unarchive's sentence goes to the page). A clean delete now only
+            // pops (tone: "info" default) rather than staying in the panel —
+            // see DECISIONS-toasts-become-notifications.md's retention-
+            // narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -3586,7 +3589,10 @@ function TaskCard({
           onClose={() => setErasing(false)}
           onDone={() => {
             setErasing(false);
-            notify({ title: `Deleted ${task.task_id}`, tone: "info", tier: "trail" });
+            // A clean delete now only pops (tone: "info" default) rather
+            // than staying in the panel — see DECISIONS-toasts-become-
+            // notifications.md's retention-narrowing reversal.
+            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onErased();
           }}
         />
