@@ -236,3 +236,96 @@ if desired.
   `MAX_TOASTS`, `getToasts`, `useToasts` — zero references found.
 - No full `bun test` suite run was performed mid-build, per the working
   agreement; the orchestrator runs the full suite once at the end.
+
+## Code-review round (PR #1104), all 8 findings
+
+Fixed all 8 findings from the review, each with a test confirmed red
+against the pre-fix code and green after, one commit per logical group.
+Nothing was pushed back on — every finding held up on inspection.
+
+**#1/#2/#8 — pane→shell forwarding (`notifications.ts`), one commit.**
+`installIngest()`'s handler now takes a plain `NotificationInput` and mints
+its OWN id from its OWN `nextId` sequence (was: a `StoredNotification` with
+the SENDER's id baked in, colliding across documents since every document's
+`nextId` starts at 1 — #2), then calls `refreshSnapshot()` before `emit()`
+(was: `emit()` alone, so `useSyncExternalStore`'s reference-identity check
+never saw a change and forwarded messages silently never appeared — #1). A
+new `forwardedIds: Map<localId, shellId>` plus a new `_fusedDismissNotification`
+global lets a pane's `dismissNotification(localId)` reach across and remove
+the shell's own, independently-minted copy — previously it only ever cleared
+the pane's own invisible retained entry (#8; the `Preview.tsx` dismiss
+wiring needed ZERO changes for its `dismissNotification(id)` half — the fix
+lives entirely inside `notifications.ts`).
+
+Test rigor note: the first draft of finding #2's test injected an id-less
+payload (`{ title, tone }`) and only checked `ingestedId !== localId` —
+this passed even against the UNFIXED code, vacuously, because the old
+handler pushed `n.id === undefined` into `retained` and `undefined` trivially
+differs from a real number. Caught before implementing the fix; strengthened
+to inject the SAME id the local `notify()` had just minted
+(`{ id: localId, title, tone }`), which is genuinely red against the old
+code (both ids read `1` from independent `nextId` counters) and green only
+once the receiving side mints its own id instead of trusting the payload's.
+
+**#5 (+ the rest of #4) — `dismissPopup(id?)`, one commit.** Every real call
+site (`mountHealth.ts`'s Reconnect, `scheduleEvents.ts`'s Open,
+`Preview.tsx`'s registry-error dismiss, `useFileOps.ts`'s two paste-cleanup
+calls) is a delayed action holding an id captured when its own popup first
+appeared; a bare `dismissPopup()` closed whatever was CURRENTLY showing by
+the time that action fired, almost always something unrelated by then.
+`dismissPopup(id?: number)` is now a no-op once `id` no longer names the
+live popup; the popup's own ✕/outside-press (`MessagePopupCard.tsx`) keeps
+calling it with no id on purpose — "whatever's showing right now" IS what
+that one means. This also completes #4: `useFileOps.ts`'s two calls now
+target the SAME id the reassigned `progressToastId` holds, not a stale one.
+
+**#6/#7 — retained-`replaceId` branch, one commit.** The branch that updates
+a `replaceId` matching a RETAINED (not live) entry: (#6) set `popup =
+updated` under `IS_TOP_EMBED && attention` but never cleared whatever timer
+was already running for the PREVIOUS popup — that stale timer's closure only
+reads the module-level `popup` variable, so it fired against the re-popped
+entry regardless of its own content, silently breaking the no-auto-expiry
+guarantee. Now clears/re-evaluates the timer before deciding whether to arm
+it, same shape the fresh-item path already used. (#7b) the branch always
+wrote its update into `retained` even when the new tier resolved to
+transient/silent; now routes a non-retained-tier update through a removal
+instead. (#7a, latent — no caller triggers it today) the LIVE-popup
+`replaceId` branch never synced a matching `retained` entry; now does,
+a no-op when none exists.
+
+**#3 — error notifications actually look like errors, one commit.**
+`NotificationCard`'s status line (and the glyph inside it) now renders
+whenever EITHER `status` or `terminal` is given, not only when `status` is —
+previously `terminal` alone (both `MessagePopupCard.tsx` and
+`RepoUpdatesDock.tsx`'s `MessageRowView` passed it with no `status`) drew
+nothing at all, so an error notification looked pixel-identical to an info
+one. `NotificationCard` also gained an explicit `role` prop (wins over
+`rowClick`'s own implicit `role="button"`), restoring the deleted
+`Toast.tsx`'s own `role={tone === "info" ? "status" : "alert"}` distinction,
+now set from the same tone check that already drives `terminal` at both
+call sites. Tests assert actual rendered output (JSON tree from
+`react-test-renderer`), not props handed to a mock.
+
+## Test state at the end of this round
+
+- `bun test src/platform/lib/notifications.test.ts` — 27 pass, 0 fail.
+- `bun test src/platform/ui/NotificationCard.test.tsx` — 15 pass, 0 fail.
+- `bun test src/platform/ui/MessagePopupCard.test.tsx` (new file) — 1 pass,
+  0 fail.
+- `bun test src/platform/ui/NotificationHost.test.tsx` — unaffected, still
+  green.
+- `bun test src/shell/RepoUpdatesDock.test.tsx` — 63 pass, 0 fail.
+- `bun test src/apps/explorer/listing/useFileOps.paste.test.tsx` (new file)
+  — 1 pass, 0 fail; confirmed red before the `progressToastId` reassignment
+  fix (3 distinct popup ids observed across 3 files instead of ≤2).
+- `bun test src/platform/lib/schedule-toast.test.ts` — 7 pass, 0 fail
+  (unaffected by the `dismissPopup(id)` signature change — still calls it
+  the same way).
+- Combined run of all of the above — 115 pass, 0 fail, 283 `expect()`
+  calls.
+- `bunx tsc --noEmit -p .` — clean.
+- Grepped `tests/` (Python) for every symbol touched this round
+  (`dismissPopup`, `_fusedIngestNotification`, `forwardToShell`,
+  `notifications.ts`) — zero references found; nothing to update there.
+- No full `bun test` suite run performed this round either, per the working
+  agreement.
