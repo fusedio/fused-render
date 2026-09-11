@@ -31,6 +31,7 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
+import { scheduleMessage } from "@platform/lib/api";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
@@ -51,6 +52,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
+import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
 import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
@@ -67,6 +69,7 @@ import type {
   PermissionRow,
   Phase,
   PollResponse,
+  Quota,
   RetryInfo,
   RunIdResponse,
   SendResponse,
@@ -196,6 +199,7 @@ function emptyState(file: string | null): ChatState {
     skills: [],
     working: null,
     trouble: null,
+    quota: null,
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
     historyLoading: false,
@@ -604,6 +608,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       key: nextKey("e"),
       text: trouble.message,
       kind: trouble.kind,
+      ...(trouble.quota ? { quota: trouble.quota } : {}),
     };
     emit({ trouble, turns: [...state.turns, row] });
   };
@@ -611,6 +616,61 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** T:13698 `addError(message)` — classify, then report. */
   const addError = (message: string, fromAgent = false) =>
     reportTrouble(troubleFromMessage(message, fromAgent));
+
+  /**
+   * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
+   * session and continues the task when the plan window reopens; a headless
+   * `-p` run gets no such wait — the turn ends on the limit and the process is
+   * reaped. So the chat does the same thing with the infrastructure it already
+   * has: one scheduled message on THIS session, due at the reset the CLI
+   * reported (+ a minute), carrying the CLI's own fixed continuation prompt.
+   * The schedule banner (`SchedBlock`) then shows the row with its time and
+   * its cancel, exactly like any other pending message, and the fired run
+   * resumes the conversation in place.
+   *
+   * Reported as trouble FIRST, with the window on it, so the card says when
+   * the reset is even if the POST fails; the note and the card's "scheduled"
+   * line land only once the server has the row. A refused POST is a NOTE
+   * beside that card, never a second card: `reportTrouble` replaces the slot,
+   * and the reset time is the one fact the reader must not lose (Bugbot
+   * #1107). Once per run, and the guard comes BEFORE the row: `poll.done`
+   * repeats on a re-attached or superseded loop, and the second pass must
+   * print nothing and post nothing (Bugbot #1107).
+   *
+   * Returns whether it took the failure — false means the caller reports the
+   * error the ordinary way (no session to schedule on, or no target).
+   */
+  const scheduledRuns = new Set<string>();
+  const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
+    if (scheduledRuns.has(runId)) return true;
+    const sessionId = state.sessionId;
+    if (!FILE || !sessionId) return false;
+    scheduledRuns.add(runId);
+    const trouble: Trouble = { ...troubleFromMessage(error), quota };
+    reportTrouble(trouble);
+    const post = deps.schedule ?? scheduleMessage;
+    void post({
+      target: FILE,
+      message: CONTINUE_PROMPT,
+      due: continueDue(quota),
+      session_id: sessionId,
+      title: CONTINUE_TITLE,
+    })
+      .then(() => {
+        // The card's line about the scheduled follow-up, and the CLI's own
+        // wait sentence as a note in the log where the failure sits.
+        if (state.trouble === trouble) emit({ trouble: { ...trouble, scheduled: true } });
+        addNote(continueNote(quota), "\u25f7");
+        announceTasksChanged();
+      })
+      .catch((err: unknown) => {
+        addNote(
+          "Could not schedule the follow-up: " + (err instanceof Error ? err.message : String(err)),
+          "\u25f7",
+        );
+      });
+    return true;
+  };
 
   // ---- skills / app_state (T:15771-15837) --------------------------------
 
@@ -1030,6 +1090,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
+        // The plan window rides on every poll that saw a `rate_limit_event`;
+        // a poll without one (the turn's first, an older agent.py) keeps the
+        // last known rather than blanking the pill.
+        if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
 
@@ -1316,7 +1380,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
               });
             }
           }
-          if (end.error) addError(end.error);
+          // The comeback is gated on ownership like the stop note below: a
+          // superseded loop's end must not print or schedule anything.
+          if (end.error && limitHit(poll.quota) && loopSeq === seat) {
+            if (!scheduleComeback(runId, end.error, poll.quota)) addError(end.error);
+          } else if (end.error) addError(end.error);
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -2465,6 +2533,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // road can be added later that forgets to.
       if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
+      // THE PLAN WINDOW OFF A PROBE TOO. A scheduled comeback that finishes
+      // before the 15 s watch attaches never reaches `pollLoop` — the repair
+      // branch below appends its turns and returns — so the warning the CLI
+      // raised on that turn has to be taken here or the pill never shows.
+      if (poll.quota && poll.quota !== state.quota) emit({ quota: poll.quota });
       if (poll.session_id) noteSessionId(String(poll.session_id));
       const probeMsg = stripBlocks(poll.message || "");
       const users = state.turns.filter((t): t is UserTurn => t.role === "user");
@@ -2618,9 +2691,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
          * case, so this is parity with its behaviour rather than its spelling.
          */
         let appended = false;
+        // A LIMIT HIT REPAIRED OFF-FRAME IS STILL A LIMIT HIT (Bugbot #1107):
+        // the same card with the reset time, the same scheduled comeback. The
+        // three branches below only decide whether a user line is needed
+        // first; the error itself goes through here.
+        const probeQuota = poll.quota;
+        const reportProbeError = (message: string) => {
+          if (limitHit(probeQuota) && scheduleComeback(runId, message, probeQuota)) return;
+          addError(message);
+        };
         if (poll.error) {
           if (matches || !users.length) {
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           } else if (unseen) {
             // The turn is not on screen and never was, so the failure needs its
@@ -2638,7 +2720,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // transcript is already showing, so with none there is no turn to
             // append and neither flag has anything to be quiet about.
             addUser(probeMsg);
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           } else if (shownAlready && !errorShown(poll.error)) {
             // THE PROMPT IS UP AND THE FAILURE IS NOT (Bugbot PR #1075, third
@@ -2652,7 +2734,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // under the line that is already there, and only `errorShown`
             // stops it: if the transcript happened to carry the failure too,
             // the row is there and there is nothing to add.
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           }
           // A FAILED TURN IS NEWS TOO (Bugbot 3974939169): same nonce, same

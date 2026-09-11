@@ -89,6 +89,20 @@
      rather than one more site at a time. */
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
 }
+/* The plan-window pill before "running": the CLI's own warning, quiet and
+   monospace like the task number beside it, coloured as a caution, never as an
+   error — nothing has failed yet. */
+.c-tb-quota {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--c-status-progress);
+  background: color-mix(in srgb, var(--c-status-progress) 12%, transparent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* "running" at the end of the chat's name — a shimmer through the WORD, not a
    spinner, and the same mark every "running" in this app wears (T:1342-1372).
    The travel stays inside 100% -> 0% over a 300%-wide image so no frame can
