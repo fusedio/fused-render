@@ -694,3 +694,115 @@ def test_a_live_task_attaches_to_its_own_row_only(client, workspace, monkeypatch
     rows = {c["id"]: c for c in body["checks"]}
     assert rows["readme"]["task"] == {"id": "t1", "state": "sent", "run_id": "r1"}
     assert rows["icon"]["task"] is None
+
+
+# ----------------------------------------------------- R1: prompt carries detail
+
+
+def test_a_fact_rows_prompt_carries_its_own_detail_and_drops_the_fallback(workspace):
+    """`api-version` is a `kind="fact"` row and never carries findings — its
+    `detail` IS the diagnosis. The old fallback line pointed at a `detail`
+    the prompt never actually included; that string must be gone."""
+    current = app_doctor.fused_api_version.current_version()
+    if current <= 0:
+        pytest.skip("no migration docs resolve, so nothing is behind")
+    d = _app(workspace, version=0)
+    row = _rows(app_doctor.report(str(d)))["api-version"]
+    assert row["state"] == "fail"
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "api-version",
+                                     row["findings"], row["detail"])
+    assert row["detail"] in prompt
+    assert "no findings listed" not in prompt
+
+
+def test_a_candidate_rows_prompt_carries_both_detail_and_findings(workspace):
+    """`secrets` is a `kind="candidate"` row: it DOES carry findings, and the
+    row's own `detail` (e.g. "1 line to look at") must show up alongside
+    them, not instead of them."""
+    d = _app(workspace)
+    (d / "app.py").write_text('AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    row = _rows(app_doctor.report(str(d)))["secrets"]
+    assert row["state"] == "fail"
+    assert row["findings"]
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "secrets",
+                                     row["findings"], row["detail"])
+    assert row["detail"] in prompt
+    for f in row["findings"]:
+        assert f["excerpt"] in prompt
+
+
+def test_report_one_returning_none_behaves_as_today(monkeypatch):
+    """No row (an unknown check id slipping past validation somehow) must not
+    crash `doctor_prompt` — the router already guards `check_id` against
+    `CHECK_ORDER`, but the prompt builder itself should not assume a detail
+    is always available."""
+    prompt = app_doctor.doctor_prompt("app/index.html", "readme", [], "")
+    assert "readme" in prompt
+
+
+# --------------------------------------------------- R1 grep: no dead fallback
+
+def test_the_deleted_fallback_string_is_gone_from_the_module():
+    """Defect 1's fallback line must not merely be unreachable — it must not
+    exist anywhere a session (or a future test) could still find it."""
+    src = open(app_doctor.__file__, encoding="utf-8").read()
+    assert "no findings listed" not in src
+
+
+# ------------------------------------------------------- R3: fix sessions commit
+
+
+def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(workspace):
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "readme", [], "no README")
+    assert "commit" in prompt.lower()
+    # "push" only ever appears as an explicit PROHIBITION ("never push") —
+    # never as an instruction to actually push.
+    assert "never push" in prompt.lower()
+    assert "push the branch" not in prompt.lower()
+    assert "push it" not in prompt.lower()
+
+
+def test_fix_all_makes_one_trailing_commit_not_one_per_row(workspace):
+    d = _app(workspace, readme=False)
+    (d / "app.py").write_text('DATA = "/Users/alice/data.csv"\n')
+    checks = app_doctor.report(str(d))["checks"]
+    failing = [c for c in checks if c["state"] == "fail"]
+    assert len(failing) >= 2  # readme AND device-paths, so a per-row commit
+                              # step would show up more than once if present.
+    prompt = app_doctor.doctor_prompt_all(str(d / "index.html"), checks)
+    # The commit step is the block appended once, after every row — not
+    # something each row's own block asks for.
+    assert prompt.count(app_doctor._COMMIT_STEP_ALL) == 1
+    for c in failing:
+        row_block = (
+            f"## `{c['id']}` — {c['label']}\n"
+            f"{app_doctor._triage_ask(c['kind'])}\n"
+            f"{app_doctor._findings_block(c['detail'], c['findings'])}"
+        )
+        assert "commit" not in row_block.lower()
+    assert "push the branch" not in prompt.lower()
+    assert "push it" not in prompt.lower()
+
+
+def test_fix_all_with_nothing_failing_asks_for_no_commit(workspace):
+    d = _app(workspace)
+    checks = app_doctor.report(str(d))["checks"]
+    prompt = app_doctor.doctor_prompt_all(str(d / "index.html"), checks)
+    assert "commit" not in prompt.lower()
+
+
+def test_the_secrets_commit_step_cannot_be_read_as_commit_the_secret_fix(workspace):
+    """R3's sensitive case: the commit instruction must not be readable as
+    licence to commit a still-live or merely relocated credential. A session
+    following `_CREDENTIAL_NOTE` (report + say "rotate it", never move the
+    value) makes no file edit for `secrets`, so the wording must make clear
+    that no edit means no commit — and must never say "commit the fix" in a
+    way that could be misapplied to a relocated secret."""
+    d = _app(workspace)
+    (d / "app.py").write_text('AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    row = _rows(app_doctor.report(str(d)))["secrets"]
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "secrets",
+                                     row["findings"], row["detail"])
+    assert "commit the fix" not in prompt.lower()
+    assert "live" in prompt.lower() or "relocat" in prompt.lower()

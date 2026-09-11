@@ -717,18 +717,30 @@ def doctor_task_check_id(message: str) -> str | None:
 ALL = "all"
 
 
-def _findings_block(findings: list[dict]) -> str:
-    """`findings` as the lines a fix session reads, one per line: where it
-    is and what fired. Shared by `doctor_prompt` and `doctor_prompt_all` so
-    the two prompts describe a finding identically."""
-    if not findings:
-        return "- (no findings listed — the row's own detail already explains why it failed)"
-    return "\n".join(
+def _findings_block(detail: str, findings: list[dict]) -> str:
+    """`detail` and `findings` as the lines a fix session reads. Shared by
+    `doctor_prompt` and `doctor_prompt_all` so the two prompts describe a
+    row identically.
+
+    `detail` is the row's own one-line diagnosis (`_check`'s `detail`) — for
+    a `kind="fact"` row (`api-version`, `readme`, `git`, ...) it is the WHOLE
+    diagnosis, findings is always `[]` for those, and there used to be a
+    fallback line here pointing at a `detail` the prompt never actually
+    included. That fallback is gone: `detail` always goes in, first, so
+    there is no longer a row with nothing to say. For a `kind="candidate"`
+    row (`secrets`, `device-paths`) `detail` is a one-line count ("2 lines
+    to look at") and the findings below it are the substance — both go in,
+    detail first."""
+    lines = []
+    if detail:
+        lines.append(f"- {detail}")
+    lines.extend(
         "- " + (f"{f.get('path', '.')}:{f['line']}" if f.get("line") else
                 str(f.get('path', '.')))
         + f": {f.get('rule', '')}: {f.get('excerpt', '')}"
         for f in findings
     )
+    return "\n".join(lines)
 
 
 def _triage_ask(kind: str) -> str:
@@ -756,8 +768,40 @@ _CREDENTIAL_NOTE = (
     "ask about alone."
 )
 
+# R3: App Doctor itself never writes — the fix SESSION does, and until now no
+# prompt told it to leave its own edits committed, so a reopened report saw
+# the `git` row FAIL right after a fix landed, reading as if the fix broke
+# something. Two wordings, not one, because "fix all" makes ONE commit for
+# the whole run rather than one per row (`doctor_prompt_all` already says
+# "one row at a time in the order given" — this is the trailing step after
+# that, not a per-row addition).
+#
+# Both are deliberately conditional ("only if you changed something") so an
+# advisory-only outcome — every `secrets` row that follows `_CREDENTIAL_NOTE`
+# above: report the leak, don't touch the file — never produces an empty or
+# spurious commit. And neither says "commit the fix", which for `secrets`
+# could be misread as license to commit a value merely relocated rather than
+# left alone; the wording instead says plainly that a still-live or
+# relocated credential must never end up in the commit.
+_COMMIT_STEP = (
+    "If you edited any files to address this, commit them now in this repo — never "
+    "push. Say what changed in the commit message. If you made no edit at all (an "
+    "advisory-only outcome, including a secrets finding where the right move was "
+    "reporting it rather than touching the file), make no commit — not an empty one, "
+    "and never one that commits a still-live or merely relocated credential."
+)
 
-def doctor_prompt(entry_html: str, check_id: str, findings: list[dict]) -> str:
+_COMMIT_STEP_ALL = (
+    "When every row above is done: make ONE commit — not one per row — covering every "
+    "file you actually edited across the whole run. Never push. If nothing needed "
+    "changing anywhere (every row was advisory only, or already passed), make no "
+    "commit at all — and never commit a still-live or merely relocated credential from "
+    "a secrets row."
+)
+
+
+def doctor_prompt(entry_html: str, check_id: str, findings: list[dict],
+                  detail: str = "") -> str:
     """The fix task's text for ONE row: names the check, points at the
     skill's section for it by id (SKILL.md's section names match check ids
     exactly, see its own module note), and carries that row's findings
@@ -771,17 +815,22 @@ def doctor_prompt(entry_html: str, check_id: str, findings: list[dict]) -> str:
     direct `_CHECK_META` read would keep asking for a triage-first fix (or a
     fix-outright one) based on this module's fallback copy even after the
     engine reclassified an id — fix-outright where triage-first was needed
-    is exactly the failure the candidate/fact split exists to prevent."""
+    is exactly the failure the candidate/fact split exists to prevent.
+
+    `detail` is the row's own diagnosis (`report_one(...)["detail"]`) — R1:
+    every prompt has to carry it, not just the findings list, since most
+    checks (every `kind="fact"` row) never populate `findings` at all and
+    `detail` is their whole story."""
     entry_name = os.path.basename(entry_html)
     _section, _severity, kind = _meta(check_id)
-    lines = _findings_block(findings)
+    lines = _findings_block(detail, findings)
     ask = _triage_ask(kind)
 
     return (
         f"{DOCTOR_PROMPT_PREFIX} — check `{check_id}` (`{entry_name}` is its entry page). "
         f"Invoke the `{SKILL_QUALIFIED}` skill and read its `{check_id}` section end to "
         f"end. {ask} {_CREDENTIAL_NOTE}\n\n"
-        f"Findings for this row:\n{lines}"
+        f"Findings for this row:\n{lines}\n\n{_COMMIT_STEP}"
     )
 
 
@@ -793,24 +842,36 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     difference is how many rows are in the prompt and that this one names no
     single check by id (`ALL` fills that slot in the stored prompt instead,
     so `is_doctor_prompt` and the one-live-task-per-app gate still work
-    unchanged)."""
+    unchanged).
+
+    R1: each row's own `detail` is included alongside its findings, same as
+    `doctor_prompt` — every check dict already carries `detail` (`_check`),
+    so no re-derivation needed here. R3: ONE trailing commit step covers the
+    whole run, appended after every row's block — never one per row, and
+    only when there was at least one failing row to maybe act on."""
     entry_name = os.path.basename(entry_html)
     failing = [c for c in checks if c["state"] == FAIL]
     if not failing:
-        body = "Every check passed — say so and stop; there is nothing to fix."
-    else:
-        blocks = []
-        for c in failing:
-            blocks.append(
-                f"## `{c['id']}` — {c['label']}\n"
-                f"{_triage_ask(c['kind'])}\n"
-                f"{_findings_block(c['findings'])}"
-            )
-        body = "\n\n".join(blocks)
+        return (
+            f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "
+            f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and "
+            f"follow it end to end, one row at a time in the order given. "
+            f"{_CREDENTIAL_NOTE}\n\n"
+            "Every check passed — say so and stop; there is nothing to fix."
+        )
+
+    blocks = []
+    for c in failing:
+        blocks.append(
+            f"## `{c['id']}` — {c['label']}\n"
+            f"{_triage_ask(c['kind'])}\n"
+            f"{_findings_block(c['detail'], c['findings'])}"
+        )
+    body = "\n\n".join(blocks)
 
     return (
         f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
-        f"{body}"
+        f"{body}\n\n{_COMMIT_STEP_ALL}"
     )
