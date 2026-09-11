@@ -200,13 +200,17 @@ function Drawer({
         </p>
       )}
       <div className="acts">
-        <a className="btn-link" href={hubModelUrl(model.id)} target="_blank" rel="noreferrer">
-          View on Hugging Face ↗
-        </a>
-        {model.have && (
-          <button type="button" className="btn-link" onClick={() => handlers.onShowInFinder?.(model.id)}>
-            Show in Finder
-          </button>
+        {model.have && model.path && (
+          <a
+            className="btn-link"
+            href={urlForFsPath(model.path, "?_mode=model_card")}
+            onClick={(e) => {
+              e.preventDefault();
+              navigate(model.path!, { isDir: true, mode: "model_card" });
+            }}
+          >
+            Open model card
+          </a>
         )}
         <button type="button" className="btn-link" onClick={() => handlers.onToggleInfo?.(model.id)}>
           Close

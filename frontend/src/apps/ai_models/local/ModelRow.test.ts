@@ -68,10 +68,10 @@ describe("ModelRow drawer", () => {
     expect(ROW).toContain("Not one of our suggestions");
   });
 
-  it("only shows Last used, Path and Show in Finder for a model this Mac has", () => {
+  it("only shows Last used, Path and Open model card for a model this Mac has", () => {
     const drawerFn = ROW.slice(ROW.indexOf("function Drawer("), ROW.indexOf("function Actions("));
     expect(drawerFn).toContain("{model.have && (");
-    expect(drawerFn).toContain("Show in Finder");
+    expect(drawerFn).toContain("Open model card");
   });
 
   it("links out to the Hub via hubModelUrl rather than a hand-built URL", () => {

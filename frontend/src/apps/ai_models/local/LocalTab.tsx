@@ -58,7 +58,6 @@ import {
   downloadAiModel,
   getAiCatalog,
   loadAiModel,
-  revealPath,
   type AiCatalogCapability,
   type AiCatalogModel,
   type AiModelDeleteTarget,
@@ -333,8 +332,8 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   }
 
   // Every repo on this disk, by id — what a row's handler resolves a click
-  // back to (Try, Delete, Show in Finder), whichever capability's pane it is
-  // drawn in.
+  // back to (Try, Delete, Open model card), whichever capability's pane it
+  // is drawn in.
   const reposById = new Map<string, AiModelRepo>(repos.map((r) => [r.id, r]));
 
   // The click is held until something ELSE can speak for the pull — see the
@@ -465,10 +464,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     },
     onDelete: deleteRepo,
     onToggleInfo: (id) => setOpenInfoId((cur) => (cur === id ? null : id)),
-    onShowInFinder: (id) => {
-      const r = reposById.get(id);
-      if (r) void revealPath(r.path);
-    },
   };
 
   const capabilities: CapabilityNavEntry[] = sections.map((s) => ({
