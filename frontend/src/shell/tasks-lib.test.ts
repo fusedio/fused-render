@@ -8451,6 +8451,10 @@ describe("the schedule mark on a List row", () => {
     expect(VIEWS).not.toContain('className="tasks-row-next"');
     // …and the Board card wears the same mark after its title.
     expect(VIEWS).toContain('className="tasks-card-sched"');
+    // Inside the title span (the card is a column flex box; a sibling would be a
+    // row of its own — Bugbot, PR #1105).
+    const title = VIEWS.slice(VIEWS.indexOf('className={"schedule-tv-card-title"'));
+    expect(title.indexOf('className="tasks-card-sched"')).toBeLessThan(title.indexOf("</span>\n        {"));
     expect(TASKS_CSS).toContain(".tasks-card-sched {");
   });
 });

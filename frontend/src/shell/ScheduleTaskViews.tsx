@@ -3630,12 +3630,16 @@ function TaskCard({
           {unread > 0 && (
             <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
           )}
+          {/* INSIDE the title, not beside it: the card is a column flex box, so a
+              sibling is a row of its own and a lone glyph grew every scheduled
+              card by one line (Bugbot, PR #1105). Inline here it follows the
+              last word, which is where a caption on the title belongs. */}
+          {sched && (
+            <span className="tasks-card-sched" title={sched.title} aria-label={sched.label}>
+              {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
+            </span>
+          )}
         </span>
-        {sched && (
-          <span className="tasks-card-sched" title={sched.title} aria-label={sched.label}>
-            {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
-          </span>
-        )}
         {/* The foot is the folder and the run ahead, so when neither says
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
