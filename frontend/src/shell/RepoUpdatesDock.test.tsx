@@ -1138,12 +1138,22 @@ test("a done (trail-tier) job alone never turns the label loud — only attentio
 //
 // A 5th row source: client-raised notifications retained by
 // `@platform/lib/notifications`, split the same way `terminal` already is —
-// `attention` into "Needs you", `trail` into "Worth keeping" — and folded
-// into the SAME `total`/`attentionCount` every other source already feeds
-// (see "EVERY SOURCE DECIDES EVERY DERIVED NUMBER" above). `transient` and
-// `silent` messages never reach this component at all — the store itself
-// never retains them (notifications.ts) — so there is nothing to test here
-// for those tiers.
+// `attention` into "Needs you", everything else that made it into `messages`
+// into "Worth keeping". Retention narrowed (user: "don't keep this in the
+// list. just show popup. anything non actionable or error doesn't belong in
+// the list") from "attention or trail" to "attention, or carries an
+// action/page" — `trail` is no longer even a type a client call site can
+// pass (`ClientNotificationTier` in notifications.ts), so a real
+// "Worth keeping" message today resolves to `tier: "transient"` while still
+// being retained, because it carries an action/page. These tests still build
+// mock `StoredNotification`s with `tier: "trail"` for the "not attention"
+// half of the split — that continues to work (the dock's own split is just
+// "attention vs. not"), but the more important, more regression-prone case
+// is the plain-transient-but-actionable one, covered separately below with a
+// message built by the REAL store rather than a hand-built mock. A message
+// the store would never retain (no tone: "error", no action, no page) never
+// reaches this component at all — the store itself refuses to retain it
+// (notifications.ts) — so there is nothing to test here for that case.
 let messageId = 0;
 const message = (over: Partial<StoredNotification> = {}): StoredNotification => ({
   id: ++messageId,
@@ -1178,6 +1188,31 @@ test("an attention message draws in 'Needs you', a trail message in 'Worth keepi
   const rows = findAll(tree, "dl-row").map((r) => text(r));
   expect(rows[0]).toContain("Could not save");
   expect(rows[1]).toContain("Moved 3 items");
+});
+
+// The half most likely to regress: a `tone: "info"` message with NO error
+// and NO explicit `tier` at all — it resolves to `tier: "transient"` — is
+// still retained (and lands in "Worth keeping") purely because it carries a
+// `page`. Built through the REAL store (`notify`), not the hand-rolled
+// `message()` mock above, so this exercises `isRetained` end to end rather
+// than assuming the dock trusts whatever mock tier a test hands it.
+test("a tone: info, non-error message with a page is retained and drawn in 'Worth keeping', not dropped", () => {
+  _resetNotificationsForTest();
+  try {
+    notify({ title: "Could not save", tone: "error" }); // gives "Needs you" a row too
+    notify({ title: "Export ready", tone: "info", page: "/tasks/42" });
+    const stored = getRetainedNotifications();
+    expect(stored.map((n) => n.tier)).toEqual(["attention", "transient"]);
+
+    const tree = renderView({ rows: [], messages: stored });
+    const headings = findAll(tree, "dl-section-head").map((h) => text(h));
+    expect(headings).toEqual(["Needs you", "Worth keeping"]);
+    const rows = findAll(tree, "dl-row").map((r) => text(r));
+    expect(rows[0]).toContain("Could not save");
+    expect(rows[1]).toContain("Export ready");
+  } finally {
+    _resetNotificationsForTest();
+  }
 });
 
 test("a message row draws with its detail, like a terminal job's failure message", () => {

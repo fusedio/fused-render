@@ -61,9 +61,9 @@ test("neither tone nor tier defaults to transient", () => {
   expect(getRetainedNotifications()).toEqual([]);
 });
 
-test("an explicit tier wins over the tone default when tone is not error", () => {
-  notify({ title: "Freed 1.4 GB", tone: "info", tier: "trail" });
-  expect(getRetainedNotifications().map((n) => n.tier)).toEqual(["trail"]);
+test("an explicit tier: attention wins over the tone: info default", () => {
+  notify({ title: "worth flagging even though it succeeded", tone: "info", tier: "attention" });
+  expect(getRetainedNotifications().map((n) => n.tier)).toEqual(["attention"]);
 });
 
 // ---- error promotion override ----------------------------------------------
@@ -85,9 +85,35 @@ test("an attention message is retained", () => {
   expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Could not delete"]);
 });
 
-test("a trail message is retained", () => {
-  notify({ title: "Moved 3 items to Desktop", tier: "trail" });
-  expect(getRetainedNotifications().map((n) => n.tier)).toEqual(["trail"]);
+// ---- retention narrowing: error OR actionable, nothing else (user: "don't
+// keep this in the list. just show popup. anything non actionable or error
+// doesn't belong in the list") ------------------------------------------------
+
+test("a tone: info message with an action is retained even though it is not an error", () => {
+  notify({ title: "Export ready", tone: "info", action: { label: "Open", onClick: () => {} } });
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Export ready"]);
+});
+
+test("a tone: info message with a page is retained even though it is not an error", () => {
+  notify({ title: "Export ready", tone: "info", page: "/tasks/42" });
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Export ready"]);
+});
+
+test("a tone: info message with neither an action nor a page is never retained (Undid/Redid the delete no longer belongs in the list)", () => {
+  notify({ title: "Undid the delete.", tone: "info" });
+  notify({ title: "Freed 1.4 GB — deleted foo", tone: "info" });
+  notify({ title: "Moved 3 items to Desktop", tone: "info" });
+  expect(getRetainedNotifications()).toEqual([]);
+});
+
+test("tier: silent is never retained even when the message carries an action", () => {
+  notify({
+    title: "quiet but actionable",
+    tone: "info",
+    tier: "silent",
+    action: { label: "Open", onClick: () => {} },
+  });
+  expect(getRetainedNotifications()).toEqual([]);
 });
 
 // ---- popup lifecycle --------------------------------------------------------
@@ -282,9 +308,9 @@ test("an attention popup never auto-expires under IS_TOP_EMBED", async () => {
   expect(popupSnapshot()?.leaving).toBe(false);
 });
 
-test("a trail popup still auto-expires normally under IS_TOP_EMBED", async () => {
+test("a retained-but-not-attention (actionable) popup still auto-expires normally under IS_TOP_EMBED — only attention never expires", async () => {
   _setIsTopEmbedForTest(true);
-  notify({ title: "Moved 3 items", tier: "trail" });
+  notify({ title: "Export ready", tone: "info", page: "/tasks/42" });
 
   await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
   expect(popupSnapshot()).toBe(null);

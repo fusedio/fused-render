@@ -509,9 +509,11 @@ export function RepoUpdatesCardView({
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
   /** Client-raised messages retained by `lib/notifications.ts` — the fifth
-   *  row kind (SPEC toasts-become-notifications §3). Already filtered to
-   *  `attention`/`trail` by the store itself; split the same way `terminal`
-   *  is split below. */
+   *  row kind (SPEC toasts-become-notifications §3). Already filtered by the
+   *  store itself to "error, or carries something to act on" (`isRetained`
+   *  in notifications.ts) — never `trail` from a client call site any more,
+   *  see DECISIONS-toasts-become-notifications.md's retention-narrowing
+   *  entry; split the same way `terminal` is split below. */
   messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides — keyed and expired the
    *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
@@ -545,13 +547,16 @@ export function RepoUpdatesCardView({
   // has actually failed.
   const terminalAttention = terminal.filter((job) => effectiveTier(job) === "attention");
   const terminalTrail = terminal.filter((job) => effectiveTier(job) !== "attention");
-  // MESSAGES SPLIT THE SAME WAY — `lib/notifications.ts`'s own `resolveTier`
-  // already applies its client-side equivalent of `effectiveTier` (a `tone:
-  // "error"` message is always "attention", never lost to a declared tier)
-  // before a message ever reaches the retained list, so there is nothing
-  // left to re-derive here; the store's tier IS the effective one.
+  // MESSAGES SPLIT THE SAME WAY — but NOT by `tier === "trail"` any more.
+  // `lib/notifications.ts`'s `isRetained` already decided every entry in
+  // `messages` belongs here — an error (always "attention"), or a message
+  // carrying an action/page (any OTHER resolved tier, most commonly
+  // "transient", since `trail` is no longer even a type a client call site
+  // can pass — see DECISIONS-toasts-become-notifications.md). So the split
+  // here is simply "attention" vs. "everything else that made it into this
+  // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
-  const messagesTrail = messages.filter((m) => m.tier === "trail");
+  const messagesTrail = messages.filter((m) => m.tier !== "attention");
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted
   // toward this cap: the cap exists to bound how tall "Worth keeping" gets

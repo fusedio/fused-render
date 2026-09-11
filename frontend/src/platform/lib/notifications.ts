@@ -2,10 +2,11 @@
 // (a failure, a completed op) now shares the exact pop-then-retain lifetime
 // the job system already has (`JobTier`, this module's own import): it pops a
 // card in `.notif-host` for `JOB_POPUP_VISIBLE_MS`, then either leaves for
-// good (`transient`, `silent`) or is retained in the Notifications panel
-// (`attention`/`trail`) until the user dismisses it — see
-// SPEC-toasts-become-notifications.md for the full reasoning and
-// DECISIONS-toasts-become-notifications.md for the call-by-call tier table.
+// good, or is retained in the Notifications panel until the user dismisses
+// it — retained only if it is an error, or carries something to act on
+// (`isRetained` below) — see SPEC-toasts-become-notifications.md for the
+// full reasoning and DECISIONS-toasts-become-notifications.md for the
+// call-by-call tier table and the later retention-narrowing reversal.
 //
 // SAME module-store + useSyncExternalStore SHAPE `toast.ts` used — that part
 // was never the problem, so it is kept verbatim: mutations update a module
@@ -20,16 +21,31 @@
 // second `notify()` simply replaces whatever is still popping, exactly like a
 // second terminal job replaces the first job's own popup.
 //
-// THE RETAINED LIST is the part with no toast.ts precedent: `attention`/
-// `trail` messages stay here — capped, like the old stack, at MAX_RETAINED —
-// until `dismissNotification` (or the panel's "Clear all") removes them.
-// `transient`/`silent` messages are never added to it; their popup is their
-// only trace, same as the affected-flows diagram in the spec.
+// THE RETAINED LIST is the part with no toast.ts precedent: a message stays
+// here — capped, like the old stack, at MAX_RETAINED — until
+// `dismissNotification` (or the panel's "Clear all") removes it. Retention
+// narrowed from "attention or trail" to "attention, or carries an action/page"
+// (see `isRetained` below and DECISIONS-toasts-become-notifications.md) —
+// everything else is never added to it; its popup is its only trace.
 import { useSyncExternalStore } from "react";
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import type { NotificationCardAction } from "@platform/ui/NotificationCard";
+
+// "trail" is deliberately UNREPRESENTABLE on client input — see
+// DECISIONS-toasts-become-notifications.md's "Retention narrows to error-or-
+// actionable" entry): a bare "kept in the panel" tier meant something for a
+// client-raised message when `trail` alone was enough to retain it, but that
+// reading no longer exists — retention is now `resolveTier(...) ===
+// "attention"` OR the message carries a destination (`action`/`page`). A
+// caller that types `tier: "trail"` today is trying to say "keep this
+// around" the OLD way; excluding it from the type turns that mistake into a
+// compile error instead of a silently-wrong runtime no-op. `jobs.ts`'s own
+// `JobTier` (the server/job vocabulary `effectiveTier` reads) is untouched —
+// a server-side job row still uses `trail` exactly as before; only the
+// client `notify()` input narrows.
+export type ClientNotificationTier = Exclude<JobTier, "trail">;
 
 export interface NotificationInput {
   title: string;
@@ -38,8 +54,8 @@ export interface NotificationInput {
    *  "error", which always promotes to "attention" regardless (see
    *  `resolveTier` below; mirrors `jobs.ts`'s `effectiveTier` promoting any
    *  error/cancelled JOB to "attention" no matter what its producer
-   *  declared). */
-  tier?: JobTier;
+   *  declared). Does NOT accept "trail" — see `ClientNotificationTier`. */
+  tier?: ClientNotificationTier;
   /** Retained as the ergonomic shorthand every call site already used. */
   tone?: "error" | "info";
   action?: NotificationCardAction;
@@ -158,6 +174,28 @@ function resolveTier(input: NotificationInput): JobTier {
   return "transient";
 }
 
+// THE RETENTION RULE (narrowed — user: "don't keep this in the list. just
+// show popup. anything non actionable or error doesn't belong in the list").
+// Was `tier === "attention" || tier === "trail"`; a bare "destructive but
+// successful" record (a completed move, a batch delete, "Freed X — deleted
+// <model>") no longer earns a place by itself — see
+// DECISIONS-toasts-become-notifications.md for the reversal writeup. ONE
+// helper, used by every site that used to spell out the old two-tier check,
+// so the three call sites below cannot drift apart:
+//   - "attention" (every `tone: "error"` message, via resolveTier's
+//     promotion) is always retained, action/page or not — a failure is
+//     always worth finding again.
+//   - anything else is retained only if it carries a destination
+//     (`input.action` or `input.page`) — a non-error message with something
+//     to click on is actionable and belongs in the panel.
+//   - "silent" is never retained, even if it happens to carry an action —
+//     a producer that declared silence gets silence, full stop.
+function isRetained(input: NotificationInput, tier: JobTier): boolean {
+  if (tier === "silent") return false;
+  if (tier === "attention") return true;
+  return Boolean(input.action || input.page);
+}
+
 function toStored(input: NotificationInput, id: number): StoredNotification {
   return {
     id,
@@ -239,7 +277,13 @@ function forwardToShell(n: StoredNotification): number | undefined {
     const input: NotificationInput = {
       title: n.title,
       detail: n.detail,
-      tier: n.tier,
+      // `n.tier` reads `StoredNotification.tier` (still the full `JobTier`,
+      // shared with jobs.ts) — in practice it can never actually be "trail"
+      // here, since only `resolveTier` (fed a `ClientNotificationTier` input)
+      // ever produces a client-side `StoredNotification`. This ternary is
+      // the type-safe bridge back to `ClientNotificationTier`, not a
+      // real runtime case.
+      tier: n.tier === "trail" ? undefined : n.tier,
       tone: n.tone,
       action: n.action,
       page: n.page,
@@ -277,8 +321,9 @@ function refreshSnapshot(): void {
 }
 
 /** Queue a notification. Pops a card in `.notif-host` for
- *  `JOB_POPUP_VISIBLE_MS`, then (for "attention"/"trail" only) stays in the
- *  Notifications panel until dismissed.
+ *  `JOB_POPUP_VISIBLE_MS`, then (only if `isRetained` says so — an error, or
+ *  a message carrying an action/page) stays in the Notifications panel until
+ *  dismissed.
  *
  *  `replaceId`, exactly as `toast.ts`'s own `pushToast` — a repeated notice
  *  ("Still undoing…" on a second Cmd+Z) passes back the id it got last time
@@ -312,7 +357,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     const idx = retained.findIndex((n) => n.id === replaceId);
     if (idx !== -1) {
       const updated = toStored(input, replaceId);
-      if (updated.tier === "attention" || updated.tier === "trail") {
+      if (isRetained(input, updated.tier)) {
         retained = retained.map((n) => (n.id === replaceId ? updated : n));
         // This re-pops the entry as the live popup, replacing whatever was
         // showing before — always clear any timer that popup had armed for
@@ -343,7 +388,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
   const id = nextId++;
   const item = toStored(input, id);
 
-  if (item.tier === "attention" || item.tier === "trail") {
+  if (isRetained(input, item.tier)) {
     retained = capRetained([...retained, item]);
     const shellId = forwardToShell(item);
     if (shellId !== undefined) forwardedIds.set(id, shellId);
@@ -365,7 +410,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
   // shell underneath it to retain an "attention" message for, so that one
   // tier, in that one context, never auto-expires — it sits until the user
   // dismisses it (MessagePopupCard's own outside-press/✕) or presses
-  // elsewhere. `trail`/`transient` still time out normally even there; only
+  // elsewhere. Every other tier still times out normally even there; only
   // a failure would otherwise vanish with no history anywhere.
   const neverExpiresHere = effectiveIsTopEmbed() && item.tier === "attention";
   if (item.tier !== "silent" && !neverExpiresHere) armExitTimer(JOB_POPUP_VISIBLE_MS);
