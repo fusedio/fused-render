@@ -1970,3 +1970,37 @@ rationale on each.
   unlisted value and pressing Enter still applies it.
 - The Sort menu's dropdown opens fully on screen, anchored to its own
   right edge, never clipped by the scrolling pane.
+
+### Fix round 7 (2026-09-11)
+
+- Item 1: each control menu (Fit/Size/Sort `ControlMenu`, Quant/Publisher
+  `SearchMenu`) used to own its own `open` state and its own outside-click
+  listener, so opening one never closed another — live testing found up to
+  four `.tp .dd` dropdowns open at once, with neither an outside click nor
+  Escape closing any of them. `SearchControls` now owns a single
+  `openMenu` id for the whole row, and one shared document `mousedown` +
+  `keydown` listener (registered only while a menu is open) closes it on
+  an outside click or Escape. Picking an option, or applying free text
+  with Enter in a `SearchMenu`'s filter input, still closes that menu.
+- Item 2: the drawer's `×` close button was a bare 8×12px glyph. Grown to
+  a 24×24px flex-centered hit target with a quiet hover background,
+  `top`/`right` nudged so the glyph's visual centre didn't shift.
+
+### Round 7 test results
+
+- `bun test frontend/src/apps/ai_models/local/` — 59 pass (6 new tests
+  pinning the single-`openMenu` state, the outside-mousedown/Escape close,
+  the listener's open-only lifecycle, and that picking/applying a
+  `SearchMenu` option still closes via the shared `setOpen`).
+- `bun run --cwd frontend typecheck` — clean.
+- Item 2 is CSS-only; no test, per this round's own rule.
+
+### To verify in the browser (round 7)
+
+- Opening the Publisher menu, then Sort, then Quant, then Fit leaves only
+  the last one open — never more than one `.tp .dd` visible at a time.
+- A click/mousedown outside any open menu closes it; Escape closes it too.
+- Typing in the Publisher/Quant filter input, or clicking inside a
+  `.tp .dd`, does not close that menu.
+- The drawer's `×` in the top-right corner is now comfortably clickable,
+  not just the bare glyph, with a quiet hover highlight.
