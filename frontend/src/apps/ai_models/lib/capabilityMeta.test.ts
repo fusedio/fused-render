@@ -14,7 +14,9 @@ describe("capabilityMeta", () => {
     expect(capabilityMeta("text-to-image").searchNoun).toBe("image models");
     expect(capabilityMeta("automatic-speech-recognition").plain).toBe("Speech to text");
     expect(capabilityMeta("automatic-speech-recognition").searchNoun).toBe("transcription models");
-    expect(capabilityMeta("embeddings").plain).toBe("Embeddings");
+    // Amendment: embeddings keeps "Search & similarity" (user asked to keep
+    // this one name) while every other capability uses its standard name.
+    expect(capabilityMeta("embeddings").plain).toBe("Search & similarity");
     expect(capabilityMeta("embeddings").searchNoun).toBe("embedding models");
     expect(capabilityMeta("text-to-video").plain).toBe("Video generation");
     expect(capabilityMeta("text-to-video").searchNoun).toBe("video models");
