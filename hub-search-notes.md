@@ -2004,3 +2004,19 @@ rationale on each.
   `.tp .dd`, does not close that menu.
 - The drawer's `×` in the top-right corner is now comfortably clickable,
   not just the bare glyph, with a quiet hover highlight.
+
+### Fix round 8 (2026-09-11)
+
+- Item 1: the hit row's meta line dropped the leading task label
+  (e.g. "speech recognition") — the search screen is already scoped by
+  the left pane's capability (D843), so repeating it per row was
+  redundant. Meta line now starts with params (`8.7B · BF16 · ≈16 GB ·
+  Transformers`). `ModelRow.tsx` pane rows and the drawer's "Task" field
+  are unchanged.
+
+### Round 8 test results
+
+- Markup-only change; no new test. Grepped both `HubSearchScreen.test.ts`
+  and `hubSearchView.test.ts` for `metaParts`/`model.task` source-pinning
+  — none found, nothing to update.
+- `bun run --cwd frontend typecheck` — clean.

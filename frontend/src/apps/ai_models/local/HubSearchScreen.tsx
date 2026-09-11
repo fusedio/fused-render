@@ -237,9 +237,11 @@ function HitDrawer({
 /** One hit — the mockup's own `hit()`, one repo, one row: match cell first,
  *  the full repo id in mono bold (no separate owner span — the mockup's own
  *  "no curated name to give them" reasoning), a `from <base>` line only when
- *  a base model is known, one `row-meta` facts line with no dangling dash,
- *  popularity as its own right-hand cell, and Download/Accept-terms/
- *  Downloaded plus an ⓘ opening `HitDrawer` above. */
+ *  a base model is known, one `row-meta` facts line (params/quant/size/format/
+ *  variants — no task label; the search screen is already scoped by the left
+ *  pane's capability, so repeating it per row is redundant, fix round 8) with
+ *  no dangling dash, popularity as its own right-hand cell, and
+ *  Download/Accept-terms/Downloaded plus an ⓘ opening `HitDrawer` above. */
 function HitRow({
   model,
   disk,
@@ -294,7 +296,6 @@ function HitRow({
   // "1 variant" would be true of nearly every row and add noise, not signal.
   const variantsLabel = model.variants && model.variants > 1 ? `${model.variants} variants` : null;
   const metaParts = [
-    model.task,
     paramsLabel(model.params),
     quantLabel(model.quant),
     sizeLabel,
