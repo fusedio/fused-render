@@ -1389,3 +1389,64 @@ pane, row/drawer components, full search screen, rewire `LocalTab.tsx`, and
 delete dead code, per the builder brief's full scope list. HEAD at this
 checkpoint: commit "Reorder CAPABILITY_ORDER to the mockup's order" (see
 git log), tree otherwise clean.
+
+### Units 1-6 (2026-09-11, same continuation) — markup port and hard-stop rule reached
+
+Built the plain-language capability metadata module, `CapabilityNav.tsx`,
+`CapabilityPane.tsx` (+ `EngineFilesPane`), `ModelRow.tsx`, rewrote
+`SearchControls.tsx` and `HubSearchScreen.tsx` for the mockup's full search
+screen, then rewired `LocalTab.tsx` into the single `<div className="tp"
+data-part="page">` two-pane wrapper. Markup, class names and copy ported
+verbatim from the mockup's render functions per the brief. Hard-stop rule
+(LocalTab renders the two-pane layout, typecheck clean) reached and
+committed as `01516f06d`. Commits `904f406cf`, `01516f06d` cover this span.
+
+### Unit 7 (2026-09-11) — delete the dead carousel/table-era code
+
+Deleted the card-grid/dense-table components and CSS the search screen
+replaced (`HubResultsTable.tsx`, `hubFamilies.ts`+test, the hoist half of
+`hubTableView.ts`+test, `Carousel.tsx`/`RecommendedCard.tsx`/`RepoCard.tsx`,
+shadcn `table.tsx`, and their CSS in `ai-models.css` — net ~980 lines).
+Rewrote the hub-table-related tests that pinned the deleted symbols and
+fixed Python test docstrings (`tests/`) that cited the deleted files by
+name, per the standing `pytest-greps-frontend-source-lines` rule. Committed
+as `16c8d07fe`.
+
+### Unit 8 (2026-09-11) — CSS for the two-pane layout
+
+Added the CSS the ported markup needed: a new "THE TWO-PANE LOCAL TAB"
+section in `ai-models.css` (~600 lines) plus the two missing
+`.am-hub-controls-push`/`.am-hub-resultline` rules in the pre-existing Hub
+search section. Values copied from the mockup's `<style>` block, all colors
+via `tokens.css` tokens (no literals). The mockup's own bare/generic class
+names already present verbatim in the ported TSX (`.row`, `.chip`, `.mono`,
+`.tick`, `.drawer`, `.acts`, `.plain`, `.unknown`, `.why`, `.bar-prog`,
+`.match`, `.mbar`, `.mnum`, `.rowwrap`, `.scoped`, `.rule`, `.capicon`,
+`.iconbtn`, `.row-*`) are scoped under a `.tp ` ancestor combinator rather
+than left bare (LocalTab's own `.tp` wrapper makes this safe) or renamed
+(renaming would have broken the "ported verbatim" mandate from units 1-6).
+Distinctive names (`.tp-nav`, `.tp-pane`, `.tp-head`, `.tp-group`,
+`.hubdoor`, `.hits`, `.adv-head`, `.bigsearch`, `.advfoot`, `.sorthint`,
+`.offpane`) left unscoped. The hit row's match/verdict coloring uses
+attribute selectors (`.tp .match[data-verdict="easy|tight|no|unknown"]`)
+matching the real `data-verdict={cell.verdict}` markup rather than the
+mockup's separate `.fit-*` classes. Also fixed `HitRow`'s inline
+`style={{ color: "var(--danger, #c0392b)" }}` — no `--danger` token exists
+anywhere in `tokens.css` — by switching to `className="row-reason danger"`
+backed by `.tp .row-reason.danger { color: var(--error); }`. Logged as
+D808/D809 in `DECISIONS.md`. Committed as `f74f5975e`.
+
+### Unit 9 (2026-09-11) — final verification
+
+`bun run --cwd frontend typecheck`: clean. `bun run --cwd frontend build`:
+succeeds (pre-existing dynamic/static import warning for `api.ts`,
+unrelated to this work — `main.tsx` and many other modules already
+statically import it). `node frontend/scripts/check-boundaries.mjs`:
+`boundaries OK (753 files)`. `.venv/bin/python -m pytest
+tests/test_hub_models.py tests/test_ai_registry.py tests/test_fused_ai_client.py -q`:
+277 passed. Full `bun test --cwd frontend`: 5269 pass, 0 fail (run during
+Unit 8's verification, unchanged by Unit 9 since no further TSX/CSS edits
+followed).
+
+Status: DONE. HEAD: `f74f5975e` (branch `worktree-hub-search-discovery`),
+tree clean after the Unit 8 commit. All 9 build-order units complete.
