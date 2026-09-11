@@ -278,7 +278,15 @@ function HitRow({
           <span className="mbar">
             <i style={{ width: `${cell.scoreText === "—" ? 0 : cell.scoreText}%` }} />
           </span>
-          <span className="mnum">{cell.scoreText}</span>
+          {/* Item 12 (fix round 3): the bare number carried no label — a
+           *  reader had no way to tell 84 was a score, out of what, or of
+           *  what. The cell's own `title` (matchTitle, below) already
+           *  explains it on hover; this adds a caption that names it at a
+           *  glance instead of only on hover. */}
+          <span className="score">
+            <b>{cell.scoreText}</b>
+            <small>match</small>
+          </span>
         </span>
         <div>
           <div className="row-name">
@@ -517,10 +525,13 @@ export function HubSearchScreen({
         matchCount={shown?.length ?? null}
         hiddenUnfit={hiddenUnfit}
       />
+      {/* Item 12c (fix round 3): the legend explained the ranking but never
+       *  named the number itself — now opens by naming it, same as the
+       *  cell's own `title` (matchTitle) already does on hover. */}
       <p className="sorthint">
-        Ranked for this Mac: memory fit first, then speed, freshness and popularity; models already here get a
-        small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will not fit ? not
-        measured yet.
+        Match score (0–100) is ranked for this Mac: memory fit first, then speed, freshness and popularity; models
+        already here get a small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will
+        not fit ? not measured yet.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {loading && models === null && <p className="cc-empty">Asking {host}…</p>}

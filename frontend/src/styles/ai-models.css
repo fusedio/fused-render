@@ -3765,11 +3765,33 @@ button.am-bench-model:focus-visible {
   border-radius: 3px;
 }
 
-.tp .match .mnum {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  color: var(--fg-muted);
+/* Item 12 (fix round 3): the bare score number (`.mnum`) had no caption
+   saying what it was — replaced by `.score`, a two-line stack (the number,
+   then a muted "MATCH" caption) that keeps the same column width (the
+   112px match cell is unchanged) and stays vertically centred like every
+   other cell on the row. */
+.tp .match .score {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
   min-width: 2ch;
-  text-align: right;
+}
+
+.tp .match .score b {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  line-height: 1;
+}
+
+.tp .match .score small {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  line-height: 1;
 }
 
 .tp .match.fit-easy,
