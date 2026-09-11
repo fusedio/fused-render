@@ -3456,6 +3456,11 @@ button.am-bench-model:focus-visible {
   font-size: 12px;
   color: var(--accent-soft);
   cursor: pointer;
+  /* S-nit: `.btn-link` also renders as a real `<a>` (the drawer's "View on
+     Hugging Face" link) — an anchor's UA-default underline isn't reset by
+     anything above, so without this it shows permanently instead of only on
+     hover as the mockup has it. */
+  text-decoration: none;
 }
 
 .tp .btn-link:hover {
