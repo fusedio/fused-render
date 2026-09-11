@@ -63,6 +63,7 @@ export function ControlMenu({
   active,
   onClear,
   items,
+  align,
 }: {
   keyLabel: string;
   valueLabel: string;
@@ -72,6 +73,11 @@ export function ControlMenu({
   active: boolean;
   onClear?: () => void;
   items: MenuOption[];
+  /** Item 6 (fix round 6): "right" anchors the `.dd` to its trigger's RIGHT
+   *  edge (`.dd.right`) instead of the default left — for a menu whose
+   *  trigger sits in the controls row's right half, where a left-anchored
+   *  dropdown runs past the scrolling pane's edge and is clipped. */
+  align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -124,7 +130,7 @@ export function ControlMenu({
         )}
       </button>
       {open && (
-        <div className="dd" role="menu">
+        <div className={"dd" + (align === "right" ? " right" : "")} role="menu">
           {items.map((it) => (
             <button
               key={it.label}
@@ -382,6 +388,7 @@ export function SearchControls({
           ariaLabel={"Sort results: " + activeS.label}
           active={false}
           items={sortItems}
+          align="right"
         />
       </div>
       {/* Item 6 (fix round 3): also wears the mockup's own `.resultline`

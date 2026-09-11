@@ -22,12 +22,20 @@ describe("SearchControls menu surface", () => {
   it("uses one ControlMenu component for every dropdown, mockup-shaped (item B)", () => {
     expect(SRC).not.toContain("@platform/ui/ContextMenu");
     expect(SRC).toContain('"menubtn" + (active ? " active" : "")');
-    expect(SRC).toContain('className="dd" role="menu"');
+    // Item 6 (fix round 6): the dropdown's class is now conditional on
+    // `align` (`.dd.right` for the Sort menu) rather than a hardcoded
+    // literal — assert the anchoring logic exists instead of the old fixed
+    // string.
+    expect(SRC).toContain('"dd" + (align === "right" ? " right" : "")');
     const menuCalls = SRC.match(/<ControlMenu/g) ?? [];
     // Fit, Size (params), Sort — three ControlMenu-based menus in this row
     // now the Task menu is gone (D843); Publisher/Quant are `SearchMenu`
     // now (item 5, round 6), not `ControlMenu`.
     expect(menuCalls.length).toBe(3);
+    // Item 6: the Sort menu (the row's right-most trigger, after the `.push`
+    // spacer) anchors its dropdown to the right so it can't run past the
+    // scrolling pane's edge.
+    expect(SRC).toContain('align="right"');
   });
 
   it("shows every option's hover sentence as a <p class=\"h\"> line, not just on the trigger", () => {

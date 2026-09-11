@@ -969,6 +969,12 @@
   left: 0;
   z-index: 5;
   min-width: 290px;
+  /* Item 6 (fix round 6): the pane's right half scrolls with
+     `overflow-x: hidden` (round 5 item 8), so a `.dd` wider than the space
+     left of its trigger to the pane's own right edge is silently clipped
+     rather than wrapped or scrolled — never wider than the viewport minus a
+     comfortable side gutter. */
+  max-width: min(360px, calc(100vw - 48px));
   /* Item 5's Publisher/Quant menus can carry up to 40 options plus a filter
      input — a fixed cap with its own scroller (`.am-engine-popup`'s pattern)
      rather than an unbounded list pushing the page around. */
@@ -981,6 +987,18 @@
   /* --shadow-lg is 0.18 alpha in light mode — the exact value the mockup's
      literal rgba(0,0,0,.18) names, via the repo's own shadow scale. */
   box-shadow: 0 8px 24px var(--shadow-lg);
+}
+
+/* Item 6 (fix round 6): the Sort menu is the row's last, right-most trigger
+   (after the `.push` spacer) — anchored `left: 0` like every other menu, its
+   ~300px-wide options ran past the scrolling pane's right edge and were cut
+   off (clipped by the pane's own `overflow-x: hidden`, not wrapped). A menu
+   whose trigger sits in the row's right half anchors to its trigger's RIGHT
+   edge instead, so the dropdown grows leftward into the row rather than off
+   the edge of the pane. */
+.tp .dd.right {
+  left: auto;
+  right: 0;
 }
 
 .tp .dd button {
