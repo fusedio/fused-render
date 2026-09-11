@@ -22,8 +22,8 @@ describe("ModelRow action slot", () => {
     expect(ROW).toContain('title="No engine on this device can run it"');
   });
 
-  it("uses the primary Try link only for a model this Mac actually has", () => {
-    expect(ROW).toContain('className="btn btn-primary"');
+  it("uses a plain (Download-matching) Try link only for a model this Mac actually has", () => {
+    expect(ROW).toContain('className="btn"');
     expect(ROW).toContain("href={tryHref}");
   });
 

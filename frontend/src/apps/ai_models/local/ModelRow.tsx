@@ -264,7 +264,7 @@ function Actions({
     return (
       <>
         <a
-          className="btn btn-primary"
+          className="btn"
           href={tryHref}
           onClick={(e) => {
             if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

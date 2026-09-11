@@ -2115,3 +2115,24 @@ rationale on each.
   now also pin `hub.fit.is_apple_silicon` and assert the pinned entries
   alongside their original rows.
 - `bun run --cwd frontend typecheck` — clean.
+
+### Fix round 12 (2026-09-11)
+
+- Try (`ModelRow.tsx`, the `<a>` used for a model this Mac already has)
+  dropped `btn-primary` so it renders exactly like Download's plain
+  `.tp .btn` — same translucent background, `--border` outline, `--fg`
+  text, weight 500 — instead of the lime `--accent` fill `.tp
+  .btn-primary` gave it. `HubSearchScreen.tsx` has no Try button of its
+  own (its hit rows go through `ModelRow`), so this was the only site.
+  Left the "Search" submit button (`HubSearchScreen.tsx`, `btn-primary
+  btn-lg`) and Download's own conditional `opts.primary` path alone —
+  both were explicitly out of scope, and `.tp .btn-primary` keeps a
+  live consumer either way.
+- `ModelRow.test.ts`'s source-pinning test for the Try link's class
+  updated from `'className="btn btn-primary"'` to `'className="btn"'`.
+
+### Round 12 test results
+
+- `bun test frontend/src/apps/ai_models/local/ModelRow.test.ts` — 12
+  pass, 0 fail.
+- `bun run --cwd frontend typecheck` — clean.
