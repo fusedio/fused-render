@@ -630,16 +630,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * Reported as trouble FIRST, with the window on it, so the card says when
    * the reset is even if the POST fails; the note and the card's "scheduled"
-   * line land only once the server has the row. Once per run: `poll.done`
-   * repeats on a re-attached loop and a second row would fire twice.
+   * line land only once the server has the row. A refused POST is a NOTE
+   * beside that card, never a second card: `reportTrouble` replaces the slot,
+   * and the reset time is the one fact the reader must not lose (Bugbot
+   * #1107). Once per run, and the guard comes BEFORE the row: `poll.done`
+   * repeats on a re-attached or superseded loop, and the second pass must
+   * print nothing and post nothing (Bugbot #1107).
+   *
+   * Returns whether it took the failure — false means the caller reports the
+   * error the ordinary way (no session to schedule on, or no target).
    */
   const scheduledRuns = new Set<string>();
-  const scheduleComeback = (runId: string, error: string, quota: Quota) => {
+  const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
+    if (scheduledRuns.has(runId)) return true;
+    const sessionId = state.sessionId;
+    if (!FILE || !sessionId) return false;
+    scheduledRuns.add(runId);
     const trouble: Trouble = { ...troubleFromMessage(error), quota };
     reportTrouble(trouble);
-    const sessionId = state.sessionId;
-    if (!FILE || !sessionId || scheduledRuns.has(runId)) return;
-    scheduledRuns.add(runId);
     const post = deps.schedule ?? scheduleMessage;
     void post({
       target: FILE,
@@ -656,10 +664,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
         announceTasksChanged();
       })
       .catch((err: unknown) => {
-        addError(
+        addNote(
           "Could not schedule the follow-up: " + (err instanceof Error ? err.message : String(err)),
+          "\u25f7",
         );
       });
+    return true;
   };
 
   // ---- skills / app_state (T:15771-15837) --------------------------------
@@ -1370,8 +1380,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
               });
             }
           }
-          if (end.error && limitHit(poll.quota)) scheduleComeback(runId, end.error, poll.quota);
-          else if (end.error) addError(end.error);
+          // The comeback is gated on ownership like the stop note below: a
+          // superseded loop's end must not print or schedule anything.
+          if (end.error && limitHit(poll.quota) && loopSeq === seat) {
+            if (!scheduleComeback(runId, end.error, poll.quota)) addError(end.error);
+          } else if (end.error) addError(end.error);
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -2678,9 +2691,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
          * case, so this is parity with its behaviour rather than its spelling.
          */
         let appended = false;
+        // A LIMIT HIT REPAIRED OFF-FRAME IS STILL A LIMIT HIT (Bugbot #1107):
+        // the same card with the reset time, the same scheduled comeback. The
+        // three branches below only decide whether a user line is needed
+        // first; the error itself goes through here.
+        const probeQuota = poll.quota;
+        const reportProbeError = (message: string) => {
+          if (limitHit(probeQuota) && scheduleComeback(runId, message, probeQuota)) return;
+          addError(message);
+        };
         if (poll.error) {
           if (matches || !users.length) {
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           } else if (unseen) {
             // The turn is not on screen and never was, so the failure needs its
@@ -2698,7 +2720,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // transcript is already showing, so with none there is no turn to
             // append and neither flag has anything to be quiet about.
             addUser(probeMsg);
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           } else if (shownAlready && !errorShown(poll.error)) {
             // THE PROMPT IS UP AND THE FAILURE IS NOT (Bugbot PR #1075, third
@@ -2712,7 +2734,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // under the line that is already there, and only `errorShown`
             // stops it: if the transcript happened to carry the failure too,
             // the row is there and there is nothing to add.
-            addError(poll.error);
+            reportProbeError(poll.error);
             appended = true;
           }
           // A FAILED TURN IS NEWS TOO (Bugbot 3974939169): same nonce, same

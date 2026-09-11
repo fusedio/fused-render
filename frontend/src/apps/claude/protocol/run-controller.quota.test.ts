@@ -134,7 +134,7 @@ describe("a limit hit", () => {
     expect((state.turns[1] as { quota?: Quota }).quota?.status).toBe("rejected");
   });
 
-  test("a refused POST leaves the limit card up and says the follow-up did not schedule", async () => {
+  test("a refused POST keeps the limit card (with its reset) and notes the refusal", async () => {
     const c = make(
       {
         start: () => ({ run_id: "r1" }),
@@ -144,10 +144,60 @@ describe("a limit hit", () => {
     );
     await c.sendMessage("go");
     await flush();
-    const errs = c.getState().turns.filter((t) => t.role === "error");
-    expect(errs.length).toBe(2);
-    expect((errs[1] as { text: string }).text).toContain("Could not schedule the follow-up");
-    expect(c.getState().turns.some((t) => t.role === "note")).toBe(false);
+    const state = c.getState();
+    // ONE error row and the card still the limit's: the refusal must not
+    // replace the card that carries the reset time (Bugbot #1107).
+    expect(state.turns.filter((t) => t.role === "error").length).toBe(1);
+    expect(state.trouble?.kind).toBe("limit");
+    expect(state.trouble?.quota?.resets_at).toBe(RESET);
+    expect(state.trouble?.scheduled).toBeUndefined();
+    const notes = state.turns.filter((t): t is NoteTurn => t.role === "note");
+    expect(notes.length).toBe(1);
+    expect(notes[0]!.text).toContain("Could not schedule the follow-up");
+  });
+
+  test("a second end on the same run prints nothing and posts nothing", async () => {
+    const posted: unknown[] = [];
+    const c = make(
+      {
+        start: () => ({ run_id: "r1" }),
+        poll: () => poll({ done: true, error: LIMIT_TEXT, quota: rejected() }),
+      },
+      (body) => {
+        posted.push(body);
+        return Promise.resolve({});
+      },
+    );
+    await c.sendMessage("go");
+    await flush();
+    // Re-attach to the SAME run id: agent.py answers with the same ended poll.
+    await c.resumeRun("r1");
+    await flush();
+    expect(posted.length).toBe(1);
+    expect(c.getState().turns.filter((t) => t.role === "error").length).toBe(1);
+  });
+
+  test("a limit hit repaired off-frame gets the card and the comeback too", async () => {
+    const posted: unknown[] = [];
+    const c = make(
+      {
+        poll: () => poll({ done: true, message: "do it", error: LIMIT_TEXT, quota: rejected() }),
+      },
+      (body) => {
+        posted.push(body);
+        return Promise.resolve({});
+      },
+    );
+    await c.resumeRun("r9");
+    await flush();
+    expect(posted.length).toBe(1);
+    expect((posted[0] as { session_id: string }).session_id).toBe("s1");
+    const state = c.getState();
+    expect(state.trouble?.kind).toBe("limit");
+    expect(state.trouble?.quota?.resets_at).toBe(RESET);
+    // Empty transcript → the repair's own rule adds no user line (same as
+    // `addError` did); the card row and the comeback note are what matter.
+    expect(state.turns.map((t) => t.role)).toEqual(["error", "note"]);
   });
 
   test("an error without a rejected window is an ordinary failure — nothing scheduled", async () => {
