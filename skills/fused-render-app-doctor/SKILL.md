@@ -80,7 +80,7 @@ Real: a hardcoded `/Users/alex/data.csv` (or `/home/…`, `/Volumes/…`) the ap
 
 **fact** — `git status --porcelain`, scoped to the app folder. Skip means no readable git repo or no git; unanswerable, not failing.
 
-**Fix.** Commit the listed paths, or `.gitignore` them if they shouldn't be tracked — so what you share is what you tested.
+**Fix.** Commit the listed paths, or `.gitignore` them if they shouldn't be tracked — and commit that `.gitignore` edit too, or it is itself an uncommitted change and this row fails again — so what you share is what you tested.
 
 ## `pushed` — every commit is pushed
 

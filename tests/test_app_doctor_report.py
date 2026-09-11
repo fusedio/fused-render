@@ -15,6 +15,7 @@ The spawn is stubbed at the same module seam the scaffolding tests use
 """
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -299,6 +300,84 @@ def test_a_sibling_apps_uncommitted_work_is_not_this_apps_finding(workspace):
 
     assert _state(app_doctor.report(str(mine)), "git") == "pass"
     assert _state(app_doctor.report(str(theirs)), "git") == "fail"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_wholly_untracked_app_folder_reads_as_a_folder_finding_not_a_bare_code(
+    workspace,
+):
+    """git collapses a fully-untracked directory to one `?? demo/` line. After
+    the app-relative prefix strip, `rest` is exactly empty (D-defect-2) — the
+    finding must read as the app folder itself being untracked, never as a
+    bare `??` with nothing after it."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    _git(repo, "init", "-q")
+    # Nothing committed at all: the whole app folder is untracked.
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    assert finding["path"] == "."
+    assert finding["excerpt"] != "??"
+    assert "?" not in finding["excerpt"]
+    assert "untracked" in finding["excerpt"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_nested_untracked_directory_reads_as_a_directory_not_a_bare_code(workspace):
+    """A subdirectory that is entirely new collapses to one `?? sub/` line —
+    unlike the whole-app case, `rest` is not empty here (D-defect-2's
+    variant), but it should still read as a directory, not a raw status
+    line."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    sub = d / "sub"
+    sub.mkdir()
+    (sub / "new.py").write_text("x = 1\n")
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    assert finding["path"] == "sub/"
+    assert finding["excerpt"] == "sub/ (untracked directory)"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_an_app_that_is_its_own_repo_root_does_not_over_claim_the_whole_folder(
+    workspace,
+):
+    """Review finding 4: `rest` strips to empty for ANY porcelain line whose
+    path equals the app's own basename, not only the whole-app-folder
+    collapse. When the app folder IS the repo root (an unmigrated app with
+    its own `.git`, `app_git._repo_scope`'s other supported layout) git
+    already reports paths relative to the app dir itself — no prefix to
+    strip at all. An untracked subdirectory that happens to share the app's
+    own folder name (`?? demo/` inside app `demo/`) must read as that
+    subdirectory being untracked, not as the whole app being untracked."""
+    d = _app(workspace, name="demo")
+    _git(d, "init", "-q")
+    _git(d, "add", "-A")
+    _git(d, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    sub = d / "demo"  # same basename as the app folder itself
+    sub.mkdir()
+    (sub / "new.py").write_text("x = 1\n")
+
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert len(row["findings"]) == 1
+    finding = row["findings"][0]
+    # Must NOT read as "the whole app folder is untracked" — only one
+    # subdirectory is.
+    assert finding["path"] != "."
+    assert "whole app folder" not in finding["excerpt"]
+    assert finding["path"] == "demo/"
+    assert finding["excerpt"] == "demo/ (untracked directory)"
 
 
 # --------------------------------------------------------------- pushed
@@ -648,3 +727,235 @@ def test_a_live_task_attaches_to_its_own_row_only(client, workspace, monkeypatch
     rows = {c["id"]: c for c in body["checks"]}
     assert rows["readme"]["task"] == {"id": "t1", "state": "sent", "run_id": "r1"}
     assert rows["icon"]["task"] is None
+
+
+# ----------------------------------------------------- R1: prompt carries detail
+
+
+def test_a_fact_rows_prompt_carries_its_own_detail_and_drops_the_fallback(workspace):
+    """`api-version` is a `kind="fact"` row and never carries findings — its
+    `detail` IS the diagnosis. The old fallback line pointed at a `detail`
+    the prompt never actually included; that string must be gone."""
+    current = app_doctor.fused_api_version.current_version()
+    if current <= 0:
+        pytest.skip("no migration docs resolve, so nothing is behind")
+    d = _app(workspace, version=0)
+    row = _rows(app_doctor.report(str(d)))["api-version"]
+    assert row["state"] == "fail"
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "api-version",
+                                     row["findings"], row["detail"])
+    assert row["detail"] in prompt
+    assert "no findings listed" not in prompt
+
+
+def test_a_candidate_rows_prompt_carries_both_detail_and_findings(workspace):
+    """`secrets` is a `kind="candidate"` row: it DOES carry findings, and the
+    row's own `detail` (e.g. "1 line to look at") must show up alongside
+    them, not instead of them."""
+    d = _app(workspace)
+    (d / "app.py").write_text('AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    row = _rows(app_doctor.report(str(d)))["secrets"]
+    assert row["state"] == "fail"
+    assert row["findings"]
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "secrets",
+                                     row["findings"], row["detail"])
+    assert row["detail"] in prompt
+    for f in row["findings"]:
+        assert f["excerpt"] in prompt
+
+
+def test_report_one_returning_none_behaves_as_today(monkeypatch):
+    """No row (an unknown check id slipping past validation somehow) must not
+    crash `doctor_prompt` — the router already guards `check_id` against
+    `CHECK_ORDER`, but the prompt builder itself should not assume a detail
+    is always available."""
+    prompt = app_doctor.doctor_prompt("app/index.html", "readme", [], "")
+    assert "readme" in prompt
+
+
+def test_empty_detail_and_findings_omit_the_dangling_header(workspace):
+    """Review finding 3: `apps.py`'s router passes `findings=[]`, `detail=""`
+    whenever `report_one` returns `None` (an unknown check id slipping past
+    validation). With no fallback line left, `_findings_block("", [])`
+    returns `""` — the "Findings for this row:" header must not be emitted
+    over nothing, or the prompt reads as a dangling, empty section."""
+    prompt = app_doctor.doctor_prompt(str(_app(workspace) / "index.html"),
+                                     "readme", [], "")
+    assert "Findings for this row:" not in prompt
+    assert "\n\n\n" not in prompt
+
+
+# --------------------------------------------------- R1 grep: no dead fallback
+
+def test_the_deleted_fallback_string_is_gone_from_the_module():
+    """Defect 1's fallback line must not merely be unreachable — it must not
+    exist anywhere a session (or a future test) could still find it."""
+    src = open(app_doctor.__file__, encoding="utf-8").read()
+    assert "no findings listed" not in src
+
+
+# ------------------------------------------------------- R3: fix sessions commit
+
+
+def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(workspace):
+    """This covers a row whose fix EDITS FILES (`readme`) — the shape
+    `_COMMIT_STEP` is right for. It deliberately does NOT stand in for every
+    row: `git` and `pushed` don't edit files, their fix IS a git action
+    spelled out in their own SKILL.md section, and appending this same
+    "never push" / edit-conditioned step to THOSE rows is exactly what
+    review findings 1 & 2 caught (a `pushed` row's only real fix is
+    forbidden by "never push"; a `git` row's fix needs no edit, so "no edit
+    -> no commit" disables it). Those two rows are covered separately below
+    by `test_the_pushed_rows_own_prompt_carries_no_never_push_step` and
+    `test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step`."""
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "readme", [], "no README")
+    assert "commit" in prompt.lower()
+    # "push" only ever appears as an explicit PROHIBITION ("never push") —
+    # never as an instruction to actually push.
+    assert "never push" in prompt.lower()
+    assert "push the branch" not in prompt.lower()
+    assert "push it" not in prompt.lower()
+
+
+def test_the_pushed_rows_own_prompt_carries_no_never_push_step(workspace):
+    """Review finding 1: the trailing commit step's "never push" contradicts
+    SKILL.md's `pushed` section ("Push the branch") — the row's only real
+    fix. The `pushed` row's own prompt must not carry the generic commit/
+    no-push step at all; its own SKILL.md section is the whole instruction."""
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pushed", [],
+                                     "1 commit ahead of upstream")
+    assert "never push" not in prompt.lower()
+    assert app_doctor._COMMIT_STEP not in prompt
+
+
+def test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step(workspace):
+    """Review finding 2: `_COMMIT_STEP`'s "if you made no edit at all ...
+    make no commit" disables the `git` row's own fix, which is exactly to
+    commit pre-existing uncommitted paths with no file edit required. The
+    `git` row's own prompt must not carry the generic commit step; SKILL.md's
+    `git` section ("Commit the listed paths, or .gitignore them") is the
+    whole instruction."""
+    d = _app(workspace)
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "git",
+                                     [{"rule": "git:uncommitted", "path": "?? a.py",
+                                       "line": 0, "excerpt": "?? a.py"}],
+                                     "1 uncommitted path")
+    assert app_doctor._COMMIT_STEP not in prompt
+
+
+def test_git_skill_section_tells_the_gitignore_branch_to_commit_its_own_edit():
+    """Re-review finding: `_COMMIT_STEP_EXEMPT` means the `git` row's prompt
+    carries NO commit instruction of its own — SKILL.md's `git` section is
+    the whole story (see the test above). That section offers two fixes:
+    "Commit the listed paths" (self-contained: committing IS the action) or
+    ".gitignore them" (NOT self-contained: writing/editing a `.gitignore` is
+    itself a file edit that then needs committing, or it shows up as its own
+    uncommitted change and the row fails again next time). Before the
+    `_COMMIT_STEP` exemption, the generic step caught this; now nothing does
+    unless the section itself says so. Assert the `.gitignore` branch is
+    followed by an explicit instruction to commit that edit."""
+    text = (Path(__file__).resolve().parents[1] / "skills" /
+            "fused-render-app-doctor" / "SKILL.md").read_text()
+    section = text.split("## `git`", 1)[1].split("\n## ", 1)[0]
+    assert ".gitignore" in section
+    gitignore_idx = section.index(".gitignore")
+    after = section[gitignore_idx:].lower()
+    assert "commit" in after, (
+        "the .gitignore branch of the git fix must say to commit that edit too"
+    )
+
+
+def test_fix_all_containing_a_pushed_row_can_still_push_for_that_row(workspace):
+    """Review finding 1 in `doctor_prompt_all`: a Fix-all run that includes a
+    `pushed` row must still be able to push for that row — the trailing
+    `_COMMIT_STEP_ALL` step must not be phrased as a blanket "never push"
+    that overrides the `pushed` row's own SKILL.md instruction.
+
+    Absence of "never push" alone would also pass if the step said nothing
+    about pushing at all — silence isn't permission. Assert the real
+    semantics: the step affirmatively defers to the `pushed` row's own
+    section rather than merely not-forbidding it."""
+    checks = [
+        {"id": "pushed", "label": "Every commit is pushed", "kind": "fact",
+         "state": "fail", "detail": "1 commit ahead of upstream", "findings": []},
+    ]
+    prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
+    assert "never push" not in prompt.lower()
+    lower = prompt.lower()
+    # The trailing step must name the `pushed` row and instruct following
+    # through on push for it — not just avoid a blanket prohibition.
+    assert "pushed" in lower
+    assert "follow through on push" in lower
+    assert "does not forbid it" in lower
+
+
+def test_fix_all_containing_a_git_row_can_still_commit_pre_existing_paths(workspace):
+    """Review finding 2 in `doctor_prompt_all`: a Fix-all run that includes a
+    `git` row must still be able to commit paths that were already
+    uncommitted before the run — not only "files you actually edited".
+
+    A bare "pre-existing" substring would also pass if it appeared in some
+    unrelated disclaimer. Assert the real semantics: the step explicitly
+    scopes the commit to include paths a `git` row asked for, attributed to
+    that row, not just files edited this run."""
+    checks = [
+        {"id": "git", "label": "Every change is committed", "kind": "fact",
+         "state": "fail", "detail": "1 uncommitted path",
+         "findings": [{"rule": "git:uncommitted", "path": "?? a.py", "line": 0,
+                       "excerpt": "?? a.py"}]},
+    ]
+    prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
+    lower = prompt.lower()
+    # The trailing step must not read as forbidding a commit of pre-existing
+    # uncommitted paths that the git row itself asked for.
+    assert "pre-existing" in lower
+    assert "pre-existing uncommitted" in lower
+    assert "a `git` row" in lower or "a git row" in lower
+    assert "even though you didn't edit them" in lower
+
+
+def test_fix_all_makes_one_trailing_commit_not_one_per_row(workspace):
+    d = _app(workspace, readme=False)
+    (d / "app.py").write_text('DATA = "/Users/alice/data.csv"\n')
+    checks = app_doctor.report(str(d))["checks"]
+    failing = [c for c in checks if c["state"] == "fail"]
+    assert len(failing) >= 2  # readme AND device-paths, so a per-row commit
+                              # step would show up more than once if present.
+    prompt = app_doctor.doctor_prompt_all(str(d / "index.html"), checks)
+    # The commit step is the block appended once, after every row — not
+    # something each row's own block asks for.
+    assert prompt.count(app_doctor._COMMIT_STEP_ALL) == 1
+    for c in failing:
+        row_block = (
+            f"## `{c['id']}` — {c['label']}\n"
+            f"{app_doctor._triage_ask(c['kind'])}\n"
+            f"{app_doctor._findings_block(c['detail'], c['findings'])}"
+        )
+        assert "commit" not in row_block.lower()
+    assert "push the branch" not in prompt.lower()
+    assert "push it" not in prompt.lower()
+
+
+def test_fix_all_with_nothing_failing_asks_for_no_commit(workspace):
+    d = _app(workspace)
+    checks = app_doctor.report(str(d))["checks"]
+    prompt = app_doctor.doctor_prompt_all(str(d / "index.html"), checks)
+    assert "commit" not in prompt.lower()
+
+
+def test_the_secrets_commit_step_cannot_be_read_as_commit_the_secret_fix(workspace):
+    """R3's sensitive case: the commit instruction must not be readable as
+    licence to commit a still-live or merely relocated credential. A session
+    following `_CREDENTIAL_NOTE` (report + say "rotate it", never move the
+    value) makes no file edit for `secrets`, so the wording must make clear
+    that no edit means no commit — and must never say "commit the fix" in a
+    way that could be misapplied to a relocated secret."""
+    d = _app(workspace)
+    (d / "app.py").write_text('AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    row = _rows(app_doctor.report(str(d)))["secrets"]
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "secrets",
+                                     row["findings"], row["detail"])
+    assert "commit the fix" not in prompt.lower()
+    assert "live" in prompt.lower() or "relocat" in prompt.lower()
