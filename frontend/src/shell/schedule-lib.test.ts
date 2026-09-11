@@ -10,6 +10,7 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
+import { taskFolder } from "./useMissingFolders";
 
 describe("describeRepeats", () => {
   it("reads the form's own presets", () => {
@@ -1350,17 +1351,53 @@ describe("folderHref", () => {
     // the watcher has not yet reported which session it opened. taskHref is null
     // for the whole of it, which is exactly when a run parked on a permission
     // prompt needs a way in.
-    expect(folderHref(task({ key: "pending:t1", session_id: "", target: "/Users/me/proj" })))
+    expect(folderHref(task({
+      key: "pending:t1", session_id: "",
+      project: "/Users/me/proj", target: "/Users/me/proj",
+    }))).toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
+  });
+
+  it("opens the FOLDER of a task that targets a file, not the file", () => {
+    // A task made from inside an app targets that app's entry page, and this
+    // door is the folder's sessions — a file preview has none of them on it.
+    // `project` is already that folder (routers/tasks.py:_place), so it is a
+    // field away and never a path to chop.
+    expect(folderHref(task({
+      key: "pending:t2", session_id: "",
+      project: "/Users/me/app", target: "/Users/me/app/index.html",
+    }))).toBe("/explorer/view/Users/me/app?_side=claude&session_id=");
+  });
+
+  it("falls back to the target when a row carries no project", () => {
+    expect(folderHref(task({ key: "k", project: "", target: "/Users/me/proj" })))
       .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
   });
 
-  it("falls back to the project when the task points at no target", () => {
+  it("reads the project when the task points at no target", () => {
     expect(folderHref(task({ key: "k", target: "", project: "/Users/me" })))
       .toBe("/explorer/view/Users/me?_side=claude&session_id=");
   });
 
   it("says nothing rather than minting a url to nowhere", () => {
     expect(folderHref(task({ key: "k", target: "", project: "" }))).toBe(null);
+  });
+
+  // ONE reading of "which folder is this task's", shared by the door and the
+  // is-it-still-there stat. They disagreed once — `folderHref` read the project
+  // and `taskFolder` the target — and the cost was a live folder whose tasks all
+  // wore "Folder missing" because the entry page had been renamed.
+  it("names the same folder useMissingFolders stats", () => {
+    const t = task({
+      key: "pending:t3", session_id: "",
+      project: "/Users/me/app", target: "/Users/me/app/index.html",
+    });
+    expect(taskFolder(t)).toBe("/Users/me/app");
+    expect(folderHref(t)).toBe(`/explorer/view/Users/me/app?_side=claude&session_id=`);
+
+    const noProject = task({ key: "k", project: "", target: "/Users/me/proj" });
+    expect(taskFolder(noProject)).toBe("/Users/me/proj");
+
+    expect(taskFolder(task({ key: "k", project: "", target: "" }))).toBe("");
   });
 });
 

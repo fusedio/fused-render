@@ -120,6 +120,11 @@ import { isUnderDir } from "./current-apps-lib";
 export interface TasksScope {
   /** The app folder, canonical forward-slash — the value `Task.project` carries. */
   project: string;
+  /** That folder's entry page when it has one, already resolved by the app page
+   *  (AppPage asks `getAppEntry` to frame the Overview). PREFILLS a new task's
+   *  target and nothing else — never the filter, which stays on `project` so
+   *  the tab keeps listing every task in the folder. */
+  entry?: string | null;
 }
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
@@ -797,10 +802,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // `openSeq` above.
           key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
-          // Scoped, a new task is a task FOR THIS APP: the folder is prefilled
-          // so the modal opens ready to type. A deep link's own target still
-          // wins — it named a folder on purpose.
-          initialTarget={newTarget ?? scope?.project ?? null}
+          // Scoped, a new task is a task FOR THIS APP: the entry page is
+          // prefilled so the modal opens ready to type, because a task made
+          // from inside an app is nearly always about the page, not the folder
+          // around it. The folder is the fallback when the app has no entry.
+          // Prefill only — the field shows exactly what will be saved, and
+          // deleting the filename back to the folder is the user's to make. A
+          // deep link's own target still wins: it named a path on purpose.
+          initialTarget={newTarget ?? scope?.entry ?? scope?.project ?? null}
           initialMessage={newMessage}
           initialAttachments={newAttachments}
           chatSessionId={newSession}

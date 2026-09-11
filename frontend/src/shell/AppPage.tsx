@@ -209,7 +209,11 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
   tasks: {
     label: "Tasks",
     Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
-    render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
+    // `entry` is this page's ALREADY-RESOLVED entry page (the Overview frames
+    // it), handed down so a new task opens on the app's page rather than the
+    // folder — a prefill in a field the user can still edit, not a rewrite.
+    // The filter stays on `dir`: the tab lists every task in the folder.
+    render: ({ dir, entry }) => <Scheduled scope={{ project: dir, entry }} />,
   },
   files: {
     label: "Files",

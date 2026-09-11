@@ -544,7 +544,18 @@ export function explorerUrl(target: string, sessionId: string): string {
 // caller now, and this fallback is exactly what a run with no session yet needs
 // — a state the Notifications section's rows meet as often as the popover does.
 export function folderHref(task: Pick<Task, "target" | "project">): string | null {
-  const target = task.target || task.project;
+  // `project` FIRST, deliberately: this door is the run's FOLDER, and `project`
+  // is a folder by construction — `routers/tasks.py:_place` fills it from the
+  // transcript's own `cwd`, falling back to `_workdir(target)` (the target
+  // itself when it is a directory, its parent when it is a file) and, last, to
+  // the decoded project dir. Reading `target` first was the same answer for as
+  // long as a task's target was nearly always a folder; now that a task made
+  // from inside an app targets the app's ENTRY PAGE, target-first sent this to
+  // a file preview — which has none of the sessions this door promises — and
+  // this is reached only when `taskHref` declined, i.e. `session_id` is "",
+  // i.e. there is no transcript to open instead. `target` stays the fallback
+  // for a row whose project never got filled in.
+  const target = task.project || task.target;
   return target ? explorerUrl(target, "") : null;
 }
 
