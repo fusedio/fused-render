@@ -227,6 +227,16 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     if (popup && popup.id === replaceId && !popup.leaving) {
       const updated = toStored(input, replaceId);
       popup = { ...updated, leaving: popup.leaving };
+      // Re-arm, not merely re-stamp: a caller that keeps replacing the SAME
+      // id (a paste's "Copying N of M…", an undo's repeated "Still
+      // undoing…") is saying "this is still going", and the card must not
+      // silently vanish out from under a still-running operation just
+      // because the FIRST call's 2.5s clock happened to run out. Skipped
+      // only where notify()'s own fresh-item path below also skips it —
+      // `silent` never pops, and an under-IS_TOP_EMBED `attention` message
+      // never auto-expires.
+      const neverExpiresHere = effectiveIsTopEmbed() && updated.tier === "attention";
+      if (updated.tier !== "silent" && !neverExpiresHere) armExitTimer(JOB_POPUP_VISIBLE_MS);
       refreshSnapshot();
       emit();
       return replaceId;

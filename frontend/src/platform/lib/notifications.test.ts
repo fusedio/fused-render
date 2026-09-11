@@ -130,6 +130,43 @@ test("replaceId updates the live popup in place instead of pushing a new one", (
   expect(popupSnapshot()?.title).toBe("Still undoing…");
 });
 
+test("replaceId against a live popup re-arms the exit timer instead of letting the original clock run out underneath it", async () => {
+  // A paste's "Copying N of M…" or an undo's "Still undoing…" keeps calling
+  // notify(..., id) against the SAME popup while a long-running operation is
+  // in flight. If the timer armed by the FIRST call kept counting regardless
+  // of content updates, an operation slower than JOB_POPUP_VISIBLE_MS would
+  // see its progress card start leaving mid-operation.
+  const id = notify({ title: "Copying 1 of 5…", tone: "info" });
+
+  await sleep(JOB_POPUP_VISIBLE_MS - 200);
+  expect(popupSnapshot()?.leaving).toBe(false);
+
+  notify({ title: "Copying 2 of 5…", tone: "info" }, id);
+
+  // Past the ORIGINAL timer's deadline — still up, because the update reset it.
+  await sleep(300);
+  expect(popupSnapshot()?.title).toBe("Copying 2 of 5…");
+  expect(popupSnapshot()?.leaving).toBe(false);
+
+  // The re-armed timer still eventually fires on its own, JOB_POPUP_VISIBLE_MS
+  // after the UPDATE (not the original notify() call) — checked before
+  // TOAST_EXIT_MS has also elapsed, so the card is still present as "leaving".
+  await sleep(JOB_POPUP_VISIBLE_MS - 250);
+  expect(popupSnapshot()?.leaving).toBe(true);
+}, 10_000);
+
+test("replaceId against a live, never-retained popup does not re-arm once it has left", async () => {
+  const id = notify({ title: "Still undoing…", tone: "info" });
+  await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
+  expect(popupSnapshot()).toBe(null);
+
+  // Once the popup is gone, a replaceId call against its id is no longer a
+  // "live popup" match — it falls through to the fresh-notification path
+  // (covered separately below), not a resurrection of the old card.
+  const second = notify({ title: "Still undoing…", tone: "info" }, id);
+  expect(second).not.toBe(id);
+});
+
 test("replaceId against an id that already left starts a fresh notification", async () => {
   const id = notify({ title: "first", tone: "info" });
   await sleep(JOB_POPUP_VISIBLE_MS + TOAST_EXIT_MS + 30);
