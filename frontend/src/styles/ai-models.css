@@ -4212,14 +4212,24 @@ button.am-bench-model:focus-visible {
    the global `[data-tip]` primitive in schedule.css (deliberately not that
    rule itself — that one is `white-space: nowrap`, sized for 4-char labels,
    and global; this one wraps a real sentence and only ever applies to this
-   cell). `.rowwrap`/`.hits`/the row grid above have no `overflow: hidden`
-   (checked), so opening upward is safe. */
-.tp .match[data-tip] {
+   cell).
+   D-next (round 7): the attribute is `data-match-tip`, not the shared
+   `data-tip` — schedule.css's `[data-tip]:not([data-tip=""])` selector has
+   no scoping of its own and matched this same span, so a reader hovering
+   the match cell saw TWO popovers at once: this scoped `::after` and the
+   global `::before` stacked under it (the "duplicate row-wide black strip"
+   bug report). Renaming the attribute is the fix rather than teaching
+   schedule.css's global rule to exclude `.match` — it keeps this cell's
+   popover a private concern of this file, with nothing for a future global
+   `[data-tip]` change to accidentally re-collide with. `.rowwrap`/`.hits`/
+   the row grid above have no `overflow: hidden` (checked), so opening
+   upward is safe. */
+.tp .match[data-match-tip] {
   position: relative;
 }
 
-.tp .match[data-tip]::after {
-  content: attr(data-tip);
+.tp .match[data-match-tip]::after {
+  content: attr(data-match-tip);
   position: absolute;
   left: 0;
   bottom: calc(100% + 6px);
@@ -4247,8 +4257,8 @@ button.am-bench-model:focus-visible {
   z-index: 5;
 }
 
-.tp .match[data-tip]:hover::after,
-.tp .match[data-tip]:focus-visible::after {
+.tp .match[data-match-tip]:hover::after,
+.tp .match[data-match-tip]:focus-visible::after {
   opacity: 1;
 }
 

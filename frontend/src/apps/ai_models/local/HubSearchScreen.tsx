@@ -15,6 +15,7 @@
 // (`hubFamilies.ts`) and the dense `<table>` (`HubResultsTable.tsx`) — the
 // brief for this screen is one row per hit, the mockup's own `hit()`.
 import { useEffect, useRef, useState } from "react";
+import { ClockIcon, DownloadIcon, HeartIcon } from "./HitStatIcons";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
 import { formatToken } from "@apps/ai_models/lib/formatToken";
@@ -340,7 +341,7 @@ function HitRow({
   // Item 3 (fix round 5): `matchTitle`'s full sentence (still used for other
   // rows elsewhere) reads as a 60-word paragraph in a native `title=` —
   // small, unstyled, one-line-wrapped, ugly. This row instead carries a
-  // short `data-tip` for a real (CSS-only) popover — see `.tp .match[data-tip]`
+  // short `data-match-tip` for a real (CSS-only) popover — see `.tp .match[data-match-tip]`
   // in ai-models.css — that keeps the score and the colour legend and drops
   // the rest.
   //
@@ -350,7 +351,7 @@ function HitRow({
   // show "84" with a different colour reading as a bug. It carries `\n`
   // between its two lines; `matchTipLabel` below flattens that into one
   // sentence for the `aria-label` a screen reader reads (the CSS popover
-  // itself, `data-tip`, is silent to assistive tech — it is not a `title`).
+  // itself, `data-match-tip`, is silent to assistive tech — it is not a `title`).
   const matchTip = matchRowTip(model.fit, model.matchScore, model.matchBreakdown);
   const matchTipLabel = matchTip.replace(/\n/g, ". ");
   const glyph = verdictGlyph(cell.verdict);
@@ -389,7 +390,7 @@ function HitRow({
       >
         <span
           className={`match fit-${cell.verdict}`}
-          data-tip={matchTip}
+          data-match-tip={matchTip}
           data-verdict={cell.verdict}
           aria-label={matchTipLabel}
           tabIndex={0}
@@ -471,9 +472,15 @@ function HitRow({
           )}
         </div>
         <span className="row-facts pop">
-          <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
-          <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
-          <span title="Last updated">{ageLabel(model.updated ?? model.created)}</span>
+          <span title="Downloads in the last month">
+            <DownloadIcon aria-label="downloads" /> {popLabel(model.downloads)}
+          </span>
+          <span title="Likes on the Hub">
+            <HeartIcon aria-label="likes" /> {popLabel(model.likes)}
+          </span>
+          <span title="Last updated">
+            <ClockIcon aria-label="updated" /> {ageLabel(model.updated ?? model.created)}
+          </span>
         </span>
         <span className="row-act">
           {have ? (
