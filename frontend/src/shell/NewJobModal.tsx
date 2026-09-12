@@ -3494,6 +3494,14 @@ export default function NewJobModal({
       backTimer.current = window.setTimeout(() => setBackConfirm(false), 2000);
       return;
     }
+    // FLUSH FIRST, on the bound arm's account (Bugbot, PR #1126, 2026-09-12):
+    // the last 600 ms of typing are still in the debounce, and the composer
+    // this hands off to seeds from the FORM — so those keystrokes have to land
+    // in the form before the walk, and `stop` would otherwise also silence the
+    // unmount flush that used to catch them. The unbound arm re-saves the live
+    // words by hand below, so the flush is harmless there (one write, same
+    // value, then the delete).
+    autosaveRef.current.flush();
     autosaveRef.current.stop();
     await autosaveRef.current.settle();
     // AFTER `settle`, for Discard's reason (Bugbot, PR #1126, 2026-09-12): the
