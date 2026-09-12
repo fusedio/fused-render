@@ -2058,19 +2058,22 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
         # D1268: re-sort after `_pull_in_family_members` the same tier-first
         # way as the initial sort above — a pulled-in family member must not
         # re-flatten the tier ordering back to score-only.
-        def _rank_key(row: dict) -> tuple[bool, int, float]:
+        def _rank_key_best(row: dict) -> tuple[bool, int, float]:
             value = row.get("matchScore")
             return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        _rank_key = _rank_key_best
         rank_reverse = True
     elif sort == _FIT_SORT:
-        def _rank_key(row: dict) -> tuple[bool, float]:
+        def _rank_key_fit(row: dict) -> tuple[bool, float]:
             value = row.get("matchScore")
             return (value is not None, value if value is not None else 0.0)
+        _rank_key = _rank_key_fit
         rank_reverse = True
     else:
-        def _rank_key(row: dict) -> tuple[bool, object]:
+        def _rank_key_default(row: dict) -> tuple[bool, object]:
             value = row.get(sort_field)
             return (value is not None, value if value is not None else 0)
+        _rank_key = _rank_key_default
         rank_reverse = direction == -1
 
     models = _pull_in_family_members(models[:count], models[count:])
@@ -2527,19 +2530,22 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         # D1268: re-sort after `_pull_in_family_members` the same tier-first
         # way as the initial sort above — a pulled-in family member must not
         # re-flatten the tier ordering back to score-only.
-        def _rank_key(row: dict) -> tuple[bool, int, float]:
+        def _rank_key_best(row: dict) -> tuple[bool, int, float]:
             value = row.get("matchScore")
             return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        _rank_key = _rank_key_best
         rank_reverse = True
     elif sort == _FIT_SORT:
-        def _rank_key(row: dict) -> tuple[bool, float]:
+        def _rank_key_fit(row: dict) -> tuple[bool, float]:
             value = row.get("matchScore")
             return (value is not None, value if value is not None else 0.0)
+        _rank_key = _rank_key_fit
         rank_reverse = True
     else:
-        def _rank_key(row: dict) -> tuple[bool, object]:
+        def _rank_key_default(row: dict) -> tuple[bool, object]:
             value = row.get(sort_field)
             return (value is not None, value if value is not None else 0)
+        _rank_key = _rank_key_default
         rank_reverse = direction == -1
 
     models = _pull_in_family_members(models[:count], models[count:])
