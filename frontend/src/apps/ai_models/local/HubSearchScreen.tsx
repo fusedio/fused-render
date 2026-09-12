@@ -344,11 +344,15 @@ function HitRow({
   // in ai-models.css — that keeps the score and the colour legend and drops
   // the rest.
   //
-  // D1245/D1246: `matchRowTip` (not a generic ingredients list any more)
-  // names only the axes that cost THIS row points, and always separates the
-  // bar's colour (memory fit alone) from its score — the fix for two rows
-  // that both show "84" with a different colour reading as a bug.
+  // D1245/D1246/D1267: `matchRowTip` (not a generic ingredients list any
+  // more) names only the one or two axes that cost THIS row the most, and
+  // always gives fit its own second line — the fix for two rows that both
+  // show "84" with a different colour reading as a bug. It carries `\n`
+  // between its two lines; `matchTipLabel` below flattens that into one
+  // sentence for the `aria-label` a screen reader reads (the CSS popover
+  // itself, `data-tip`, is silent to assistive tech — it is not a `title`).
   const matchTip = matchRowTip(model.fit, model.matchScore, model.matchBreakdown);
+  const matchTipLabel = matchTip.replace(/\n/g, ". ");
   const glyph = verdictGlyph(cell.verdict);
   const have = disk.state === "downloaded";
   const gate = have ? null : gateChrome(model.gated, authenticated);
@@ -387,6 +391,7 @@ function HitRow({
           className={`match fit-${cell.verdict}`}
           data-tip={matchTip}
           data-verdict={cell.verdict}
+          aria-label={matchTipLabel}
           tabIndex={0}
         >
           <span className="glyph">{glyph}</span>

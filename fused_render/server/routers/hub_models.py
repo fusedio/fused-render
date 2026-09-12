@@ -220,6 +220,26 @@ _FIT_SORT = "fit"
 # most-downloaded candidate set and reorders it here.
 _BEST_SORT = "best"
 
+# D1268 (round-6 item 3): `_FIT_TIER` orders `best`'s rows by memory-fit
+# TIER first, composite score only as the tie-break WITHIN a tier. Before
+# this, `best` ranked purely by the D780 composite, and that composite
+# weights fit at only 0.35 of the blend — enough that a "tight" row with a
+# strong score on the other four axes can outscore an "easy" row that is
+# weaker on them, so a yellow (tight-fit) row interleaved between two green
+# (easy-fit) ones even though the legend says "memory fit first". A verdict
+# nothing could be judged for (`None`) sits between "tight" and "no": it is
+# neither a measured squeeze nor a measured failure, so it ranks below every
+# row this machine is KNOWN to run easily or tightly, but above a row known
+# NOT to fit (dropped by default anyway, and kept here only for
+# `includeUnfit`/local-join rows the "no" filter never removes).
+_FIT_TIER = {"easy": 0, "tight": 1, None: 2, "no": 3}
+
+
+def _fit_tier(row: dict) -> int:
+    """The `best` sort's primary key (D1268) — see `_FIT_TIER`'s own doc."""
+    verdict = (row.get("fit") or {}).get("verdict")
+    return _FIT_TIER.get(verdict, 2)
+
 # ---- D780's composite score: weights, defaults, and the axis curves -------
 #
 # Every weight below is a DELIBERATE choice, not a magic tuple — see D780 for
@@ -2005,7 +2025,10 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
 
     sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
     if sort == _BEST_SORT:
-        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
+        # D1268: tier first (easy/tight/unknown/no), composite score only the
+        # tie-break WITHIN a tier — see `_fit_tier`'s own doc for why a
+        # tight-fit row could otherwise interleave between two easy ones.
+        models.sort(key=lambda row: (_fit_tier(row), -raw_scores.get(id(row), 0.0)))
     elif sort == _FIT_SORT:
         models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
                     reverse=True)
@@ -2031,7 +2054,15 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     # `hiddenUnfit` is always 0 on both paths.
     hidden_unfit = 0
 
-    if sort in (_BEST_SORT, _FIT_SORT):
+    if sort == _BEST_SORT:
+        # D1268: re-sort after `_pull_in_family_members` the same tier-first
+        # way as the initial sort above — a pulled-in family member must not
+        # re-flatten the tier ordering back to score-only.
+        def _rank_key(row: dict) -> tuple[bool, int, float]:
+            value = row.get("matchScore")
+            return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        rank_reverse = True
+    elif sort == _FIT_SORT:
         def _rank_key(row: dict) -> tuple[bool, float]:
             value = row.get("matchScore")
             return (value is not None, value if value is not None else 0.0)
@@ -2396,10 +2427,13 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
 
     if sort == _BEST_SORT:
-        # Descending composite score, on the UNCLAMPED figure (finding 8) —
-        # stable sort keeps the Hub's own most-downloaded order as the
-        # tie-break, same guarantee `_FIT_SORT` documents below.
-        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
+        # D1268: tier first (easy/tight/unknown/no) — see `_fit_tier`'s own
+        # doc — then descending composite score, on the UNCLAMPED figure
+        # (finding 8), as the tie-break WITHIN a tier. `sort` is Python's own
+        # stable sort, so ties within a tier keep the Hub's own
+        # most-downloaded order as the further tie-break, same guarantee
+        # `_FIT_SORT` documents below.
+        models.sort(key=lambda row: (_fit_tier(row), -raw_scores.get(id(row), 0.0)))
     elif sort == _FIT_SORT:
         # Descending score, nulls (nothing to judge) sorted last — `sort` is
         # Python's own stable sort, so ties (including every null-fit row
@@ -2489,7 +2523,15 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # uses for a Hub sort. `HubSearchScreen.tsx` draws every row flat in
     # payload order with no family grouping, so this is the only ordering
     # rule left that the page actually honours.
-    if sort in (_BEST_SORT, _FIT_SORT):
+    if sort == _BEST_SORT:
+        # D1268: re-sort after `_pull_in_family_members` the same tier-first
+        # way as the initial sort above — a pulled-in family member must not
+        # re-flatten the tier ordering back to score-only.
+        def _rank_key(row: dict) -> tuple[bool, int, float]:
+            value = row.get("matchScore")
+            return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        rank_reverse = True
+    elif sort == _FIT_SORT:
         def _rank_key(row: dict) -> tuple[bool, float]:
             value = row.get("matchScore")
             return (value is not None, value if value is not None else 0.0)

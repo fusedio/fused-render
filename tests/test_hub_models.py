@@ -1553,6 +1553,36 @@ def test_sort_fit_orders_by_descending_score_and_still_asks_the_hub_for_download
     assert "sort=downloads" in url
 
 
+def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monkeypatch):
+    """D1268 (round-6 item 3), live-path equivalent of the catalog-path test
+    of the same name: the legend says "memory fit first" but the D780
+    composite alone weights fit at only 0.35 — a tight-fit row can still
+    outscore an easy-fit row on the other four axes and rank between two
+    easy rows. Pin `matchScore` directly (90 for the tight row, 80 for the
+    easy one) so the fit VERDICT, not the raw score, decides the order."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    fake = _reply([
+        _fitted("org/easy-fit", score=80, safetensors_gb=5),
+        _fitted("org/tight-fit", score=90, safetensors_gb=20),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+
+    def _fake_raw_score(row, ram_gb):
+        return 90.0 if row.get("id") == "org/tight-fit" else 80.0
+
+    monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
+
+    body = _search(client, {"sort": "best"}).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/easy-fit"]["fit"]["verdict"] == "easy"
+    assert by_id["org/tight-fit"]["fit"]["verdict"] == "tight"
+    assert by_id["org/easy-fit"]["matchScore"] == 80.0
+    assert by_id["org/tight-fit"]["matchScore"] == 90.0
+
+    ids = [m["id"] for m in body["models"]]
+    assert ids.index("org/easy-fit") < ids.index("org/tight-fit")
+
+
 def test_a_pulled_in_base_never_outranks_the_variant_that_named_it(
         client, hub_cache, monkeypatch):
     """D859: `_pull_in_family_members` used to reinsert a pulled-in base

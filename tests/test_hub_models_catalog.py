@@ -64,7 +64,7 @@ def client():
     return TestClient(create_app(start_dir="/"))
 
 
-def _pool_row(repo_id, downloads, likes=1, last_modified="2026-01-01T00:00:00.000Z"):
+def _pool_row(repo_id, downloads, likes=1, last_modified="2026-01-01T00:00:00.000Z", safetensors=None):
     return {
         "capability": registry.TEXT_GENERATION,
         "format": "",
@@ -79,8 +79,21 @@ def _pool_row(repo_id, downloads, likes=1, last_modified="2026-01-01T00:00:00.00
             "gated": False,
             "private": False,
             "tags": ["text-generation"],
+            "safetensors": safetensors,
         },
     }
+
+
+def _pin_hardware(monkeypatch, *, ram_gb=32.0):
+    """Same pin `test_hub_models.py`'s helper of the same name applies to the
+    live path — a row's fit verdict must be a property of the FIXTURE, not of
+    whatever box happens to run the suite (a CI runner's smaller RAM would
+    silently flip "tight" to "no" and drop the row before the assertion)."""
+    from fused_render.ai import hw_detect
+    monkeypatch.setattr(hub.fit, "machine_ram_gb", lambda: ram_gb)
+    monkeypatch.setattr(hub.fit, "_wired_limit_mb", lambda: None)
+    monkeypatch.setattr(hub.hw_detect, "cached_hardware", lambda: hw_detect.HardwareInfo(
+        gpus=[], total_vram_gb=0.0, bandwidth_gb_s=None, detected_at=0.0))
 
 
 def _build_big_pool(n_publishers=25, per_publisher=9):
@@ -150,6 +163,45 @@ def test_catalog_path_facets_and_best_sort_cover_the_whole_pool(client, hub_cach
     # 200-row-window live path this row would simply never have been fetched
     # at all in a pool this size.
     assert body["models"][0]["id"] == "pub24/model-8"
+
+
+def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monkeypatch):
+    """D1268 (round-6 item 3): the legend says "memory fit first" but the
+    D780 composite alone weights fit at only 0.35 — enough that a tight-fit
+    row can outscore an easy-fit row on the OTHER four axes and rank between
+    two easy rows. Pin `matchScore` directly (90 for the tight row, 80 for
+    the easy one) so the fit VERDICT, not the score, is what decides the
+    order: under the old score-only sort the tight row (90) would lead; the
+    tier-first fix must put the easy row (80) first regardless."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    # 32GB * COMFORT(0.70) ~= 22.4GB budget. 5GB is comfortably under it
+    # (easy); 20GB is past COMFORT but still within budget (tight).
+    easy_bytes = int(5e9 / 2) * 2  # 5GB at BF16 (2 bytes/param)
+    tight_bytes = int(20e9 / 2) * 2  # 20GB at BF16
+    hub_catalog.write_pool(hub_catalog.load_config(), registry.TEXT_GENERATION, [
+        _pool_row("org/easy-fit", downloads=10,
+                  safetensors={"parameters": {"BF16": easy_bytes // 2}, "total": easy_bytes // 2}),
+        _pool_row("org/tight-fit", downloads=10_000,
+                  safetensors={"parameters": {"BF16": tight_bytes // 2}, "total": tight_bytes // 2}),
+    ])
+
+    def _fake_raw_score(row, ram_gb):
+        return 90.0 if row.get("id") == "org/tight-fit" else 80.0
+
+    monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "best", "limit": 24})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/easy-fit"]["fit"]["verdict"] == "easy"
+    assert by_id["org/tight-fit"]["fit"]["verdict"] == "tight"
+    assert by_id["org/easy-fit"]["matchScore"] == 80.0
+    assert by_id["org/tight-fit"]["matchScore"] == 90.0
+
+    ids = [m["id"] for m in body["models"]]
+    assert ids.index("org/easy-fit") < ids.index("org/tight-fit")
 
 
 def test_catalog_path_publisher_facet_does_not_collapse_on_filter(client, hub_cache, monkeypatch):
