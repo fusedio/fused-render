@@ -84,6 +84,8 @@ import {
   markReadIntent,
   messageEditEntry,
   messageHref,
+  messageStamp,
+  nextMessageId,
   taskFile,
   threadTone,
   messageWhenTitle,
@@ -1254,6 +1256,7 @@ export function TaskList({
   missing,
   onEditEntry,
   onOpenDraft,
+  onOpenBoundDraft,
   onReload,
   onPickProject,
   pinnedProjects = [],
@@ -1285,6 +1288,14 @@ export function TaskList({
    *  nothing; omitted ⇒ the row is inert, exactly as an unresolvable pending
    *  row is. */
   onOpenDraft?: (task: Task) => void;
+  /** Open the New task form BOUND TO THIS CONVERSATION — the thread's leading
+   *  draft line, when the words it is quoting are in a form rather than in the
+   *  composer (`task.draft.kind === "form"`; Bugbot, PR #1126). Mirrors
+   *  `onOpenDraft` in every way but which draft it is about: that one is a draft
+   *  ROW's press, this one is a session row's, and a bound draft has no row.
+   *  Omitted ⇒ the line falls back to opening the chat, which is what it always
+   *  did. */
+  onOpenBoundDraft?: (task: Task) => void;
   /** Re-read the list after a cancel lands (or fails) — the row has to correct
    * itself to whatever the server actually did, and a failed cancel is a race
    * the server won, not a no-op.
@@ -1698,6 +1709,7 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onOpenDraft={onOpenDraft}
+          onOpenBoundDraft={onOpenBoundDraft}
           onReload={onReload}
           onPickProject={onPickProject}
           pinned={pinnedProjects.includes(task.project)}
@@ -1732,6 +1744,7 @@ function TaskNode({
   error,
   onEditEntry,
   onOpenDraft,
+  onOpenBoundDraft,
   onReload,
   onPickProject,
   pinned,
@@ -1775,6 +1788,9 @@ function TaskNode({
   onEditEntry?: (entryId: string) => void;
   /** See TaskList's own prop: the draft row's press. */
   onOpenDraft?: (task: Task) => void;
+  /** See TaskList's own prop: the thread's draft line, when the words are in the
+   *  form bound to this conversation rather than in its composer. */
+  onOpenBoundDraft?: (task: Task) => void;
   onReload?: () => void;
   /** Filter the page to this row's folder — the List's handler, passed through
    * untouched. See TaskList's own `onPickProject`. */
@@ -1851,7 +1867,19 @@ function TaskNode({
   // No chat arm for a folder that is gone: the thread's URL is the Explorer at
   // that folder with the Claude pane, and the Explorer would answer with a raw
   // stat error and no pane. The row's press says so instead (see `activate`).
-  const chat = folderMissing ? null : openThreadIntent(task, unread);
+  //
+  // …AND NONE FOR A DRAFT, WHATEVER IT NAMES (Akshil, 2026-09-12). A draft row
+  // opens the New task form and nothing else (`openDraft` below), and a draft
+  // bound to a conversation is the first one that could ALSO have answered
+  // `taskHref` — it carries the session it is a message to. That would have
+  // made the row draw a real `<a href>` at its chat: the plain click would still
+  // open the form (the arm order decides it), but ⌘-click, middle click and
+  // "Open in new tab" would go somewhere else entirely, which is the one mark
+  // promising two presses this page keeps refusing. Asked here rather than in
+  // `taskHref`, because it is this ROW's rule about its own press.
+  const chat = folderMissing || isDraftTask(task)
+    ? null
+    : openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
@@ -1868,10 +1896,15 @@ function TaskNode({
   // to open (a thread with no edit affordance is read-only), and then the press
   // falls through to the arms below.
   const edit = onEditEntry ? upcomingEditEntry(task, held) : null;
-  // A DRAFT ROW'S PRESS re-opens the New task form on the form it was saved
-  // from (design.md, "Reopen path": the draft rows in the list/board are the
-  // only way back to a draft). It outranks every other arm below because a
-  // draft has nothing else — no session to open, no entry to edit.
+  // A DRAFT ROW'S PRESS OPENS THE NEW TASK FORM — every draft row, both kinds
+  // (Akshil, 2026-09-12: "a row without a session is a draft and always opens
+  // the New Task modal; a row with a session always opens the chat"). It
+  // outranks every other arm below because a draft has nothing else — no
+  // session to open, no entry to edit — and the rule it states is the row's, so
+  // `isDraftTask` is the whole question here: WHICH kind it is decides only
+  // what the modal is seeded from, and that is Scheduled.openDraft's business,
+  // not this row's. A never-sent chat used to be routed past this arm into a
+  // navigation, which made one mark on the page promise two different presses.
   const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;
   // When this task runs next, or when it last ran — one time at the end of every
   // row, beside the folder. Which of the two is tasks-lib.taskWhen's decision (it
@@ -2179,6 +2212,32 @@ function TaskNode({
     // the schedule form needs no folder (Bugbot, #1023) — so this is the row
     // with neither, and its press says why (a toast) rather than doing nothing.
     else if (folderMissing) toastMissingFolder();
+  };
+
+  /**
+   * ARE THE THREAD'S UNSENT WORDS IN A FORM RATHER THAN IN THE COMPOSER?
+   *
+   * The server says so (`draft.kind`, routers/tasks.py `_row`), and absent — an
+   * older server — means `"chat"`, which is what every draft joined onto a
+   * session row was before a New task form could be bound to one.
+   */
+  const draftIsForm = task.draft?.kind === "form";
+  /**
+   * THE DRAFT LINE'S PRESS, which is not always the row's (Bugbot, PR #1126,
+   * 2026-09-12).
+   *
+   * That line quotes `task.draft.preview` — the reader's own unsent sentence —
+   * and pressing your own sentence has to land where it is. For a composer draft
+   * that is the chat, which is what `activate` already opens. For a form bound
+   * to this conversation it is the New task card: the chat holds nothing of it,
+   * so the old press showed the words on a row and then took the reader to an
+   * empty composer. `onOpenBoundDraft` is the hop door back into the form
+   * (shell/Scheduled `openBoundDraft`); without it — a caller that passes no
+   * handler — the line does what it always did.
+   */
+  const pressDraftLine = () => {
+    if (draftIsForm && onOpenBoundDraft) onOpenBoundDraft(task);
+    else activate();
   };
 
   /**
@@ -2851,6 +2910,103 @@ function TaskNode({
 
       {open && (
         <div className="tasks-thread">
+          {/* THE UNSENT LINE, AT THE HEAD OF THE THREAD (Akshil, 2026-09-12).
+              The row already wears the red `Draft` chip, which says THAT there
+              are words here; expanding it used to show the thread without them,
+              so the one place a reader goes to read this conversation was the
+              one place the newest thing in it was missing.
+
+              It is drawn as a MESSAGE ROW because that is what it is about to
+              be: same class, same seats, same quoted body, same relative time,
+              so the thread reads as one column with a line at the top that has
+              not gone yet. Three things differ, and each is the fact itself:
+
+                * THE SEAT WHERE THE RING GOES holds the pencil instead, in the
+                  error colour — the chip's own mark and the chip's own red, so
+                  the mark on the row and the line under it are visibly the same
+                  news. A status ring would be the wrong glyph outright: the
+                  statuses are about runs, and nothing has run.
+                * THE ID IS THE NEXT ONE (tasks-lib.nextMessageId, the client
+                  half of tasks_store.format_message_id). These words have no
+                  message and so no id, but they stand in the id column, and what
+                  they can honestly say is which message they would be.
+                * IT IS NOT A LINK. Every other row here addresses a turn in the
+                  transcript (`msg=`); this one addresses nothing — there is no
+                  turn — so there is no anchor to ⌘-click into a tab. Its press
+                  is the TASK's (`activate`), which is the same thing the row
+                  above it does and the only honest destination: the composer
+                  holding these words is at the end of that chat.
+
+              OUTSIDE `view.messages`, deliberately: the cap, the `hidden` count
+              and the "Loading N more…" line are all arithmetic about what the
+              SERVER holds, and a row the client drew from a joined draft is not
+              one of those. Adding it there would have made a thread of three
+              report four and then fetch the missing one for ever.
+
+              A DRAFT ROW never reaches this: both kinds carry `message_count: 0`
+              (routers/tasks.py `_draft_row`, `_new_chat_draft_row`), so
+              `isExpandable` is false and there is no thread to head — including
+              the session-bound task draft, which has a session but still no
+              messages of its own. The one row that draws this is an ordinary
+              conversation whose composer is holding something — or a New task
+              form bound to it, which is the same question to the reader and a
+              different place to send them (`pressDraftLine`). */}
+          {task.draft && (
+            <div
+              className="tasks-msg"
+              role="button"
+              tabIndex={0}
+              aria-label={
+                (draftIsForm ? "Draft task — " : "Draft — ")
+                + (firstLine(task.draft.preview) || "(empty)")
+              }
+              onClick={pressDraftLine}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  pressDraftLine();
+                }
+              }}
+            >
+              <span className="tasks-msg-pencil" aria-hidden>{ICON_PENCIL_LINE}</span>
+              <IdChip id={nextMessageId(task.message_count)} kind="message" />
+              {/* The words as they arrived: `draft.preview` is already the first
+                  line, cut at 120 characters, by the server that joined it
+                  (fused_render/drafts.py `preview`) — the same string the chip
+                  captions with. No fetch: an expanded row must not go and get
+                  what the listing already handed it. */}
+              <span
+                className="tasks-msg-body"
+                data-hint={
+                  draftIsForm ? "Draft task — open to continue" : task.draft.preview
+                }
+              >
+                {firstLine(task.draft.preview) || "(empty)"}
+              </span>
+              <span className="tasks-grow" />
+              {/* The message rows' own cell, in the message rows' own
+                  vocabulary (relativeWhen), off the draft's clock. The word for
+                  WHICH kind of time this is lives in the tooltip, exactly where
+                  `messageWhenTitle` and `taskWhen` keep theirs.
+
+                  Guarded for `updated_at` being 0: `messageStamp`/`relativeWhen`
+                  both answer "" for a falsy stamp (an older store, or a record
+                  that predates the field), and an ungated template would have
+                  printed a bare "Drafted" tooltip with a trailing space and a
+                  blank time cell — a row with nothing where its clock should
+                  be. "Draft" is not a lie the way "" would be silence. */}
+              <span
+                className="tasks-msg-time"
+                data-hint={
+                  task.draft.updated_at
+                    ? `Drafted ${messageStamp(task.draft.updated_at)}`
+                    : "Drafted"
+                }
+              >
+                {task.draft.updated_at ? relativeWhen(task.draft.updated_at) : "Draft"}
+              </span>
+            </div>
+          )}
           {view.messages.map((m) => {
             // threadTone, not messageTone: a thread under an archived task is
             // archived with it, except for a turn that is still running
@@ -3739,6 +3895,8 @@ function TaskCard({
         onClick={() => {
           // The draft arm first, for the List row's reason: a draft has no
           // session and no folder to be missing from — the form IS its content.
+          // Both kinds of draft come through here, the never-sent chat included
+          // (Akshil, 2026-09-12).
           if (onOpenDraft && isDraftTask(task)) onOpenDraft(task);
           else if (folderMissing) onMissing();
           else if (open) onOpen(open);

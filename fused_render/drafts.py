@@ -26,6 +26,16 @@ Shape::
     {"chat": {"<session-id>": {"text": …, "attachments": […], "updated_at": …}},
      "task": {"<draft-id>": {"title": …, …, "created_at": …, "updated_at": …}}}
 
+**One record, two doors.** A task draft that names a session (`session_id`) IS
+that conversation's unsent message, so the composer is a second door onto it:
+a session with a bound form and no chat record of its own reads and writes that
+form's words from the chat half (`bound_chats`, `chat_view`, `put_chat`). Never
+a copy — the words are in exactly one record, and which door the reader comes
+back through does not change what they find. The bug that asked for it: hop out
+of a finished session, type, press Schedule, click outside the modal, and the
+row wore the `✎ Draft` chip while the composer the chip's press led to was
+empty (Akshil, 2026-09-12).
+
 **Empty is never stored.** Writing an empty draft IS deleting it — there is no
 such thing as a draft with nothing in it, and a store that kept one would paint
 a `✎ Draft` badge on a task whose composer is blank. `put_chat` and `put_task`
@@ -84,11 +94,16 @@ TASK = "task"
 #: first send deleted the draft, and that was the end of it. Round 2 reversed
 #: both halves. A `new:<file>` draft IS a row (the folder is its project, the
 #: first line its title, and it carries a TASK number like any other), and the
-#: first send therefore has somewhere to carry that number TO — which is what
-#: `POST /api/drafts/chat/rekey` is: `new:<file>` → the session id, by the same
-#: `tasks_store.rekey` that moves `pending:<entry-id>` forward. Nothing about
-#: the SHAPE changed; what changed is that the key is now worth keeping
-#: (design.md, "Round 2"; Akshil, 2026-09-11).
+#: first send therefore has somewhere to carry that number TO: `new:<file>` →
+#: the session id, by the same `tasks_store.rekey` that moves
+#: `pending:<entry-id>` forward. WHO makes that move is the SERVER, off the run
+#: the send TAGGED with this key (`draft_key` in its `meta.json`,
+#: `routers/tasks.py::_settle_new_chats`): a page cannot tell which session id
+#: its own send created, and four rounds of trying is how we know (Bugbot, PR
+#: #1118, 2026-09-12) — but it can name the draft it just spent. Nothing about
+#: the SHAPE changed; what
+#: changed is that the key is now worth keeping (design.md, "Round 2"; Akshil,
+#: 2026-09-11).
 NEW_CHAT_PREFIX = "new:"
 
 #: A client-minted uuid, in practice. Validated as a shape rather than parsed as
@@ -118,21 +133,38 @@ PREVIEW_MAX = 120
 #: page), and a field the client omits keeps whatever the stored draft had.
 TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
                "model", "effort", "permission", "attachments",
-               "new_task_each_run", "from_chat_key")
+               "new_task_each_run", "from_chat_key", "session_id")
 
-#: The three fields that are plain text. The rest are pass-through (`when`,
-#: `repeat`, `custom_rule`), a tri-state flag (`new_task_each_run`), rows
-#: (`attachments`) or the chat key this draft was moved out of
-#: (`from_chat_key`, which is a chat key rather than free text and is validated
-#: as one).
+#: The fields that are plain text, normalised through `_text` on the way in. The
+#: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
+#: (`new_task_each_run`), rows (`attachments`), the chat key this draft was
+#: moved out of (`from_chat_key`) or the session it is going into
+#: (`session_id`) — the last two being keys rather than free text, and each
+#: validated as the key it is.
 #:
-#: `from_chat_key` is DELIBERATELY NOT IN HERE, and that is the whole of what
-#: keeps it from changing what a draft is: `_empty_task` asks "is there anything
-#: a person typed in this record", and a provenance key is not that. A form that
-#: arrives blank is still a delete even when it names the chat it came from —
-#: which is exactly the bargain `an empty task put keeps the chat draft` rests
-#: on (Akshil, 2026-09-11).
+#: THIS IS A LIST OF SHAPES, NOT A DEFINITION OF CONTENT — see `_TASK_CONTENT`
+#: below, which is the one that decides whether there is a draft here at all.
+#: `from_chat_key` and `session_id` are in neither, and for the same reason
+#: `from_chat_key` was always out of the second: they are provenance and
+#: destination, not something a person typed. A form that arrives blank is still
+#: a delete even when it names the chat it came from and the session it was
+#: going to — which is exactly the bargain `an empty task put keeps the chat
+#: draft` rests on (Akshil, 2026-09-11).
 _TASK_TEXT = ("title", "description", "target", "model", "effort", "permission")
+
+#: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
+#: asks about separately because it is rows rather than text.
+#:
+#: Everything else the form holds — the folder, the model, the effort, the
+#: permission mode, the time, the repeat rule — is a SETTING that rides along
+#: with a draft, not a reason for one to exist. They used to count, and the
+#: consequence was a card that minted an "Untitled draft" row on the List the
+#: moment somebody changed the folder or opened the when-row and picked a time,
+#: for a form holding nothing anybody had typed. It also left the reported
+#: dead-end: clear the text and the row reads "Untitled draft"; remove the last
+#: attachment after that and the row still will not go, because `target` alone
+#: was keeping the record alive (Akshil, 2026-09-12).
+_TASK_CONTENT = ("title", "description")
 
 #: What an attachment's `kind` may be — the same two `schedule._ATTACH_KINDS`
 #: allows, and a third local copy of a list that is already spelled twice (see
@@ -189,19 +221,20 @@ def new_chat_file(key: str) -> str:
     return key[len(NEW_CHAT_PREFIX):]
 
 
-def session_key(value) -> str:
-    """One SESSION id, or `""` — `chat_key` minus the `new:` shape.
+def bound_session(value) -> str:
+    """The session a task draft BELONGS TO, or `""` for anything that is not a
+    session id.
 
-    `POST /api/drafts/chat/rekey` is the one caller that needs the difference
-    spelled out: it moves a draft (and its TASK number) from the folder key a
-    chat had before its first send onto the session that send created, and a
-    `to` that was itself a `new:` key would move a number sideways into another
-    folder row rather than forward onto a conversation (Akshil, 2026-09-11)."""
+    The narrow twin of `chat_key`: that one takes both of a chat's two ages, and
+    this one takes only the older. A draft can be bound to a conversation that
+    EXISTS — the composer → Schedule hop out of a session that has already run —
+    and never to `new:<file>`, which names a folder somebody opened a chat on and
+    no thread at all. There is nothing for a `new:` draft to schedule INTO, and a
+    key of that shape in this field would make the listing hide a session row
+    that does not exist (Akshil, 2026-09-12)."""
     if not isinstance(value, str):
         return ""
     key = value.strip()
-    if not key or key.startswith(NEW_CHAT_PREFIX):
-        return ""
     return key if _SESSION_KEY.match(key) else ""
 
 
@@ -357,26 +390,131 @@ def preview(text) -> str:
     return ""
 
 
+def split_draft(text) -> tuple[str, str]:
+    """One box of words as the New task form's two fields: `(title,
+    description)` — the first non-empty line names the thing, the rest
+    describes it.
+
+    THE PYTHON TWIN OF `NewJobModal.splitDraft`, and it has to stay its twin.
+    The hop into the form splits in the client; the composer's door onto a
+    bound draft splits here (`put_chat`), and a rule that drifted would mean
+    one sentence landing in two different shapes depending on which door it
+    came through. Leading blank lines go before the first line is taken, which
+    is what makes "the first NON-EMPTY line" true of both."""
+    body = _text(text).strip()
+    if not body:
+        return "", ""
+    head, _, rest = body.partition("\n")
+    return head.strip(), rest.strip()
+
+
+def join_draft(title, description) -> str:
+    """The form's two fields back as one box of words — `split_draft` run
+    backwards, blank line and all (`NewJobModal.joinDraft`).
+
+    Not an inverse of every input: a title and a description written one
+    newline apart come back a blank line apart, because a blank line is what
+    two fields look like as one box. It IS an inverse of everything this pair
+    itself produces, which is the round trip the composer actually makes."""
+    head = _text(title).strip()
+    body = _text(description).strip()
+    if not head:
+        return body
+    if not body:
+        return head
+    return head + "\n\n" + body
+
+
 # ------------------------------------------------------------- chat drafts
 
 
 def _project_chat(section: dict) -> dict:
     """The chat section of an ALREADY-LOADED store, projected. Split out of
-    `list_chat` so `list_all` can answer both questions off one read."""
+    `list_chat` so `list_all` can answer both questions off one read.
+
+    `bound_draft` is `""` on everything that comes out of here, because a
+    STORED chat record is a record of its own — the field is filled in only by
+    `chat_view`, on the entries it synthesizes out of a task draft. One shape
+    for both, so a reader never has to test for the key."""
     out: dict[str, dict] = {}
     for key, rec in section.items():
         if not chat_key(key) or not isinstance(rec, dict):
             continue
         out[key] = {"text": _text(rec.get("text")),
                     "attachments": _attachments(rec.get("attachments")),
-                    "updated_at": _epoch(rec.get("updated_at"))}
+                    "updated_at": _epoch(rec.get("updated_at")),
+                    "bound_draft": ""}
+    return out
+
+
+def bound_chats(chat: dict, task: dict) -> dict[str, str]:
+    """`{session-id: draft-id}` — every conversation whose unsent words are
+    being kept in a New task FORM rather than in a chat record of its own.
+
+    ONE RECORD, TWO DOORS (Akshil, 2026-09-12). The composer's Schedule hop
+    moves the words out of the chat draft and into a task draft bound to the
+    session (`from_chat_key` deletes the one, `session_id` binds the other), and
+    the reported bug is what the session's row looked like afterwards: it wore
+    the red `✎ Draft` chip, the chip's press took the reader to the chat, and
+    the composer there was empty — the words were on disk the whole time, in a
+    record that door could not see. A session with a bound form and no chat
+    record of its own therefore SHOWS AND EDITS that form's words from the
+    composer too. Two doors onto one record, never a second copy of it.
+
+    THE JOIN ITSELF LIVES HERE and nowhere else, so `/api/drafts`, the composer
+    and `routers/tasks.py`'s row chip cannot disagree about which draft a
+    session's words are in.
+
+    A STORED CHAT RECORD WINS outright: a session can have both — text left in
+    its composer and a form opened out of it — and then they are two different
+    unsent things, the composer's own being the one the composer is holding.
+    That is the same precedence `_row` has always drawn its chip with.
+
+    NEWEST WINS when two forms name one session, the same tie-break
+    `_bound_chips` and `put_task`'s fold take, so every reader agrees on which
+    draft a session is advertising."""
+    out: dict[str, str] = {}
+    stamps: dict[str, float] = {}
+    for ident, record in task.items():
+        session = bound_session(record.get("session_id"))
+        if not session or session in chat:
+            continue
+        updated = _epoch(record.get("updated_at"))
+        if session in out and stamps[session] >= updated:
+            continue
+        out[session], stamps[session] = ident, updated
+    return out
+
+
+def chat_view(chat: dict, task: dict) -> dict:
+    """The chat half as a READER sees it: every stored chat draft, plus one
+    synthesized entry for every session whose words live in a bound form
+    (`bound_chats`).
+
+    A synthesized entry is the form read as a composer would write it — the
+    title and description joined back into one box (`join_draft`, the inverse
+    of the split the hop made), the form's attachments, the form's clock — plus
+    `bound_draft`, the form's id, so a client that cares can tell the two apart.
+    Nothing here writes: this is a projection of one read, and the write that
+    goes back through the same door is `put_chat`'s half of the bargain."""
+    out = dict(chat)
+    for session, ident in bound_chats(chat, task).items():
+        record = task[ident]
+        out[session] = {
+            "text": join_draft(record.get("title"), record.get("description")),
+            "attachments": _attachments(record.get("attachments")),
+            "updated_at": _epoch(record.get("updated_at")),
+            "bound_draft": ident,
+        }
     return out
 
 
 def list_chat() -> dict:
-    """Every chat draft, `{key: {text, attachments, updated_at}}`, unreadable
-    records dropped."""
-    return _project_chat(load()[CHAT])
+    """Every chat draft a reader can open, `{key: {text, attachments,
+    updated_at, bound_draft}}` — stored records and the bound forms that read
+    as one (`chat_view`), unreadable records dropped."""
+    store = load()
+    return chat_view(_project_chat(store[CHAT]), _project_task(store[TASK]))
 
 
 def get_chat(session_id) -> dict | None:
@@ -386,6 +524,60 @@ def get_chat(session_id) -> dict | None:
     return list_chat().get(key) if key else None
 
 
+def bound_chat_draft(session_id) -> str:
+    """The task draft one chat key's words actually live in, or `""` — one
+    read of the file, for a caller that has to name that draft's row.
+
+    The routes' use: both halves of a chat write announce the FORM's key
+    (`draft:<id>`) as well as the session's, because on a bound session the two
+    doors are one record and a page holding a row under either has to hear
+    about it."""
+    key = chat_key(session_id)
+    session = bound_session(key)
+    if not session:
+        return ""
+    store = load()
+    return bound_chats(_project_chat(store[CHAT]),
+                       _project_task(store[TASK])).get(session, "")
+
+
+def _put_bound(data: dict, ident: str, body: str, rows: list[dict]):
+    """The composer's words written into the FORM they live in — `put_chat`'s
+    other half, run inside its lock (`bound_chats` for why there is one).
+
+    The inverse of what the reader was shown: the box is split back across
+    title and description by the same rule the hop split it with
+    (`split_draft`), so typing into the composer and typing into the card's two
+    fields are edits to one record rather than to two copies of it.
+
+    THE TRAY IS A REPLACEMENT AND NOT A UNION, unlike the fold `put_task` does
+    between two FORMS (`_fold_into_bound`). That one reconciles a card that
+    could not read the binding before it wrote, and so cannot tell "no files"
+    from "did not ask"; this door always shows the whole tray, so a file
+    missing from the write is a file the reader took out.
+
+    EMPTY IS A DELETE, the same bargain the chat half has always made: the
+    composer's autosave fires after the send has cleared the box, and the words
+    it is clearing are the ones that were just sent. What goes is the whole
+    form — there is no half of a draft left to keep."""
+    title, description = split_draft(body)
+    if not title and not description and not rows:
+        if ident not in data[TASK]:
+            return None, False
+        data[TASK].pop(ident, None)
+        return None, True
+    record = _task_record(data[TASK].get(ident)) or {}
+    now = time.time()
+    record["title"] = title
+    record["description"] = description
+    record["attachments"] = rows
+    record["created_at"] = record.get("created_at") or now
+    record["updated_at"] = now
+    data[TASK][ident] = record
+    return {"text": join_draft(title, description), "attachments": rows,
+            "updated_at": now, "bound_draft": ident}, True
+
+
 def put_chat(session_id, text=None, attachments=None) -> dict | None:
     """Upsert one chat draft — and DELETE it when it comes in empty.
 
@@ -393,20 +585,47 @@ def put_chat(session_id, text=None, attachments=None) -> dict | None:
     the moment its message is sent. The send path therefore does not have to
     choose between PUT and DELETE: writing what the box now holds is correct in
     both directions. Answers the stored record, or None when the write was a
-    delete."""
+    delete.
+
+    …AND WHEN THIS SESSION'S WORDS ARE IN A BOUND FORM, the write goes THERE
+    and no chat record is made (`bound_chats`, "one record, two doors"). Two
+    records would be two rows, two chips and two versions of one sentence, and
+    which of them the reader saw would depend on which door they came back
+    through. The answer is that form read as a chat draft — the same shape a
+    stored one has, `bound_draft` filled in — so the caller need not know which
+    of the two it just wrote.
+
+    The binding is looked up INSIDE the lock, with the write: a form bound (or
+    emptied) between a read and a write outside one is exactly how the same
+    sentence ends up in both halves of the store."""
     key = chat_key(session_id)
     if not key:
         return None
     body = _text(text)
     rows = _attachments(attachments)
-    if not body.strip() and not rows:
-        delete_chat(key)
-        return None
-    record = {"text": body, "attachments": rows, "updated_at": time.time()}
 
     def mutate(data: dict):
+        ident = ""
+        session = bound_session(key)
+        if session:
+            ident = bound_chats(_project_chat(data[CHAT]),
+                                _project_task(data[TASK])).get(session, "")
+        if ident:
+            return _put_bound(data, ident, body, rows)
+        if not body.strip() and not rows:
+            # The delete, taken here rather than through `delete_chat` so the
+            # question "is this key bound?" and the answer to it are one turn of
+            # the lock.
+            if key not in data[CHAT]:
+                return None, False
+            data[CHAT].pop(key, None)
+            return None, True
+        record = {"text": body, "attachments": rows, "updated_at": time.time()}
         data[CHAT][key] = record
-        return record, True
+        # STORED without `bound_draft` and ANSWERED with it: the field is a fact
+        # about which record these words are in, not a field of the record, and
+        # writing it into the file would be a second place for it to go stale.
+        return dict(record, bound_draft=""), True
 
     return _update(mutate)
 
@@ -461,6 +680,21 @@ def _task_record(rec) -> dict | None:
     # is either a key the chat half can actually be written under or "" (Akshil,
     # 2026-09-11).
     out["from_chat_key"] = chat_key(rec.get("from_chat_key"))
+    # WHICH CONVERSATION THIS DRAFT IS A MESSAGE TO, when it came out of one
+    # that already exists (Akshil, 2026-09-12).
+    #
+    # `from_chat_key` above says where the WORDS were typed and is spent the
+    # moment the chat's own copy is deleted; this says where the TASK is going,
+    # and it has to outlive the modal being closed. Without it the hop worked
+    # only while the page still held the session in memory: press Schedule
+    # straight away and the message landed in the conversation, exit the modal
+    # and the draft on disk knew nothing about it — so reopening that draft and
+    # scheduling it started a NEW session under a NEW task number, and the task
+    # the reader had been watching was gone.
+    #
+    # Validated as a session id and never as `new:<file>` (`bound_session`):
+    # binding is to a thread, not to a folder.
+    out["session_id"] = bound_session(rec.get("session_id"))
     out["created_at"] = _epoch(rec.get("created_at"))
     out["updated_at"] = _epoch(rec.get("updated_at"))
     return out
@@ -469,18 +703,16 @@ def _task_record(rec) -> dict | None:
 def _empty_task(record: dict) -> bool:
     """Is there nothing in this draft at all?
 
-    Every stored field, not a chosen few: the client mints a draft id on the
-    FIRST KEYSTROKE and never for an untouched modal (design.md, "New Task
-    modal"), so a draft that arrives with every field blank is a person having
-    cleared it out by hand, and the honest answer to that is to stop keeping
-    it."""
-    if any(record[field].strip() for field in _TASK_TEXT):
+    Words or files, and nothing else — see `_TASK_CONTENT`. A form whose title
+    and description are blank and whose tray is empty is not an unfinished task,
+    whatever folder or model or time it happens to be carrying: those are
+    settings, and settings are how a task would run if there were one. So a PUT
+    that arrives in that state is a DELETE, which is the same semantics this
+    store has always had for an empty draft — the change is only in what
+    "empty" counts as (Akshil, 2026-09-12)."""
+    if any(record[field].strip() for field in _TASK_CONTENT):
         return False
-    if record["attachments"]:
-        return False
-    return (record["when"] in (None, "") and record["repeat"] in (None, "")
-            and record["custom_rule"] in (None, "")
-            and record["new_task_each_run"] is None)
+    return not record["attachments"]
 
 
 def _project_task(section: dict) -> dict:
@@ -508,10 +740,12 @@ def list_all() -> tuple[dict, dict]:
     that want drafts almost always want both — the tasks listing asks for the
     chat drafts to join onto its rows and the task drafts to build draft rows
     from, on every build, including the `/api/tasks/changes` polls. One file,
-    one read. Same projections, so this is interchangeable with calling the
-    two in turn."""
+    one read. Same projections AND the same chat view — a bound form reads as
+    its session's chat draft here exactly as it does through `list_chat` — so
+    this is interchangeable with calling the two in turn."""
     store = load()
-    return _project_task(store[TASK]), _project_chat(store[CHAT])
+    task = _project_task(store[TASK])
+    return task, chat_view(_project_chat(store[CHAT]), task)
 
 
 def get_task(ident) -> dict | None:
@@ -519,7 +753,54 @@ def get_task(ident) -> dict | None:
     return list_task().get(key) if key else None
 
 
-def put_task(ident, fields) -> dict | None:
+def _fold_into_bound(existing: dict, incoming: dict) -> dict:
+    """The incoming write folded INTO the draft that already holds its session.
+
+    What survives is everything the incoming write did not actually say. The
+    caller that lands here is a card that could not read the binding before it
+    wrote — `fetchDrafts` answers "unknown" on a failed lookup and the modal
+    opens anyway, because words must not be lost waiting for a request — so the
+    form it is saving may be a fresh one carrying only the composer's sentence,
+    and the draft it is colliding with is the one holding the time, the repeat
+    rule, the model and the tray somebody spent a minute choosing. Overwriting
+    those with the blanks of a form that never asked about them is how the
+    reported loss happened; keeping them is this function.
+
+    NON-EMPTY IS THE WHOLE TEST, field by field. A blank title is not "clear the
+    title", it is "this write has nothing to say about the title" — a draft
+    store is the one place where that reading is always the safe one, since the
+    alternative destroys work and the cost of being wrong is one stale setting
+    the reader can see and change. Attachments are a UNION keyed on `path`, for
+    the same reason read as rows: neither side's files are a statement that the
+    other side's are gone.
+
+    `session_id` is the exception and takes the incoming value outright — it is
+    the very fact that brought these two records together, and it is the same on
+    both sides by construction."""
+    out = dict(existing)
+    for field in _TASK_TEXT:
+        if incoming[field].strip():
+            out[field] = incoming[field]
+    for field in ("when", "repeat", "custom_rule"):
+        if incoming[field] not in (None, "", [], {}):
+            out[field] = incoming[field]
+    if incoming["new_task_each_run"] is not None:
+        out["new_task_each_run"] = incoming["new_task_each_run"]
+    if incoming["from_chat_key"]:
+        out["from_chat_key"] = incoming["from_chat_key"]
+    out["session_id"] = incoming["session_id"]
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for row in list(existing["attachments"]) + list(incoming["attachments"]):
+        if row["path"] in seen:
+            continue
+        seen.add(row["path"])
+        rows.append(row)
+    out["attachments"] = rows
+    return out
+
+
+def put_task(ident, fields) -> tuple[dict | None, str]:
     """Upsert one task draft — and DELETE it when every field comes in empty.
 
     Fields the client did not send keep the value the stored draft had, so the
@@ -529,11 +810,36 @@ def put_task(ident, fields) -> dict | None:
 
     `created_at` is written once and then never moves — it is the row's `at` on
     the List and the Board, and a draft that jumped to the top of Upcoming on
-    every keystroke would be a row that will not sit still. Answers the stored
-    record, or None when the write was a delete."""
+    every keystroke would be a row that will not sit still. Answers
+    `(record, canonical_id)`: the stored record (None when the write was a
+    delete) and the id it is actually stored under, which is `ident` on every
+    ordinary write and somebody else's id when this write was folded into a
+    draft that already held its session (below). The caller has to pass that id
+    back to the page, or the next autosave, the Discard and the Schedule all aim
+    at a record that is no longer there.
+
+    ONE BOUND DRAFT PER SESSION, enforced here rather than trusted to the
+    client (review, 2026-09-12). A session-bound draft stands in for its
+    session's row (`_bound_chips` in routers/tasks.py) and that row wears
+    exactly one `✎ Draft` chip, so two drafts naming the same session is not
+    two facts, it is one fact written twice.
+
+    IT IS A MERGE AND NOT AN EVICTION (Bugbot, PR #1126, 2026-09-12). The first
+    version of this rule deleted the loser, which is correct only if the winner
+    is the better-informed of the two — and the write that collides is by
+    construction the one that knows LESS. `fetchDrafts` never rejects: a lookup
+    that fails on the way into the hop reads as "this session has no form", so
+    the card mints a NEW id and saves a fresh form over a stored draft carrying
+    a time, a repeat rule, a model and a tray. Evicting there threw all of that
+    away over one failed GET. Folding the incoming write into the existing
+    record instead (`_fold_into_bound`) makes a failed lookup cost nothing: the
+    words land, the settings stay, the id the reader keeps is the one that was
+    already bound. Done inside THIS write's lock rather than as a second
+    request, so nothing can observe the moment two drafts both claim one
+    session."""
     key = draft_id(ident)
     if not key:
-        return None
+        return None, ""
     patch = fields if isinstance(fields, dict) else {}
 
     def mutate(data: dict):
@@ -545,14 +851,81 @@ def put_task(ident, fields) -> dict | None:
         record = _task_record(merged)
         if record is None or _empty_task(record):
             if key not in data[TASK]:
-                return None, False
+                return (None, key), False
             data[TASK].pop(key, None)
-            return None, True
+            return (None, key), True
         now = time.time()
         record["created_at"] = stored.get("created_at") or now
         record["updated_at"] = now
+        session = record["session_id"]
+        bound_id, bound = "", None
+        if session:
+            for other_id, other_rec in data[TASK].items():
+                if other_id == key:
+                    continue
+                other = _task_record(other_rec)
+                if other is None or other["session_id"] != session:
+                    continue
+                # NEWEST WINS if a store somehow holds several — the same
+                # tie-break `_bound_chips` takes, so what this write folds into
+                # is the draft the session's row is advertising.
+                if bound is not None and bound["updated_at"] >= other["updated_at"]:
+                    continue
+                bound_id, bound = other_id, other
+        if bound is not None:
+            record = _fold_into_bound(bound, record)
+            record["created_at"] = bound["created_at"] or now
+            record["updated_at"] = now
+            data[TASK].pop(key, None)
+            data[TASK][bound_id] = record
+            return (record, bound_id), True
         data[TASK][key] = record
-        return record, True
+        return (record, key), True
+
+    return _update(mutate)
+
+
+def unbind_session(session_id) -> list[str]:
+    """Cut every task draft loose from one session; the LISTING KEYS of the ones
+    that were cut (`draft:<id>`), newest-store order, and `[]` when none were.
+
+    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just changed —
+    a different number, a different folder, no session — and the caller has to
+    announce them (`tasks_watch.notify`) or the page goes on showing the erased
+    session's number on a draft whose Schedule would send the message back into
+    a conversation that no longer exists. A count cannot be announced.
+
+    The erase gesture's share of this store (`POST /api/tasks/erase`). The words
+    are NOT deleted — a draft is a task somebody is still writing, and the
+    conversation it was going to be sent into is only where it was going to go.
+    What goes is the binding, and with it everything the binding stood for: the
+    draft stops borrowing a number that is now a reservation nobody may reissue
+    (`tasks_store.forget_session` stamps the record `erased` and keeps it), stops
+    standing in for a row that no longer exists, and is numbered as the ordinary
+    `draft:<id>` it has become on the next listing.
+
+    Without this the draft showed the dead TASK-nnn for ever and could never be
+    allocated one of its own, because the binding was the very thing telling
+    `_draft_numbers` that its task already had a number (review, 2026-09-12).
+
+    One pass under one lock, and `[]` — no write at all — for the overwhelmingly
+    common erase where nothing was bound to that session."""
+    target = bound_session(session_id)
+    if not target:
+        return []
+
+    def mutate(data: dict):
+        cut: list[str] = []
+        for ident, rec in list(data[TASK].items()):
+            record = _task_record(rec)
+            if record is None or record["session_id"] != target:
+                continue
+            # `updated_at` is NOT touched: it is the clock the row prints
+            # ("drafted 5m ago") and sorts on, and nobody typed anything here.
+            record["session_id"] = ""
+            data[TASK][ident] = record
+            cut.append(task_key(ident))
+        return cut, bool(cut)
 
     return _update(mutate)
 

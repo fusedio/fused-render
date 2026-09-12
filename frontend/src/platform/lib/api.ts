@@ -3085,7 +3085,28 @@ export interface Task {
   // `Draft` chip and say what they start with. Joined server-side by
   // `session_id`, the same place the unread numbers are joined; null — or
   // absent, on a server that predates drafts — means there is nothing unsent.
-  draft?: { preview: string; updated_at: number } | null;
+  // …and `kind` says WHERE those words are, because the two answers are two
+  // different presses (Bugbot, PR #1126). `"chat"` is this conversation's own
+  // composer — the press opens the chat and there they are. `"form"` is a New
+  // task card bound to this session (`bound_draft` names it), of which the chat
+  // holds nothing, so that press has to reopen the card instead. Absent on a
+  // server that predates the field; read as `"chat"`, which is what every draft
+  // joined onto a session row was before a form could be bound to one.
+  draft?: { preview: string; updated_at: number; kind?: "chat" | "form" } | null;
+  /**
+   * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
+   * (or absent, on an older server) when there is none.
+   *
+   * A task draft made out of a chat is a message INTO that chat, so it gets no
+   * row and no number of its own: this row is the one the reader knows, and it
+   * simply wears the `Draft` chip, whose preview arrives in `draft` above when
+   * the conversation's own composer is empty (routers/tasks.py `_bound_chips`).
+   *
+   * Nothing draws it. It is what the composer's Schedule hop looks up so a
+   * second press reopens the SAME form instead of minting another
+   * (shell/Scheduled `boundDraftSeed`).
+   */
+  bound_draft?: string;
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose

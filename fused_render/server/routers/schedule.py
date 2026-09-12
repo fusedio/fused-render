@@ -373,10 +373,34 @@ def api_schedule_create(body: dict = Body(...),
             # actually matter to it — but a failure between the two must leave
             # the draft, which is recoverable, rather than a numberless task,
             # which is not.
-            tasks_store.rekey(drafts.task_key(draft),
-                              tasks_store.pending_key(str(entry.get("id") or "")))
+            #
+            # NOT FOR A DRAFT THAT BELONGS TO A SESSION (Akshil, 2026-09-12).
+            # Such a draft never had a number of its own — the listing skips it
+            # precisely because the session it is bound to holds the task's
+            # number already (`routers/tasks.py::_draft_numbers`) — and this
+            # message is landing IN that session, which is where the number
+            # stays. Moving anything onto `pending:<entry-id>` here would be
+            # inventing a second identity for a task that has one; the entry
+            # naming a session is the whole test, since that is the key the
+            # listing will file it under (`_collect`).
+            if not str(entry.get("session_id") or ""):
+                tasks_store.rekey(drafts.task_key(draft),
+                                  tasks_store.pending_key(str(entry.get("id") or "")))
             if drafts.delete_task(draft):
-                tasks_watch.notify({drafts.task_key(draft)})
+                # BOTH KEYS ARE ANNOUNCED, but only one of them was ever a row.
+                # The draft's key repaints as `gone` — for an unbound draft
+                # because the row just left the listing outright, for a
+                # session-bound one because it was never a row to begin with
+                # (`_draft_rows` skips it; the session's own row wore the chip
+                # instead). The session's key repaints because THAT row just
+                # lost the chip it was wearing (`bound_draft`, `_bound_chips`) —
+                # nothing about the row underneath ever moved. `session` below
+                # is the same key and is announced there anyway, but only when
+                # the composer left a chat draft behind; this is the
+                # announcement scheduling itself owes.
+                tasks_watch.notify(
+                    {drafts.task_key(draft), str(entry.get("session_id") or "")}
+                    - {""})
         except OSError:
             pass
 

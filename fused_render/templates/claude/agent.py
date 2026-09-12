@@ -2351,7 +2351,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
-           extra_read_dirs: list | None = None) -> dict:
+           extra_read_dirs: list | None = None,
+           draft_key: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -2399,9 +2400,22 @@ def _start(file: str, message: str, session_id: str, model: str,
     # re-attaching page compares against the bubble on screen (which shows the
     # typed text only, so an unstripped copy silently stopped matching). Stripped
     # here, once, rather than at each of those three readers.
+    meta = {"file": file, "message": _strip_app_state(message),
+            "resumed_from": session_id, "mode": mode}
+    # `draft_key` is the composer's RECEIPT for this send, carried verbatim and
+    # read by nothing in this template (fused_render/server/routers/tasks.py
+    # `_settle_new_chats` is its one reader). A chat with no session yet keeps
+    # its half-typed message — and its TASK number — under a `new:<file>` key,
+    # and the number has to follow the session this send is about to create. The
+    # page cannot prove which session that was (four rounds of trying: a send
+    # that threw, a Back before the id landed), so the send TAGS its own run
+    # instead and the server reads the tag back off disk. Written only when the
+    # caller sent one — the apps API, the scheduler and canvases.py all start
+    # runs on the same folders and must not look like a composer's first send.
+    if draft_key:
+        meta["draft_key"] = draft_key
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
-        json.dump({"file": file, "message": _strip_app_state(message),
-                   "resumed_from": session_id, "mode": mode}, f)
+        json.dump(meta, f)
 
     # `err.log` exists from the very first instant, empty — `_poll`'s
     # abnormal-exit fallback reads its tail, and a host that dies before it
@@ -5792,7 +5806,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
-         native: str = "") -> dict:
+         native: str = "", draft_key: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5802,9 +5816,14 @@ def main(action: str = "start", file: str = "", message: str = "",
         # binder is str-shaped). Empty means "the caller did not say" — the apps
         # API, which has no page — and only then does `_start` ask disk. "0" is a
         # real no, so it must not be read as absence.
+        # `draft_key` is optional and absent for every caller but the native
+        # composer's FIRST send — see `_start`. Passed through untouched: it is
+        # the page's own key spelling (`new:<file>`, unnormalised), and a key
+        # normalised on the way through is a key the server cannot match.
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
-                      extra_read_dirs=_attach_dirs(read_dirs))
+                      extra_read_dirs=_attach_dirs(read_dirs),
+                      draft_key=draft_key)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller

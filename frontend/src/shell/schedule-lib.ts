@@ -596,33 +596,6 @@ export function folderHref(task: Pick<Task, "target" | "project">): string | nul
 }
 
 /**
- * WHERE A NEVER-SENT CHAT'S ROW GOES (design.md, Round 2: "New-chat drafts are
- * rows" — "Click → opens the folder's chat, composer prefilled").
- *
- * The same door as `folderHref` and deliberately so: a draft chat has no
- * session to name, so what opens is the FOLDER with the Claude pane on it, and
- * the composer seeds itself from the draft keyed on that folder. Carrying a
- * `session_id` would be asserting an identity this conversation has not been
- * given yet — the very state `new:<file>` exists to describe.
- *
- * `file` FIRST, and that is the whole difference from `folderHref`. The chat
- * draft's key is built out of the chat's own `file` (platform/lib/drafts
- * `chatDraftKey`, whose note carries the rule), so this URL has to be built out
- * of the same string or the chat that opens is mounted somewhere else and the
- * composer seeds from a key nothing wrote. `target` / `project` are the
- * fallback for a server that sends the row without it.
- */
-export function chatDraftHref(
-  task: Pick<Task, "file" | "target" | "project">,
-): string | null {
-  const at = task.file || task.target || task.project;
-  // NO `session_id` AT ALL, not an empty one. `&session_id=` claimed the
-  // parameter had been answered with nothing; a chat that has never been sent
-  // has not been asked the question (Akshil, 2026-09-11).
-  return at ? chatPaneUrl(at) : null;
-}
-
-/**
  * The same conversation as an IFRAME — one card on the Tasks page's Cards view
  * (shell/TaskCards.tsx), showing the run as it happens.
  *

@@ -399,9 +399,62 @@ describe("the chat handoff's attachments", () => {
 
   it("the Tasks page parses the param through the chat's own parser and CONSUMES it", () => {
     expect(SCHEDULED).toContain(
-      'setNewAttachments(parseAttachmentsParam(q.get("attachments")));');
+      'attachments: parseAttachmentsParam(q.get("attachments")),');
     // Deleted with the rest, or a reload reopens the modal forever.
     expect(SCHEDULED).toContain('q.delete("attachments");');
-    expect(SCHEDULED).toContain("initialAttachments={newAttachments}");
+    expect(SCHEDULED).toContain("initialAttachments={hop.attachments}");
+  });
+
+  // ---- and they do not follow the reader to the NEXT card -------------------
+  //
+  // THE REGRESSION (Akshil, 2026-09-12): after a composer→Schedule hop carrying
+  // an image, the picture turned up in whatever New task modal was opened next,
+  // and the one after that. The URL params were stripped correctly; what leaked
+  // was the PAGE STATE they had been read into. Six loose `useState`s were
+  // cleared one by one in the modal's `onClose` and `attachments` was simply not
+  // on that list — so `newAttachments` stood for the life of the page and
+  // re-seeded every opening through `initialAttachments`.
+
+  it("the hop is ONE value, seeded by the opening rather than cleared afterwards", () => {
+    // The fix is structural: there is no second place that says what a hop is
+    // made of, so no list can fall out of step with the fields again.
+    expect(SCHEDULED).toContain("const [hop, setHop] = useState<HopSeed>(NO_HOP);");
+    expect(SCHEDULED).toContain("seed: HopSeed = NO_HOP,");
+    expect(SCHEDULED).toContain("setHop(seed);");
+    // Every value the card reads comes off that one object.
+    for (const read of ["hop.target ?? scope?.entry ?? scope?.project ?? null", "initialMessage={hop.message}",
+                        "initialAttachments={hop.attachments}", "chatSessionId={hop.session}",
+                        "chatBack={hop.back}", "fromChatKey={hop.chatKey}"]) {
+      expect(SCHEDULED).toContain(read);
+    }
+  });
+
+  it("a NON-hop opening carries no hop at all — the default, not a clean-up", () => {
+    // "+ New task", a calendar slot, an Edit: all reach `openForm` without a
+    // seed, so they get `NO_HOP`. A reopened draft says it in its own words.
+    expect(SCHEDULED).toContain("NO_HOP: HopSeed = {");
+    expect(SCHEDULED).toContain("attachments: [], chatKey: null,");
+    expect(SCHEDULED).toContain('openForm("blank", null)');
+    expect(SCHEDULED).toContain("onCreateAt={(t) => openForm(t, null)}");
+    expect(SCHEDULED).toContain("openForm(null, template ?? entry);");
+    // The draft reopen path says it in the same words, through the same door:
+    // it names `NO_HOP` outright rather than setting the state by hand.
+    const draft = SCHEDULED.slice(SCHEDULED.indexOf("const openDraft ="));
+    expect(draft.slice(0, draft.indexOf("};"))).toContain(
+      "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
+    // …and the ONLY opening that seeds one is the deep link.
+    expect(SCHEDULED.match(/setHop\(seed\)/g) ?? []).toHaveLength(1);
+    expect(SCHEDULED).toContain("openForm(at, null, seed);");
+  });
+
+  it("and the close has nothing left to forget", () => {
+    // The clear-on-close list is GONE rather than extended: keeping it and
+    // adding `attachments` would leave the same trap for the next field.
+    const close = SCHEDULED.slice(SCHEDULED.indexOf("onClose={() => {"));
+    const body = close.slice(0, close.indexOf("}}"));
+    expect(body).not.toContain("setNewAttachments");
+    expect(body).not.toContain("setNewTarget");
+    expect(body).not.toContain("setNewChatKey");
+    expect(SCHEDULED).not.toContain("newAttachments");
   });
 });

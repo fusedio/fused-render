@@ -1474,6 +1474,35 @@ button.tasks-caret,
    third mark, and nothing on this page acts on the distinction — the row's words
    and its time say it anyway. */
 
+/* THE DRAFT LINE'S SEAT, where a message row keeps its status ring
+   (ScheduleTaskViews, the thread's first row when the task carries unsent
+   words — Akshil, 2026-09-12). The one new class this row needs: everything
+   else about it is a message row's, because everything else about it is a
+   message.
+
+   It is sized to `.schedule-ring` and NOT to the glyph inside it — 16px square,
+   `flex: 0 0 16px`, the ring's own box (schedule.css) — because the column of
+   rings running down an expanded thread is the thing this row must not break.
+   The pencil is 11px (ICON_PENCIL_LINE, drawn a step under the row's other
+   marks), so it is centred in the ring's slot rather than filling it, and the
+   ids beside it stay in one line.
+
+   `--error`, which is the chip's colour on the row above and the page's one red
+   (tokens.css): the mark in the thread and the mark on the row are the same
+   news, and a reader who has learned the red pencil once has learned it here.
+   `line-height: 0` for the outcome pill's reason — an inline SVG sits on the
+   text baseline and would otherwise carry the line box's descender with it. */
+.tasks-msg-pencil {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  line-height: 0;
+  color: var(--error);
+}
+
 .tasks-msg-body {
   min-width: 0;
   color: var(--fg);
@@ -1815,6 +1844,27 @@ button.tasks-caret,
    pressed states would be the one thing this seat was chosen to avoid. */
 .tasks-draft-pill {
   gap: 3px;
+  /* RED, and only the ink (Akshil, 2026-09-12) — Gmail's "Draft", which is the
+     reference: the word and the pencil in the error colour and nothing else
+     painted. Red because unsent words are the one thing on these rows that is
+     unfinished rather than merely reported; every other pill here is a verdict
+     about something that already happened.
+
+     --error is the page's own red (tokens.css), which is a DARKER red in the
+     light theme and a lighter one in dark, so the contrast holds both ways
+     without a second colour here. The glyph follows for free: the inline SVG is
+     `currentColor`.
+
+     And NO box: no fill, no hairline — the outcome pill's `currentColor` border
+     is dropped here, or the chip would read as a red-outlined badge (an alarm)
+     instead of a red word (a note). That also makes the three views agree: the
+     List's and the Board's chips are buttons, which already had `border: 0`
+     from the tag skin below, and the Cards wall's inert span is the one that
+     still wore the pill's outline. The hover wash on the pressable arm stays
+     exactly the quiet one it was — the chip is not becoming a danger control. */
+  color: var(--error);
+  border: 0;
+  padding: 0 2px;
 }
 
 .tasks-draft-pill-icon {
@@ -1847,6 +1897,44 @@ button.tasks-draft-pill {
   transition: background-color 120ms ease;
 }
 
+/* …AND THE RED HAS TO BE SAID ON THE BUTTON (Akshil, 2026-09-12, screenshot of
+   the List: the chip came out in the page's plain foreground, not the error
+   colour). The declaration above is on `.tasks-draft-pill`, ONE CLASS — and every
+   view here is drawn inside `<section className="prefs-section">`
+   (Scheduled.tsx), where preferences.css ships
+
+       .prefs-section button { … color: var(--fg) … }
+
+   at (0,1,1). That outranks a lone class, so on the List and the Board — the two
+   views whose chip is a `<button>` — the page's foreground won and the red was
+   never drawn; the Cards wall's inert `<span>`, which that rule cannot reach, was
+   the only chip that was ever red. Nothing in this file's own draft rules could
+   settle it either: `button.tasks-draft-pill` above is (0,1,1) as well and wins
+   its padding, border and background on source order alone, but it never named a
+   colour, so there was nothing there to win with.
+
+   The cure is this page's own, twice over — `.prefs-section button.tasks-caret`
+   and `.schedule-tv-filter-x` both name the opponent by hand rather than lean on
+   load order. (0,2,1) beats it outright and leaves no tie for source order to
+   decide.
+
+   ONE SELECTOR, and its `.deploy-body` twin is gone (review, 2026-09-12). Those
+   neighbouring rules list the modal shell because their controls are drawn in
+   one; this chip is not. Every renderer of it — ScheduleTaskViews' List row and
+   Board card foot, TaskCards' wall card, the List's filter toolbar — is inside
+   `Scheduled`'s `.prefs-section`, which is a PAGE (App.tsx's Tasks route and
+   AppPage's Tasks tab) and never a modal body. A selector that can match nothing
+   is a claim about where a component is drawn, and a wrong one is worse than no
+   claim: the day the chip does go in a modal, the red will be missing and this
+   rule will read as though somebody had already thought about it.
+
+   ONE declaration covers every state, which is why there is no hover or `.is-on`
+   twin of it: neither the wash below nor the ON pill touches `color`, so rest,
+   hover, focus and the filter being on all read this. */
+.prefs-section button.tasks-draft-pill {
+  color: var(--error);
+}
+
 button.tasks-draft-pill:hover,
 button.tasks-draft-pill:focus-visible {
   background: var(--ctl-quiet-bg-hover);
@@ -1862,15 +1950,35 @@ button.tasks-draft-pill:focus-visible {
    more here because this filter has NO other control. There is no popover
    holding a count for it and no entry in the Status menu; if the chip did not
    wear the state, a filtered page would be one a reader could not explain. */
+/* …and the WORD STAYS RED under it (Akshil, 2026-09-12): the fill says the
+   filter is running, the colour says what the chip is, and they are two
+   different facts. Nothing sets `color` here now — the red above carries
+   through — which is also why the fill is a wash rather than a solid accent.
+
+   AND THE WASH IS THE WORD'S OWN RED, not the accent (Akshil, 2026-09-12,
+   second pass). The accent fill was borrowed from the folder tag, which is the
+   right instinct for the SHAPE and the wrong one for the colour: a red word
+   sitting in a blue box is two hues arguing inside one 40px chip, and the ON
+   state read as a different control rather than as this one, pressed. A light
+   red — the same `--error` the ink is, at a wash's strength — says the same
+   thing in the chip's own voice, which is what the folder tag's accent fill
+   does for the folder tag.
+
+   14% and a 28% hairline, both of `--error`: deliberately lighter than the
+   folder's 18/22 of `--accent`, because the ink standing IN this fill is the
+   same hue as the fill, and a heavier wash starts eating the word. Checked on
+   both grounds (tokens.css: `--error` is #c62828 on light, #ff6b6b on dark, and
+   both washes sit a step off `--bg` rather than near it). The hairline is what
+   gives the wash an edge on the dark theme, where 14% of a light red over a
+   dark ground is nearly nothing on its own. */
 button.tasks-draft-pill.is-on {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-  color: var(--fg);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 28%, transparent);
 }
 
 button.tasks-draft-pill.is-on:hover,
 button.tasks-draft-pill.is-on:focus-visible {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  background: color-mix(in srgb, var(--error) 22%, transparent);
 }
 
 /* -- dropping ONE filter, from the control that set it (D448) -----------------

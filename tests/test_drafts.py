@@ -11,7 +11,11 @@ Nothing here reads the real ~/.claude or the real ~/.fused-render: every path is
 under tmp_path, and `drafts.STATE_DIR` is redirected alongside tasks_store's
 because both are computed at import from the same env var.
 """
+import importlib.util
+import io
 import json
+import os
+import time
 from urllib.parse import quote
 
 import pytest
@@ -68,6 +72,39 @@ def no_real_wake(monkeypatch):
     monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
 
 
+@pytest.fixture(autouse=True)
+def runs(tmp_path, monkeypatch):
+    """A runs tree of our own, and the stand-in that reads it.
+
+    The listing looks in here to settle a `new:<file>` key onto the session its
+    first send created (`tasks_mod._settle_new_chats`), and the real tree is a
+    per-user directory under the machine's temp root — the developer's own live
+    chats. Autouse, so no test in this file can read it, and so a draft test
+    that stages no run gets the same empty answer every time.
+
+    A stand-in rather than the real `agent.py` for the reason `test_tasks_api`'s
+    own fake gives: it is a TEMPLATE, outside the package's import graph by
+    design (SPEC PY-15), and what is under test is what the router does with its
+    answers."""
+    d = tmp_path / "runs"
+    d.mkdir()
+
+    class _Agent:
+        RUNS = str(d)
+
+        def _permissions(self, run_dir):
+            return []
+
+        def _alive(self, run_dir):
+            return False
+
+        def _session_from_out(self, run_dir):
+            return ""   # the `session` file is the only id these tests write
+
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _Agent())
+    return d
+
+
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
@@ -102,6 +139,14 @@ def _by_key(client):
     r = client.get("/api/tasks")
     assert r.status_code == 200, r.text
     return {t["key"]: t for t in r.json()["tasks"]}
+
+
+def _put(ident, fields) -> dict | None:
+    """`drafts.put_task`, minus the canonical-id half most tests here have no
+    reason to look at — the tests that ARE about the binding (below, "one bound
+    draft per session") call `drafts.put_task` directly to see both."""
+    record, _canonical = drafts.put_task(ident, fields)
+    return record
 
 
 # ---------------------------------------------------------------- the store
@@ -163,17 +208,17 @@ def test_a_draft_id_is_a_token(state_dir):
     assert drafts.draft_id("d-1234-abcd") == "d-1234-abcd"
     assert drafts.draft_id("short") == "", "under eight characters"
     assert drafts.draft_id("has/slash/init") == ""
-    assert drafts.put_task("nope", {"title": "x"}) is None
+    assert _put("nope", {"title": "x"}) is None
 
 
 def test_a_task_draft_merges_fields_and_keeps_created_at(state_dir):
-    first = drafts.put_task("draft-0001", {"title": "Ship it", "junk": "dropped"})
+    first = _put("draft-0001", {"title": "Ship it", "junk": "dropped"})
     assert "junk" not in first
     assert first["title"] == "Ship it"
     assert first["created_at"] == first["updated_at"]
 
     # A second autosave sends only what changed; the rest stands.
-    second = drafts.put_task("draft-0001", {"target": "/tmp/proj"})
+    second = _put("draft-0001", {"target": "/tmp/proj"})
     assert second["title"] == "Ship it"
     assert second["target"] == "/tmp/proj"
     assert second["created_at"] == first["created_at"], "the row must sit still"
@@ -182,15 +227,57 @@ def test_a_task_draft_merges_fields_and_keeps_created_at(state_dir):
 def test_when_and_repeat_pass_through_whatever_the_form_held(state_dir):
     """A structured repeat is an object and a cron line is a string; the modal
     has to reopen on exactly what it closed on."""
-    stored = drafts.put_task("draft-0001", {
+    stored = _put("draft-0001", {
+        "title": "Standup",
         "when": "2026-09-12T09:00", "repeat": {"every": "week", "on": ["mon"]}})
     assert stored["when"] == "2026-09-12T09:00"
     assert stored["repeat"] == {"every": "week", "on": ["mon"]}
 
 
+def test_only_words_or_files_make_a_task_draft(state_dir):
+    """WHAT A DRAFT IS: `title.strip() or description.strip() or attachments`,
+    and nothing else (Akshil, 2026-09-12).
+
+    Everything else the form holds — the folder, the model, the effort, the
+    permission mode, the time, the repeat rule — is a setting that rides along
+    with a draft. They used to count, so changing the folder or picking a time
+    on an untouched card minted an "Untitled draft" row holding nothing anybody
+    had typed."""
+    for settings in ({"target": "/tmp/proj"}, {"model": "opus"},
+                     {"effort": "high"}, {"permission": "auto"},
+                     {"when": "2026-09-12T09:00"}, {"repeat": "week"},
+                     {"custom_rule": {"freq": "day"}},
+                     {"new_task_each_run": True}):
+        assert _put("draft-0001", settings) is None, settings
+        assert drafts.get_task("draft-0001") is None, settings
+
+    # The three that DO make one, each on its own.
+    assert _put("draft-0001", {"title": "Ship it"}) is not None
+    assert drafts.delete_task("draft-0001") is True
+    assert _put("draft-0001", {"description": "roll up the PRs"}) is not None
+    assert drafts.delete_task("draft-0001") is True
+    assert _put("draft-0001", {"attachments": [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]}) is not None
+
+
+def test_clearing_the_words_then_the_last_file_lets_the_draft_go(state_dir):
+    """THE REPORTED DEAD END (Akshil, 2026-09-12): "if I clear the text it says
+    untitled draft, after that if I lose the attachment it doesn't clear the
+    draft". `target` was counted as content, so the record outlived everything
+    a person had actually put in it."""
+    shot = [{"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]
+    _put("draft-0001", {"title": "Ship it", "target": "/tmp/proj",
+                        "model": "opus", "attachments": shot})
+    # Text cleared: still a draft, because the picture is still in the tray.
+    assert _put("draft-0001", {"title": "", "description": ""}) is not None
+    # …and the picture removed after it: now there is nothing left to keep.
+    assert _put("draft-0001", {"attachments": []}) is None
+    assert drafts.get_task("draft-0001") is None
+
+
 def test_an_all_empty_task_draft_is_a_delete(state_dir):
-    drafts.put_task("draft-0001", {"title": "Ship it"})
-    assert drafts.put_task("draft-0001", {"title": "  "}) is None
+    _put("draft-0001", {"title": "Ship it"})
+    assert _put("draft-0001", {"title": "  "}) is None
     assert drafts.get_task("draft-0001") is None
     assert drafts.delete_task("draft-0001") is False
 
@@ -333,7 +420,10 @@ def test_a_draft_row_falls_back_to_its_description_then_to_a_name(client):
                json={"description": "  \nroll up yesterday's PRs\nand file them"})
     assert _by_key(client)["draft:draft-0001"]["title"] == "roll up yesterday's PRs"
 
-    client.put("/api/drafts/task/draft-0002", json={"model": "opus"})
+    # …and "Untitled draft" is now reachable ONLY by an attachment-only draft:
+    # a settings-only form is not a draft at all (Akshil, 2026-09-12).
+    client.put("/api/drafts/task/draft-0002", json={"attachments": [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]})
     assert _by_key(client)["draft:draft-0002"]["title"] == "Untitled draft"
 
 
@@ -413,7 +503,7 @@ def test_a_schedule_without_a_draft_id_is_unchanged(client, tmp_path):
     `?new=1` hop still does not."""
     target = tmp_path / "project"
     target.mkdir()
-    drafts.put_task("draft-0001", {"title": "keep me"})
+    _put("draft-0001", {"title": "keep me"})
     r = client.post("/api/schedule", headers=WRITE,
                     json={"target": str(target), "message": "hi",
                           "delay_seconds": 600})
@@ -635,11 +725,55 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
     assert [t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]] == []
 
 
-# ------------------------------------------------- round 2: rekey forward
+# ----------------------------------- round 2: the first send's session
+#
+# A chat with no session drafts under `new:<file>` and is numbered under that
+# key. The first send creates the session, and the number has to follow it —
+# but WHICH session a send created is not a question the page can answer, and
+# four rounds of bugbot went into trying (PR #1118, 2026-09-12). What the send
+# CAN say is which draft it is spending, so it says that: a session-less start
+# carries `draft_key`, `agent._start` writes it into the run's `meta.json`, and
+# the listing build moves the number onto the session that run made
+# (`routers/tasks.py::_settle_new_chats`).
+#
+# The first build of this matched on the target and an empty `resumed_from`
+# instead — "a first-ever run on this folder" — and every other way a folder
+# gets its first run passes those guards too: a scheduled task's first fire,
+# a `new_task_each_run` entry, canvases.py's spawn. Each would have taken the
+# number AND deleted the unsent words (review, 2026-09-12). That is the second
+# test below, and it is the one this round exists for.
 
 
-def test_the_rekey_route_moves_the_number_onto_the_session(client, projects_dir,
-                                                           tmp_path):
+def _stage_run(runs, name, file, session_id="", resumed_from="", started=None,
+               draft_key=None):
+    """One run dir as `agent._start` leaves it: `meta.json` with the target, the
+    session it resumed (empty when the send had none) and — for a native
+    composer's session-less send only — the draft key that send is spending,
+    plus the `session` file `_poll` writes once the CLI reports an id.
+
+    `draft_key=None` is every OTHER caller of `_start`: the scheduler, the apps
+    API, canvases.py. They write no such field, which is exactly what stops them
+    claiming a draft.
+
+    `started` back-dates `meta.json` — the run's own clock, which is what tells
+    a draft the send spent from one typed into after it."""
+    d = runs / name
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {"file": str(file), "resumed_from": resumed_from,
+            "message": "first message"}
+    if draft_key is not None:
+        meta["draft_key"] = draft_key
+    path = d / "meta.json"
+    path.write_text(json.dumps(meta))
+    if started is not None:
+        os.utime(path, (started, started))
+    if session_id:
+        (d / "session").write_text(session_id)
+    return d
+
+
+def test_a_session_less_send_carries_the_number_onto_the_session_it_made(
+        client, projects_dir, runs, tmp_path):
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
@@ -647,67 +781,214 @@ def test_the_rekey_route_moves_the_number_onto_the_session(client, projects_dir,
     number = _by_key(client)[key]["task_id"]
     assert number == "TASK-001"
 
-    # The send happened: Claude Code minted a session and wrote a transcript.
+    # The send: a run tagged with this draft's key, and Claude Code minted a
+    # session for it.
     _write_transcript(projects_dir, "sess-a", str(folder),
                       [_user("first message", T9)])
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json()["task_id"] == number
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
 
     rows = _by_key(client)
     assert key not in rows, "the folder row is the session's row now"
     assert rows["sess-a"]["task_id"] == number
     assert tasks_store.task_number("sess-a") == number
+    # And the draft the send spent is gone — never copied onto the session:
+    # those words are in the transcript.
+    assert client.get("/api/drafts").json()["chat"] == {}
 
 
-def test_the_rekey_route_deletes_a_draft_the_send_already_emptied(client, tmp_path):
-    """The normal case: the send cleared the box, so there is nothing to move
-    and the `new:` key is simply gone."""
+def test_a_first_run_nobody_tagged_leaves_the_draft_whole(
+        client, projects_dir, runs, tmp_path):
+    """THE ONE THIS ROUND EXISTS FOR (review, 2026-09-12).
+
+    A scheduled task's first fire on the same folder is a run with no
+    `resumed_from` and a brand-new session — identical, on disk, to a composer's
+    first send in every way except the tag. It must leave the unsent words, the
+    draft and the number exactly where they are; the earlier target-matching
+    version deleted all three.
+    """
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "still typing this"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("the scheduled prompt", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               started=time.time() + 5)
+
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert rows["sess-a"]["task_id"] != number, "the scheduler gets its own"
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == \
+        "still typing this"
+
+
+def test_a_run_tagged_for_another_chat_is_not_this_key_s_send(
+        client, projects_dir, runs, tmp_path):
+    """The tag is matched verbatim and nothing else is consulted. A folder and a
+    file inside it are two chats to draft in, and a number that crossed between
+    them would land on a conversation the reader never typed into."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    (folder / "app.py").write_text("x = 1\n")
+    key = "new:" + str(folder / "app.py")
+    client.put(_chat_url(key), json={"text": "first message"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               draft_key="new:" + str(folder), started=time.time() + 5)
+
+    assert _by_key(client)[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "first message"
+
+
+def test_a_send_into_a_session_leaves_another_chats_draft_alone(
+        client, projects_dir, runs, tmp_path):
+    """The bug this whole move was rewritten for. Opening a recent session in a
+    folder that holds an unsent draft used to walk that row — words, number and
+    all — onto a conversation the send had nothing to do with. A send with a
+    session to send into creates nothing, so it carries no tag."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "still typing this"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("something else", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               resumed_from="sess-a", started=time.time() + 5)
+
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert rows["sess-a"]["task_id"] != number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "still typing this"
+
+
+def test_a_run_that_never_minted_a_session_leaves_the_draft_alone(
+        client, runs, tmp_path):
+    """`_start` failed, or the CLI died before its first row. There is nothing
+    to carry the number to, and the draft is still the only copy of what the
+    user typed."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
     client.put(_chat_url(key), json={"text": "first message"})
-    client.put(_chat_url(key), json={"text": ""})  # the send
+    number = _by_key(client)[key]["task_id"]
 
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json()["moved"] is False
-    assert drafts.get_chat(key) is None
-    assert drafts.get_chat("sess-a") is None
+    _stage_run(runs, "20260912-090000-aa", folder, draft_key=key,
+               started=time.time() + 5)
+
+    assert _by_key(client)[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "first message"
 
 
-def test_the_rekey_route_carries_text_typed_after_the_send(client, tmp_path):
+def test_words_typed_after_the_run_started_are_not_that_run_s_draft(
+        client, projects_dir, runs, tmp_path):
+    """A draft saved AFTER the run began is not the message it sent — it is the
+    next one, typed into the same box while the session id was still on its way
+    — so the key keeps both its words and its number."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() - 60)
     client.put(_chat_url(key), json={"text": "and one more thing"})
+    number = _by_key(client)[key]["task_id"]
 
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.json()["moved"] is True
-    assert drafts.get_chat(key) is None
-    assert drafts.get_chat("sess-a")["text"] == "and one more thing"
-
-
-def test_the_rekey_route_is_a_no_op_for_a_draft_that_never_existed(client, tmp_path):
-    """The client fires this on every first send and cannot know whether the
-    debounce ever got round to a first save."""
-    key = "new:" + str(tmp_path / "proj")
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "from": key, "to": "sess-a",
-                        "task_id": "", "moved": False}
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "and one more thing"
 
 
-def test_the_rekey_route_refuses_a_to_that_is_not_a_session(client, tmp_path):
-    key = "new:" + str(tmp_path / "proj")
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": key, "to": "new:/tmp/x"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": key, "to": "/etc/passwd"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": "/etc/passwd", "to": "sess-a"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": "sess-a", "to": "sess-a"}).status_code == 400
+def test_the_number_moves_even_though_the_composer_deleted_the_draft(
+        client, projects_dir, runs, tmp_path):
+    """The ORDINARY case, and the one with no draft record left to read: the
+    composer deletes its own `new:<file>` draft in the same tick as the send, so
+    by the next build the number is all that is still filed under the key. It
+    still has to reach the session — which is why the settle asks the numbers
+    store and not only the drafts store."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "first message"})
+    number = _by_key(client)[key]["task_id"]
+    client.delete(_chat_url(key))
+    assert client.get("/api/drafts").json()["chat"] == {}
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
+
+    assert _by_key(client)["sess-a"]["task_id"] == number
+    assert tasks_store.task_number(key) == ""
+
+
+# ------------------------------- round 2: the template's half of the tag
+#
+# The settle above reads a field somebody else writes. `agent.py` is a TEMPLATE
+# — outside the package's import graph by design (SPEC PY-15), so it cannot be
+# imported, only loaded by path — and it is the process that actually spends the
+# draft. These two tests are the contract between the halves: the key goes into
+# `meta.json` verbatim when a send hands one over, and the field is ABSENT for
+# every other caller of `_start` (the scheduler, the apps API, canvases.py),
+# which is what keeps them from claiming a draft.
+
+
+def _load_agent_template():
+    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent_drafts", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeHost:
+    """The session host `_start` spawns. What is under test is the file it
+    writes BEFORE the spawn, and a real host would go looking for a CLI."""
+
+    pid = 4242
+
+    def __init__(self):
+        self.stdin = io.BytesIO()
+
+
+def _start_a_run(tmp_path, monkeypatch, target, **kw):
+    agent = _load_agent_template()
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda *a, **kwargs: _FakeHost())
+    out = agent._start(str(target), "first message", "", "", "", **kw)
+    assert "error" not in out, out
+    with open(os.path.join(agent.RUNS, out["run_id"], "meta.json"),
+              encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_start_writes_the_draft_key_it_was_handed(tmp_path, monkeypatch):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    meta = _start_a_run(tmp_path, monkeypatch, folder, draft_key=key)
+    # VERBATIM: the key is stored unnormalised on both sides on purpose, so a
+    # tilde or a trailing slash that the template "helpfully" resolved would be
+    # a key the server can never match.
+    assert meta["draft_key"] == key
+    assert meta["resumed_from"] == ""
+
+
+def test_start_writes_no_draft_key_when_nobody_sent_one(tmp_path, monkeypatch):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    meta = _start_a_run(tmp_path, monkeypatch, folder)
+    assert "draft_key" not in meta
 
 
 # --------------------------------------- round 2: a draft moves, never twice
@@ -888,37 +1169,875 @@ def test_a_bad_or_absent_from_chat_key_changes_nothing(client, tmp_path):
     assert drafts.get_chat(key) is not None
 
 
+# ------------------------------ round 3: a draft that belongs to a session
+#
+# THE BUG (Akshil, 2026-09-12). The chat composer's Schedule button can hop out
+# of a conversation that has ALREADY RUN, and the task being written is the next
+# message of that thread. Press Schedule straight away and it landed there,
+# because the page still held the session id. Exit the card and the draft on
+# disk knew nothing about it: reopening that draft and scheduling it opened a
+# SECOND session with a SECOND task number, and the TASK-nnn the reader had been
+# watching was gone.
+#
+# So the binding is STORED, and everything below follows from it: such a draft
+# is not a row and not a number — the CONVERSATION's row is the one the reader
+# knows, and it simply grows the red `✎ Draft` chip — and the way back into the
+# form is the composer's own Schedule button, which reopens the draft already
+# bound to that session instead of minting a second one.
+#
+# Round 3 built it the other way, with a draft row wearing the session's
+# identity and the session's own row held back behind it, and every part of that
+# read wrong: a second thing to read, the conversation gone from the Cards wall
+# (which draws transcripts, and a form has none), and one session row that
+# opened a modal where every other opens the chat (bugbot, PR #1126).
+
+
+def _bound_draft(client, ident, session_id, target, **fields):
+    """The hop's first autosave: a task draft that names the session it is a
+    message to, exactly as `NewJobModal`'s `draftBody` sends it."""
+    body = {"title": "Ship the changelog", "target": str(target),
+            "session_id": session_id}
+    body.update(fields)
+    r = client.put("/api/drafts/task/" + ident, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_the_session_a_draft_is_going_into_round_trips(state_dir):
+    """Stored and validated as a SESSION id, never as `new:<file>`: binding is to
+    a thread, and a chat that has never been sent has none."""
+    stored = _put("draft-0001", {"title": "hi", "session_id": "sess-a"})
+    assert stored["session_id"] == "sess-a"
+    assert drafts.get_task("draft-0001")["session_id"] == "sess-a"
+    assert drafts.bound_session("sess-a") == "sess-a"
+    assert drafts.bound_session("new:/Users/me/x.py") == ""
+    assert drafts.bound_session("/etc/passwd") == ""
+    assert drafts.bound_session(None) == ""
+    # ...and it survives the saves that do not mention it, like every other
+    # stored field (`TASK_FIELDS`): the modal's later autosaves may send only
+    # what changed.
+    assert _put("draft-0001",
+                {"title": "hi again"})["session_id"] == "sess-a"
+
+
+# --------------------------------------- one bound draft per session (server)
+#
+# THE OWNER'S OWN RULE, "a draft moves, never duplicates" (design.md, Round 2),
+# read the other way round. `from_chat_key` above keeps it for the chat → task
+# hop; this is the same promise for two TASK drafts that both end up naming the
+# same session — a New task form opened twice out of one conversation's
+# Schedule button, say, once before a reload and once after. The session's row
+# can wear exactly one `✎ Draft` chip (`_bound_chips`), so binding a second
+# draft to it is not a second fact, it is one fact written twice.
+#
+# IT IS A MERGE AND NOT AN EVICTION (Bugbot, PR #1126, 2026-09-12). The first
+# version of this rule deleted the loser, which is right only if the winner is
+# the better-informed of the two — and the write that collides is by
+# construction the one that knows LESS: `fetchDrafts` never rejects, so a lookup
+# that fails on the way into the hop reads as "no bound form", the card mints a
+# new id, and a form carrying one sentence used to destroy a draft holding a
+# time, a repeat rule, a model and a tray. The incoming write is folded into the
+# existing record instead, and the id it landed on comes back so the card can
+# follow it.
+
+
+def test_a_second_draft_bound_to_one_session_is_MERGED_into_the_first(state_dir):
+    """NOT evicted (Bugbot, PR #1126, 2026-09-12).
+
+    The write that collides is by construction the one that knows LESS. A
+    Schedule hop whose `GET /api/drafts` failed reads as "this session has no
+    form", mints a fresh id and saves a form carrying only the composer's
+    sentence — over a stored draft holding the time, the repeat rule, the model
+    and the tray somebody spent a minute choosing. The first version of this
+    rule deleted all of that over one failed request."""
+    first, canonical = drafts.put_task("draft-0001", {
+        "title": "one", "session_id": "sess-a", "when": "2026-09-12T09:00",
+        "repeat": "weekly", "model": "opus", "effort": "high",
+        "target": "/Users/me/proj",
+        "attachments": [{"path": "/shots/a.png", "name": "a", "kind": "image"}],
+    })
+    assert first is not None
+    assert canonical == "draft-0001", "nothing else was bound yet"
+
+    second, canonical = drafts.put_task("draft-0002", {
+        "title": "two", "session_id": "sess-a", "when": None, "repeat": None,
+        "model": "", "effort": "", "target": "",
+        "attachments": [{"path": "/shots/b.png", "name": "b", "kind": "image"}],
+    })
+    # THE EXISTING ID COMES BACK, so the caller can tell the page which record
+    # its card is really writing into.
+    assert canonical == "draft-0001"
+    assert drafts.get_task("draft-0002") is None, "no second draft was created"
+    stored = drafts.get_task("draft-0001")
+    assert stored is not None
+    assert stored == second
+    # The incoming write's words land...
+    assert stored["title"] == "two"
+    # ...and everything it said nothing about survives it.
+    assert stored["when"] == "2026-09-12T09:00"
+    assert stored["repeat"] == "weekly"
+    assert stored["model"] == "opus"
+    assert stored["effort"] == "high"
+    assert stored["target"] == "/Users/me/proj"
+    # Files are a union keyed on `path`: neither side's tray is a statement that
+    # the other side's is gone.
+    assert [a["path"] for a in stored["attachments"]] == ["/shots/a.png", "/shots/b.png"]
+    assert stored["session_id"] == "sess-a"
+    assert stored["created_at"] == first["created_at"], "the row does not move"
+
+
+def test_the_merge_takes_a_setting_the_incoming_write_did_name(state_dir):
+    """Non-empty is the whole test. A blank field is "this write has nothing to
+    say about it"; a filled one is an answer, and answers win."""
+    drafts.put_task("draft-0001", {"title": "one", "session_id": "sess-a",
+                                   "when": "2026-09-12T09:00", "model": "opus"})
+    record, canonical = drafts.put_task("draft-0002", {
+        "title": "two", "session_id": "sess-a",
+        "when": "2026-09-13T17:30", "model": "haiku"})
+    assert canonical == "draft-0001"
+    assert record["when"] == "2026-09-13T17:30"
+    assert record["model"] == "haiku"
+
+
+def test_a_put_for_the_same_id_updates_in_place_and_merges_with_nobody(state_dir):
+    """The ordinary autosave — the SAME draft, saved again and again — must
+    never read as a second draft colliding with itself."""
+    drafts.put_task("draft-0001", {"title": "one", "session_id": "sess-a"})
+    record, canonical = drafts.put_task("draft-0001", {"title": "one, edited"})
+    assert record["title"] == "one, edited"
+    assert record["session_id"] == "sess-a", "unmentioned fields survive"
+    assert canonical == "draft-0001"
+    assert drafts.get_task("draft-0001") is not None
+
+
+def test_unbound_drafts_are_untouched_by_a_binding_elsewhere(state_dir):
+    """Only a draft bound to the SAME session is at risk. An unbound draft, and
+    a draft bound to a DIFFERENT session, are not the fact "one per session" is
+    about, whatever else is going on in the store at the time."""
+    drafts.put_task("draft-unbound", {"title": "no session at all"})
+    drafts.put_task(
+        "draft-other", {"title": "a different thread", "session_id": "sess-b"})
+
+    _record, canonical = drafts.put_task(
+        "draft-0001", {"title": "one", "session_id": "sess-a"})
+    assert canonical == "draft-0001"
+    assert drafts.get_task("draft-unbound") is not None
+    assert drafts.get_task("draft-other")["session_id"] == "sess-b"
+
+
+def test_the_router_answers_and_announces_the_id_the_write_landed_on(
+        client, tmp_path):
+    """The merge happens inside `put_task`'s own lock. The page has to be told
+    twice over: in the answer, because every later call the card makes names the
+    draft by id, and on the long-poll, because a page holding a row under the id
+    that was folded away would go on showing it until the next full listing
+    (`routers/drafts.py`, the PUT handler)."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    before = client.get("/api/tasks").json()["generation"]
+
+    body = _bound_draft(client, "draft-0002", "sess-a", elsewhere,
+                        title="written by a card that could not look first")
+    assert body["draft_id"] == "draft-0001"
+    assert drafts.get_task("draft-0002") is None
+    assert drafts.get_task("draft-0001")["title"].startswith("written by a card")
+
+    changed = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
+    assert "draft:draft-0002" in changed["gone"]
+
+
+def test_a_session_bound_draft_is_not_a_row_and_the_session_wears_the_chip(
+        client, tmp_path, projects_dir):
+    """ONE TASK, ONE ROW — and it is the CONVERSATION's row (Akshil,
+    2026-09-12).
+
+    The draft is the thread's next message being written, so it is not a second
+    thing beside the thread. Nothing is emitted for it and nothing is hidden for
+    it: the session's row stands exactly as it always did — same title, same
+    number, same message count, same lane — and grows two fields, the id of the
+    form being written into it and that form's preview for the chip."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    before = _by_key(client)["sess-a"]
+    assert before["task_id"] == "TASK-001"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere,
+                 description="ship the changelog, then tag it")
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows, "a bound draft is not a row"
+    row = rows["sess-a"]
+    # Untouched, field for field: this is the row the reader already knew.
+    assert row["task_id"] == before["task_id"] == "TASK-001"
+    assert row["title"] == before["title"]
+    assert row["status"] == before["status"]
+    assert row["message_count"] == before["message_count"] == 1
+    assert row["project"] == before["project"]
+    assert row.get("kind") == before.get("kind"), "not a draft row, and never was"
+    # …and the two fields that are new. The chip's words are the form's TITLE,
+    # which is what the reader named this thing; the description is the fallback
+    # for a form that has only been typed into.
+    assert row["bound_draft"] == "draft-0001"
+    assert row["draft"]["preview"] == "Ship the changelog"
+    assert row["draft"]["updated_at"] > 0
+
+    # Nothing was allocated under the draft's own key either — the number is the
+    # session's, and minting a second one was the whole bug.
+    assert "draft:draft-0001" not in tasks_store.task_ids()
+
+
+def test_the_conversations_own_composer_outranks_the_form(client, tmp_path,
+                                                          projects_dir):
+    """One row, one chip, and the chat's own unsent words win.
+
+    A session can have both — text left in its composer AND a New task form
+    opened out of it — and `draft` is one field because the reader has one
+    question. The composer's copy is literally sitting in that conversation; the
+    form is a message about to be scheduled into it.
+
+    THE COMPOSER HAS TO HAVE WRITTEN FIRST, which is the one order that produces
+    both records now ("one record, two doors"): once a form is bound and the
+    session has no chat record, the composer's own writes go INTO that form
+    rather than beside it (`drafts.put_chat`). A chat record that predates the
+    binding is a record of its own, and this is its precedence."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    client.put(_chat_url("sess-a"), json={"text": "half a thought"})
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["preview"] == "half a thought"
+    assert row["bound_draft"] == "draft-0001", "still the way back to the form"
+    assert row["draft"]["kind"] == "chat"
+
+
+def test_the_row_says_WHICH_kind_of_draft_its_preview_is(client, tmp_path,
+                                                         projects_dir):
+    """`draft.kind` — "chat" or "form" (Bugbot, PR #1126, 2026-09-12).
+
+    The thread's leading line quotes this preview, and pressing your own unsent
+    sentence has to land where it is. A `"chat"` preview is in this
+    conversation's composer, so the press opens the chat and there it is; a
+    `"form"` preview is a New task card bound to this session, which holds the
+    time, the repeat rule and the model beside the words, so that press reopens
+    the card instead. The page used to go to the chat either way and showed the
+    reader an empty composer under the words it had just printed — the composer
+    shows them now ("one record, two doors"), and `kind` is what still sends the
+    press to the record that holds ALL of what was written, not just the
+    sentence."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    # The bound form, with no chat record of its own: the words are the card's.
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["kind"] == "form"
+    assert row["draft"]["preview"] == "Ship the changelog"
+
+    # …and a conversation whose composer wrote FIRST keeps a record of its own,
+    # which outranks the form bound to it afterwards and says so.
+    _write_transcript(projects_dir, "sess-b", "/home/me/proj", [_user("two", T9)])
+    client.put(_chat_url("sess-b"), json={"text": "half a thought"})
+    _bound_draft(client, "draft-0002", "sess-b", elsewhere)
+    assert _by_key(client)["sess-b"]["draft"]["kind"] == "chat"
+
+
+# --------------------------------------------- round 3: one record, two doors
+#
+# THE BUG (Akshil, 2026-09-12). Finish a session, type into its composer, press
+# Schedule, then click outside the modal. The form is kept — that is the whole
+# point of a draft — and the hop deleted the chat draft it came from, so the
+# session's row wore the red `✎ Draft` chip over a composer with nothing in it.
+# The chip's press leads to the chat; the words were in a record that door could
+# not see.
+#
+# THE RULE: one record, two doors. A session with a bound task draft and no chat
+# draft of its own SHOWS and EDITS that draft's words from the composer too —
+# split and joined by the same rule the New task card's two fields use. Never a
+# copy: which door the reader comes back through does not change what is there.
+
+
+def _stored_chat_half() -> dict:
+    """The chat section as it is ON DISK — what `/api/drafts` synthesizes is a
+    view, and the tests below care that nothing was written into the store
+    beside the form."""
+    with open(os.path.join(drafts.STATE_DIR, drafts.DRAFTS_FILE),
+              encoding="utf-8") as fh:
+        return json.load(fh)["chat"]
+
+
+def test_the_composer_shows_a_bound_forms_words(client, tmp_path, projects_dir):
+    """The door the bug was about. `GET /api/drafts` answers the bound form
+    under the SESSION key, as the composer would have written it."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere,
+                 description="start with the path handling",
+                 attachments=[{"path": "/shots/a1b2.png", "name": "shot.png",
+                               "kind": "image"}])
+
+    chat = client.get("/api/drafts").json()["chat"]
+    # Title, blank line, description — `joinDraft` run in Python, which is the
+    # inverse of the split the hop made on the way in.
+    assert chat["sess-a"]["text"] == ("Ship the changelog\n\n"
+                                      "start with the path handling")
+    assert chat["sess-a"]["attachments"] == [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]
+    assert chat["sess-a"]["updated_at"] > 0
+    # …and it says which record these words are really in, so a client that
+    # wants to tell the two apart can.
+    assert chat["sess-a"]["bound_draft"] == "draft-0001"
+    # The store itself is unchanged: this is a view, not a second copy.
+    assert _stored_chat_half() == {}
+
+
+def test_typing_in_the_composer_edits_the_bound_form(client, tmp_path,
+                                                     projects_dir):
+    """The other direction, and the one that keeps it ONE record: the composer's
+    autosave lands in the form, split across its two fields, and no chat record
+    is made."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere, when="2026-09-13T09:00",
+                 model="opus")
+
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "Roll up the PRs\n\ngroup them by repo",
+                         "attachments": [{"path": "/shots/x.png", "name": "x.png",
+                                          "kind": "image"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["bound_draft"] == "draft-0001"
+
+    form = drafts.get_task("draft-0001")
+    assert form["title"] == "Roll up the PRs"
+    assert form["description"] == "group them by repo"
+    assert form["attachments"] == [
+        {"path": "/shots/x.png", "name": "x.png", "kind": "image"}]
+    # Everything the card holds and the composer knows nothing about is
+    # untouched — this write was about the words.
+    assert form["when"] == "2026-09-13T09:00"
+    assert form["model"] == "opus"
+    assert form["session_id"] == "sess-a"
+    # No chat record anywhere: two records would be two chips and two versions
+    # of one sentence.
+    assert _stored_chat_half() == {}
+    assert client.get("/api/drafts").json()["chat"]["sess-a"]["text"] == (
+        "Roll up the PRs\n\ngroup them by repo")
+
+
+def test_a_one_line_composer_draft_is_all_title(client, tmp_path, projects_dir):
+    """The same split the card makes: one line names the task and there is no
+    description to write."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    client.put(_chat_url("sess-a"), json={"text": "  Update the changelog  "})
+    form = drafts.get_task("draft-0001")
+    assert form["title"] == "Update the changelog"
+    assert form["description"] == ""
+    assert client.get("/api/drafts").json()["chat"]["sess-a"]["text"] == (
+        "Update the changelog")
+
+
+def test_emptying_the_composer_deletes_the_bound_form(client, tmp_path,
+                                                      projects_dir):
+    """Clearing the box IS deleting the draft, whichever record the box is a
+    door onto — and there is no half of a form left behind to wear the chip."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    r = client.put(_chat_url("sess-a"), json={"text": "   ", "attachments": []})
+    assert r.json()["draft"] is None
+    assert drafts.get_task("draft-0001") is None
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows
+    assert rows["sess-a"]["draft"] is None
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["task_id"] == "TASK-001", "the row itself never moved"
+
+
+def test_the_send_takes_the_bound_form_with_it(client, tmp_path, projects_dir):
+    """`DELETE /api/drafts/chat/<session>` is the composer's send, and what it
+    spends is whatever record held those words."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    r = client.delete(_chat_url("sess-a"))
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] is True
+    assert drafts.get_task("draft-0001") is None
+    assert client.get("/api/drafts").json()["chat"] == {}
+    assert _by_key(client)["sess-a"]["draft"] is None
+
+
+def test_both_doors_announce_the_form_and_the_session(client, tmp_path,
+                                                      projects_dir):
+    """Two keys on every chat write that turned out to be about a form: the
+    session's row, whose chip just changed, and the form's own key, so a page
+    holding a stale row under it drops it (`routers/drafts._announce`)."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    _by_key(client)  # a first full listing, so the session is numbered
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    before = client.get("/api/tasks").json()["generation"]
+    client.put(_chat_url("sess-a"), json={"text": "Roll up the PRs"})
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["draft"]["preview"] == "Roll up the PRs"
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" in body["gone"]
+
+    gen = body["generation"]
+    client.delete(_chat_url("sess-a"))
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["draft"] is None
+    assert "draft:draft-0001" in body["gone"]
+
+
+def test_a_session_with_both_keeps_them_apart(client, tmp_path, projects_dir):
+    """A chat record that PREDATES the binding is a record of its own, and the
+    two doors stop being one: the composer reads and writes its own words, and
+    the form is left exactly as it was."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    client.put(_chat_url("sess-a"), json={"text": "half a thought"})
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    chat = client.get("/api/drafts").json()["chat"]
+    assert chat["sess-a"]["text"] == "half a thought", "the chat record wins"
+    assert chat["sess-a"]["bound_draft"] == "", "and it is a record of its own"
+
+    client.put(_chat_url("sess-a"), json={"text": "the rest of the thought"})
+    assert drafts.get_chat("sess-a")["text"] == "the rest of the thought"
+    assert drafts.get_task("draft-0001")["title"] == "Ship the changelog"
+    # …and the row still knows about the form, which is still the way back to it.
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["preview"] == "the rest of the thought"
+    assert row["bound_draft"] == "draft-0001"
+
+
+def test_a_chat_key_with_no_session_never_looks_for_a_form(client, tmp_path):
+    """`new:<file>` is a folder somebody opened a chat on and no thread at all,
+    so nothing can be bound to it — its writes are ordinary chat writes."""
+    key = "new:" + str(tmp_path)
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Ship the changelog", "target": str(tmp_path)})
+    r = client.put(_chat_url(key), json={"text": "never sent"})
+    assert r.json()["draft"]["text"] == "never sent"
+    assert r.json()["draft"]["bound_draft"] == ""
+    assert drafts.get_task("draft-0001")["title"] == "Ship the changelog"
+
+
+def test_the_split_and_the_join_are_each_others_inverse(state_dir):
+    """The Python twins of `NewJobModal.splitDraft` / `joinDraft`, which is what
+    keeps one sentence the same shape through either door."""
+    assert drafts.split_draft("Port the parquet reader\nstart with the path") == (
+        "Port the parquet reader", "start with the path")
+    assert drafts.split_draft("Update the changelog") == ("Update the changelog", "")
+    assert drafts.split_draft("   \n\n  ") == ("", "")
+    assert drafts.split_draft(None) == ("", "")
+    one = "roll up the PRs\n\ngroup them by repo"
+    assert drafts.join_draft(*drafts.split_draft(one)) == one
+    assert drafts.join_draft("", "just a body") == "just a body"
+    assert drafts.join_draft("just a title", "") == "just a title"
+    assert drafts.join_draft(None, None) == ""
+
+
+def test_a_draft_with_no_session_is_numbered_exactly_as_before(client, tmp_path):
+    """The binding is the exception, not the new rule. A form opened from "+ New
+    task" belongs to nobody and still mints a number of its own."""
+    target = tmp_path / "project"
+    target.mkdir()
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(target)})
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["task_id"] == "TASK-001"
+    assert row["session_id"] == ""
+    assert "draft:draft-0001" in tasks_store.task_ids()
+
+
+def test_discarding_a_bound_draft_takes_the_chip_off_the_row(client, tmp_path,
+                                                             projects_dir):
+    """The chip is the only trace, so Discard is the only thing that has to
+    reverse — the row itself never moved."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    assert _by_key(client)["sess-a"]["bound_draft"] == "draft-0001"
+
+    assert client.delete("/api/drafts/task/draft-0001").status_code == 200
+    row = _by_key(client)["sess-a"]
+    assert row["bound_draft"] == ""
+    assert row["draft"] is None
+    assert row["task_id"] == "TASK-001", "nothing about the row was ever changed"
+    assert row["message_count"] == 1
+
+
+def test_emptying_a_bound_draft_takes_the_chip_off_too(client, tmp_path,
+                                                       projects_dir):
+    """An all-empty form is a DELETE (`_empty_task`), and the chip has to go on
+    that door as well — not only on Discard."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    assert _by_key(client)["sess-a"]["bound_draft"] == "draft-0001"
+
+    r = client.put("/api/drafts/task/draft-0001",
+                   json={"title": "", "description": "", "target": str(elsewhere),
+                         "session_id": "sess-a", "attachments": []})
+    assert r.json()["draft"] is None
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["draft"] is None
+
+
+def test_the_chip_repaints_through_the_changes_endpoint(client, tmp_path,
+                                                        projects_dir):
+    """One row moves, and it is the session's — the draft write announces that
+    key too (`routers/drafts._announce`), which is what makes the chip appear
+    and vanish without a reload."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    _by_key(client)  # a first full listing, so the session is numbered
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    before = client.get("/api/tasks").json()["generation"]
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert rows["sess-a"]["draft"]["preview"] == "Ship the changelog"
+    # The draft's own key is announced as well and answers `gone`: it is not a
+    # row, and a page holding one from an older build is told to drop it.
+    assert "draft:draft-0001" in body["gone"]
+
+    gen = body["generation"]
+    assert client.delete("/api/drafts/task/draft-0001").status_code == 200
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["draft"] is None
+
+
+def test_a_poll_about_the_session_alone_carries_the_chip(client, tmp_path,
+                                                         projects_dir):
+    """The chip is read off the DRAFT STORE, never off the rows a build happened
+    to produce.
+
+    A narrowed build asking about a session alone runs no draft half at all
+    (`_draft_shaped`), so a join that depended on a draft row having been built
+    would drop the chip on exactly that poll — and the row the page is holding
+    would lose it until the next full listing."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    narrowed = tasks_mod._task_rows(only=frozenset({"sess-a"}))
+    assert [r["key"] for r in narrowed] == ["sess-a"]
+    assert narrowed[0]["bound_draft"] == "draft-0001"
+    assert narrowed[0]["draft"]["preview"] == "Ship the changelog"
+
+
+def test_scheduling_a_bound_draft_lands_in_the_session_and_keeps_the_number(
+        client, tmp_path, projects_dir):
+    """The whole bug, end to end: reopen the draft, press Schedule, and the
+    message is the next turn of the SAME conversation under the SAME number."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    number = _by_key(client)["sess-a"]["task_id"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(elsewhere), "message": "ship it",
+                          "delay_seconds": 600, "title": "Ship the changelog",
+                          "draft_id": "draft-0001", "session_id": "sess-a"})
+    assert r.status_code == 200, r.text
+    entry = r.json()["entry"]
+    assert entry["session_id"] == "sess-a"
+
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows, "the draft's whole purpose is over"
+    assert "pending:" + entry["id"] not in rows, "the entry is filed on the session"
+    assert rows["sess-a"]["task_id"] == number
+    # ...and no number was invented on the way. `pending:<entry-id>` is not a key
+    # this task is ever filed under, so a rekey onto it would have been a second
+    # identity for a task that already has one.
+    store = tasks_store.task_ids()
+    assert "pending:" + entry["id"] not in store
+    assert "draft:draft-0001" not in store
+
+
+def test_an_unbound_draft_still_rekeys_onto_its_pending_entry(client, tmp_path):
+    """The guard is only for the bound case — pinned here as the other side of
+    the branch. A draft that belongs to nobody still carries its number forward
+    onto the entry it becomes."""
+    target = tmp_path / "project"
+    target.mkdir()
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(target)})
+    # A number is allocated by the LISTING, not by the save, so the draft has to
+    # have been listed once before there is anything to carry forward.
+    assert _by_key(client)["draft:draft-0001"]["task_id"] == "TASK-001"
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "roll it up",
+                          "delay_seconds": 600, "draft_id": "draft-0001"})
+    entry_id = r.json()["entry"]["id"]
+    assert "pending:" + entry_id in tasks_store.task_ids()
+
+
+def test_a_bound_draft_never_reaches_the_new_chat_settle(client, tmp_path,
+                                                         projects_dir, runs):
+    """`_settle_new_chats` is untouched by any of this: it reads `new:<file>`
+    CHAT drafts and the run that spent one, and a task draft bound to a session
+    is neither."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    _task_drafts, chat_drafts = drafts.list_all()
+    assert tasks_mod._settle_new_chats(chat_drafts) is False
+    assert drafts.get_task("draft-0001")["session_id"] == "sess-a"
+
+
+class _SettledAgent:
+    """The same runs tree with nobody waiting on it — what `_park` leaves behind
+    once the card has been answered."""
+
+    def __init__(self, runs):
+        self.RUNS = str(runs)
+
+    def _permissions(self, run_dir):
+        return [{"id": "p1", "tool": "Bash", "decision": "allow", "input": {}}]
+
+    def _alive(self, run_dir):
+        return False
+
+    def _session_from_out(self, run_dir):
+        return ""
+
+
+def _park(monkeypatch, runs, session_id):
+    """One LIVE run, parked on a permission card nobody has answered — the state
+    `_status` reads as `needs_attention`.
+
+    A stand-in agent of the same shape the `runs` fixture installs, with the two
+    answers `_parked_runs` actually asks for: an undecided request, and a process
+    that is still alive to be unblocked."""
+    _stage_run(runs, "r-1", "/home/me/proj", session_id)
+
+    class _Parked:
+        RUNS = str(runs)
+
+        def _permissions(self, run_dir):
+            return [{"id": "p1", "tool": "Bash", "decision": "",
+                     "input": {"command": "rm -rf build"}}]
+
+        def _alive(self, run_dir):
+            return True
+
+        def _session_from_out(self, run_dir):
+            return ""
+
+        def _tool_detail(self, name, inp):
+            return str((inp or {}).get("command") or "")
+
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _Parked())
+
+
+def test_a_live_session_is_untouched_by_a_draft_bound_to_it(
+        client, tmp_path, projects_dir, runs, monkeypatch):
+    """Nothing is hidden, whatever the conversation is doing — and a run parked
+    on a permission card is the case that used to be worth a rule of its own.
+
+    Round 3 dropped a settled session's row behind its draft and had to carve
+    out the live statuses so a run in flight could never vanish from the listing
+    or from the pulse the sidebar dot and Notifications read. Nothing is dropped
+    now, so there is no rule to carve: the row is the row, the pill says what
+    the run is doing, and the chip says a message is being written to it."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    _park(monkeypatch, runs, "sess-a")
+
+    rows = _by_key(client)
+    assert rows["sess-a"]["status"] == "needs_attention"
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" not in rows
+
+    # The pulse is the half the sidebar reads, and a listing that hid rows was a
+    # dot that never lit and a Notification nobody got.
+    pulse = {t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]}
+    assert "sess-a" in pulse
+
+    # …and the narrowed build the changes long-poll runs says the same thing.
+    assert [r["key"] for r in
+            tasks_mod._task_rows(only=frozenset({"sess-a"}))] == ["sess-a"]
+
+    # …and the settled case is the same case. There is no second behaviour here.
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _SettledAgent(runs))
+    rows = _by_key(client)
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" not in rows
+
+
+def test_erasing_a_session_cuts_its_task_draft_loose(client, tmp_path,
+                                                     projects_dir):
+    """The words stay, the binding does not (review, 2026-09-12).
+
+    A chat draft is deleted by an erase — there is no conversation left for it to
+    be typed into — but a TASK draft is a form somebody is still filling in, and
+    the session was only where they had meant to send it."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    assert _by_key(client)["sess-a"]["task_id"] == "TASK-001"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    before = client.get("/api/tasks").json()["generation"]
+    assert client.post("/api/tasks/erase",
+                       json={"key": "sess-a"}).status_code == 200
+    stored = drafts.get_task("draft-0001")
+    assert stored["session_id"] == "", "the binding"
+    assert stored["title"] == "Ship the changelog", "and not the words"
+
+    # An ordinary `draft:<id>` again: its own number, in its own folder. The
+    # session's TASK-001 is a reservation now (`forget_session` stamps it
+    # `erased` so it can never be reissued), and a draft wearing it for ever was
+    # the bug.
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["session_id"] == ""
+    assert row["project"] == canonical_fs_path(str(elsewhere))
+    ids = tasks_store.task_ids()
+    assert "draft:draft-0001" in ids, "an allocation of its own at last"
+    # Numbers are per project and this draft points at a folder of its own, so
+    # the digits may perfectly well read TASK-001 again — what changed is WHOSE
+    # number it is. The session's record stays as a reservation nobody may
+    # reissue, and the draft is no longer wearing it.
+    assert ids["draft:draft-0001"]["project"] != ids["sess-a"]["project"]
+    assert row["task_id"] == tasks_store.format_task_id(ids["draft:draft-0001"]["n"])
+    assert tasks_store.erased() == {"sess-a"}
+
+    # AND THE DRAFT'S OWN KEY IS ANNOUNCED (bugbot, PR #1126). The erase used to
+    # notify the session key alone, so the page went on holding a row — or, for
+    # the build where it was one, a draft row — carrying the dead TASK number and
+    # the erased `session_id`, and pressing Schedule on it sent the message back
+    # into the conversation this gesture had just destroyed. A narrowed poll for
+    # the draft's key now answers the re-numbered, unbound row.
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    moved = {r["key"]: r for r in body["rows"]}
+    assert "draft:draft-0001" in moved, "the row that just changed its number"
+    assert moved["draft:draft-0001"]["session_id"] == ""
+    assert moved["draft:draft-0001"]["project"] == canonical_fs_path(str(elsewhere))
+    assert "sess-a" in body["gone"], "and the conversation itself"
+
+
+def test_a_draft_left_bound_to_an_erased_session_wears_no_dead_number(
+        client, tmp_path, projects_dir):
+    """AN ERASED RECORD IS NO RECORD, read off the store rather than trusted to
+    have been unbound.
+
+    A bound draft is not a row — the conversation's row wears its chip instead —
+    and an ERASED conversation has no row to wear one, so a draft still naming it
+    would be words nobody can reach. `forget_session` keeps the mapping as a
+    reservation, which is exactly the fact that says so, and such a draft is an
+    ordinary row again: blank-numbered (nothing may reissue the session's TASK
+    number) and in its own folder. Covers the draft written between the erase's
+    two writes, and any store left bound by an older build."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    assert _by_key(client)["sess-a"]["task_id"] == "TASK-001"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    tasks_store.forget_session("sess-a")   # the erase's share of it, by hand
+
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["task_id"] == "", "a blank number, never a dead one"
+    assert row["project"] == canonical_fs_path(str(elsewhere))
+
+
+def test_unbind_session_cuts_that_session_and_nothing_else(state_dir):
+    """The store's half on its own: one pass, one lock, and no write at all when
+    nothing is bound.
+
+    It answers the LISTING KEYS it cut, not a count (bugbot, PR #1126): those
+    rows have just changed their number, their folder and the thread they would
+    be sent to, and the caller has to announce them."""
+    _put("draft-0001", {"title": "a", "session_id": "sess-a"})
+    _put("draft-0002", {"title": "b", "session_id": "sess-b"})
+    _put("draft-0003", {"title": "c"})
+    typed_at = drafts.get_task("draft-0001")["updated_at"]
+
+    assert drafts.unbind_session("sess-a") == ["draft:draft-0001"]
+    cut = drafts.get_task("draft-0001")
+    assert cut["session_id"] == ""
+    assert cut["title"] == "a", "the words are not what an erase takes"
+    # …and the clock the row prints and sorts on did not move: nobody typed.
+    assert cut["updated_at"] == typed_at
+    assert drafts.get_task("draft-0002")["session_id"] == "sess-b"
+    assert drafts.get_task("draft-0003")["session_id"] == ""
+
+    assert drafts.unbind_session("sess-a") == [], "nothing bound, nothing written"
+    assert drafts.unbind_session("") == []
+    assert drafts.unbind_session(None) == []
+
+
 def test_a_custom_repeat_keeps_its_rule(state_dir):
     """`repeat` is a preset KEY, and "custom" is a pointer at a rule the
     recurrence dialog built. A draft that stored the key and dropped the rule
     reopened saying Custom, holding nothing, with Save refused and nothing on the
     card saying why."""
     rule = {"freq": "week", "interval": 2, "byday": [1, 3]}
-    stored = drafts.put_task("draft-0001", {"title": "Standup notes",
-                                            "repeat": "custom",
-                                            "custom_rule": rule})
+    stored = _put("draft-0001", {"title": "Standup notes",
+                                 "repeat": "custom",
+                                 "custom_rule": rule})
     assert stored["custom_rule"] == rule
     assert drafts.get_task("draft-0001")["custom_rule"] == rule
     # Pass-through, not parsed: this store is not the authority on what a
     # recurrence rule looks like, and a shape it validated would be a second
     # copy of `recur`'s grammar going stale.
-    assert drafts.put_task("draft-0002", {"custom_rule": {"freq": "fortnight"}}
-                           )["custom_rule"] == {"freq": "fortnight"}
+    assert _put("draft-0002", {"title": "Retro",
+                               "custom_rule": {"freq": "fortnight"}}
+               )["custom_rule"] == {"freq": "fortnight"}
     # A field the client omits keeps what the stored draft had, like every other.
-    assert drafts.put_task("draft-0001", {"title": "Standup"}
-                           )["custom_rule"] == rule
+    assert _put("draft-0001", {"title": "Standup"}
+               )["custom_rule"] == rule
     # …and clearing the choice clears the rule with it.
-    assert drafts.put_task("draft-0001", {"repeat": None, "custom_rule": None}
-                           )["custom_rule"] is None
+    assert _put("draft-0001", {"repeat": None, "custom_rule": None}
+               )["custom_rule"] is None
 
 
-def test_a_rule_alone_is_still_a_draft(state_dir):
-    """`_empty_task` asks "is there anything a person chose here", and opening
-    the recurrence dialog and building a rule is exactly that."""
-    assert drafts.put_task("draft-0001",
-                           {"custom_rule": {"freq": "month"}}) is not None
-    assert drafts.put_task("draft-0001", {"custom_rule": None}) is None
+def test_a_rule_alone_is_not_a_draft(state_dir):
+    """A recurrence rule is a SETTING — how a task would run, not a task
+    (Akshil, 2026-09-12). It used to count, and the cost was an "Untitled draft"
+    row minted by opening the when-row and picking a time."""
+    assert _put("draft-0001",
+                {"custom_rule": {"freq": "month"}}) is None
     assert drafts.get_task("draft-0001") is None
+    # …and it rides along perfectly well once there are words to ride with.
+    assert _put("draft-0001", {"title": "Monthly report",
+                               "custom_rule": {"freq": "month"}}
+               )["custom_rule"] == {"freq": "month"}
 
 
 def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
@@ -939,7 +2058,7 @@ def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
 def test_list_all_answers_both_halves_off_one_read(state_dir, monkeypatch):
     """`list_task()` and `list_chat()` are each a whole `load()`, and the tasks
     listing wants both on every build. Same projections, half the reads."""
-    drafts.put_task("draft-0001", {"title": "Nightly report"})
+    _put("draft-0001", {"title": "Nightly report"})
     drafts.put_chat("sess-a", "half a thought", [])
 
     reads = []

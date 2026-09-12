@@ -325,8 +325,27 @@ def test_the_link_opens_the_form_immediately(page):
     # key so a fresh card cannot inherit the previous one's answers. The deep link
     # is an opening like any other, and what this test cares about is unchanged —
     # it opens on arrival, prefilled, with no button left to press.
-    assert "openForm(new Date(" in effect
-    assert "setNewTarget(" in effect
+    assert "const at = new Date(Date.now() + NEW_LINK_LEAD_MS);" in effect
+    assert "openForm(at, null, seed);" in effect
+    # The handoff travels as ONE seed handed to that door (Akshil, 2026-09-12:
+    # attachments from a hop were leaking into every later modal because the
+    # six loose page states were undone one by one), so the effect builds a
+    # `HopSeed` and passes it rather than setting fields.
+    assert "const seed: HopSeed" in effect
+    assert ", null, seed)" in effect
+    # A HOP OUT OF A CONVERSATION LOOKS FIRST (Akshil, 2026-09-12). A task draft
+    # bound to a session has no row of its own — the session's row wears the
+    # `Draft` chip — so this button is the way back into it, and a second press
+    # has to reopen THAT form rather than mint a second one bound to the same
+    # thread. One small request, only for a hop that names a session, and a miss
+    # opens exactly as it always did.
+    #
+    # A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (Bugbot, PR #1126): `fetchDrafts`
+    # answers null for a blip, and the hop still opens on it — the composer's
+    # words must not wait on a GET — but the seed is gated on that answer rather
+    # than read off an empty snapshot, and the tray travels with it.
+    assert "all && boundDraftSeed(all.task, session, seed.message," in effect
+    assert "seed.attachments)" in effect
 
 
 def test_the_prefilled_time_is_valid_the_moment_it_opens(page):
@@ -355,11 +374,16 @@ def test_the_deep_linked_values_do_not_outlive_their_own_modal(page):
     """Left standing they would prefill the next "+ New task" with a folder, a
     draft and a session the user arrived from some time ago — the same class of bug
     as a When pill that survived its send."""
-    close = page[page.index("onClose={() => {"):]
-    close = close[:close.index("}}")]
-    for setter in ("setNewTarget(null)", "setNewMessage(null)",
-                   "setNewSession(null)", "setNewBack(null)"):
-        assert setter in close, f"{setter} missing from the modal's close"
+    # Since 2026-09-12 the hop is one value the OPENING seeds — `openForm(at,
+    # entry, seed = NO_HOP)` — so a plain "+ New task" carries no hop by
+    # construction and the close has nothing to forget. The old shape (six page
+    # states cleared one by one in `onClose`) is what let a hop's attachments
+    # outlive their modal: one setter was missing from the list.
+    assert "seed: HopSeed = NO_HOP" in page
+    assert "setHop(seed);" in page
+    for stale in ("setNewTarget(", "setNewMessage(", "setNewAttachments(",
+                  "setNewSession(", "setNewBack("):
+        assert stale not in page, f"{stale} is the shape that leaked"
 
 
 # ------------------------------------------------------------- the modal
