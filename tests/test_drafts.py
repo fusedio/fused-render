@@ -931,3 +931,77 @@ def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
     row = _by_key(client)["draft:draft-0001"]
     assert row["form"]["repeat"] == "custom"
     assert row["form"]["custom_rule"] == rule
+
+
+# ------------------------------------------- one read of the file, one lock
+
+
+def test_list_all_answers_both_halves_off_one_read(state_dir, monkeypatch):
+    """`list_task()` and `list_chat()` are each a whole `load()`, and the tasks
+    listing wants both on every build. Same projections, half the reads."""
+    drafts.put_task("draft-0001", {"title": "Nightly report"})
+    drafts.put_chat("sess-a", "half a thought", [])
+
+    reads = []
+    real = drafts.load
+    monkeypatch.setattr(drafts, "load", lambda: (reads.append(1), real())[1])
+
+    task, chat = drafts.list_all()
+    assert len(reads) == 1
+    assert task == drafts.list_task()
+    assert chat == drafts.list_chat()
+
+
+def test_a_narrowed_build_about_nothing_draft_shaped_never_takes_the_ids_lock(
+        client, projects_dir, tmp_path, monkeypatch):
+    """`ensure_ids(reproject=True)` is a write-shaped pass under the task_ids
+    lock, and `_draft_numbers` was taking it on EVERY build — including the
+    `/api/tasks/changes` builds narrowed to one unrelated session. `_draft_rows`
+    only ever emits `draft:`/`new:` keys (a chat draft on a real session is a
+    CHIP on that session's row, not a row), so such a build had no draft row to
+    find and was paying the lock for an empty list."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj",
+                      [_user("pull today's news", T9)])
+    # Both kinds of draft exist, so the skip is about the NARROWING and not
+    # about an empty store — and sess-a carries a chat draft of its own, the
+    # one thing a session key does have to keep answering for.
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(tmp_path)})
+    client.put("/api/drafts/chat/sess-a", json={"text": "half a thought"})
+
+    calls = []
+    real = tasks_store.ensure_ids
+    monkeypatch.setattr(tasks_store, "ensure_ids",
+                        lambda *a, **kw: (calls.append(kw), real(*a, **kw))[1])
+
+    rows = tasks_mod._task_rows(only=frozenset({"sess-a"}))
+    assert [r["key"] for r in rows] == ["sess-a"]
+    # The chip is still joined on — that read is the build's own, not the
+    # draft-row half's.
+    assert rows[0]["draft"]["preview"] == "half a thought"
+    assert not any(kw.get("reproject") for kw in calls)
+
+    # ...and a build that DOES name a draft still numbers it.
+    calls.clear()
+    rows = tasks_mod._task_rows(only=frozenset({"draft:draft-0001"}))
+    assert [r["key"] for r in rows] == ["draft:draft-0001"]
+    assert any(kw.get("reproject") for kw in calls)
+
+
+def test_the_full_listing_is_unchanged_by_the_narrowing(client, projects_dir,
+                                                        tmp_path):
+    """The skip is `only`-only: an unnarrowed build still builds every draft
+    row, numbers and all."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj",
+                      [_user("pull today's news", T9)])
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly report", "target": str(tmp_path)})
+    client.put(f"/api/drafts/chat/{quote('new:' + str(tmp_path), safe='')}",
+               json={"text": "never sent"})
+
+    rows = _by_key(client)
+    assert rows["draft:draft-0001"]["title"] == "Nightly report"
+    assert rows["draft:draft-0001"]["task_id"]
+    chat_key = "new:" + str(tmp_path)
+    assert rows[chat_key]["title"] == "never sent"
+    assert rows[chat_key]["task_id"]

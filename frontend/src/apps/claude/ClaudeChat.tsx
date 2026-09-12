@@ -2469,16 +2469,33 @@ function ChatBody(props: ChatBodyProps) {
    * Fire and forget, like every other write in platform/lib/drafts: a refusal
    * costs the number's continuity and nothing the reader is doing — and the
    * draft this renames is one the send is about to delete anyway.
+   *
+   * BOTH LATCHES ARE PER CONTROLLER, not per mount — the same rule, and for the
+   * same reason, as the boot's `bootedFor` above (Bugbot, PR #1061). `ChatBody`
+   * is not keyed on `file`: switching to a target whose `agentDir` is already
+   * cached rebuilds the controller WITHOUT remounting this tree, so as bare
+   * per-mount refs these two carried chat A's answers into chat B. Chat A's
+   * first send sets `rekeyed`, and a later session-less chat B in the same
+   * `ChatBody` then never moved its `new:<fileB>` draft — and the TASK number
+   * and List row wearing that key — onto the session its own first send made.
    */
+  const rekeyedFor = useRef<object | null>(null);
   const rekeyed = useRef(false);
   const startedWithoutSession = useRef<boolean | null>(null);
   useEffect(() => {
+    // A NEW CONTROLLER IS A NEW CHAT, so both answers are asked again: whether
+    // THIS chat started without a session, and whether ITS draft has moved.
+    if (rekeyedFor.current !== controller) {
+      rekeyedFor.current = controller;
+      rekeyed.current = false;
+      startedWithoutSession.current = null;
+    }
     const id = state.sessionId ?? "";
     if (startedWithoutSession.current === null) startedWithoutSession.current = !id;
     if (!startedWithoutSession.current || rekeyed.current || !id) return;
     rekeyed.current = true;
     void rekeyChatDraft(chatDraftKey(null, file), id);
-  }, [file, state.sessionId]);
+  }, [controller, file, state.sessionId]);
 
   const card = useMemo(
     () => ({

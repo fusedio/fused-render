@@ -2215,19 +2215,44 @@ def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
         return {}
 
 
+def _draft_shaped(only: frozenset | set) -> bool:
+    """Could ANY of these keys name a draft row?
+
+    `_draft_rows` emits exactly two key shapes: `draft:<id>` for a task draft
+    and `new:<file>` for a chat that has never been sent. A session key never
+    reaches it — a chat draft filed under a real session is a CHIP on that
+    session's own row (`_chat_draft`, off the `chat_drafts` the build already
+    holds), not a row of its own.
+
+    So a narrowed build asking about anything else has no draft row to find,
+    and running the draft half anyway cost it `ensure_ids(reproject=True)` —
+    a write-shaped pass under the task_ids lock — on every `/api/tasks/changes`
+    poll about an unrelated session. The full build (`only is None`) never
+    takes this door.
+    """
+    return any(key.startswith(("draft:", drafts.NEW_CHAT_PREFIX)) for key in only)
+
+
 def _draft_rows(only: frozenset | set | None = None,
-                chat_drafts: dict | None = None) -> list[dict]:
+                chat_drafts: dict | None = None,
+                task_drafts: dict | None = None) -> list[dict]:
     """Every draft as a row — task drafts AND unsent new chats — narrowed to
     `only` when the caller is the changes endpoint.
 
-    `chat_drafts` is `drafts.list_chat()`, read once by the caller for the same
-    reason the row join reads it once: it is one file, and this is the second
-    question asked of it. Read here when the caller has no copy, so the
-    function still answers on its own.
+    `chat_drafts` and `task_drafts` are `drafts.list_all()`, read once by the
+    caller for the same reason the row join reads the chat half once: it is
+    ONE file, and between the row join, the row build and the numbering it was
+    being asked three times per listing. Read here when the caller has no copy,
+    so the function still answers on its own.
     """
-    task_drafts = drafts.list_task()
-    if chat_drafts is None:
-        chat_drafts = drafts.list_chat()
+    if only is not None and not _draft_shaped(only):
+        return []
+    if task_drafts is None or chat_drafts is None:
+        loaded_task, loaded_chat = drafts.list_all()
+        if task_drafts is None:
+            task_drafts = loaded_task
+        if chat_drafts is None:
+            chat_drafts = loaded_chat
     numbers = _draft_numbers(task_drafts, chat_drafts)
     rows = []
     for ident, record in task_drafts.items():
@@ -2384,10 +2409,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # One scan of the runs tree for every row: which conversations are parked on
     # a card nobody has answered. See `_parked_runs`.
     parked = _parked_runs()
-    # One read of the drafts store for every row, for the same reason `read`
-    # and `busy` are read once: it is one small file, and the join below asks
-    # it per session.
-    chat_drafts = drafts.list_chat()
+    # ONE read of the drafts store for the whole build, for the same reason
+    # `read` and `busy` are read once: it is one small file, the join below
+    # asks it per session, and `_draft_rows` asks it again.
+    task_drafts, chat_drafts = drafts.list_all()
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)
@@ -2425,7 +2450,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # a draft has no messages and nothing to have read; before, because the
     # Board orders Upcoming off this list and a draft has to arrive already in
     # its place rather than appended past the end of the lane.
-    rows.extend(_draft_rows(only, chat_drafts))
+    rows.extend(_draft_rows(only, chat_drafts, task_drafts))
     rows.sort(key=_row_order)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.

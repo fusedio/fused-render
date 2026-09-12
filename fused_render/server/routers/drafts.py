@@ -74,7 +74,8 @@ def api_drafts():
     """Everything, both kinds. The modal's "resume" affordance reads the task
     half; the composer reads its own key out of the chat half rather than
     paying for a request per conversation."""
-    return {"chat": drafts.list_chat(), "task": drafts.list_task()}
+    task, chat = drafts.list_all()  # one file, one read
+    return {"chat": chat, "task": task}
 
 
 @router.post("/api/drafts/chat/rekey")

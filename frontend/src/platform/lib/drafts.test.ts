@@ -408,8 +408,8 @@ describe("the chat rekeys its draft when it learns its session", () => {
     readFileSync(join(import.meta.dir, "../../apps/claude/ClaudeChat.tsx"), "utf8");
   const effect = () => {
     const s = chat();
-    const at = s.indexOf("const rekeyed = useRef(false);");
-    return s.slice(at, s.indexOf("}, [file, state.sessionId]);", at));
+    const at = s.indexOf("const rekeyedFor = useRef<object | null>(null);");
+    return s.slice(at, s.indexOf("}, [controller, file, state.sessionId]);", at));
   };
 
   test("posts the move once, from the `new:<file>` key onto the session", () => {
@@ -427,6 +427,25 @@ describe("the chat rekeys its draft when it learns its session", () => {
     expect(e).toContain("if (startedWithoutSession.current === null) startedWithoutSession.current = !id;");
     expect(e).toContain("if (!startedWithoutSession.current || rekeyed.current || !id) return;");
     expect(e).toContain("rekeyed.current = true;");
+  });
+
+  test("both latches are PER CONTROLLER, so a second session-less chat still rekeys", () => {
+    // `ChatBody` is not keyed on `file` (see the boot's `bootedFor`, Bugbot PR
+    // #1061): switching to a target whose `agentDir` is already cached rebuilds
+    // the controller WITHOUT remounting this tree. As bare per-mount refs, chat
+    // A's first send left `rekeyed` set, and a later session-less chat B in the
+    // same body never moved its `new:<fileB>` draft — nor the TASK number and
+    // List row wearing that key — onto the session its own first send made.
+    const e = effect();
+    expect(e).toContain("const rekeyedFor = useRef<object | null>(null);");
+    expect(e).toContain("if (rekeyedFor.current !== controller) {");
+    expect(e).toContain("rekeyedFor.current = controller;");
+    // BOTH answers are asked again, not just the one: a chat B opened ON a
+    // session must re-learn that too, or A's `startedWithoutSession` decides it.
+    expect(e).toContain("rekeyed.current = false;");
+    expect(e).toContain("startedWithoutSession.current = null;");
+    // ...and the effect has to RUN on the rebuild for any of that to happen.
+    expect(chat()).toContain("}, [controller, file, state.sessionId]);");
   });
 
   test("fire and forget, like every other write in this module", () => {

@@ -360,17 +360,23 @@ def preview(text) -> str:
 # ------------------------------------------------------------- chat drafts
 
 
-def list_chat() -> dict:
-    """Every chat draft, `{key: {text, attachments, updated_at}}`, unreadable
-    records dropped."""
+def _project_chat(section: dict) -> dict:
+    """The chat section of an ALREADY-LOADED store, projected. Split out of
+    `list_chat` so `list_all` can answer both questions off one read."""
     out: dict[str, dict] = {}
-    for key, rec in load()[CHAT].items():
+    for key, rec in section.items():
         if not chat_key(key) or not isinstance(rec, dict):
             continue
         out[key] = {"text": _text(rec.get("text")),
                     "attachments": _attachments(rec.get("attachments")),
                     "updated_at": _epoch(rec.get("updated_at"))}
     return out
+
+
+def list_chat() -> dict:
+    """Every chat draft, `{key: {text, attachments, updated_at}}`, unreadable
+    records dropped."""
+    return _project_chat(load()[CHAT])
 
 
 def get_chat(session_id) -> dict | None:
@@ -477,16 +483,35 @@ def _empty_task(record: dict) -> bool:
             and record["new_task_each_run"] is None)
 
 
-def list_task() -> dict:
-    """Every task draft, `{draft_id: {…fields, created_at, updated_at}}`."""
+def _project_task(section: dict) -> dict:
+    """The task section of an ALREADY-LOADED store, projected. Split out of
+    `list_task` for the same reason as `_project_chat`."""
     out: dict[str, dict] = {}
-    for ident, rec in load()[TASK].items():
+    for ident, rec in section.items():
         if not draft_id(ident):
             continue
         record = _task_record(rec)
         if record is not None:
             out[ident] = record
     return out
+
+
+def list_task() -> dict:
+    """Every task draft, `{draft_id: {…fields, created_at, updated_at}}`."""
+    return _project_task(load()[TASK])
+
+
+def list_all() -> tuple[dict, dict]:
+    """Both sections off ONE read of the file: `(task_drafts, chat_drafts)`.
+
+    `list_task()` and `list_chat()` are each a whole `load()`, and the callers
+    that want drafts almost always want both — the tasks listing asks for the
+    chat drafts to join onto its rows and the task drafts to build draft rows
+    from, on every build, including the `/api/tasks/changes` polls. One file,
+    one read. Same projections, so this is interchangeable with calling the
+    two in turn."""
+    store = load()
+    return _project_task(store[TASK]), _project_chat(store[CHAT])
 
 
 def get_task(ident) -> dict | None:
