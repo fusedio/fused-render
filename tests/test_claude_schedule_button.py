@@ -325,13 +325,21 @@ def test_the_link_opens_the_form_immediately(page):
     # key so a fresh card cannot inherit the previous one's answers. The deep link
     # is an opening like any other, and what this test cares about is unchanged —
     # it opens on arrival, prefilled, with no button left to press.
-    assert "openForm(new Date(" in effect
+    assert "const at = new Date(Date.now() + NEW_LINK_LEAD_MS);" in effect
+    assert "openForm(at, null, seed);" in effect
     # The handoff travels as ONE seed handed to that door (Akshil, 2026-09-12:
     # attachments from a hop were leaking into every later modal because the
     # six loose page states were undone one by one), so the effect builds a
     # `HopSeed` and passes it rather than setting fields.
     assert "const seed: HopSeed" in effect
     assert ", null, seed)" in effect
+    # A HOP OUT OF A CONVERSATION LOOKS FIRST (Akshil, 2026-09-12). A task draft
+    # bound to a session has no row of its own — the session's row wears the
+    # `Draft` chip — so this button is the way back into it, and a second press
+    # has to reopen THAT form rather than mint a second one bound to the same
+    # thread. One small request, only for a hop that names a session, and a miss
+    # opens exactly as it always did.
+    assert "boundDraftSeed(all.task, session, seed.message)" in effect
 
 
 def test_the_prefilled_time_is_valid_the_moment_it_opens(page):

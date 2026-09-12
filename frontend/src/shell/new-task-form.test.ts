@@ -1871,7 +1871,7 @@ describe("a draft moves with the reader, never duplicating", () => {
     // The ✕ guard's question ("has the user changed anything") and the draft's
     // ("are there words here that would be lost") are asked APART: the prefill
     // still moves the dirty baseline, so a close is still one click.
-    expect(s).toContain("const hopSeeded = !editing && !initialDraft");
+    expect(s).toContain("const hopSeeded = !editing");
     expect(s).toContain("(!!(initialMessage ?? \"\").trim() || !!initialAttachments?.length)");
     expect(s).toContain("!editing && (dirty || hopSeeded)");
     // …and the hook is told the opening value counts as unwritten, which is what
@@ -1881,9 +1881,10 @@ describe("a draft moves with the reader, never duplicating", () => {
 
   test("an ordinary new card still mints nothing until something changes", () => {
     const s = src();
-    // `hopSeeded` is false without a chat handoff, so the body is null and the
-    // hook keeps its own default: the mount value is already written.
-    expect(s).toContain("!initialDraft");
+    // `hopSeeded` is false without a chat handoff — no words, no files — so the
+    // body is null and the hook keeps its own default: the mount value is
+    // already written.
+    expect(s).toContain("const hopSeeded = !editing\n    && (!!(initialMessage");
     // An Edit writes nothing here at all, whatever else is true.
     expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
   });
@@ -2283,5 +2284,102 @@ describe("Delete and Discard share one seat and one skin", () => {
     expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
     expect(s).toContain("{del && (");
     expect(s).toContain("{draftId && (");
+  });
+});
+
+// ---- the hop comes back to the form it already made ---------------------------
+//
+// THE RULE (Akshil, 2026-09-12). A task draft made out of a chat is bound to it
+// and has NO ROW of its own — the conversation's row wears the `Draft` chip
+// instead (routers/tasks.py `_bound_chips`) — so the composer's Schedule button
+// is the only way back into that form. Press it a second time and the card has
+// to reopen the SAME draft, or the store grows a second form bound to one
+// session and whichever saved last owns the chip.
+
+describe("a Schedule hop out of a chat that already has a form", () => {
+  const page = () => readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+  let boundDraftSeed: typeof import("./Scheduled").boundDraftSeed;
+  beforeAll(async () => {
+    ({ boundDraftSeed } = await import("./Scheduled"));
+  });
+
+  const stored = (over: Record<string, unknown>) => ({
+    title: "Ship the changelog",
+    description: "then tag it",
+    target: "/Users/me/proj",
+    when: null,
+    repeat: null,
+    model: "",
+    effort: "",
+    permission: "",
+    attachments: [],
+    new_task_each_run: null,
+    session_id: "sess-a",
+    custom_rule: null,
+    created_at: 1,
+    updated_at: 2,
+    ...over,
+  }) as unknown as import("@platform/lib/drafts").TaskDraft;
+
+  test("it reopens the draft bound to that session, under its own id", () => {
+    const seed = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a", null);
+    expect(seed?.id).toBe("draft-0001");
+    // The whole stored form comes back, not a summary: the card seeds every
+    // field from it and goes on autosaving under the same id.
+    expect((seed?.form as Record<string, unknown>).title).toBe("Ship the changelog");
+    expect((seed?.form as Record<string, unknown>).description).toBe("then tag it");
+  });
+
+  test("a chat with no form of its own still mints one, exactly as before", () => {
+    expect(boundDraftSeed({}, "sess-a", null)).toBeNull();
+    // Bound to somebody else's conversation is bound to somebody else.
+    expect(boundDraftSeed({ "draft-0001": stored({ session_id: "sess-b" }) },
+                          "sess-a", null)).toBeNull();
+    // …and a draft bound to nobody is a row of its own; this door is not it.
+    expect(boundDraftSeed({ "draft-0001": stored({ session_id: "" }) },
+                          "sess-a", null)).toBeNull();
+  });
+
+  test("the composer's words outrank the stored ones — and only those two fields", () => {
+    // Whatever is in the box right now was typed a second ago, so it wins, and
+    // it is split across the card's two fields exactly as a fresh hop's is.
+    const seed = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a",
+                                "Cut the release\nand post the notes");
+    const form = seed?.form as Record<string, unknown>;
+    expect(seed?.id).toBe("draft-0001");
+    expect(form.title).toBe("Cut the release");
+    expect(form.description).toBe("and post the notes");
+    // Everything else the form remembers is untouched — this is the same draft,
+    // written a bit further.
+    expect(form.target).toBe("/Users/me/proj");
+    expect(form.session_id).toBe("sess-a");
+    // An empty composer overrides nothing.
+    const quiet = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a", "   ");
+    expect((quiet?.form as Record<string, unknown>).title).toBe("Ship the changelog");
+  });
+
+  test("newest wins if a store somehow holds two", () => {
+    // The same tie-break the server's chip takes, so the card that opens is the
+    // draft the row is advertising.
+    const seed = boundDraftSeed({
+      "draft-0001": stored({ updated_at: 2, title: "older" }),
+      "draft-0002": stored({ updated_at: 9, title: "newer" }),
+    }, "sess-a", null);
+    expect(seed?.id).toBe("draft-0002");
+  });
+
+  test("only a hop that names a session pays for the lookup", () => {
+    const s = page();
+    // One small request, and the answer can arrive late — so it takes the same
+    // generation `openChatDraft` does, and a stale one is dropped rather than
+    // painted over a newer press.
+    expect(s).toContain("const session = (q.get(\"session_id\") ?? \"\").trim();");
+    expect(s).toContain("const gen = ++chatDraftGen.current;");
+    expect(s).toContain(
+      "openForm(at, null, seed, boundDraftSeed(all.task, session, seed.message));");
+    // Every other door still opens synchronously, and a failed lookup falls
+    // through to the ordinary opening: a hop that cannot find its draft is a
+    // hop, not a dead button.
+    expect(s).toContain("} else {\n      openForm(at, null, seed);\n    }");
   });
 });

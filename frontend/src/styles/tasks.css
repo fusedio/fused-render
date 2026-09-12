@@ -1474,6 +1474,35 @@ button.tasks-caret,
    third mark, and nothing on this page acts on the distinction — the row's words
    and its time say it anyway. */
 
+/* THE DRAFT LINE'S SEAT, where a message row keeps its status ring
+   (ScheduleTaskViews, the thread's first row when the task carries unsent
+   words — Akshil, 2026-09-12). The one new class this row needs: everything
+   else about it is a message row's, because everything else about it is a
+   message.
+
+   It is sized to `.schedule-ring` and NOT to the glyph inside it — 16px square,
+   `flex: 0 0 16px`, the ring's own box (schedule.css) — because the column of
+   rings running down an expanded thread is the thing this row must not break.
+   The pencil is 11px (ICON_PENCIL_LINE, drawn a step under the row's other
+   marks), so it is centred in the ring's slot rather than filling it, and the
+   ids beside it stay in one line.
+
+   `--error`, which is the chip's colour on the row above and the page's one red
+   (tokens.css): the mark in the thread and the mark on the row are the same
+   news, and a reader who has learned the red pencil once has learned it here.
+   `line-height: 0` for the outcome pill's reason — an inline SVG sits on the
+   text baseline and would otherwise carry the line box's descender with it. */
+.tasks-msg-pencil {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  line-height: 0;
+  color: var(--error);
+}
+
 .tasks-msg-body {
   min-width: 0;
   color: var(--fg);
@@ -1924,15 +1953,32 @@ button.tasks-draft-pill:focus-visible {
 /* …and the WORD STAYS RED under it (Akshil, 2026-09-12): the fill says the
    filter is running, the colour says what the chip is, and they are two
    different facts. Nothing sets `color` here now — the red above carries
-   through — which is also why the fill is a wash rather than a solid accent. */
+   through — which is also why the fill is a wash rather than a solid accent.
+
+   AND THE WASH IS THE WORD'S OWN RED, not the accent (Akshil, 2026-09-12,
+   second pass). The accent fill was borrowed from the folder tag, which is the
+   right instinct for the SHAPE and the wrong one for the colour: a red word
+   sitting in a blue box is two hues arguing inside one 40px chip, and the ON
+   state read as a different control rather than as this one, pressed. A light
+   red — the same `--error` the ink is, at a wash's strength — says the same
+   thing in the chip's own voice, which is what the folder tag's accent fill
+   does for the folder tag.
+
+   14% and a 28% hairline, both of `--error`: deliberately lighter than the
+   folder's 18/22 of `--accent`, because the ink standing IN this fill is the
+   same hue as the fill, and a heavier wash starts eating the word. Checked on
+   both grounds (tokens.css: `--error` is #c62828 on light, #ff6b6b on dark, and
+   both washes sit a step off `--bg` rather than near it). The hairline is what
+   gives the wash an edge on the dark theme, where 14% of a light red over a
+   dark ground is nearly nothing on its own. */
 button.tasks-draft-pill.is-on {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 28%, transparent);
 }
 
 button.tasks-draft-pill.is-on:hover,
 button.tasks-draft-pill.is-on:focus-visible {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  background: color-mix(in srgb, var(--error) 22%, transparent);
 }
 
 /* -- dropping ONE filter, from the control that set it (D448) -----------------

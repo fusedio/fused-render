@@ -84,6 +84,8 @@ import {
   markReadIntent,
   messageEditEntry,
   messageHref,
+  messageStamp,
+  nextMessageId,
   taskFile,
   threadTone,
   messageWhenTitle,
@@ -2868,6 +2870,93 @@ function TaskNode({
 
       {open && (
         <div className="tasks-thread">
+          {/* THE UNSENT LINE, AT THE HEAD OF THE THREAD (Akshil, 2026-09-12).
+              The row already wears the red `Draft` chip, which says THAT there
+              are words here; expanding it used to show the thread without them,
+              so the one place a reader goes to read this conversation was the
+              one place the newest thing in it was missing.
+
+              It is drawn as a MESSAGE ROW because that is what it is about to
+              be: same class, same seats, same quoted body, same relative time,
+              so the thread reads as one column with a line at the top that has
+              not gone yet. Three things differ, and each is the fact itself:
+
+                * THE SEAT WHERE THE RING GOES holds the pencil instead, in the
+                  error colour — the chip's own mark and the chip's own red, so
+                  the mark on the row and the line under it are visibly the same
+                  news. A status ring would be the wrong glyph outright: the
+                  statuses are about runs, and nothing has run.
+                * THE ID IS THE NEXT ONE (tasks-lib.nextMessageId, the client
+                  half of tasks_store.format_message_id). These words have no
+                  message and so no id, but they stand in the id column, and what
+                  they can honestly say is which message they would be.
+                * IT IS NOT A LINK. Every other row here addresses a turn in the
+                  transcript (`msg=`); this one addresses nothing — there is no
+                  turn — so there is no anchor to ⌘-click into a tab. Its press
+                  is the TASK's (`activate`), which is the same thing the row
+                  above it does and the only honest destination: the composer
+                  holding these words is at the end of that chat.
+
+              OUTSIDE `view.messages`, deliberately: the cap, the `hidden` count
+              and the "Loading N more…" line are all arithmetic about what the
+              SERVER holds, and a row the client drew from a joined draft is not
+              one of those. Adding it there would have made a thread of three
+              report four and then fetch the missing one for ever.
+
+              A DRAFT ROW never reaches this: both kinds carry `message_count: 0`
+              (routers/tasks.py `_draft_row`, `_new_chat_draft_row`), so
+              `isExpandable` is false and there is no thread to head — including
+              the session-bound task draft, which has a session but still no
+              messages of its own. The one row that draws this is an ordinary
+              conversation whose composer is holding something. */}
+          {task.draft && (
+            <div
+              className="tasks-msg"
+              role="button"
+              tabIndex={0}
+              aria-label={`Draft — ${firstLine(task.draft.preview) || "(empty)"}`}
+              onClick={activate}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  activate();
+                }
+              }}
+            >
+              <span className="tasks-msg-pencil" aria-hidden>{ICON_PENCIL_LINE}</span>
+              <IdChip id={nextMessageId(task.message_count)} kind="message" />
+              {/* The words as they arrived: `draft.preview` is already the first
+                  line, cut at 120 characters, by the server that joined it
+                  (fused_render/drafts.py `preview`) — the same string the chip
+                  captions with. No fetch: an expanded row must not go and get
+                  what the listing already handed it. */}
+              <span className="tasks-msg-body" data-hint={task.draft.preview}>
+                {firstLine(task.draft.preview) || "(empty)"}
+              </span>
+              <span className="tasks-grow" />
+              {/* The message rows' own cell, in the message rows' own
+                  vocabulary (relativeWhen), off the draft's clock. The word for
+                  WHICH kind of time this is lives in the tooltip, exactly where
+                  `messageWhenTitle` and `taskWhen` keep theirs.
+
+                  Guarded for `updated_at` being 0: `messageStamp`/`relativeWhen`
+                  both answer "" for a falsy stamp (an older store, or a record
+                  that predates the field), and an ungated template would have
+                  printed a bare "Drafted" tooltip with a trailing space and a
+                  blank time cell — a row with nothing where its clock should
+                  be. "Draft" is not a lie the way "" would be silence. */}
+              <span
+                className="tasks-msg-time"
+                data-hint={
+                  task.draft.updated_at
+                    ? `Drafted ${messageStamp(task.draft.updated_at)}`
+                    : "Drafted"
+                }
+              >
+                {task.draft.updated_at ? relativeWhen(task.draft.updated_at) : "Draft"}
+              </span>
+            </div>
+          )}
           {view.messages.map((m) => {
             // threadTone, not messageTone: a thread under an archived task is
             // archived with it, except for a turn that is still running

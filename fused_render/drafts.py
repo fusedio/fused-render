@@ -555,7 +555,7 @@ def get_task(ident) -> dict | None:
     return list_task().get(key) if key else None
 
 
-def put_task(ident, fields) -> dict | None:
+def put_task(ident, fields) -> tuple[dict | None, list[str]]:
     """Upsert one task draft — and DELETE it when every field comes in empty.
 
     Fields the client did not send keep the value the stored draft had, so the
@@ -565,11 +565,26 @@ def put_task(ident, fields) -> dict | None:
 
     `created_at` is written once and then never moves — it is the row's `at` on
     the List and the Board, and a draft that jumped to the top of Upcoming on
-    every keystroke would be a row that will not sit still. Answers the stored
-    record, or None when the write was a delete."""
+    every keystroke would be a row that will not sit still. Answers
+    `(record, evicted_ids)`: the stored record (None when the write was a
+    delete) and the LISTING KEYS (`draft:<id>`) of any other task drafts this
+    write evicted — `[]` on the overwhelmingly common write that bound nobody.
+
+    ONE BOUND DRAFT PER SESSION, enforced here rather than trusted to the
+    client (review, 2026-09-12). A session-bound draft stands in for its
+    session's row (`_bound_chips` in routers/tasks.py) and that row wears
+    exactly one `✎ Draft` chip, so two drafts naming the same session is not
+    two facts, it is one fact and a stale second copy of it — a New task modal
+    opened twice from the same conversation's Schedule button, say, once
+    before a reload and once after. The newest write wins and the loser's
+    words are gone: the same "a draft moves, never duplicates" rule the
+    composer → New task hop already keeps (`from_chat_key`, above), read the
+    other way round. Done inside THIS write's lock rather than as a second
+    request, so nothing can observe the moment two drafts both claim the same
+    session."""
     key = draft_id(ident)
     if not key:
-        return None
+        return None, []
     patch = fields if isinstance(fields, dict) else {}
 
     def mutate(data: dict):
@@ -581,20 +596,37 @@ def put_task(ident, fields) -> dict | None:
         record = _task_record(merged)
         if record is None or _empty_task(record):
             if key not in data[TASK]:
-                return None, False
+                return (None, []), False
             data[TASK].pop(key, None)
-            return None, True
+            return (None, []), True
         now = time.time()
         record["created_at"] = stored.get("created_at") or now
         record["updated_at"] = now
+        evicted: list[str] = []
+        session = record["session_id"]
+        if session:
+            for other_id, other_rec in list(data[TASK].items()):
+                if other_id == key:
+                    continue
+                other = _task_record(other_rec)
+                if other is not None and other["session_id"] == session:
+                    data[TASK].pop(other_id, None)
+                    evicted.append(task_key(other_id))
         data[TASK][key] = record
-        return record, True
+        return (record, evicted), True
 
     return _update(mutate)
 
 
-def unbind_session(session_id) -> int:
-    """Cut every task draft loose from one session; how many were cut.
+def unbind_session(session_id) -> list[str]:
+    """Cut every task draft loose from one session; the LISTING KEYS of the ones
+    that were cut (`draft:<id>`), newest-store order, and `[]` when none were.
+
+    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just changed —
+    a different number, a different folder, no session — and the caller has to
+    announce them (`tasks_watch.notify`) or the page goes on showing the erased
+    session's number on a draft whose Schedule would send the message back into
+    a conversation that no longer exists. A count cannot be announced.
 
     The erase gesture's share of this store (`POST /api/tasks/erase`). The words
     are NOT deleted — a draft is a task somebody is still writing, and the
@@ -609,14 +641,14 @@ def unbind_session(session_id) -> int:
     allocated one of its own, because the binding was the very thing telling
     `_draft_numbers` that its task already had a number (review, 2026-09-12).
 
-    One pass under one lock, and 0 — no write at all — for the overwhelmingly
+    One pass under one lock, and `[]` — no write at all — for the overwhelmingly
     common erase where nothing was bound to that session."""
     target = bound_session(session_id)
     if not target:
-        return 0
+        return []
 
     def mutate(data: dict):
-        cut = 0
+        cut: list[str] = []
         for ident, rec in list(data[TASK].items()):
             record = _task_record(rec)
             if record is None or record["session_id"] != target:
@@ -625,7 +657,7 @@ def unbind_session(session_id) -> int:
             # ("drafted 5m ago") and sorts on, and nobody typed anything here.
             record["session_id"] = ""
             data[TASK][ident] = record
-            cut += 1
+            cut.append(task_key(ident))
         return cut, bool(cut)
 
     return _update(mutate)

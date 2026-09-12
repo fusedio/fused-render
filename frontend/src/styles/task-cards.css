@@ -187,6 +187,26 @@
   margin-left: auto;
 }
 
+/* …AND ONLY THE FIRST OF THEM TAKES IT (Akshil, 2026-09-12, screenshot: the
+   Draft chip floating in the middle of the head row). The rule above names a
+   SHAPE, not a seat, and the Draft chip arrives in the very same shield — so a
+   card carrying both had two `auto` margins in one flex line, which is not "push
+   the group right" but "split the free space between them", and the chip landed
+   halfway across the row with a hole on either side.
+
+   The group is chip, folder, time, in that order, and the seat rule is the
+   List's and the Board's: the chip sits immediately LEFT of the folder with the
+   row's ordinary gap between them (design-principles §1 — a mark that moved
+   between views would be three marks to learn). So the free space is spent ONCE,
+   at the head of the group, and every shape after a shield gives its own auto
+   margin back. Written as a sibling combinator rather than by naming the draft
+   chip, because the fact being stated is about the SECOND member of the group,
+   whatever it turns out to be. */
+.task-card-head-row > .schedule-tv-id-shield ~ .schedule-tv-id-shield,
+.task-card-head-row > .schedule-tv-id-shield ~ .schedule-tv-id {
+  margin-left: 0;
+}
+
 /* CENTRED ON THE ROW'S OWN LINE. The List row pays for the tag's 3px of padding
    with `margin-block: -3px` and lets the shield stretch to the row's height,
    which is right in a 36px row and wrong here: this row is one text line tall,

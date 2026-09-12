@@ -91,6 +91,7 @@ import {
   nextRunRepeats,
   ringFailed,
   outcomeTag,
+  nextMessageId,
   nextRunAt,
   openMessageHref,
   openThreadIntent,
@@ -304,6 +305,17 @@ describe("isExpandable", () => {
     expect(isExpandable(task({}, 2))).toBe(true);
     expect(isExpandable(task({}, 3))).toBe(true);
     expect(isExpandable(task({}, 40))).toBe(true);
+  });
+
+  it("opens a one-message task that is holding a draft, and only then", () => {
+    // The expanded thread leads with the composer's unsent words, so a draft is
+    // the second voice a single message lacked (Akshil, 2026-09-12). Without one
+    // the row stays a leaf; a pending task that never ran stays a leaf even with
+    // words in its box, because there is no thread to lead.
+    const holding = { preview: "one more thing", updated_at: 1 };
+    expect(isExpandable({ ...task({}, 1), draft: holding })).toBe(true);
+    expect(isExpandable({ ...task({}, 1), draft: null })).toBe(false);
+    expect(isExpandable({ ...task({}, 0), draft: holding })).toBe(false);
   });
 
   it("asks message_count, never the tail the client happens to hold", () => {
@@ -4377,13 +4389,41 @@ describe("the Draft chip", () => {
     expect(cardsHead.indexOf("<DraftChip")).toBeLessThan(cardsHead.indexOf("<IdentityChip"));
   });
 
-  it("wears the ON pill the folder chip wears, in the accent, at rest", () => {
+  it("…and the card's head row SPENDS its free space once, at the group's head", () => {
+    // Akshil, 2026-09-12, screenshot: the chip floating mid-row on the wall. The
+    // JSX order above was already right; the CSS was not. `margin-left: auto` is
+    // asked of a SHAPE — IdentityChip's shield — and the pressable Draft chip
+    // arrives in the very same shield, so a card carrying both had two auto
+    // margins in one flex line, which splits the free space between them rather
+    // than pushing the group right.
+    expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id-shield"))
+      .toContain("margin-left: auto;");
+    // Everything after the first shape in the group gives its own back, so the
+    // group is chip, folder, time with the row's ordinary gap between them —
+    // the List's and the Board's seat, not a third one.
+    const rest = block(
+      CARDS_CSS,
+      ".task-card-head-row > .schedule-tv-id-shield ~ .schedule-tv-id-shield",
+    );
+    expect(rest).toContain("margin-left: 0;");
+    // The gap is the row's own and nothing adds to it.
+    expect(block(CARDS_CSS, ".task-card-head-row")).toContain("gap: 8px;");
+  });
+
+  it("wears an ON pill at rest — the folder chip's shape, in its own red", () => {
     // The only trace this filter has: there is no popover holding a count for
     // it and no entry in the Status menu, so a chip that did not show its own
     // state would leave a narrowed page unexplainable.
     expect(TASKS_CSS).toContain("button.tasks-draft-pill.is-on {");
     const on = block(TASKS_CSS, "button.tasks-draft-pill.is-on");
-    expect(on).toContain("var(--accent)");
+    // The SHAPE is the folder tag's — a wash and an inset hairline — and the
+    // HUE is this chip's own (Akshil, 2026-09-12): a red word in a blue box was
+    // two hues arguing inside one 40px chip.
+    expect(on).toContain("background: color-mix(in srgb, var(--error) 14%, transparent);");
+    expect(on).toContain(
+      "box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 28%, transparent);",
+    );
+    expect(on).not.toContain("var(--accent)");
     // The same pill the outcome tag is — one shape for one kind of mark.
     expect(VIEWS).toContain('"tasks-outcome-pill tasks-draft-pill"');
     // …and inside the row's shield, so a near-miss in the row's padding opens
@@ -4408,12 +4448,19 @@ describe("the Draft chip", () => {
     // the pressable chip on the List and the Board.
     expect(pill).toContain("border: 0;");
     expect(pill).not.toContain("background:");
-    // The ON state keeps the accent wash — the filter still says it is running —
-    // and no longer repaints the word, so the chip is red whatever the page is
-    // filtered to.
+    // The ON state is a wash of the SAME red — the filter still says it is
+    // running — and it never repaints the word, so the chip is red whatever the
+    // page is filtered to. Lighter than the folder tag's 18/22 of `--accent`,
+    // because the ink standing in this fill is the fill's own hue.
     const on = block(TASKS_CSS, "button.tasks-draft-pill.is-on");
-    expect(on).toContain("var(--accent)");
+    expect(on).toContain("var(--error) 14%");
+    expect(on).toContain("var(--error) 28%");
     expect(on).not.toContain("color:");
+    // …and the hover on an ON chip is one step up of the same wash, never the
+    // accent that used to be here.
+    const onHot = block(TASKS_CSS, "button.tasks-draft-pill.is-on:hover");
+    expect(onHot).toContain("var(--error) 22%");
+    expect(onHot).not.toContain("var(--accent)");
     // …and the hover wash is still the quiet one, not a danger wash.
     expect(TASKS_CSS).toContain("background: var(--ctl-quiet-bg-hover);");
     // Both themes define the token this leans on, so the contrast is the
@@ -4446,6 +4493,131 @@ describe("the Draft chip", () => {
     // rest, hover, focus and the filter being on all read this one.
     expect(block(TASKS_CSS, "button.tasks-draft-pill.is-on")).not.toContain("color:");
     expect(block(TASKS_CSS, "button.tasks-draft-pill:hover")).not.toContain("color:");
+  });
+});
+
+// ---- the draft, as the thread's first row (Akshil, 2026-09-12) --------------
+// Expanding a task shows its messages. A task whose composer is holding unsent
+// words showed them all EXCEPT the newest thing in the conversation, which is
+// the one a reader expanded the row to find. So the thread grows one row at its
+// head: the pencil where the ring goes, the id the words would have, the words
+// quoted like every other row, and when they were typed.
+
+describe("an expanded thread leads with the draft it is carrying", () => {
+  const THREAD = (() => {
+    const at = VIEWS.indexOf('<div className="tasks-thread">');
+    expect(at).toBeGreaterThan(-1);
+    return VIEWS.slice(at, VIEWS.indexOf("{view.messages.map((m) => {", at));
+  })();
+
+  it("numbers it as the NEXT message of the thread", () => {
+    // A message id is derived — the Nth message in time order IS MSG-N
+    // (tasks_store.message_ids) — so the words that have not gone yet are
+    // `message_count + 1`, and no fetch is needed to say so.
+    expect(nextMessageId(3)).toBe("MSG-004");
+    expect(nextMessageId(0)).toBe("MSG-001");
+    // The Python's width is a MINIMUM, not a cap: a four-digit thread grows a
+    // digit rather than wrapping to a wrong id.
+    expect(nextMessageId(999)).toBe("MSG-1000");
+    // Nonsense off the wire lands on the first message rather than on `MSG-NaN`.
+    expect(nextMessageId(-4)).toBe("MSG-001");
+    expect(nextMessageId(Number.NaN)).toBe("MSG-001");
+    // Shaped exactly like the ids the server sends, which is the whole point of
+    // a second implementation of `tasks_store.format_message_id`.
+    expect(nextMessageId(11)).toMatch(/^MSG-\d{3}$/);
+    // …and it is asked of the SERVER's total, never of the three-message window
+    // this client happens to hold.
+    expect(THREAD).toContain("nextMessageId(task.message_count)");
+  });
+
+  it("draws it as a message row, with the pencil in the ring's seat", () => {
+    // Same class, same seats, same quoted body: it is about to BE a message.
+    expect(THREAD).toContain('{task.draft && (');
+    expect(THREAD).toContain('className="tasks-msg"');
+    expect(THREAD).toContain('className="tasks-msg-body"');
+    expect(THREAD).toContain('className="tasks-msg-time"');
+    // The ring's seat holds the chip's own mark instead — nothing has run, so a
+    // status ring would be the wrong glyph outright.
+    expect(THREAD).toContain('<span className="tasks-msg-pencil" aria-hidden>{ICON_PENCIL_LINE}</span>');
+    expect(THREAD).not.toContain("<StatusIcon");
+    // ONE new class, and it is sized to the ring it stands in for
+    // (schedule.css `.schedule-ring`), so the thread's column of marks holds.
+    const seat = block(TASKS_CSS, ".tasks-msg-pencil");
+    expect(seat).toContain("width: 16px;");
+    expect(seat).toContain("flex: 0 0 16px;");
+    // The chip's red, which is the page's one red — the mark on the row and the
+    // line under it are the same news.
+    expect(seat).toContain("color: var(--error);");
+  });
+
+  it("quotes the preview it was given and never fetches one", () => {
+    // `draft.preview` is already the first line, cut at 120 characters, by the
+    // server that joined it — the same string the chip captions with.
+    expect(THREAD).toContain("data-hint={task.draft.preview}");
+    expect(THREAD).toContain('{firstLine(task.draft.preview) || "(empty)"}');
+    expect(THREAD).not.toContain("fetch(");
+    // The time is the message rows' own cell and the message rows' own
+    // vocabulary; WHICH kind of time it is lives in the tooltip, exactly where
+    // `taskWhen` now keeps the same word.
+    expect(THREAD).toContain("relativeWhen(task.draft.updated_at)");
+    expect(THREAD).toContain("`Drafted ${messageStamp(task.draft.updated_at)}`");
+  });
+
+  it("guards a falsy updated_at instead of printing a blank clock", () => {
+    // `messageStamp`/`relativeWhen` both answer "" for a falsy stamp (an older
+    // store, or a record written before the field existed), and an unguarded
+    // template prints a "Drafted " tooltip with a trailing space over a blank
+    // time cell — a row with nothing where its clock should be.
+    expect(THREAD).toContain(
+      'task.draft.updated_at ? relativeWhen(task.draft.updated_at) : "Draft"');
+    expect(THREAD).toContain('task.draft.updated_at\n');
+    expect(THREAD).toContain(': "Drafted"');
+  });
+
+  it("is not a message link, and its press is the task's", () => {
+    // Every other row here addresses a turn (`msg=`); this one addresses
+    // nothing, so there is no anchor to ⌘-click into a tab and no `pressMessage`
+    // to run. What it does is what the row above it does.
+    expect(THREAD).not.toContain("tasks-rowlink");
+    expect(THREAD).not.toContain("openMessageHref");
+    expect(THREAD).not.toContain("pressMessage");
+    expect(THREAD).toContain("onClick={activate}");
+    expect(THREAD).toContain('role="button"');
+    expect(THREAD).toContain("tabIndex={0}");
+  });
+
+  it("costs the thread's arithmetic nothing", () => {
+    // It is drawn OUTSIDE `view.messages`, so the preview cap, the `hidden`
+    // count and the "Loading N more…" line — all of them arithmetic about what
+    // the SERVER holds — are untouched. A thread of three still reports three.
+    const listing = VIEWS.slice(VIEWS.indexOf("{view.messages.map((m) => {"));
+    expect(listing.slice(0, listing.indexOf("</div>"))).not.toContain("task.draft");
+    const view = threadView(
+      task({ message_count: 3, draft: { preview: "unsent", updated_at: 1 },
+             messages: [msg({}), msg({}), msg({})] }),
+    );
+    expect(view.messages).toHaveLength(3);
+    expect(view.hidden).toBe(0);
+    expect(view.more).toBe(false);
+  });
+
+  it("is never a DRAFT row's, because a draft row has no thread to head", () => {
+    // Both kinds carry `message_count: 0` (routers/tasks.py `_draft_row`,
+    // `_new_chat_draft_row`) — the session-bound task draft included, which has
+    // a session but still no messages of its own — so `isExpandable` is false
+    // and the accordion never opens. Nothing to leave out; there is no row.
+    const bound = task({
+      key: "draft:d9", kind: "draft", draft_kind: "task", state: "draft",
+      status: "upcoming", session_id: "s-9", message_count: 0, messages: [],
+      draft: { preview: "half a thought", updated_at: 1 },
+    });
+    expect(isExpandable(bound)).toBe(false);
+    const chat = task({
+      key: "new:/Users/me/news", kind: "draft", draft_kind: "chat", state: "draft",
+      status: "upcoming", message_count: 0, messages: [],
+      draft: { preview: "unsent", updated_at: 1 },
+    });
+    expect(isExpandable(chat)).toBe(false);
   });
 });
 
@@ -5218,12 +5390,17 @@ describe("the time a task row prints", () => {
     expect(soon.text).toBe("in 4d");
   });
 
-  it("says `drafted 3h ago` on a draft row, in the column's own vocabulary", () => {
+  it("says `3h ago` on a draft row, in the column's own vocabulary and no other", () => {
     // Akshil, 2026-09-12. The cell used to print the literal word "Draft", which
     // the red chip on the same row already says — so the row's last column was
     // repeating a mark and the one fact it could not state was how stale the
     // words are. Both kinds of draft ROW, because both are the same fact to a
     // reader: an unfinished New task form, and a never-sent chat.
+    //
+    // …and NOT "drafted 3h ago" either (same day, second pass): the prefix was
+    // the chip's word said twice, and it made the last column of the list ragged
+    // — every other row ends in two short units and these ended in three. Which
+    // kind of time it is stays in the tooltip, where the other rows keep it.
     const at = T("2026-08-16T09:00:00");
     const form = task({
       key: "draft:d1", kind: "draft", draft_kind: "task", state: "draft",
@@ -5240,8 +5417,11 @@ describe("the time a task row prints", () => {
       expect(when.kind).toBe("draft");
       // TIED TO THE COLUMN'S FORMATTER, not to a second one that happens to
       // agree today: the cell beside it on every other row is `relativeWhen`.
-      expect(when.text).toBe(`drafted ${relativeWhen(at, NOW)}`);
-      expect(when.text).toBe("drafted 3h ago");
+      expect(when.text).toBe(relativeWhen(at, NOW));
+      expect(when.text).toBe("3h ago");
+      // Nothing is prefixed onto the unit — it is exactly what the row beside it
+      // prints for a run.
+      expect(when.text).not.toContain("drafted");
       expect(when.title).toBe(`Drafted ${messageStamp(at)}`);
       // …and the instant it printed is the one the draft rank sorts by, so the
       // order of these rows and the times on them come off ONE number.
@@ -5260,7 +5440,8 @@ describe("the time a task row prints", () => {
     // Review, 2026-09-12. A draft is written in the past by definition — there is
     // no such thing as one typed in two minutes — but the stamp comes off the
     // machine's clock, and a clock nudged backwards (an NTP correction, a laptop
-    // waking in another timezone) put "drafted in 2m" on the row.
+    // waking in another timezone) put "in 2m" on a row nobody can have typed
+    // into yet.
     const ahead = T("2026-08-16T12:02:00"); // two minutes past NOW
     const row = task({
       key: "draft:d2", kind: "draft", draft_kind: "task", state: "draft",
@@ -5268,7 +5449,7 @@ describe("the time a task row prints", () => {
       last_active: 0,
     });
     const when = taskWhen(row, NOW);
-    expect(when.text).toBe("drafted just now");
+    expect(when.text).toBe("just now");
     expect(when.text).not.toContain(" in ");
     // The STAMP itself is untouched: `at` is what the row sorts on and what the
     // tooltip prints, and rewriting a stored fact to fix a sentence would be the
@@ -5837,7 +6018,7 @@ describe("groupByColumn", () => {
     // settled on: for rows it scores as "no time", the server's. So the List
     // ranked two drafts newest-words-first and the Board, drawing the same two,
     // did not (Akshil, 2026-09-12). Both now read `byDraftClock`, off the very
-    // number the List row prints beside them ("drafted 3h ago").
+    // number the List row prints beside them ("3h ago").
     const at = 1_700_000_000;
     const draftAt = (key: string, updated: number) =>
       task({ key, kind: "draft", draft_kind: "task", state: "draft", status: "upcoming",

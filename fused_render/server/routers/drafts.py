@@ -22,12 +22,17 @@ travels. The key announced is the key the listing files the row under — the
 session id for a chat draft, `draft:<id>` for a task draft — so the changes
 endpoint rebuilds exactly that row and nothing else.
 
-TWO keys when a task draft is bound to a session, because then two rows move at
-once: the draft appears and the session's own row stands down in its favour (one
-task, one row — `routers/tasks.py`, the tail of `_build_task_rows`), and on the
-discard they swap back. The changes endpoint reports the key it is asked about
-and cannot list as `gone`, which is exactly how each of the two is retired from
-the page the moment the other arrives.
+TWO keys when a task draft is bound to a session, because then two things
+change and only one of them is a row. A session-bound draft is never a row of
+its own (`routers/tasks.py::_draft_rows` skips it outright); the session's own
+row carries it instead, as `bound_draft` and the `✎ Draft` chip (`_bound_chips`,
+joined in `_row`). So the draft's key is announced so a page holding a stale
+row under it — from before the binding, or from an older build — is told to
+drop it (the changes endpoint reports it `gone`, having no row to rebuild), and
+the session's key is announced because that is the row whose chip just
+appeared, changed, or went. Nothing "swaps back" on a discard — the session's
+row was never touched, so there is nothing to reverse; it simply repaints
+without the chip.
 
 `new:<file>` announces itself too, as of round 2. It used to be the one key
 that did not — no session meant no task row meant nothing for a listening page
@@ -130,19 +135,22 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     the modal may grow a field without this endpoint learning about it. An
     all-empty form is a delete, the same bargain the chat half makes."""
     ident = _draft_id(draft_id)
-    # WHICH SESSION'S ROW IS AT STAKE BESIDES THIS DRAFT'S, read BEFORE the
+    # WHICH SESSION'S CHIP IS AT STAKE BESIDES THIS DRAFT'S KEY, read BEFORE the
     # write.
     #
-    # A task draft that names a session stands IN for that session's row while
-    # it exists (`routers/tasks.py`, the tail of `_build_task_rows`), so both
-    # keys have to repaint on every write: the draft row appears and the
-    # session's goes, and on the write that turns out to be a DELETE the
-    # session's row comes straight back. The delete is why this is read first —
-    # emptying a form takes the binding away with it, and afterwards there is
-    # nothing left to ask. One small json read on a debounced autosave, against
-    # a session row that would otherwise be stuck until the 20-second listing.
+    # A task draft that names a session is never a row of its own — the
+    # session's own row carries it instead, as `bound_draft` and the `✎ Draft`
+    # chip (`routers/tasks.py::_bound_chips`, joined in `_row`) — so both keys
+    # have to repaint on every write: the session's chip appears, changes or
+    # goes, and the draft's own key is announced so a page holding a stale row
+    # under it drops it. On the write that turns out to be a DELETE the chip
+    # simply goes, because the row underneath it was never touched. The delete
+    # is why this is read first — emptying a form takes the binding away with
+    # it, and afterwards there is nothing left to ask. One small json read on a
+    # debounced autosave, against a chip that would otherwise be stuck showing
+    # stale words until the 20-second listing.
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
-    record = drafts.put_task(ident, body)
+    record, evicted = drafts.put_task(ident, body)
     bound = bound or str((record or {}).get("session_id") or "")
     # A DRAFT MOVES, IT NEVER DUPLICATES. The composer → New task hop mints the
     # task draft out of what was in the chat box, so for one instant the same
@@ -168,7 +176,12 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     from_chat = drafts.chat_key(body.get("from_chat_key")) if record else ""
     if from_chat:
         drafts.delete_chat(from_chat)
-    _announce(drafts.task_key(ident), from_chat, bound)
+    # ...and EVICTED, when this write bound a session that another draft had
+    # already claimed (`drafts.put_task`, review 2026-09-12: one bound draft
+    # per session). The loser's key is announced alongside the rest so a page
+    # holding that row drops it, rather than going on showing a chip whose form
+    # just vanished out from under it.
+    _announce(drafts.task_key(ident), from_chat, bound, *evicted)
     return {"ok": True, "draft_id": ident, "draft": record,
             "from_chat_key": from_chat}
 
@@ -179,10 +192,10 @@ def api_draft_task_delete(draft_id: str):
     after a draft has been scheduled for real (which `POST /api/schedule` does
     for itself, given a `draft_id`)."""
     ident = _draft_id(draft_id)
-    # …and the session whose row this draft was standing in for, read before the
+    # …and the session whose chip this draft was wearing, read before the
     # delete for the same reason the PUT reads it: afterwards nothing can name
-    # it, and that row has to come back in the same repaint the draft row goes
-    # out on (Akshil, 2026-09-12).
+    # it, and that row has to repaint — chip gone — in the same round the
+    # draft's own key goes out on (Akshil, 2026-09-12).
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
     removed = drafts.delete_task(ident)
     _announce(drafts.task_key(ident), bound)

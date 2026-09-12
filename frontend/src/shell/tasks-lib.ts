@@ -1117,9 +1117,52 @@ export function threadView(task: Task, loaded?: TaskMessage[]): ThreadView {
  * we hold would call a forty-message task unexpandable. It is the same number
  * threadView already trusts for "is there more?", so the chevron and the "Show N
  * more" button under it cannot disagree about how long the thread is.
+ *
+ * A DRAFT COUNTS AS A SECOND VOICE (Akshil, 2026-09-12: "if i have a single
+ * message task, and i have a draft message, let's show accordion in that one").
+ * The expanded thread leads with the composer's unsent words as a row of their
+ * own, so a one-message task holding a draft has something to reveal — the words
+ * the row's title does not show. One message and no draft stays a plain row.
  */
 export function isExpandable(task: Task): boolean {
-  return task.message_count > 1;
+  if (task.message_count > 1) return true;
+  return task.message_count === 1 && !!task.draft;
+}
+
+/** How many digits a message number is padded to — `tasks_store._MSG_WIDTH`,
+ *  which is the only place this number is decided. Named rather than typed into
+ *  the template below so the two files can be read against each other. */
+const MSG_WIDTH = 3;
+
+/**
+ * THE ID THE NEXT MESSAGE OF THIS THREAD WILL HAVE — `MSG-004` on a task of
+ * three (Akshil, 2026-09-12).
+ *
+ * The client-side half of `tasks_store.format_message_id`, and it exists for
+ * exactly one row: the DRAFT line at the head of an expanded thread
+ * (ScheduleTaskViews). That line is words nobody has sent, so it has no message
+ * and therefore no id of its own — but it stands in the column the ids stand in,
+ * and a blank there would read as a broken row the way every other hole in a
+ * column on this page does. What it can honestly say is which message these
+ * words would BE, and that is arithmetic the client is allowed to do: a message
+ * id is *derived* — the Nth message of a task in time order IS MSG-N
+ * (tasks_store.message_ids says so, and stores nothing) — so the next one is
+ * `count + 1` and nothing has to be asked of the server.
+ *
+ * `count` is `task.message_count`, the SERVER's total, and never the tail this
+ * client happens to hold: the listing sends a three-message window, so counting
+ * what is in hand would number the draft of a forty-message task `MSG-004`.
+ *
+ * A count of zero (or a negative one, or a number that is not one) gives
+ * `MSG-001`, which is the truth for a thread with nothing in it — the first
+ * thing sent there will be its first message. Past 999 the number simply grows a
+ * digit, exactly as the Python does: the width is a MINIMUM, not a cap, and
+ * silently wrapping a four-digit thread back to `MSG-000` would be a wrong id
+ * rather than a wide one.
+ */
+export function nextMessageId(count: number): string {
+  const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  return `MSG-${String(n + 1).padStart(MSG_WIDTH, "0")}`;
 }
 
 /**
@@ -2781,7 +2824,7 @@ export interface TaskWhen {
  */
 export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
   // A DRAFT PRINTS WHEN IT WAS LAST TYPED IN (Akshil, 2026-09-12: "drafted 3h
-  // ago"). It used to print the literal word "Draft", on the argument that a
+  // ago" — the word itself dropped later the same day, see below). It used to print the literal word "Draft", on the argument that a
   // draft has none of the three times this function knows — no run ahead, no run
   // behind, no session activity — and the honest cell was the one fact it did
   // have. That was a true sentence in the wrong column: the chip on the same row
@@ -2797,8 +2840,16 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
   // AND THE COLUMN'S OWN FORMATTER, `relativeWhen`, not a second one: the cell
   // beside it on every other row reads "5h ago", and a draft that spoke a
   // different dialect of the same fact would be two vocabularies in one column.
-  // The word "drafted" is the only thing added, and it is what stops the unit
-  // being read as a run — this row has never run.
+  //
+  // NOTHING IS ADDED TO IT EITHER (Akshil, 2026-09-12, second pass). The cell
+  // said "drafted 5h ago" for a day, on the argument that the word is what stops
+  // the unit being read as a run. The red `Draft` chip on the same row already
+  // says it — in a word and a pencil, four hundred pixels to the left — so the
+  // prefix was the second statement of one fact, and it was the one that made
+  // the last column of the list ragged: every other row ends in two short units
+  // and these ended in three. The unit alone is the column's vocabulary, and
+  // WHICH kind of time it is stays where the other rows keep it, in the tooltip
+  // ("Drafted <absolute>").
   //
   // A draft with NO clock at all (every source zero — `draftUpdatedAt` returns 0)
   // keeps the old cell. Not a fallback so much as the same care `none` takes: 0
@@ -2822,14 +2873,15 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
       // in two minutes — but the stamp comes off the machine's clock and
       // `relativeWhen` reads a future number as "in 2m", so a clock nudged
       // backwards (an NTP correction, a laptop waking in another timezone) put
-      // "drafted in 2m" on the row. Pinning the argument at `now` degrades that
-      // to "drafted just now", which is both true and unremarkable. `at` itself
+      // "in 2m" on a row nobody can have typed into yet. Pinning the argument at
+      // `now` degrades that to "just now", which is both true and
+      // unremarkable. `at` itself
       // is NOT clamped: it is what the row sorts on and what the tooltip prints,
       // and rewriting the stored fact to fix a sentence would be a second
       // vocabulary again. `now / 1000` because this function's `now` is in
       // MILLISECONDS (it is `Date.now()`) and every stamp it handles is in
       // seconds — `relativeWhen` does the same division on the way in.
-      text: `drafted ${relativeWhen(Math.min(at, now / 1000), now)}`,
+      text: relativeWhen(Math.min(at, now / 1000), now),
       title: `Drafted ${messageStamp(at)}`,
     };
   }
@@ -3004,7 +3056,7 @@ export function groupByColumn(
   // and for rows it scores as "no time" that is the server's order: so the List
   // ranked two drafts newest-words-first and the Board, drawing the same two,
   // did not. Neither view shows a draft's clock as ink on a card, but both now
-  // print it on the List row beside them (`taskWhen`: "drafted 3h ago"), and one
+  // print it on the List row beside them (`taskWhen`: "3h ago"), and one
   // order for one number is the whole of why this reads the same function rather
   // than sorting here.
   const upcoming = map.get("upcoming");

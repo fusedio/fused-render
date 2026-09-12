@@ -3179,15 +3179,24 @@ export default function NewJobModal({
    *
    * So the two questions are asked apart, and the ✕ keeps the behaviour it has
    * always had. This one is answered once, at mount, off the props: a chat
-   * handoff with something in it, on a card that is neither an Edit (not a draft
-   * at all) nor a re-opened draft (whose words are already stored, under an id
-   * this card was handed).
+   * handoff with something in it, on a card that is not an Edit (an Edit is a
+   * stored entry, not a draft at all).
+   *
+   * A RE-OPENED DRAFT IS INCLUDED WHEN THE HOP BROUGHT WORDS (Akshil,
+   * 2026-09-12). Reopening a draft from its row carries no hop, so nothing
+   * changes there. But a hop out of a chat that already has a bound form
+   * reopens THAT form (shell/Scheduled `boundDraftSeed`) with the composer's
+   * newer words merged into it — and those words are in exactly the position
+   * this flag exists for: typed a moment ago, about to have the composer's own
+   * copy deleted, and not yet anywhere else. Writing at mount is what stops a
+   * close from losing them; the id is the draft's own, so it is one more save
+   * of the same form rather than a second draft.
    */
   // …and a hop can arrive as FILES with no words at all — a picture dropped into
   // an empty composer is a chat draft (`drafts.put_chat`), so it is a task draft
   // the moment it lands here, or the composer's copy would sit beside this card
   // as a second row (Akshil, 2026-09-12).
-  const hopSeeded = !editing && !initialDraft
+  const hopSeeded = !editing
     && (!!(initialMessage ?? "").trim() || !!initialAttachments?.length);
   /**
    * THE CHAT THIS CARD'S WORDS CAME OUT OF, whichever way the card was opened —

@@ -3086,6 +3086,20 @@ export interface Task {
   // `session_id`, the same place the unread numbers are joined; null — or
   // absent, on a server that predates drafts — means there is nothing unsent.
   draft?: { preview: string; updated_at: number } | null;
+  /**
+   * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
+   * (or absent, on an older server) when there is none.
+   *
+   * A task draft made out of a chat is a message INTO that chat, so it gets no
+   * row and no number of its own: this row is the one the reader knows, and it
+   * simply wears the `Draft` chip, whose preview arrives in `draft` above when
+   * the conversation's own composer is empty (routers/tasks.py `_bound_chips`).
+   *
+   * Nothing draws it. It is what the composer's Schedule hop looks up so a
+   * second press reopens the SAME form instead of minting another
+   * (shell/Scheduled `boundDraftSeed`).
+   */
+  bound_draft?: string;
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose

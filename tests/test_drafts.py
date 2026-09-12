@@ -141,6 +141,14 @@ def _by_key(client):
     return {t["key"]: t for t in r.json()["tasks"]}
 
 
+def _put(ident, fields) -> dict | None:
+    """`drafts.put_task`, minus the evicted-ids half most tests here have no
+    reason to look at — the tests that ARE about eviction (below, "one bound
+    draft per session") call `drafts.put_task` directly to see both."""
+    record, _evicted = drafts.put_task(ident, fields)
+    return record
+
+
 # ---------------------------------------------------------------- the store
 
 
@@ -200,17 +208,17 @@ def test_a_draft_id_is_a_token(state_dir):
     assert drafts.draft_id("d-1234-abcd") == "d-1234-abcd"
     assert drafts.draft_id("short") == "", "under eight characters"
     assert drafts.draft_id("has/slash/init") == ""
-    assert drafts.put_task("nope", {"title": "x"}) is None
+    assert _put("nope", {"title": "x"}) is None
 
 
 def test_a_task_draft_merges_fields_and_keeps_created_at(state_dir):
-    first = drafts.put_task("draft-0001", {"title": "Ship it", "junk": "dropped"})
+    first = _put("draft-0001", {"title": "Ship it", "junk": "dropped"})
     assert "junk" not in first
     assert first["title"] == "Ship it"
     assert first["created_at"] == first["updated_at"]
 
     # A second autosave sends only what changed; the rest stands.
-    second = drafts.put_task("draft-0001", {"target": "/tmp/proj"})
+    second = _put("draft-0001", {"target": "/tmp/proj"})
     assert second["title"] == "Ship it"
     assert second["target"] == "/tmp/proj"
     assert second["created_at"] == first["created_at"], "the row must sit still"
@@ -219,7 +227,7 @@ def test_a_task_draft_merges_fields_and_keeps_created_at(state_dir):
 def test_when_and_repeat_pass_through_whatever_the_form_held(state_dir):
     """A structured repeat is an object and a cron line is a string; the modal
     has to reopen on exactly what it closed on."""
-    stored = drafts.put_task("draft-0001", {
+    stored = _put("draft-0001", {
         "title": "Standup",
         "when": "2026-09-12T09:00", "repeat": {"every": "week", "on": ["mon"]}})
     assert stored["when"] == "2026-09-12T09:00"
@@ -240,15 +248,15 @@ def test_only_words_or_files_make_a_task_draft(state_dir):
                      {"when": "2026-09-12T09:00"}, {"repeat": "week"},
                      {"custom_rule": {"freq": "day"}},
                      {"new_task_each_run": True}):
-        assert drafts.put_task("draft-0001", settings) is None, settings
+        assert _put("draft-0001", settings) is None, settings
         assert drafts.get_task("draft-0001") is None, settings
 
     # The three that DO make one, each on its own.
-    assert drafts.put_task("draft-0001", {"title": "Ship it"}) is not None
+    assert _put("draft-0001", {"title": "Ship it"}) is not None
     assert drafts.delete_task("draft-0001") is True
-    assert drafts.put_task("draft-0001", {"description": "roll up the PRs"}) is not None
+    assert _put("draft-0001", {"description": "roll up the PRs"}) is not None
     assert drafts.delete_task("draft-0001") is True
-    assert drafts.put_task("draft-0001", {"attachments": [
+    assert _put("draft-0001", {"attachments": [
         {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]}) is not None
 
 
@@ -258,18 +266,18 @@ def test_clearing_the_words_then_the_last_file_lets_the_draft_go(state_dir):
     draft". `target` was counted as content, so the record outlived everything
     a person had actually put in it."""
     shot = [{"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]
-    drafts.put_task("draft-0001", {"title": "Ship it", "target": "/tmp/proj",
-                                   "model": "opus", "attachments": shot})
+    _put("draft-0001", {"title": "Ship it", "target": "/tmp/proj",
+                        "model": "opus", "attachments": shot})
     # Text cleared: still a draft, because the picture is still in the tray.
-    assert drafts.put_task("draft-0001", {"title": "", "description": ""}) is not None
+    assert _put("draft-0001", {"title": "", "description": ""}) is not None
     # …and the picture removed after it: now there is nothing left to keep.
-    assert drafts.put_task("draft-0001", {"attachments": []}) is None
+    assert _put("draft-0001", {"attachments": []}) is None
     assert drafts.get_task("draft-0001") is None
 
 
 def test_an_all_empty_task_draft_is_a_delete(state_dir):
-    drafts.put_task("draft-0001", {"title": "Ship it"})
-    assert drafts.put_task("draft-0001", {"title": "  "}) is None
+    _put("draft-0001", {"title": "Ship it"})
+    assert _put("draft-0001", {"title": "  "}) is None
     assert drafts.get_task("draft-0001") is None
     assert drafts.delete_task("draft-0001") is False
 
@@ -495,7 +503,7 @@ def test_a_schedule_without_a_draft_id_is_unchanged(client, tmp_path):
     `?new=1` hop still does not."""
     target = tmp_path / "project"
     target.mkdir()
-    drafts.put_task("draft-0001", {"title": "keep me"})
+    _put("draft-0001", {"title": "keep me"})
     r = client.post("/api/schedule", headers=WRITE,
                     json={"target": str(target), "message": "hi",
                           "delay_seconds": 600})
@@ -1171,10 +1179,17 @@ def test_a_bad_or_absent_from_chat_key_changes_nothing(client, tmp_path):
 # SECOND session with a SECOND task number, and the TASK-nnn the reader had been
 # watching was gone.
 #
-# So the binding is STORED, and the three consequences below follow from it: no
-# number is minted for a draft whose task already has one, the draft row wears
-# the session's identity, and while it stands the session's own row stands down
-# — one task, one row.
+# So the binding is STORED, and everything below follows from it: such a draft
+# is not a row and not a number — the CONVERSATION's row is the one the reader
+# knows, and it simply grows the red `✎ Draft` chip — and the way back into the
+# form is the composer's own Schedule button, which reopens the draft already
+# bound to that session instead of minting a second one.
+#
+# Round 3 built it the other way, with a draft row wearing the session's
+# identity and the session's own row held back behind it, and every part of that
+# read wrong: a second thing to read, the conversation gone from the Cards wall
+# (which draws transcripts, and a form has none), and one session row that
+# opened a modal where every other opens the chat (bugbot, PR #1126).
 
 
 def _bound_draft(client, ident, session_id, target, **fields):
@@ -1191,7 +1206,7 @@ def _bound_draft(client, ident, session_id, target, **fields):
 def test_the_session_a_draft_is_going_into_round_trips(state_dir):
     """Stored and validated as a SESSION id, never as `new:<file>`: binding is to
     a thread, and a chat that has never been sent has none."""
-    stored = drafts.put_task("draft-0001", {"title": "hi", "session_id": "sess-a"})
+    stored = _put("draft-0001", {"title": "hi", "session_id": "sess-a"})
     assert stored["session_id"] == "sess-a"
     assert drafts.get_task("draft-0001")["session_id"] == "sess-a"
     assert drafts.bound_session("sess-a") == "sess-a"
@@ -1201,37 +1216,140 @@ def test_the_session_a_draft_is_going_into_round_trips(state_dir):
     # ...and it survives the saves that do not mention it, like every other
     # stored field (`TASK_FIELDS`): the modal's later autosaves may send only
     # what changed.
-    assert drafts.put_task("draft-0001",
-                           {"title": "hi again"})["session_id"] == "sess-a"
+    assert _put("draft-0001",
+                {"title": "hi again"})["session_id"] == "sess-a"
 
 
-def test_a_session_bound_draft_wears_the_sessions_number(client, tmp_path,
-                                                         projects_dir):
-    """No second number, and no second identity: the row IS that task.
+# --------------------------------------- one bound draft per session (server)
+#
+# THE OWNER'S OWN RULE, "a draft moves, never duplicates" (design.md, Round 2),
+# read the other way round. `from_chat_key` above keeps it for the chat → task
+# hop; this is the same promise for two TASK drafts that both end up naming the
+# same session — a New task form opened twice out of one conversation's
+# Schedule button, say, once before a reload and once after. The session's row
+# can wear exactly one `✎ Draft` chip (`_bound_chips`), so binding a second
+# draft to it is not a second fact, it is a stale copy of the first one, and
+# the newest write is the one that is telling the truth (review, 2026-09-12).
 
-    The number, the project and the cwd all come off the session, so the row the
-    draft stands in for and the row it replaces say the same thing about where
-    this work lives."""
+
+def test_binding_a_second_draft_evicts_the_first_bound_to_the_same_session(
+        state_dir):
+    first, evicted = drafts.put_task(
+        "draft-0001", {"title": "one", "session_id": "sess-a"})
+    assert first is not None
+    assert evicted == [], "nothing else was bound yet"
+
+    second, evicted = drafts.put_task(
+        "draft-0002", {"title": "two", "session_id": "sess-a"})
+    assert second is not None
+    assert second["session_id"] == "sess-a"
+    # THE LISTING KEY (`draft:<id>`), same shape `unbind_session` answers in —
+    # the caller announces it and a page holding that row has to be told to
+    # drop it.
+    assert evicted == ["draft:draft-0001"]
+    assert drafts.get_task("draft-0001") is None, "the loser's words are gone"
+    assert drafts.get_task("draft-0002") is not None
+
+
+def test_a_put_for_the_same_id_updates_in_place_and_evicts_nobody(state_dir):
+    """The ordinary autosave — the SAME draft, saved again and again — must
+    never read as a second draft colliding with itself."""
+    drafts.put_task("draft-0001", {"title": "one", "session_id": "sess-a"})
+    record, evicted = drafts.put_task("draft-0001", {"title": "one, edited"})
+    assert record["title"] == "one, edited"
+    assert record["session_id"] == "sess-a", "unmentioned fields survive"
+    assert evicted == []
+    assert drafts.get_task("draft-0001") is not None
+
+
+def test_unbound_drafts_are_untouched_by_a_binding_elsewhere(state_dir):
+    """Only a draft bound to the SAME session is at risk. An unbound draft, and
+    a draft bound to a DIFFERENT session, are not the fact "one per session" is
+    about, whatever else is going on in the store at the time."""
+    drafts.put_task("draft-unbound", {"title": "no session at all"})
+    drafts.put_task(
+        "draft-other", {"title": "a different thread", "session_id": "sess-b"})
+
+    _record, evicted = drafts.put_task(
+        "draft-0001", {"title": "one", "session_id": "sess-a"})
+    assert evicted == []
+    assert drafts.get_task("draft-unbound") is not None
+    assert drafts.get_task("draft-other")["session_id"] == "sess-b"
+
+
+def test_the_router_announces_the_draft_a_binding_evicted(client, tmp_path):
+    """The eviction happens inside `put_task`'s own lock; a page holding the
+    loser's row would go on showing it until the next full listing without the
+    router telling the long-poll too (`routers/drafts.py`, the PUT handler)."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    before = client.get("/api/tasks").json()["generation"]
+
+    _bound_draft(client, "draft-0002", "sess-a", elsewhere)
+    assert drafts.get_task("draft-0001") is None
+
+    body = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
+    assert "draft:draft-0001" in body["gone"]
+
+
+def test_a_session_bound_draft_is_not_a_row_and_the_session_wears_the_chip(
+        client, tmp_path, projects_dir):
+    """ONE TASK, ONE ROW — and it is the CONVERSATION's row (Akshil,
+    2026-09-12).
+
+    The draft is the thread's next message being written, so it is not a second
+    thing beside the thread. Nothing is emitted for it and nothing is hidden for
+    it: the session's row stands exactly as it always did — same title, same
+    number, same message count, same lane — and grows two fields, the id of the
+    form being written into it and that form's preview for the chip."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
-    session_number = _by_key(client)["sess-a"]["task_id"]
-    assert session_number == "TASK-001"
+    before = _by_key(client)["sess-a"]
+    assert before["task_id"] == "TASK-001"
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
-    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-    row = _by_key(client)["draft:draft-0001"]
-    assert row["task_id"] == session_number
-    assert row["session_id"] == "sess-a"
-    assert row["kind"] == "draft"
-    assert row["draft_kind"] == "task"
-    # The SESSION's folder, not the folder the form happens to point at: a task
-    # sits in one project, and the row is that task.
-    assert row["project"] == canonical_fs_path("/home/me/proj")
-    assert row["cwd"] == canonical_fs_path("/home/me/proj")
-    assert row["target"] == canonical_fs_path(str(elsewhere))
-    # ...and nothing was allocated under the draft's own key. The number is the
-    # session's; there is no second one to move, spend or renumber.
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere,
+                 description="ship the changelog, then tag it")
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows, "a bound draft is not a row"
+    row = rows["sess-a"]
+    # Untouched, field for field: this is the row the reader already knew.
+    assert row["task_id"] == before["task_id"] == "TASK-001"
+    assert row["title"] == before["title"]
+    assert row["status"] == before["status"]
+    assert row["message_count"] == before["message_count"] == 1
+    assert row["project"] == before["project"]
+    assert row.get("kind") == before.get("kind"), "not a draft row, and never was"
+    # …and the two fields that are new. The chip's words are the form's TITLE,
+    # which is what the reader named this thing; the description is the fallback
+    # for a form that has only been typed into.
+    assert row["bound_draft"] == "draft-0001"
+    assert row["draft"]["preview"] == "Ship the changelog"
+    assert row["draft"]["updated_at"] > 0
+
+    # Nothing was allocated under the draft's own key either — the number is the
+    # session's, and minting a second one was the whole bug.
     assert "draft:draft-0001" not in tasks_store.task_ids()
+
+
+def test_the_conversations_own_composer_outranks_the_form(client, tmp_path,
+                                                          projects_dir):
+    """One row, one chip, and the chat's own unsent words win.
+
+    A session can have both — text left in its composer AND a New task form
+    opened out of it — and `draft` is one field because the reader has one
+    question. The composer's copy is literally sitting in that conversation; the
+    form is a message about to be scheduled into it."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    client.put(_chat_url("sess-a"), json={"text": "half a thought"})
+
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["preview"] == "half a thought"
+    assert row["bound_draft"] == "draft-0001", "still the way back to the form"
 
 
 def test_a_draft_with_no_session_is_numbered_exactly_as_before(client, tmp_path):
@@ -1247,40 +1365,33 @@ def test_a_draft_with_no_session_is_numbered_exactly_as_before(client, tmp_path)
     assert "draft:draft-0001" in tasks_store.task_ids()
 
 
-def test_the_session_row_stands_down_while_the_draft_stands_in(client, tmp_path,
-                                                               projects_dir):
-    """ONE TASK, ONE ROW. The draft is the conversation's next message, not a
-    second thing beside it — and two rows for one task is what the reader
-    actually saw."""
+def test_discarding_a_bound_draft_takes_the_chip_off_the_row(client, tmp_path,
+                                                             projects_dir):
+    """The chip is the only trace, so Discard is the only thing that has to
+    reverse — the row itself never moved."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    assert _by_key(client)["sess-a"]["bound_draft"] == "draft-0001"
 
-    rows = _by_key(client)
-    assert "sess-a" not in rows, "the session's own row is held back"
-    assert "draft:draft-0001" in rows
-    assert [key for key, row in rows.items() if row["task_id"] == "TASK-001"] \
-        == ["draft:draft-0001"], "one number, one row"
-
-    # Discard, and the conversation is simply back — number, message count and
-    # all. Nothing about the session was changed to hide it.
     assert client.delete("/api/drafts/task/draft-0001").status_code == 200
-    rows = _by_key(client)
-    assert "draft:draft-0001" not in rows
-    assert rows["sess-a"]["task_id"] == "TASK-001"
-    assert rows["sess-a"]["message_count"] == 1
+    row = _by_key(client)["sess-a"]
+    assert row["bound_draft"] == ""
+    assert row["draft"] is None
+    assert row["task_id"] == "TASK-001", "nothing about the row was ever changed"
+    assert row["message_count"] == 1
 
 
-def test_emptying_a_bound_draft_brings_the_session_row_back(client, tmp_path,
-                                                            projects_dir):
-    """An all-empty form is a DELETE (`_empty_task`), and the swap has to
-    reverse on that door too — not only on Discard."""
+def test_emptying_a_bound_draft_takes_the_chip_off_too(client, tmp_path,
+                                                       projects_dir):
+    """An all-empty form is a DELETE (`_empty_task`), and the chip has to go on
+    that door as well — not only on Discard."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-    assert "sess-a" not in _by_key(client)
+    assert _by_key(client)["sess-a"]["bound_draft"] == "draft-0001"
 
     r = client.put("/api/drafts/task/draft-0001",
                    json={"title": "", "description": "", "target": str(elsewhere),
@@ -1288,13 +1399,15 @@ def test_emptying_a_bound_draft_brings_the_session_row_back(client, tmp_path,
     assert r.json()["draft"] is None
     rows = _by_key(client)
     assert "draft:draft-0001" not in rows
-    assert "sess-a" in rows
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["draft"] is None
 
 
-def test_both_rows_repaint_through_the_changes_endpoint(client, tmp_path,
+def test_the_chip_repaints_through_the_changes_endpoint(client, tmp_path,
                                                         projects_dir):
-    """Two rows move at once, so both keys are announced: the draft arrives and
-    the session's row is reported `gone`, then the other way round."""
+    """One row moves, and it is the session's — the draft write announces that
+    key too (`routers/drafts._announce`), which is what makes the chip appear
+    and vanish without a reload."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     _by_key(client)  # a first full listing, so the session is numbered
     elsewhere = tmp_path / "elsewhere"
@@ -1302,34 +1415,40 @@ def test_both_rows_repaint_through_the_changes_endpoint(client, tmp_path,
 
     before = client.get("/api/tasks").json()["generation"]
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-    r = client.get("/api/tasks/changes?since=%d&wait=0" % before)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert [row["key"] for row in body["rows"]] == ["draft:draft-0001"]
-    assert "sess-a" in body["gone"], "the row the page is still showing"
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert rows["sess-a"]["draft"]["preview"] == "Ship the changelog"
+    # The draft's own key is announced as well and answers `gone`: it is not a
+    # row, and a page holding one from an older build is told to drop it.
+    assert "draft:draft-0001" in body["gone"]
 
     gen = body["generation"]
     assert client.delete("/api/drafts/task/draft-0001").status_code == 200
     body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
-    assert [row["key"] for row in body["rows"]] == ["sess-a"]
-    assert "draft:draft-0001" in body["gone"]
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["draft"] is None
 
 
-def test_a_poll_about_the_session_alone_does_not_bring_its_row_back(
-        client, tmp_path, projects_dir):
-    """The claim is read off the DRAFT STORE, never off the rows a build
-    happened to produce.
+def test_a_poll_about_the_session_alone_carries_the_chip(client, tmp_path,
+                                                         projects_dir):
+    """The chip is read off the DRAFT STORE, never off the rows a build happened
+    to produce.
 
     A narrowed build asking about a session alone runs no draft half at all
-    (`_draft_shaped`), so a claim derived from built rows would let the hidden
-    row reappear on exactly that poll — and the page would show the task twice
-    until the next full listing."""
+    (`_draft_shaped`), so a join that depended on a draft row having been built
+    would drop the chip on exactly that poll — and the row the page is holding
+    would lose it until the next full listing."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
 
-    assert tasks_mod._task_rows(only=frozenset({"sess-a"})) == []
+    narrowed = tasks_mod._task_rows(only=frozenset({"sess-a"}))
+    assert [r["key"] for r in narrowed] == ["sess-a"]
+    assert narrowed[0]["bound_draft"] == "draft-0001"
+    assert narrowed[0]["draft"]["preview"] == "Ship the changelog"
 
 
 def test_scheduling_a_bound_draft_lands_in_the_session_and_keeps_the_number(
@@ -1439,16 +1558,16 @@ def _park(monkeypatch, runs, session_id):
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _Parked())
 
 
-def test_a_live_session_is_never_hidden_by_a_draft_bound_to_it(
+def test_a_live_session_is_untouched_by_a_draft_bound_to_it(
         client, tmp_path, projects_dir, runs, monkeypatch):
-    """The one thing the swap may not do (review, 2026-09-12).
+    """Nothing is hidden, whatever the conversation is doing — and a run parked
+    on a permission card is the case that used to be worth a rule of its own.
 
-    "One task, one row" is a statement about identity, and a settled conversation
-    can say it with a single row because there is nothing left to watch. A run
-    parked on a permission card is the opposite: hiding it takes the row out of
-    the listing AND out of the pulse the sidebar dot and Notifications read, so
-    the user would be waiting on a card they can no longer see — because they
-    started typing the next message."""
+    Round 3 dropped a settled session's row behind its draft and had to carve
+    out the live statuses so a run in flight could never vanish from the listing
+    or from the pulse the sidebar dot and Notifications read. Nothing is dropped
+    now, so there is no rule to carve: the row is the row, the pill says what
+    the run is doing, and the chip says a message is being written to it."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -1457,45 +1576,23 @@ def test_a_live_session_is_never_hidden_by_a_draft_bound_to_it(
 
     rows = _by_key(client)
     assert rows["sess-a"]["status"] == "needs_attention"
-    assert "draft:draft-0001" in rows, "and the way back into the modal stays too"
-    # Both rows, and both wearing the one number: while the run is live the
-    # session says what it is doing and the draft says what is being written to
-    # it. The number is the task's, and they are the same task.
-    assert rows["draft:draft-0001"]["task_id"] == rows["sess-a"]["task_id"]
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" not in rows
 
-    # The pulse is the half the sidebar reads, and it is the half that mattered:
-    # a hidden row is a dot that never lights and a Notification nobody gets.
+    # The pulse is the half the sidebar reads, and a listing that hid rows was a
+    # dot that never lit and a Notification nobody got.
     pulse = {t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]}
     assert "sess-a" in pulse
 
-    # …and the narrowed build the changes long-poll runs says the same thing. It
-    # builds no draft half at all (`_draft_shaped`) and still has to answer with
-    # the row, or the page drops the live task the moment the watcher mentions
-    # it — the settled case, which answers `gone` here, is pinned separately.
+    # …and the narrowed build the changes long-poll runs says the same thing.
     assert [r["key"] for r in
             tasks_mod._task_rows(only=frozenset({"sess-a"}))] == ["sess-a"]
 
-    # …and the moment the card is answered and the run is over, the swap is back
-    # on — no second gesture needed, just the next build.
+    # …and the settled case is the same case. There is no second behaviour here.
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _SettledAgent(runs))
     rows = _by_key(client)
-    assert "sess-a" not in rows
-    assert "draft:draft-0001" in rows
-
-
-def test_a_settled_session_with_a_bound_draft_is_still_hidden(
-        client, tmp_path, projects_dir):
-    """The other side of the rule, pinned beside it: `done` is settled, and a
-    settled conversation still stands down. The live check narrows the swap; it
-    does not undo it."""
-    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-
-    rows = _by_key(client)
-    assert "sess-a" not in rows
-    assert "draft:draft-0001" in rows
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" not in rows
 
 
 def test_erasing_a_session_cuts_its_task_draft_loose(client, tmp_path,
@@ -1511,6 +1608,7 @@ def test_erasing_a_session_cuts_its_task_draft_loose(client, tmp_path,
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
 
+    before = client.get("/api/tasks").json()["generation"]
     assert client.post("/api/tasks/erase",
                        json={"key": "sess-a"}).status_code == 200
     stored = drafts.get_task("draft-0001")
@@ -1534,17 +1632,32 @@ def test_erasing_a_session_cuts_its_task_draft_loose(client, tmp_path,
     assert row["task_id"] == tasks_store.format_task_id(ids["draft:draft-0001"]["n"])
     assert tasks_store.erased() == {"sess-a"}
 
+    # AND THE DRAFT'S OWN KEY IS ANNOUNCED (bugbot, PR #1126). The erase used to
+    # notify the session key alone, so the page went on holding a row — or, for
+    # the build where it was one, a draft row — carrying the dead TASK number and
+    # the erased `session_id`, and pressing Schedule on it sent the message back
+    # into the conversation this gesture had just destroyed. A narrowed poll for
+    # the draft's key now answers the re-numbered, unbound row.
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    moved = {r["key"]: r for r in body["rows"]}
+    assert "draft:draft-0001" in moved, "the row that just changed its number"
+    assert moved["draft:draft-0001"]["session_id"] == ""
+    assert moved["draft:draft-0001"]["project"] == canonical_fs_path(str(elsewhere))
+    assert "sess-a" in body["gone"], "and the conversation itself"
+
 
 def test_a_draft_left_bound_to_an_erased_session_wears_no_dead_number(
         client, tmp_path, projects_dir):
     """AN ERASED RECORD IS NO RECORD, read off the store rather than trusted to
     have been unbound.
 
-    `forget_session` keeps the mapping as a reservation, so a draft bound to an
-    erased session found a record and printed that number for ever — and
-    `_draft_numbers`, told by the binding that this task already had one, never
-    minted it another. Covers the draft written between the erase's two writes,
-    and any store left bound by an older build."""
+    A bound draft is not a row — the conversation's row wears its chip instead —
+    and an ERASED conversation has no row to wear one, so a draft still naming it
+    would be words nobody can reach. `forget_session` keeps the mapping as a
+    reservation, which is exactly the fact that says so, and such a draft is an
+    ordinary row again: blank-numbered (nothing may reissue the session's TASK
+    number) and in its own folder. Covers the draft written between the erase's
+    two writes, and any store left bound by an older build."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     assert _by_key(client)["sess-a"]["task_id"] == "TASK-001"
     elsewhere = tmp_path / "elsewhere"
@@ -1559,13 +1672,17 @@ def test_a_draft_left_bound_to_an_erased_session_wears_no_dead_number(
 
 def test_unbind_session_cuts_that_session_and_nothing_else(state_dir):
     """The store's half on its own: one pass, one lock, and no write at all when
-    nothing is bound."""
-    drafts.put_task("draft-0001", {"title": "a", "session_id": "sess-a"})
-    drafts.put_task("draft-0002", {"title": "b", "session_id": "sess-b"})
-    drafts.put_task("draft-0003", {"title": "c"})
+    nothing is bound.
+
+    It answers the LISTING KEYS it cut, not a count (bugbot, PR #1126): those
+    rows have just changed their number, their folder and the thread they would
+    be sent to, and the caller has to announce them."""
+    _put("draft-0001", {"title": "a", "session_id": "sess-a"})
+    _put("draft-0002", {"title": "b", "session_id": "sess-b"})
+    _put("draft-0003", {"title": "c"})
     typed_at = drafts.get_task("draft-0001")["updated_at"]
 
-    assert drafts.unbind_session("sess-a") == 1
+    assert drafts.unbind_session("sess-a") == ["draft:draft-0001"]
     cut = drafts.get_task("draft-0001")
     assert cut["session_id"] == ""
     assert cut["title"] == "a", "the words are not what an erase takes"
@@ -1574,9 +1691,9 @@ def test_unbind_session_cuts_that_session_and_nothing_else(state_dir):
     assert drafts.get_task("draft-0002")["session_id"] == "sess-b"
     assert drafts.get_task("draft-0003")["session_id"] == ""
 
-    assert drafts.unbind_session("sess-a") == 0, "nothing bound, nothing written"
-    assert drafts.unbind_session("") == 0
-    assert drafts.unbind_session(None) == 0
+    assert drafts.unbind_session("sess-a") == [], "nothing bound, nothing written"
+    assert drafts.unbind_session("") == []
+    assert drafts.unbind_session(None) == []
 
 
 def test_a_custom_repeat_keeps_its_rule(state_dir):
@@ -1585,36 +1702,36 @@ def test_a_custom_repeat_keeps_its_rule(state_dir):
     reopened saying Custom, holding nothing, with Save refused and nothing on the
     card saying why."""
     rule = {"freq": "week", "interval": 2, "byday": [1, 3]}
-    stored = drafts.put_task("draft-0001", {"title": "Standup notes",
-                                            "repeat": "custom",
-                                            "custom_rule": rule})
+    stored = _put("draft-0001", {"title": "Standup notes",
+                                 "repeat": "custom",
+                                 "custom_rule": rule})
     assert stored["custom_rule"] == rule
     assert drafts.get_task("draft-0001")["custom_rule"] == rule
     # Pass-through, not parsed: this store is not the authority on what a
     # recurrence rule looks like, and a shape it validated would be a second
     # copy of `recur`'s grammar going stale.
-    assert drafts.put_task("draft-0002", {"title": "Retro",
-                                         "custom_rule": {"freq": "fortnight"}}
-                           )["custom_rule"] == {"freq": "fortnight"}
+    assert _put("draft-0002", {"title": "Retro",
+                               "custom_rule": {"freq": "fortnight"}}
+               )["custom_rule"] == {"freq": "fortnight"}
     # A field the client omits keeps what the stored draft had, like every other.
-    assert drafts.put_task("draft-0001", {"title": "Standup"}
-                           )["custom_rule"] == rule
+    assert _put("draft-0001", {"title": "Standup"}
+               )["custom_rule"] == rule
     # …and clearing the choice clears the rule with it.
-    assert drafts.put_task("draft-0001", {"repeat": None, "custom_rule": None}
-                           )["custom_rule"] is None
+    assert _put("draft-0001", {"repeat": None, "custom_rule": None}
+               )["custom_rule"] is None
 
 
 def test_a_rule_alone_is_not_a_draft(state_dir):
     """A recurrence rule is a SETTING — how a task would run, not a task
     (Akshil, 2026-09-12). It used to count, and the cost was an "Untitled draft"
     row minted by opening the when-row and picking a time."""
-    assert drafts.put_task("draft-0001",
-                           {"custom_rule": {"freq": "month"}}) is None
+    assert _put("draft-0001",
+                {"custom_rule": {"freq": "month"}}) is None
     assert drafts.get_task("draft-0001") is None
     # …and it rides along perfectly well once there are words to ride with.
-    assert drafts.put_task("draft-0001", {"title": "Monthly report",
-                                          "custom_rule": {"freq": "month"}}
-                           )["custom_rule"] == {"freq": "month"}
+    assert _put("draft-0001", {"title": "Monthly report",
+                               "custom_rule": {"freq": "month"}}
+               )["custom_rule"] == {"freq": "month"}
 
 
 def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
@@ -1635,7 +1752,7 @@ def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):
 def test_list_all_answers_both_halves_off_one_read(state_dir, monkeypatch):
     """`list_task()` and `list_chat()` are each a whole `load()`, and the tasks
     listing wants both on every build. Same projections, half the reads."""
-    drafts.put_task("draft-0001", {"title": "Nightly report"})
+    _put("draft-0001", {"title": "Nightly report"})
     drafts.put_chat("sess-a", "half a thought", [])
 
     reads = []

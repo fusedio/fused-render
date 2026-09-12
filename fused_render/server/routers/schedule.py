@@ -387,12 +387,17 @@ def api_schedule_create(body: dict = Body(...),
                 tasks_store.rekey(drafts.task_key(draft),
                                   tasks_store.pending_key(str(entry.get("id") or "")))
             if drafts.delete_task(draft):
-                # BOTH ROWS MOVE. The draft row goes, and for a session-bound
-                # draft the session's own row — held back while the draft stood
-                # in for it — comes back in its place. `session` below is the
-                # same key and is announced there anyway, but only when the
-                # composer left a chat draft behind; this is the announcement
-                # the swap itself owes.
+                # BOTH KEYS ARE ANNOUNCED, but only one of them was ever a row.
+                # The draft's key repaints as `gone` — for an unbound draft
+                # because the row just left the listing outright, for a
+                # session-bound one because it was never a row to begin with
+                # (`_draft_rows` skips it; the session's own row wore the chip
+                # instead). The session's key repaints because THAT row just
+                # lost the chip it was wearing (`bound_draft`, `_bound_chips`) —
+                # nothing about the row underneath ever moved. `session` below
+                # is the same key and is announced there anyway, but only when
+                # the composer left a chat draft behind; this is the
+                # announcement scheduling itself owes.
                 tasks_watch.notify(
                     {drafts.task_key(draft), str(entry.get("session_id") or "")}
                     - {""})

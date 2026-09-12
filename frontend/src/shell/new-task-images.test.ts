@@ -437,14 +437,14 @@ describe("the chat handoff's attachments", () => {
     expect(SCHEDULED).toContain('openForm("blank", null)');
     expect(SCHEDULED).toContain("onCreateAt={(t) => openForm(t, null)}");
     expect(SCHEDULED).toContain("openForm(null, template ?? entry);");
-    // The draft reopen path drops it explicitly, since it does not go through
-    // `openForm` at all.
+    // The draft reopen path says it in the same words, through the same door:
+    // it names `NO_HOP` outright rather than setting the state by hand.
     const draft = SCHEDULED.slice(SCHEDULED.indexOf("const openDraft ="));
-    expect(draft.slice(0, draft.indexOf("};"))).toContain("setHop(NO_HOP);");
+    expect(draft.slice(0, draft.indexOf("};"))).toContain(
+      "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
     // …and the ONLY opening that seeds one is the deep link.
     expect(SCHEDULED.match(/setHop\(seed\)/g) ?? []).toHaveLength(1);
-    expect(SCHEDULED).toContain(
-      "openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);");
+    expect(SCHEDULED).toContain("openForm(at, null, seed);");
   });
 
   it("and the close has nothing left to forget", () => {

@@ -71,7 +71,8 @@ import {
   parseAttachmentsParam,
   type SchedAttachment,
 } from "@apps/claude/ui/sched-draft";
-import { chatDraftKey, fetchChatDraft } from "@platform/lib/drafts";
+import { chatDraftKey, fetchChatDraft, fetchDrafts } from "@platform/lib/drafts";
+import type { TaskDraft } from "@platform/lib/drafts";
 import { chatPaneUrl } from "./schedule-lib";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -81,7 +82,8 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal from "./NewJobModal";
+import NewJobModal, { splitDraft } from "./NewJobModal";
+import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
   TaskBoard,
@@ -189,6 +191,54 @@ const NO_HOP: HopSeed = {
   target: null, message: null, session: null, back: null,
   attachments: [], chatKey: null,
 };
+
+/**
+ * THE UNSENT FORM ALREADY BOUND TO THIS CONVERSATION, as the seed that reopens
+ * it — or null when there is none, and the hop mints one exactly as it always
+ * did (Akshil, 2026-09-12).
+ *
+ * A task draft made out of a chat stores that chat's `session_id`
+ * (platform/lib/drafts.TaskDraftForm) and is deliberately NOT a row of its own:
+ * the conversation's row is the one the reader knows, and it wears the `✎
+ * Draft` chip instead (routers/tasks.py `_bound_chips`). Which leaves exactly
+ * one way back into the form — the composer's own Schedule button, the door the
+ * form came out of — so this is what that door looks up before opening a card.
+ * Without it, the second press minted a second draft over the first: two forms
+ * bound to one session, one chip, and whichever saved last owning it.
+ *
+ * NEWEST WINS if a store somehow holds two — the same tie-break the server's
+ * chip takes, so the card the user reopens is the draft the row is advertising.
+ *
+ * THE COMPOSER'S WORDS OUTRANK THE STORED ONES, and only those two fields. The
+ * hop carries whatever is in the composer right now; if that is something, it is
+ * newer than what the form was saved with and the reader typed it a second ago,
+ * so it is split across title and description exactly as a fresh hop's would be
+ * (`splitDraft`). Everything else the form remembers — the folder, the time, the
+ * repeat rule, the model, the tray — is untouched, and so is the id: this is the
+ * same draft, being written a bit further. An empty composer overrides nothing.
+ */
+export function boundDraftSeed(
+  stored: Record<string, TaskDraft>,
+  session: string,
+  message: string | null,
+): DraftSeed | null {
+  let id = "";
+  let found: TaskDraft | null = null;
+  for (const [ident, draft] of Object.entries(stored ?? {})) {
+    if (!draft || draft.session_id !== session) continue;
+    if (found && (found.updated_at ?? 0) >= (draft.updated_at ?? 0)) continue;
+    id = ident;
+    found = draft;
+  }
+  if (!id || !found) return null;
+  const words = (message ?? "").trim();
+  if (!words) return { id, form: { ...found } };
+  const split = splitDraft(words);
+  return {
+    id,
+    form: { ...found, title: split.title, description: split.description },
+  };
+}
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
@@ -303,6 +353,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     at: Date | "blank" | null,
     entry: ScheduledMessage | null,
     seed: HopSeed = NO_HOP,
+    draft: DraftSeed | null = null,
   ) => {
     // Every opening ABANDONS any chat-draft fetch still in flight (Bugbot on
     // PR #1126, 2026-09-12): a press that lands here through any door — New
@@ -313,15 +364,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     setOpenSeq((n) => n + 1);
     setHop(seed);
     setEditing(entry);
-    setDraftRow(null);
+    setDraftSeed(draft);
     setCreating(at);
   };
-  // An unfinished New task form, re-opened from its own row (design.md, "Reopen
-  // path": editing a draft row is the only way back to it). It travels as the
-  // ROW rather than as its id, because the row already carries the saved form —
-  // `/api/tasks` emits it — so the card can seed from it on the first paint with
-  // no second fetch, exactly as an Edit seeds from its entry.
-  const [draftRow, setDraftRow] = useState<Task | null>(null);
+  // An unfinished New task form this card already saved, re-opened: its id and
+  // the stored form, which is everything `NewJobModal` needs to come up on it
+  // and to go on autosaving under the SAME id.
+  //
+  // TWO DOORS REACH IT, and they hand it over the same way. A draft ROW carries
+  // the form on the row itself (`/api/tasks` emits it), so `openDraft` seeds
+  // from the row with no second fetch. And a SESSION-BOUND draft has no row at
+  // all — the conversation's row wears the chip instead (routers/tasks.py
+  // `_bound_chips`) — so the composer's own Schedule hop is the way back to it,
+  // and the effect below looks it up by session before opening (Akshil,
+  // 2026-09-12).
+  const [draftSeed, setDraftSeed] = useState<DraftSeed | null>(null);
   /**
    * A NEVER-SENT CHAT'S ROW, OPENED AS A NEW TASK (Akshil, 2026-09-12: "a row
    * without a session is a draft and always opens the New Task modal").
@@ -406,13 +463,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       return;
     }
     if (!task.draft_id) return;
-    setOpenSeq((n) => n + 1);
     // A reopened draft carries its own everything (the row's stored `form`), so
-    // whatever a deep link said earlier in this page's life is not about it.
-    setHop(NO_HOP);
-    setEditing(null);
-    setCreating(null);
-    setDraftRow(task);
+    // whatever a deep link said earlier in this page's life is not about it —
+    // `NO_HOP`, through the same door every other opening takes.
+    openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });
   };
   // `hop` (above) is what a deep link named — the folder, the composer's words,
   // the session it was typed in, the way back, the tray's chips, and the chat
@@ -494,7 +548,39 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         ? null
         : chatDraftKey(q.get("session_id"), q.get("target")),
     };
-    openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);
+    // THE HOP COMES BACK TO THE FORM IT ALREADY MADE (Akshil, 2026-09-12).
+    //
+    // A task draft made out of a conversation is bound to it (`session_id`) and
+    // has no row of its own — the conversation's row wears the `✎ Draft` chip
+    // instead — so this hop IS the way back into it. Press Schedule in a chat
+    // that already has an unsent form and the card must reopen THAT form, under
+    // its own id, or the second press mints a second draft and the chip on the
+    // row starts pointing at whichever of them saved last.
+    //
+    // Looked up by session against `GET /api/drafts`, which is the only place
+    // the binding is legible to the client (the listing deliberately does not
+    // emit a row for it). One small request, and only for a hop that names a
+    // session — every other door opens synchronously as before.
+    //
+    // AND IT CAN ARRIVE LATE, like `openChatDraft`, so it takes the same
+    // generation: a second press through any door owns the modal, and an
+    // answer that is no longer current is dropped rather than painted over it.
+    // A failed or empty lookup falls through to the ordinary opening — a hop
+    // that cannot find its draft is a hop, not a dead button.
+    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
+    const session = (q.get("session_id") ?? "").trim();
+    if (session) {
+      const gen = ++chatDraftGen.current;
+      void fetchDrafts().then((all) => {
+        if (gen !== chatDraftGen.current) return;
+        openForm(at, null, seed, boundDraftSeed(all.task, session, seed.message));
+      }, () => {
+        if (gen !== chatDraftGen.current) return;
+        openForm(at, null, seed);
+      });
+    } else {
+      openForm(at, null, seed);
+    }
     q.delete("new");
     q.delete("target");
     q.delete("message");
@@ -990,7 +1076,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         </section>
       )}
 
-      {(creating !== null || editing || draftRow) && state && (
+      {(creating !== null || editing || draftSeed) && state && (
         <NewJobModal
           // Keyed on WHICH OPENING this is, and on what is being edited, because
           // the form reads `editing` in `useState` initialisers — they run once,
@@ -1012,7 +1098,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // read in `useState` initialisers, so re-opening one over a card that
           // was showing another must be a fresh mount.
           key={`${
-            draftRow ? `draft:${draftRow.draft_id}` : editing ? `edit:${editing.id}` : "new"
+            draftSeed ? `draft:${draftSeed.id}` : editing ? `edit:${editing.id}` : "new"
           }#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
           // Scoped, a new task is a task FOR THIS APP: the entry page is
@@ -1026,11 +1112,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           initialMessage={hop.message}
           initialAttachments={hop.attachments}
           // The saved form, handed back whole. Null on every other opening.
-          initialDraft={
-            draftRow?.draft_id
-              ? { id: draftRow.draft_id, form: draftRow.form ?? null }
-              : null
-          }
+          initialDraft={draftSeed}
           chatSessionId={hop.session}
           chatBack={hop.back}
           // The chat draft this card's own first save supersedes — see
@@ -1060,9 +1142,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             setCreating(null);
             setEditing(null);
             // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
-            // away, the row stays on the list, and the modal's own autosave has
+            // away, the draft stays — as its own row, or as the `Draft` chip on
+            // the conversation it is bound to — and the modal's own autosave has
             // already flushed on unmount.
-            setDraftRow(null);
+            setDraftSeed(null);
           }}
           onCreated={reload}
         />

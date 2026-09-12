@@ -260,8 +260,9 @@ def erased(key: str = "") -> set[str]:
     answering that (the number must never be reissued, whatever became of the
     session). This is the other question — "is there still anything behind it" —
     and exactly one caller asks it: the tasks listing, deciding whether a draft
-    bound to a session may go on wearing that session's number (routers/tasks.py
-    `_bound_places`, review 2026-09-12).
+    bound to a session may still stand in behind it rather than becoming an
+    ordinary row of its own (routers/tasks.py `_draft_rows`, review
+    2026-09-12).
 
     `key` narrows it to one lookup; the default answers for the whole store."""
     store = load_state(TASK_IDS_FILE)
