@@ -432,6 +432,77 @@ export function pagesFetchedLabel(poolPagesDone: number | null | undefined): str
   return `${poolPagesDone} page${poolPagesDone === 1 ? "" : "s"} fetched`;
 }
 
+// ---------------------------------------------------------------------------
+// Round 7 — the "v2 staged status" wait state, replacing the plain
+// "Asking {host}…" line a FIRST search (no rows on the pane yet) used to
+// show for the whole round trip. Approved from
+// `hub-wait-variants.html`'s own `v2` block: one centred stage line + sub-
+// caption + sweep bar + a three-dot "Hub · Size · Rank" step row.
+//
+// The three stages are honest about what is and is not known: "Hub" is the
+// only one gated on the real network call — there is no timer that ever
+// advances it, only the response actually arriving. Once the response lands,
+// "Size" and "Rank" play in quick, fixed succession (the component's own
+// ~250ms-each timers) because both are genuinely instantaneous client-side
+// work by then — the server already ranked and sized every row before it
+// answered. What is pure and testable here is the per-stage copy and the
+// slow-line text; the phase clock itself is a component-owned timer chain
+// (mirroring `nextPoolPhase`'s own split above).
+
+/** One of the three stages the wait block ever names — `"hub"` is the only
+ *  one a pane can sit in for an unbounded time; `"size"`/`"rank"` are each a
+ *  fixed ~250ms beat played once the response has actually arrived. */
+export type HubWaitStage = "hub" | "size" | "rank";
+
+/** Facts the "Sizing…" sub-caption can fold in when the component already
+ *  has them — it does not today (round 7), so every caller sees the plain
+ *  fallback, but the shape exists so a future caller wiring in real
+ *  memory/runner facts is a one-line change here rather than a new
+ *  function. */
+export interface HubWaitFacts {
+  ramGb: number | null;
+  runnerCount: number | null;
+}
+
+const NO_HUB_WAIT_FACTS: HubWaitFacts = { ramGb: null, runnerCount: null };
+
+/** The stage line + sub-caption for one of the three wait stages — copy
+ *  lifted verbatim from the approved mockup's own `stage()` text map. */
+export function hubWaitStageText(
+  stage: HubWaitStage,
+  host: string,
+  facts: HubWaitFacts = NO_HUB_WAIT_FACTS,
+): { line: string; sub: string } {
+  if (stage === "hub") {
+    return { line: `Asking ${host}`, sub: "one request, then everything else runs here" };
+  }
+  if (stage === "size") {
+    const sub =
+      facts.ramGb != null && facts.runnerCount != null
+        ? `${round1(facts.ramGb)} GB of unified memory, ${facts.runnerCount} runner${
+            facts.runnerCount === 1 ? "" : "s"
+          } installed`
+        : "sized against this Mac's memory";
+    return { line: "Sizing each model for this Mac", sub };
+  }
+  return { line: "Ranking for this Mac", sub: "memory fit first, then speed, freshness, popularity" };
+}
+
+/** The amber "still waiting" line a pane shows once stage `"hub"` has held
+ *  for 12s or more, with a live seconds counter — never claims progress
+ *  that hasn't happened, only names how long the wait has been. */
+export function hubWaitSlowLabel(seconds: number): string {
+  return `The Hub is slow right now. ${seconds} s and counting.`;
+}
+
+/** Whether a response that arrived `elapsedMs` after the request went out is
+ *  fast enough that the wait block must never have flashed on screen at
+ *  all — under 400ms, per the approved design ("If the response arrives
+ *  within 400 ms of the request, skip the block entirely"). */
+export function shouldSkipHubWait(elapsedMs: number): boolean {
+  return elapsedMs < 400;
+}
+
 /** The build card's own tiny state machine: `"hidden"` (nothing to show),
  *  `"building"` (shimmer + page count), `"done"` (the success beat that
  *  holds briefly before the caller collapses it back to `"hidden"`).

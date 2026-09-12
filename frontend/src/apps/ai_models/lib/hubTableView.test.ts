@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchScoreInt, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
+import { ageLabel, downloadedVariantLabel, hubWaitSlowLabel, hubWaitStageText, matchCell, matchRowTip, matchScoreInt, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, shouldSkipHubWait, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -519,5 +519,65 @@ describe("variantIsDownloadable", () => {
 
   it("is downloadable when the field is absent (a cached response predating it)", () => {
     expect(variantIsDownloadable({})).toBe(true);
+  });
+});
+
+describe("hubWaitStageText", () => {
+  it("Hub stage names the host and the one-request promise", () => {
+    expect(hubWaitStageText("hub", "huggingface.co")).toEqual({
+      line: "Asking huggingface.co",
+      sub: "one request, then everything else runs here",
+    });
+  });
+
+  it("Size stage falls back to the plain caption when no facts are known", () => {
+    expect(hubWaitStageText("size", "huggingface.co")).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "sized against this Mac's memory",
+    });
+  });
+
+  it("Size stage folds in ram/runner facts when the caller has them", () => {
+    expect(
+      hubWaitStageText("size", "huggingface.co", { ramGb: 26.4, runnerCount: 4 }),
+    ).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "26.4 GB of unified memory, 4 runners installed",
+    });
+  });
+
+  it("Size stage singularizes one runner", () => {
+    expect(
+      hubWaitStageText("size", "huggingface.co", { ramGb: 26.4, runnerCount: 1 }),
+    ).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "26.4 GB of unified memory, 1 runner installed",
+    });
+  });
+
+  it("Rank stage names the ranking order", () => {
+    expect(hubWaitStageText("rank", "huggingface.co")).toEqual({
+      line: "Ranking for this Mac",
+      sub: "memory fit first, then speed, freshness, popularity",
+    });
+  });
+});
+
+describe("hubWaitSlowLabel", () => {
+  it("names the live seconds count", () => {
+    expect(hubWaitSlowLabel(12)).toBe("The Hub is slow right now. 12 s and counting.");
+    expect(hubWaitSlowLabel(47)).toBe("The Hub is slow right now. 47 s and counting.");
+  });
+});
+
+describe("shouldSkipHubWait", () => {
+  it("skips the block for a response inside 400ms", () => {
+    expect(shouldSkipHubWait(0)).toBe(true);
+    expect(shouldSkipHubWait(399)).toBe(true);
+  });
+
+  it("shows the block from 400ms onward", () => {
+    expect(shouldSkipHubWait(400)).toBe(false);
+    expect(shouldSkipHubWait(2000)).toBe(false);
   });
 });
