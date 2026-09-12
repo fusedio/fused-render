@@ -372,7 +372,7 @@ describe("admission, in the send window", () => {
     // leader's entry id is what joins them (`follow_of`); the rule and both its
     // edges are unit-tested in sched/queue-leader.test.tsx.
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
-    expect(send).toContain("const sid = controller.getState().sessionId ?? \"\";");
+    expect(send).toContain('const sid = live.sessionId || params.get("session_id") || "";');
     expect(send).toContain("const follow = leader.followOf(sid);");
     expect(send).toContain("...(follow ? { follow_of: follow } : {}),");
     // The session id on the body is the SAME read the leader was asked with, so
@@ -616,6 +616,30 @@ describe("one card for one waiting message", () => {
     const block = readFileSync(join(HERE, "SchedBlock.tsx"), "utf8");
     expect(block).toContain("if (!next) return null;");
   });
+
+  it("a cancel does not UNMASK the block it just took the card down from", () => {
+    // The chip leaves on the server's answer, which drops its id out of
+    // `chipEntryIds` — while `blockers` is a photograph from up to a lap before
+    // the press and still lists the entry. The block therefore popped straight
+    // back up, in the block's own vocabulary, over a message that no longer
+    // existed (Bugbot, PR #1124 round 2).
+    const cancel = CHAT.slice(
+      CHAT.indexOf("const cancelQueued = useCallback("),
+      CHAT.indexOf("const adoptSession ="),
+    );
+    // Remembered BEFORE the send is dropped, so no paint sits between the two.
+    expect(cancel.indexOf("setDismissedEntries((cur) => new Set(cur).add(send.entryId));")).toBeLessThan(
+      cancel.indexOf("setQueuedSends((cur) => cur.filter((q) => q.entryId !== send.entryId));"),
+    );
+    // …and the poll is asked NOW rather than at the end of the lap.
+    expect(cancel).toContain("schedRefresh();");
+    expect(USE_SCHEDULE).toContain("refresh(): void;");
+    expect(USE_SCHEDULE).toContain("void watcher.tick();");
+    // The dismissal keeps filtering the block for as long as the chip did …
+    expect(CHAT).toContain("for (const id of dismissedEntries) if (!ids.includes(id)) ids.push(id);");
+    // … and is forgotten by the first poll that no longer lists the entry.
+    expect(CHAT).toContain("setDismissedEntries((cur) => pruneDismissed(cur, sched.pendingIds));");
+  });
 });
 
 describe("the follow-ups a RUNNING turn is holding", () => {
@@ -662,13 +686,32 @@ describe("admission names the run this chat already has", () => {
     // the second line typed into a brand-new chat queueing behind its own first
     // turn — the reader waiting for themselves.
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
-    expect(send).toContain('const rid = controller.getState().runId ?? "";');
+    expect(send).toContain('const rid = live.runId || live.lastRunId || "";');
     expect(send).toContain("...(rid ? { run_id: rid } : {}),");
-    // Read in the same breath as the session, so the two halves of one body can
-    // never describe two moments.
-    expect(send.indexOf('const sid = controller.getState().sessionId ?? "";')).toBeLessThan(
-      send.indexOf('const rid = controller.getState().runId ?? "";'),
+    // Read in the same breath as the session, off ONE snapshot, so the two
+    // halves of one body can never describe two moments.
+    expect(send).toContain("const live = controller.getState();");
+    expect(send.indexOf('const sid = live.sessionId || params.get("session_id") || "";')).toBeLessThan(
+      send.indexOf('const rid = live.runId || live.lastRunId || "";'),
     );
+  });
+
+  it("is never anonymous after a turn has run — the id outlives the run", () => {
+    // "hello" → reply → "second" straight away came back `Queued · #1 in line ·
+    // behind a run in this folder` (browser QA, 2026-09-12). `state.runId` is
+    // cleared the instant the turn ends while the host is still tearing down, so
+    // the body named no run — and in that same window the session id may not be
+    // in controller state yet either, though the URL has it. Both fall back.
+    const api = readFileSync(join(HERE, "../protocol/controller-api.ts"), "utf8");
+    expect(api).toContain("lastRunId: string | null;");
+    // Written on the way UP and never on the way down.
+    expect(CONTROLLER).toContain(
+      "? { status, runId: activeRun, ...(activeRun ? { lastRunId: activeRun } : {}) }",
+    );
+    expect(CONTROLLER).toContain("{ status, runId: null }");
+    // …and cleared where the CONVERSATION changes, which is the lifetime the
+    // question has (`newChat` clears it through `emptyState`).
+    expect(CONTROLLER).toContain("lastRunId: null,");
   });
 
   it("is on the wire, and absent when nothing is running", async () => {

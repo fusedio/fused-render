@@ -920,22 +920,37 @@ def _revived(messages: list[dict], filed_at: float) -> bool:
     return any((m["ran_at"] or 0.0) > filed_at for m in messages)
 
 
-def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
+def _running_now(session_id: str, live: bool, busy: set[str],
+                 reserved: set[str] | None = None) -> bool:
     """Is something happening in this conversation RIGHT NOW, whatever its
     messages say?
 
-    Two independent halves, either of which is enough and neither of which is
+    Three independent halves, any of which is enough and none of which is
     sufficient alone: `live` is the transcript mid-turn, `busy` is the scheduler
-    waiting on a send it has not heard back from. A turn thinking through a long
-    tool call appends nothing and reads as not-live; a session a human is typing
-    into has no scheduler entry at all.
+    waiting on a send it has not heard back from, and `reserved` is a send this
+    server admitted a moment ago. A turn thinking through a long tool call
+    appends nothing and reads as not-live; a session a human is typing into has
+    no scheduler entry at all.
+
+    **THE RESERVATION IS THE FIRST TWO SECONDS** (`project_queue.reserved_sessions`,
+    flag-gated, browser QA 2026-09-12). Between the admission answering "run"
+    and `claude` registering a session there is nothing on disk that says a turn
+    started — no registry row, no transcript record, no scheduler entry, because
+    the chat spawns its own run — so the sidebar went on reading the previous
+    verdict for 3.4 s after the user pressed Enter, where the spec asks for two.
+    The reservation is the one thing that knows, it is taken on the admission
+    path already, and it lapses on its own (`RESERVATION_TTL`), so the failure
+    mode is a row that reads `in_progress` for a few seconds too long instead of
+    one that reads `done` while a turn is starting.
 
     Its own function so `_status`'s first rule and anything else that has to ask
-    cannot drift apart about what "running" means. The third way — a message of
+    cannot drift apart about what "running" means. The fourth way — a message of
     this task's own that is in flight — is `_message_running`, and `_status`
     asks both.
     """
-    return live or (bool(session_id) and session_id in busy)
+    if not session_id:
+        return live
+    return live or session_id in busy or session_id in (reserved or ())
 
 
 # How much newer than its verdict the transcript's tail must be before the tail
@@ -1220,6 +1235,22 @@ def _held_requests() -> set:
 # would pay that per task.
 
 
+def _reserved_sessions(queue_on: bool) -> set[str]:
+    """Every conversation with a live admission reservation — the sends this
+    server said yes to in the last few seconds. Empty with the flag off, where
+    nothing takes a reservation in the first place and the row is main's.
+
+    Best-effort like every other queue read on the listing's path: a table we
+    cannot read is no reservations, which is the answer that leaves the row
+    exactly as main computes it."""
+    if not queue_on:
+        return set()
+    try:
+        return project_queue.reserved_sessions()
+    except Exception:  # noqa: BLE001 — an unreadable table reserves nothing
+        return set()
+
+
 def _due_pending(task: dict, now: float, by_id: dict) -> list[tuple[str, tuple]]:
     """This task's entries that are WAITING TO GO RIGHT NOW, each as
     `(queue_key of its target, order_key)`.
@@ -1448,7 +1479,8 @@ def queue_ahead_of(key: str, tasks: dict[str, dict] | None = None) -> tuple[str,
 
 
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
-            busy: set[str], parked: bool = False, queued: bool = False) -> str:
+            busy: set[str], parked: bool = False, queued: bool = False,
+            reserved: set[str] | None = None) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the MESSAGES, in this order, and the order is the whole model:
@@ -1480,12 +1512,14 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        newest message is next Tuesday's occurrence, with a run still going in
        it, is a task that is working. Three things say a run is happening and a
        task needs only one — a message of its own that is in flight
-       (`_message_running`), a transcript that is live, and `schedule.busy_sessions`,
-       the scheduler's record of a send it has not heard back from. They are
-       independent because each is wrong on its own in a different direction: a
-       turn thinking through a long tool call appends nothing for minutes and
-       reads as not-live, and a session a human is typing into has no busy entry
-       at all. The transcript's vote is withdrawn by the caller for exactly one
+       (`_message_running`), a transcript that is live, `schedule.busy_sessions`,
+       the scheduler's record of a send it has not heard back from, and — with
+       the project queue on — a reservation this server took when it admitted a
+       send seconds ago (`reserved`, see `_running_now`). They are independent
+       because each is wrong on its own in a different direction: a turn
+       thinking through a long tool call appends nothing for minutes and reads
+       as not-live, a session a human is typing into has no busy entry at all,
+       and a send that has just been admitted has nothing on disk anywhere. The transcript's vote is withdrawn by the caller for exactly one
        case — the tail's freshness is the finished run's own closing records —
        see `_verdict_outvotes_live`.
     2. **Archived is a filing state.** The task the user put away is archived,
@@ -1541,7 +1575,7 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     """
     if parked:
         return "needs_attention"
-    if messages and (_running_now(session_id, live, busy)
+    if messages and (_running_now(session_id, live, busy, reserved)
                      or any(_message_running(m) for m in messages)):
         return "in_progress"
     if filed:
@@ -2112,7 +2146,8 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          busy: set[str], revived: list[str], parked: dict | None = None,
-         queue: dict | None = None, queue_on: bool | None = None) -> dict:
+         queue: dict | None = None, queue_on: bool | None = None,
+         reserved: set[str] | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -2141,6 +2176,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     queue field on this row, and the folder appears the moment the feature is
     turned on. None means "ask", for the single-row callers that have no listing
     to have read it in.
+
+    `reserved` is `project_queue.reserved_sessions()` — every conversation this
+    server has just admitted a send for and whose process has not appeared yet,
+    read once by the caller like everything else on this list. It is what makes
+    a row say `in_progress` within the long-poll's own latency instead of
+    waiting for `claude` to register (see `_running_now`). None means "ask", and
+    the answer is empty with the flag off.
 
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
@@ -2253,8 +2295,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     queued = (queue or {}).get(task["key"]) or {}
     if queue_on is None:
         queue_on = project_queue.enabled()
+    if reserved is None:
+        reserved = _reserved_sessions(queue_on)
     status = _status(merged, filed, task["session_id"], live, busy,
-                     parked=waiting is not None, queued=bool(queued))
+                     parked=waiting is not None, queued=bool(queued),
+                     reserved=reserved)
     failed = _failed(speaker)
     return {
         "key": task["key"],
@@ -2501,6 +2546,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # One scan of the runs tree for every row: which conversations are parked on
     # a card nobody has answered. See `_parked_runs`.
     parked = _parked_runs()
+    # One read of the reservation table for every row: which conversations have
+    # a send this server admitted seconds ago and no process to show for it yet.
+    # See `_running_now`.
+    reserved = _reserved_sessions(queue_on)
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
@@ -2517,7 +2566,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived, parked, queue, queue_on)
+                       busy, revived, parked, queue, queue_on, reserved)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -3408,6 +3457,12 @@ def api_queue_admit(body: dict = Body(...),
     **The flag off answers `{"run": true}` and stores nothing**, which is what
     lets the client ask unconditionally and still behave exactly as main does.
 
+    **AND EITHER ANSWER RINGS THE LONG-POLL.** The row changes on both roads —
+    `queued` for a stored message, `in_progress` for an admitted one, the latter
+    off the reservation this endpoint takes (`_running_now`) — and a page
+    waiting on `/api/tasks/changes` should not sit out its own timeout to hear
+    about a send it just made.
+
     The entry is created through the schedule router's own `create_entry`, so a
     queued send carries the model, the effort, the permission mode and the
     attachments the user actually chose. A queued message that differed from the
@@ -3508,6 +3563,17 @@ def api_queue_admit(body: dict = Body(...),
     # down the client's ordinary path — which, for a live host, is the inbox
     # absorb it has always been (`agent._send`) rather than a second process.
     if not behind_own and project_queue.reserve_if_free(key, session_id, run_id):
+        # THE ROW IS RUNNING FROM HERE, AND THE PAGE HEARS IT NOW. The
+        # reservation this just took is what `_running_now` reads, so the status
+        # has already changed by the time this returns — but a long-poll that is
+        # not rung waits out its own timeout to find out, which is the 3.4 s the
+        # sidebar took to say `running` after a send (browser QA, 2026-09-12).
+        # The queued answer below has always rung; the admitted one is the same
+        # news about the same row. A brand-new chat has no key to ring yet: its
+        # row appears with the session, and the poll that fetches it is the
+        # client's own.
+        if session_id:
+            tasks_watch.notify({session_id})
         return {"run": True}
 
     if not message.strip():

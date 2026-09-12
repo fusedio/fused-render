@@ -740,6 +740,77 @@ def test_a_run_id_does_not_admit_a_chat_into_somebody_elses_folder(
     assert _rows(client)["sess-mine"]["status"] == "queued"
 
 
+def test_a_new_chats_second_message_is_not_queued_behind_its_own_teardown(
+        client, folders, flag, chat_run, registry):
+    """THE SELF-QUEUE WINDOW, over HTTP (browser QA, 2026-09-12). A brand-new
+    chat said hello, got its reply, and the next message was queued behind its
+    own conversation: the admission named neither the session nor the run (the
+    client had not learned either yet), the first message's ANONYMOUS
+    reservation was still standing, and the run was between turns.
+
+    Both halves are asserted here because the difference between them is the
+    whole rule: while the turn is genuinely running the nameless send queues,
+    and the moment the registry says the turn is over it goes."""
+    flag()
+    alpha, _beta = folders
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "", "message": "hello"}
+                 ).json() == {"run": True}
+    chat_run("run-1", alpha, pid=os.getpid())
+    registry("sess-new", status="busy")
+    project_queue.invalidate_holders()
+
+    queued = _post(client, "/api/tasks/queue/admit",
+                   {"project": alpha, "session_id": "", "message": "second"})
+    assert queued.json()["run"] is False      # a turn IS running in there
+
+    registry("sess-new", status="idle")       # …and now it is not
+    project_queue.invalidate_holders()
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "", "message": "second"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"run": True}
+
+
+def test_an_admitted_send_says_running_before_anything_has_spawned(
+        client, projects_dir, folders, flag, rings):
+    """INSTANT STATUS (browser QA, 2026-09-12: the sidebar took 3.4 s to say
+    running, where the spec asks for two). Nothing on disk says a turn has
+    started until `claude` registers a session — the chat spawns its own run, so
+    there is no scheduler entry either — and the row went on reading the
+    previous verdict for the whole of that gap. The reservation this endpoint
+    takes is the one record of the instant, and the ring is what stops a page
+    waiting out its own long-poll to hear about a send it just made."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "hello")
+    assert _rows(client)["sess-a"]["status"] != "in_progress"
+
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-a", "message": "go"}
+                 ).json() == {"run": True}
+    assert {"sess-a"} in rings
+    assert _rows(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_with_the_flag_off_an_admitted_send_changes_no_row(
+        client, projects_dir, folders, flag, rings):
+    """The control. With the queue off nothing is reserved, so nothing reads as
+    running that main would not — the endpoint is a constant and the row is
+    whatever the transcript says."""
+    flag(False)
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "hello")
+    before = _rows(client)["sess-a"]["status"]
+
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-a", "message": "go"}
+                 ).json() == {"run": True}
+    assert rings == []
+    assert project_queue.reserved_sessions() == set()
+    assert _rows(client)["sess-a"]["status"] == before
+
+
 def test_a_run_id_that_is_a_path_is_refused(client, folders, flag):
     """Run ids name a directory under the runs tree; one carrying a separator
     is a client bug, and a 400 is what makes it visible."""

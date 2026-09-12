@@ -546,6 +546,21 @@ test("flag OFF, a chip id filters nothing — the block is main's byte for byte"
   expect(h.state().schedDisabled).toBe(true);
 });
 
+test("refresh() asks the schedule NOW, rather than at the end of the lap", async () => {
+  // What the chip's Cancel spends. The press changed the schedule from this
+  // pane, so everything derived from the poll — `blockers` and `pendingIds`
+  // both — describes a world the reader has already left until a lap ends,
+  // fifteen seconds of a block standing over a cancelled message.
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
+  expect(h.state().blockers.map((e) => e.id)).toEqual(["a"]);
+  h.serve([]);
+  await act(async () => {
+    h.state().refresh();
+  });
+  expect(h.state().blockers).toEqual([]);
+  expect([...(h.state().pendingIds ?? [])]).toEqual([]);
+});
+
 test("the filtered list keeps its identity when it removes nothing", async () => {
   // The dedupe `absorb` keeps — one object for one unchanged list — is worth
   // nothing if the filter hands back a fresh array on every render: the card

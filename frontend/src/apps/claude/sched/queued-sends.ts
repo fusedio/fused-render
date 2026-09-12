@@ -177,3 +177,52 @@ export function useQueuedLiveness<T extends QueuedLike>(
     [sends, pendingIds, watch],
   );
 }
+
+// ── THE ENTRIES A CHIP TOOK BACK ─────────────────────────────────────────────
+//
+// A cancel pressed on a chip drops the send from `queuedSends` on the SERVER'S
+// ANSWER rather than on the next poll, because a card that stayed up for fifteen
+// seconds after a successful cancel reads as a button that did nothing. That
+// removal has a second effect nobody asked for: `chipEntryIds` is derived from
+// the very same list, so the id leaves the block's filter in the same paint —
+// and the schedule poll's `allBlockers` is a photograph taken up to a poll
+// interval ago, which still lists the entry. The block therefore POPPED BACK UP
+// over the message the reader had just cancelled ("Blocked — a scheduled message
+// runs in this chat … Cancel this message"), and stood there until a poll
+// answered (Bugbot, PR #1124 round 2).
+//
+// So a cancelled id is remembered, and it keeps filtering the block after its
+// chip has gone. THE SAME SEEN/UNSEEN ARGUMENT AS ABOVE, read the other way
+// round: the absence of an id from a poll only means something once a poll has
+// spoken at all, and `pendingIds` and `allBlockers` are published by the same
+// tick (`absorb` / `absorbPending`) — so "this poll no longer lists it" is
+// exactly the moment the block has stopped holding it too, and the memory can
+// go. Nothing expires on a clock: a page that is not polling keeps the
+// dismissal, which is the safe direction (a block that is not drawn, over an
+// entry that is not there).
+
+export const NO_DISMISSED: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The dismissed ids still worth remembering, given the last poll's pending set.
+ *
+ * `null` (nobody has polled) keeps every id. Otherwise an id the poll no longer
+ * lists is dropped — the server agrees the entry is gone, so the block cannot
+ * draw it and the filter has nothing left to do.
+ *
+ * Returns the SAME SET when nothing moved, so a caller holding it in state does
+ * not re-render four times a minute for a memory that did not change.
+ */
+export function pruneDismissed(
+  dismissed: ReadonlySet<string>,
+  pendingIds: ReadonlySet<string> | null,
+): ReadonlySet<string> {
+  if (!pendingIds || !dismissed.size) return dismissed;
+  let dropped = false;
+  const next = new Set<string>();
+  for (const id of dismissed) {
+    if (pendingIds.has(id)) next.add(id);
+    else dropped = true;
+  }
+  return dropped ? next : dismissed;
+}

@@ -922,6 +922,110 @@ def test_the_holder_is_free_to_send_into_its_own_folder(home, agent):
     assert pq.is_free(folder_key(work), "") is False
 
 
+# ------------------------------- the chat that cannot name itself at all
+
+
+def test_a_holder_in_teardown_frees_its_folder_when_the_registry_says_idle(
+        home, agent):
+    """The first wall under the self-queue window (browser QA, 2026-09-12): a
+    process that is still ALIVE but whose session has left `busy` is not a
+    holder. A `claude` takes a moment to go away after its last row, and a
+    folder locked for those seconds is a folder the next message queues behind
+    for nothing."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), SID)
+    registry(SID, status="busy")
+    assert folder_key(work) in pq.holders()
+
+    registry(SID, status="idle")            # the turn is over, the pid is not
+    assert pq.holders() == {}
+    assert pq.is_free(folder_key(work), SID2) is True
+
+
+def test_an_anonymous_send_claims_back_the_folder_its_own_run_went_quiet_in(
+        home, agent):
+    """AKSHIL'S SELF-QUEUE WINDOW, this module's half (browser QA,
+    2026-09-12). A brand-new chat says hello, gets its reply, and types again
+    while the client still knows neither the session nor the run — so the
+    admission names nothing, and the thing refusing it was the ANONYMOUS
+    reservation its own first message left behind.
+
+    The wall that keeps this narrow is the run dir: a run of this folder's own,
+    gone quiet, is the proof that a chat has already had a turn here, which is
+    the only way an unnamed send can be a second message."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")             # the first message's claim
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="idle")                 # the turn ended
+
+    assert pq.holders()[folder_key(work)]["kind"] == "reserved"
+    assert pq.is_free(folder_key(work), "") is True
+    assert pq.reserve_if_free(folder_key(work), "") is True
+
+
+def test_an_anonymous_send_still_queues_while_that_run_is_running(home, agent):
+    """…and not one step further. The same folder, the same nameless send, a
+    turn actually in flight: this is the case the whole feature exists for and
+    it queues."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="busy")
+
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.reserve_if_free(folder_key(work), "") is False
+
+
+def test_two_brand_new_chats_in_one_empty_folder_still_queue(home, agent):
+    """The race the wall is there for: two conversations that have never run
+    anything, in a folder with no run of its own. The second cannot claim the
+    first one's reservation, because nothing in that folder proves either of
+    them has had a turn."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.reserve_if_free(folder_key(work), "") is False
+
+
+def test_an_anonymous_send_never_claims_a_reservation_that_has_a_name(home,
+                                                                      agent):
+    """A reservation naming a session belongs to a conversation that CAN be
+    named, and a send that cannot name itself is not it."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), SID)
+    stage_run(agent, "r-1", str(work / "page.html"), SID, pid=os.getpid())
+    registry(SID, status="idle")
+
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.is_free(folder_key(work), SID) is True
+
+
+def test_the_reserved_sessions_are_the_sends_just_admitted(home, agent):
+    """What the listing reads to say `in_progress` the instant a send is
+    admitted. A reservation with no session names nobody and is left out — an
+    empty id would match every task on the machine that has no session yet."""
+    work = home / "work"
+    work.mkdir()
+    other = home / "other"
+    other.mkdir()
+    assert pq.reserved_sessions() == set()
+
+    pq.reserve(folder_key(work), SID)
+    pq.reserve(folder_key(other), "")
+    assert pq.reserved_sessions() == {SID}
+
+    pq.reserve(folder_key(work), SID2, ttl=0.0)
+    assert pq.reserved_sessions() == set()
+
+
 # ================================================================= order_key
 
 

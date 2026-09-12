@@ -98,6 +98,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     file: "/proj",
     sessionId: "s1",
     runId: null,
+    lastRunId: null,
     status: "idle",
     turns: [],
     permissions: [],

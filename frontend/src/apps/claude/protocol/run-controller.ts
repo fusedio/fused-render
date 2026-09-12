@@ -193,6 +193,7 @@ function emptyState(file: string | null): ChatState {
     file,
     sessionId: null,
     runId: null,
+    lastRunId: null,
     status: "idle",
     turns: [],
     permissions: [],
@@ -466,7 +467,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
   };
 
   const setRunningUi = (on: boolean, status: RunStatus = on ? "running" : "idle") =>
-    emit({ status, runId: on ? activeRun : null });
+    emit(
+      // `lastRunId` is written on the way UP and never on the way down: it is
+      // the id the queue's admission names to be recognised as this folder's own
+      // caller, and the window it exists for is precisely the one after the turn
+      // ended (see `ChatState.lastRunId`).
+      on
+        ? { status, runId: activeRun, ...(activeRun ? { lastRunId: activeRun } : {}) }
+        : { status, runId: null },
+    );
 
   // ---- turns --------------------------------------------------------------
 
@@ -2380,6 +2389,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // outside turn to arrive (Bugbot, PR #1075). `newChat` clears it through
       // `emptyState`; this is the other way a transcript is replaced.
       ownRunEndedAt: 0,
+      // AND THE RUN ID GOES WITH IT, for the same reason and one of its own: the
+      // queue's admission names `lastRunId` to be recognised as the caller that
+      // owns this folder's live run, and a run belonging to the conversation
+      // just closed is not that. `newChat` clears it through `emptyState`.
+      lastRunId: null,
     });
     // WHAT THIS PAGE ALREADY KNOWS ABOUT THE CONVERSATION paints before the
     // fetch is even sent: the Tasks wall loaded this chat into a tile, and the

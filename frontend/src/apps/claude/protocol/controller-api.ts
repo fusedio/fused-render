@@ -173,6 +173,25 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   runId: string | null;
+  /**
+   * THE LAST RUN THIS CONVERSATION HAD, and unlike `runId` it OUTLIVES the turn.
+   *
+   * `runId` is in-flight bookkeeping: it is cleared the moment the turn ends
+   * (`setRunningUi(false)`), which is correct for everything that draws it and
+   * wrong for the one question the project queue asks — "is the thing holding
+   * this folder this very page?". A reply finishes, the host is still tearing
+   * down and the registry still says busy, and the second message the reader
+   * types lands in that window: with `runId` already null and a session id the
+   * chat may not have in state yet, the admit body was ANONYMOUS, so the server
+   * had nothing to recognise its own caller by and queued the message behind the
+   * reader's own finished run (Akshil, browser QA 2026-09-12).
+   *
+   * Set where a run goes live (`pollLoop`, the one place a run is ever in
+   * flight, which covers a re-attached and a scheduled one for free) and cleared
+   * only where the CONVERSATION changes — `openSession` and `newChat` — because
+   * a run id belongs to the chat it ran in.
+   */
+  lastRunId: string | null;
   status: RunStatus;
   /** Ordered transcript. The last assistant turn is the live bubble while running. */
   turns: Turn[];

@@ -135,7 +135,7 @@ import { copyToTaskShots } from "./ui/SchedButton";
 import type { SchedAttachment } from "./ui/sched-draft";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
-import { useQueuedLiveness } from "./sched/queued-sends";
+import { NO_DISMISSED, pruneDismissed, useQueuedLiveness } from "./sched/queued-sends";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
 import { createLiveWatch } from "./live/watch";
 import {
@@ -825,6 +825,13 @@ function ChatBody(props: ChatBodyProps) {
   /** A cancel in flight, by entry id: the chip's two buttons are dead for its
    *  duration and the chip leaves when it lands. */
   const [cancelling, setCancelling] = useState<ReadonlySet<string>>(() => new Set());
+  /** Entries a chip has TAKEN BACK — cancelled here, and dropped from
+   *  `queuedSends` on the server's answer rather than on the next poll. Kept
+   *  until a poll stops listing them, because until then the block's own list
+   *  still has them and would draw the card the cancel just took down
+   *  (`sched/queued-sends` `pruneDismissed`). */
+  const [dismissedEntries, setDismissedEntries] =
+    useState<ReadonlySet<string>>(NO_DISMISSED);
   // SUBSCRIBED, AND NOW ALSO READ. The admission is still asked on the keystroke
   // from `queueEnabled()` — a plain synchronous read of the same one
   // `/api/prefs` answer — and subscribing is what puts that answer ON ITS WAY
@@ -2171,7 +2178,19 @@ function ChatBody(props: ChatBodyProps) {
             // `follow_of` were asked a round trip apart could carry both — a
             // message addressed to a conversation AND filed under the task it
             // predates.
-            const sid = controller.getState().sessionId ?? "";
+            const live = controller.getState();
+            /**
+             * THE FRESHEST SESSION ID THIS PANE CARRIES, which is not always the
+             * one in controller state.
+             *
+             * The URL is the pane's other record of which conversation is on
+             * screen — `openSession` writes it, the boot effect reads it, and
+             * `newChat` clears it — and in the window right after a first reply
+             * it can be ahead of `state.sessionId`. An admission that names
+             * neither is an ANONYMOUS one, and the server then has nothing to
+             * recognise its own caller by (below).
+             */
+            const sid = live.sessionId || params.get("session_id") || "";
             /**
              * …AND THE RUN THIS CHAT ALREADY HAS IN FLIGHT, read in the same
              * breath as the session for the same reason.
@@ -2183,8 +2202,19 @@ function ChatBody(props: ChatBodyProps) {
              * their own message wait for themselves (Akshil, browser QA
              * 2026-09-12). `runId` is minted by `POST /api/run` and is live from
              * the first keystroke of the first turn (`api.admitQueueSend`).
+             *
+             * OR THE LAST RUN THIS CHAT HAD, and that was round two's finding.
+             * `state.runId` is cleared the instant a turn ends, while the host
+             * is still tearing the run down and the registry still reads busy —
+             * so "hello" → reply → "second" typed straight away was admitted
+             * with no run id AND (see `sid`) sometimes no session id either, and
+             * the server, seeing an anonymous caller against its own live run,
+             * queued the reader behind themselves: `Queued · #1 in line · behind
+             * a run in this folder` (Akshil, browser QA 2026-09-12).
+             * `lastRunId` outlives the turn and dies with the CONVERSATION,
+             * which is the lifetime this question actually has.
              */
-            const rid = controller.getState().runId ?? "";
+            const rid = live.runId || live.lastRunId || "";
             const follow = leader.followOf(sid);
             /**
              * AND THE NOTES GO WITH THE WORDS, for the pictures' reason.
@@ -2400,6 +2430,7 @@ function ChatBody(props: ChatBodyProps) {
       refuseQueuedSend,
       spendTrayForQueue,
       leader,
+      params,
     ],
   );
 
@@ -2487,6 +2518,9 @@ function ChatBody(props: ChatBodyProps) {
     // the reader back into the conversation they just left, on the next poll.
     // The entries themselves are untouched; the Tasks page is where they live.
     setQueuedSends([]);
+    // …and the dismissals with them: both are memories of the chips that were on
+    // this screen, and the block the next conversation draws is its own.
+    setDismissedEntries(NO_DISMISSED);
     leader.forget();
   }, [controller, cardPolicy, leader]);
   const onOpenSession = useCallback(
@@ -2498,6 +2532,7 @@ function ChatBody(props: ChatBodyProps) {
       // under a transcript that is about to be replaced.
       setStranded(null);
       setQueuedSends([]);
+      setDismissedEntries(NO_DISMISSED);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
@@ -2758,10 +2793,16 @@ function ChatBody(props: ChatBodyProps) {
    * for an entry the poll no longer lists, and an entry the poll no longer
    * lists is not in `blockers` either.
    */
-  const chipEntryIds = useMemo(
-    () => queuedSends.map((q) => q.entryId),
-    [queuedSends],
-  );
+  const chipEntryIds = useMemo(() => {
+    const ids = queuedSends.map((q) => q.entryId);
+    // …AND THE ONES A CHIP TOOK BACK, which no longer have a send to be read
+    // off. A cancel drops its chip on the server's answer while `blockers` is
+    // still a photograph from before the press, so an id that left this list in
+    // the same paint unmasked the block over the very message the reader had
+    // just cancelled. It stays here until a poll no longer lists the entry.
+    for (const id of dismissedEntries) if (!ids.includes(id)) ids.push(id);
+    return ids;
+  }, [queuedSends, dismissedEntries]);
 
   const sched = useSchedule({
     controller,
@@ -2794,6 +2835,23 @@ function ChatBody(props: ChatBodyProps) {
    * listed it, and only from then on does its absence mean the words have gone.
    */
   const liveQueued = useQueuedLiveness(queuedSends, sched.pendingIds);
+  /** Stable across renders (`useSchedule` memoises it on the watcher), so the
+   *  cancel below may depend on it by name. */
+  const schedRefresh = sched.refresh;
+
+  /**
+   * …AND A DISMISSAL IS FORGOTTEN once a poll agrees the entry is gone.
+   *
+   * `pendingIds` and `blockers` are published by the SAME tick, so a poll that
+   * no longer lists an id is exactly the poll after which the block cannot draw
+   * it either — the memory has nothing left to do and holding it for ever would
+   * mask a real entry that happened to reuse the id. In an effect rather than a
+   * render for the reason the liveness watch is: a render that writes the memory
+   * it read answers differently depending on how many times React ran it.
+   */
+  useEffect(() => {
+    setDismissedEntries((cur) => pruneDismissed(cur, sched.pendingIds));
+  }, [sched.pendingIds]);
 
   /**
    * Skip from the chip: this message to the front of its folder's line. The same
@@ -2874,7 +2932,15 @@ function ChatBody(props: ChatBodyProps) {
       setCancelling((cur) => new Set(cur).add(send.entryId));
       try {
         await cancelScheduledMessage(send.entryId);
+        // THE CHIP GOES, AND THE BLOCK DOES NOT TAKE ITS PLACE. Dropping the
+        // send also drops its id from `chipEntryIds`, and the schedule poll's
+        // own list is up to a lap older than this press — so the entry was
+        // unmasked and the block popped up over a message that no longer
+        // existed. Remembered here until a poll stops listing it, and the poll
+        // is asked NOW rather than at the end of the lap.
+        setDismissedEntries((cur) => new Set(cur).add(send.entryId));
         setQueuedSends((cur) => cur.filter((q) => q.entryId !== send.entryId));
+        schedRefresh();
       } catch (err) {
         const t = troubleFromError(err);
         controller.reportTrouble({
@@ -2889,7 +2955,7 @@ function ChatBody(props: ChatBodyProps) {
         });
       }
     },
-    [controller],
+    [controller, schedRefresh],
   );
 
   /**

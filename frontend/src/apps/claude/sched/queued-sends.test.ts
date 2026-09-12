@@ -12,7 +12,9 @@
 import { describe, expect, it } from "bun:test";
 import {
   EMPTY_QUEUED_WATCH,
+  NO_DISMISSED,
   QUEUED_UNSEEN_POLLS,
+  pruneDismissed,
   reconcileQueuedSends,
   type QueuedWatch,
 } from "./queued-sends";
@@ -146,5 +148,45 @@ describe("reconcileQueuedSends", () => {
     expect([...out.watch.seen]).toEqual(["e1"]);
     // e2 is unseen and has been missed once: still up, and on its own terms.
     expect(out.live.map((s) => s.entryId)).toEqual(["e1", "e2"]);
+  });
+});
+
+// THE OTHER HALF OF THE SAME PHOTOGRAPH. A cancel pressed on a chip drops the
+// send on the server's answer, which also drops its id out of the block's
+// filter (`chipEntryIds`) — while `blockers`, taken from a poll up to a lap
+// older than the press, still lists the entry. The block therefore came back up
+// over the message the reader had just cancelled (Bugbot, PR #1124 round 2).
+describe("pruneDismissed", () => {
+  it("keeps a dismissal while nobody has polled", () => {
+    const held = new Set(["e1"]);
+    expect(pruneDismissed(held, null)).toBe(held);
+  });
+
+  it("keeps it across a poll that STILL lists the entry — the stale one", () => {
+    // The answer in flight when Cancel was pressed. It has the entry, so the
+    // block has it too, and the dismissal is the only thing keeping the card
+    // down.
+    const held = new Set(["e1"]);
+    expect(pruneDismissed(held, ids(["e1", "e2"]))).toBe(held);
+  });
+
+  it("forgets it on the first poll that omits the entry", () => {
+    // `pendingIds` and `blockers` are published by the same tick, so this is
+    // exactly the poll after which the block cannot draw it either.
+    const out = pruneDismissed(new Set(["e1", "e2"]), ids(["e2"]));
+    expect([...out]).toEqual(["e2"]);
+  });
+
+  it("costs nothing when there is nothing to remember", () => {
+    expect(pruneDismissed(NO_DISMISSED, ids(["e1"]))).toBe(NO_DISMISSED);
+  });
+
+  it("never expires on a clock — a page with no answers keeps every dismissal", () => {
+    // The same rule the chips' own grace is counted by: nothing here reads
+    // `Date.now()`, so a throttled tab holds its dismissals rather than
+    // unmasking a block on evidence nobody gathered.
+    let held: ReadonlySet<string> = new Set(["e1"]);
+    for (let i = 0; i < 10; i++) held = pruneDismissed(held, null);
+    expect([...held]).toEqual(["e1"]);
   });
 });

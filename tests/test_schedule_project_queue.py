@@ -1429,6 +1429,7 @@ class _HostAgent:
         self.answer = answer if answer is not None else {"sent": True}
         self.live_host_calls = []
         self.sends = []
+        self.cancels = []
 
     def _alive(self, run_dir):
         return False
@@ -1446,6 +1447,10 @@ class _HostAgent:
                            "read_dirs": read_dirs, "model": model,
                            "effort": effort, "permission_mode": permission_mode})
         return dict(self.answer)
+
+    def _cancel(self, run_id, interrupt_first=True):
+        self.cancels.append(run_id)
+        return {"ok": True}
 
 
 @pytest.fixture()
@@ -1551,3 +1556,143 @@ def test_a_host_that_raises_is_a_spawn(folders, home, spawned, monkeypatch, host
     schedule.tick()
     assert [c["session_id"] for c in spawned] == [SID]
     assert _stored(entry["id"])["state"] == schedule.SENT
+
+
+def test_a_host_send_never_rewrites_the_chats_own_settings(folders, home,
+                                                           spawned, host):
+    """BUGBOT, 2026-09-12. The mode went in as the scheduler's own default
+    (`auto`), `agent._send` turned that into a `set_permission_mode` control
+    request, and the CLI kept it — so a scheduled follow-up silently changed
+    the permission mode of a chat somebody was sitting in front of, for the rest
+    of the session. An empty value means "whatever this chat is already set to",
+    which is the only thing a guest may say."""
+    _on(home)
+    agent = host(run_id="run-live")
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID)
+
+    schedule.tick()
+    assert agent.sends[0]["permission_mode"] == ""
+    assert agent.sends[0]["model"] == "" and agent.sends[0]["effort"] == ""
+
+
+def test_no_mode_is_carried_into_a_live_host_even_an_explicit_one(
+        folders, home, spawned, host):
+    """The mode is left behind whatever the entry says, and the model and the
+    effort still travel. Every entry carries a mode — `create` fills the field
+    with this module's default — so "the user chose one" is not a thing this
+    send can read; and the one it would carry most often is `auto`, broader than
+    the chat's own default. A spawn keeps the entry's mode (the case below it);
+    a guest in a live session does not get to set the house rules."""
+    _on(home)
+    agent = host(run_id="run-live")
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
+                    permission_mode="plan", model="opus", effort="high")
+
+    schedule.tick()
+    assert agent.sends[0]["permission_mode"] == ""
+    assert agent.sends[0]["model"] == "opus"
+    assert agent.sends[0]["effort"] == "high"
+
+
+def test_a_spawn_still_carries_the_entrys_mode(folders, home, spawned, host,
+                                               monkeypatch):
+    """The control: with no live host the send is a process of its own, and it
+    is started in the mode the entry asked for, exactly as before."""
+    _on(home)
+    host(run_id="")
+    modes = []
+    real = claude_spawn.spawn_helper
+
+    def spy(target, prompt, permission_mode, session_id="", **kw):
+        modes.append(permission_mode)
+        return real(target, prompt, permission_mode, session_id, **kw)
+
+    monkeypatch.setattr(claude_spawn, "spawn_helper", spy)
+    schedule.create(str(folders["alpha"]), "go", _ago(1),
+                    permission_mode="plan")
+
+    schedule.tick()
+    assert modes == ["plan"]
+
+
+def _cancel_requested(monkeypatch):
+    """Every `_report` call, with the manager's ✕ pressed on every read-back."""
+    reports = []
+
+    def report(entry_id, **fields):
+        reports.append((entry_id, fields))
+        return {"cancel_requested": True}
+
+    monkeypatch.setattr(schedule, "_report", report)
+    return reports
+
+
+def test_a_host_sent_entry_is_not_cancellable(folders, home, spawned, host,
+                                              monkeypatch):
+    """BUGBOT HIGH, 2026-09-12. The run id on a host-sent entry is the CHAT'S
+    session host — the process the user has a page open on — so the manager's ✕
+    must not be offered for it at all. `agent._cancel` would end their live
+    session to withdraw one scheduled follow-up."""
+    _on(home)
+    host(run_id="run-live")
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
+                            session_id=SID)
+    reports = _cancel_requested(monkeypatch)
+
+    schedule.tick()
+    opened = next(f for _id, f in reports if f.get("state") == "running")
+    assert opened["cancellable"] is False
+    assert _stored(entry["id"])["host_sent"] is True
+
+
+def test_a_spawned_entry_is_cancellable_as_it_always_was(folders, home,
+                                                         spawned, host,
+                                                         monkeypatch):
+    """The control, and the reason the flag is written only when it is true: a
+    send this module actually started is a process this module can stop, and
+    nothing about that entry changes."""
+    _on(home)
+    host(run_id="")                       # no live host: the ordinary spawn
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
+    reports = _cancel_requested(monkeypatch)
+
+    schedule.tick()
+    opened = next(f for _id, f in reports if f.get("state") == "running")
+    assert opened["cancellable"] is True
+    assert "host_sent" not in _stored(entry["id"])
+
+
+def test_a_cancel_on_a_host_sent_entry_leaves_the_chats_session_alone(
+        folders, home, spawned, host, monkeypatch):
+    """The other end of the same fix. A `cancel_requested` flag reaching a
+    host-sent entry — a stale registry row, a client that ignored
+    `cancellable` — stops the WATCH and records the entry as cancelled, and the
+    live session it was written into is never touched."""
+    _on(home)
+    agent = host(run_id="run-live")
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
+                            session_id=SID)
+    _cancel_requested(monkeypatch)
+    schedule.tick()
+
+    stored = _stored(entry["id"])
+    assert schedule._turn_tick(dict(stored), "run-live", agent, {}) is False
+    assert agent.cancels == []                      # the chat is left alone
+    assert _stored(entry["id"])["turn"] == "cancelled"
+
+
+def test_a_cancel_on_a_spawned_entry_still_stops_the_run(folders, home,
+                                                         spawned, host,
+                                                         monkeypatch):
+    """The control again: a run this module spawned is stopped by the ✕, which
+    is what makes the manager's button an action rather than a decoration."""
+    _on(home)
+    agent = host(run_id="")
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
+    _cancel_requested(monkeypatch)
+    schedule.tick()
+
+    stored = _stored(entry["id"])
+    assert schedule._turn_tick(dict(stored), stored["run_id"], agent, {}) is False
+    assert agent.cancels == [stored["run_id"]]
+    assert _stored(entry["id"])["turn"] == "cancelled"

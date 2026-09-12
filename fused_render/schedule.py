@@ -2115,6 +2115,20 @@ def _host_send(entry: dict) -> dict | None:
     (turn open) is the wrong one here, because a host idling between turns is
     precisely the case this exists for.
 
+    **A GUEST CHANGES NOTHING.** No permission mode is passed at all, and the
+    model and the effort only where the entry names one: `agent._send` turns
+    any of them into a `set_model`/`set_permission_mode` control request the CLI
+    keeps for the rest of the session, so this send would otherwise rewrite the
+    settings of a chat the user is sitting in front of — and the mode it would
+    rewrite them to is this module's `auto`, which is broader than the chat's
+    own default. An inbox message runs under the settings its session already
+    has, exactly as a message typed into that composer would.
+
+    **The entry is marked `host_sent`**, because what this returns is not a run
+    of ours: the run id is the CHAT'S session host, shared with the page, and a
+    cancel aimed at this entry must never tear it down (see `_send` and
+    `_turn_tick`).
+
     **A respawn is not a failure.** `agent._send` answers `{"respawn": True}`
     when the live host cannot serve the message as it stands — an attachment
     directory it was not granted, an effort fixed at spawn — and it has already
@@ -2148,11 +2162,26 @@ def _host_send(entry: dict) -> dict | None:
         # was not already granted the directory answers `respawn`, which is the
         # honest outcome: the grant is fixed at spawn.
         read_dirs = json.dumps([shots_dir()]) if _stored_attachments(entry) else ""
+        # NO PERMISSION MODE AT ALL, WHICH MEANS "THE CHAT'S OWN" (bugbot,
+        # 2026-09-12). `agent._send` turns any mode it is given that differs
+        # from the host's into a `set_permission_mode` control request, and the
+        # CLI keeps it for the rest of the session — so a scheduled follow-up
+        # was silently rewriting the permission mode of a chat somebody was
+        # sitting in front of, and leaving it rewritten. Worse in one
+        # direction than the sentence makes it sound: every entry carries a
+        # mode (`create` fills the field in with this module's own default,
+        # `auto`, so "the user chose auto" and "the user chose nothing" are the
+        # same stored value), and `auto` is BROADER than the chat's own default
+        # of `prompt` — an unattended message walking into someone's live
+        # session and loosening it permanently. A spawn is a process of its own
+        # and keeps the entry's mode; an inbox message is a guest in somebody
+        # else's session and runs under the settings that session already has,
+        # exactly as a message typed into that composer would. `model` and
+        # `effort` are read straight off the entry and are empty unless the
+        # entry names one, so both already say nothing when nothing was chosen.
         res = agent._send(run_id, _composed(entry), read_dirs,
                           str(entry.get("model") or ""),
-                          str(entry.get("effort") or ""),
-                          str(entry.get("permission_mode")
-                              or _SCHEDULED_PERMISSION_MODE))
+                          str(entry.get("effort") or ""), "")
     except Exception:  # noqa: BLE001 — a host we cannot reach is a spawn
         logger.debug("could not send %s into a live host; spawning instead",
                      entry.get("id"), exc_info=True)
@@ -2174,8 +2203,10 @@ def _send(entry: dict) -> None:
     than propagating: one bad target must not stop the rest of the tick, and a
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
+    host_sent = False
     try:
         res = _host_send(entry)
+        host_sent = res is not None
         if res is None:
             # The extra Read pre-allowance is passed only when this run actually
             # HAS attachments — not as `None` on every other send. Two reasons, and
@@ -2204,14 +2235,30 @@ def _send(entry: dict) -> None:
     # which a concurrent sweep would close a turn that is about to be watched
     # perfectly well.
     _watching(entry["id"], True)
-    _update(entry["id"], state=SENT, run_id=str(run_id), error="")
+    # `host_sent` is written ONLY when it is true, so an ordinary spawn's stored
+    # entry is the one main writes, field for field. It is the fact everything
+    # downstream needs and cannot re-derive: the run id on this entry is a
+    # session host the CHAT owns, not a process this send started.
+    _update(entry["id"], state=SENT, run_id=str(run_id), error="",
+            **({"host_sent": True} if host_sent else {}))
+    entry["host_sent"] = host_sent
     # The row opens `running` and stays that way for the whole TURN, not just the
     # spawn — the spawn takes a moment and the turn can take minutes, and the
     # minutes are the part worth being able to see. `cancellable` is honest here
     # in a way it is not for most reporters: this process can actually stop the
     # run (agent._cancel), so the manager's ✕ is an action.
+    #
+    # …EXCEPT FOR A MESSAGE THAT WENT INTO A LIVE CHAT'S INBOX (bugbot,
+    # 2026-09-12). There the run is the chat's own session host: `agent._cancel`
+    # would kill the process the user is typing into, ending their live session
+    # to withdraw one scheduled follow-up. Nothing in agent.py can take a
+    # message back out of the inbox without also throwing away whatever else is
+    # queued there, so the honest answer is that this row has no stop button —
+    # the chat's own Stop does, and it is the one that knows what it is
+    # stopping. See `_turn_tick`, which refuses the same call from the other
+    # side for a flag the registry should never carry anyway.
     _report(entry["id"], title=_job_title(entry), kind="task",
-            detail=entry["target"], state="running", cancellable=True)
+            detail=entry["target"], state="running", cancellable=not host_sent)
     # Nothing else will poll the run, so without this thread the finished
     # turn is never committed — and, since
     # this feature added an observer, nobody would ever learn how the turn went.
@@ -2326,10 +2373,26 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     # One call: reporting the tick is also how the cancel flag is read back.
     record = _report(entry_id, detail=detail)
     if record and record.get("cancel_requested"):
-        try:
-            agent._cancel(run_id)
-        except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
-            logger.debug("could not cancel scheduled run %s", run_id, exc_info=True)
+        # NEVER KILL A HOST THIS ENTRY MERELY WROTE TO (bugbot, 2026-09-12).
+        # With the project queue on, a scheduled message for a conversation that
+        # already has a live session host is delivered into that host's inbox
+        # rather than spawned (`_host_send`), and the run id recorded here is
+        # THE CHAT'S — the process the user has a page open on. `agent._cancel`
+        # ends that process: a stop asked of this row would have closed the
+        # reader's live session, kill the turn they were watching and any
+        # message they had queued behind it. The row is reported not-cancellable
+        # for exactly this reason, so a flag here is either a stale registry
+        # record or a client that ignored it; either way the entry stops being
+        # watched and says so, and the session is left alone. There is no
+        # middle road to take: `interrupt` aborts the user's turn just the same,
+        # and `_discard_inbox` throws away every undrained message in the
+        # session, the user's own included.
+        if not entry.get("host_sent"):
+            try:
+                agent._cancel(run_id)
+            except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
+                logger.debug("could not cancel scheduled run %s", run_id,
+                             exc_info=True)
         _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
         _report(entry_id, state="cancelled")
         return False

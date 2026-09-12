@@ -642,6 +642,27 @@ def reserved_run(key: str) -> str:
         return found[2]
 
 
+def reserved_sessions() -> set:
+    """Every session holding an unexpired reservation, anywhere.
+
+    The listing's half of "instant running" (`tasks._running_now`). A send the
+    server has just admitted is a turn that has started as far as the person who
+    pressed Enter is concerned, and for the seconds before `claude` registers a
+    session there is nothing on disk to say so — the row read `done` for 3.4 s
+    after a send, which is the sidebar telling the user their message went
+    nowhere. The reservation is the one record of that instant, it is already
+    taken on the admission path, and it expires on its own
+    (`RESERVATION_TTL`), so a spawn that never happened costs at most one row
+    reading `in_progress` for twenty seconds — the same overshoot the folder
+    gate already accepts, and the opposite of the failure it replaces.
+
+    A reservation with no session names nobody and is left out: an empty id
+    would match every task with no session on the machine at once.
+    """
+    return {session_id for session_id, _run in _live_reservations().values()
+            if session_id}
+
+
 def reserve_if_free(key: str, session_id: str, run_id: str = "",
                     now: float | None = None) -> bool:
     """Take `key`'s reservation for `session_id` if the folder is free — one
@@ -701,7 +722,8 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
             # describe one spawn from opposite ends. `_name_starting` does the
             # same for the map `holders` hands out.
             holder = dict(holder, session_id=reserved_by, task_key=reserved_by)
-        if holder is not None and not _self_held(holder, sid, run):
+        if (holder is not None and not _self_held(holder, sid, run)
+                and not _anonymous_self(key, holder, sid, run, now)):
             return False
         _reservations[key] = (sid, time.monotonic() + RESERVATION_TTL,
                               run or reserved_run_id)
@@ -729,6 +751,70 @@ def _self_held(holder: dict, session_id: str, run_id: str) -> bool:
         return True
     run = str(run_id or "")
     return bool(run) and run == str(holder.get("run_id") or "")
+
+
+def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
+                    now: float | None = None) -> bool:
+    """Is a request that can name NOTHING the chat that already owns this
+    folder? Narrow on purpose, and every clause is one of the walls.
+
+    THE WINDOW THIS CLOSES (Akshil's browser QA, 2026-09-12). A brand-new chat
+    sends "hello", gets its reply, and the second message is admitted while the
+    first turn is still tearing down — the process alive, the registry row a
+    second or two behind. The client had not yet learned the session or the run
+    (the frontend now sends both; this is the server's half of the same fix), so
+    the admission named nobody, and the anonymous reservation the FIRST message
+    left behind was the thing standing in its way: a claim on the folder made by
+    this very chat, refusing this very chat because neither end had a name yet.
+
+    Four walls, and the folder stays gated by all of them:
+
+    1. **The request names nothing at all.** A send carrying a session or a run
+       has a real identity and is answered by `_self_held`; this is only for the
+       one case that cannot be.
+    2. **The holder names nothing either.** An anonymous reservation and nothing
+       else: a `run` or `starting` holder is a live process and outranks a
+       reservation in `holders()`, so reaching here at all means no process is
+       running in that folder. A reservation that HAS a session or a run belongs
+       to a conversation that can be named, and an anonymous request is not it.
+    3. **A run of this folder's own, and it is not running.** The presence of a
+       run dir keyed on this folder is the proof that a chat has already had a
+       turn here — which is the only way an anonymous admission can be a SECOND
+       message rather than a first. Two brand-new chats racing into one empty
+       folder fail this clause (neither has a run yet) and the second still
+       queues, which is the case the gate exists for.
+    4. **The newest run only** (`scan_runs` is newest-first). A folder chatted
+       in for weeks has a tail of dead run dirs, and the freshest one is the
+       conversation whose reservation is standing here.
+
+    Nothing here is a lease and nothing is stored: the reservation still expires
+    on its own, and the moment either end learns a name the ordinary
+    `_self_held` rule takes over.
+    """
+    if session_id or run_id:
+        return False
+    if str(holder.get("session_id") or "") or str(holder.get("run_id") or ""):
+        return False
+    return _idle_run_in(key, now)
+
+
+def _idle_run_in(key: str, now: float | None = None) -> bool:
+    """Does `key`'s folder hold a run of its own that is NOT running — an idle
+    session host, one in teardown, or a dead one?
+
+    The newest run filed under this folder decides; everything older is a
+    previous conversation. Best-effort like the rest of the module: no agent
+    module, no runs tree or no run in this folder all answer False, which is the
+    answer that keeps the gate closed."""
+    agent = agent_module()
+    if agent is None:
+        return False
+    now = time.time() if now is None else now
+    for run in scan_runs(agent):
+        if run_key(run) != key:
+            continue
+        return not _live_session(run["sessions"], now)
+    return False
 
 
 def _prune_reservations() -> None:
@@ -997,16 +1083,19 @@ def is_free(key: str, session_id: str, run_id: str = "",
     anonymous in the same window; asking only about the session made that chat
     queue behind its own first message (Akshil, 2026-09-12). `run_id` — the run
     the caller knows it started — matches the holder's own run whatever either
-    side calls the session. A chat that can name NEITHER can never be the
-    holder, so it waits, which is what keeps two brand-new tasks out of one
-    folder.
+    side calls the session. A chat that can name NEITHER is the folder's own
+    only where nothing but an anonymous reservation stands in it and a run of
+    that folder's own has already gone quiet (`_anonymous_self`); short of that
+    it waits, which is what keeps two brand-new tasks out of one folder.
     """
     if not key:
         return True
     holder = holder_for(key, now)
     if holder is None:
         return True
-    return _self_held(holder, str(session_id or ""), str(run_id or ""))
+    sid, run = str(session_id or ""), str(run_id or "")
+    return (_self_held(holder, sid, run)
+            or _anonymous_self(key, holder, sid, run, now))
 
 
 # -------------------------------------------------------------------- the order

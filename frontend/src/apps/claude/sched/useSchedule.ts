@@ -146,6 +146,17 @@ export interface ScheduleState {
   cardRef: React.MutableRefObject<HTMLDivElement | null>;
   /** T:16776 — the visible conversation was REPLACED. */
   reset(): void;
+  /**
+   * ASK THE SCHEDULE NOW, rather than at the end of the current 15 s lap.
+   *
+   * For a press that CHANGED the schedule from this pane — the chip's Cancel is
+   * the one caller — where waiting a lap means the poll's answer (and everything
+   * derived from it: `blockers`, `pendingIds`) describes a world the reader has
+   * already left. Fire and forget: the tick publishes through the same
+   * `onBlockers`/`onPending` every other lap does, and a failing one fails open
+   * exactly as it always has.
+   */
+  refresh(): void;
 }
 
 export function useSchedule(opts: UseScheduleOptions): ScheduleState {
@@ -404,6 +415,13 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     watcher.resetForNewTranscript();
   }, [watcher]);
 
+  /** The poller's own tick, on demand — `watcher.tick()` is public and
+   *  re-entrant-safe (it publishes and re-arms exactly as a timed lap does), and
+   *  `resetForNewTranscript` has always spent it this way. */
+  const refresh = useCallback(() => {
+    void watcher.tick();
+  }, [watcher]);
+
   // ── the row's number and name ─────────────────────────────────────────────
   //
   // TASK-nnn, the task's name and its state are NOT in `/api/schedule` — only
@@ -630,5 +648,6 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     onRow,
     cardRef,
     reset,
+    refresh,
   };
 }
