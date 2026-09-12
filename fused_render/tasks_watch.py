@@ -96,6 +96,52 @@ def registry_row(session_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def session_for_pid(pid) -> str:
+    """The session id the `claude` process `pid` is holding, or `""`.
+
+    THE REGISTRY READ BACKWARDS, and the reason it exists is a run that has not
+    said who it is yet. A run dir carries the CLI's own pid from the instant the
+    session host spawns it (`run_dir/pid`), but the session id only lands in the
+    run dir once something polls the run — a chat whose first message was sent
+    and then left alone can go a long time without one, and for all that time
+    the project queue can say only "a process is starting in that folder", not
+    WHICH conversation it is. Claude Code itself answers that in
+    `~/.claude/sessions/<pid>.json` from the moment the CLI comes up, and this
+    loop already parses every one of those rows once a second: the map is keyed
+    by session with the pid INSIDE the row, so the reverse lookup is a scan of a
+    map holding one entry per live `claude` on the machine.
+
+    The file is read directly when the map has nothing to say — the watcher may
+    not have ticked yet on a server seconds old, and it is the same file the
+    tick would have read. The pid is checked for life on that path because a
+    crashed CLI leaves its row behind; the map's rows are pruned by the tick
+    itself and need no second check.
+    """
+    pid_s = str(pid or "").strip()
+    if not pid_s.isdigit():
+        return ""
+    with _cond:
+        for sid, row in _registry.items():
+            if str(row.get("pid") or "") == pid_s:
+                return sid
+    try:
+        with open(os.path.join(SESSIONS_DIR, pid_s + ".json"),
+                  encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(row, dict) or str(row.get("pid") or "") != pid_s:
+        return ""
+    sid = row.get("sessionId")
+    # `_pid_alive` wants the int — it trusts anything it cannot read as a pid,
+    # which is the right default for the tick (the file is the authority there)
+    # and the wrong one here, where an unprobed pid would name a crashed
+    # session the map has already pruned.
+    if not isinstance(sid, str) or not sid or not _pid_alive(int(pid_s)):
+        return ""
+    return sid
+
+
 def live_from_registry(session_id: str,
                        transcript_mtime: float | None = None) -> tuple[bool, float] | None:
     """(running, last_active) as the registry tells it, or None to say "no
@@ -260,10 +306,41 @@ def _pid_alive_windows(pid: int) -> bool:
         return True
 
 
+def _wake_schedule() -> None:
+    """Tell the scheduler a folder may just have freed (project queue only).
+
+    THIS IS THE "wake, not wait" half of the queue. This loop already stats the
+    live registry once a second, so it learns that a run stopped — status left
+    RUNNING_STATUSES, the row departed, the pid died — long before the
+    scheduler's own 30-second timer would. Without the ring the next queued
+    task starts up to half a minute after the one in front of it finished,
+    which reads as a queue that is not moving.
+
+    A HINT, never a mechanism: `schedule.wake` only shortens the wait, every
+    rule about what fires stays in `schedule.tick`, and a ring that finds
+    nothing costs one early pass. Imported inside the function because the
+    scheduler reaches this module the other way round (through
+    `project_queue`), so a module-level import would close the cycle. Gated on
+    the flag so nothing about a default install changes."""
+    try:
+        from fused_render import project_queue, schedule
+
+        if project_queue.enabled():
+            schedule.wake()
+    except Exception:  # noqa: BLE001 — a watcher must outlive any one bad ring
+        pass
+
+
 def _read_registry() -> set[str]:
     """Reconcile `sessions/*.json` with `_registry`; return the session ids
-    whose record appeared, changed, or went away."""
+    whose record appeared, changed, or went away.
+
+    Rings the scheduler once (`_wake_schedule`) when any session STOPPED
+    running in this pass — the row went away, the pid died, or the status left
+    RUNNING_STATUSES. That transition is what the project queue is waiting for,
+    and this is the loop that sees it first."""
     keys: set[str] = set()
+    stopped = False
     try:
         names = os.listdir(SESSIONS_DIR)
     except OSError:
@@ -297,6 +374,7 @@ def _read_registry() -> set[str]:
                     _tr_paths.pop(sid, None)
                     _tr_sizes.pop(sid, None)
                     keys.add(sid)
+                    stopped = True
             continue
         _sess_mtimes[path] = mtime
         try:
@@ -310,6 +388,8 @@ def _read_registry() -> set[str]:
         if not isinstance(sid, str) or not sid:
             continue
         old_sid = _sess_sids.get(path)
+        with _cond:
+            was = (_registry.get(sid) or {}).get("status")
         if not _pid_alive(row.get("pid")):
             # A crashed claude leaves its file behind; a dead pid is not a
             # live session, and must not paint a running badge forever. The
@@ -320,15 +400,22 @@ def _read_registry() -> set[str]:
                     _registry.pop(old_sid, None)
                     _departed[old_sid] = time.time()
                 keys.add(old_sid)
+                stopped = True
             continue
         if old_sid and old_sid != sid:
             _registry.pop(old_sid, None)
             keys.add(old_sid)
+            stopped = True
         _sess_sids[path] = sid
         with _cond:
             _registry[sid] = row
             _departed.pop(sid, None)
         keys.add(sid)
+        # busy/shell -> anything else: the turn ended, and whatever was queued
+        # behind that folder can go now. `waiting` counts as stopped on purpose
+        # — a run parked on a card holds nothing (project_queue.holders).
+        if was in RUNNING_STATUSES and row.get("status") not in RUNNING_STATUSES:
+            stopped = True
     for path in list(_sess_mtimes):
         if path in seen:
             continue
@@ -341,6 +428,9 @@ def _read_registry() -> set[str]:
             _tr_paths.pop(sid, None)
             _tr_sizes.pop(sid, None)
             keys.add(sid)
+            stopped = True
+    if stopped:
+        _wake_schedule()
     return keys
 
 

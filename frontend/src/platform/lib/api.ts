@@ -1175,6 +1175,17 @@ export interface Prefs {
   // reader asks `chat?.recap !== false` rather than `=== true`: an older
   // server answers without the field and that server's chat still shows it.
   chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
+  // Everything that wants to run in a folder somebody else's task is already
+  // running in waits its turn in the scheduler's pending list instead — chat
+  // sends, Run now and scheduled entries alike — and the row that is waiting
+  // reads `queued`.
+  //
+  // OPTIONAL for the reason `chat` is: the readers ask `p.queue?.enabled ===
+  // true`, and a server that predates the field answers without it. Off is
+  // both the pref's own default and what every server did before this existed,
+  // so "not sent" and "off" are honestly the same answer here.
+  queue?: { enabled: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1398,6 +1409,10 @@ export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
+}
+
+export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { project_queue_enabled: enabled });
 }
 
 export interface LanDevice {
@@ -3019,8 +3034,14 @@ export interface Task {
   // never attempted (the coalescer dropped it, or the user cancelled it), which
   // is a different thing from a run that tried and broke; only something that
   // actually ran can fail.
-  status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
-    | "archived";
+  //
+  // `queued` is the project queue's word (prefs `queue.enabled`): this task has
+  // work due and the FOLDER it edits is busy with somebody else's run, so the
+  // scheduler is holding it. It sits between `upcoming` and `in_progress`
+  // because that is where it sits in time — the work is asked for and not yet
+  // started — and it is never sent at all while the flag is off.
+  status: "upcoming" | "queued" | "in_progress" | "needs_attention" | "blocked"
+    | "done" | "archived";
   /**
    * WHICH KIND OF ROW THIS IS — and the one field that says a row is not a task
    * at all.
@@ -3114,11 +3135,22 @@ export interface Task {
   // Anything asking "which column" should read `status`.
   failed: boolean;
   // WHY it is not moving, for the two statuses that need a reason. "permission"
-  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
-  // `blocked`, and "" to every other task — which is most of them. It is what
-  // decides the row's button: Retry on a run that broke, Open on one somebody is
-  // being waited on. Absent on an older server; read as "".
-  blocked_reason?: "permission" | "question" | "failed" | "";
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" and
+  // "usage_limit" to `blocked`, and "" to every other task — which is most of
+  // them. It is what decides the row's button: Retry on a run that broke, Open on
+  // one somebody is being waited on. Absent on an older server; read as "".
+  //
+  // "usage_limit" is the plan's window, not a failure: the session stopped
+  // because the usage limit was reached and it starts again by itself at
+  // `resumes_at`. It draws in the Blocked lane with the same red ring — nothing
+  // is moving, and nothing will move by itself — and says which kind it is in its
+  // caption (platform/lib/usage-limit).
+  blocked_reason?: "permission" | "question" | "failed" | "usage_limit" | "";
+  // WHEN A USAGE-LIMITED SESSION COMES BACK, epoch seconds — the CLI's own
+  // `rate_limit_event.resetsAt`, as the scheduler recorded it. 0 or absent
+  // whenever the server could not say (and on every row that is not limited),
+  // and then the caption stops after "Usage limit".
+  resumes_at?: number;
   // The one line under a needs-attention row's title: which tool, and what it
   // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
   // whenever nothing is waiting.
@@ -3168,6 +3200,63 @@ export interface Task {
   // `_next_run`, 2026-09-11) — the next-run chip's repeat glyph. Absent on an
   // older server; tasks-lib.nextRunRepeats then reads the window.
   next_run_repeats?: boolean;
+  // ---- the project queue (prefs `queue.enabled`) ----------------------------
+  // ALL FOUR OPTIONAL, and every reader treats a missing one as "not queued":
+  // an older server sends none of them, and the flag being off means a server
+  // that HAS them still never sets them. So there is no "unknown" state to
+  // render — `queued` is the status, and these only say where in the line.
+  //
+  // The FOLDER this task's work happens in — `current_apps.app_dir_for`, else
+  // the nearest ancestor holding a `.git`, else the canonical cwd
+  // (project_queue.queue_key). Two tasks on two files in one repo share it; a
+  // worktree does not share its main repo's. Never `$HOME`, never `/`.
+  queue_key?: string;
+  // 1-based place in that folder's line, held answers and priority first. 0 (or
+  // absent) when the task is not queued at all — so a reader may print it only
+  // after `status === "queued"`.
+  queue_position?: number;
+  // WHO IS IN FRONT: the holder's `task_id` ("TASK-041"), or "" when the folder
+  // is held by something this row cannot name (a scheduler entry already
+  // claimed, a run whose task row is gone). The empty case is a real answer and
+  // the views say "behind a run in this folder" for it rather than a blank.
+  queue_ahead?: string;
+  // …and that holder's title, for the POINTER only. Never the ink since
+  // 2026-09-12: an id is what a reader can go and find, and a quoted title
+  // inside the caption was a second sentence nested in the first one.
+  queue_ahead_title?: string;
+  // WHERE THAT ID GOES. "behind TASK-038" is only worth printing if TASK-038 is
+  // somewhere the reader can open, so the server names the holder's Claude
+  // session and its folder beside its id and every surface draws the id as a
+  // link (platform/lib/queue.queueAheadHref). Absent on an older server, and the
+  // id is then plain text rather than a link to nothing.
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
+  // …and the holder's own task KEY, which is a door of its own when the session
+  // is not one yet: a holder still starting is keyed `pending:<entry id>`, and
+  // that entry opens as a chat (platform/lib/queue.QUEUED_PARAM). Absent on an
+  // older server, and the id is then plain text for that window.
+  queue_ahead_key?: string;
+  // ── what this task's SCHEDULER ENTRY is, when it has one ──────────────────
+  //
+  // A task with no transcript is nothing but a line in a folder's queue, keyed
+  // `pending:<entry id>`. These two name that entry outright rather than leaving
+  // every reader to take the key apart, and — more importantly — say WHERE IT
+  // CAME FROM.
+  //
+  // The origin is the half that matters: `"chat"` is stamped by
+  // `POST /api/tasks/queue/admit` and by nothing else, so it means "somebody
+  // typed this into a chat composer". Its ABSENCE is a calendar message, a New
+  // task form, a repeat's occurrence — work that is not a conversation, and must
+  // not be listed as one (`sched/waiting-chats`: every future scheduled job
+  // would otherwise appear in Recent chats).
+  //
+  // Both "" on a task that has run, and on an older server.
+  entry_id?: string;
+  entry_origin?: string;
+  // Skipped: this task's pending work jumped to the head of its folder's line
+  // (`POST /api/tasks/queue/skip`, or a held answer, which is always priority).
+  // It still never interrupts the run in flight.
+  queue_priority?: boolean;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.
@@ -3239,6 +3328,178 @@ export function getTaskChanges(
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
   return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
+}
+
+// ---- the project queue (prefs `queue.enabled`) --------------------------------
+// Three verbs, and they exist because the client cannot derive any of them: who
+// holds a folder is a fact about live processes (project_queue.holders()), and
+// asking the client to guess it would be the merge the Tasks page already gave
+// up (see the head of ScheduleTaskViews).
+//
+// ADMISSION IS ASKED BEFORE THE SEND, NOT AFTER. A chat send that spawned first
+// and queued second would be two runs in one folder for as long as the round
+// trip takes, which is the one thing this feature exists to prevent. The server
+// holds a short reservation on `run: true` to close the same gap on its side.
+
+/** What `/api/tasks/queue/admit` answers. `run: true` means "go, exactly as
+ *  before" — the flag being OFF answers this too, which is why a caller that
+ *  asks unconditionally still behaves like today. `run: false` means the server
+ *  has already created the pending entry: the words are safe, nothing spawned,
+ *  and the composer shows where in the line they landed. */
+export type QueueAdmission =
+  | { run: true }
+  | {
+      run: false;
+      entry: ScheduledMessage;
+      /** The folder that is busy — `Task.queue_key`. */
+      key: string;
+      position: number;
+      ahead: string;
+      ahead_title: string;
+      /** WHERE THAT ID GOES — the holder's Claude session and folder, so the
+       *  waiting row's "behind TASK-038" is a link into the conversation that is
+       *  in the way (queue.queueAheadHref). Both "" when the folder is free,
+       *  which is the ordinary answer for a second send into a chat whose first
+       *  one is still waiting: nothing is in front but the reader's own line. */
+      ahead_session?: string;
+      ahead_target?: string;
+      /** …and the holder's task key, which opens the holder's chat even while it
+       *  is still starting (`pending:<entry id>`, queue.queueAheadHref). */
+      ahead_key?: string;
+      /**
+       * THE NUMBER THIS CONVERSATION IS NOW CALLED — "TASK-057".
+       *
+       * A queued send CREATES the task (the entry is the task, keyed
+       * `pending:<leader id>`), so the server can name it in the very answer
+       * that queued it. The chat's header used to wait for a `/api/tasks` listing
+       * to say the same thing, which is up to a poll interval of a conversation
+       * with no number at the top — and the number is how a reader finds it again
+       * on the Tasks page. Absent on an older server, and the header then waits
+       * for the listing exactly as it did.
+       */
+      task_id?: string;
+    };
+
+export function admitQueueSend(body: {
+  project: string;
+  session_id: string;
+  message: string;
+  model?: string;
+  effort?: string;
+  permission_mode?: string;
+  images?: string[];
+  attachments?: TaskAttachment[];
+  /**
+   * THE QUEUED ENTRY THIS MESSAGE IS A FOLLOW-UP TO — the one-off twin of
+   * `template_id`, and only ever sent by a chat that has NO session id yet.
+   *
+   * A chat whose first message was queued is a task named `pending:<entry id>`;
+   * it has no Claude session, because nothing has run. A second message typed
+   * into that same composer has nothing to address — sent bare it would create
+   * a SECOND brand-new task in the same folder, and the reader would watch
+   * their conversation fork in two. Naming the leader joins it instead: the
+   * server groups both entries under the leader's key, orders them, and
+   * resolves the follower's session from the leader's `claude_session_id` at
+   * claim time.
+   */
+  follow_of?: string;
+  /**
+   * THE RUN THIS CHAT ALREADY HAS IN FLIGHT, when it has one.
+   *
+   * A folder's holder is a RUN, and "is that holder this chat?" used to be
+   * asked by session id alone — which a chat does not have until its first turn
+   * has opened one. So a second message typed into a brand-new chat whose own
+   * first turn was still going queued behind ITSELF: the holder was this page's
+   * own run and nothing in the body said so. The run id is minted by `POST
+   * /api/run` before any session exists (`ChatState.runId`), so it is the one
+   * name the two halves can be compared by from the first keystroke — the
+   * server reads a holder carrying this same `run_id` as "this chat" and
+   * answers `run: true`, which is the inbox-absorb case the chat has always had.
+   *
+   * Absent while nothing is running, which is the ordinary case and the one a
+   * session id answers on its own.
+   */
+  run_id?: string;
+  /**
+   * THE CHAT DRAFT THIS SEND SPENDS — `new:<file>`, and only ever sent by a chat
+   * that has no session yet.
+   *
+   * A session-less composer autosaves under that key and the listing gives it a
+   * TASK number, so the row the reader is watching is named before anything has
+   * run. A send into a FREE folder spends it through the run it starts (the
+   * start request's own `draft_key`, which `agent._start` writes into
+   * `meta.json`); a send that QUEUES starts no run, so it says it here instead
+   * and the entry inherits both the number and the delete
+   * (`routers/schedule.py::spend_chat_draft`). Without it the queued task minted
+   * a second number and the spent key was never cleaned up (review, PR #1124).
+   */
+  draft_key?: string;
+}): Promise<QueueAdmission> {
+  return postJson<QueueAdmission>("/api/tasks/queue/admit", body);
+}
+
+/**
+ * Jump queued work to the head of its folder's line. NEVER interrupts the run in
+ * flight — the answer is always a position, never "running now". Idempotent;
+ * rejects (400) when there is nothing queued to move, which is a real answer and
+ * worth showing.
+ *
+ * TWO WAYS TO NAME THE WORK, AND THEY ARE NOT INTERCHANGEABLE.
+ *
+ *   * `{ key }` — the TASK key, which is what a Tasks row or a Board card holds.
+ *     The press there means "everything this task has waiting", and the server
+ *     flags every pending due entry of it.
+ *   * `{ entry_id }` — ONE ENTRY, and the only name a CHAT can safely hold. A
+ *     queued send's task key is `pending:<leader entry id>` until the leader's
+ *     run opens a Claude session, and the store then REKEYS that task onto the
+ *     session id — so a key frozen at admission time is stale from the first run
+ *     onwards, and `{ key }` 404s on the very chip a reader is most likely to
+ *     press (round-2 review). An entry id is minted once and never rekeyed.
+ *
+ * Same answer either way: `{ ok, position }`.
+ */
+/** What Skip answers with: the promise (`position: 1`) and the LINE IT JUST
+ *  CHANGED — who is in front now, the same five `ahead_*` fields admit, decide
+ *  and run-now answer with (`_queue_place`). Optional, because a server from
+ *  before PR #1124 sends the first two alone. */
+export interface SkipResult {
+  ok: boolean;
+  position: number;
+  ahead_key?: string;
+  ahead?: string;
+  ahead_title?: string;
+  ahead_session?: string;
+  ahead_target?: string;
+}
+
+export function skipQueue(
+  what: { key: string } | { entry_id: string },
+): Promise<SkipResult> {
+  return postJson<SkipResult>("/api/tasks/queue/skip", what);
+}
+
+/** A card decision routed through the queue: the same body the agent's own
+ *  `decide` action takes, plus the session and folder the server needs to find
+ *  the line. `held: false` carries the ordinary decide result straight through;
+ *  `held: true` means the answer is stored and will be delivered when the folder
+ *  frees, and the card latches on "runs next" instead of a verdict. */
+export type QueueDecision =
+  | ({ held: false } & Record<string, unknown>)
+  | { held: true; position: number; ahead: string; ahead_title: string };
+
+export function decideThroughQueue(body: {
+  run_id: string;
+  request_id: string;
+  session_id: string;
+  project: string;
+  decision: string;
+  scope: string;
+  mode?: string;
+  answers?: string;
+  note?: string;
+  custom?: string;
+}): Promise<QueueDecision> {
+  return postJson<QueueDecision>("/api/tasks/queue/decide", body);
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —
@@ -4858,6 +5119,28 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // WHO PUT THIS ENTRY IN THE LINE — "chat" for a message the project queue
+  // admitted out of a composer, ABSENT for everything a person scheduled (the
+  // calendar, the New task form, a repeat's occurrence).
+  //
+  // The chat reads exactly one thing off it, and it is the difference between
+  // two states that look identical in the store: a chat-origin entry is a
+  // message the reader typed into THIS box ten seconds ago and the box stays
+  // open behind it, while a calendar entry aimed at this session is a run the
+  // scheduler is about to start here — and a line typed over THAT is two
+  // messages racing into one turn, which is what the closed composer has always
+  // been there to prevent. Absent on every entry stored before the field
+  // existed, which reads as "scheduled", i.e. the cautious half.
+  origin?: string;
+  // Skipped to the head of its folder's line (`POST /api/tasks/queue/skip`, or a
+  // held answer, which is always priority). Never interrupts the run in flight.
+  priority?: boolean;
+  // On a follow-up into a chat that has not run yet: the QUEUED ENTRY this
+  // message was typed behind (`admitQueueSend`'s `follow_of`). The entry groups
+  // under that leader's task instead of minting one of its own, and takes its
+  // session from whatever the leader's run opens. Absent on everything else —
+  // one-offs, occurrences, and every entry stored before the field existed.
+  follow_of?: string;
   // On an occurrence: this is the ONE catch-up run of a rule whose anchor was
   // already in the past when it was created. Its `due` is the LATEST slot at or
   // before the moment it was made (the anchor sets the pattern; the run that
@@ -5013,11 +5296,30 @@ export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledM
 // sending, cancelled, or its conversation has a turn open right now (two
 // `claude --resume` processes on one transcript is the one thing this must
 // never do). The reason is written to be shown.
-export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
-  return postJson<{ ok: boolean; entry: ScheduledMessage }>(
-    "/api/schedule/run-now",
-    { entry_id: entryId },
-  );
+//
+// `ok: false` WITH A REASON IS NOT A REFUSAL. Under the project queue a folder
+// that is busy with another task holds this message instead of sending it — the
+// entry stays pending, gains `priority` (running something now IS a skip) and
+// the row reads `queued` at position 1. The caller paints that rather than
+// raising it: nothing went wrong and nothing was lost.
+export function runScheduledNow(entryId: string): Promise<RunNowResult> {
+  return postJson<RunNowResult>("/api/schedule/run-now", { entry_id: entryId });
+}
+
+export interface RunNowResult {
+  ok: boolean;
+  entry: ScheduledMessage;
+  /** `"queued"` — the only value today, and the only one that means "held, not
+   *  refused". Absent on `ok: true` and on an older server. */
+  reason?: string;
+  position?: number;
+  ahead?: string;
+  ahead_title?: string;
+  /** The number the task is called, on a `queued` answer — the same field the
+   *  admission carries, for the same reason: running something now can CREATE
+   *  the task (the entry is the task), and a row that has just appeared has no
+   *  listing to be read out of yet. Absent on an older server. */
+  task_id?: string;
 }
 
 // Ask again — the other half of Re-run, for the case run-now cannot serve.

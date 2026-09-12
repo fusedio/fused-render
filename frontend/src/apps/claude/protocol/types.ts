@@ -309,6 +309,43 @@ export interface PermissionRow {
    *  live run, and the same click would then land on a process that never asked
    *  the question. */
   runId?: string;
+  /**
+   * THE ANSWER IS HELD, not delivered (the project queue, `/api/tasks/queue/
+   * decide`). The reader decided; the folder was busy with another task, so the
+   * server stored the decision and will write it the moment the folder frees —
+   * at the head of the line, ahead of every message, because an answer somebody
+   * is already waiting on outranks new work.
+   *
+   * The value is the holder's task id ("TASK-041"), or "" when the server could
+   * not name it. Present at all is what makes the card say so; the card is
+   * `resolved` either way, because from the reader's side the decision is MADE —
+   * it is latched, first-writer-wins, and a second click is ignored exactly as
+   * it is on a delivered one.
+   *
+   * CLIENT-ONLY, like every annotation above it: agent.py has never heard of it,
+   * and the poll that eventually reports the delivered decision simply replaces
+   * the row.
+   */
+  queuedAhead?: string;
+  /**
+   * THE SAME FACT, FROM THE SERVER — and a second field rather than the one
+   * above for what the one above cannot do: `queuedAhead` is stamped by the
+   * click that made the decision, so it lives exactly as long as this document
+   * does. Reload, or open the conversation in another tab, and the card came
+   * back UNANSWERED with live buttons over a decision that is already stored and
+   * waiting its turn — buttons a second reader would then press.
+   *
+   * `held` rides on the poll's own permission row (the server writes it for a
+   * request that has an entry in `held_answers.json`), so it survives the
+   * reload the annotation cannot. True means to the card exactly what
+   * `queuedAhead` means: latched, no buttons, "◷ Answer queued".
+   *
+   * IT CARRIES NO NAME. The store is keyed by folder, not by whatever happens to
+   * be holding it when a page is rebuilt, so a restored card says which folder
+   * it is waiting on rather than which task — and `queuedAhead` is what names
+   * the holder for as long as the page that clicked is still open.
+   */
+  held?: boolean;
 }
 
 /** An UNANSWERED app-state request (agent.py:1970-1996). */
@@ -439,6 +476,47 @@ export interface PollResponse {
    * loop falls back to treating the payload as one turn.
    */
   turn_breaks?: TurnBreak[];
+  /**
+   * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
+   * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).
+   *
+   * THE GAP IT CLOSES. A line typed into a running chat is absorbed by the live
+   * host: it goes into the CLI's queue and is answered when the current turn
+   * ends. Until then it exists in exactly two places — the CLI's stdin queue,
+   * and this page's own optimistic bubble — and the second of those is client
+   * memory. So a reload, or the standing watch's `refreshHistory`, replaced the
+   * transcript with the JSONL, which does not have the message either (nothing
+   * has consumed it), and the reader's own words simply vanished until the
+   * model got to them (Akshil, 2026-09-12).
+   *
+   * The run has the list, so the run reports it. Absent on an older agent.py,
+   * which is the same as an empty one: the optimistic bubbles are all there is.
+   */
+  inbox?: InboxMessage[];
+}
+
+/**
+ * One undrained follow-up (`PollResponse.inbox`).
+ *
+ * `id` is the send's own identity, stable across polls, so a bubble drawn for it
+ * is the SAME bubble on the next lap rather than a new one in the same place.
+ * `text` is what the reader typed. `at` is when the host took it — an ISO stamp
+ * or an epoch, whichever the server sends, and this page only ever ORDERS by it.
+ */
+export interface InboxMessage {
+  id: string;
+  text: string;
+  at?: string | number;
+  /**
+   * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
+   * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY
+   * and the client draws them exactly as it draws an undrained one: for the
+   * reader they are the same fact, "my words are with the run", and a bubble that
+   * blinked out at the drain and back in when the turn echoed would be the app
+   * narrating its own plumbing. It is the echo — a real user turn — that retires
+   * the bubble, and nothing else.
+   */
+  drained?: boolean;
 }
 
 /** One seam in a poll payload — see `PollResponse.turn_breaks`. */
@@ -522,6 +600,29 @@ export interface SessionRow {
   /** File the pane was opened on, "" if none. */
   pane: string;
   running: boolean;
+  // ── the three below are NOT the agent's. ────────────────────────────────
+  //
+  // A chat whose first message was QUEUED has no transcript — nothing of it has
+  // run — so `sessions` cannot list it and the landing had no row for it at all
+  // (`sched/waiting-chats`). Its row is built from the `/api/tasks` listing and
+  // folded into this same list, because a waiting chat is not a different kind
+  // of thing from one that ran: it is the same conversation, earlier.
+  //
+  // Absent on every row the agent produced, which is what tells the two apart.
+  /** The leader entry this conversation is waiting AS — its only name until the
+   *  scheduler gives it a session (`platform/lib/queue.QUEUED_PARAM`). */
+  queuedEntry?: string;
+  /** Its number, for the row: the task exists the moment the entry does. */
+  taskId?: string;
+  /** The Claude session its leader's run has opened, when the tasks read already
+   *  knows one — "" otherwise. Only the MERGE reads it (`mergeWaitingChats`): a
+   *  conversation whose transcript has landed is listed by that session id and
+   *  by this entry key at the same time for one lap, and this is what lets the
+   *  two be recognised as one chat. */
+  leaderSession?: string;
+  /** Where the row opens — the queued chat URL, built once where the task's own
+   *  target is in hand rather than re-derived by the component drawing it. */
+  href?: string;
 }
 export interface SessionsResponse {
   sessions: SessionRow[];
@@ -567,6 +668,18 @@ export interface HistoryResponse {
   live_run?: string;
   permissions?: PermissionRow[];
   mode?: PermissionMode | "";
+  /**
+   * THE LIVE RUN'S UNDRAINED FOLLOW-UPS — the same list `PollResponse.inbox`
+   * carries, on the read a RELOADING chat makes first (agent.py `_history_live`).
+   *
+   * This is the half that actually fixes the reload. The poll's copy keeps the
+   * bubbles up while a page stays open; a page that comes BACK reads `history`
+   * before it has a run to poll, and without the list here the reader's held
+   * follow-ups would be missing for the whole of that window — which is exactly
+   * the moment they are looking for them. Only meaningful beside `live_run`:
+   * nothing is held when nothing is running.
+   */
+  inbox?: InboxMessage[];
 }
 
 /** agent.py:904 / 868,883. */

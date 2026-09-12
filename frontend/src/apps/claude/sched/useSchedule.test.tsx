@@ -66,8 +66,9 @@ afterEach(() => {
 
 interface Harness {
   state(): State;
-  /** Re-render with a different session on screen — no tick, no fetch. */
-  setSession(id: string): Promise<void>;
+  /** Re-render with a different session on screen — no tick, no fetch. The
+   *  leader moves with it when one is given (the adoption clears it). */
+  setSession(id: string, leaderId?: string): Promise<void>;
   /** Run the poll's interval callback and flush it. */
   poll(): Promise<void>;
   /** What `/api/schedule` answers next. */
@@ -86,12 +87,23 @@ interface Harness {
   holdTasks(): void;
   /** Let a wedged `/api/tasks` answer. */
   releaseTasks(): Promise<void>;
+  /** Move the injected wall clock, which is what paces the row's own re-read
+   *  (`REC_REFRESH_MS`) — the poll's rate no longer decides it. */
+  advance(ms: number): void;
 }
 
 async function mount(
   initial: Entry[],
   session = "s1",
   tasks: SchedTask[] = [],
+  /** The project queue's switch, INJECTED rather than left to the pref: the
+   *  hook subscribes to a process-global `/api/prefs` answer, and a suite that
+   *  drove it by writing that global would be deciding the flag for every other
+   *  file in the same bun run. */
+  queueEnabled?: boolean,
+  /** The entry a session-less chat's messages are grouped under
+   *  (`sched/queue-leader`) — "" for every chat that has a session. */
+  leader = "",
 ): Promise<Harness> {
   let served = initial;
   let servedTasks: SchedTask[] = tasks;
@@ -118,6 +130,9 @@ async function mount(
       return d.promise;
     },
   };
+  /** The injected wall clock. Starts at a round number so an assertion about
+   *  the floor is about the floor and not about the epoch. */
+  let clock = 1_000_000;
   const beats: Array<() => void> = [];
   const timers = {
     setInterval: (fn: () => void) => {
@@ -128,22 +143,27 @@ async function mount(
   };
 
   let out: State | null = null;
-  function Probe(props: { sessionId: string }) {
+  function Probe(props: { sessionId: string; leaderId: string }) {
     out = useSchedule({
       controller,
       file: "/w/app",
       sessionId: props.sessionId,
+      leaderId: props.leaderId,
       inChat: !!props.sessionId,
       setRunParam: () => {},
       api,
       timers,
+      now: () => clock,
+      ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
     return null;
   }
 
   let renderer!: ReactTestRenderer;
+  let session_ = session;
+  let leader_ = leader;
   await act(async () => {
-    renderer = create(createElement(Probe, { sessionId: session }));
+    renderer = create(createElement(Probe, { sessionId: session_, leaderId: leader_ }));
   });
   mounted.push(renderer);
 
@@ -152,9 +172,11 @@ async function mount(
       if (!out) throw new Error("not rendered");
       return out;
     },
-    async setSession(id: string) {
+    async setSession(id: string, leaderId?: string) {
+      session_ = id;
+      if (leaderId !== undefined) leader_ = leaderId;
       await act(async () => {
-        renderer.update(createElement(Probe, { sessionId: id }));
+        renderer.update(createElement(Probe, { sessionId: session_, leaderId: leader_ }));
       });
     },
     async poll() {
@@ -171,6 +193,9 @@ async function mount(
     cancels,
     nextCancel(d) {
       pendingCancel = d;
+    },
+    advance(ms: number) {
+      clock += ms;
     },
     tasksReads: () => tasksReads,
     serveTasks(tasks: SchedTask[]) {
@@ -213,6 +238,305 @@ test("Back to the landing page opens the composer on the same paint", async () =
   // And the block comes back for the conversation it belongs to.
   await h.setSession("s1");
   expect(h.state().blocked).toBe(true);
+});
+
+// ── who owns the ORDER of two sends into one conversation ────────────────────
+//
+// This test was written the other way round, and pinned it: "a this-session
+// blocker keeps the block, flag or no flag". That was true while the composer
+// was the ONLY thing standing between two messages racing into one run — a
+// pending entry aimed here is one the scheduler is about to claim and send into
+// this very session, and a line typed over it would arrive in the middle of it.
+//
+// The project queue moves that job to the scheduler, which is the only place it
+// was ever answerable: under the flag a send is ADMITTED before it spawns, and
+// admission queues any message aimed at a session with due pending entries of
+// its own rather than letting it start. So the second line is no longer a race —
+// it is the next entry in this conversation's own line, in the order it was
+// typed, with its own dashed bubble in the transcript saying so. Keeping the box
+// shut would refuse a message the server is perfectly willing to take.
+//
+// WHAT DID NOT MOVE is the CALENDAR. An entry the reader scheduled is a turn the
+// scheduler is about to start in this very session out of its own hand — nothing
+// admitted it, nothing ordered it against a line the reader is typing — so it
+// still shuts the box, with the same reason it always gave. `origin` is the one
+// field that tells the two apart, and its ABSENCE reads as the calendar: the
+// cautious half, and what every entry stored before the field existed gets.
+const chatEntry = (id: string, due: string, over: Partial<Entry> = {}): Entry =>
+  pending(id, due, { origin: "chat", ...over });
+
+for (const queueOn of [false, true]) {
+  test(
+    `a chat's OWN queued message ${queueOn ? "leaves the box open (flag on)" : "shuts it (flag off)"}`,
+    async () => {
+      const mine = chatEntry("a", "2026-09-09T14:00:00+00:00");
+      const theirs = chatEntry("b", "2026-09-09T14:00:00+00:00", { session_id: "s2" });
+      const h = await mount([mine, theirs], "s1", [], queueOn);
+      // WHAT IS WAITING is the same list either way — this conversation's own
+      // pending work. Only who draws it, and whether the box is shut over it,
+      // changes.
+      expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+      expect(h.state().blocked).toBe(!queueOn);
+      expect(h.state().schedDisabled).toBe(!queueOn);
+      expect(h.state().reason === "").toBe(queueOn);
+      // …and under the flag the old block card is handed NOTHING, because the
+      // chat draws those messages as messages. Two shapes for one fact a few
+      // pixels apart is what browser QA sent back on 2026-09-12.
+      expect(h.state().blockers.map((e) => e.id)).toEqual(queueOn ? [] : ["a"]);
+
+      // A folder-mate aimed at a DIFFERENT session never reached this list at
+      // all, so it never shut this box under either flag.
+      h.serve([theirs]);
+      await h.poll();
+      expect(h.state().waitingHere).toEqual([]);
+      expect(h.state().blocked).toBe(false);
+    },
+  );
+
+  test(
+    `a CALENDAR message aimed here shuts the box either way (flag ${queueOn ? "on" : "off"})`,
+    async () => {
+      // No `origin`: the reader scheduled it, and the scheduler is about to run
+      // it in this session. A line typed over that is two messages racing into
+      // one turn, which is the whole reason the block ever existed.
+      const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], queueOn);
+      expect(h.state().blocked).toBe(true);
+      expect(h.state().schedDisabled).toBe(true);
+      expect(h.state().reason).not.toBe("");
+      // It is still one of the chat's waiting rows under the flag — same dashed
+      // bubble, same line, with `scheduled · <when>` before its due time — so
+      // the box being shut is the ONLY thing the calendar buys.
+      expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+    },
+  );
+}
+
+test("a chat entry beside a calendar one still shuts the box, and names the calendar one", async () => {
+  // The reason is written ABOUT the entry that shut it. Naming a chat send in a
+  // sentence about why the box is shut would be a banner about the wrong
+  // message — and the chat send is the FIRST of the two here, so the naive
+  // `blockers[0]` would have picked it.
+  const h = await mount(
+    [
+      { ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" },
+      pending("b", "2026-09-09T15:00:00+00:00"),
+    ],
+    "s1",
+    [],
+    true,
+  );
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a", "b"]);
+  expect(h.state().blocked).toBe(true);
+  expect(h.state().reason).not.toBe("");
+});
+
+test("every row the tick saw is published, for a chat that has no session", async () => {
+  // A chat whose first message queued has NO session — nothing has run — so the
+  // session filter answers `[]` for it by construction. Its waiting messages are
+  // found in THIS list, through the leader entry they were admitted behind, and
+  // the rows that have already RUN are carried too: once the leader runs it is
+  // the only row tying that group to the session the chat is about to adopt.
+  const h = await mount(
+    [
+      { ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "", origin: "chat" },
+      { ...pending("b", "2026-09-09T15:00:00+00:00"), session_id: "", origin: "chat", follow_of: "a" },
+      { ...pending("z", "2026-09-09T13:00:00+00:00"), session_id: "", state: "sent" },
+    ],
+    "",
+    [],
+    true,
+    "a",
+  );
+  await h.poll();
+  // "z" is SENT and names no session it opened, so it is published to nobody:
+  // the list carries the rows still in the line and the rows that hold the LINK
+  // to a session (🔴 review 2026-09-12).
+  expect((h.state().allRows ?? []).map((e) => e.id)).toEqual(["a", "b"]);
+  // …and the chat draws its own two out of it, by leader.
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a", "b"]);
+});
+
+test("the rows survive the adoption, and a reload with no leader left", async () => {
+  // THE FINDING (Bugbot PR #1124). The leader ran, so it names the session and is
+  // no longer pending; the followers are pending and name nothing (the server
+  // fills a follower's session at claim time). The session filter missed them,
+  // and so did the leader list the moment the adoption cleared the leader id.
+  const entries: Entry[] = [
+    { id: "L", state: "sent", session_id: "", claude_session_id: "s9", due: "2026-09-09T13:00:00+00:00" },
+    { id: "f1", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T14:00:00+00:00", origin: "chat" },
+    { id: "f2", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T15:00:00+00:00", origin: "chat" },
+  ];
+  const h = await mount(entries, "", [], true, "L");
+  await h.poll();
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+  // The adoption: `openSession` gives the chat a session and the leader memory is
+  // dropped by `leaderAfterSession`. Nothing about the entries changed.
+  await h.setSession("s9", "");
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+  // …AND A RELOAD, which is the same state reached with nothing in client memory.
+  const fresh = await mount(entries, "s9", [], true, "");
+  await fresh.poll();
+  expect(fresh.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+});
+
+test("a claimed entry stays in the list, and in the live ids behind the seeds", async () => {
+  // The second between the scheduler taking the entry and the turn appearing:
+  // dropping it there took the row down and pruned its seed, so the reader's own
+  // message blinked out of the conversation until the turn landed.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), state: "sending", origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  await h.poll();
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+  expect([...(h.state().pendingIds ?? [])]).toEqual(["a"]);
+});
+
+test("the row is re-read on a CLOCK under the queue, because its fields move", async () => {
+  // `queue_ahead`, `queue_position`, `queue_priority` and `queue_waiting` all
+  // change UNDER A FIXED ENTRY ID — the task in front finishes, somebody skips
+  // ahead — so a row read once said "behind TASK-038" for the life of the chat.
+  //
+  // NOT once per poll lap, which is what it was (🔴 review 2026-09-12): the
+  // schedule polls every 3 s while the composer is shut, and that made a chat
+  // behind a blocker ask for the whole tasks listing twenty times a minute.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_ahead: "TASK-041" }],
+    true,
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_ahead).toBe("TASK-041");
+  const reads = h.tasksReads();
+  const gen = h.state().recGen;
+  h.serveTasks([{ key: "s1", queue_ahead: "", queue_priority: true }]);
+  // Two laps INSIDE the floor buy nothing at all…
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads);
+  // …and the first lap past it re-reads.
+  h.advance(5000);
+  await h.poll();
+  expect(h.tasksReads()).toBeGreaterThan(reads);
+  expect(h.state().rec?.queue_priority).toBe(true);
+  // …and the generation moves with it, which is what retires an optimistic claim.
+  expect(h.state().recGen).toBeGreaterThan(gen);
+});
+
+test("a listing SLOWER than the floor does not put the row read in a loop", async () => {
+  // Bugbot PR #1124. `at` was stamped when the read STARTED, and the effect
+  // re-runs on `at` — so a listing that took longer than `REC_REFRESH_MS` landed
+  // already stale, the effect read `stale`, and fired again immediately. On a
+  // busy machine that is a tight loop of whole-`/api/tasks` listings. The floor
+  // is a floor BETWEEN reads, so it is measured from where one ended.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_ahead: "TASK-041" }],
+    true,
+  );
+  await h.poll();
+  const reads = h.tasksReads();
+
+  // A read that takes longer than the floor: wedge it open and move the clock
+  // past `REC_REFRESH_MS` while it is in flight.
+  h.holdTasks();
+  h.advance(5000);
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 1);
+  h.advance(6000);
+  await h.releaseTasks();
+
+  // The answer landed stamped at the moment it LANDED, so the laps that follow
+  // are inside the floor again and buy nothing.
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 1);
+  // …and the floor still expires on its own.
+  h.advance(5000);
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 2);
+});
+
+test("…and exactly once per entry with the flag off, as it always was", async () => {
+  const h = await mount(
+    [pending("a", "2026-09-09T14:00:00+00:00")],
+    "s1",
+    [{ key: "s1", task_id: "TASK-7" }],
+    false,
+  );
+  await h.poll();
+  const reads = h.tasksReads();
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads);
+});
+
+test("a chat with no session gets its card and its row, keyed on the leader", async () => {
+  // Its task is named after the FIRST entry it queued (`pending:<leader>`), never
+  // after the entry at the front of its line — so the row read had to be told the
+  // leader or it found nothing, and the card had no facts to draw.
+  const h = await mount(
+    [
+      { id: "L", state: "pending", session_id: "", due: "2026-09-09T13:00:00+00:00", origin: "chat" },
+      { id: "f1", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T14:00:00+00:00", origin: "chat" },
+    ],
+    "",
+    [{ key: "pending:L", queue_ahead: "TASK-041", queue_waiting: 2 }],
+    true,
+    "L",
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_ahead).toBe("TASK-041");
+  expect(h.state().rec?.queue_waiting).toBe(2);
+  // …and the box is still open: nothing here is a message the reader SCHEDULED.
+  expect(h.state().blocked).toBe(false);
+});
+
+test("the composer shuts on the server's own verdict when there is a row", async () => {
+  // One rule, server first (design.md, UI). The entry rule (`schedIsCalendar`) is
+  // the fallback for the paint before the row lands, not a second opinion.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_blocking: true }],
+    true,
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_blocking).toBe(true);
+  expect(h.state().blocked).toBe(true);
+  expect(h.state().reason).not.toBe("");
+});
+
+test("…and stays open when the row says nothing is blocking, whatever the entry", async () => {
+  // No row to be had at first: the entry rule decides, and a calendar entry (no
+  // `origin`) shuts the box — the cautious half, and the right direction to be
+  // briefly wrong in.
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
+  expect(h.state().rec).toBe(null);
+  expect(h.state().blocked).toBe(true);
+  // Then the server's own answer lands and it outranks that reading. Past the
+  // row's own floor, which is what paces the re-read now.
+  h.serveTasks([{ key: "s1", queue_blocking: false }]);
+  h.advance(5000);
+  await h.poll();
+  expect(h.state().rec?.queue_blocking).toBe(false);
+  expect(h.state().blocked).toBe(false);
+});
+
+test("those rows keep their identity when the schedule did not move", async () => {
+  // The dedupe `absorb` keeps — one object for one unchanged list — is worth
+  // nothing if this publishes a fresh array on every lap: the composer's whole
+  // column would re-render four times a minute over a schedule that did not
+  // change.
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
+  await h.poll();
+  const first = h.state().allRows;
+  await h.poll();
+  expect(h.state().allRows).toBe(first);
 });
 
 test("reset() empties the block for the transcript that replaced it", async () => {
@@ -422,4 +746,67 @@ test("a row belongs to the entry it was read for", async () => {
   h.serve([pending("z", "2026-09-09T18:00:00+00:00")]);
   await h.poll();
   expect(h.state().rec).toBe(null);
+});
+
+// ── one representation for a queued send ─────────────────────────────────────
+//
+// The chip and this block used to draw the SAME entry at the same time, a few
+// pixels apart, in two vocabularies — "Queued · #1 in line · behind TASK-006"
+// over "Blocked — a scheduled message runs in this chat … Cancel this message"
+// — disagreeing about whether anything was blocked at all (Akshil, browser QA
+// 2026-09-12). The chip is the right card for a message the reader just typed;
+// this block is the right one for a message coming due out of the calendar.
+
+test("under the flag the block draws nothing, and the task row is still read", async () => {
+  // The block was one card explaining why the box was shut. Under the queue the
+  // same fact is drawn as the messages themselves, plus one summary over the
+  // composer — so the block draws NOTHING rather than a third copy of it.
+  //
+  // What it still pays for is the `/api/tasks` row, and that is not decoration
+  // any more: it is where "1st in line · behind TASK-038" comes from, which is
+  // what makes a reload say the same sentence the send did.
+  const h = await mount(
+    [
+      { ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" },
+      { ...pending("b", "2026-09-09T15:00:00+00:00"), origin: "chat" },
+    ],
+    "s1",
+    [{ key: "k", task_id: "TASK-1", queue_ahead: "TASK-038", messages: [{ entry_id: "a" }] }],
+    true,
+  );
+  expect(h.state().blockers).toEqual([]);
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a", "b"]);
+  expect(h.state().rec?.task_id).toBe("TASK-1");
+  expect(h.state().rec?.queue_ahead).toBe("TASK-038");
+  // …and the composer is open: a chat's own queued messages never shut it.
+  expect(h.state().blocked).toBe(false);
+});
+
+test("flag OFF, the block is main's byte for byte", async () => {
+  // The one rule this feature must not break: the block a flag-off reader sees
+  // is the block they saw before it existed.
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], false);
+  expect(h.state().blockers.map((e) => e.id)).toEqual(["a"]);
+  expect(h.state().blocked).toBe(true);
+  expect(h.state().schedDisabled).toBe(true);
+});
+
+test("refresh() asks the schedule NOW, rather than at the end of the lap", async () => {
+  // What a row's `delete` spends. The press changed the schedule from this pane,
+  // so everything derived from the poll — the waiting rows and `pendingIds` both
+  // — describes a world the reader has already left until a lap ends: fifteen
+  // seconds of a row standing over a message they just deleted.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+  h.serve([]);
+  await act(async () => {
+    h.state().refresh();
+  });
+  expect(h.state().waitingHere).toEqual([]);
+  expect([...(h.state().pendingIds ?? [])]).toEqual([]);
 });

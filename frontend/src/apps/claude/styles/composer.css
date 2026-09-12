@@ -113,6 +113,19 @@
   -webkit-text-fill-color: transparent;
   animation: c-running-shimmer 2.2s linear infinite;
 }
+/* "paused · resumes 4:00 AM" — the seat "running" rides, for a session the
+   plan's usage limit stopped (ui/Topbar, platform/lib/usage-limit). The same
+   size and seat, and NO shimmer: the word's whole content is that nothing is
+   moving, and an animation on it would say the opposite. Blocked's red, which is
+   the ring this task wears everywhere else on the page. */
+.c-tb-paused {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 1px;
+  white-space: nowrap;
+  color: var(--status-failed);
+}
 @keyframes c-running-shimmer {
   from {
     background-position: 100% 0;

@@ -207,6 +207,24 @@ export interface ComposerCardProps {
   status: RunStatus;
   /** Follow-ups typed while a run is live that have not been acknowledged. */
   queued?: string[];
+  /**
+   * THE PROJECT QUEUE IS ON (prefs `queue.enabled`), which TAKES THE NOTE BELOW
+   * AWAY.
+   *
+   * A follow-up typed into this chat's own running turn is held by the live host
+   * for the seconds the turn has left. Under the queue that is the ONE waiting
+   * state with nothing to say about it: there is no scheduler entry, so nothing
+   * to be behind, nothing to run next and nothing to delete — and the bubbles are
+   * already in the transcript above, in order, exactly where the reader put them.
+   * A footnote counting them is a third piece of chrome for a state that resolves
+   * itself, in a pane that now says "waiting" about messages that genuinely are
+   * (Akshil, 2026-09-12).
+   *
+   * FLAG OFF THE NOTE STAYS, untouched: there is no other ink in that build
+   * saying a follow-up went somewhere, and a line that has gone invisible is
+   * worse than 24px of composer card (the note's own original argument).
+   */
+  queueOn?: boolean;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
@@ -348,6 +366,7 @@ export function ComposerCard({
   controls,
   status,
   queued,
+  queueOn,
   onSend,
   onFollowUp,
   onStop,
@@ -706,7 +725,7 @@ export function ComposerCard({
             it is the one thing in this file that adds a box T does not draw
             (91 → 115 while a follow-up is pending), so it is written down here
             rather than left for a fourth visual pass to find again. */}
-        {count > 0 ? (
+        {count > 0 && !queueOn ? (
           <div className="c-queued">
             {count === 1
               ? "1 follow-up is queued for this turn."

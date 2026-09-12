@@ -10,6 +10,7 @@ import type {
   Task,
   TaskMessage,
 } from "@platform/lib/api";
+import { chatUrl } from "@platform/lib/queue";
 
 export function formatDue(iso: string): string {
   const d = new Date(iso);
@@ -284,18 +285,61 @@ export function assignLanes<T extends { time: Date }>(
 // the ring red and `Task.blocked_reason` names it in a word, so the button can
 // still be Retry for one and Open for the other.
 //
-// SIX KEYS, FIVE LANES. `needs_attention` is a STATUS — its own word, its own
-// hue, its own rank at the top of the List — and it draws in the Blocked lane
-// rather than a sixth column of its own (see BOARD_LANES). A board is read by
-// sweeping across it, and a lane that is empty except during the minutes
-// somebody is being waited on is a lane that teaches the reader to skip it.
+// SEVEN KEYS SINCE 2026-09-12, and the new one is QUEUED — a task whose work is
+// due and whose FOLDER is busy with somebody else's run (the project queue,
+// prefs `queue.enabled`). It sits BETWEEN Upcoming and In Progress because that
+// is where it sits in time: the work has been asked for and has not started.
 //
-// THIS IS THE LIST'S VOCABULARY TOO, and a test holds the two arrays to the same
-// sequence apart from the two ranks the List hoists (tasks-lib.LIST_ORDER, whose
-// note carries the argument): a reader moving between the views carries ONE
-// mental picture of what a status IS, even where urgency reorders them.
+// It is a status of its own rather than a flavour of Upcoming for the same
+// reason Blocked is not a flavour of Done. "Upcoming" means a time has not come
+// yet, and the reader's move is to wait or to run it now; "Queued" means the
+// time HAS come and something else is in the way, and the reader's move is to
+// skip the line or to leave it alone. Folding the two would put a lane's worth
+// of work that is ready to go behind a word that says it is not.
+//
+// It never appears at all while the flag is off — the server simply never sends
+// it — so a board on a machine that has not turned the queue on is the six-key
+// board it has always been, and this lane is empty and therefore rolled up.
+//
+// SEVEN KEYS, FIVE LANES. Two statuses SHARE a lane with the one they are a
+// phase of, and both for the same reason: a board is read by sweeping across it,
+// and a lane that is empty except during the minutes somebody is waiting is a
+// lane that teaches the reader to skip it.
+//
+//   * `needs_attention` draws in Blocked — its own word, its own hue, its own
+//     rank at the top of the List, and no column of its own.
+//   * `queued` draws in IN PROGRESS, since 2026-09-12 (Akshil). It had a lane
+//     between Upcoming and In Progress for a day and that lane was the wrong
+//     shape for the fact: work that is due, asked for, and about to run is work
+//     IN PROGRESS in every sense a person means it — the only thing separating a
+//     queued task from a running one is which second its folder frees, and a
+//     column boundary is far too strong a line to draw between two states that
+//     swap every few minutes. Inside the lane the two are still told apart, and
+//     firmly: running cards first in the running amber, then a dashed "waiting"
+//     divider, then the waiting ones by their place in the line in the same yellow
+//     (tasks-lib.groupByColumn, and the lane header counts the two halves
+//     separately — "1 running · 2 waiting").
+//
+// It is still a STATUS of its own for everything else — its own word on a row,
+// its own ring, its own rank — for the reason it was made one: "Upcoming" means a
+// time has not come and the reader's move is to wait; "Queued" means the time HAS
+// come and something else is in the way, and the reader's move is Run next.
+//
+// IT IS NOT A TICK IN THE STATUS FILTER, and that follows from the lane rather
+// than being a second decision: the menu offers the LANES THE BOARD DRAWS, so
+// `queued` is clubbed under In Progress exactly as `needs_attention` is clubbed
+// under Blocked, and one In Progress tick brings the running cards and the
+// waiting ones together — which is the only reading that agrees with the board a
+// press takes the reader back to (project-queue.test.ts, "the Status filter").
+//
+// THE LIST SHARES THE VOCABULARY BUT NOT THE SEQUENCE. Its own order hoists the
+// two urgent ranks AND puts `queued` after `in_progress` rather than before it
+// (tasks-lib.LIST_ORDER, whose note carries the argument): the lane draws the
+// running cards first and the waiting ones under them, and a List that read that
+// lane upwards would be the two views telling one story in opposite directions.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
+  { key: "queued", label: "Queued" },
   { key: "in_progress", label: "In Progress" },
   { key: "needs_attention", label: "Needs attention" },
   { key: "blocked", label: "Blocked" },
@@ -319,33 +363,44 @@ export const BOARD_COLUMNS = [
  */
 export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"] | "draft";
 
-/** A column the BOARD actually draws. Every status is one except
- *  `needs_attention`, which shares the Blocked lane, and `draft`, which shares
- *  Upcoming — see `laneOf`. */
-export type BoardLane = Exclude<BoardColumn, "needs_attention" | "draft">;
+/** A column the BOARD actually draws. Every status is one except the three that
+ *  share a lane — `needs_attention` in Blocked, `queued` in In Progress, and
+ *  `draft` in Upcoming. See `laneOf`. */
+export type BoardLane = Exclude<BoardColumn, "needs_attention" | "queued" | "draft">;
 
 /**
- * The lanes, left to right — BOARD_COLUMNS minus the one that shares.
+ * The lanes, left to right — the columns that are their own lane.
  *
- * Derived rather than written out a second time, so a status added to the list
- * above cannot be a status the board silently does not draw. The cast is the
- * price of `filter` widening a literal tuple; the FILTER is the claim, and the
- * type keeps `needs_attention` out of every lane-shaped position after it.
+ * A LANE IS A COLUMN THAT MAPS TO ITSELF, asked of `laneOf` rather than written
+ * out as a list of exceptions: a status added above cannot be a status the board
+ * silently does not draw, and a status that starts sharing a lane leaves this
+ * array by changing exactly one line (`laneOf`) instead of two that have to be
+ * kept in step. The cast is the price of `filter` widening a literal tuple; the
+ * FILTER is the claim, and the type keeps every sharer out of every lane-shaped
+ * position after it.
  */
 export const BOARD_LANES = BOARD_COLUMNS.filter(
-  (c) => c.key !== "needs_attention",
+  (c) => laneOf(c.key) === c.key,
 ) as readonly { key: BoardLane; label: string }[];
 
 /**
- * Which lane a status is DRAWN in. Identity for five of the six.
+ * Which lane a status is DRAWN in. Identity for five of the eight.
  *
- * The one mapping is the whole of "needs attention lives in Blocked", written
- * once here rather than as an `=== "needs_attention"` in each of the board's
- * three passes (bucketing, drop legality, the rail's count) — three places that
- * would each have to be remembered again the next time a status is added.
+ * The three mappings are the whole of "needs attention lives in Blocked",
+ * "queued lives in In Progress" and "a draft lives in Upcoming", written once
+ * here rather than as an
+ * `=== "needs_attention"` in each of the board's three passes (bucketing, drop
+ * legality, the rail's count) — three places that would each have to be
+ * remembered again the next time a status is added.
  */
 export function laneOf(column: BoardColumn): BoardLane {
   if (column === "needs_attention") return "blocked";
+  // DUE, ASKED FOR, AND ABOUT TO RUN IS IN PROGRESS. The only thing between a
+  // queued task and a running one is which second its folder frees; the two are
+  // told apart INSIDE the lane (groupByColumn's partition, the lane header's
+  // "1 running · 2 waiting", and the ring's own hue), which is a far better fit
+  // for how often a card crosses between them than a column boundary was.
+  if (column === "queued") return "in_progress";
   // An unfinished task is the most upcoming thing there is (design.md), and it
   // sorts to the head of that lane — tasks-lib.groupByColumn does the hoist,
   // the same stable partition that puts a waiting card at the top of Blocked.
@@ -535,8 +590,13 @@ export function repeatChoicesFor(picked: Date): RepeatChoice[] {
 // "Open in Inbox": the inbox showed the chat but not the files it was
 // about). Same /view codec + `_side=claude` handoff the retired Inbox's
 // own open-dir button used.
+// ONE CODEC, IN THE LAYER BOTH SIDES CAN READ. The chat draws "behind TASK-038"
+// as a link into that conversation and lives in `apps/claude`, which may not
+// import shell — so the builder moved to `platform/lib/queue.chatUrl` and this
+// is the shell's name for it. A second copy of the same three lines is exactly
+// how two surfaces end up disagreeing about where a conversation lives.
 export function explorerUrl(target: string, sessionId: string): string {
-  return `${chatPaneUrl(target)}&session_id=${encodeURIComponent(sessionId)}`;
+  return chatUrl(target, sessionId);
 }
 
 /**
@@ -550,12 +610,14 @@ export function explorerUrl(target: string, sessionId: string): string {
  * the empty value is the chat pane's own "this folder's sessions" signal there.
  * A never-sent chat is a different fact: there is no session to be waiting for,
  * so the parameter is omitted rather than sent empty (Akshil, 2026-09-11).
+ *
+ * Built off the SAME codec rather than spelling the /view path a second time
+ * (see `explorerUrl` above): `queue.chatUrl` always ends a session-less URL with
+ * the empty `&session_id=`, and this drops exactly that tail. One builder, two
+ * doors — a second copy of the path encoder is how they drift apart.
  */
 export function chatPaneUrl(target: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
-  const encoded = norm.replace(/^\/+/, "").split("/")
-    .filter(Boolean).map(encodeURIComponent).join("/");
-  return `/explorer/view/${encoded}?_side=claude`;
+  return chatUrl(target, "").replace(/&session_id=$/, "");
 }
 
 // The same door, for a task that has no thread to open YET.

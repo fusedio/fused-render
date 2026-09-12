@@ -28,9 +28,18 @@ export interface TopbarProps {
   /** A turn is live: one source of truth for the mark and the composer's stop
    *  square (T:1342-1349). */
   running: boolean;
+  /**
+   * THE OTHER WORD THIS SEAT CAN SAY — "paused · resumes 4:00 AM", when the
+   * plan's usage limit stopped this session (`platform/lib/usage-limit`).
+   *
+   * It REPLACES "running" rather than sitting beside it: they are answers to one
+   * question ("is anything happening here"), and a limited session is precisely
+   * one where nothing is. "" on every ordinary chat.
+   */
+  status?: string;
 }
 
-export function Topbar({ sessionId, subtitle, taskId, running }: TopbarProps) {
+export function Topbar({ sessionId, subtitle, taskId, running, status }: TopbarProps) {
   // The number, or the session hash until it lands (T:12698 — the answer to a
   // slow listing is the old label, never a gap).
   const label =
@@ -56,7 +65,13 @@ export function Topbar({ sessionId, subtitle, taskId, running }: TopbarProps) {
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
-      {running ? (
+      {status ? (
+        // NOT `.c-tb-run`: that word shimmers, and a shimmer on "paused" would
+        // animate the one state whose whole content is that nothing is moving.
+        <span className="c-tb-paused" aria-live="polite">
+          {status}
+        </span>
+      ) : running ? (
         <span className="c-tb-run" aria-live="polite">
           running
         </span>

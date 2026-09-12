@@ -311,6 +311,46 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  */
 
 /**
+ * …AND THE WORDS THAT WERE NEVER SENT DO MOVE, on the one event that is not an
+ * inference: a chat ADOPTING the session its queued leader turned out to open
+ * (`ClaudeChat`'s `adoptSession` → `openSession`).
+ *
+ * This is not the rekey above wearing a new name. That one asked "which session
+ * did my send create?" and moved a TASK NUMBER on the answer; this moves TEXT
+ * nobody has sent, between two keys the same composer is holding, on an event
+ * the page is TOLD about (the entry's own `claude_session_id`, off the schedule
+ * poll) rather than one it guesses at. The number is settled server-side and
+ * never touched here.
+ *
+ * WHY IT HAS TO HAPPEN AT ALL. A chat with no session drafts under
+ * `new:<file>`; the adoption flips the composer's key to the session id, and
+ * the next keystroke autosaves the same sentence under the new key while the
+ * old record stands — one unsent message, two drafts, and a `kind: "draft"` row
+ * on the Tasks page beside the conversation it belongs to (review, PR #1124).
+ *
+ * A SPENT KEY MOVES NOTHING, which is what keeps a message that was just SENT
+ * out of this: `fetchChatDraft` answers null for it (see `spent`), so the only
+ * thing this can ever carry is text the reader typed and did not send. Neither
+ * is an empty draft moved — an empty write is a delete, and deleting a key that
+ * holds nothing is a request with nothing behind it.
+ *
+ * Best-effort at every step and never thrown out of: the words are still in the
+ * box either way, and the next autosave writes them under the new key regardless
+ * of what this did.
+ */
+export async function moveChatDraft(from: string, to: string): Promise<boolean> {
+  if (!from || !to || from === to) return false;
+  const saved = await fetchChatDraft(from);
+  if (!saved) return false;
+  const attachments = saved.attachments ?? [];
+  if (!saved.text.trim() && !attachments.length) return false;
+  // The save first, in that order for the schedule router's own reason: a
+  // failure between the two must leave the words where they are, never nowhere.
+  if (!(await saveChatDraft(to, saved.text, attachments))) return false;
+  return deleteChatDraft(from);
+}
+
+/**
  * Upsert a task draft under the id the form minted.
  *
  * `fromChatKey` is the MOVE (design.md, Round 2: "A draft moves, never

@@ -546,6 +546,22 @@ describe("the poll's two rates (FIX-D)", () => {
     expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
   });
 
+  test("A CLAIMED ENTRY DOES NOT BUY THE FAST RATE — flag off is main, byte for byte", async () => {
+    // The blocker list was widened for the queue's ROWS (`schedIsWaiting` takes a
+    // `sending` entry too), and the RATE reads that same list. Main never drew a
+    // claimed entry and never polled three times a second for one, so the rate
+    // reads the pending half only (🔴 review 2026-09-12).
+    const claimed = { ...soon("e1"), state: "sending" as const };
+    const t = timed([[claimed], [soon("e2")]]);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    // …and a genuinely pending one still does.
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+  });
+
   test("A BLOCKER DUE NEXT CENTURY KEEPS THE SLOW RATE (M1)", async () => {
     // The composer is shut either way — but a chat holding a message scheduled
     // days out must not ask twenty times a minute for the life of the tab. The

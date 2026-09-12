@@ -31,6 +31,7 @@ import {
 } from "react";
 
 import { currentUrl, navigateUrl } from "@platform/lib/router";
+import { chatDraftKey, moveChatDraft } from "@platform/lib/drafts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -70,7 +71,7 @@ import {
   type Recorder,
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
-import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   CHAT_FRAME_FALLBACK_MS,
@@ -124,14 +125,38 @@ import {
   useRecentSessions,
   useRepairScroll,
   useTaskId,
+  useLimitWord,
   type TranscriptTail,
   type Viewable,
 } from "./ui";
 import { recapAnchor } from "./protocol/recap";
-import { useChatRecapEnabled } from "./feature-flag";
+import { queueEnabled, useChatRecapEnabled, useProjectQueueEnabled } from "./feature-flag";
+import { WaitingCard, WaitingRow } from "./ui/Waiting";
+import { copyToTaskShots } from "./ui/SchedButton";
+import type { SchedAttachment } from "./ui/sched-draft";
+import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
+import type { QueueFacts } from "@platform/lib/queue";
+import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
+import {
+  NO_DROPPED,
+  pruneDropped,
+  useLiveSeeds,
+  headerTaskId,
+  waitingFacts,
+  waitingRows,
+} from "./sched/waiting";
+import type { WaitingSeed } from "./sched/waiting";
+import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
+import { mergeWaitingChats, useWaitingChats } from "./sched/waiting-chats";
+import { inboxBubbles } from "./protocol/inbox";
 import { createLiveWatch } from "./live/watch";
-import { getClaudeSessionLiveness } from "@platform/lib/api";
+import {
+  admitQueueSend,
+  cancelScheduledMessage,
+  getClaudeSessionLiveness,
+  skipQueue,
+} from "@platform/lib/api";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -793,6 +818,85 @@ function ChatBody(props: ChatBodyProps) {
   const liveWait = useRef("");
   /** The same fact as state, for the send button's `disabled`. */
   const [sendLocked, setSendLocked] = useState(false);
+  /**
+   * THE MESSAGES THIS FOLDER WAS TOO BUSY TO TAKE, as the ADMISSION answered
+   * them — a seed, not the row.
+   *
+   * The row itself is drawn from the SERVER (`sched.waitingHere`, or the leader's
+   * followers on a chat with no session): that is what makes a reload show the
+   * identical picture, and it is the whole difference between this and the chip
+   * it replaces. What this holds is the window before the next poll has listed
+   * the new entry — up to fifteen seconds in which a bubble the reader just
+   * pressed Enter on would otherwise not be on screen at all.
+   *
+   * A LIST, not one: the composer stays open under the queue, so a reader may put
+   * three messages into a busy folder and every one of them is owed its place.
+   * Each seed is retired the moment the poll carries its entry (`waitingRows`
+   * drops a seed the server has published), and on a bounded number of laps when
+   * the entry ran before any poll ever saw it (`useLiveSeeds`).
+   *
+   * IT CARRIES THE TYPED LINE, because the stored entry holds the COMPOSED
+   * message — attachment markers and all — and swapping one for the other under
+   * the reader on the next poll would be the row silently rewriting itself.
+   */
+  const [waitingSeeds, setWaitingSeeds] = useState<WaitingSeed[]>([]);
+  /**
+   * WHAT THE ADMISSION SAID WAS IN FRONT — the fallback for "behind TASK-038"
+   * until this conversation's own `/api/tasks` row has been read.
+   *
+   * ONE ANSWER FOR THE WHOLE CHAT, not one per message, because that is what the
+   * fact IS: a folder is held by one task, and three messages waiting in one line
+   * are all behind the same thing. The authority is the server row
+   * (`sched.rec`), which now wins outright the moment there is one; this is what
+   * the first paint has before it arrives.
+   */
+  const [admitAhead, setAdmitAhead] = useState<QueueFacts | null>(null);
+  /**
+   * THE NUMBER THE ADMISSION GAVE THIS CONVERSATION — "TASK-057", for the header
+   * until a `/api/tasks` listing says the same thing.
+   *
+   * A queued send CREATES the task (the entry is the task), so the server can
+   * name it in the very answer that queued the message — and the header used to
+   * wait for a listing anyway, leaving a conversation numberless for up to a
+   * poll interval while the id a reader needs to find it again was in hand
+   * (Akshil, 2026-09-12). Ordering against the two listings is `headerTaskId`.
+   */
+  const [admitTaskId, setAdmitTaskId] = useState("");
+  /** Run next is in flight, or already spent: the card's one button is dead. */
+  const [runningNext, setRunningNext] = useState(false);
+  /**
+   * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
+   * it stood at the press (`useSchedule.recGen`), or null for "no claim".
+   *
+   * The press changes a fact this pane cannot see: the row in hand was read
+   * BEFORE it, and it goes on saying `behind TASK-038` until the next listing.
+   * Painting the claim through `admitAhead` was not enough, and could not be: the
+   * facts prefer the server's row whenever there is one, so the card sat visibly
+   * unchanged under a button the reader had just pressed and watched succeed
+   * (Bugbot PR #1124).
+   *
+   * A DEADLINE, NOT A STATE. It is spent the moment a fresher row lands —
+   * `schedRefresh` asks for one immediately — and that row then decides, which is
+   * what puts the button back when the server turns out to have refused.
+   */
+  const [nextClaim, setNextClaim] = useState<number | null>(null);
+  /** A delete in flight, by entry id: that row's one control is dead for its
+   *  duration and the row leaves when it lands. */
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
+  /** Entries a `delete` has TAKEN BACK — dropped on the server's answer rather
+   *  than on the next poll, and remembered until a poll stops listing them
+   *  because until then the poll's own list still has them and would draw the row
+   *  the delete just took down (`sched/waiting` `pruneDropped`). */
+  const [droppedEntries, setDroppedEntries] = useState<ReadonlySet<string>>(NO_DROPPED);
+  // SUBSCRIBED, AND NOW ALSO READ. The admission is still asked on the keystroke
+  // from `queueEnabled()` — a plain synchronous read of the same one
+  // `/api/prefs` answer — and subscribing is what puts that answer ON ITS WAY
+  // from mount rather than from whenever some other hook happens to ask, so the
+  // first send of a freshly opened chat is admitted rather than spawning into a
+  // folder somebody has just protected. The VALUE is drawn for two things the
+  // flag owns outright: the waiting rows, and the composer's own follow-up note,
+  // which the flag takes away (see the Composer's `queueOn`).
+  const queueOn = useProjectQueueEnabled();
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
@@ -1390,6 +1494,10 @@ function ChatBody(props: ChatBodyProps) {
     () =>
       !!(
         params.get("session_id") ||
+        // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
+        // waiting bubble, a task number and a line to be in, and landing on the
+        // home view instead would show none of them.
+        params.get(QUEUED_PARAM) ||
         params.get("run") ||
         askRef.current ||
         props.initialSessionId ||
@@ -1784,11 +1892,38 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  const recent = useRecentSessions(
+  const recentSessions = useRecentSessions(
     inChat ? null : agentDir,
     file,
     undefined,
     leftLive,
+  );
+  /**
+   * …AND THE CHATS IN THIS FOLDER THAT HAVE NOT RUN YET, in the same list.
+   *
+   * `sessions` lists TRANSCRIPTS, so a chat whose first message was queued is in
+   * no list at all: nothing of it has run, nothing has been written, and the
+   * landing showed no sign of a conversation the reader had typed into minutes
+   * before. Its row is on `/api/tasks` instead, keyed `pending:<leader id>`
+   * (`sched/waiting-chats`), and it is folded in here rather than given a section
+   * of its own — a waiting chat is not a different kind of thing from one that
+   * ran, it is the same conversation earlier, and it sorts by the same clock.
+   *
+   * ONLY ON THE LANDING and only under the flag: inside a chat the list is not
+   * drawn, and flag off there is nothing to merge because nothing queues.
+   */
+  const waitingChats = useWaitingChats(
+    !inChat && queueOn ? file : null,
+    queueOn,
+    // …AND ON THE RECENT LIST'S OWN TICK. A leader's transcript appearing is news
+    // the sessions watch hears and the tasks read does not, and until it re-read
+    // the same conversation was drawn twice — once as a transcript, once as the
+    // waiting row it had stopped being (🔴 review 2026-09-12).
+    recentSessions,
+  );
+  const recent = useMemo(
+    () => mergeWaitingChats(recentSessions, waitingChats),
+    [recentSessions, waitingChats],
   );
   /** ONE TRIP'S WORTH. T's `leftLive` is a local in its Back handler, so it is
    *  spent by the landing it was set for; here it has to be cleared by hand, or
@@ -1959,6 +2094,131 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   /**
+   * THE TRAY, COPIED WHERE A QUEUED RUN CAN READ IT (the project queue).
+   *
+   * A send the folder is too busy to take becomes a pending scheduler entry, and
+   * that entry fires minutes later with whatever is written ON IT. A chat
+   * attachment lives in the claude template's own shots dir on a 12 h TTL and
+   * the backend refuses any `attachments` path outside `schedule.shots_dir()` —
+   * so the path cannot travel and the BYTES have to, exactly as they do for
+   * "Schedule this as a task" (`copyToTaskShots`, the same endpoint the task
+   * form's own drop uses). Without this the message queued and fired without its
+   * pictures while the tray went on showing them.
+   *
+   * BEFORE THE ADMISSION, which means a send into a FREE folder pays for copies
+   * nobody reads: the answer decides whether they are needed and the answer
+   * arrives too late to upload after it. That costs a few unused task-shots (the
+   * ordinary send goes out on its ORIGINAL receipts — the bytes the bubble
+   * shows) against the alternative of a queued message with no pictures, which
+   * is a message that means something else when it finally runs.
+   *
+   * ONE FAILURE COSTS ONE ATTACHMENT and never the send: `copyToTaskShots` is
+   * `allSettled` inside, and a wholesale failure answers `[]`.
+   *
+   * `lead` IS THE NOTES' OVERVIEW, and it rides in front for the reason it does
+   * on the live wire (`beginSend`'s `takeAttachments(lead)`): the
+   * `<annotations>` block tells the model to read "the attached overview
+   * screenshot", so a queued entry carrying the words without the picture names
+   * one that never travelled.
+   */
+  const carryForQueue = useCallback(
+    async (lead: readonly Attachment[] = []): Promise<SchedAttachment[]> => {
+      const tray = [...lead, ...attach.items];
+      // Pending chips have no bytes yet, and an empty carry must not buy a round
+      // trip in front of every send.
+      if (!tray.some((a: Attachment) => !a.pending && !!a.view)) return [];
+      return copyToTaskShots(tray).catch(() => []);
+    },
+    [attach],
+  );
+
+  /**
+   * THE TRAY IS SPENT ON A QUEUED SEND, exactly as it is on one that ran.
+   *
+   * The server has the pictures now (`carryForQueue` put copies where the
+   * scheduled run will read them) and the words are its entry. Leaving the chips
+   * in the composer would mean the next message silently carried them a second
+   * time — the same double-send `take()` exists to prevent — so the tray is
+   * emptied by the same call, and the handles are released through the
+   * commit-later queue because nothing on screen is drawing them any more.
+   */
+  const spendTrayForQueue = useCallback(() => {
+    const mine = takeAttachments();
+    if (!mine.items.length) return;
+    spentAlive.current = spentAlive.current.concat(mine.items);
+    setSpentTick((n) => n + 1);
+  }, [takeAttachments]);
+
+  /**
+   * WHICH QUEUED MESSAGE A FOLLOW-UP JOINS, while this chat has no session.
+   *
+   * A new chat whose first message was queued is a task called
+   * `pending:<entry id>` and NOTHING has run in it, so `sessionId` is still "".
+   * A second line typed into the same composer would therefore be admitted as
+   * another session-less send — which is what "open a brand-new task" means
+   * everywhere else in this app — and the folder would gain a second task while
+   * the reader watched one conversation. Naming the first entry (`follow_of`)
+   * joins it instead; the rule and both its edges are in `sched/queue-leader`.
+   */
+  const leader = useQueuedLeader(state.sessionId ?? "");
+  /**
+   * THIS PANE WAS OPENED ON A CHAT THAT HAS NEVER RUN — `?queued=<entry id>`
+   * (`platform/lib/queue.QUEUED_PARAM`).
+   *
+   * A waiting new chat has no session to name: nothing of it has run. Its name
+   * is the LEADER ENTRY its first message is, which is also what the server
+   * groups the whole conversation under (`pending:<leader id>`) — so the door
+   * into it hands over that id and this pane takes it as its queue leader. From
+   * there everything else is the road a chat that queued its own first message
+   * already walks: `waitingFor` finds its rows, the `/api/tasks` row for
+   * `pending:<id>` gives the header its number, and `adoptSession` swaps in the
+   * real transcript the moment the leader runs.
+   *
+   * REMEMBERED IN AN EFFECT, READ DIRECTLY FOR THE RENDER. `leader` is a ref —
+   * writing it during a render would answer differently depending on how many
+   * times React ran that render — and the render below needs the id on the FIRST
+   * paint, which is before any effect. So the two halves are separate: the paint
+   * reads the param, the send path reads the ref the effect filled.
+   *
+   * A SESSION OUTRANKS IT, always. The moment this chat has one the param is
+   * stale by construction, and it is cleared from the URL where the session is
+   * adopted.
+   */
+  // Read only under the flag: a `?queued=` link made while the queue was on
+  // must not name a leader — and hide Archive / Continue in terminal — on a
+  // chat that is running with the queue off (flag-off audit, 2026-09-12).
+  const queuedParam = queueOn ? params.get(QUEUED_PARAM) || "" : "";
+  useEffect(() => {
+    if (!queuedParam || state.sessionId) return;
+    leader.remember("", queuedParam);
+  }, [queuedParam, state.sessionId, leader]);
+
+  /**
+   * THE ADMISSION SAID NEITHER YES NOR NO — and nothing is sent.
+   *
+   * Falling through to a spawn was this path's first shape, on the argument that
+   * a new endpoint failing is no reason to swallow a message. But the failure
+   * that actually happens is the server REFUSING this send (a wordless one it
+   * will not queue, a 400 of any kind), and "the queue would not take it" is the
+   * one answer that must not end in a run: the whole feature exists to stop a
+   * second process starting in a folder somebody else is working in.
+   *
+   * So: no spawn, the words go back in the BOX they were typed in (`strand` —
+   * the composer cleared it on the keystroke), the tray is untouched because
+   * `beginSend` was never reached, and the reason lands in the chat's own error
+   * slot — the same card a failed `start` writes, because from the reader's side
+   * this is the same event: the message did not go.
+   */
+  const refuseQueuedSend = useCallback(
+    (text: string, err: unknown) => {
+      strand(text);
+      const t = troubleFromError(err);
+      controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
+    },
+    [controller, strand],
+  );
+
+  /**
    * THE SEND WINDOW, SERIALIZED — one road, both kinds of send.
    *
    * `beginSend` is AWAITED (a round of notes has its pane photographed before
@@ -2002,6 +2262,256 @@ function ChatBody(props: ChatBodyProps) {
       void (async () => {
         let taken = false;
         try {
+          // ---- ADMISSION, AHEAD OF EVERYTHING ELSE (the project queue) ------
+          //
+          // BEFORE `beginSend`, not after, and that ordering is the whole
+          // reason this is safe to add here: `beginSend` PHOTOGRAPHS the pane,
+          // empties the attachment tray and stamps the round of notes as sent.
+          // A message that turns out to be queued never took any of it — the
+          // server stored the words as a pending entry and a picture of a pane
+          // taken now would be a picture of a pane from before the run that
+          // eventually answers it. So the ask happens while nothing has been
+          // spent, and a queued send simply never calls it.
+          //
+          // …and BEFORE `start`/`send`, which is the point of the feature: the
+          // one thing the queue exists to prevent is two runs in one folder,
+          // and spawning first would open exactly that window for the length of
+          // a round trip.
+          //
+          // AND THE PICTURES GO WITH THE WORDS. A queued send fires minutes
+          // later out of the scheduler, so whatever is not ON the entry is not
+          // in the message that eventually runs — see `carryForQueue`.
+          //
+          // A FAILED ADMISSION SENDS NOTHING. This used to fall through to a
+          // spawn, on the argument that a new endpoint failing is no reason to
+          // swallow a typed message — but the failure that actually happens is
+          // the server REFUSING this send (a 400 on a wordless one, a flag the
+          // server does not have), and falling through turns every such refusal
+          // into the exact second run in a busy folder the queue exists to
+          // prevent. So only a clean `run: true` sends; anything else is
+          // `refuseQueuedSend` — words back in the box, reason on the card.
+          if (queueEnabled()) {
+            // READ ONCE, and read HERE: the session can arrive while the copies
+            // below are uploading, and a body whose `session_id` and
+            // `follow_of` were asked a round trip apart could carry both — a
+            // message addressed to a conversation AND filed under the task it
+            // predates.
+            const live = controller.getState();
+            /**
+             * THE FRESHEST SESSION ID THIS PANE CARRIES, which is not always the
+             * one in controller state.
+             *
+             * The URL is the pane's other record of which conversation is on
+             * screen — `openSession` writes it, the boot effect reads it, and
+             * `newChat` clears it — and in the window right after a first reply
+             * it can be ahead of `state.sessionId`. An admission that names
+             * neither is an ANONYMOUS one, and the server then has nothing to
+             * recognise its own caller by (below).
+             */
+            const sid = live.sessionId || params.get("session_id") || "";
+            /**
+             * …AND THE RUN THIS CHAT ALREADY HAS IN FLIGHT, read in the same
+             * breath as the session for the same reason.
+             *
+             * It is what tells the server that the thing holding this folder is
+             * THIS page. A session id cannot say it before the first turn has
+             * opened one, so a second line typed into a brand-new chat that is
+             * still starting queued behind its own run — the reader watched
+             * their own message wait for themselves (Akshil, browser QA
+             * 2026-09-12). `runId` is minted by `POST /api/run` and is live from
+             * the first keystroke of the first turn (`api.admitQueueSend`).
+             *
+             * OR THE LAST RUN THIS CHAT HAD, and that was round two's finding.
+             * `state.runId` is cleared the instant a turn ends, while the host
+             * is still tearing the run down and the registry still reads busy —
+             * so "hello" → reply → "second" typed straight away was admitted
+             * with no run id AND (see `sid`) sometimes no session id either, and
+             * the server, seeing an anonymous caller against its own live run,
+             * queued the reader behind themselves: `Queued · #1 in line · behind
+             * a run in this folder` (Akshil, browser QA 2026-09-12).
+             * `lastRunId` outlives the turn and dies with the CONVERSATION,
+             * which is the lifetime this question actually has.
+             */
+            const rid = live.runId || live.lastRunId || "";
+            const follow = leader.followOf(sid);
+            /**
+             * AND THE NOTES GO WITH THE WORDS, for the pictures' reason.
+             *
+             * A queued send is a scheduler entry that fires minutes later with
+             * whatever is written ON IT, and a round of pane notes left in the
+             * tray is half the message: the reader drew on the app, pressed
+             * Enter, and what eventually reached the agent was the typed line
+             * alone. Worse than missing — the notes stayed UNMARKED, so the
+             * next send into a free folder silently took somebody else's round
+             * (`takeAnnotations` → `markSent`).
+             *
+             * Taken exactly as `beginSend` takes them (the badge letters, one
+             * picture of the pane with those letters burned in, the block built
+             * out of both) and composed into the admitted `message` through
+             * `composeOutgoing` — the same call the live send's wire goes
+             * through — so the entry carries the text this send would have sent.
+             *
+             * NOT MARKED YET, because the verdict decides who owns them:
+             * `run: false` stamps them below (nothing may take them again), and
+             * a `run: true` leaves them pending for `beginSend`, which takes its
+             * own round the ordinary way. That is the same price `carryForQueue`
+             * pays one line down — a send into a free folder buys a capture
+             * nobody reads — and it is paid for the same reason: the answer
+             * arrives too late to take anything after it.
+             */
+            const notes = await takeAnnotations();
+            const carried = await carryForQueue(notes.overview ? [notes.overview] : []);
+            /**
+             * THE BADGED PICTURE, PUT DOWN — on every road out of here, and it
+             * is only ever the picture.
+             *
+             * Queued: its COPY is on the entry (`carryForQueue` led with it) and
+             * nothing on screen draws the original, so holding the blob would
+             * pin a full-pane image for the life of the document (Bugbot, PR
+             * #1064's rule). Admitted or refused: it is this page's photograph of
+             * a pane that has since moved on, and the send that actually goes
+             * takes a fresh one — exactly what `beginSend`'s `done(false)` does
+             * with one.
+             *
+             * The NOTES are a different question and are not touched here: they
+             * are marked only where the entry took them (below), so on every
+             * other road their chips stand.
+             */
+            const putDownQueuedShot = () => {
+              if (notes.overview) ATTACH_API.revoke(notes.overview);
+            };
+            let verdict: Awaited<ReturnType<typeof admitQueueSend>> | null = null;
+            try {
+              verdict = await admitQueueSend({
+                project: file || "",
+                session_id: sid,
+                // EMPTY IS SENT, not withheld. A wordless send (pictures alone)
+                // is a send like any other and has to be admitted like one;
+                // whether an empty message with attachments may be queued is the
+                // server's call, and a refusal is an answer this road already
+                // knows how to show. A send carrying NOTES is not one of those:
+                // its `<annotations>` block is the message, composed in here the
+                // way the live wire composes it.
+                message: composeOutgoing(text, [notes.block]),
+                ...(opts.model ? { model: opts.model } : {}),
+                ...(opts.effort ? { effort: opts.effort } : {}),
+                ...(opts.permission ? { permission_mode: opts.permission } : {}),
+                ...(carried.length
+                  ? { images: carried.map((a) => a.path), attachments: carried }
+                  : {}),
+                // THE LEADER, and only while there is no session to name
+                // instead — `followOf` is asked with the very id that went into
+                // `session_id` above, so the two halves of the body can never
+                // disagree about what this message is addressed to.
+                ...(follow ? { follow_of: follow } : {}),
+                // THE LIVE RUN, so the holder can be recognised as this chat's
+                // own before a session id exists to say it.
+                ...(rid ? { run_id: rid } : {}),
+                // THE DRAFT THIS SEND SPENDS, on the one road where the server
+                // has to be told: a send that RUNS tags the run it starts
+                // (`run-controller`'s own `draft_key`, read back off
+                // `meta.json`), and a send that QUEUES starts no run at all —
+                // so without this the composer's `new:<file>` draft kept the
+                // TASK number the reader had been watching and the entry minted
+                // a second one (review, PR #1124). The same key the composer
+                // autosaves under, spelled by the same function, and sent only
+                // while there is no session: a chat that has one is numbered
+                // under it and has nothing to carry forward.
+                ...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),
+              });
+            } catch (err) {
+              putDownQueuedShot();
+              refuseQueuedSend(text, err);
+              return;
+            }
+            // A shape this build does not understand is not a yes. Read off the
+            // wire rather than off the type: the type is what the server is
+            // MEANT to answer.
+            const run = (verdict as { run?: unknown } | null)?.run;
+            if (run !== true && run !== false) {
+              putDownQueuedShot();
+              refuseQueuedSend(text, new Error("the queue gave no answer."));
+              return;
+            }
+            if (verdict && verdict.run === false) {
+              // THE WORDS STAY AND THE ROW MOVES — from the transcript, which
+              // cannot keep them, to the chip, which can.
+              //
+              // This used to keep the optimistic bubble (`taken = true`), on the
+              // rule that a bubble vanishing on Enter reads as a message that
+              // was lost. That rule is right and the bubble was the wrong home
+              // for it: the optimistic row lives only in the live document, and
+              // both of the things that replace that document happen to a queued
+              // send routinely — the standing watch's `refreshHistory` (a full
+              // `turns` replace from the JSONL, four times a minute) and the
+              // adoption of the leader's session (`adoptSession` → `openSession`
+              // below). A message the scheduler has not sent is in no file, so
+              // either one wiped the words and left the chip talking about
+              // nothing (Bugbot, PR #1124).
+              //
+              // So the chip carries the text (`QueuedSend.text`) and draws it in
+              // the transcript's own user bubble, directly under the log and in
+              // the same column — and the optimistic row goes, because two
+              // copies of one message is the other way to get this wrong.
+              // `taken` stays false, which is exactly what the `finally` reads
+              // to drop it: the same handover a send that reached the controller
+              // makes, one paint, no gap where the words are nowhere.
+              //
+              // …and the tray is spent, because the entry now carries its own
+              // copies of those pictures (`spendTrayForQueue`).
+              spendTrayForQueue();
+              // THE NOTES ARE SPENT TOO, on the same argument and for a sharper
+              // reason: their words are on the entry now, so leaving them
+              // pending would hand this round to the NEXT send — the very
+              // double-take `markSent` exists to stop, and the one a queued send
+              // used to cause every time. Stamped exactly where `beginSend`
+              // stamps them: after the request the words went out on.
+              if (notes.notes.length) annRef.current?.markSent(notes.notes);
+              putDownQueuedShot();
+              const entryId = String(verdict.entry?.id ?? "");
+              // …and if this chat still has no session, THIS is the entry every
+              // later message in it joins (`sched/queue-leader`, which ignores
+              // the call when a leader is already remembered or a session has
+              // arrived).
+              leader.remember(sid, entryId);
+              // THE ROW IS THE SERVER'S; THIS IS ONLY THE FIRST PAINT OF IT.
+              // The entry exists now, so the next schedule tick will list it and
+              // the chat will draw it from that (`waitingRows`). The seed covers
+              // the up-to-fifteen-seconds before that tick, in which a message
+              // the reader just sent would otherwise be nowhere on screen — and
+              // it carries the TYPED line, so the row does not rewrite itself
+              // when the server's copy (the composed message, markers and all)
+              // takes over. Same entry id, so it is never two rows.
+              setWaitingSeeds((cur) => [
+                ...cur,
+                { entryId, text, due: String(verdict?.entry?.due ?? "") },
+              ]);
+              // …AND WHAT IS IN FRONT, for the paint before this conversation's
+              // own `/api/tasks` row has been read. One answer for the whole
+              // chat, because a folder is held by one task and every message in
+              // this line is behind the same thing.
+              setAdmitAhead({
+                status: "queued",
+                queue_position: verdict.position,
+                queue_ahead: verdict.ahead,
+                queue_ahead_title: verdict.ahead_title,
+                queue_ahead_session: verdict.ahead_session ?? "",
+                queue_ahead_target: verdict.ahead_target ?? "",
+                queue_ahead_key: verdict.ahead_key ?? "",
+              });
+              // …AND THE NUMBER THIS CONVERSATION IS NOW CALLED. The entry IS
+              // the task, so the answer that queued the message can name it —
+              // and the header wore nothing at all until a listing landed.
+              if (verdict.task_id) setAdmitTaskId(String(verdict.task_id));
+              return;
+            }
+            // `run: true` — the ordinary road, on the ORIGINAL receipts: the
+            // copies made above are task-shots nobody will read, which is the
+            // price of asking before spending (see `carryForQueue`). The round
+            // of notes is put down the same way: still pending, still chipped,
+            // and `beginSend` below takes it the ordinary way.
+            putDownQueuedShot();
+          }
           const { merged, done } = await beginSend(opts);
           const wire: SendOptions = {
             ...merged,
@@ -2041,7 +2551,18 @@ function ChatBody(props: ChatBodyProps) {
         }
       })();
     },
-    [controller, file, beginSend, releaseSend],
+    [
+      controller,
+      file,
+      beginSend,
+      releaseSend,
+      carryForQueue,
+      takeAnnotations,
+      refuseQueuedSend,
+      spendTrayForQueue,
+      leader,
+      params,
+    ],
   );
 
   const onSend = useCallback(
@@ -2120,17 +2641,46 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
-  }, [controller, cardPolicy]);
+    // …AND SO DO THE QUEUED CHIPS AND THE LEADER THEY NAME. Both are memories of
+    // the messages that were ON SCREEN: the chips sit under a transcript that is
+    // being emptied, and the leader would file the next chat's first line under
+    // a task it has nothing to do with. The leader especially, now that a chat
+    // ADOPTS the session its leader's run opens — left standing it would pull
+    // the reader back into the conversation they just left, on the next poll.
+    // The entries themselves are untouched; the Tasks page is where they live.
+    setWaitingSeeds([]);
+    setAdmitAhead(null);
+    setAdmitTaskId("");
+    // …and the deletions with them: both are memories of the rows that were on
+    // this screen, and the next conversation's waiting messages are its own.
+    setDroppedEntries(NO_DROPPED);
+    leader.forget();
+    // AND THE DOOR THIS PANE CAME IN BY. `?queued=` names the conversation that
+    // is being left; carried into the next one it would re-adopt the leader the
+    // line above just forgot, on the first render after it.
+    params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
+  }, [controller, cardPolicy, leader, params]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
       resetCardPolicy(cardPolicy);
       setEntered(true);
       // Same rule as Back: a hand-back belongs to the conversation it was typed
-      // in, and this is a different one.
+      // in, and this is a different one — and so do the queued chips, which sit
+      // under a transcript that is about to be replaced.
       setStranded(null);
+      setWaitingSeeds([]);
+      setAdmitAhead(null);
+      setAdmitTaskId("");
+      setDroppedEntries(NO_DROPPED);
+      // …and the LEADER, same as Back: `leaderId` reads `leader.peek()` before
+      // it reads the session, so a leader left behind here would keep drawing
+      // (and acting on) the previous chat's waiting rows under the new
+      // transcript until something else re-rendered (Bugbot, d9f041e11).
+      leader.forget();
+      params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
       void controller.openSession(sessionId);
     },
-    [controller, cardPolicy],
+    [controller, cardPolicy, leader, params],
   );
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
@@ -2371,10 +2921,23 @@ function ChatBody(props: ChatBodyProps) {
     transcriptFollow.current?.();
   }, []);
 
+  /**
+   * THE ENTRY THIS CHAT'S MESSAGES ARE GROUPED UNDER while it has no session of
+   * its own (`sched/queue-leader`) — read here, for the render, as well as in the
+   * send window where it is written.
+   *
+   * `useSchedule` takes it because three things hang off it and all three are
+   * that hook's: which entries are this conversation's (`waitingFor`), whether
+   * there is a card at all, and which `/api/tasks` row to read (a queued new chat
+   * is named `pending:<leader>`, never after the entry at the front of its line).
+   */
+  const leaderId = leader.peek() || (state.sessionId ? "" : queuedParam);
+
   const sched = useSchedule({
     controller,
     file,
     sessionId: state.sessionId ?? "",
+    leaderId,
     inChat,
     navLocked: ann.locked,
     followBottom,
@@ -2383,6 +2946,288 @@ function ChatBody(props: ChatBodyProps) {
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
   });
+  /** Stable across renders (`useSchedule` memoises it on the watcher), so the
+   *  delete below may depend on it by name. */
+  const schedRefresh = sched.refresh;
+
+  /**
+   * A SEED COMES DOWN WHEN ITS ENTRY GOES — and not one poll sooner.
+   *
+   * "The entry fired" is exactly "it is no longer pending", and it is also what a
+   * cancel from the Tasks page looks like. `pendingIds` is the schedule poll's
+   * UNFILTERED pending set rather than `waitingHere`, because the chat that most
+   * needs this is a brand-new one with no session yet, for which the
+   * session-filtered list is empty by construction.
+   *
+   * NOT A PLAIN FILTER, and that was the bug the chip version shipped with: a
+   * non-null `pendingIds` is a photograph taken up to a poll interval before this
+   * send existed, so the entry the admission has just created is legitimately
+   * missing from it (`sched/waiting`).
+   */
+  const liveSeeds = useLiveSeeds(waitingSeeds, sched.pendingIds);
+
+  /**
+   * …AND A DELETION IS FORGOTTEN once a poll agrees the entry is gone.
+   *
+   * In an effect rather than a render for the liveness watch's reason: a render
+   * that writes the memory it read answers differently depending on how many
+   * times React ran it.
+   */
+  useEffect(() => {
+    setDroppedEntries((cur) => pruneDropped(cur, sched.pendingIds));
+  }, [sched.pendingIds]);
+
+  /**
+   * THE WAITING MESSAGES THIS CHAT DRAWS — ONE list, asked of the whole schedule.
+   *
+   * It used to be two, swapped on one fact: with a session, the session-filtered
+   * pending list; without one, the leader's followers. Adoption flips exactly
+   * that fact and both lists miss the followers in the instant it does — the
+   * server fills a follower's session only when it CLAIMS it, and the leader id
+   * is a client memory a reload drops — so the reader's queued messages vanished
+   * from the transcript while sitting safely in the line (Bugbot PR #1124).
+   * `sched.waitingHere` is now `waitingFor`: the group, by session AND by
+   * `follow_of` in either direction, off every row the poll saw.
+   *
+   * IT IS THE SERVER'S ANSWER, which is the whole point: a reload re-reads the
+   * same list and paints the same rows, where the chip this replaces was client
+   * state and vanished.
+   */
+  const serverWaiting = sched.waitingHere;
+  /** The rows themselves — server first, then the seeds no poll has listed yet,
+   *  one row per entry id. */
+  const waiting = useMemo(
+    () => waitingRows(serverWaiting, liveSeeds, droppedEntries),
+    [serverWaiting, liveSeeds, droppedEntries],
+  );
+  /**
+   * WHAT IS IN FRONT, for every one of those rows and for the card above the box.
+   *
+   * ONE ANSWER, from this conversation's own `/api/tasks` row (`sched.rec`, which
+   * the schedule hook already fetches) — the server's, so a reload says the same
+   * thing. A chat with no session has one too: it is named after its leader
+   * (`pending:<id>`), which is the key the row read falls back to. `admitAhead`
+   * is the fallback for the paint before that row lands, and `claimedNext` the
+   * one thing that outranks both — for one lap, after a Run next the server has
+   * already accepted.
+   */
+  /**
+   * FOLLOW-UPS THE LIVE RUN IS STILL HOLDING — the bubbles a reload used to lose.
+   *
+   * A line typed into a running chat is absorbed by the live host: it sits in the
+   * CLI's own queue until the current turn ends. For that window the only copy on
+   * screen was this page's optimistic bubble, which is client memory — so a
+   * reload, or the standing watch's four-a-minute `refreshHistory`, replaced the
+   * transcript with a JSONL that does not have the message either (nothing has
+   * consumed it) and the reader's own words simply vanished (Akshil,
+   * 2026-09-12). The RUN knows, and now says so (`PollResponse.inbox`).
+   *
+   * DEDUPED HERE rather than in the controller, because "does this still need a
+   * bubble" is a question about what is on screen: the optimistic list and the
+   * turns both answer it, and both move without the inbox moving. One entry
+   * leaves for one of three reasons, all of them somebody else drawing the same
+   * message — see `protocol/inbox`.
+   */
+  const inboxRows = useMemo(
+    () =>
+      inboxBubbles(
+        state.inbox,
+        state.queued,
+        state.turns.filter((t) => t.role === "user").map((t) => t.text),
+      ),
+    [state.inbox, state.queued, state.turns],
+  );
+  const claimedNext = nextClaim !== null && nextClaim === sched.recGen;
+  const waitFacts = useMemo(
+    () => waitingFacts(sched.rec, admitAhead, claimedNext),
+    [sched.rec, admitAhead, claimedNext],
+  );
+  /**
+   * HOW MANY MESSAGES THE CARD SAYS ARE WAITING — the server's own count.
+   *
+   * NOT `waiting.length`, which is the number of ROWS this chat is drawing and a
+   * different question: it includes a message scheduled for next Tuesday (drawn,
+   * correctly, as `scheduled`) and a seed no poll has confirmed, so a chat with
+   * one calendar entry a week out read "1 message waiting" for six days about
+   * nothing anybody was waiting behind (Bugbot PR #1124). `queue_waiting` is
+   * counted where every entry can be seen and means DUE AND HELD (design.md, UI).
+   *
+   * The fallback for a chat with no row yet counts only the rows that are
+   * actually in the line — the same sentence, said with what is in hand.
+   */
+  const waitCount = useMemo(() => {
+    const said = sched.rec?.queue_waiting;
+    if (typeof said === "number") return said;
+    return waiting.filter((r) => r.word === "queued").length;
+  }, [sched.rec, waiting]);
+
+  /**
+   * RUN NEXT — this conversation's waiting work to the front of its folder's
+   * line. The same endpoint the Tasks row and the Board's drag spend, so one verb
+   * cannot mean two things in two places, and it interrupts NOTHING: the run
+   * holding the folder keeps running and this goes when it ends.
+   *
+   * THE TASK WHEN THERE IS ONE, THE ENTRY OTHERWISE. `sched.rec.key` is read off
+   * a listing the poll just took, so it cannot be the stale `pending:<leader>`
+   * key the admission answered and the store has since rekeyed — and the task
+   * form promotes every message this chat has waiting, which is what the card
+   * over the composer is a summary of. With no row yet there is no key to trust,
+   * and one entry id — minted once, never rekeyed — is the honest fallback.
+   */
+  const runNext = useCallback(async () => {
+    const key = sched.rec?.key || "";
+    const first = waiting[0]?.entryId || "";
+    if (!key && !first) return;
+    setRunningNext(true);
+    try {
+      const said = await skipQueue(key ? { key } : { entry_id: first });
+      // The claim is painted straight onto the card — on the FACTS rather than on
+      // the fallback, because the facts prefer the server's row whenever there is
+      // one and the row in hand was read before this press. It is held only until
+      // a fresher row lands, which is what `schedRefresh` goes and asks for.
+      //
+      // …AND WHO IS IN FRONT NOW, off the same answer (🟡 review,
+      // 2026-09-12). The press changed the line and the server re-derived it;
+      // painting only the claim left "behind TASK-041" naming whatever was ahead
+      // BEFORE the press until the next listing landed, which is the one sentence
+      // on the card the press was supposed to change. A server too old to send
+      // them changes nothing: the fields fall away and the claim stands alone.
+      setAdmitAhead((cur) => ({
+        ...(cur ?? {}),
+        status: "queued",
+        queue_priority: true,
+        ...(said.ahead_key === undefined
+          ? {}
+          : {
+              queue_position: said.position,
+              queue_ahead: said.ahead ?? "",
+              queue_ahead_title: said.ahead_title ?? "",
+              queue_ahead_session: said.ahead_session ?? "",
+              queue_ahead_target: said.ahead_target ?? "",
+              queue_ahead_key: said.ahead_key ?? "",
+            }),
+      }));
+      setNextClaim(sched.recGen);
+      schedRefresh();
+    } catch (err) {
+      // AND A REFUSAL IS SAID OUT LOUD. The press has a visible control behind
+      // it, so silence is a button that did nothing — and the failure that
+      // actually happened in review was a 404 on a stale key, invisible for
+      // exactly as long as nobody was reading the network tab.
+      const t = troubleFromError(err);
+      controller.reportTrouble({ ...t, message: "Run next did not go through: " + t.message });
+    } finally {
+      setRunningNext(false);
+    }
+  }, [controller, schedRefresh, sched.rec, sched.recGen, waiting]);
+
+  /**
+   * DELETE, from a waiting row: the words are dropped and nothing runs.
+   *
+   * THE SAME ENDPOINT the Tasks page's cancel posts — `POST /api/schedule/cancel`
+   * on the ENTRY id. One press and no arming: a repeat's stop spends every future
+   * run and has to be confirmed; this drops one message, whose words are in the
+   * bubble directly above the word the reader pressed.
+   *
+   * AND THE ROW GOES ON THE ANSWER, not on the next poll: a row that stayed up
+   * for fifteen seconds after a successful delete reads as a control that did
+   * nothing. It is remembered as dropped until a poll stops listing the entry,
+   * because the poll's own list is up to a lap older than the press and would
+   * otherwise put the row straight back (`sched/waiting` `pruneDropped`).
+   */
+  const deleteWaiting = useCallback(
+    async (entryId: string, stopId: string = "") => {
+      setDeleting((cur) => new Set(cur).add(entryId));
+      try {
+        // THE TEMPLATE WHEN THERE IS ONE (`schedStopTarget`, handed in by the
+        // row): cancelling a repeat's OCCURRENCE only skips that run and the
+        // template arms the next, so "stop repeating" has to reach the template
+        // or it is the same button as "skip this run" wearing another word.
+        await cancelScheduledMessage(stopId || entryId);
+        setDroppedEntries((cur) => new Set(cur).add(entryId));
+        setWaitingSeeds((cur) => cur.filter((q) => q.entryId !== entryId));
+        schedRefresh();
+      } catch (err) {
+        const t = troubleFromError(err);
+        controller.reportTrouble({
+          ...t,
+          message: stopId
+            ? "This repeat was not stopped: " + t.message
+            : "This message was not deleted: " + t.message,
+        });
+      } finally {
+        setDeleting((cur) => {
+          const next = new Set(cur);
+          next.delete(entryId);
+          return next;
+        });
+      }
+    },
+    [controller, schedRefresh],
+  );
+
+
+  /**
+   * THE LEADER RAN, SO THIS CHAT HAS A SESSION NOW — adopt it.
+   *
+   * The gap this closes: a new chat whose first message was queued has no
+   * session, so every later send joins that entry as a follower
+   * (`sched/queue-leader`). The SCHEDULER runs the leader, not this page — and
+   * none of the chat's roads to a session id begin anywhere but here. The
+   * schedule watcher's attach is the nearest thing and it is not enough: it
+   * needs a live `run_id` to probe, so a leader that ran and finished while this
+   * tab was in the background leaves nothing to attach to, and a FOLLOWER's run
+   * is written off outright (`scheduledRunIsOurs` adopts only entries naming no
+   * session on a session-less screen). Without this the chat stays a chat with
+   * no session for ever: new followers behind a leader that is long gone, and a
+   * transcript showing none of what it said.
+   *
+   * THE ENTRY IS THE RECORD — `claude_session_id`, read off the poll this pane
+   * already pays for (`sched.ranSessions`) — and the adoption is `openSession`,
+   * which is what every other "open that conversation" gesture in this file
+   * spends (`onOpenSession`, the sessions list, Peek). It brings the real
+   * transcript with it, which is the point: the optimistic bubbles are replaced
+   * by what the run actually said.
+   *
+   * THE ROWS STAY, AND THEY STAY BY THEMSELVES. They are the server's
+   * (`sched/waiting.waitingFor`, through `sched.waitingHere`): those follower
+   * entries are still waiting in this folder's line, and the group they belong to
+   * is read off `follow_of` and the leader's own session — so the very poll that
+   * hands this chat its session id goes on listing them. Nothing here has to
+   * carry them across, and nothing here may drop them: the adoption replaces the
+   * TRANSCRIPT, not the line.
+   *
+   * NO GUARD REF. `openSession` emits the id, `state.sessionId` stops being ""
+   * and `leaderSession` answers "" from then on — the effect's own dependency is
+   * what closes it. `setEntered` is for the landing case: this chat may never
+   * have been anywhere else.
+   */
+  const adoptSession = leaderSession(sched.ranSessions, leader.peek(), state.sessionId ?? "");
+  useEffect(() => {
+    if (!adoptSession) return;
+    resetCardPolicy(cardPolicy);
+    setEntered(true);
+    // THE ENTRY WAS THE NAME UNTIL NOW. `openSession` writes the real one, and
+    // leaving `?queued=` beside it would re-remember a leader this chat has just
+    // outgrown on any later render (see `queuedParam`).
+    params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
+    // AND THE UNSENT WORDS COME WITH IT. The composer keys its draft on the
+    // session, or on `new:<file>` while there is none — so the line below
+    // silently moves the box's key, and a sentence typed while this chat was
+    // waiting would be autosaved again under the session while the `new:<file>`
+    // record stood: one unsent message, two drafts, and a draft ROW on the
+    // Tasks page beside the conversation it belongs to (review, PR #1124).
+    //
+    // Here and not in the composer, because THIS is the event: a key that flips
+    // because the reader opened some other conversation is not an adoption, and
+    // moving words on it would carry a folder's unsent draft onto a thread it
+    // was never typed into (the failure four rounds of Bugbot found in the old
+    // client-side rekey, PR #1118). A send's own draft is never moved either:
+    // it is spent, and `moveChatDraft` answers nothing for a spent key.
+    void moveChatDraft(chatDraftKey(null, file || ""), adoptSession);
+    void controller.openSession(adoptSession);
+  }, [adoptSession, controller, cardPolicy, params, file]);
+
   /**
    * T:16776/18000 — the block and both attach sets belong to the conversation
    * that WAS on screen, so a REPLACED transcript takes them with it.
@@ -2582,6 +3427,11 @@ function ChatBody(props: ChatBodyProps) {
       blocked: sched.blocked,
       blockedPlaceholder: sched.placeholder,
       blockedReason: sched.reason,
+      // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
+      // under the queue this pane says "waiting" about messages that really are,
+      // and a count of follow-ups the live host will drain in seconds is the one
+      // waiting state with nothing to act on.
+      queueOn,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -2629,6 +3479,7 @@ function ChatBody(props: ChatBodyProps) {
       sched.blocked,
       sched.placeholder,
       sched.reason,
+      queueOn,
     ],
   );
   /**
@@ -2706,7 +3557,44 @@ function ChatBody(props: ChatBodyProps) {
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
-  const taskId = useTaskId(state.sessionId ?? "");
+  //
+  // A CHAT THAT HAS NEVER RUN IS ASKED ABOUT BY ITS LEADER. Its `/api/tasks` row
+  // is keyed `pending:<entry id>` — there is no session to key on — and that key
+  // is all `useTaskId` ever compares, so the same read answers for both kinds of
+  // conversation.
+  const taskKey = state.sessionId || (leaderId ? PENDING_KEY_PREFIX + leaderId : "");
+  const listedTaskId = useTaskId(taskKey);
+  // …and the three sources in freshness order (`sched/waiting.headerTaskId`), so
+  // a queued chat wears its number from the admission rather than waiting a poll
+  // interval for a listing to repeat it.
+  const taskId = headerTaskId(listedTaskId, sched.rec?.task_id, admitTaskId);
+  /** Has this conversation NEVER RUN, because its first message is still in its
+   *  folder's line? What the kebab drops its terminal and archive items on —
+   *  there is no transcript to continue in a terminal and nothing to archive.
+   *
+   *  `!state.sessionId` IS THE WHOLE QUESTION, and the row's `queued` only
+   *  narrows it (🟡 review, 2026-09-12). A chat WITH a session whose folder
+   *  happens to be held is filed `queued` too — it is waiting for its next
+   *  message, not for its first — and reading that word alone took Archive and
+   *  Continue away from a real conversation with a real transcript for as long
+   *  as somebody else held the folder.
+   *
+   *  `inChat` gates it because the LANDING's one item is "New session in
+   *  terminal", which is about no conversation at all and must never be taken
+   *  away. */
+  const queuedChat =
+    inChat && !state.sessionId && (sched.rec?.status === "queued" || !!leaderId);
+  /** …and the other thing this chat's row can say: the plan's usage limit
+   *  stopped this session and it starts again at a known time — "paused ·
+   *  resumes 4:00 AM" at the top of the pane. "" on every ordinary chat.
+   *
+   *  READ FOR `taskKey`, NOT OFF `sched.rec` (Bugbot PR #1124). That row is
+   *  fetched only while the scheduled-message card is drawn, so a session that
+   *  hit the limit with nothing waiting behind it — the ordinary case — had no
+   *  row and the header said nothing at all. `useLimitWord` asks for this
+   *  conversation's own row, on mount and on `tasks-changed` (which the
+   *  comeback's own POST rings), floored at five seconds. */
+  const limitWord = useLimitWord(taskKey);
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -2921,6 +3809,12 @@ function ChatBody(props: ChatBodyProps) {
               // (`annNavLocked`, T:6888/18181/18779).
               locked={ann.locked}
               lockedReason={NAV_LOCKED_REASON}
+              // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
+              // 2026-09-12). The row says `queued`, or this conversation is a
+              // message that has never run — either way there is no session to
+              // resume and nothing finished to put away. Delete stays: calling
+              // the message off is exactly what a reader wants here.
+              queued={queuedChat}
             />
           </div>
         ) : null}
@@ -2935,6 +3829,11 @@ function ChatBody(props: ChatBodyProps) {
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
+                // THE PLAN'S PAUSE, in the seat "running" rides: a session the
+                // usage limit stopped says `paused · resumes 4:00 AM` instead
+                // (platform/lib/usage-limit). Read off this chat's own row, which
+                // is the same field the Tasks page draws the red ring from.
+                status={limitWord}
               />
             ) : null}
             <Transcript
@@ -2957,6 +3856,74 @@ function ChatBody(props: ChatBodyProps) {
                 ) : null
               }
             />
+            {/* FOLLOW-UPS THE LIVE RUN IS HOLDING, in the transcript's own user
+                bubble and in its own column. Ordinary bubbles, with no line
+                under them and no chrome of any kind: the message is not queued,
+                it is not behind anything, and the host will drain it in seconds
+                — a caption saying so would be this feature narrating the app's
+                normal behaviour back at the reader (design.md, UI).
+
+                THEY ARE DRAWN FROM THE RUN (`state.inbox`), which is what makes
+                a reload paint the same picture: the optimistic bubble above them
+                is this document's memory and does not survive one, and the
+                transcript cannot help because nothing has consumed the message
+                yet. Deduped against both (`inboxRows`), so no message is ever
+                two bubbles. */}
+            {inboxRows.map((row) => (
+              <div className="c-inbox" key={row.id}>
+                <div className="turn user c-inbox-turn">
+                  <div className="bubble">{row.text}</div>
+                </div>
+              </div>
+            ))}
+            {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
+                conversation. They are the LAST rows of the transcript by
+                construction — the scheduler sends in `due` order, which for a
+                chat's own sends is the order they were typed, and nothing of
+                this conversation's can be after them — so drawing them
+                immediately under the log IS drawing them in the transcript,
+                without threading a per-turn slot through it for rows that belong
+                to the schedule rather than to the run.
+
+                DRAWN FROM THE SERVER (`waiting`), which is what makes a reload
+                paint the identical picture. The row the admission puts up a
+                second after Enter is the same row, minted early from the
+                answer and replaced by the server's own on the next poll.
+
+                NOTHING HERE FOR A FOLLOW-UP INTO THIS CHAT'S OWN RUNNING TURN.
+                Those bubbles are ordinary bubbles the controller posted, they
+                are held by the live host for a matter of seconds, and there is
+                no entry to be behind, to run next, or to delete — so they get no
+                second row, no card, and (under the flag) not even the composer's
+                old footnote. A count of something nobody can act on was three
+                pieces of chrome for a state that resolves itself. */}
+            {queueOn &&
+              waiting.map((row) => (
+                <WaitingRow
+                  key={row.entryId}
+                  row={row}
+                  facts={waitFacts}
+                  deleting={deleting.has(row.entryId)}
+                  onDelete={() => void deleteWaiting(row.entryId)}
+                  /* A REPEAT'S SECOND VERB. `delete` on an occurrence skips one
+                     run and the template arms the next, so the row offers the
+                     thing the reader actually meant — and it posts the TEMPLATE
+                     id the row carries, which is the only id that stops it. */
+                  onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
+                />
+              ))}
+            {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
+                scrolls; this is pinned where the composer is, so a reader twenty
+                turns down still knows something of theirs is held, what by, and
+                the one press that changes it. */}
+            {queueOn && waitCount > 0 ? (
+              <WaitingCard
+                count={waitCount}
+                facts={waitFacts}
+                busy={runningNext}
+                onRunNext={() => void runNext()}
+              />
+            ) : null}
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
                 T's own arrangement: `body.chat-compact` and `body.chat-peek`
                 take the topbar, the strip, the box and the footnote and leave

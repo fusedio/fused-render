@@ -2589,6 +2589,21 @@ input.schedule-when-field {
    mark and the column disagree. The `✎ Draft` chip beside the title is what
    tells the two apart — one mark for one fact (design.md, Akshil 2026-09-11). */
 .schedule-ring--draft { color: var(--status-upcoming); }
+
+/* QUEUED IS IN PROGRESS'S OWN YELLOW, DASHED (Akshil, 2026-09-12). It was
+   `--activity`'s blue for a day and a gold of its own for a day; both are gone.
+   `queued` is DRAWN INSIDE the In Progress lane (schedule-lib.laneOf), so a ring
+   of any other hue sits directly under the running one in the same column and
+   reads as a different kind of work — and a third yellow is a colour the reader
+   has to be taught. The colour is therefore IDENTICAL (`--status-queued` is an
+   alias of `--status-progress`, tokens.css) and the SHAPE is the difference: the
+   running ring is solid, the waiting one is dashed, the same "not settled yet"
+   the queued bubble in the chat wears. A dash survives a 16px mark, a dim screen
+   and a colour-blind reader; a hue does none of the three. */
+.schedule-ring--queued {
+  color: var(--status-queued);
+  border-style: dashed;
+}
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }
@@ -3938,4 +3953,34 @@ input.schedule-when-field {
     background-clip: padding-box;
     -webkit-text-fill-color: var(--pill);
   }
+}
+
+/* THE SEAM INSIDE THE IN PROGRESS LANE — a thin dashed rule with the reader's
+   own word on it, between the cards that are running and the ones waiting on a
+   busy folder (ScheduleTaskViews, tasks-lib.laneSplitAt).
+
+   DASHED, NOT SOLID: the cards under it are in the SAME lane and one press away
+   from crossing it, so the line is a grouping rather than a boundary — the same
+   argument the waiting bubble in the chat is dashed for.
+
+   NO WIDTH ANYWHERE ON IT. The rule is a border on a flex row that grows to
+   whatever the lane is, and the word is a label sitting in the middle of it, so
+   a 260px lane and a 400px one draw the same thing at their own size. */
+.schedule-tv-lane-split {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--status-queued);
+}
+.schedule-tv-lane-split::before,
+.schedule-tv-lane-split::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px dashed color-mix(in srgb, var(--status-queued) 55%, transparent);
+}
+.schedule-tv-lane-split > span {
+  flex: 0 0 auto;
 }

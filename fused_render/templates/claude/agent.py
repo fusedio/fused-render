@@ -1400,16 +1400,88 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     return path
 
 
+# The project queue's held-answers store — a card the user answered while
+# another task was holding this folder's working tree. The decision is NOT in
+# the run dir yet (it is delivered when the folder frees), so without this a
+# reloaded page would draw the card as unanswered and invite a second click.
+#
+# THE PATH IS SPELLED HERE RATHER THAN IMPORTED, and that is deliberate twice
+# over: this file is a TEMPLATE outside the package's import graph (SPEC PY-15)
+# and also a runPython target, so `import fused_render` is not available to it —
+# the same reason CLAUDE_DIR above is re-derived from the environment instead of
+# read off `tasks_store`. `fused_render/project_queue.py` carries the matching
+# note beside its own copy; move one and move both.
+HELD_ANSWERS = ("claude-sessions", "held_answers.json")
+
+# The store's shape version — `project_queue.STORE_VERSION`, spelled again here
+# beside the path it belongs to and for the same reason. A file that does not
+# carry THIS number reads as empty: a future layout is not something this code
+# can half-understand, and guessing at it would badge a card off fields it
+# invented. Move it there and move it here.
+HELD_ANSWERS_VERSION = 1
+
+
+def _held_answers(run_id: str) -> set:
+    """Every request id of `run_id` whose answer is held, or an empty set.
+
+    Best-effort: every failure reads as nothing held. A store that will not
+    parse must cost a card its "held" badge, never the card list — the page's
+    whole transcript is drawn off that list.
+
+    AND CHEAP ON THE MACHINE THAT HAS NEVER HELD ANYTHING, which is every
+    machine with the project queue switched off. `_permissions` is on the poll
+    path, so this used to open a JSON file per call for a feature nobody had
+    turned on; a `stat` of a file that is not there is the whole cost now, and
+    the caller does not even pay that unless some card is still unanswered
+    (round-2 review, 2026-09-12)."""
+    if not run_id:
+        return set()
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+        "~/.fused-render")
+    path = os.path.join(home, *HELD_ANSWERS)
+    try:
+        os.stat(path)
+    except OSError:
+        return set()   # nothing has ever been held here: no read, no parse
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        if state.get("version") != HELD_ANSWERS_VERSION:
+            return set()
+        answers = state.get("answers")
+        return {str(a.get("request_id") or "") for a in answers
+                if isinstance(a, dict) and str(a.get("run_id") or "") == run_id}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
     ones: a frame that re-attaches mid-turn (mode switch, reload) has to be
-    able to rebuild the cards it never saw."""
+    able to rebuild the cards it never saw.
+
+    `held` is that same promise for the one answer that is not on disk: a
+    decision the user made while another task held this folder is parked by the
+    project queue and written when the folder frees (see `_held_answers`). It
+    reads as no `decision` here — correctly, nothing has been written — so
+    without the flag a reload would show the card asking again.
+
+    IT IS A FIELD WHATEVER THE FLAG SAYS, and the store is consulted only where
+    it could say yes: a run every one of whose cards has a decision on disk has
+    nothing left to hold, so the answers file is not even looked for. On a
+    machine with the queue off that is every run, and the cost of the field is
+    then nothing at all — a card still open costs one `stat` (see
+    `_held_answers`). A page must not have to know which way a server-side flag
+    is set to read its own transcript, which is why the field is not itself
+    gated."""
     perm_dir = _perm_dir(run_dir)
     try:
         names = sorted(n for n in os.listdir(perm_dir) if n.endswith(".req.json"))
     except OSError:
         return []
+    if not names:
+        return []   # nothing was ever asked here: no store read, no loop
     out = []
     for name in names:
         try:
@@ -1436,6 +1508,12 @@ def _permissions(run_dir: str) -> list:
             "input": req.get("input") if isinstance(req.get("input"), dict) else {},
             "created_at": req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
+            # ANSWERED, NOT YET DELIVERED — the project queue is holding this
+            # decision until the folder frees. Never true alongside a
+            # `decision`: delivery writes the one and drops the other, which is
+            # why the store below is read only for a run that still has one
+            # unanswered card.
+            "held": False,
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
             # Only a question card has these, and it is the same reason the whole
@@ -1443,6 +1521,16 @@ def _permissions(run_dir: str) -> list:
             # rebuild a card it never saw, including what was chosen on it.
             "answers": answers if isinstance(answers, dict) else {},
         })
+    if any(not row["decision"] for row in out):
+        held = _held_answers(os.path.basename(os.path.normpath(run_dir)))
+        for row in out:
+            # A DECIDED ROW IS NEVER HELD, whatever the store still says. The
+            # two are answers to the same card from opposite ends and delivery
+            # writes the decision before dropping the record, so a poll landing
+            # in between (or a store a crash left a stale record in) would put
+            # `held` on a card that has its answer on disk — and the page draws
+            # "Answer queued" over a card that is already allowed.
+            row["held"] = not row["decision"] and row["id"] in held
     return out
 
 
@@ -3157,6 +3245,287 @@ def _discard_inbox(run_dir: str) -> list:
     return discarded
 
 
+
+def _inbox_at(name: str) -> float:
+    """The epoch seconds inside an inbox entry's own name — `_write_inbox_row`
+    builds it as a zero-padded `time.time_ns()` — or 0.0 for a name that does
+    not carry one, the way every other absent time on this wire reads. Read off
+    the NAME and not a `stat`, because the name is the write time exactly and
+    is already in hand."""
+    try:
+        return int(name.split("-", 1)[0]) / 1_000_000_000
+    except ValueError:
+        return 0.0
+
+
+# How much of the tail of `out.jsonl` is read looking for a follow-up's own
+# echo, and how many drained entries are walked back looking for one that has
+# not echoed yet. Both are ceilings on a per-poll cost, not guesses about
+# content: the echo being hunted lands at most one reply after the previous
+# one, and more than a handful of un-echoed follow-ups in one session is not a
+# thing a person does. A window that turns out to hold no echo at all is read
+# as "everything drained has echoed" — the conservative answer, and the one
+# that degrades to exactly the behaviour this rule replaced.
+_ECHO_TAIL_BYTES = 1 << 20
+_DRAINED_WALK_MAX = 16
+
+# THE TWO MEMOS THAT KEEP THIS OFF THE DISK ON EVERY POLL (🟡 review,
+# 2026-09-12). `_poll` runs every 400 ms for the life of a run and both of these
+# answers are functions of files that mostly do not change between two of them:
+# the first keyed on what `out.jsonl` IS (its size and mtime), the second on the
+# newest name in `inbox/done/`. Capped and cleared wholesale rather than aged —
+# they are a cache of cheap facts about live runs, and a shell that visits a
+# great many of them must not grow one entry per run forever.
+_ECHO_CACHE_MAX = 64
+# run_dir -> ((size, mtime_ns), (texts, whole))
+_echo_cache: dict = {}
+# run_dir -> the newest `inbox/done/` name PROVEN fully echoed. Once that is the
+# newest name there is, nothing is waiting and nothing needs reading at all.
+_echoed_done: dict = {}
+
+
+def _remember_capped(cache: dict, key: str, value) -> None:
+    """Store, with a ceiling: a full cache is emptied rather than aged, because
+    the entry worth keeping is the run being polled right now and it is about to
+    be written again."""
+    if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
+        cache.clear()
+    cache[key] = value
+
+
+def _echo_texts(run_dir: str) -> tuple:
+    """`_read_echo_texts`, memoized on the FILE — its size and its mtime.
+
+    Read on every `_poll` (400 ms) and every history refresh, this decoded and
+    scanned up to a megabyte of `out.jsonl` each time for an answer that can only
+    change when the file does. The stamp is the whole invalidation rule: a byte
+    appended moves both halves of it, and a file that has not been written to
+    hands back the list that was already built.
+
+    An unreadable file caches nothing and answers what the read answers."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [], False
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    hit = _echo_cache.get(run_dir)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = _read_echo_texts(run_dir)
+    _remember_capped(_echo_cache, run_dir, (stamp, value))
+    return value
+
+
+def _read_echo_texts(run_dir: str) -> tuple:
+    """`(texts, whole)` — the trimmed text of every user turn `out.jsonl` has
+    echoed back, in file order, over the tail of the file, and whether that
+    tail was the WHOLE file.
+
+    `--replay-user-messages` makes the CLI write each message it takes off its
+    own queue back into the stream the moment it OPENS that turn, and
+    `_starts_new_turn` is the row shape that says so (the same reader
+    `_read_current_turn` refuses to advance its cursor past). That echo is the
+    proof a message has arrived in the conversation, and it is the only proof
+    there is: nothing else on disk distinguishes a follow-up the CLI is holding
+    from one it has answered.
+
+    The tail only, and a partial first line is dropped: this is read on every
+    poll, and a session's whole `out.jsonl` grows without bound. `whole` is what
+    lets the caller tell "this session has echoed nothing yet" (its first
+    message is still in the CLI's hands) from "the echo is behind the window" (a
+    reply longer than `_ECHO_TAIL_BYTES`) — opposite answers about one empty
+    list."""
+    path = os.path.join(run_dir, "out.jsonl")
+    whole = True
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _ECHO_TAIL_BYTES:
+                whole = False
+                fh.seek(size - _ECHO_TAIL_BYTES)
+                fh.readline()   # the line the window cut in half is not a row
+            chunk = fh.read()
+    except OSError:
+        return [], False
+    texts = []
+    for line in chunk.decode("utf-8", "replace").splitlines():
+        # The cheap screen, before any parse, and the second half of it is the
+        # one that matters: a tool result is a `type: "user"` row too and there
+        # are far more of them than there are turns, so screening them out here
+        # is what keeps this off `json.loads` for most of the window.
+        if '"user"' not in line or '"tool_result"' in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not _starts_new_turn(row):
+            continue
+        texts.append(_inbox_text(row).strip())
+    return texts, whole
+
+
+def _inbox_text(row) -> str:
+    """The words in one inbox entry (or one echoed user row) — the `text`
+    blocks of its content, joined the way `_write_inbox_entry` splits them.
+    `""` for anything that is not a user turn with words in it."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return ""
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return ""
+    texts = [str(b.get("text") or "") for b in content
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n\n".join(t for t in texts if t)
+
+
+def _inbox_entry(path: str, name: str) -> dict | None:
+    """One inbox entry file as `{"id", "text", "at"}`, or None when it is not a
+    user turn with words in it — a `control_request`, a half-written file, or
+    one drained out from under us."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    text = _inbox_text(row)
+    if not text:
+        return None
+    return {"id": name, "text": text, "at": _inbox_at(name)}
+
+
+def _drained_unechoed(run_dir: str) -> list:
+    """The follow-ups the host has already handed to the CLI that the CLI has
+    NOT yet opened a turn for — `[{"id", "text", "at"}]`, oldest first.
+
+    **DRAINED IS NOT DELIVERED (Akshil, 2026-09-12).** The rule this replaces
+    was "the inbox directory IS the untaken set", which is true of the wire and
+    false of the conversation: `session_host._drain_inbox` runs every 0.2 s and
+    `os.replace`s each entry into `inbox/done/` the instant its bytes are on
+    the pipe, while the CLI holds it in its own queue until the reply in flight
+    finishes — minutes, for a long turn. So `inbox/*.json` was empty almost
+    always, and the bubble this whole field exists to draw appeared for a
+    fifth of a second and then vanished until the answer came back.
+
+    What is actually asked, therefore, is whether the message has SHOWN UP in
+    `out.jsonl` yet (`_echo_texts`), and the walk is cheap because both sides
+    are FIFO: the host drains in name order and the CLI echoes in the order it
+    drained, so the newest done entry is the last to echo and everything behind
+    the first echoed one has echoed too. The walk stops there.
+
+    Matched by POSITION and not by membership, so a message sent twice is not
+    read as its own echo: the echoed entries are a PREFIX of the drained ones, so
+    the last `p` echoes in the file are the texts of the first `p` entries here,
+    and the largest `p` that holds is how many have landed. Everything after it
+    is waiting. (Comparing each entry against the newest echo instead read two
+    identical follow-ups with one echo as two answered messages and drew
+    neither.) A TRUNCATED window holding no echo at all (a reply longer than
+    `_ECHO_TAIL_BYTES`) answers "all echoed", which is the reading this had
+    before the field existed; an empty WHOLE file means the CLI has not opened a
+    turn yet, and everything drained really is waiting."""
+    done = os.path.join(_inbox_dir(run_dir), "done")
+    try:
+        names = sorted(n for n in os.listdir(done) if n.endswith(".json"))
+    except OSError:
+        return []          # nothing has ever been drained here
+    if not names:
+        return []
+    # NOTHING NEW SINCE THE LAST TIME EVERYTHING HAD ECHOED — the fast path off
+    # the whole walk, and the ordinary case for the life of a run: the newest
+    # drained entry was proven echoed on some earlier poll and the host has
+    # drained nothing since, so there is nothing to read and nothing to draw.
+    if _echoed_done.get(run_dir) == names[-1]:
+        return []
+    echoes, whole = _echo_texts(run_dir)
+    if not echoes and not whole:
+        return []
+    recent = []
+    for name in names[-_DRAINED_WALK_MAX:]:
+        entry = _inbox_entry(os.path.join(done, name), name)
+        if entry is None:
+            continue       # a control request: it is not a turn on either side
+        recent.append(entry)
+    texts = [entry["text"].strip() for entry in recent]
+    # HOW MANY OF THESE HAVE ECHOED — a POSITION, counted from the oldest, and
+    # not a search for the newest text that happens to match (🔴 review,
+    # 2026-09-12). Both sides are FIFO: the host drains in name order and the CLI
+    # echoes in the order it drained, so if the first `p` of these have been
+    # answered then the LAST `p` echoes in the file are exactly their texts, in
+    # that order. The largest `p` that holds is the count.
+    #
+    # Comparing the newest entry against the newest echo alone could not tell
+    # "answered" from "said twice": two "go on"s with one echo matched on the
+    # second one and dropped BOTH bubbles, which is the reader's own words going
+    # missing while the CLI still held them.
+    matched = 0
+    for size in range(min(len(texts), len(echoes)), 0, -1):
+        if echoes[len(echoes) - size:] == texts[:size]:
+            matched = size
+            break
+    waiting = recent[matched:]
+    if not waiting:
+        # Proven, so the walk above is skipped until the host drains again.
+        _remember_capped(_echoed_done, run_dir, names[-1])
+    return waiting
+
+
+def _inbox_waiting(run_dir: str) -> list:
+    """Every follow-up the user has typed that the conversation cannot yet show
+    them — `[{"id", "text", "at", "drained"}]`, oldest first.
+
+    A FOLLOW-UP TYPED INTO A RUNNING TURN IS NOWHERE ELSE (Akshil, 2026-09-12).
+    `_send` writes the message into the inbox and returns; the host ships it to
+    the CLI's stdin on its next drain tick, and the CLI echoes it into
+    `out.jsonl` only when it actually opens that turn — which, for a line typed
+    mid-reply, is after the reply in flight has finished. Between those two
+    moments the transcript has no row for the message at all, so a reload drew
+    a conversation with the user's own words missing while the run that will
+    answer them was still going. This is the one place that fact lives, and it
+    rides on `_poll` and on `_history_live` so a chat learns it on the same
+    answer it learns everything else about its run.
+
+    TWO SETS, AND THE SECOND IS THE LONG ONE. The undrained entries are
+    `inbox/*.json` — typed, on disk, not yet on the wire, which lasts a fifth
+    of a second (`drained: false`). The drained-but-unechoed ones
+    (`_drained_unechoed`, `drained: true`) are the rest of the wait, and on a
+    turn that runs for minutes they are the whole of it: listing only the first
+    set was a bubble that flashed and disappeared (Akshil's reload, 2026-09-12).
+    The flag travels because the two are different kinds of undo — an undrained
+    entry can still be thrown away (`_discard_inbox`), one the CLI is holding
+    cannot — and a reader that has to guess would have to re-derive the whole
+    rule.
+
+    Oldest first across both, which is the order they will run: the names are
+    zero-padded nanosecond stamps (`_write_inbox_row`), so sorting the names IS
+    sorting by write time, and the drained ones are older than the undrained
+    ones by construction.
+
+    A `.tmp` name is skipped (a write still in flight is not an entry yet), and
+    a `control_request` row is skipped because it is not words anybody typed —
+    the same `type == "user"` filter `_discard_inbox` applies to the same
+    directory.
+
+    One `listdir`, and on a chat that has never drained anything that is the
+    whole cost: nothing is opened. Once something HAS been drained the price is
+    the bounded tail of `out.jsonl` (`_ECHO_TAIL_BYTES`) plus one file per
+    un-echoed follow-up — the same order of work the poll already does over the
+    same file.
+    """
+    inbox = _inbox_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except OSError:
+        return []      # no inbox yet, or the run dir is going away
+    waiting = [dict(row, drained=True) for row in _drained_unechoed(run_dir)]
+    for name in names:
+        entry = _inbox_entry(os.path.join(inbox, name), name)
+        if entry is not None:
+            waiting.append(dict(entry, drained=False))
+    return waiting
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -4186,7 +4555,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0, "segments": []}
+                "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
     # (RUNS is one flat dir), and the `run` url param survives some hops the
@@ -4219,7 +4588,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
-                    "retry_total": 0, "retry_status": 0, "segments": []}
+                    "retry_total": 0, "retry_status": 0, "segments": [],
+                    "inbox": []}
 
     text_parts = []
     result_text = None
@@ -4735,6 +5105,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
+            # WHAT THE USER HAS TYPED THAT IS NOT IN THE TRANSCRIPT YET — the
+            # follow-ups still sitting in this run's inbox, oldest first, each
+            # `{"id", "text", "at"}`. NOT gated on `echo_pending` and not part
+            # of the window: these are messages the CLI has not taken yet, so
+            # no byte of them is in `out.jsonl` to be echoed or trimmed, and a
+            # reload mid-turn drew nothing at all for them before this existed
+            # (see `_inbox_waiting`). Empty on every poll of an idle chat.
+            "inbox": _inbox_waiting(run_dir),
             "segments": [] if echo_pending
             else _segments_from_rows(parsed, app_reads=app_reads),
             # The seams inside this payload where a mid-stream follow-up was
@@ -5566,7 +5944,7 @@ def _history_live(file: str, session_id: str) -> dict:
     the gate on it the way the first adopt lap always has."""
     run_id = str(_live_run(file, session_id).get("run_id") or "")
     if not run_id:
-        return {"live_run": "", "permissions": [], "mode": ""}
+        return {"live_run": "", "permissions": [], "mode": "", "inbox": []}
     run_dir = os.path.join(RUNS, run_id)
     try:
         with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
@@ -5577,7 +5955,15 @@ def _history_live(file: str, session_id: str) -> dict:
         meta = {}
     permissions = _permissions(run_dir)
     return {"live_run": run_id, "permissions": permissions,
-            "mode": _live_mode(meta, permissions)}
+            "mode": _live_mode(meta, permissions),
+            # …AND THE WORDS THAT ARE NOT IN THE TRANSCRIPT THIS ANSWER JUST
+            # CARRIED. A follow-up typed into a running turn is on disk in the
+            # run's inbox and nowhere else until the CLI takes it, so a reload
+            # that painted `turns` alone dropped the user's own last line until
+            # the run got round to answering it. Same rows `_poll` returns,
+            # through the same `_inbox_waiting`, so the first poll after this
+            # replays them identically (Akshil, 2026-09-12).
+            "inbox": _inbox_waiting(run_dir)}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True,

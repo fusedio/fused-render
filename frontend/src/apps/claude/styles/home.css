@@ -269,6 +269,45 @@
   flex-shrink: 0;
   font-size: 10px;
 }
+/* ── a chat that has not run yet ─────────────────────────────────────────────
+   Its first message is still in the folder's line (`sched/waiting-chats`), so
+   there is no transcript, no time to print and nothing shimmering. It is the
+   ORDINARY row — same height, same columns, same place in the sort — with the
+   state said in one word and one mark, both in the running yellow
+   (`--status-queued`, an alias of `--status-progress`: waiting and running are
+   one colour, tokens.css).
+
+   A DASHED RING, NOT A FILLED DOT, and that is the whole difference from a row
+   that has run: the shell's own status marks are a 2px currentColor circle,
+   filled when a state is settled and hollow while it is not — and DASHED while
+   the work has not started, which is the shape the whole feature says "waiting"
+   with. The glyph stays in the markup and gives the cell its width; the ring is
+   drawn over it. */
+.c-chat-row.is-waiting .c-dot {
+  position: relative;
+  color: transparent;
+}
+.c-chat-row.is-waiting .c-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 2px dashed var(--status-queued);
+  border-radius: 999px;
+}
+/* `waiting`, where a live row says `running` — the same seat, the same size, no
+   shimmer: nothing is moving, which is the fact. */
+.c-row-wait {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 1px;
+  white-space: nowrap;
+  color: var(--status-queued);
+}
 .c-row-title {
   color: var(--c-fg);
   font-size: 13px;

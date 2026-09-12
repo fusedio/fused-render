@@ -20,8 +20,8 @@
 // that reads location.pathname is a store that has to be told when the pathname
 // changes.
 import { useEffect, useState } from "react";
-import { getTasksPulse } from "@platform/lib/api";
-import type { Task, TaskPulseTask } from "@platform/lib/api";
+import { getTaskChanges, getTasksPulse } from "@platform/lib/api";
+import type { Task, TaskChanges, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -128,8 +128,242 @@ async function poll() {
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
+  // THE FAST LANE FOLLOWS THE SAME RULE AS THE TIMER, and is started and
+  // stopped from the same place so the two can never disagree about who is
+  // polling: one reader and no feeder means this module is the poller, on both
+  // clocks.
+  syncFastLane();
   if (listeners.size + rowListeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
+}
+
+// ---- the fast lane -----------------------------------------------------------
+//
+// "1 running" IN THE RAIL SHOULD BE INSTANT, and on the two intervals above it
+// was not: a run that started the moment after a poll went unmentioned for ten
+// seconds, and one that started on an idle machine for thirty (Akshil,
+// 2026-09-12: "should be instant… everywhere in UI"). The number itself is
+// cheap to fetch; what was slow was WAITING to ask.
+//
+// So the store watches `/api/tasks/changes` — the same long-poll the Tasks page
+// runs (Scheduled.tsx) against the same server-side watcher, which answers the
+// moment a session starts, resumes, takes a prompt, grows, or any queue verb
+// rings it. On a generation move this calls `poll()` at once; the intervals stay
+// exactly as they were, as the floor under a watcher that missed something.
+//
+// ONE POLLER, STILL. The loop runs only while this module is the poller — a
+// reader mounted and NO feeder — because the Tasks page runs this very lane
+// itself and publishes what it learns (`publishTasks`), which is how the
+// sidebar comes along without a second connection. `useTasksFeeder` therefore
+// stands the whole module down, this lane included, and starting it back up is
+// the same `schedule()` call that re-arms the timer.
+
+/** The long-poll's own wait, in seconds — the server caps it at its own
+ *  `MAX_WAIT_SEC`. Shorter than a proxy's idle timeout on purpose. */
+const CHANGES_WAIT_S = 25;
+/** A failed call backs off rather than hammering a server that is restarting.
+ *  The same 3 s the Tasks page's lane spends. */
+export const FAST_LANE_BACKOFF_MS = 3000;
+/** …and it DOUBLES while the same thing keeps happening, up to this. Three
+ *  seconds is the right first guess about a server mid-restart; it is the wrong
+ *  forever-cadence for a server that is never going to answer this endpoint
+ *  properly (an old build behind a new shell, a login page in front of it). */
+export const FAST_LANE_BACKOFF_MAX_MS = 30_000;
+/** How many hollow laps in a row end the lane for this page load. */
+export const FAST_LANE_MAX_STALLS = 5;
+/** A lapse — "25 s passed and nothing moved" — is the watcher's normal answer
+ *  and must stay free. What is NOT normal is the same non-answer returning
+ *  immediately: under this, a lap that did not move the generation cannot have
+ *  waited on anything, so it is a hot loop rather than a long poll. */
+export const FAST_LANE_MIN_LAP_MS = 1000;
+
+/** The loop's world, so a suite can drive it with a fake fetch and a fake clock
+ *  instead of a real connection and a real 25 seconds. */
+export interface FastLaneDeps {
+  /** `/api/tasks/changes?since=…`. */
+  changes(since: number): Promise<TaskChanges>;
+  /** Something moved: re-read the pulse NOW. */
+  onChange(): void;
+  visible(): boolean;
+  /** Resolves on the next hidden → visible edge. */
+  untilVisible(): Promise<void>;
+  sleep(ms: number): Promise<void>;
+  /** The lane has been stood down (last reader gone, or a feeder took over). */
+  stopped(): boolean;
+  /** The clock, only ever read as a difference — how long one lap took, which
+   *  is what separates a 25 s lapse from a server answering instantly. Default
+   *  `Date.now`; a suite hands over a fake one. */
+  now?(): number;
+}
+
+/**
+ * Watch the server's change generation, and poke the pulse when it moves.
+ *
+ * THE FIRST ANSWER IS A HANDSHAKE, NOT NEWS. `since < 0` is answered at once
+ * with the current generation and no keys (tasks_watch.wait), which is exactly
+ * what a store that has just mounted wants: a starting point, without a poke —
+ * `useTasksPulse` already reads the pulse on mount, and poking here would make
+ * every mount pay for two.
+ *
+ * WHAT THE ROWS SAY IS NOT READ, deliberately. The page merges them because it
+ * draws them; this module wants the compact `/api/tasks/pulse` shape and gets it
+ * by asking. The long-poll is a doorbell, and the answer to it is one small GET.
+ *
+ * A HIDDEN TAB SITS THE LOOP OUT. The browser throttles its timers to about a
+ * lap a minute anyway, and a backgrounded window holding a connection open is
+ * the one cost this must not add per window; `untilVisible` resumes it, and the
+ * handshake on the way back in re-syncs the generation for free.
+ *
+ * A HOLLOW LAP IS PACED LIKE A FAILURE, and one that repeats ends the lane.
+ * Only a THROWN call used to back off, and the loop's whole pacing rested on an
+ * answer it never checked: a 200 with no numeric `generation` — an older server,
+ * a proxy or login page returning HTML with a 200, a shape that moved — left
+ * `since` at -1, which the server answers at once as a handshake, which leaves
+ * `since` at -1. That is a request storm with nothing in it that can ever slow
+ * it down, from every window with a sidebar open. So the lap, not the
+ * exception, is what is judged: one that did not move the generation AND came
+ * back faster than any real wait (`FAST_LANE_MIN_LAP_MS`) is hollow, and hollow
+ * laps back off — doubling to `FAST_LANE_BACKOFF_MAX_MS` — and, after
+ * `FAST_LANE_MAX_STALLS` of them in a row, stand the lane down for good. A
+ * genuine 25 s lapse moves nothing either and is NOT hollow: it already waited,
+ * which is the difference the clock is read for. Standing down costs the news
+ * its earliness, never the news: the 10/30 s intervals are still underneath,
+ * and `schedule()` keeps running them.
+ */
+export async function watchTaskChanges(deps: FastLaneDeps): Promise<void> {
+  const now = deps.now ?? (() => Date.now());
+  let since = -1;
+  /** Consecutive hollow laps. A thrown call is not one of these — an
+   *  unreachable server is a server that can come back, and the backoff alone
+   *  is the right answer to it. */
+  let stalls = 0;
+  let backoff = FAST_LANE_BACKOFF_MS;
+  while (!deps.stopped()) {
+    if (!deps.visible()) {
+      await deps.untilVisible();
+      continue;
+    }
+    let lap: "ok" | "hollow" | "failed";
+    const started = now();
+    try {
+      const answer = await deps.changes(since);
+      if (deps.stopped()) return;
+      const gen =
+        typeof answer.generation === "number" && Number.isFinite(answer.generation)
+          ? answer.generation
+          : -1;
+      const handshake = since < 0;
+      // `full: true` is "you are further behind than I remember" — a server that
+      // restarted, or a store that slept through the ring. It is news by
+      // definition: read the pulse and start again from the generation it named.
+      const moved =
+        !handshake &&
+        (answer.full === true ||
+          (gen >= 0 && gen > since) ||
+          (answer.rows?.length ?? 0) > 0 ||
+          (answer.gone?.length ?? 0) > 0);
+      // What the NEXT question will ask with. A `full` answer counts as
+      // progress even when it names a lower generation (the restart case) —
+      // because it changes the question — but only once: a server stuck
+      // repeating the same `full` is answering nothing, and says so by not
+      // moving this.
+      const advanced = gen >= 0 && (gen > since || (answer.full === true && gen !== since));
+      if (gen >= 0) since = gen;
+      lap = advanced || now() - started >= FAST_LANE_MIN_LAP_MS ? "ok" : "hollow";
+      // A HOLLOW LAP IS NOT NEWS, and the poke is where a storm would cost
+      // most: every one of them is a `/api/tasks/pulse` of its own. A server
+      // repeating `full: true` instantly would otherwise turn one unanswerable
+      // long-poll into two fetches a millisecond.
+      if (moved && lap === "ok") deps.onChange();
+    } catch {
+      if (deps.stopped()) return;
+      lap = "failed";
+    }
+    if (lap === "ok") {
+      stalls = 0;
+      backoff = FAST_LANE_BACKOFF_MS;
+      continue;
+    }
+    if (lap === "hollow" && ++stalls >= FAST_LANE_MAX_STALLS) return;
+    if (deps.stopped()) return;
+    await deps.sleep(backoff);
+    backoff = Math.min(backoff * 2, FAST_LANE_BACKOFF_MAX_MS);
+  }
+}
+
+let lane: { stop(): void } | null = null;
+/** The lane gave up on this server (see watchTaskChanges' hollow laps) — do not
+ *  start it again for this page load. Without this the stand-down buys nothing:
+ *  `schedule()` runs on every publish, and every one of them would start a fresh
+ *  loop to burn its five laps against the same server. Module lifetime on
+ *  purpose: what the lane gave up on is the build being served, and that changes
+ *  with a reload. */
+let laneDown = false;
+
+function syncFastLane() {
+  const wanted =
+    listeners.size + rowListeners.size > 0 &&
+    feeders === 0 &&
+    typeof document !== "undefined" &&
+    !laneDown;
+  if (!wanted) {
+    lane?.stop();
+    lane = null;
+    return;
+  }
+  if (lane) return;
+  let stopped = false;
+  let inflight: AbortController | null = null;
+  /** Set while the lane is parked on a hidden tab: the way to end a wait that
+   *  has no timer and no request behind it. Without this, a sidebar unmounted
+   *  while the window was in the background left a listener and a promise that
+   *  nothing could ever settle. */
+  let wake: (() => void) | null = null;
+  const handle = {
+    stop() {
+      stopped = true;
+      // The open long-poll goes with it: a lane nobody is reading must not hold
+      // a connection until its 25 s lapse.
+      inflight?.abort();
+      wake?.();
+    },
+  };
+  lane = handle;
+  void watchTaskChanges({
+    stopped: () => stopped,
+    visible: () => document.visibilityState === "visible",
+    untilVisible: () =>
+      new Promise<void>((resolve) => {
+        const done = () => {
+          document.removeEventListener("visibilitychange", onChange);
+          wake = null;
+          resolve();
+        };
+        const onChange = () => {
+          if (document.visibilityState === "visible") done();
+        };
+        wake = done;
+        document.addEventListener("visibilitychange", onChange);
+      }),
+    sleep: (ms) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+      }),
+    changes: (since) => {
+      inflight = new AbortController();
+      return getTaskChanges(since, CHANGES_WAIT_S, inflight.signal);
+    },
+    // `poll()` carries the in-flight and generation guards already, so a poke
+    // can never land a stale answer over a fresher one.
+    onChange: () => {
+      void poll();
+    },
+  }).finally(() => {
+    if (lane === handle) lane = null;
+    // The loop returned while nobody had stood it down: it gave up on a server
+    // that cannot answer this endpoint. That verdict outlives this handle.
+    if (!stopped) laneDown = true;
+  });
 }
 
 /** The window event a poke sends when a feeder page owns the poll: the store

@@ -60,6 +60,27 @@ RUNNING_WINDOW_SEC = 45  # same rule as the inbox UI: fresh activity = running
 STALE_TAIL_SEC = 90      # older than this, the tail can't make it "running"
 TAIL_BYTES = 16384
 
+# How much newer than a RECORDED VERDICT the tail must be before it stops being
+# the finished turn's own closing echo and starts being evidence of new work.
+#
+# It lives here for the same reason the running rule does: two readers ask it,
+# and a second copy that disagreed by a second would make them disagree about a
+# run. The Tasks router weighs it against `turn_at` to decide whether a row
+# still reads In Progress (`_verdict_outvotes_live`); the scheduler weighs it
+# against the same stamp to decide whether the per-session hold is holding a
+# message against a turn that has already ended (`schedule._verdict_echo`).
+# Neither may import the other — the router imports the schedule, and the
+# schedule may not import anything under `fused_render.server` — and this
+# module is already the place both of them reach for a transcript fact.
+#
+# 15s, widened from 5s on 2026-08-21 and unchanged since: five seconds covered
+# only the watcher's ordering jitter, and the CLI's teardown is slower than
+# that on a busy machine. It is the largest window that still lets a session
+# which is GENUINELY still working keep its vote — sustained work appends
+# records continuously, so its tail runs past any fixed window, while an echo
+# is a handful of rows and stops.
+VERDICT_ECHO_SEC = 15.0
+
 
 def parse_ts(ts) -> datetime | None:
     """Transcript timestamp -> aware UTC datetime, or None. Naive values are
@@ -234,6 +255,32 @@ def transcript_path(session_id: str, projects_dir: str | None = None) -> str:
     return matches[0] if matches else ""
 
 
+def session_activity(session_id: str, now: float,
+                     projects_dir: str | None = None) -> float:
+    """WHEN this session's transcript was last really active, as a unix
+    timestamp — 0.0 when there is nothing to read.
+
+    `session_running`'s other half, and deliberately a second entry point rather
+    than a widened return: the callers that ask "is it running" outnumber the
+    ones that ask "how fresh is it", and every one of them is already written
+    against a bool. The freshness is what a caller holding a RECORDED verdict
+    needs — it can then ask whether the tail is that verdict's own closing echo
+    (`VERDICT_ECHO_SEC`) rather than a turn still in flight.
+
+    Same failure direction as everything else here: a file that cannot be read
+    answers 0.0, which is older than any verdict and therefore never keeps a
+    message waiting.
+    """
+    path = transcript_path(session_id, projects_dir)
+    if not path:
+        return 0.0
+    try:
+        _running, last = transcript_running(path, now)
+    except Exception:  # noqa: BLE001 — never stop a send over an unreadable file
+        return 0.0
+    return last
+
+
 def session_running(session_id: str, now: float,
                     projects_dir: str | None = None) -> bool:
     """Is SOMETHING mid-turn in this session right now — whoever started it.
@@ -252,3 +299,29 @@ def session_running(session_id: str, now: float,
     except Exception:  # noqa: BLE001 — never stop a send over an unreadable file
         return False
     return running
+
+
+def session_turn_open(session_id: str, now: float,
+                      projects_dir: str | None = None) -> bool:
+    """Is a turn OPEN in this session's transcript right now — asked by session
+    id, answered by the last message (`transcript_turn_open`) and not by a
+    window.
+
+    `session_running`'s sharper twin, and the third entry point for the same
+    reason as the second: the callers know a session id and not the encoded
+    directory its transcript lives in. The scheduler asks this one where the
+    45-second window and its own recorded verdict DISAGREE — a transcript that
+    reads live moments after a turn it has already filed a verdict for is
+    either that turn's closing echo or a new turn somebody else opened, and the
+    shape of the last row is what tells them apart (`schedule._verdict_echo`).
+
+    Same failure direction as everything else here: a transcript that cannot be
+    read answers False, which leaves the question to the window rule that asked.
+    """
+    path = transcript_path(session_id, projects_dir)
+    if not path:
+        return False
+    try:
+        return transcript_turn_open(path, now)
+    except Exception:  # noqa: BLE001 — never stop a send over an unreadable file
+        return False

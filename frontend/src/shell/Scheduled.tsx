@@ -49,7 +49,7 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getConfig,
   getSchedule,
@@ -95,6 +95,10 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
+  FAST_LANE_BACKOFF_MAX_MS,
+  FAST_LANE_BACKOFF_MS,
+  FAST_LANE_MAX_STALLS,
+  FAST_LANE_MIN_LAP_MS,
   forgetListing,
   publishTasks,
   readListing,
@@ -105,13 +109,17 @@ import {
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
+  applyQueueOverrides,
+  expireQueueOverrides,
   isChatDraftTask,
   mergeTaskChanges,
+  NO_QUEUE_OVERRIDES,
   provisionalTasks,
   viewFromSearch,
   viewUrl,
+  withQueueOverride,
 } from "./tasks-lib";
-import type { TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
@@ -332,6 +340,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+  // THE CLAIMS A QUEUE VERB MAKES, until the server speaks about the same key
+  // (tasks-lib.applyQueueOverrides). They live on the PAGE and not in the view
+  // that raised them for one reason: a claim exists to outrun the poll, and a
+  // view is remounted by every navigation — a store inside one would be undone
+  // by the answer it was written to beat. `queueRef` is the changes loop's read,
+  // for the same reason `tasksRef` is: one long-lived effect, newest value, no
+  // re-subscribe per poll.
+  const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  const queueRef = useRef<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  useEffect(() => {
+    queueRef.current = queueOverrides;
+  }, [queueOverrides]);
+  const noteQueued = useCallback((override: QueueOverride) => {
+    setQueueOverrides((cur) => withQueueOverride(cur, override));
+  }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -741,6 +764,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // generation with them (bugbot #892). The next poll catches up.
         if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
+        // THE SERVER HAS SPOKEN about every key in a full listing, so every
+        // claim about one of them is over — right or wrong. A claim that
+        // survived the answer contradicting it would survive the next one too,
+        // and the row would be stuck at whatever a click asserted.
+        setQueueOverrides((cur) => expireQueueOverrides(cur, (r.tasks ?? []).map((t) => t.key)));
         setTasksFailed(false);
         setTasksLoaded(true);
         if (typeof r.generation === "number") generationRef.current = r.generation;
@@ -812,6 +840,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         };
         document.addEventListener("visibilitychange", onChange);
       });
+    // The same hollow-lap guard the sidebar's lane carries (tasksPulse
+    // watchTaskChanges): an answer that neither moved the generation nor spent
+    // any time waiting is a server that cannot answer this endpoint — an older
+    // build, a proxy or login page returning 200 — and re-asking it at full
+    // speed is a request storm no `catch` will ever slow down. A 25 s lapse
+    // moves nothing either and is free, which is what the clock separates.
+    let stalls = 0;
+    let backoff = FAST_LANE_BACKOFF_MS;
     const run = async () => {
       while (!stopped) {
         if (document.visibilityState !== "visible") {
@@ -824,6 +860,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           continue;
         }
         controller = new AbortController();
+        let lap: "ok" | "hollow" | "failed";
+        const started = Date.now();
         try {
           const r = await getTaskChanges(generationRef.current, 25, controller.signal);
           if (stopped) return;
@@ -834,25 +872,59 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             // up, forever (bugbot #892).
             generationRef.current = -1;
             reload();
+            // Real news, whatever it cost to get: the hollow-lap count starts
+            // over. A `full` that REPEATS still pays the 1 s below.
+            stalls = 0;
+            backoff = FAST_LANE_BACKOFF_MS;
             await sleep(1000);
             continue;
           }
-          generationRef.current = r.generation;
+          // A generation that is not a number is not an answer: keep the one we
+          // have (asking with `undefined` is how this loop used to spin) and
+          // let the pacing below treat the lap as hollow.
+          const prev = generationRef.current;
+          const gen =
+            typeof r.generation === "number" && Number.isFinite(r.generation) ? r.generation : -1;
+          if (gen >= 0) generationRef.current = gen;
           const rows = r.rows ?? [];
           const gone = r.gone ?? [];
           if (rows.length || gone.length) {
             const merged = mergeTaskChanges(tasksRef.current, rows, gone);
             tasksRef.current = merged;
             setTasks(merged);
+            // …and the delta is an answer about exactly the keys it names, which
+            // is the fast half of the same rule: every queue verb rings the
+            // watcher, so this usually lands within milliseconds of the press
+            // and the claim it retires is the one the press made.
+            const spoken = [...rows.map((t) => t.key), ...gone];
+            const before = queueRef.current;
+            const after = expireQueueOverrides(before, spoken);
+            if (after !== before) {
+              queueRef.current = after;
+              setQueueOverrides(after);
+            }
             publishTasks(merged);
             // The merge is now the freshest full listing there is, so it — not
             // the poll's older answer — is what a remount should seed from.
             rememberListing(merged);
           }
+          lap = gen > prev || Date.now() - started >= FAST_LANE_MIN_LAP_MS ? "ok" : "hollow";
         } catch {
           if (stopped) return;
-          await sleep(3000);
+          lap = "failed";
         }
+        if (lap === "ok") {
+          stalls = 0;
+          backoff = FAST_LANE_BACKOFF_MS;
+          continue;
+        }
+        // A run of hollow laps ends the lane: the 20 s full reload above is the
+        // floor, and it is the truth here anyway. A FAILED call never ends it —
+        // an unreachable server is one that can come back.
+        if (lap === "hollow" && ++stalls >= FAST_LANE_MAX_STALLS) return;
+        if (stopped) return;
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, FAST_LANE_BACKOFF_MAX_MS);
       }
     };
     void run();
@@ -914,9 +986,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The app page's scope, applied FIRST: `tasks` above stays the whole machine
   // (it is what publishTasks hands the sidebar), and everything the page shows
   // or offers to filter is derived from this narrowed set instead.
+  // The server's rows with the standing queue claims painted over them. FIRST,
+  // ahead of the scope and the filters, so a row a claim moves into Queued is
+  // filtered and counted as queued by everything downstream — the Status facet
+  // included. `publishTasks` above deliberately hands the sidebar the UNPAINTED
+  // rows: a claim is this page's optimism about a press made on this page, and
+  // the rail is not the place to carry it.
+  const painted = useMemo(
+    () => applyQueueOverrides(tasks, queueOverrides),
+    [tasks, queueOverrides],
+  );
   const inScope = useMemo(
-    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
-    [tasks, scope],
+    () => (scope ? painted.filter((t) => isUnderDir(t.project, scope.project)) : painted),
+    [painted, scope],
   );
   const projects = useMemo(() => projectOptions(inScope), [inScope]);
   // The Archive facet does not apply on the Calendar (see
@@ -1127,6 +1209,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              onQueued={noteQueued}
               // A draft card's press re-opens the form it was saved from —
               // the same gesture, and the same callback, as the List row's.
               onOpenDraft={openDraft}
@@ -1199,6 +1282,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
+              // A Skip pressed on a row paints the row before the poll agrees —
+              // the same claim the Board's drag makes, held by the page so it
+              // survives the view the press was made in (see `queueOverrides`).
+              onQueued={noteQueued}
               emptyLabel={emptyLabel}
             />
           )}

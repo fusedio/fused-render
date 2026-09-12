@@ -51,6 +51,11 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
+  /** How many tasks under it are WAITING on the folder (the project queue). A
+   *  count and not a flag, because that is what the row says — "· 2 queued" —
+   *  where `running` only ever draws a dot. 0 whenever the queue is off, since
+   *  the status is then never sent. */
+  queued: number;
   /** A task under it finished since the user last opened this app — the row
    *  wears the green dot (unless running: yellow outranks green, the Tasks
    *  row's own rule). The server's flag (the unread section below), the app's
@@ -88,14 +93,19 @@ export function isUnderDir(project: string, dir: string): boolean {
 
 /** The store's rows as sidebar rows, in the store's ADDED order (oldest
  *  first), with the running dot read off the projects of the tasks currently
- *  in progress and the unread dot the server's flag, minus the rows opened here
+ *  in progress, the queued count off the projects of the tasks waiting on their
+ *  folder, and the unread dot the server's flag, minus the rows opened here
  *  since the last fetch. */
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
   clearedHere: ReadonlySet<string> = new Set(),
+  queuedProjects: Iterable<string> = [],
 ): CurrentApp[] {
   const live = [...runningProjects];
+  // Defaulted rather than required, so every caller that predates the queue —
+  // and every suite — keeps answering 0 without being rewritten to say so.
+  const waiting = [...queuedProjects];
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
@@ -103,6 +113,9 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
+    // COUNTED, not `some`: the row prints the number, and two tasks waiting on
+    // one folder is the ordinary case the moment the queue is on.
+    queued: waiting.filter((p) => isUnderDir(p, e.path)).length,
     unread: Boolean(e.unread) && !clearedHere.has(e.path),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));

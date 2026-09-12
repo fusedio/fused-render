@@ -12,6 +12,7 @@ import type {
   Decision,
   DecisionScope,
   HistoryTurn,
+  InboxMessage,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -173,6 +174,25 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   runId: string | null;
+  /**
+   * THE LAST RUN THIS CONVERSATION HAD, and unlike `runId` it OUTLIVES the turn.
+   *
+   * `runId` is in-flight bookkeeping: it is cleared the moment the turn ends
+   * (`setRunningUi(false)`), which is correct for everything that draws it and
+   * wrong for the one question the project queue asks — "is the thing holding
+   * this folder this very page?". A reply finishes, the host is still tearing
+   * down and the registry still says busy, and the second message the reader
+   * types lands in that window: with `runId` already null and a session id the
+   * chat may not have in state yet, the admit body was ANONYMOUS, so the server
+   * had nothing to recognise its own caller by and queued the message behind the
+   * reader's own finished run (Akshil, browser QA 2026-09-12).
+   *
+   * Set where a run goes live (`pollLoop`, the one place a run is ever in
+   * flight, which covers a re-attached and a scheduled one for free) and cleared
+   * only where the CONVERSATION changes — `openSession` and `newChat` — because
+   * a run id belongs to the chat it ran in.
+   */
+  lastRunId: string | null;
   status: RunStatus;
   /** Ordered transcript. The last assistant turn is the live bubble while running. */
   turns: Turn[];
@@ -197,6 +217,18 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /**
+   * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
+   * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A
+   * RELOAD, which `queued` above cannot: that list is this document's memory of
+   * what it sent, and a replaced transcript or a refresh takes it with it while
+   * the CLI goes on holding the words.
+   *
+   * Drawn as ordinary user bubbles under the transcript, deduped against
+   * `queued` and against the turns (`protocol/inbox.inboxBubbles`), and empty
+   * between runs: a run that has ended has drained or died with its inbox.
+   */
+  inbox: InboxMessage[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first
@@ -424,6 +456,18 @@ export interface ChatController {
   /** A ◷ / ⏹ / ◍ / ◆ row in the transcript (T:13722 `addNote`). ADDED so the
    *  scheduled-run poller can say what it just attached to. */
   addNote(text: string, glyph?: NoteTurn["glyph"]): void;
+
+  /**
+   * Put a failure in the chat's own error slot — `ChatState.trouble`, the card
+   * a failed send already lands on (`sendMessage`'s catch).
+   *
+   * ADDED for the one failure that happens OUTSIDE this controller: the project
+   * queue's admission is asked by the composer, ahead of `start`/`send`, so a
+   * send it refuses never reaches the code that would have reported it. Saying
+   * so anywhere else would be a second error affordance in this pane for a
+   * failure the reader cannot tell apart from the first.
+   */
+  reportTrouble(trouble: Trouble): void;
 
   /** `activeRun || sending` — the one question both PR4 watchers ask before
    *  touching the transcript (T:17429, 17604). Read live, never memoised: it is

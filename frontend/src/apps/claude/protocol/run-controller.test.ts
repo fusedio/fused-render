@@ -171,6 +171,67 @@ describe("stopAllowed (T:15870)", () => {
 // ---- start → poll → done ---------------------------------------------------
 
 describe("start → poll → done", () => {
+  test("the run id OUTLIVES the turn, and dies with the CONVERSATION", async () => {
+    // THE ADMISSION MUST NEVER BE ANONYMOUS. "hello" → reply → "second" typed
+    // straight away came back `Queued · #1 in line · behind a run in this
+    // folder`: `runId` is cleared the instant the turn ends, while the host is
+    // still tearing the run down and the registry still reads busy, so the
+    // queue's admission named neither a run nor (in that window) a session and
+    // the server queued the reader behind their own finished turn (Akshil,
+    // browser QA 2026-09-12).
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, segments: [text("hello there")], text: "hello there" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("hello");
+    // The live id is gone — everything that DRAWS it wants that — and the
+    // queue's own name for this chat's run is not.
+    expect(controller.getState().runId).toBe(null);
+    expect(controller.getState().lastRunId).toBe("r1");
+
+    // …but a run belongs to the chat it ran in, so both roads that replace the
+    // visible conversation take it with them.
+    await controller.openSession("s-other");
+    expect(controller.getState().lastRunId).toBe(null);
+
+    const back = makeController({
+      start: () => ({ run_id: "r2" }),
+      poll: () => poll({ done: true, segments: [text("hi")], text: "hi" }),
+    });
+    await back.controller.sendMessage("hello");
+    expect(back.controller.getState().lastRunId).toBe("r2");
+    back.controller.newChat();
+    expect(back.controller.getState().lastRunId).toBe(null);
+  });
+
+  test("the run is NAMED THE MOMENT `start` answers, not when the poll goes up", async () => {
+    // The window that needs it most is the SHORTEST turn: send, Stop, type
+    // again. A stop landing between `start` answering and the first poll frame
+    // left `lastRunId` unwritten, so the next admit was anonymous and the
+    // server queued the reader's second message behind their own finished run
+    // (Akshil, 2026-09-12). The send path writes the id itself now; the poll
+    // loop's own write stays, for every run this page ADOPTS rather than starts.
+    let atFirstPoll: string | null | undefined;
+    let rig!: ReturnType<typeof makeController>;
+    rig = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => {
+        atFirstPoll = rig.controller.getState().lastRunId;
+        return poll({ done: true, segments: [text("hi")], text: "hi" });
+      },
+      cancel: () => ({ still_queued: [] }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await rig.controller.sendMessage("hello");
+    expect(atFirstPoll).toBe("r1");
+    // …and it is still the answer after a stop, which is the press this exists
+    // for: the run is over, the id the admission names is not.
+    await rig.controller.stopRun();
+    expect(rig.controller.getState().runId).toBe(null);
+    expect(rig.controller.getState().lastRunId).toBe("r1");
+  });
+
   test("a fresh chat skips the live-host probe and streams to a finished turn", async () => {
     const { controller, agent, params, activity } = makeController({
       start: () => ({ run_id: "r1" }),

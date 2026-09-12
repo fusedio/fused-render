@@ -143,6 +143,43 @@ def test_registry_row_with_dead_pid_is_not_live(claude_home):
     assert tasks_watch.tick() == set()
 
 
+def test_the_registry_answers_which_session_a_pid_is_holding(claude_home):
+    """The reverse lookup the project queue needs to name a run that has not
+    written its session down yet: the run dir carries the CLI's pid from the
+    instant it spawns, and `sessions/<pid>.json` carries the id."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getpid())
+    tasks_watch.tick()
+    assert tasks_watch.session_for_pid(os.getpid()) == SID
+    assert tasks_watch.session_for_pid(str(os.getpid())) == SID
+    assert tasks_watch.session_for_pid(2 ** 22 + 12345) == ""
+    assert tasks_watch.session_for_pid("") == ""
+    assert tasks_watch.session_for_pid("not-a-pid") == ""
+
+
+def test_a_pid_is_looked_up_in_the_file_before_the_first_tick(claude_home):
+    """A server seconds old has not ticked yet, and the answer is already on
+    disk — the very file the tick would have read."""
+    tasks_watch.reset()
+    pid = os.getpid()
+    (claude_home / "sessions" / f"{pid}.json").write_text(
+        json.dumps({"pid": pid, "sessionId": SID2, "cwd": "/proj"}),
+        encoding="utf-8")
+    assert tasks_watch.session_for_pid(pid) == SID2
+
+
+def test_a_registry_file_for_a_dead_pid_names_nobody(claude_home):
+    """A crashed `claude` leaves its row behind; a pid nothing answers to is
+    not a session, whatever the file says."""
+    tasks_watch.reset()
+    dead = 2 ** 22 + 12345
+    (claude_home / "sessions" / f"{dead}.json").write_text(
+        json.dumps({"pid": dead, "sessionId": SID2, "cwd": "/proj"}),
+        encoding="utf-8")
+    assert tasks_watch.session_for_pid(dead) == ""
+
+
 def test_a_crashed_claude_is_noticed_without_its_file_changing(claude_home, monkeypatch):
     tasks_watch.tick()
     _registry(claude_home, SID, status="busy")
@@ -240,7 +277,7 @@ def test_changes_names_the_pending_key_a_run_message_left_behind(claude_home, mo
              "created": "2026-08-27T09:00:00Z", "due": "2026-08-27T09:00:00Z",
              "target": "/proj", "message": "hi"}
     monkeypatch.setattr(schedule, "list_entries", lambda: [entry])
-    monkeypatch.setattr(tasks_mod, "_entry_session", lambda e: SID)
+    monkeypatch.setattr(tasks_mod, "_entry_session", lambda e, by_id=None: SID)
     _transcript(claude_home, SID)
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]

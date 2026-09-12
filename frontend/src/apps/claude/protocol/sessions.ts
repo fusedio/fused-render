@@ -22,6 +22,13 @@ import type { ErrorOnly, SessionRow, SessionsResponse } from "./types";
 export const CHANGES_WAIT_S = 25;
 /** T:18379 — how long a failed change-poll waits before trying again. */
 export const CHANGES_BACKOFF_MS = 3000;
+/** …doubling, up to this, while the same thing keeps happening. */
+export const CHANGES_BACKOFF_MAX_MS = 30_000;
+/** How many hollow laps in a row end the long-poll (see `watch`). */
+export const CHANGES_MAX_STALLS = 5;
+/** Under this, a lap that did not move the generation cannot have waited on
+ *  anything — it is a hot loop, not a long poll. */
+export const CHANGES_MIN_LAP_MS = 1000;
 
 /**
  * T:13066-13072 — TWO MORE LOOKS AFTER LANDING, and they are the difference
@@ -75,6 +82,10 @@ export interface RecentEnv {
    *  closure — `ids`, `cb`, the loop — alive, and six card mounts leak six. */
   whenVisible(): { promise: Promise<void>; cancel(): void };
   sleep(ms: number): Promise<void>;
+  /** The clock, read only as a difference: how long one long-poll lap took,
+   *  which is what separates a 25 s lapse from an instant non-answer. Defaults
+   *  to `Date.now`. */
+  now?(): number;
   run?: typeof runAgent;
   /**
    * THE PUSH SIDE OF THE LIST, alongside the long-poll's pull side: subscribe
@@ -227,7 +238,12 @@ export function subscribeRecent(
   };
 
   const watch = async () => {
+    const now = env.now ?? (() => Date.now());
     let gen = -1;
+    /** Consecutive hollow laps — see below. A FAILED call is not one: a server
+     *  that cannot be reached is one that can come back. */
+    let stalls = 0;
+    let backoff = CHANGES_BACKOFF_MS;
     while (!stopped) {
       if (env.hidden()) {
         const wait = env.whenVisible();
@@ -239,6 +255,7 @@ export function subscribeRecent(
       const ctl = new AbortController();
       abort = ctl;
       let r: ChangesResponse;
+      const started = now();
       try {
         const res = await env.fetch(`/api/tasks/changes?since=${gen}&wait=${CHANGES_WAIT_S}`, {
           signal: ctl.signal,
@@ -247,7 +264,8 @@ export function subscribeRecent(
         r = (await res.json()) as ChangesResponse;
       } catch {
         if (ctl.signal.aborted) return;
-        await env.sleep(CHANGES_BACKOFF_MS);
+        await env.sleep(backoff);
+        backoff = Math.min(backoff * 2, CHANGES_BACKOFF_MAX_MS);
         continue;
       } finally {
         if (abort === ctl) abort = null;
@@ -256,13 +274,35 @@ export function subscribeRecent(
       // The first call is a handshake that only learns the current generation
       // (T:18387-18389).
       const handshake = gen < 0;
-      gen = r.generation;
-      if (handshake) continue;
-      const changed = r.rows || [];
-      const isMine =
-        changed.some((row) => changeIsHere(row?.project, target)) ||
-        (r.gone || []).some((k) => ids.has(k));
-      if (r.full || isMine) void load();
+      // A HOLLOW LAP: the answer neither moved the generation nor spent any
+      // time waiting for one. That is a 200 from something that is not this
+      // watcher — an older build, a proxy or login page — and the loop used to
+      // spin on it forever: a body with no numeric `generation` left `gen` at
+      // -1, every call stayed a handshake, and the `catch` above never ran.
+      // A real 25 s lapse does not move the generation either, and is free:
+      // the clock is what tells the two apart.
+      const next =
+        typeof r.generation === "number" && Number.isFinite(r.generation) ? r.generation : -1;
+      const hollow = !(next > gen) && now() - started < CHANGES_MIN_LAP_MS;
+      if (next >= 0) gen = next;
+      if (!handshake) {
+        const changed = r.rows || [];
+        const isMine =
+          changed.some((row) => changeIsHere(row?.project, target)) ||
+          (r.gone || []).some((k) => ids.has(k));
+        if (r.full || isMine) void load();
+      }
+      if (!hollow) {
+        stalls = 0;
+        backoff = CHANGES_BACKOFF_MS;
+        continue;
+      }
+      // Give up rather than ask a server that cannot answer this all day. The
+      // list keeps its read, its retries and every poke — only the long-poll's
+      // earliness is lost.
+      if (++stalls >= CHANGES_MAX_STALLS) return;
+      await env.sleep(backoff);
+      backoff = Math.min(backoff * 2, CHANGES_BACKOFF_MAX_MS);
     }
   };
 
