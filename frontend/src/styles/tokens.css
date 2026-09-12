@@ -262,22 +262,19 @@
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
 
-  /* WAITING — a CLEAR GOLD, and a colour of its own (Akshil, 2026-09-12).
-     `queued` is drawn inside In Progress (schedule-lib.laneOf): running cards in
-     `--status-progress`'s amber, waiting ones under a dashed rule in this. The
-     first spelling derived it — `color-mix(--status-progress 55%, --fg-muted)` —
-     on the reading that the two are one state at two strengths. On screen that
-     mix is a FADED YELLOW, and a faded yellow beside a live amber reads as the
-     amber at low opacity: not a different state, a dimmer one, and at 12-14px
-     (the rings, the chat's own line) it drifted towards tinted grey.
-     So the two stay in the same FAMILY and part on HUE rather than on strength:
-     gold is deeper and greener than the amber, full-strength in both themes, and
-     legible at ring size. It is deliberately NOT `--activity` — the page's blue,
-     which the queue wore for a day — because blue is what this page spends on "a
-     thing you can make happen", and blue rows under yellow ones read as two
-     unrelated kinds of work.
-     Dark: #e9c95a against #facc15. Light: #9a7b0d against #ca8a04 (see below). */
-  --status-queued: #e9c95a;
+  /* WAITING IS THE RUNNING YELLOW, AND THE RING IS DASHED (Akshil, 2026-09-12).
+     The state spent a day in `--activity`'s blue and a day in a gold of its own;
+     both are retired. `queued` is drawn INSIDE In Progress (schedule-lib.laneOf),
+     and two hues in one lane read as two unrelated kinds of work — while a third
+     yellow, however carefully tuned, is a colour a reader has to learn before it
+     says anything. So waiting wears `--status-progress` EXACTLY, and the shape
+     carries the difference: a running mark is solid, a waiting one is DASHED —
+     the same "not settled yet" the queued bubble in the chat is dashed for, and
+     a distinction that survives a small ring, a dim screen and a colour-blind
+     reader, none of which a hue does.
+     The token stays as an ALIAS rather than being deleted, so every surface that
+     names the state keeps naming it and the decision lives in one line. */
+  --status-queued: var(--status-progress);
 
   /* The Playground sidebar's model-card fills. A step DARKER than the usual
      raised surface, which no single wash can do in both themes (--tint
@@ -493,12 +490,11 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
-  /* The gold for white (see the dark block): deeper and greener than the amber
-     above it, dark enough to read as ink on this page's own surfaces. Restated
-     as its own literal because the light palette must redefine every token
-     (test_theme.py) — and a literal rather than a mix, because the two palettes'
-     golds are tuned for their own grounds and not derived from anything. */
-  --status-queued: #9a7b0d;
+  /* The alias again (see the dark block): waiting is the running yellow on both
+     grounds and the dash is the whole difference. Restated because the light
+     palette must redefine every token (test_theme.py); it resolves against this
+     palette's own `--status-progress`, so there is still nothing to tune here. */
+  --status-queued: var(--status-progress);
   --pg-card-bg: #eaebee;
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;

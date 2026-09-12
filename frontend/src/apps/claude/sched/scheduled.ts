@@ -84,6 +84,13 @@ export interface SchedTask {
    *  rule read off the ENTRY, and it is the fallback for a chat with no row yet
    *  rather than a second opinion (design.md, UI: one rule, server first). */
   queue_blocking?: boolean;
+  /** WHY THE RUN STOPPED, when it stopped — `"usage_limit"` for a session the
+   *  plan's window cut off, with the instant it reopens beside it. The chat's
+   *  header says them ("paused · resumes 4:00 AM", platform/lib/usage-limit);
+   *  the Tasks page says the same thing on the same fields. Absent everywhere
+   *  else, and on an older server. */
+  blocked_reason?: string;
+  resumes_at?: number;
 }
 
 /** T:16749. */
@@ -710,7 +717,12 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // composer; only an IMMINENT one earns the fast poll (M1) — so the rate can
     // come up as a far-future entry's due time approaches, and go back down on
     // the tick after it clears, without the blocker list changing shape.
-    const fast = schedImminent(rows, (deps.now || Date.now)());
+    // …AND THE RATE READS THE PENDING HALF ONLY (`schedPendingOnly`, 🔴 review
+    // 2026-09-12). `rows` is the WIDENED list — it carries a claimed `sending`
+    // entry, which the queue's rows draw and which main never knew about — and
+    // spending the fast poll on one would put a flag-OFF page on the 3 s rate for
+    // a state it does not draw. Flag off is main byte for byte, here too.
+    const fast = schedImminent(schedPendingOnly(rows), (deps.now || Date.now)());
     rearm?.(fast ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
   }
 
@@ -746,7 +758,14 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // that have already run are carried for the link only they hold — see
     // `onAllRows`. Same tick, same payload, so the two can never disagree about
     // an entry that fired between two reads.
-    deps.onAllRows?.(entries);
+    // …AND ONLY THE ROWS THAT CAN ANSWER EITHER QUESTION (🔴 review 2026-09-12).
+    // This list exists for two readers: the waiting rows of a chat with no
+    // session (which need entries still in the line — `schedIsWaiting`, pending
+    // or claimed) and the LINK from a leader that has already run to the session
+    // it opened (`claude_session_id`). A done entry with neither is a row nobody
+    // reads, published four times a minute into a memo that re-renders the
+    // composer's column whenever its shape changes.
+    deps.onAllRows?.(entries.filter((e) => schedIsWaiting(e) || !!(e && e.claude_session_id)));
     // …and which conversation each entry's run opened, for a chat that is still
     // waiting to learn its own (see `onSessions`). Same tick, same payload: the
     // pair cannot disagree about an entry that fired between two reads.

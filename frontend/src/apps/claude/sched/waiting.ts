@@ -553,7 +553,11 @@ export function waitingFacts(
  *
  *   1. `fromTasks` — `ui/Kebab.useTaskId`, a listing read keyed on this
  *      conversation (its session, or `pending:<leader>` before it has one). The
- *      most recent answer there is, and the one that survives a rekey.
+ *      most recent answer there is, and the one that survives a rekey. TAKEN
+ *      ONLY WHEN IT IS SHAPED LIKE A TASK ID: that read FAILS OPEN to a
+ *      truncated session hash, which is a fine label for the topbar to fall back
+ *      to on its own (`ui/Topbar`) and a terrible one to rank ABOVE the row and
+ *      the admission here, both of which hold the real number.
  *   2. `fromRow` — the schedule hook's own row for this chat (`useSchedule.rec`),
  *      which the pane is already paying for and which lands on its own cadence.
  *   3. `fromAdmit` — what the admission said. Minted before either listing
@@ -569,5 +573,14 @@ export function headerTaskId(
   fromAdmit: string | null | undefined,
 ): string {
   const row = fromRow === null || fromRow === undefined ? "" : String(fromRow);
-  return String(fromTasks || "") || row || String(fromAdmit || "");
+  return listedTaskId(fromTasks) || row || String(fromAdmit || "");
+}
+
+/** `TASK-057` and nothing else. The listing read hands back either a real task
+ *  id or its own fallback (a session hash, or — before this was fixed — the word
+ *  `pending:`), and only the first of those is an answer to "what number is this
+ *  chat" (Akshil, 2026-09-12). */
+function listedTaskId(value: string | null | undefined): string {
+  const v = String(value || "").trim();
+  return /^TASK-/.test(v) ? v : "";
 }

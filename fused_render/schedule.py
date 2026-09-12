@@ -1362,6 +1362,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # migrate a store, and an entry skipped with the flag on keeps its
         # place in line if it is flipped off and back.
         "priority": _flag(priority),
+        # WHEN RUN NEXT WAS LAST PRESSED ON IT — 0.0 until it is, and never on
+        # a message anybody creates. `project_queue.order_key` sorts the
+        # promoted entries by this, newest first, which is what makes Run next
+        # mean "play next" rather than "join the promoted pile at the back".
+        "priority_at": 0.0,
         # WHEN RUN NOW WAS PRESSED ON THIS MESSAGE — "" until it is, and never
         # set by anybody creating one.
         #
@@ -1704,7 +1709,20 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
 
 
 def set_priority(entry_ids: list[str], value: bool) -> dict:
-    """Skip the queue (or un-skip it): `{"updated": [id...], "refused": [id...]}`.
+    """Run next (or un-promote): `{"updated": [id...], "refused": [id...]}`.
+
+    **IT IS "PLAY NEXT", AND THE STAMP IS WHAT MAKES IT SO** (Akshil,
+    2026-09-12). `priority` alone only says "ahead of the un-promoted", and the
+    promoted pile then ran in `due` order — so pressing Run next on B, then C,
+    then D ran them B, C, D, which is the reverse of the promise. `priority_at`
+    is the moment the button was pressed, and `project_queue.order_key` sorts
+    on it NEWEST FIRST: D, C, B. Pressing it again on B restamps B, and B is
+    next again.
+
+    So True always WRITES, even on an entry that already carries the flag: the
+    stamp is the gesture, and an idempotent no-op here would be the second
+    press doing nothing visible. False clears both fields together — an entry
+    with no `priority` has no promotion to be timed.
 
     **Only a PENDING entry can be skipped**, and every other state is refused
     rather than silently ignored. That is the same line `cancel_queued` draws
@@ -1742,8 +1760,16 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
             # `by_id` rather than a second read: a follower is filed under the
             # row its leader owns, and this is the map that answers that.
             keys.add(_task_key(entry, by_id))
-            if _flag(entry.get("priority")) != value:
-                entry["priority"] = value
+            if value:
+                # Always, not only on a change: see the docstring — the second
+                # press is what puts this entry back in front of the one that
+                # overtook it.
+                entry["priority"] = True
+                entry["priority_at"] = time.time()
+                changed = True
+            elif _flag(entry.get("priority")) or entry.get("priority_at"):
+                entry["priority"] = False
+                entry.pop("priority_at", None)
                 changed = True
         if changed:
             _write(entries)
@@ -3218,6 +3244,9 @@ def _materialize(now: datetime) -> None:
                 # folder's line for ever, which nobody asked for and nobody
                 # could see they had asked for.
                 "priority": False,
+                # …nor the moment it was pressed, which is the same fact's
+                # other half.
+                "priority_at": 0.0,
                 # …and neither is the moment somebody pressed Run now on an
                 # earlier occurrence, for exactly the same reason.
                 "run_now_at": "",

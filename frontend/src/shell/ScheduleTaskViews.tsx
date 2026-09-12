@@ -103,6 +103,7 @@ import {
   RUN_NEXT_HINT,
   RUN_NEXT_LABEL,
   skippedOverride,
+  usageLimitCaption,
   projectOptions,
   relativeWhen,
   settleMarkAllRead,
@@ -135,6 +136,7 @@ import type {
   TaskRunIntent,
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
+import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -1840,6 +1842,15 @@ function TaskNode({
   // (tasks-lib.queueCaption), so a task's place is worded once for the whole app.
   // Null on every other row.
   const queue = queueCaption(task);
+  /** …and the OTHER sentence a not-moving row can carry: the plan's window,
+   *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
+   *  limit did not stop. */
+  const limit = usageLimitCaption(task);
+  /** IS THE QUEUE ON. Only the thread's per-message word needs it — every other
+   *  `queued` on this row comes from the server's status, which is never written
+   *  while the flag is down, while `messageState` derives its own from "pending
+   *  and past due", which is true in either build (🔴 review 2026-09-12). */
+  const queueOn = useProjectQueueEnabled();
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2563,6 +2574,19 @@ function TaskNode({
             </span>
           </span>
         )}
+        {/* …AND THE PLAN'S PAUSE, in the same seat, on a blocked row the usage
+            limit stopped (`usageLimitCaption`). The lane, the ring and the header
+            are Blocked's — nothing is moving and nothing will move by itself —
+            and this is the one thing that separates it from the runs beside it
+            that actually BROKE: it did not break, it is waiting for a clock, and
+            the clock is known. The queue's own element, because these are the two
+            states a row can be WAITING in and a reader should find both in one
+            place; never both at once, since a row has one status. */}
+        {limit && (
+          <span className="tasks-row-queue" data-hint={limit}>
+            <span className="tasks-queue-text">{limit}</span>
+          </span>
+        )}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
@@ -2894,7 +2918,7 @@ function TaskNode({
             // message whose time has not come is merely scheduled. Two rows of
             // one thread now routinely hold exactly those two states, one above
             // the other, so the difference had to become ink.
-            const tone = messageState(task, m);
+            const tone = messageState(task, m, queueOn);
             const mark = unreadMarker(task.key, m, read);
             const isNew = mark.unread;
             const stop = cancelIntent(m);
@@ -3790,6 +3814,10 @@ function TaskCard({
   // (tasks-lib.queueCaption), so one task's place is described in one wording
   // wherever it is read. Null on every other card, which draws nothing.
   const queue = queueCaption(task);
+  /** …and the OTHER sentence a not-moving row can carry: the plan's window,
+   *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
+   *  limit did not stop. */
+  const limit = usageLimitCaption(task);
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
@@ -3987,6 +4015,9 @@ function TaskCard({
             <QueueCaptionText queue={queue} />
           </span>
         )}
+        {/* The plan's pause, on its own line — the List row's rule and the List
+            row's words (`usageLimitCaption`). */}
+        {limit && <span className="tasks-card-queue">{limit}</span>}
         {/* The foot is the folder and the run ahead, so when neither says
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line

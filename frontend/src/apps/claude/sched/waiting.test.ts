@@ -378,6 +378,18 @@ describe("the number at the top of a chat", () => {
     expect(headerTaskId("", 57, "")).toBe("57");
   });
 
+  it("takes only a TASK-shaped answer from the LISTING", () => {
+    // `useTaskId` fails open — to a truncated session hash, which the topbar is
+    // welcome to fall back to on its own, and which must never OUTRANK the row
+    // and the admission here: both of those hold the real number, and a hash
+    // ranked above them is a queued chat wearing a session it does not have
+    // (Akshil, 2026-09-12, 🔴 review).
+    expect(headerTaskId("abcdef01", "TASK-002", "TASK-003")).toBe("TASK-002");
+    expect(headerTaskId("pending:", "", "TASK-003")).toBe("TASK-003");
+    expect(headerTaskId("pending:", "", "")).toBe("");
+    expect(headerTaskId("  TASK-004  ", "TASK-002", "")).toBe("TASK-004");
+  });
+
   it("means a queued new chat wears its number from the first second", () => {
     // The entry IS the task, so the answer that queued the message can name it
     // — and the header used to wait for a listing anyway, leaving a

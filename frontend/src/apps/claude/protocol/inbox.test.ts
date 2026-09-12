@@ -58,9 +58,46 @@ describe("the rows a held follow-up earns", () => {
     expect(inboxBubbles([], [], [])).toHaveLength(0);
   });
 
-  it("says one message once, however many times the host lists it", () => {
-    const rows = inboxBubbles([msg("f1", "twice"), msg("f2", "twice")], [], []);
+  it("draws TWO bubbles for two entries saying the same words", () => {
+    // The host's list is a list of MESSAGES, not a set of strings: a reader who
+    // sends "go on" twice while a turn runs has sent two follow-ups, both are
+    // held, and folding them into one bubble showed the second going missing
+    // (🔴 review 2026-09-12). The dedupe inside the inbox is by ID.
+    const rows = inboxBubbles([msg("f1", "go on"), msg("f2", "go on")], [], []);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.id)).toEqual(["f1", "f2"]);
+    expect(rows.map((r) => r.text)).toEqual(["go on", "go on"]);
+    // …and ONE entry listed twice in one payload is still one bubble.
+    expect(inboxBubbles([msg("f1", "go on"), msg("f1", "go on")], [], [])).toHaveLength(1);
+  });
+
+  it("spends an already-drawn text ONCE, not against every row saying it", () => {
+    // Two identical follow-ups with one optimistic bubble up is ONE bubble here
+    // — the other copy is the one on screen — rather than none.
+    const rows = inboxBubbles([msg("f1", "go on"), msg("f2", "go on")], ["go on"], []);
     expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("f2");
+    // Both spoken for: nothing is drawn twice.
+    expect(inboxBubbles([msg("f1", "go on"), msg("f2", "go on")], ["go on"], ["go on"]))
+      .toHaveLength(0);
+  });
+
+  it("draws a DRAINED entry exactly as it draws a held one", () => {
+    // The host has taken it off the pile and the transcript has not echoed it
+    // back; for the reader that is the same fact, and a bubble that blinked out
+    // at the drain and back in at the echo would be the app narrating its own
+    // plumbing. The ECHO is what retires it — a real user turn — and nothing
+    // else.
+    const rows = inboxBubbles(
+      [{ id: "f1", text: "go on", drained: true }, msg("f2", "and again")],
+      [],
+      [],
+    );
+    expect(rows.map((r) => r.text)).toEqual(["go on", "and again"]);
+    // …and once the turn says it, the drained row goes with the rest.
+    expect(
+      inboxBubbles([{ id: "f1", text: "go on", drained: true }], [], ["go on"]),
+    ).toEqual([]);
   });
 
   it("draws no bubble for a wordless entry", () => {
@@ -73,5 +110,12 @@ describe("the rows a held follow-up earns", () => {
     // The key only has to be stable across polls and unique in the list, which
     // the words are when the ids are missing.
     expect(inboxBubbles([{ id: "", text: "unnamed" }], [], [])[0].id).toBe("unnamed");
+    // …and a second id-less row saying the same words takes a suffix rather than
+    // colliding: React keys have to be unique, and these are two messages.
+    expect(
+      inboxBubbles([{ id: "", text: "unnamed" }, { id: "", text: "unnamed" }], [], []).map(
+        (r) => r.id,
+      ),
+    ).toEqual(["unnamed", "unnamed#2"]);
   });
 });

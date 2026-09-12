@@ -542,18 +542,25 @@ def api_schedule_run_now(body: dict = Body(...),
     if result.get("queued"):
         from fused_render.server.routers import tasks as tasks_api
 
-        ahead_key = str(result.get("ahead_task_key")
-                        or result.get("ahead_session") or "")
         # ONE COLLECTION FOR BOTH HALVES. Naming the holder and placing this row
         # are two questions about the same set of tasks, and collecting is a
         # glob over every transcript on the machine — asking each to collect for
         # itself walked it twice for one reply (round-2 review, 2026-09-12).
         tasks = tasks_api._collect()
-        ahead = tasks_api.queue_ahead_of(ahead_key, tasks)
         task_key = schedule._task_key(result["entry"])
         place = tasks_api._queue_place(task_key, tasks)
+        # THE PAGE'S ANSWER FIRST, and the model's only as the fallback — the
+        # same precedence the position below takes, and for the same reason.
+        # "Behind" now names the task DIRECTLY in front (`_queue_lines`), which
+        # for a run-now is the holder anyway; taking it from the placement is
+        # what keeps the card's sentence and the row's identical when it is not
+        # (a second window promoted something in the same second).
+        ahead_key = str(place["ahead_key"] or result.get("ahead_task_key")
+                        or result.get("ahead_session") or "")
+        ahead = tasks_api.queue_ahead_of(ahead_key, tasks)
         return {"ok": False, "reason": "queued", "entry": result["entry"],
                 "position": place["position"] or int(result.get("position") or 1),
+                "ahead_key": ahead_key,
                 # WHAT THE ROW THAT JUST QUEUED IS CALLED — the same mint the
                 # chat's own admission answers with (`tasks_api._task_number`),
                 # off the collection this reply already holds, so a Run now on a

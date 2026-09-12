@@ -21,8 +21,13 @@
 // apart by one word (`waiting`, where a live one says `running`) in the state's
 // own gold.
 import { getTasks, type Task } from "@platform/lib/api";
-import { useEffect, useState } from "react";
-import { chatUrl, PENDING_KEY_PREFIX, pendingEntryId } from "@platform/lib/queue";
+import { useEffect, useRef, useState } from "react";
+import {
+  CHAT_ENTRY_ORIGIN,
+  chatUrl,
+  PENDING_KEY_PREFIX,
+  pendingEntryId,
+} from "@platform/lib/queue";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { changeIsHere } from "../protocol/sessions";
 import type { SessionRow } from "../protocol/types";
@@ -43,8 +48,17 @@ export const WAITING_TASK_STATUSES = new Set(["queued", "upcoming"]);
  * come back to read. Listing on the key alone would have put every future
  * scheduled job, every repeat's next occurrence and every New-task form entry
  * into Recent CHATS — a list whose whole promise is "what has happened here".
+ *
+ * IT GATES `upcoming` AND NOT `queued` (Akshil, 2026-09-12). The two waiting
+ * statuses are not the same fact about time: `upcoming` is "due later", which is
+ * a diary entry whatever composed it, while `queued` is DUE NOW AND HELD — the
+ * message would be running this second if the folder were free. A New-task
+ * modal's message that lands in a busy folder is a conversation a reader has
+ * just started and will come back to in a minute; leaving it off this list
+ * because a form rather than a composer typed it hid the very rows the queue
+ * exists to explain.
  */
-export const CHAT_ORIGIN = "chat";
+export const CHAT_ORIGIN = CHAT_ENTRY_ORIGIN;
 
 /** Only what a waiting row is built from, so a test hands over a handful of
  *  fields rather than the whole of `Task`. */
@@ -59,7 +73,10 @@ export type WaitingTask = Pick<
   | "last_active"
   | "entry_id"
   | "entry_origin"
->;
+> &
+  /** OPTIONAL, unlike on `Task`: only the merge's dedupe reads it, and a caller
+   *  (or a test) holding a row from before it existed is not wrong. */
+  Partial<Pick<Task, "session_id">>;
 
 /**
  * The waiting chats of THIS folder, newest first, as list rows.
@@ -85,10 +102,13 @@ export function waitingChatRows(
     const entry = (task.entry_id || "").trim() || pendingEntryId(task.key);
     if (!entry || !pendingEntryId(task.key)) continue;
     if (!WAITING_TASK_STATUSES.has(task.status)) continue;
-    // …AND ONLY A CHAT'S OWN (`CHAT_ORIGIN`). A calendar message, a New-task
-    // entry and a repeat's next occurrence are all waiting `pending:` rows too,
-    // and not one of them is a conversation somebody typed.
-    if ((task.entry_origin || "") !== CHAT_ORIGIN) continue;
+    // …AND, FOR `upcoming`, ONLY A CHAT'S OWN (`CHAT_ORIGIN`): a calendar
+    // message and a repeat's next occurrence are waiting `pending:` rows too,
+    // and a thing due on Thursday is a diary entry rather than a conversation.
+    // `queued` is exempt, because it says something `upcoming` does not — this
+    // is due NOW and the folder is busy — and that is a chat waiting to start
+    // whichever box composed it (see CHAT_ORIGIN).
+    if (task.status !== "queued" && (task.entry_origin || "") !== CHAT_ORIGIN) continue;
     const project = task.project || "";
     const target = task.target || project;
     if (!changeIsHere(project, file) && !changeIsHere(target, file)) continue;
@@ -108,6 +128,9 @@ export function waitingChatRows(
       running: false,
       queuedEntry: entry,
       taskId: task.task_id || "",
+      // THE SESSION ITS LEADER HAS OPENED, when the listing already knows one —
+      // the second half of the dedupe below. "" for every row that has not run.
+      leaderSession: (task.session_id || "").trim(),
       href: chatUrl(target || project, "", entry),
     });
   }
@@ -124,6 +147,14 @@ export function waitingChatRows(
  * A waiting row whose id is already in the list is dropped rather than drawn
  * twice — the window where a leader's run has opened a session, the transcript
  * exists, and this read is one lap stale.
+ *
+ * …AND SO IS ONE WHOSE LEADER'S SESSION IS ALREADY THERE (`leaderSession`,
+ * 🔴 review 2026-09-12). That is the same window seen from the other side, and
+ * it is the one that actually happened on screen: the run opens a session, the
+ * transcript lands, `sessions` lists it by its SESSION id — while the tasks read
+ * still holds the row under `pending:<entry>`. Two ids, one conversation, two
+ * rows in the list until the next tasks read. The transcript row wins: it is the
+ * one with a transcript behind it.
  */
 export function mergeWaitingChats(
   recent: SessionRow[] | null,
@@ -132,7 +163,9 @@ export function mergeWaitingChats(
   if (recent === null) return null;
   if (!waiting.length) return recent;
   const seen = new Set(recent.map((s) => s.id));
-  const rows = recent.concat(waiting.filter((w) => !seen.has(w.id)));
+  const rows = recent.concat(
+    waiting.filter((w) => !seen.has(w.id) && !(w.leaderSession && seen.has(w.leaderSession))),
+  );
   // BY `last_active`, which is `last_used` on a row — the list's own order, so
   // a waiting chat lands where its age puts it and not in a clump at either end.
   return rows.sort((a, b) => (b.last_used || 0) - (a.last_used || 0));
@@ -149,11 +182,31 @@ export function mergeWaitingChats(
  * Answers `[]` — never `null` — because the absence of waiting chats is not a
  * state worth a skeleton: the list it merges into owns that.
  */
-export function useWaitingChats(file: string | null, enabled: boolean): SessionRow[] {
+export function useWaitingChats(
+  file: string | null,
+  enabled: boolean,
+  /**
+   * THE RECENT LIST'S OWN TICK — whatever the caller's session list publishes,
+   * read only for its identity (🔴 review 2026-09-12).
+   *
+   * `tasks-changed` is rung by an admission and by a run's own start, and the
+   * moment this pair of lists disagrees about is neither: a leader's transcript
+   * appearing is news the SESSIONS watch hears (`/api/tasks/changes` long-poll,
+   * protocol/sessions) and this read did not. The list then held a waiting row
+   * for a chat that was already drawn as a transcript until something unrelated
+   * poked it. So every tick of that watch re-reads the tasks too, and the two
+   * halves of one list are never more than one lap apart.
+   */
+  tick?: unknown,
+): SessionRow[] {
   const [rows, setRows] = useState<SessionRow[]>([]);
+  /** The live reader, so the tick effect below can fire it without owning the
+   *  subscription's lifetime. */
+  const readRef = useRef<() => void>(() => {});
   useEffect(() => {
     if (!enabled || !file) {
       setRows([]);
+      readRef.current = () => {};
       return;
     }
     let live = true;
@@ -169,15 +222,27 @@ export function useWaitingChats(file: string | null, enabled: boolean): SessionR
           // failed sessions read.
         });
     };
+    readRef.current = read;
     read();
     const onPoke = () => read();
     window.addEventListener(TASKS_CHANGED_EVENT, onPoke);
     window.addEventListener("focus", onPoke);
     return () => {
       live = false;
+      readRef.current = () => {};
       window.removeEventListener(TASKS_CHANGED_EVENT, onPoke);
       window.removeEventListener("focus", onPoke);
     };
   }, [file, enabled]);
+  // …and the tick. FIRST RUN SKIPPED: the effect above has just read, and two
+  // identical reads on mount is a doubled request for nothing.
+  const firstTick = useRef(true);
+  useEffect(() => {
+    if (firstTick.current) {
+      firstTick.current = false;
+      return;
+    }
+    readRef.current();
+  }, [tick]);
   return rows;
 }

@@ -493,6 +493,16 @@ export interface InboxMessage {
   id: string;
   text: string;
   at?: string | number;
+  /**
+   * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
+   * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY
+   * and the client draws them exactly as it draws an undrained one: for the
+   * reader they are the same fact, "my words are with the run", and a bubble that
+   * blinked out at the drain and back in when the turn echoed would be the app
+   * narrating its own plumbing. It is the echo — a real user turn — that retires
+   * the bubble, and nothing else.
+   */
+  drained?: boolean;
 }
 
 /** One seam in a poll payload — see `PollResponse.turn_breaks`. */
@@ -590,6 +600,12 @@ export interface SessionRow {
   queuedEntry?: string;
   /** Its number, for the row: the task exists the moment the entry does. */
   taskId?: string;
+  /** The Claude session its leader's run has opened, when the tasks read already
+   *  knows one — "" otherwise. Only the MERGE reads it (`mergeWaitingChats`): a
+   *  conversation whose transcript has landed is listed by that session id and
+   *  by this entry key at the same time for one lap, and this is what lets the
+   *  two be recognised as one chat. */
+  leaderSession?: string;
   /** Where the row opens — the queued chat URL, built once where the task's own
    *  target is in hand rather than re-derived by the component drawing it. */
   href?: string;

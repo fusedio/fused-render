@@ -61,6 +61,7 @@ import {
   ringFailed,
   taskColumn,
   taskHref,
+  usageLimitCaption,
   taskWhen,
   tildePath,
 } from "./tasks-lib";
@@ -442,6 +443,9 @@ function TaskCard({
   // it is the way out.
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
+  /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
+   *  on every other card. */
+  const limit = usageLimitCaption(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
@@ -567,6 +571,14 @@ function TaskCard({
         <span className="task-card-title" data-hint={task.title}>
           {title}
         </span>
+        {/* THE PLAN'S PAUSE, under the title — the List row's and the Board
+            card's own sentence, from the same function (`usageLimitCaption`), so
+            one stopped session is described one way on all three surfaces. The
+            ring above it is Blocked's red and the lane is Blocked's, which is
+            true; this is the clause that says the run did not BREAK, it is
+            waiting for a clock, and names the clock. Nothing at all on every
+            other card. */}
+        {limit && <span className="task-card-limit">{limit}</span>}
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when

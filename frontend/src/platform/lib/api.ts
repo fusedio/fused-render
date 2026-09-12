@@ -3046,11 +3046,22 @@ export interface Task {
   // Anything asking "which column" should read `status`.
   failed: boolean;
   // WHY it is not moving, for the two statuses that need a reason. "permission"
-  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
-  // `blocked`, and "" to every other task — which is most of them. It is what
-  // decides the row's button: Retry on a run that broke, Open on one somebody is
-  // being waited on. Absent on an older server; read as "".
-  blocked_reason?: "permission" | "question" | "failed" | "";
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" and
+  // "usage_limit" to `blocked`, and "" to every other task — which is most of
+  // them. It is what decides the row's button: Retry on a run that broke, Open on
+  // one somebody is being waited on. Absent on an older server; read as "".
+  //
+  // "usage_limit" is the plan's window, not a failure: the session stopped
+  // because the usage limit was reached and it starts again by itself at
+  // `resumes_at`. It draws in the Blocked lane with the same red ring — nothing
+  // is moving, and nothing will move by itself — and says which kind it is in its
+  // caption (platform/lib/usage-limit).
+  blocked_reason?: "permission" | "question" | "failed" | "usage_limit" | "";
+  // WHEN A USAGE-LIMITED SESSION COMES BACK, epoch seconds — the CLI's own
+  // `rate_limit_event.resetsAt`, as the scheduler recorded it. 0 or absent
+  // whenever the server could not say (and on every row that is not limited),
+  // and then the caption stops after "Usage limit".
+  resumes_at?: number;
   // The one line under a needs-attention row's title: which tool, and what it
   // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
   // whenever nothing is waiting.

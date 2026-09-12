@@ -1762,6 +1762,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // (PR-3, T:16673-16678).
       if (logGen === gen) {
         setRunParam(runId);
+        // THE RUN IS NAMED THE MOMENT IT EXISTS, not when the poll goes up
+        // (Akshil, 2026-09-12). `lastRunId` is what the queue's admission puts in
+        // its body so the server can recognise this page as the caller holding
+        // the folder — and the window that most needs it is the SHORTEST turn:
+        // send, Stop, type again. A stop landing between `start` answering and
+        // `pollLoop`'s first frame left the id unwritten, so the next admit was
+        // anonymous and the reader's own finished run queued their next message
+        // behind itself. `setRunningUi(true)` still writes it for every run this
+        // page adopts rather than starts; this is the one it starts.
+        emit({ lastRunId: runId });
         // `ownTurn`: this loop was started by THIS send, so anything the first
         // payload has already closed off is a turn that ended before it — see
         // `adoptFirstSeam`.

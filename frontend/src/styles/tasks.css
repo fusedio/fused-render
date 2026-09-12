@@ -1877,8 +1877,9 @@ button.tasks-caret,
 /* AT THE HEAD OF THE LINE the caption stops being muted, on both surfaces. It
    is the one card in the lane whose work goes out next, and a reader sweeping a
    column of identical grey sentences has nothing to find it by otherwise.
-   `--status-queued`, the faded yellow this state wears everywhere since
-   2026-09-12 — NOT `--activity`. The blue was retired from every queued surface
+   `--status-queued`, the running yellow this state wears everywhere since
+   2026-09-12 (an alias of `--status-progress`; the DASH on the ring is what
+   separates waiting from running) — NOT `--activity`. The blue was retired from every queued surface
    when the lane folded into In Progress: waiting is a quieter running, in the
    running hue, and a blue caption under an amber card said the opposite
    (tokens.css). */

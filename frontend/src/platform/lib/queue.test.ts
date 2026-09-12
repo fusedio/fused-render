@@ -217,6 +217,26 @@ describe("runs next", () => {
     expect(canRunNext({ queue_ahead: "" })).toBe(false);
   });
 
+  it("survives `queue_ahead` naming the task DIRECTLY ahead rather than the holder", () => {
+    // The server changed what `queue_ahead*` points at: for position n > 1 it is
+    // now the task at n-1 (the one actually in front of you in the line), and
+    // the folder's HOLDER only for position 1. The button's rule is untouched by
+    // that, because it never read the id — it reads the PLACE (Akshil,
+    // 2026-09-12).
+    expect(canRunNext({ queue_position: 2, queue_ahead: "TASK-041" })).toBe(true);
+    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-041" })).toBe(false);
+    // …and the row is what moves it: a task that stood 1st and now stands 2nd
+    // offers the press again, from the row alone.
+    const wasHead = { status: "queued", queue_position: 1, queue_ahead: "TASK-056" };
+    const nowSecond = { ...wasHead, queue_position: 2, queue_ahead: "TASK-041" };
+    expect(canRunNext(wasHead)).toBe(false);
+    expect(canRunNext(nowSecond)).toBe(true);
+    // And the sentence a press produces is the same one a free folder reads.
+    expect(waitingCardText(2, { ...nowSecond, queue_priority: true })).toBe(
+      "2 messages waiting · next in this folder",
+    );
+  });
+
   it("is the verb every surface says, in one place", () => {
     // "Skip the queue" read as skipping the MESSAGE. The press makes the message
     // RUN, next — and interrupts nothing, which is the half the hint says aloud.

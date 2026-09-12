@@ -316,7 +316,7 @@ export function assignLanes<T extends { time: Date }>(
 //     column boundary is far too strong a line to draw between two states that
 //     swap every few minutes. Inside the lane the two are still told apart, and
 //     firmly: running cards first in the running amber, then a dashed "waiting"
-//     divider, then the waiting ones by their place in the line in faded yellow
+//     divider, then the waiting ones by their place in the line in the same yellow
 //     (tasks-lib.groupByColumn, and the lane header counts the two halves
 //     separately — "1 running · 2 waiting").
 //

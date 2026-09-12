@@ -35,6 +35,7 @@ import {
 } from "@platform/lib/api";
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { runAgent } from "../protocol/agent";
 import type { TerminalCommandResponse } from "../protocol/types";
 
@@ -206,9 +207,19 @@ export function useTaskId(sessionId: string): string {
     };
   }, [sessionId]);
   if (!sessionId) return "";
+  const known = taskIds.get(sessionId);
+  if (known) return known;
+  // A `pending:<entry>` KEY IS NOT A HASH, and the fail-open below would print
+  // it as one: `"pending:8f2…".slice(0, 8)` is the literal word "pending:", which
+  // is what the header of a queued new chat showed until the listing caught up
+  // (Akshil, 2026-09-12). There is nothing to fall back TO for this kind of key —
+  // the conversation has no session id yet — so the honest answer is nothing, and
+  // the caller's own next source (`sched/waiting.headerTaskId`) supplies the
+  // number the admission already minted.
+  if (sessionId.startsWith(PENDING_KEY_PREFIX)) return "";
   // The hash paints first and stays up until the number lands, so the answer to
   // a slow listing is the old label rather than a gap (T:12698).
-  return taskIds.get(sessionId) || sessionId.slice(0, 8);
+  return sessionId.slice(0, 8);
 }
 
 /** What the listing knows about this chat, for the caller's own reads (the
@@ -258,6 +269,19 @@ export interface KebabProps {
   /** Why, for the item's `title` — `NAV_LOCKED_REASON`. A prop rather than an
    *  import so this menu owns no vocabulary of the annotation subsystem's. */
   lockedReason?: string;
+  /**
+   * THIS CHAT'S WORK IS STILL IN ITS FOLDER'S LINE — the task row says `queued`,
+   * or this conversation is a message that has never run (Akshil, 2026-09-12).
+   *
+   * Two items go, and for the same reason: there is no session behind this chat
+   * yet. "Continue in terminal" would hand the reader a `claude --resume` for a
+   * conversation that does not exist, and Archive would file work that has not
+   * happened — which this page spells Delete, and Delete STAYS.
+   *
+   * HIDDEN, not disabled, like everything else in this menu whose precondition
+   * the reader cannot act on from inside it (T:13100-13108).
+   */
+  queued?: boolean;
 }
 
 export function Kebab({
@@ -270,6 +294,7 @@ export function Kebab({
   onErased,
   locked = false,
   lockedReason,
+  queued = false,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -509,19 +534,24 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
-          <DropdownMenuItem
-            className="c-kebab-opt"
-            closeOnClick={false}
-            onClick={() => void onTerminal()}
-          >
-            {terminalLabel ||
-              (sessionId ? "Continue in terminal" : "New session in terminal")}
-          </DropdownMenuItem>
+          {/* NOT WHILE THIS CHAT IS WAITING (`queued`): there is no session to
+              continue, so the command this copies would open a conversation that
+              does not exist yet. */}
+          {!queued ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onTerminal()}
+            >
+              {terminalLabel ||
+                (sessionId ? "Continue in terminal" : "New session in terminal")}
+            </DropdownMenuItem>
+          ) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu
               (T:13100-13108). */}
-          {!landing && hasTask ? (
+          {!landing && hasTask && !queued ? (
             <DropdownMenuItem
               className="c-kebab-opt"
               /* R2-8 — the press closes the menu. `onArchive` closes it too

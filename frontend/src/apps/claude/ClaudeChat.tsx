@@ -136,6 +136,7 @@ import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
 import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
+import { usageLimitStatusWord } from "@platform/lib/usage-limit";
 import {
   NO_DROPPED,
   pruneDropped,
@@ -1910,7 +1911,15 @@ function ChatBody(props: ChatBodyProps) {
    * ONLY ON THE LANDING and only under the flag: inside a chat the list is not
    * drawn, and flag off there is nothing to merge because nothing queues.
    */
-  const waitingChats = useWaitingChats(!inChat && queueOn ? file : null, queueOn);
+  const waitingChats = useWaitingChats(
+    !inChat && queueOn ? file : null,
+    queueOn,
+    // …AND ON THE RECENT LIST'S OWN TICK. A leader's transcript appearing is news
+    // the sessions watch hears and the tasks read does not, and until it re-read
+    // the same conversation was drawn twice — once as a transcript, once as the
+    // waiting row it had stopped being (🔴 review 2026-09-12).
+    recentSessions,
+  );
   const recent = useMemo(
     () => mergeWaitingChats(recentSessions, waitingChats),
     [recentSessions, waitingChats],
@@ -3480,6 +3489,18 @@ function ChatBody(props: ChatBodyProps) {
   // a queued chat wears its number from the admission rather than waiting a poll
   // interval for a listing to repeat it.
   const taskId = headerTaskId(listedTaskId, sched.rec?.task_id, admitTaskId);
+  /** Is this conversation's work still IN ITS FOLDER'S LINE? The row's own word
+   *  when there is a row, and "this chat has a leader entry and no session yet"
+   *  before there is one — the two ways a chat can be waiting. What the kebab
+   *  drops its terminal and archive items on. `inChat` gates it because the
+   *  LANDING's one item is "New session in terminal", which is about no
+   *  conversation at all and must never be taken away. */
+  const queuedChat =
+    inChat && (sched.rec?.status === "queued" || (!state.sessionId && !!leaderId));
+  /** …and the other thing this chat's row can say: the plan's usage limit
+   *  stopped this session and it starts again at a known time — "paused ·
+   *  resumes 4:00 AM" at the top of the pane. "" on every ordinary chat. */
+  const limitWord = usageLimitStatusWord(sched.rec);
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -3694,6 +3715,12 @@ function ChatBody(props: ChatBodyProps) {
               // (`annNavLocked`, T:6888/18181/18779).
               locked={ann.locked}
               lockedReason={NAV_LOCKED_REASON}
+              // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
+              // 2026-09-12). The row says `queued`, or this conversation is a
+              // message that has never run — either way there is no session to
+              // resume and nothing finished to put away. Delete stays: calling
+              // the message off is exactly what a reader wants here.
+              queued={queuedChat}
             />
           </div>
         ) : null}
@@ -3708,6 +3735,11 @@ function ChatBody(props: ChatBodyProps) {
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
+                // THE PLAN'S PAUSE, in the seat "running" rides: a session the
+                // usage limit stopped says `paused · resumes 4:00 AM` instead
+                // (platform/lib/usage-limit). Read off this chat's own row, which
+                // is the same field the Tasks page draws the red ring from.
+                status={limitWord}
               />
             ) : null}
             <Transcript

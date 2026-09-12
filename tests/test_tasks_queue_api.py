@@ -460,6 +460,41 @@ def test_a_held_answer_reads_queued_and_not_needs_attention(
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
 
 
+def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
+        client, projects_dir, folders, monkeypatch, flag):
+    """"Behind TASK-041" ON EVERY CARD IN THE LANE SAID THE SAME THING FOUR
+    TIMES (Akshil, 2026-09-12), and the one fact a reader wants out of the
+    sentence — who do I actually have to wait for — was the one it could not
+    give. Position 1 is behind the holder (the run in flight, which is what it
+    is genuinely waiting on); everything after that is behind the task in front
+    of it, so reading down the lane the sentences chain."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    for name in ("sess-1", "sess-2", "sess-3"):
+        _transcript(projects_dir, name, alpha, "waiting: " + name)
+    schedule._write([
+        _entry("e1", "first in line", alpha, due=_iso(-300),
+               session_id="sess-1"),
+        _entry("e2", "second in line", alpha, due=_iso(-200),
+               session_id="sess-2"),
+        _entry("e3", "third in line", alpha, due=_iso(-100),
+               session_id="sess-3"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    rows = _rows(client)
+    assert [rows[k]["queue_position"] for k in ("sess-1", "sess-2", "sess-3")] \
+        == [1, 2, 3]
+    assert rows["sess-1"]["queue_ahead_key"] == "sess-holder"
+    assert rows["sess-2"]["queue_ahead_key"] == "sess-1"
+    assert rows["sess-3"]["queue_ahead_key"] == "sess-2"
+    # …and the words and the link agree with the key, all four off one pass.
+    assert rows["sess-3"]["queue_ahead"] == rows["sess-2"]["task_id"]
+    assert rows["sess-3"]["queue_ahead_title"] == "waiting: sess-2"
+    assert rows["sess-3"]["queue_ahead_session"] == "sess-2"
+
+
 def test_a_second_unanswered_card_still_needs_attention(
         client, projects_dir, folders, monkeypatch, flag, park):
     """One held answer does not speak for the whole run: a second card nobody
@@ -512,8 +547,14 @@ def test_the_line_puts_held_answers_first_then_priority_then_the_older_due(
     assert rows["sess-skipped"]["queue_priority"] is True
     assert rows["sess-plain"]["queue_position"] == 3
     assert rows["sess-plain"]["queue_priority"] is False
-    assert {row["queue_ahead"] for row in rows.values() if row["queue_position"]} \
-        == {rows["sess-holder"]["task_id"]}
+    # "behind" NAMES THE TASK DIRECTLY AHEAD, and held answers are stepped over:
+    # the answering task is behind the holder, the skipped message is behind the
+    # holder too (the only thing in front of it is that held answer), and the
+    # plain one is behind the skipped message.
+    assert rows["sess-answer"]["queue_ahead"] == rows["sess-holder"]["task_id"]
+    assert rows["sess-skipped"]["queue_ahead"] == rows["sess-holder"]["task_id"]
+    assert rows["sess-plain"]["queue_ahead"] == rows["sess-skipped"]["task_id"]
+    assert rows["sess-plain"]["queue_ahead_key"] == "sess-skipped"
 
 
 def test_one_task_takes_one_place_however_many_messages_it_has(
@@ -1148,7 +1189,8 @@ def test_a_card_answered_while_another_task_holds_the_folder_is_held(
     r = _post(client, "/api/tasks/queue/decide", _decide_body(alpha))
     assert r.status_code == 200, r.text
     assert r.json() == {"held": True, "position": 1, "ahead": ahead,
-                        "ahead_title": "holding the folder"}
+                        "ahead_title": "holding the folder",
+                        "ahead_key": "sess-holder"}
     assert agent.calls == []
     held = project_queue.held_answers()
     assert len(held) == 1
@@ -1231,6 +1273,7 @@ def test_run_now_maps_a_queued_hold_onto_a_200_that_names_who_is_ahead(
     assert r.json() == {"ok": False, "reason": "queued", "entry": entry,
                         "position": 2, "ahead": ahead,
                         "ahead_title": "holding the folder",
+                        "ahead_key": "sess-holder",
                         # …and where "behind TASK-041" goes when it is clicked.
                         "ahead_session": "sess-holder",
                         "ahead_target": alpha,
@@ -1422,9 +1465,15 @@ def test_run_now_answers_the_position_the_row_shows(
     _holders(monkeypatch, {alpha: "sess-holder"})
 
     body = _post(client, "/api/schedule/run-now", {"entry_id": "e-a1"}).json()
-    # Two entries are in front of it; ONE task is.
-    assert body["position"] == 2
+    # Run now IS Run next, and Run next is play next: the message just promoted
+    # goes to the head, past sess-b's two older promotions.
+    assert body["position"] == 1
     assert body["position"] == _rows(client)["sess-a"]["queue_position"]
+
+    # …and when sess-b asks to go next again, its TWO entries are still ONE
+    # slot: this row moves to #2, never to #3.
+    schedule.set_priority(["e-b1", "e-b2"], True)
+    assert _rows(client)["sess-a"]["queue_position"] == 2
 
 
 def test_run_now_on_a_far_future_message_puts_the_row_in_the_queued_lane(
@@ -2097,6 +2146,47 @@ def test_a_queued_new_chat_is_named_the_moment_it_queues(
     # …and the same key still answers the same number on every listing after
     # that: allocation is once, keyed by the task key (`ensure_ids`).
     assert _rows(client)[key]["task_id"] == number
+
+
+def test_two_admissions_of_one_task_in_two_threads_mint_one_number(
+        client, projects_dir, folders, monkeypatch, flag):
+    """ALLOCATE-ONCE HOLDS UNDER CONCURRENT ADMITS, and the lock is
+    `tasks_store._update`'s — a sibling `.lock` file held with `flock` for the
+    whole read-modify-write, which is per open-file-description and therefore
+    excludes two THREADS of this process as surely as two processes. FastAPI
+    serves sync routes from a threadpool, so two sends landing together is not
+    exotic; a second number for one key would mean the chip and the row calling
+    the same conversation different things for ever (numbers are never
+    released).
+
+    Asked of `_task_number` rather than of `ensure_ids` directly, because that
+    is the seam the admission answers through and the one that also has to walk
+    `_place` and `_numbers` on the way in."""
+    import threading
+
+    flag()
+    alpha, _beta = folders
+    schedule._write([_entry("e1", "queued", alpha, due=_iso(-1))])
+    key = tasks_store.pending_key("e1")
+    tasks = tasks_mod._collect()
+    assert key in tasks
+
+    minted, start = [], threading.Barrier(2)
+
+    def admit():
+        start.wait()
+        minted.append(tasks_mod._task_number(key, dict(tasks)))
+
+    threads = [threading.Thread(target=admit) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(minted) == 2
+    assert minted[0].startswith("TASK-")
+    assert minted[0] == minted[1], "one key, one number, however many askers"
+    assert list(tasks_store.task_ids()) == [key], "and one record on disk"
 
 
 def test_a_followers_admission_answers_its_leaders_number(

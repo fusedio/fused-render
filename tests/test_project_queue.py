@@ -384,6 +384,22 @@ def test_a_shell_status_holds_too_and_idle_does_not(home, agent):
         assert (folder_key(work) in pq.holders()) is expected, status
 
 
+def test_a_session_waiting_out_a_usage_limit_holds_nothing(home, agent):
+    """A chat that hit the plan's usage limit is waiting ON THE CLOCK, not
+    working: PR #1107 schedules the continuation for the reset and the CLI sits
+    there. `waiting` is not one of the two statuses that mean a turn is open, so
+    the folder is free and the next task runs in it — which is the whole point
+    of deriving the holder from what the process is DOING rather than from
+    whether it exists (Akshil's screenshot, 2026-09-12)."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), SID, pid=os.getpid())
+    registry(SID, status="waiting")
+
+    assert pq.holders() == {}
+    assert pq.is_free(folder_key(work), SID2) is True
+
+
 def test_a_parked_run_does_not_hold_the_folder(home, agent):
     """The whole reason the queue can move at all: a run blocked on a card
     nobody has answered may sit there until tomorrow, and the next task runs."""
@@ -1045,6 +1061,106 @@ def test_two_brand_new_chats_in_a_folder_with_HISTORY_still_queue(home, agent):
     assert pq.reserved_run(folder_key(work)) == ""
 
 
+# ------------------------------------ claiming back after the user pressed Stop
+
+
+def test_a_named_send_claims_back_the_nameless_reservation_its_dead_run_left(
+        home, agent):
+    """THE STOP-THEN-SEND SEQUENCE (Akshil, 2026-09-12). New chat, first admit:
+    no session and no run, so the reservation names nobody. The user presses
+    Stop before that run ever became a holder and the host is killed. The
+    second send arrives WITH the session (the client read it off the URL) and
+    still no run id — so `_self_held` has nothing to match and `_anonymous_self`
+    refuses a request that CAN name itself. The chat queued behind its own dead
+    reservation."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")             # the first admit's claim
+    # …and the run it spawned, killed by Stop before it ever named a session.
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="", alive=False)
+
+    assert pq.holders()[folder_key(work)]["kind"] == "reserved"
+    assert pq.is_free(folder_key(work), SID) is True
+    assert pq.reserve_if_free(folder_key(work), SID) is True
+    # …and the reservation is now that chat's, by name.
+    assert pq.reserved(folder_key(work)) == SID
+
+
+def test_a_named_send_queues_behind_a_DIFFERENT_live_session_in_the_folder(
+        home, agent):
+    """…and not one step further. A live run in the folder is a `run` holder and
+    outranks every reservation, so there is no nameless claim to take back and
+    the send queues — which is the whole feature."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    stage_run(agent, "r-2", str(work / "other.html"), SID2, pid=os.getpid())
+    registry(SID2, status="busy")
+
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
+    assert pq.is_free(folder_key(work), SID) is False
+    assert pq.reserve_if_free(folder_key(work), SID) is False
+
+
+def test_a_named_send_never_claims_back_a_quiet_run_that_is_somebody_elses(
+        home, agent):
+    """The wall's third clause. The newest run in this folder is quiet and
+    recent but it NAMES ANOTHER SESSION, so the anonymous reservation standing
+    here is far more likely to be that conversation's than this one's."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    stage_run(agent, "r-3", str(work / "page.html"), SID2, alive=False)
+
+    assert pq.is_free(folder_key(work), SID) is False
+    # …and the session the quiet run DOES name is let straight through.
+    assert pq.is_free(folder_key(work), SID2) is True
+
+
+def test_a_named_send_never_claims_back_a_folder_with_no_run_of_its_own(
+        home, agent):
+    """A run dir is the proof that this conversation has already been in this
+    folder. With none, a named send is just as likely to be a second brand-new
+    chat, and it waits out the reservation's own TTL."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+
+    assert pq.is_free(folder_key(work), SID) is False
+
+
+def test_a_named_send_never_claims_back_a_run_from_last_week(home, agent):
+    """RECENT, for `_anonymous_self`'s reason: a folder chatted in for weeks
+    always has SOME dead run in it, and one of those is not the other half of
+    the message being admitted right now."""
+    work = home / "work"
+    work.mkdir()
+    run_dir = stage_run(agent, "r-old", str(work / "page.html"), session_id="",
+                        alive=False)
+    old = time.time() - pq.STARTING_GRACE - 60
+    os.utime(run_dir, (old, old))
+    pq.invalidate_holders()
+    pq.reserve(folder_key(work), "")
+
+    assert pq.is_free(folder_key(work), SID) is False
+
+
+def test_a_dead_run_is_never_a_holder_however_fresh_the_registry_row(home,
+                                                                     agent):
+    """`_derived_holders` probes the pid before it believes anything else: the
+    Stop that killed the host leaves a registry row saying `busy` for as long as
+    it takes the watcher to notice, and a corpse must not hold a working tree
+    for that window."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), SID, alive=False,
+              pid=os.getpid())
+    registry(SID, status="busy")
+
+    assert pq.holders() == {}
+    assert pq.is_free(folder_key(work), SID2) is True
+
+
 def test_a_reservation_taken_this_instant_is_never_claimed_anonymously(home,
                                                                        agent):
     """The two-admissions-in-one-breath race, which the run dir alone cannot
@@ -1110,8 +1226,8 @@ def test_the_reserved_sessions_are_the_sends_just_admitted(home, agent):
 # ================================================================= order_key
 
 
-def _entry(entry_id, due, priority=False):
-    return {"id": entry_id, "due": due, "priority": priority}
+def _entry(entry_id, due, priority=False, at=0.0):
+    return {"id": entry_id, "due": due, "priority": priority, "priority_at": at}
 
 
 def test_priority_jumps_the_line():
@@ -1121,11 +1237,32 @@ def test_priority_jumps_the_line():
     assert [e["id"] for e in sorted(entries, key=pq.order_key)] == ["c", "a", "b"]
 
 
-def test_a_priority_tie_falls_to_the_older_due():
-    """Skipping two things must not reshuffle them."""
+def test_run_next_is_play_next_and_the_newest_promotion_goes_first():
+    """B, then C, then D — the line runs D, C, B (Akshil, 2026-09-12). Ordering
+    the promoted entries by `due` made the FIRST thing promoted stay first,
+    which is the reverse of what the button says."""
+    entries = [_entry("b", "2026-09-12T09:00:00+00:00", priority=True, at=10.0),
+               _entry("c", "2026-09-12T10:00:00+00:00", priority=True, at=20.0),
+               _entry("d", "2026-09-12T11:00:00+00:00", priority=True, at=30.0)]
+    assert [e["id"] for e in sorted(entries, key=pq.order_key)] == ["d", "c", "b"]
+
+
+def test_pressing_run_next_again_takes_the_head_straight_back():
+    """The same gesture means the same thing every time it is made: a later
+    stamp on B puts B in front of the D that overtook it."""
+    entries = [_entry("b", "2026-09-12T09:00:00+00:00", priority=True, at=40.0),
+               _entry("d", "2026-09-12T11:00:00+00:00", priority=True, at=30.0)]
+    assert [e["id"] for e in sorted(entries, key=pq.order_key)] == ["b", "d"]
+
+
+def test_a_promotion_with_no_stamp_keeps_the_due_order_behind_the_stamped_ones():
+    """An entry promoted before the field existed reads 0.0 — behind every
+    stamped promotion, and among its own kind back to the order it already
+    had."""
     entries = [_entry("y", "2026-09-12T11:00:00+00:00", priority=True),
-               _entry("x", "2026-09-12T09:00:00+00:00", priority=True)]
-    assert [e["id"] for e in sorted(entries, key=pq.order_key)] == ["x", "y"]
+               _entry("x", "2026-09-12T09:00:00+00:00", priority=True),
+               _entry("z", "2026-09-12T12:00:00+00:00", priority=True, at=5.0)]
+    assert [e["id"] for e in sorted(entries, key=pq.order_key)] == ["z", "x", "y"]
 
 
 def test_a_due_tie_falls_to_the_entry_id():

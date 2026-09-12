@@ -293,8 +293,38 @@ def test_set_priority_refuses_anything_not_pending(folders, spawned):
 
 def test_set_priority_un_skips_too(folders):
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1), priority=True)
+    schedule.set_priority([entry["id"]], True)
     schedule.set_priority([entry["id"]], False)
-    assert schedule.list_entries()[0]["priority"] is False
+    stored = schedule.list_entries()[0]
+    assert stored["priority"] is False
+    # BOTH FIELDS, TOGETHER. An entry with no promotion has no moment to be
+    # promoted at, and a stamp left behind would put it back at the head the
+    # next time anybody pressed the button on something else.
+    assert "priority_at" not in stored
+
+
+def test_run_next_stamps_the_moment_and_the_newest_click_goes_first(folders):
+    """B, THEN C, THEN D RUN D, C, B (Akshil, 2026-09-12). `priority` alone only
+    says "ahead of the un-promoted"; the stamp is what makes the button mean
+    play-next instead of join-the-promoted-pile."""
+    b = schedule.create(str(folders["alpha"]), "b", _ago(300), session_id=SID)
+    c = schedule.create(str(folders["alpha"]), "c", _ago(200), session_id=SID)
+    d = schedule.create(str(folders["alpha"]), "d", _ago(100), session_id=SID)
+    for entry in (b, c, d):
+        schedule.set_priority([entry["id"]], True)
+
+    key = _key(folders["alpha"])
+    now = schedule._now()
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert all(e["priority_at"] > 0 for e in stored.values())
+    assert [schedule._queue_position(stored[e["id"]], key, now)
+            for e in (d, c, b)] == [1, 2, 3]
+
+    # …and pressing it again on B takes the head straight back.
+    schedule.set_priority([b["id"]], True)
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert [schedule._queue_position(stored[e["id"]], key, now)
+            for e in (b, d, c)] == [1, 2, 3]
 
 
 # ============================================================== the folder hold
@@ -627,11 +657,14 @@ def test_run_now_on_a_busy_folder_is_a_skip(folders, spawned, home, monkeypatch)
     # …and nothing was claimed
     assert out["entry"]["state"] == schedule.PENDING
     assert spawned == []
-    # A second skip in the same folder does not reshuffle the first: among the
-    # skipped, the older `due` still goes first — so `ahead` takes the head and
-    # this one moves to #2.
+    # RUN NEXT IS PLAY NEXT: the most recent promotion goes first. Promoting
+    # `ahead` (the older message) puts IT at the head and this one at #2 —
+    # and promoting this one again takes the head straight back.
     assert schedule.run_now(ahead["id"])["position"] == 1
-    assert schedule.run_now(entry["id"])["position"] == 2
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert schedule._queue_position(
+        stored[entry["id"]], _key(folders["alpha"]), schedule._now()) == 2
+    assert schedule.run_now(entry["id"])["position"] == 1
 
 
 def test_run_now_names_the_holder_by_its_task_and_not_by_its_session(

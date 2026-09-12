@@ -327,3 +327,86 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   expect(props).toContain("locked={ann.locked}");
   expect(props).toContain("lockedReason={NAV_LOCKED_REASON}");
 });
+
+// ── A `pending:` KEY IS NOT A HASH ─────────────────────────────────────────
+//
+// A chat that has never run is asked about by its LEADER — `pending:<entry id>`
+// — and the fail-open at the end of `useTaskId` used to truncate that key like a
+// session hash. `"pending:8f2…".slice(0, 8)` is the literal word "pending:", and
+// that is what the top of a queued new chat printed until the listing caught up
+// (Akshil, 2026-09-12, 🔴 review).
+test("answers nothing for a pending: key rather than the word `pending:`", async () => {
+  const KEY = "pending:8f2c11d4-aaaa-bbbb";
+  answer = async () => ({ tasks: [] });
+  const labels: string[] = [];
+  function PendingProbe() {
+    labels.push(useTaskId(KEY));
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(<PendingProbe />);
+  });
+  mounted.push(r);
+  await settle();
+  expect(labels.length).toBeGreaterThan(0);
+  for (const label of labels) {
+    expect(label).toBe("");
+    expect(label).not.toContain("pending");
+  }
+  forgetTaskCaches(KEY);
+});
+
+// …and when the listing DOES know the number for that same key, it is handed
+// back: the guard drops the fallback, not the answer.
+test("still answers the number the listing holds for a pending: key", async () => {
+  const KEY = "pending:9a1b";
+  answer = async () => ({ tasks: [{ key: KEY, task_id: "TASK-077", status: "queued" }] });
+  const labels: string[] = [];
+  function PendingProbe() {
+    labels.push(useTaskId(KEY));
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(<PendingProbe />);
+  });
+  mounted.push(r);
+  await settle();
+  expect(labels[0]).toBe("");
+  expect(labels[labels.length - 1]).toBe("TASK-077");
+  forgetTaskCaches(KEY);
+});
+
+// ── A WAITING CHAT OFFERS NEITHER A TERMINAL NOR A FILE ────────────────────
+//
+// Read off the source, for the reason the P3R1-5 test above is: base-ui mounts
+// no item without a real pointer event. `queued` means the task row says so, or
+// this conversation is a message that has never run — either way there is no
+// session behind it, so "Continue in terminal" would resume a conversation that
+// does not exist and Archive would file work that has not happened. Delete
+// stays, because calling the message off IS what a reader wants here (Akshil,
+// 2026-09-12).
+test("hides Continue in terminal and Archive while the chat is queued", () => {
+  const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
+  expect(src).toContain("queued?: boolean");
+  expect(src).toContain("queued = false,");
+  // The terminal item is wrapped in the guard…
+  expect(src).toContain("{!queued ? (");
+  const terminal = src.slice(src.indexOf("{!queued ? ("));
+  expect(terminal.slice(0, terminal.indexOf("</DropdownMenuItem>"))).toContain(
+    'sessionId ? "Continue in terminal" : "New session in terminal"',
+  );
+  // …Archive takes it as a third condition…
+  expect(src).toContain("{!landing && hasTask && !queued ? (");
+  // …and Delete does NOT: exactly one item in this menu keeps its old condition.
+  expect(src).toContain("{!landing && hasTask ? (");
+  const del = src.slice(src.lastIndexOf("{!landing && hasTask ? ("));
+  expect(del.slice(0, del.indexOf("</DropdownMenuItem>"))).toContain("Delete this task");
+  // And the chat hands the fact down from the row it already reads.
+  const chat = readFileSync(join(import.meta.dir, "../ClaudeChat.tsx"), "utf8");
+  expect(chat).toContain(
+    '    inChat && (sched.rec?.status === "queued" || (!state.sessionId && !!leaderId));',
+  );
+  expect(chat.slice(chat.indexOf("<Kebab"))).toContain("queued={queuedChat}");
+});

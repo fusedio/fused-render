@@ -26,6 +26,9 @@ const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
  *  shell's suite because the COLOUR is one decision for the whole app and this
  *  is where it is held still. */
 const CHAT_CSS = readFileSync(join(SHELL, "../apps/claude/styles/sched.css"), "utf8");
+/** The Recent-chats row's stylesheet — same reason as CHAT_CSS: the waiting mark
+ *  is one decision and every surface that draws it is held still here. */
+const HOME_CSS = readFileSync(join(SHELL, "../apps/claude/styles/home.css"), "utf8");
 
 const CARD = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
 const ROW = VIEWS.slice(VIEWS.indexOf("function TaskNode("), VIEWS.indexOf("function TaskCard("));
@@ -222,7 +225,12 @@ describe("the List's waiting row", () => {
     // person reading down a thread would find it — and with the queue on, a
     // `running` row and a `queued` row sit one line apart in two strengths of one
     // hue (tasks-lib.messageState carries the four words).
-    expect(ROW).toContain("const tone = messageState(task, m);");
+    // …AND NEVER WITH THE FLAG DOWN (`queueOn`, 🔴 review 2026-09-12): this word
+    // is derived on the client from "pending and past due", which is true in
+    // either build, where every other `queued` on the page comes from a server
+    // status that is never written while the queue is off.
+    expect(ROW).toContain("const tone = messageState(task, m, queueOn);");
+    expect(ROW).toContain("const queueOn = useProjectQueueEnabled();");
     expect(ROW).toContain('<span className={"tasks-msg-state tasks-msg-state--" + tone.column}>');
     expect(ROW).toContain("{tone.word}");
     expect(ROW).toContain("<StatusIcon\n                    status={tone.column}");
@@ -233,14 +241,15 @@ describe("the List's waiting row", () => {
 });
 
 describe("the queue's ink", () => {
-  it("is a FADED IN PROGRESS, and `--activity` is gone from every queued surface", () => {
-    // Blue was the queue's colour for a day, on the reading that `--activity`
-    // means "a thing about to happen, or that you can make happen". The lane fold
-    // retired it: `queued` is DRAWN INSIDE In Progress now, so a blue ring sits
-    // directly under an amber one in the same column — and two unrelated hues in
-    // one lane read as two unrelated kinds of work. They are one kind of work at
-    // two strengths, and the token says exactly that.
-    expect(SCHEDULE_CSS).toContain(".schedule-ring--queued { color: var(--status-queued); }");
+  it("is IN PROGRESS'S OWN YELLOW, and `--activity` is gone from every queued surface", () => {
+    // Blue was the queue's colour for a day and a gold of its own for a day. The
+    // lane fold retired both: `queued` is DRAWN INSIDE In Progress now, so a ring
+    // of any other hue sits directly under the running one in the same column and
+    // reads as a different kind of work. One state, one colour; the DASH is the
+    // difference (below).
+    expect(css(SCHEDULE_CSS)).toContain(
+      ".schedule-ring--queued {\n  color: var(--status-queued);\n  border-style: dashed;\n}",
+    );
     expect(css(TASKS_CSS)).toContain(
       ".tasks-row-queue.is-next,\n.tasks-card-queue.is-next {\n  color: var(--status-queued);\n}",
     );
@@ -260,29 +269,39 @@ describe("the queue's ink", () => {
     expect(css(CHAT_CSS)).toContain("var(--status-queued)");
   });
 
-  it("is a CLEAR GOLD of its own, one literal per palette", () => {
-    // The first spelling DERIVED it — `color-mix(--status-progress 55%,
-    // --fg-muted)` — on the reading that waiting and running are one state at two
-    // strengths. On screen that mix is a faded yellow, which beside a live amber
-    // reads as the amber at low opacity rather than as a state of its own, and at
-    // ring size (12-14px) it drifts towards tinted grey (Akshil, 2026-09-12).
-    // So the two stay in one family and part on HUE: deeper, greener, full
-    // strength, and a hand-picked value per ground.
-    expect(TOKENS_CSS).toContain("--status-queued: #e9c95a;"); // dark
-    expect(TOKENS_CSS).toContain("--status-queued: #9a7b0d;"); // light
+  it("spends NO hue of its own — the token is an alias of the running yellow", () => {
+    // A third yellow is a colour the reader has to be taught before it says
+    // anything, and it loses at ring size against the amber it sits beside
+    // (Akshil, 2026-09-12). So `--status-queued` resolves to `--status-progress`
+    // in BOTH palettes and the gold literals are gone.
+    expect(css(TOKENS_CSS).match(/--status-queued: var\(--status-progress\);/g)).toHaveLength(2);
+    expect(TOKENS_CSS).not.toContain("#e9c95a");
+    expect(TOKENS_CSS).not.toContain("#9a7b0d");
     // ONCE PER THEME, and never twice in one: test_theme.py requires every dark
     // token to have a light value, and two definitions in one palette is a token
     // whose winner is source order.
     expect(css(TOKENS_CSS).match(/--status-queued:/g)).toHaveLength(2);
-    // DISTINCT FROM THE RUNNING AMBER in both palettes — the whole point of
-    // spending a hue on it.
-    expect(TOKENS_CSS).not.toContain("--status-queued: #facc15;");
-    expect(TOKENS_CSS).not.toContain("--status-queued: #ca8a04;");
     // …and no SURFACE mints one: every one of them still goes through the token,
-    // so the two palettes remain the only place this colour is decided.
+    // so the alias remains the only place this colour is decided.
     expect(css(SCHEDULE_CSS)).not.toMatch(/schedule-ring--queued[^}]*#[0-9a-f]{3,6}/);
     expect(css(CHAT_CSS)).not.toMatch(/c-waiting[^}]*#[0-9a-f]{3,6}/);
     expect(css(TASKS_CSS)).not.toMatch(/tasks-row-queue[^}]*#[0-9a-f]{3,6}/);
+  });
+
+  it("says WAITING with the DASH, on every ring that has one", () => {
+    // The shape is what separates the two states now, so it has to be on every
+    // mark that wears the hue: the shell's status ring (List, Board, Cards), the
+    // Recent-chats dot, and the chat's own waiting card.
+    expect(css(SCHEDULE_CSS)).toMatch(/\.schedule-ring--queued \{[^}]*border-style: dashed;/);
+    // …and the ring it overrides is the solid one, so the dash is a delta rather
+    // than a second ring.
+    expect(css(SCHEDULE_CSS)).toMatch(/\.schedule-ring \{[^}]*border: 2px solid currentColor;/);
+    expect(css(CHAT_CSS)).toMatch(
+      /\.c-waitcard \.wc-ring \{[^}]*border: 2px dashed currentColor;/,
+    );
+    expect(css(HOME_CSS)).toMatch(
+      /\.c-chat-row\.is-waiting \.c-dot::after \{[^}]*border: 2px dashed var\(--status-queued\);/,
+    );
   });
 
   it("gives the caption no width and no breakpoint — it measures, it does not guess", () => {

@@ -312,7 +312,7 @@
 /* THE EDGE IS THE WHOLE STATEMENT. `background: none` rather than a paler tint:
    a tint is still a filled bubble and reads as a weaker message, where an empty
    one reads as an outline of a message that has not happened. The border colour
-   is the state's own faded yellow at half strength, so the dash is legible
+   is the state's own yellow at half strength, so the dash is legible
    without becoming the loudest thing in the column. */
 .c-waiting .bubble.c-waiting-bubble {
   background: none;
@@ -338,7 +338,6 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  justify-self: end;
   text-align: end;
   align-items: baseline;
   gap: 4px;
@@ -459,14 +458,15 @@ a.c-waiting-ahead:hover {
   line-height: 1.45;
 }
 /* The ring the state is read by — the same 2px currentColor circle the shell's
-   rows wear, in the same faded yellow, at 12px because this line is 12px. */
+   rows wear, in the same running yellow and DASHED the same way (schedule.css
+   `.schedule-ring--queued`), at 12px because this line is 12px. */
 .c-waitcard .wc-ring {
   position: relative;
   box-sizing: border-box;
   flex: 0 0 12px;
   width: 12px;
   height: 12px;
-  border: 2px solid currentColor;
+  border: 2px dashed currentColor;
   border-radius: 999px;
   color: var(--status-queued);
 }

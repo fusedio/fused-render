@@ -21,6 +21,7 @@ const HERE = new URL(".", import.meta.url).pathname;
 const CHAT = readFileSync(join(HERE, "../ClaudeChat.tsx"), "utf8");
 const ROW = readFileSync(join(HERE, "../ui/RecentRow.tsx"), "utf8");
 const HOME_CSS = readFileSync(join(HERE, "../styles/home.css"), "utf8");
+const SRC = readFileSync(join(HERE, "waiting-chats.ts"), "utf8");
 
 const task = (over: Partial<WaitingTask> = {}): WaitingTask => ({
   key: "pending:e1",
@@ -83,16 +84,31 @@ describe("which tasks become rows", () => {
     expect(waitingChatRows([task({ key: "sess-9" })], "/w/app")).toHaveLength(0);
   });
 
-  it("is a CHAT's own message and nothing else — `entry_origin` is the test", () => {
+  it("gates `upcoming` on `entry_origin` — a thing due Thursday is not a chat", () => {
     // A calendar message, a New-task entry and a repeat's next occurrence are all
     // waiting `pending:` rows too. Not one of them is a conversation somebody
     // typed, and listing on the key alone would have put every future scheduled
     // job into a list whose whole promise is "what has happened here".
     expect(CHAT_ORIGIN).toBe("chat");
-    expect(waitingChatRows([task({ entry_origin: "" })], "/w/app")).toHaveLength(0);
-    expect(waitingChatRows([task({ entry_origin: undefined })], "/w/app")).toHaveLength(0);
-    expect(waitingChatRows([task({ entry_origin: "schedule" })], "/w/app")).toHaveLength(0);
-    expect(waitingChatRows([task()], "/w/app")).toHaveLength(1);
+    const later = (origin?: string) =>
+      waitingChatRows([task({ status: "upcoming", entry_origin: origin })], "/w/app");
+    expect(later("")).toHaveLength(0);
+    expect(later(undefined)).toHaveLength(0);
+    expect(later("schedule")).toHaveLength(0);
+    expect(later("chat")).toHaveLength(1);
+  });
+
+  it("takes EVERY `queued` row, whatever composed it", () => {
+    // `queued` is not "due later": it says the message would be running this
+    // second if the folder were free. A New-task modal's message that lands in a
+    // busy folder is a conversation the reader has just started and will come
+    // back to in a minute, and leaving it off the list because a form rather than
+    // a composer typed it hid the very rows the queue exists to explain
+    // (Akshil, 2026-09-12).
+    for (const origin of ["", "schedule", "chat", undefined]) {
+      expect(waitingChatRows([task({ status: "queued", entry_origin: origin })], "/w/app"))
+        .toHaveLength(1);
+    }
   });
 
   it("takes the entry the SERVER named, and falls back to the key", () => {
@@ -151,6 +167,36 @@ describe("folding them into Recent chats", () => {
   });
 });
 
+describe("one conversation, one row, on either of its two names", () => {
+  it("drops a waiting row whose LEADER'S SESSION is already in the list", () => {
+    // The window this closes: the run opens a session, the transcript lands,
+    // `sessions` lists it by that session id — and the tasks read still holds the
+    // row under `pending:<entry>`. Two ids, one conversation, two rows until the
+    // next tasks read (🔴 review 2026-09-12). The transcript row wins.
+    const waiting = waitingChatRows([task({ session_id: "sess-1" })], "/w/app");
+    expect(waiting[0].leaderSession).toBe("sess-1");
+    expect(mergeWaitingChats([session({ id: "sess-1" })], waiting)).toHaveLength(1);
+    // …and with no such row in the list, it is still drawn.
+    expect(mergeWaitingChats([session({ id: "sess-other" })], waiting)).toHaveLength(2);
+    // A leader with no session yet is never mistaken for one: "" matches nothing.
+    const fresh = waitingChatRows([task()], "/w/app");
+    expect(fresh[0].leaderSession).toBe("");
+    expect(mergeWaitingChats([session({ id: "" })], fresh)).toHaveLength(2);
+  });
+
+  it("re-reads the tasks on the RECENT LIST'S own tick", () => {
+    // `tasks-changed` is rung by an admission and by a run's start; a leader's
+    // transcript APPEARING is news only the sessions watch hears. Without this
+    // the pair of lists disagreed until something unrelated poked them.
+    expect(SRC).toContain("tick?: unknown,");
+    expect(SRC).toContain("readRef.current();");
+    expect(SRC).toContain("}, [tick]);");
+    // …and the first tick is skipped, or a mount reads twice for nothing.
+    expect(SRC).toContain("const firstTick = useRef(true);");
+    expect(CHAT).toContain("    recentSessions,");
+  });
+});
+
 describe("what the row says and where it goes", () => {
   it("says `waiting` where a live row says `running`, and no time", () => {
     // The state is the more useful answer to "when", and the two side by side
@@ -161,14 +207,16 @@ describe("what the row says and where it goes", () => {
     expect(HOME_CSS).toContain("color: var(--status-queued);");
   });
 
-  it("wears the gold RING rather than the filled dot", () => {
+  it("wears the DASHED ring rather than the filled dot", () => {
     const css = HOME_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toContain(".c-chat-row.is-waiting .c-dot::after {");
     const ring = css.slice(
       css.indexOf(".c-chat-row.is-waiting .c-dot::after {"),
       css.indexOf("}", css.indexOf(".c-chat-row.is-waiting .c-dot::after {")),
     );
-    expect(ring).toContain("border: 2px solid var(--status-queued)");
+    // Dashed, in the running yellow: one colour for waiting and running, and the
+    // shape is what separates them (tokens.css, schedule.css).
+    expect(ring).toContain("border: 2px dashed var(--status-queued)");
     expect(ring).toContain("border-radius: 999px");
   });
 

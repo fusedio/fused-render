@@ -223,6 +223,28 @@
   color: var(--fg);
 }
 
+/* THE PLAN'S PAUSE, UNDER THE TITLE — "Usage limit · resumes 4:00 AM"
+   (platform/lib/usage-limit, and the same sentence the List row and the Board
+   card print). Secondary text in the register every caption on this page uses:
+   the ring above it already carries Blocked's red, so the words only have to be
+   readable and out of the title's way.
+
+   NO WIDTH AND NO BREAKPOINT. The clause is as long as a clock makes it, so it
+   ellipsises inside itself on a narrow wall rather than widening the card or
+   pushing the doors off the head. */
+.task-card-limit {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* THE DOORS, ON HOVER, OVER THE TITLE'S RIGHT END (Akshil, 2026-09-06: "archive
    and explorer button right side of the title … don't cover or shift, make
    extra space, just show them on hover … overlap"). The popup's two doors —

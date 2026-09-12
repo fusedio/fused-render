@@ -38,6 +38,7 @@ import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
 import {
+  CHAT_ENTRY_ORIGIN,
   chatUrl,
   pendingEntryId,
   queuePosition,
@@ -377,8 +378,9 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
  * so a reader carries one vocabulary between the two:
  *
  *   * `running` — the turn is in flight (amber, `--status-progress`).
- *   * `queued` — its time has come and its folder is busy (faded yellow,
- *     `--status-queued`), which is exactly the lane's waiting half.
+ *   * `queued` — its time has come and its folder is busy (the SAME yellow,
+ *     `--status-queued` is an alias of `--status-progress`; the ring is dashed,
+ *     which is the whole of the difference), the lane's waiting half.
  *   * `failed` — settled badly, whatever spelling of badly.
  *   * `done` — settled.
  *
@@ -411,6 +413,18 @@ export interface MessageState {
 export function messageState(
   task: Task,
   m: TaskMessage,
+  /**
+   * IS THE QUEUE ON AT ALL (prefs `queue.enabled`) — and it is required rather
+   * than defaulted, because forgetting it is the bug (🔴 review 2026-09-12).
+   *
+   * Every other `queued` on this page comes from the SERVER's status, which is
+   * never written while the flag is down. This word is derived on the CLIENT
+   * from two facts that are true flag or no flag — pending, and past due — so
+   * with the queue off a message merely running late printed a state that does
+   * not exist in that build, under a lane with no waiting half. Off, it reads
+   * `scheduled`, exactly as it did before this feature.
+   */
+  queueOn: boolean,
   nowSec: number = Math.floor(Date.now() / 1000),
 ): MessageState {
   const tone = threadTone(task, m);
@@ -419,7 +433,7 @@ export function messageState(
   }
   // Past due and still pending — the two facts the word is about, for the reason
   // above.
-  if (m.state === "pending" && m.at > 0 && m.at <= nowSec) {
+  if (queueOn && m.state === "pending" && m.at > 0 && m.at <= nowSec) {
     return { word: "queued", column: "queued", failed: false, label: "Queued" };
   }
   if (tone.failed) return { word: "failed", column: tone.column, failed: true, label: tone.label };
@@ -1294,6 +1308,7 @@ export function taskHref(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
     status?: string;
+    entry_origin?: string;
   },
 ): string | null {
   if (task.session_id) return explorerUrl(task.target || task.project, task.session_id);
@@ -1317,6 +1332,19 @@ export function taskHref(
    * scheduled message on the page.
    */
   if (task.status !== "queued") return null;
+  /**
+   * …AND ONLY A CHAT'S OWN WAITING WORK (`entry_origin`, 🔴 review 2026-09-12).
+   *
+   * ONE DOOR PER TASK is the rule this keeps. A queued row that a FORM composed
+   * — the New task modal, the calendar, a repeat's next occurrence — has an
+   * instruction that has not run yet, and that instruction is the content of the
+   * row: its press opens the EDIT form, exactly as it does while the same entry
+   * is merely `upcoming`. Handing it a chat url instead would make a task's door
+   * depend on whether its folder happened to be busy when the reader clicked.
+   * A chat-origin entry has no form to edit — the words were typed into a
+   * composer and the conversation IS the row.
+   */
+  if ((task.entry_origin || "") !== CHAT_ENTRY_ORIGIN) return null;
   const queued = pendingEntryId(task.key || "");
   const where = task.target || task.project;
   if (queued && where) return chatUrl(where, "", queued);
@@ -1556,12 +1584,25 @@ export function messageEditEntry(m: TaskMessage): string | null {
 const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   // Run it early, or call it off.
   upcoming: ["in_progress", "archived"],
-  // Skip the line, or call it off. The drop onto In Progress is NOT a run —
-  // nothing may interrupt the task already holding this folder — it is
-  // `skip`, which moves this card to the head of its folder's line and leaves
-  // the run in flight completely alone (laneAction). Archive keeps the
-  // ordinary meaning: the pending work is cancelled and the task is filed.
-  queued: ["in_progress", "archived"],
+  // Skip the line, and NOTHING ELSE. The drop onto In Progress is not a run —
+  // nothing may interrupt the task already holding this folder — it is `skip`,
+  // which moves this card to the head of its folder's line and leaves the run in
+  // flight completely alone (laneAction).
+  //
+  // ARCHIVE IS NOT OFFERED ON A WAITING TASK (Akshil, 2026-09-12). Filing is for
+  // work that has happened: a queued task is a message the reader has just sent
+  // and the server has not run yet, so "put this away" is really "call it off",
+  // and this page already has a word for that — Delete, which stays. Offering
+  // both put an irreversible verb and a reversible one side by side on the one
+  // row where they mean the same thing, and the archive half would have left a
+  // filed task whose entries were cancelled underneath it. Hidden rather than
+  // disabled, on this page's usual rule: a dead control on every waiting row is
+  // what makes the rows a control DOES work on hard to find.
+  //
+  // `filingIntent` reads this table, so the List's mark-slot button, the Board
+  // card's button and the Cards wall's all go with the drop — one predicate, by
+  // construction.
+  queued: ["in_progress"],
   // Locked: a run in flight is Claude's output, and it leaves this lane when it
   // ends, not when a card is dragged.
   in_progress: [],
@@ -1789,6 +1830,7 @@ export function isQueued(task: { status: string }): boolean {
 export {
   canRunNext,
   chatUrl,
+  CHAT_ENTRY_ORIGIN,
   pendingEntryId,
   PENDING_KEY_PREFIX,
   QUEUED_PARAM,
@@ -1807,6 +1849,22 @@ export {
   RUN_NEXT_LABEL,
 } from "@platform/lib/queue";
 export type { QueueCaption, QueueFacts } from "@platform/lib/queue";
+
+/**
+ * …AND THE PLAN'S OWN PAUSE, re-exported for the same reason: the chat's header
+ * says it too, and the chat may not import shell. A usage-limited session is a
+ * `blocked` row with `blocked_reason: "usage_limit"` — the lane and the red ring
+ * are unchanged, and the CAPTION is what tells it apart from the runs that
+ * actually broke (platform/lib/usage-limit).
+ */
+export {
+  isUsageLimited,
+  resumesClock,
+  usageLimitCaption,
+  usageLimitStatusWord,
+  USAGE_LIMIT_REASON,
+} from "@platform/lib/usage-limit";
+export type { UsageLimitFacts } from "@platform/lib/usage-limit";
 
 /**
  * The same move the drag makes, reachable without dragging (Akshil,

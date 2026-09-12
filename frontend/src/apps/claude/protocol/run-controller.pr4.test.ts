@@ -1430,3 +1430,62 @@ describe("`repaired` is bumped when a repair actually appended something", () =>
     expect(controller.getState().repaired).toBe(before);
   });
 });
+
+// ---- the held follow-ups a RELOAD reads ------------------------------------
+//
+// A line typed into a running chat is in the CLI's own stdin queue and in no
+// JSONL row — nothing has consumed it — so a page that comes BACK has only one
+// place to learn about it: the `history` answer, which it makes before it has a
+// run to poll. `landHistory` publishes that list whenever the answer names a
+// live run at all (`live_run` is a string), and `live_run: ""` publishes the
+// empty one, because nothing is held when nothing is running.
+describe("the inbox a restored conversation draws", () => {
+  test("lands from `history` when the answer names a live run", async () => {
+    const { controller } = makeController({
+      history: () => ({
+        turns: [{ role: "user", text: "count the rows", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+        live_run: "r1",
+        permissions: [],
+        inbox: [
+          { id: "f1", text: "go on" },
+          // A DRAINED entry rides the same list and draws the same bubble.
+          { id: "f2", text: "and again", drained: true },
+        ],
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    expect(controller.getState().inbox?.map((m) => m.id)).toEqual(["f1", "f2"]);
+    expect(controller.getState().inbox?.map((m) => m.text)).toEqual(["go on", "and again"]);
+  });
+
+  test("publishes the EMPTY list when the answer says nothing is running", async () => {
+    // `live_run: ""` is "I looked, and nothing is running here" — so the answer
+    // carries no held follow-ups and the list it publishes is empty. (The field
+    // being a STRING is the test; its value is the server's news.)
+    const { controller } = makeController({
+      history: () => ({
+        turns: [{ role: "user", text: "count the rows", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+        live_run: "",
+        permissions: [],
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    expect(controller.getState().inbox ?? []).toEqual([]);
+  });
+
+  test("leaves the list ALONE on an answer with no `live_run` at all (older server)", async () => {
+    const { controller } = makeController({
+      history: () => ({
+        turns: [{ role: "user", text: "count the rows", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    expect(controller.getState().inbox ?? []).toEqual([]);
+  });
+});

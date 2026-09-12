@@ -212,8 +212,11 @@ describe("the one line under it", () => {
     const css = SCHED_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     const line = css.slice(css.indexOf(".c-waiting-line {"), css.indexOf("}", css.indexOf(".c-waiting-line {")));
     expect(line).toContain("justify-content: flex-end");
-    expect(line).toContain("justify-self: end");
     expect(line).toContain("text-align: end");
+    // …and NOT `justify-self`, which did nothing here: this element is a flex
+    // ITEM in a column, and `justify-self` is ignored on one (🟡 review
+    // 2026-09-12). Two properties that look like a pair and are not.
+    expect(line).not.toContain("justify-self");
     // STILL WRAPS AND STILL MEASURES NOTHING: the sentence's length is the
     // data's, and no width or breakpoint decides it.
     expect(line).toContain("flex-wrap: wrap");
@@ -324,6 +327,63 @@ describe("the card over the composer", () => {
     expect(busy.root.findAllByType("button")[0].props.disabled).toBe(true);
     act(() => busy.unmount());
   });
+
+  it("gets the button BACK when the row moves it off the head of the line", () => {
+    // The whole visibility rule is ROW-DRIVEN, and this is the case that proves
+    // it: a task standing 1st has no press (nothing waiting is in front of it),
+    // and the moment somebody else's Run next puts it 2nd the very same card has
+    // one again — because the card re-reads the facts it is handed and derives
+    // nothing of its own (Akshil, 2026-09-12).
+    const r = render(
+      <WaitingCard
+        count={1}
+        facts={{ queue_position: 1, queue_ahead: "TASK-056" }}
+        onRunNext={() => {}}
+      />,
+    );
+    expect(r.root.findAllByType("button")).toHaveLength(0);
+    act(() => {
+      r.update(
+        <WaitingCard
+          count={1}
+          facts={{ queue_position: 2, queue_ahead: "TASK-041" }}
+          onRunNext={() => {}}
+        />,
+      );
+    });
+    expect(r.root.findAllByType("button")).toHaveLength(1);
+    expect(textOf(r)).toContain("behind ");
+    expect(textOf(r)).toContain("TASK-041");
+    act(() => r.unmount());
+  });
+
+  it("reads `N messages waiting · next in this folder` once the press has landed", () => {
+    // What a reader sees immediately after pressing Run next: the claim on the
+    // spot (`queue_priority`) is the ONLY thing that replaces "behind …", and it
+    // takes the button with it because there is nothing left to get in front of.
+    const r = render(
+      <WaitingCard
+        count={2}
+        facts={{ queue_position: 2, queue_ahead: "TASK-041" }}
+        onRunNext={() => {}}
+      />,
+    );
+    expect(textOf(r)).toContain("behind ");
+    act(() => {
+      r.update(
+        <WaitingCard
+          count={2}
+          facts={{ queue_position: 1, queue_ahead: "TASK-041", queue_priority: true }}
+          onRunNext={() => {}}
+        />,
+      );
+    });
+    expect(textOf(r)).toContain("2 messages waiting");
+    expect(textOf(r)).toContain("next in this folder");
+    expect(textOf(r)).not.toContain("behind ");
+    expect(r.root.findAllByType("button")).toHaveLength(0);
+    act(() => r.unmount());
+  });
 });
 
 describe("the rows come from the server, which is what a reload reads", () => {
@@ -341,7 +401,12 @@ describe("the rows come from the server, which is what a reload reads", () => {
     expect(CHAT).toContain("const serverWaiting = sched.waitingHere;");
     expect(CHAT).not.toContain("schedFollowing(");
     expect(USE_SCHEDULE).toContain("waitingFor(allRows, sessionId, leaderId)");
-    expect(WATCHER).toContain("deps.onAllRows?.(entries);");
+    // …and the list it publishes is the rows that can ANSWER one of the two
+    // questions it exists for: still in the line, or holding the link to a
+    // session a chat is about to adopt (🔴 review 2026-09-12).
+    expect(WATCHER).toContain(
+      "deps.onAllRows?.(entries.filter((e) => schedIsWaiting(e) || !!(e && e.claude_session_id)));",
+    );
   });
 
   it("is ONE answer about what is in front, and the server's when it has one", () => {
@@ -547,6 +612,13 @@ describe("admission, in the send window", () => {
     );
     expect(CONTROLLER).toContain("{ status, runId: null }");
     expect(CONTROLLER).toContain("lastRunId: null,");
+    // …AND THE SEND PATH NAMES IT TOO, before it ever polls (Akshil,
+    // 2026-09-12): a stop landing between `start` answering and the first poll
+    // frame otherwise left the id unwritten and the next admit anonymous.
+    expect(CONTROLLER).toContain("emit({ lastRunId: runId });");
+    expect(CONTROLLER.indexOf("emit({ lastRunId: runId });")).toBeLessThan(
+      CONTROLLER.indexOf("await pollLoop(runId, gen, { ownTurn: true });"),
+    );
   });
 
   it("is on the wire, and absent when nothing is running", async () => {

@@ -203,6 +203,17 @@ export function pendingEntryId(key: string | null | undefined): string {
  */
 export const QUEUED_PARAM = "queued";
 
+/**
+ * WHO PUT AN ENTRY IN THE LINE — `Task.entry_origin` / `SchedEntry.origin`,
+ * stamped `"chat"` by `POST /api/tasks/queue/admit` and by nothing else.
+ *
+ * Here rather than in either caller because both layers ask it: the chat asks
+ * "is this row one of my conversations" (`sched/waiting-chats`) and the shell
+ * asks "does this task open a CHAT or an edit form" (`tasks-lib.taskHref`), and
+ * a string typed twice is a string that can be typed differently once.
+ */
+export const CHAT_ENTRY_ORIGIN = "chat";
+
 /** The codec itself, so `shell/schedule-lib.explorerUrl` has one to delegate to
  *  instead of keeping a second copy of the same three lines.
  *

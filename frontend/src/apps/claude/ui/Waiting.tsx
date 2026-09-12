@@ -295,8 +295,8 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
   return (
     <div className="c-waitcard">
       <div className="wc-card" role="status" aria-label={waitingCardText(count, facts)}>
-        {/* The ring the whole state is coloured by — faded yellow, the same hue
-            the rows and the Tasks lane wear. `aria-hidden`: the card's own label
+        {/* The ring the whole state is coloured by — the running yellow, dashed,
+            the same mark the rows and the Tasks lane wear. `aria-hidden`: the card's own label
             already says everything it stands for. */}
         <span className="wc-ring" aria-hidden="true" />
         <span className="wc-text">

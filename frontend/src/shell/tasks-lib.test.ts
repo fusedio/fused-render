@@ -929,7 +929,7 @@ describe("threadTone: archiving a task archives its thread", () => {
     // queued; one whose time has not come is merely scheduled), and the archive
     // cascade this describes still applies underneath because `messageState`
     // calls it.
-    expect(VIEWS).toContain("const tone = messageState(task, m);");
+    expect(VIEWS).toContain("const tone = messageState(task, m, queueOn);");
     expect(LIB).toContain("const tone = threadTone(task, m);");
   });
 });
@@ -3444,6 +3444,7 @@ describe("a row with no message at all", () => {
       key: "pending:e1",
       session_id: "",
       status: "queued",
+      entry_origin: "chat",
       message_count: 0,
       messages: [],
     }, 0);
@@ -3455,6 +3456,12 @@ describe("a row with no message at all", () => {
     // row press opens the EDIT FORM — `activate` runs the thread arm first, so a
     // wider rule would have taken the form away from every scheduled message.
     expect(taskHref({ ...waiting, status: "upcoming" })).toBe(null);
+    // …AND ONLY A CHAT'S OWN WAITING WORK (🔴 review 2026-09-12). ONE DOOR PER
+    // TASK: a queued row a FORM composed still has an instruction to edit, and
+    // that is what its press opens — a task's door must not depend on whether
+    // its folder happened to be busy when the reader clicked.
+    expect(taskHref({ ...waiting, entry_origin: "" })).toBe(null);
+    expect(taskHref({ ...waiting, entry_origin: undefined })).toBe(null);
     // …and a task that HAS run is opened by its transcript, exactly as before.
     expect(taskHref({ ...waiting, session_id: "sess-1" })).toBe(
       "/explorer/view/Users/me/Desktop/fused?_side=claude&session_id=sess-1",
@@ -8984,22 +8991,22 @@ describe("one message's own state inside an expanded row", () => {
     // ring's tooltip — and with the queue on, a running row and a waiting row sit
     // one line apart in two strengths of one hue.
     const queuedTask = task({ status: "queued" });
-    expect(messageState(queuedTask, msg({ at: 100 }), 900).word).toBe("queued");
-    expect(messageState(queuedTask, msg({ at: 100 }), 900).column).toBe("queued");
-    expect(messageState(task({ status: "in_progress" }), msg({ state: "sent", turn: "" }), 900).word)
+    expect(messageState(queuedTask, msg({ at: 100 }), true, 900).word).toBe("queued");
+    expect(messageState(queuedTask, msg({ at: 100 }), true, 900).column).toBe("queued");
+    expect(messageState(task({ status: "in_progress" }), msg({ state: "sent", turn: "" }), true, 900).word)
       .toBe("running");
     expect(
-      messageState(task({ status: "done" }), msg({ state: "sent", turn: "ok" as never }), 900).word,
+      messageState(task({ status: "done" }), msg({ state: "sent", turn: "ok" as never }), true, 900).word,
     ).toBe("done");
-    expect(messageState(task({ status: "done" }), msg({ state: "error" }), 900).word).toBe("failed");
+    expect(messageState(task({ status: "done" }), msg({ state: "error" }), true, 900).word).toBe("failed");
   });
 
   it("does not dress a message whose TIME has not come as queued", () => {
     // `scheduled` means "its time has not come", and that is the ONE fact it is
     // about: a message due in the future is scheduled whatever its task is doing.
     const queuedTask = task({ status: "queued" });
-    expect(messageState(queuedTask, msg({ at: 5000 }), 900).word).toBe("scheduled");
-    expect(messageState(task({ status: "in_progress" }), msg({ at: 5000 }), 900).word)
+    expect(messageState(queuedTask, msg({ at: 5000 }), true, 900).word).toBe("scheduled");
+    expect(messageState(task({ status: "in_progress" }), msg({ at: 5000 }), true, 900).word)
       .toBe("scheduled");
   });
 
@@ -9011,17 +9018,17 @@ describe("one message's own state inside an expanded row", () => {
     // That message printed `scheduled`: "its time has not come", about a message
     // that is late and standing in a line.
     const running = task({ status: "in_progress" });
-    expect(messageState(running, msg({ at: 100 }), 900).word).toBe("queued");
-    expect(messageState(running, msg({ at: 100 }), 900).column).toBe("queued");
+    expect(messageState(running, msg({ at: 100 }), true, 900).word).toBe("queued");
+    expect(messageState(running, msg({ at: 100 }), true, 900).column).toBe("queued");
     // …and the message that is actually in flight is still `running`, which is
     // the branch above this one and the reason the two never collide.
-    expect(messageState(running, msg({ state: "sending" }), 900).word).toBe("running");
+    expect(messageState(running, msg({ state: "sending" }), true, 900).word).toBe("running");
   });
 
   it("keeps the archive's own two words rather than collapsing them into done", () => {
-    expect(messageState(task({ status: "archived" }), msg({ state: "cancelled" }), 900).word)
+    expect(messageState(task({ status: "archived" }), msg({ state: "cancelled" }), true, 900).word)
       .toBe("cancelled");
-    expect(messageState(task({ status: "archived" }), msg({ state: "skipped" }), 900).word)
+    expect(messageState(task({ status: "archived" }), msg({ state: "skipped" }), true, 900).word)
       .toBe("skipped");
   });
 });
@@ -9029,8 +9036,8 @@ describe("one message's own state inside an expanded row", () => {
 describe("dragging a queued card", () => {
   const waiting = task({ key: "q", task_id: "TASK-q", status: "queued", queue_position: 3 });
 
-  it("may go to In Progress or to Archive, and nowhere else", () => {
-    expect(dropLanes(waiting)).toEqual(["in_progress", "archived"]);
+  it("may go to In Progress and NOWHERE else", () => {
+    expect(dropLanes(waiting)).toEqual(["in_progress"]);
     expect(isDraggable(waiting)).toBe(true);
   });
 
@@ -9044,8 +9051,17 @@ describe("dragging a queued card", () => {
     expect(dropAction(waiting, "in_progress")).not.toHaveProperty("entryId");
   });
 
-  it("keeps the ordinary cancel semantics on Archive", () => {
-    expect(dropAction(waiting, "archived")).toEqual({ kind: "archive" });
+  it("IS NOT FILED AWAY — no drop onto Archive, and no button either", () => {
+    // Filing is for work that has happened. A queued task is a message the
+    // reader just sent and the server has not run yet, so "put this away" is
+    // really "call it off" — and this page already spells that Delete, which
+    // stays (Akshil, 2026-09-12).
+    expect(dropAction(waiting, "archived")).toBeNull();
+    // …and the three views' buttons go with the drop, by construction:
+    // `filingIntent` reads the same table.
+    expect(filingIntent(waiting)).toBeNull();
+    // The skip is untouched — the one gesture a waiting card still has.
+    expect(dropAction(waiting, "in_progress")).toEqual({ kind: "skip", key: "q" });
   });
 
   it("is not a lane anything may be dropped INTO", () => {

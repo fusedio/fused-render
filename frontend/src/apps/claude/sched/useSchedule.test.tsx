@@ -87,6 +87,9 @@ interface Harness {
   holdTasks(): void;
   /** Let a wedged `/api/tasks` answer. */
   releaseTasks(): Promise<void>;
+  /** Move the injected wall clock, which is what paces the row's own re-read
+   *  (`REC_REFRESH_MS`) — the poll's rate no longer decides it. */
+  advance(ms: number): void;
 }
 
 async function mount(
@@ -127,6 +130,9 @@ async function mount(
       return d.promise;
     },
   };
+  /** The injected wall clock. Starts at a round number so an assertion about
+   *  the floor is about the floor and not about the epoch. */
+  let clock = 1_000_000;
   const beats: Array<() => void> = [];
   const timers = {
     setInterval: (fn: () => void) => {
@@ -147,6 +153,7 @@ async function mount(
       setRunParam: () => {},
       api,
       timers,
+      now: () => clock,
       ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
     return null;
@@ -186,6 +193,9 @@ async function mount(
     cancels,
     nextCancel(d) {
       pendingCancel = d;
+    },
+    advance(ms: number) {
+      clock += ms;
     },
     tasksReads: () => tasksReads,
     serveTasks(tasks: SchedTask[]) {
@@ -338,7 +348,10 @@ test("every row the tick saw is published, for a chat that has no session", asyn
     "a",
   );
   await h.poll();
-  expect((h.state().allRows ?? []).map((e) => e.id)).toEqual(["a", "b", "z"]);
+  // "z" is SENT and names no session it opened, so it is published to nobody:
+  // the list carries the rows still in the line and the rows that hold the LINK
+  // to a session (🔴 review 2026-09-12).
+  expect((h.state().allRows ?? []).map((e) => e.id)).toEqual(["a", "b"]);
   // …and the chat draws its own two out of it, by leader.
   expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a", "b"]);
 });
@@ -381,10 +394,14 @@ test("a claimed entry stays in the list, and in the live ids behind the seeds", 
   expect([...(h.state().pendingIds ?? [])]).toEqual(["a"]);
 });
 
-test("the row is re-read every lap under the queue, because its fields move", async () => {
+test("the row is re-read on a CLOCK under the queue, because its fields move", async () => {
   // `queue_ahead`, `queue_position`, `queue_priority` and `queue_waiting` all
   // change UNDER A FIXED ENTRY ID — the task in front finishes, somebody skips
   // ahead — so a row read once said "behind TASK-038" for the life of the chat.
+  //
+  // NOT once per poll lap, which is what it was (🔴 review 2026-09-12): the
+  // schedule polls every 3 s while the composer is shut, and that made a chat
+  // behind a blocker ask for the whole tasks listing twenty times a minute.
   const h = await mount(
     [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
     "s1",
@@ -396,6 +413,12 @@ test("the row is re-read every lap under the queue, because its fields move", as
   const reads = h.tasksReads();
   const gen = h.state().recGen;
   h.serveTasks([{ key: "s1", queue_ahead: "", queue_priority: true }]);
+  // Two laps INSIDE the floor buy nothing at all…
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads);
+  // …and the first lap past it re-reads.
+  h.advance(5000);
   await h.poll();
   expect(h.tasksReads()).toBeGreaterThan(reads);
   expect(h.state().rec?.queue_priority).toBe(true);
@@ -460,8 +483,10 @@ test("…and stays open when the row says nothing is blocking, whatever the entr
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
   expect(h.state().rec).toBe(null);
   expect(h.state().blocked).toBe(true);
-  // Then the server's own answer lands and it outranks that reading.
+  // Then the server's own answer lands and it outranks that reading. Past the
+  // row's own floor, which is what paces the re-read now.
   h.serveTasks([{ key: "s1", queue_blocking: false }]);
+  h.advance(5000);
   await h.poll();
   expect(h.state().rec?.queue_blocking).toBe(false);
   expect(h.state().blocked).toBe(false);

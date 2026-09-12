@@ -717,6 +717,12 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
     reservation is then REWRITTEN with whatever the caller now knows — that is
     how an anonymous reservation gets its session, and why a chat can claim back
     a reservation it made before it had a name.
+
+    **AND A SEND THAT CAN NAME ITS SESSION CLAIMS BACK A NAMELESS RESERVATION
+    ITS OWN DEAD RUN LEFT** (`_claims_back`): the Stop-then-send sequence, where
+    the first message reserved anonymously, the user killed the host before the
+    run ever became a holder, and the second message arrived with a session and
+    no run to match it with.
     """
     if not key:
         return True
@@ -745,7 +751,8 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
             holder = dict(holder, session_id=reserved_by, task_key=reserved_by)
         if (holder is not None and not _self_held(holder, sid, run)
                 and not _anonymous_self(key, holder, sid, run, now,
-                                        reservation_age=age)):
+                                        reservation_age=age)
+                and not _claims_back(key, holder, sid, now)):
             return False
         # The moment it was taken SURVIVES the rewrite. What a chat refreshing
         # its own reservation holds is one claim, not a new one, and restamping
@@ -847,6 +854,76 @@ def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
     return _recent_idle_run_in(key, now)
 
 
+def _claims_back(key: str, holder: dict, session_id: str,
+                 now: float | None = None) -> bool:
+    """May a send that CAN name its session take back a reservation that names
+    nobody?
+
+    THE STOP-THEN-SEND SEQUENCE (Akshil, 2026-09-12). A new chat's first
+    message is admitted with no session and no run, so the reservation it
+    leaves is anonymous. The user presses Stop before that run ever became a
+    holder and the host is killed. The second message now DOES carry a session
+    — the client read it off the URL — but still no run id, because the client
+    never had one. `_self_held` needs a name on the holder's side and there is
+    none; `_anonymous_self` needs the REQUEST to be nameless and this one is
+    not. So the chat queued behind its own dead reservation, and the row read
+    "next in this folder" about a folder nothing was in.
+
+    The gate is the same wall `_anonymous_self` uses, read one clause tighter:
+
+    1. **A `reserved` holder naming nobody, and nothing else.** A `run`, a
+       `starting` or a `sending` holder is a process in that tree or one the
+       tick has claimed it for, and no session id makes a second send into it
+       safe. A reservation that HAS a session is answered by `_self_held` or
+       not at all.
+    2. **The newest run keyed on this folder is quiet and recent** — not
+       running (`_live_session`, which believes the registry and therefore a
+       killed process), and written to within `STARTING_GRACE`. The run dir is
+       the proof that this conversation has already been in this folder;
+       recency is what stops last week's corpse from proving it.
+    3. **…and that run is this session's, or nobody's.** A quiet run naming a
+       DIFFERENT session is somebody else's conversation, and the anonymous
+       reservation standing in this folder is far more likely to be theirs. A
+       run that named no session at all is the killed one from the sequence
+       above — it never lived long enough to publish one — and that is the case
+       this exists for.
+
+    Nothing is stored and nothing is leased: the caller rewrites the
+    reservation with the session it now knows, which is what stops the same
+    question being asked twice."""
+    if not session_id:
+        return False
+    if str(holder.get("kind") or "") != "reserved":
+        return False
+    if str(holder.get("session_id") or "") or str(holder.get("run_id") or ""):
+        return False
+    run = _newest_run_in(key)
+    if run is None:
+        return False
+    now = time.time() if now is None else now
+    if _live_session(run["sessions"], now):
+        return False
+    if not _starting(run["run_dir"], now):
+        return False
+    names = {s for s in run["sessions"] if s}
+    return not names or session_id in names
+
+
+def _newest_run_in(key: str, agent=None) -> dict | None:
+    """The most recent run dir filed under `key`'s folder, or None.
+
+    Newest and nothing older, because everything behind it is a previous
+    conversation — `scan_runs` is newest-first, which is what makes this one
+    pass with an early exit rather than a sort."""
+    agent = agent or agent_module()
+    if agent is None:
+        return None
+    for run in scan_runs(agent):
+        if run_key(run) == key:
+            return run
+    return None
+
+
 def _recent_idle_run_in(key: str, now: float | None = None) -> bool:
     """Does `key`'s folder hold a run of its own that is QUIET AND RECENT — a
     turn of this conversation's that ended moments ago, rather than a
@@ -864,17 +941,13 @@ def _recent_idle_run_in(key: str, now: float | None = None) -> bool:
     Best-effort like the rest of the module: no agent module, no runs tree or no
     run in this folder all answer False, which is the answer that keeps the gate
     closed."""
-    agent = agent_module()
-    if agent is None:
+    run = _newest_run_in(key)
+    if run is None:
         return False
     now = time.time() if now is None else now
-    for run in scan_runs(agent):
-        if run_key(run) != key:
-            continue
-        if _live_session(run["sessions"], now):
-            return False
-        return _starting(run["run_dir"], now)
-    return False
+    if _live_session(run["sessions"], now):
+        return False
+    return _starting(run["run_dir"], now)
 
 
 def _reservation_age(key: str) -> float:
@@ -1159,7 +1232,9 @@ def is_free(key: str, session_id: str, run_id: str = "",
     only where nothing but an anonymous reservation stands in it and a run of
     that folder's own has just gone quiet AND the reservation is old enough to
     be a round trip rather than a race (`_anonymous_self`); short of that it
-    waits, which is what keeps two brand-new tasks out of one folder.
+    waits, which is what keeps two brand-new tasks out of one folder. A chat
+    that can name its SESSION but not its run claims back a nameless
+    reservation on the same wall (`_claims_back`) — the Stop-then-send case.
     """
     if not key:
         return True
@@ -1169,20 +1244,38 @@ def is_free(key: str, session_id: str, run_id: str = "",
     sid, run = str(session_id or ""), str(run_id or "")
     return (_self_held(holder, sid, run)
             or _anonymous_self(key, holder, sid, run, now,
-                               reservation_age=_reservation_age(key)))
+                               reservation_age=_reservation_age(key))
+            or _claims_back(key, holder, sid, now))
 
 
 # -------------------------------------------------------------------- the order
 
 
 def order_key(entry: dict, by_id: dict | None = None) -> tuple:
-    """`(not priority, due, id)` — how a folder's line is ordered, everywhere.
+    """`(not priority, -priority_at, due, id)` — how a folder's line is
+    ordered, everywhere.
 
-    `priority` is what Skip sets, and it inverts because False sorts first:
-    a skipped entry jumps the queue. Ties fall to the older `due` — read through
+    `priority` is what Run next sets, and it inverts because False sorts first:
+    a promoted entry jumps the queue.
+
+    **RUN NEXT IS "PLAY NEXT", NOT "MOVE TO THE BACK OF THE PROMOTED PILE"
+    (Akshil, 2026-09-12).** Ordering the promoted entries by `due` made the
+    FIRST thing promoted stay first: click B, then C, then D and the line ran
+    B, C, D — the opposite of what the button says. A playlist's "play next"
+    puts the newest choice immediately after what is playing and pushes the
+    earlier choices down, so the second element is the moment the button was
+    pressed (`schedule.set_priority` stamps `priority_at`), negated, which
+    sorts the NEWEST promotion first: D, C, B. Pressing it again on B restamps
+    B and B is first again — the same gesture, the same meaning, every time.
+
+    An entry promoted before this field existed carries no stamp and reads
+    0.0, which sorts it behind every stamped one and, among its own kind,
+    back to the `due` order it already had.
+
+    Ties fall to the older `due` — read through
     `_entry_due`, so a message the user pressed Run now on sorts by the moment
-    they asked rather than by a due time that may be days away — so skipping two
-    things does not reshuffle them, and finally to the entry id, which is
+    they asked rather than by a due time that may be days away — and finally to
+    the entry id, which is
     itself due-time-ordered — a total order with no coin flips, which is what
     lets a position number shown in the UI still be true on the next poll.
 
@@ -1200,9 +1293,7 @@ def order_key(entry: dict, by_id: dict | None = None) -> tuple:
     that rank one task's own entries against each other pass nothing, because a
     leader and its followers share a task and therefore share a slot.
     """
-    own = (not bool(entry.get("priority")),
-           _entry_due(entry),
-           str(entry.get("id") or ""))
+    own = _own_key(entry)
     if not by_id or not str(entry.get("follow_of") or ""):
         return own
     from fused_render import schedule
@@ -1213,13 +1304,32 @@ def order_key(entry: dict, by_id: dict | None = None) -> tuple:
     leader = schedule.leader_of(entry, by_id)
     if leader is None:
         return own
-    lead = (not bool(leader.get("priority")),
-            _entry_due(leader),
-            str(leader.get("id") or ""))
+    lead = _own_key(leader)
     # `(*lead, 1, id)` is greater than `lead` and less than anything that sorts
     # after it — tuples of different lengths compare on their common prefix, and
     # the entry ids in it are unique, so the two can never tie.
-    return own if own > lead else (*lead, 1, own[2])
+    return own if own > lead else (*lead, 1, own[-1])
+
+
+def _own_key(entry: dict) -> tuple:
+    """One entry's own place in the line, before any leader is consulted."""
+    promoted = bool(entry.get("priority"))
+    return (not promoted,
+            # NEGATED, so the most recent Run next sorts first. 0.0 for
+            # everything that was never promoted — a constant, which is why the
+            # ordinary line still falls straight through to `due`.
+            -_priority_at(entry) if promoted else 0.0,
+            _entry_due(entry),
+            str(entry.get("id") or ""))
+
+
+def _priority_at(entry: dict) -> float:
+    """When Run next was last pressed on this entry, as epoch seconds — 0.0 for
+    one promoted before the stamp existed, or carrying an unreadable one."""
+    try:
+        return max(0.0, float(entry.get("priority_at") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _entry_due(entry: dict) -> datetime:

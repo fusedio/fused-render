@@ -159,7 +159,7 @@ STATUSES = ("upcoming", "queued", "in_progress", "needs_attention", "blocked",
 
 # What `blocked_reason` may say. "" is the answer for every task that is neither
 # blocked nor waiting on anybody — most of them.
-BLOCKED_REASONS = ("permission", "question", "failed", "")
+BLOCKED_REASONS = ("permission", "question", "failed", "usage_limit", "")
 
 # The ONE triage word this router still reads. `archived` is a FILING state —
 # the user put the task away — and filing is the only decision about a task that
@@ -291,6 +291,15 @@ def _command(obj) -> str:
 # hint because Claude Code writes compact JSON while a hand-written fixture
 # writes `json.dumps` defaults; the alternative is de-spacing every line.
 _API_ERROR_HINTS = ('"isApiErrorMessage":true', '"isApiErrorMessage": true')
+# …and the one API failure that is not a failure. Claude Code writes the plan's
+# usage limit into the transcript as an ordinary `isApiErrorMessage` row whose
+# text is the CLI's own sentence ("Claude usage limit reached", "You've hit your
+# session limit · resets 7:20pm"), so it arrives here indistinguishable from a
+# 500 — and the chat, meanwhile, has SCHEDULED a continuation for the moment the
+# window reopens (PR #1107). Nothing is broken and there is nothing to retry:
+# the run is waiting on a clock. Matched by substring on the same screened line,
+# lowercased, for the same reason every other hint here is — see `_reply_fate`.
+_LIMIT_HINTS = ("usage limit", "session limit")
 _ASSISTANT_HINTS = ('"type":"assistant"', '"type": "assistant"')
 _TEXT_HINTS = ('"type":"text"', '"type": "text"')
 _USER_HINTS = ('"type":"user"', '"type": "user"')
@@ -328,14 +337,29 @@ def _reply_fate(line: str) -> bool | None:
     return None
 
 
-def _mark_fate(prompts: list[dict], fate: bool) -> None:
+def _limit_hit(line: str) -> bool:
+    """Is this API-error line the plan's usage limit rather than a break?
+
+    Asked only of a line `_reply_fate` has already called an error, so the test
+    is just which KIND. See `_LIMIT_HINTS` for why it is a substring."""
+    text = line.lower()
+    return any(hint in text for hint in _LIMIT_HINTS)
+
+
+def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
     """Record an assistant reply's fate on the newest prompt seen SO FAR — the
     prompt it is a reply to. The mark lives on the prompt dict, which is where
     both read paths keep their state (`_SCAN`'s `tail`, `_FULL`'s list), so a
     scan that resumes from its saved offset carries the mark across polls
-    instead of re-deriving it from bytes it will never read again."""
+    instead of re-deriving it from bytes it will never read again.
+
+    `limit` rides beside `failed` and is cleared by the same ordinary reply
+    that clears it: a turn the usage limit ended and a turn the network ended
+    are both failures, and only the first is one the user can do nothing about
+    but wait. See `_LIMIT_HINTS` and the row's `blocked_reason`."""
     if prompts:
         prompts[-1]["failed"] = fate
+        prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
 def _absorb(rec: dict, line: str) -> None:
@@ -347,7 +371,7 @@ def _absorb(rec: dict, line: str) -> None:
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
     fate = _reply_fate(line)
     if fate is not None:
-        _mark_fate(rec["tail"], fate)
+        _mark_fate(rec["tail"], fate, line)
         return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
@@ -446,7 +470,7 @@ def _full_prompts(path: str) -> list[dict]:
                 # it opens contradict each other.
                 fate = _reply_fate(line)
                 if fate is not None:
-                    _mark_fate(prompts, fate)
+                    _mark_fate(prompts, fate, line)
                     continue
                 if '"user"' not in line:
                     continue
@@ -598,6 +622,10 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         "at": at,
         "ran_at": ran_at,
         "state": _entry_state(entry),
+        # One shape for both kinds. A scheduled run's verdict comes from the
+        # watcher and not from the transcript, so nothing sets this on that
+        # road; the field is here so no reader has to branch on `kind` to ask.
+        "limited": False,
         # When the turn's verdict LANDED — 0.0 until it has (and for entries a
         # pre-stamp version of the store wrote). `ran_at` is when the run
         # started; this is when it was pronounced over, which is the moment
@@ -644,6 +672,13 @@ def _chat_message(prompt: dict) -> dict:
         # Wi-Fi sat in the Done lane looking answered. `state` stays `sent` —
         # the message really was delivered, and the verdict is what changes.
         "turn": "error" if prompt.get("failed") else "done",
+        # …AND WHETHER THAT FAILURE WAS THE PLAN'S USAGE LIMIT, which is a
+        # different thing to a reader and to the row: nothing is broken, there
+        # is nothing to retry, and the chat has already scheduled the
+        # continuation for the moment the window reopens (PR #1107). The row
+        # turns it into `blocked_reason: "usage_limit"` and `resumes_at`; the
+        # verdict itself stays `error`, because the turn really did not finish.
+        "limited": bool(prompt.get("limit")),
         "anchor": prompt["anchor"],
     }
 
@@ -1037,6 +1072,35 @@ def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
     return True
 
 
+def _limit_outvotes_live(messages: list[dict]) -> bool:
+    """Is the transcript's liveness the echo of a turn the PLAN'S USAGE LIMIT
+    ended?
+
+    The same shape as `_verdict_outvotes_live` and for the same reason, from
+    the other road. A chat turn that hits the limit is over — the CLI writes
+    the failure row and the `-p` run is reaped — but the failure row is itself a
+    write, so the 45-second window read the corpse as a pulse and the board put
+    the task in In Progress with the red failed ring on it, which is two
+    answers about one run (Akshil's screenshot, 2026-09-12). Worse than
+    untidy: the chat has already scheduled the continuation for the reset (PR
+    #1107), so In Progress is the one lane that hides the fact that nothing
+    will happen until then.
+
+    No clock in it, because there is nothing to be an echo OF: a usage-limit
+    row is not a verdict the watcher stamped, it is the end of the turn stated
+    in the transcript itself. The guard is the ordinary one — a message that
+    claims to be running by its own state is believed, so a later turn (the
+    comeback firing, a line typed after the reset) takes the vote straight
+    back."""
+    if any(_message_running(m) for m in messages):
+        return False
+    for message in reversed(messages):
+        if _message_verdict(message) is None:
+            continue
+        return bool(message.get("limited"))
+    return False
+
+
 # --------------------------------------------------- what a run is waiting on
 # A run parked on a card nobody has answered is invisible from every fact this
 # module already reads. The transcript stops growing, the process stays alive,
@@ -1311,8 +1375,24 @@ def _queue_lines(tasks: dict[str, dict], now: float,
     the inbox-absorb case (a second message typed into a conversation that is
     already running) out of the queue entirely.
 
-    `ahead_key` is the holder's TASK key — a session id, or `pending:<entry>` for
-    a claimed message that has not minted one yet. `ahead` is the number a reader
+    `ahead_key` IS THE TASK DIRECTLY IN FRONT OF THIS ONE, not always the
+    holder (Akshil, 2026-09-12). "Behind TASK-041" on every card in a line of
+    four said the same thing four times, and the one fact a reader wants from
+    it — how far off am I, and who do I have to wait for — was the one it could
+    not give. So position 1 is behind the HOLDER (the run in flight, which is
+    what it is actually waiting on) and position n behind the task at position
+    n - 1. Read down the lane the sentences now chain: the holder, then each
+    other's.
+
+    HELD ANSWERS ARE INVISIBLE IN "behind". An answer the user made on a parked
+    card is at the head of its folder's line by definition, but it is a card
+    decision and not a message anybody queued, and naming it as the thing in
+    front of a queued send would point the reader at a conversation that is not
+    going to run in front of them so much as be let go. So the walk back skips
+    them, and a task whose only predecessors are held answers reads as behind
+    the holder — the same sentence position 1 gets.
+
+    `ahead` is the number a reader
     sees, `ahead_session` and `ahead_target` the pair a reader CLICKS
     (tasks-lib `taskHref`), and all four are filled in by `_name_ahead`, which
     needs the listing's own allocation pass and therefore cannot happen here.
@@ -1375,7 +1455,7 @@ def _queue_lines(tasks: dict[str, dict], now: float,
             out[task_key] = {
                 "key": key,
                 "position": position,
-                "ahead_key": holder["task_key"],
+                "ahead_key": _ahead_in_line(line, position, holder),
                 "ahead": "",
                 "ahead_title": "",
                 # "Behind TASK-041" is a sentence the reader wants to FOLLOW,
@@ -1393,6 +1473,19 @@ def _queue_lines(tasks: dict[str, dict], now: float,
                 "priority": _rank == 0 or _has_priority(task),
             }
     return out
+
+
+def _ahead_in_line(line: list[tuple], position: int, holder: dict) -> str:
+    """The task key the entry at 1-based `position` is waiting DIRECTLY behind.
+
+    The nearest message task in front of it, else the holder — see
+    `_queue_lines` for why held answers (rank 0) are stepped over rather than
+    named, and why position 1 is the holder rather than nothing at all."""
+    for index in range(position - 2, -1, -1):
+        rank, _tie, task_key = line[index]
+        if rank != 0:
+            return task_key
+    return str(holder.get("task_key") or "")
 
 
 def _has_priority(task: dict | None) -> bool:
@@ -2289,6 +2382,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # session that kept working, and only the verdict's own echo is set aside.
     if live and _verdict_outvotes_live(merged, active):
         live = False
+    # …and a turn the usage limit ended is over too, however fresh the failure
+    # row it ended on. See `_limit_outvotes_live`: without this the row read In
+    # Progress and wore the failed ring at the same time, and the board put a
+    # task that cannot move until the window resets into the lane for work that
+    # is happening.
+    if live and _limit_outvotes_live(merged):
+        live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
     next_run, next_run_entry, next_run_repeats = _next_run(task["entries"])
@@ -2381,6 +2481,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
                      parked=waiting is not None, queued=bool(queued),
                      reserved=reserved)
     failed = _failed(speaker)
+    # THE ONE FAILURE THAT IS NOT A FAULT. Read off the message the status is
+    # reading off, so the reason and the lane cannot describe different runs.
+    limited = speaker is not None and bool(speaker.get("limited"))
     return {
         "key": task["key"],
         "task_id": number,
@@ -2427,8 +2530,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # Retry for the first, Open for the second (Akshil, 2026-09-03: "for fail
         # retry, for block a reason"). "" for every task that is neither, which
         # is most of them.
-        "blocked_reason": (waiting["reason"] if waiting is not None
-                           else ("failed" if failed or status == "blocked" else "")),
+        "blocked_reason": (
+            waiting["reason"] if waiting is not None
+            # `usage_limit` BEFORE `failed`, because it is the same run
+            # described more usefully: the button is not Retry, it is nothing —
+            # the continuation is already scheduled and `resumes_at` says when.
+            else "usage_limit" if limited
+            else ("failed" if failed or status == "blocked" else "")),
+        # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the task's own next pending
+        # run, which for a usage limit is the continuation the chat scheduled at
+        # the reset the CLI reported (PR #1107). 0.0 when nothing is scheduled
+        # (the comeback was cancelled, or the POST that made it failed) and 0.0
+        # for every task that is not waiting on a clock, which is how every
+        # other absent time on this row reads.
+        "resumes_at": next_run if limited else 0.0,
         # The one line under the title on a needs-attention row: which tool, and
         # what it wants to do ("Bash · rm -rf build"). None whenever nothing is
         # waiting — the row draws the sub-line off this, so an empty object would
@@ -3820,6 +3935,9 @@ def api_queue_admit(body: dict = Body(...),
             "task_id": number,
             "position": place["position"], "ahead": place["ahead"],
             "ahead_title": place["ahead_title"],
+            # The task key behind the name, so the bubble's "behind TASK-041"
+            # opens a chat that has no session yet (`pending:<entry>`).
+            "ahead_key": place["ahead_key"],
             # WHERE "behind TASK-041" GOES when the chip is clicked — the
             # holder's session and target, `taskHref`'s own pair. Both "" for a
             # holder with no session yet, and the chip then says the words
@@ -3864,9 +3982,16 @@ def _behind_own(session_id: str, follow_of: str, by_id: dict) -> bool:
 
 
 def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
-    """Where one task stands right now — `{"position", "ahead", "ahead_title",
-    "ahead_session", "ahead_target"}`, re-derived from scratch, or from a
-    collection the caller already holds.
+    """Where one task stands right now — `{"position", "ahead_key", "ahead",
+    "ahead_title", "ahead_session", "ahead_target"}`, re-derived from scratch,
+    or from a collection the caller already holds.
+
+    `ahead_key` rides along for the same reason the row carries it (`_row`'s
+    `queue_ahead_key`): a holder that has not minted a session yet can still be
+    LINKED to — it is a `pending:<entry>` row with a number — and an answer
+    that named it only in words would leave the one surface that has just
+    changed the line unable to click through to what is in front of it
+    (round-3 review, 2026-09-12).
 
     The three endpoints below all answer with a place in a line, and all three
     have just CHANGED that line (stored an entry, set a priority, held an
@@ -3889,6 +4014,7 @@ def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
     _name_ahead(queue, {}, tasks)
     place = queue.get(task_key) or {}
     return {"position": place.get("position", 0),
+            "ahead_key": place.get("ahead_key", ""),
             "ahead": place.get("ahead", ""),
             "ahead_title": place.get("ahead_title", ""),
             # The chip under a queued bubble links to the chat in front, the
@@ -4108,4 +4234,5 @@ def api_queue_decide(body: dict = Body(...),
     tasks_watch.notify({session_id})
     place = _queue_place(session_id)
     return {"held": True, "position": 1, "ahead": place["ahead"],
-            "ahead_title": place["ahead_title"]}
+            "ahead_title": place["ahead_title"],
+            "ahead_key": place["ahead_key"]}

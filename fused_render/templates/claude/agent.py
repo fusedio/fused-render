@@ -3244,9 +3244,148 @@ def _inbox_at(name: str) -> float:
         return 0.0
 
 
+# How much of the tail of `out.jsonl` is read looking for a follow-up's own
+# echo, and how many drained entries are walked back looking for one that has
+# not echoed yet. Both are ceilings on a per-poll cost, not guesses about
+# content: the echo being hunted lands at most one reply after the previous
+# one, and more than a handful of un-echoed follow-ups in one session is not a
+# thing a person does. A window that turns out to hold no echo at all is read
+# as "everything drained has echoed" — the conservative answer, and the one
+# that degrades to exactly the behaviour this rule replaced.
+_ECHO_TAIL_BYTES = 1 << 20
+_DRAINED_WALK_MAX = 16
+
+
+def _echo_texts(run_dir: str) -> tuple:
+    """`(texts, whole)` — the trimmed text of every user turn `out.jsonl` has
+    echoed back, in file order, over the tail of the file, and whether that
+    tail was the WHOLE file.
+
+    `--replay-user-messages` makes the CLI write each message it takes off its
+    own queue back into the stream the moment it OPENS that turn, and
+    `_starts_new_turn` is the row shape that says so (the same reader
+    `_read_current_turn` refuses to advance its cursor past). That echo is the
+    proof a message has arrived in the conversation, and it is the only proof
+    there is: nothing else on disk distinguishes a follow-up the CLI is holding
+    from one it has answered.
+
+    The tail only, and a partial first line is dropped: this is read on every
+    poll, and a session's whole `out.jsonl` grows without bound. `whole` is what
+    lets the caller tell "this session has echoed nothing yet" (its first
+    message is still in the CLI's hands) from "the echo is behind the window" (a
+    reply longer than `_ECHO_TAIL_BYTES`) — opposite answers about one empty
+    list."""
+    path = os.path.join(run_dir, "out.jsonl")
+    whole = True
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _ECHO_TAIL_BYTES:
+                whole = False
+                fh.seek(size - _ECHO_TAIL_BYTES)
+                fh.readline()   # the line the window cut in half is not a row
+            chunk = fh.read()
+    except OSError:
+        return [], False
+    texts = []
+    for line in chunk.decode("utf-8", "replace").splitlines():
+        # The cheap screen, before any parse, and the second half of it is the
+        # one that matters: a tool result is a `type: "user"` row too and there
+        # are far more of them than there are turns, so screening them out here
+        # is what keeps this off `json.loads` for most of the window.
+        if '"user"' not in line or '"tool_result"' in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not _starts_new_turn(row):
+            continue
+        texts.append(_inbox_text(row).strip())
+    return texts, whole
+
+
+def _inbox_text(row) -> str:
+    """The words in one inbox entry (or one echoed user row) — the `text`
+    blocks of its content, joined the way `_write_inbox_entry` splits them.
+    `""` for anything that is not a user turn with words in it."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return ""
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return ""
+    texts = [str(b.get("text") or "") for b in content
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n\n".join(t for t in texts if t)
+
+
+def _inbox_entry(path: str, name: str) -> dict | None:
+    """One inbox entry file as `{"id", "text", "at"}`, or None when it is not a
+    user turn with words in it — a `control_request`, a half-written file, or
+    one drained out from under us."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    text = _inbox_text(row)
+    if not text:
+        return None
+    return {"id": name, "text": text, "at": _inbox_at(name)}
+
+
+def _drained_unechoed(run_dir: str) -> list:
+    """The follow-ups the host has already handed to the CLI that the CLI has
+    NOT yet opened a turn for — `[{"id", "text", "at"}]`, oldest first.
+
+    **DRAINED IS NOT DELIVERED (Akshil, 2026-09-12).** The rule this replaces
+    was "the inbox directory IS the untaken set", which is true of the wire and
+    false of the conversation: `session_host._drain_inbox` runs every 0.2 s and
+    `os.replace`s each entry into `inbox/done/` the instant its bytes are on
+    the pipe, while the CLI holds it in its own queue until the reply in flight
+    finishes — minutes, for a long turn. So `inbox/*.json` was empty almost
+    always, and the bubble this whole field exists to draw appeared for a
+    fifth of a second and then vanished until the answer came back.
+
+    What is actually asked, therefore, is whether the message has SHOWN UP in
+    `out.jsonl` yet (`_echo_texts`), and the walk is cheap because both sides
+    are FIFO: the host drains in name order and the CLI echoes in the order it
+    drained, so the newest done entry is the last to echo and everything behind
+    the first echoed one has echoed too. The walk stops there.
+
+    Matched by position and not by membership, so a message sent twice is not
+    read as its own echo: the last echo answers the newest done entry, the one
+    before it the one before that. A TRUNCATED window holding no echo at all (a
+    reply longer than `_ECHO_TAIL_BYTES`) answers "all echoed", which is the
+    reading this had before the field existed; an empty WHOLE file means the
+    CLI has not opened a turn yet, and everything drained really is waiting."""
+    done = os.path.join(_inbox_dir(run_dir), "done")
+    try:
+        names = sorted(n for n in os.listdir(done) if n.endswith(".json"))
+    except OSError:
+        return []          # nothing has ever been drained here
+    if not names:
+        return []
+    echoes, whole = _echo_texts(run_dir)
+    if not echoes and not whole:
+        return []
+    waiting = []
+    index = len(echoes) - 1
+    for name in reversed(names[-_DRAINED_WALK_MAX:]):
+        entry = _inbox_entry(os.path.join(done, name), name)
+        if entry is None:
+            continue       # a control request: it is not a turn on either side
+        if index >= 0 and echoes[index] == entry["text"].strip():
+            break          # this one landed, and so did everything before it
+        waiting.append(entry)
+    waiting.reverse()
+    return waiting
+
+
 def _inbox_waiting(run_dir: str) -> list:
-    """Every user turn still sitting in `run_dir/inbox/` — typed, safely on
-    disk, and not yet handed to the CLI. `[{"id", "text", "at"}]`, oldest first.
+    """Every follow-up the user has typed that the conversation cannot yet show
+    them — `[{"id", "text", "at", "drained"}]`, oldest first.
 
     A FOLLOW-UP TYPED INTO A RUNNING TURN IS NOWHERE ELSE (Akshil, 2026-09-12).
     `_send` writes the message into the inbox and returns; the host ships it to
@@ -3259,45 +3398,43 @@ def _inbox_waiting(run_dir: str) -> list:
     rides on `_poll` and on `_history_live` so a chat learns it on the same
     answer it learns everything else about its run.
 
-    Oldest first, which is the order the host drains in and therefore the order
-    they will run: the names are zero-padded nanosecond stamps
-    (`_write_inbox_row`), so sorting the names IS sorting by write time.
+    TWO SETS, AND THE SECOND IS THE LONG ONE. The undrained entries are
+    `inbox/*.json` — typed, on disk, not yet on the wire, which lasts a fifth
+    of a second (`drained: false`). The drained-but-unechoed ones
+    (`_drained_unechoed`, `drained: true`) are the rest of the wait, and on a
+    turn that runs for minutes they are the whole of it: listing only the first
+    set was a bubble that flashed and disappeared (Akshil's reload, 2026-09-12).
+    The flag travels because the two are different kinds of undo — an undrained
+    entry can still be thrown away (`_discard_inbox`), one the CLI is holding
+    cannot — and a reader that has to guess would have to re-derive the whole
+    rule.
 
-    DRAINED MEANS GONE FROM HERE, so nothing has to be marked and an entry the
-    CLI already has can never be listed twice: `session_host._drain_inbox`
-    `os.replace`s each name into `inbox/done/` once its bytes are on the wire,
-    so what is left in the directory is exactly the untaken ones. A `.tmp` name
-    is skipped for the same reason the drain skips it (a write still in flight
-    is not an entry yet), and a `control_request` row is skipped because it is
-    not words anybody typed — the same `type == "user"` filter `_discard_inbox`
-    applies to the same directory.
+    Oldest first across both, which is the order they will run: the names are
+    zero-padded nanosecond stamps (`_write_inbox_row`), so sorting the names IS
+    sorting by write time, and the drained ones are older than the undrained
+    ones by construction.
 
-    One `listdir`, and on the ordinary poll — an empty inbox — that is the
-    whole cost: nothing is opened.
+    A `.tmp` name is skipped (a write still in flight is not an entry yet), and
+    a `control_request` row is skipped because it is not words anybody typed —
+    the same `type == "user"` filter `_discard_inbox` applies to the same
+    directory.
+
+    One `listdir`, and on a chat that has never drained anything that is the
+    whole cost: nothing is opened. Once something HAS been drained the price is
+    the bounded tail of `out.jsonl` (`_ECHO_TAIL_BYTES`) plus one file per
+    un-echoed follow-up — the same order of work the poll already does over the
+    same file.
     """
     inbox = _inbox_dir(run_dir)
     try:
         names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
     except OSError:
         return []      # no inbox yet, or the run dir is going away
-    waiting = []
+    waiting = [dict(row, drained=True) for row in _drained_unechoed(run_dir)]
     for name in names:
-        try:
-            with open(os.path.join(inbox, name), encoding="utf-8") as fh:
-                row = json.load(fh)
-        except (OSError, ValueError):
-            continue   # drained out from under us, or half a write: not ours
-        if not isinstance(row, dict) or row.get("type") != "user":
-            continue
-        message = row.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        texts = [str(b.get("text") or "") for b in content
-                 if isinstance(b, dict) and b.get("type") == "text"] \
-            if isinstance(content, list) else []
-        text = "\n\n".join(t for t in texts if t)
-        if not text:
-            continue
-        waiting.append({"id": name, "text": text, "at": _inbox_at(name)})
+        entry = _inbox_entry(os.path.join(inbox, name), name)
+        if entry is not None:
+            waiting.append(dict(entry, drained=False))
     return waiting
 
 

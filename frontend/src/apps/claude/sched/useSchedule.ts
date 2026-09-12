@@ -83,6 +83,12 @@ export interface UseScheduleOptions {
    * replaces a global for every suite loaded after it. Forwarded straight to
    * `createScheduleWatcher`, which has taken them from the start.
    */
+  /**
+   * THE WALL CLOCK the row's own re-read is paced by (`REC_REFRESH_MS`),
+   * injectable for the timers' reason: a suite that proved the floor with the
+   * real clock would sleep five seconds per assertion.
+   */
+  now?: () => number;
   timers?: {
     setInterval(fn: () => void, ms: number): unknown;
     clearInterval(handle: unknown): void;
@@ -99,6 +105,23 @@ export interface ScheduleApi {
  *  consumer downstream of it, and a fresh `[]` every render would re-render the
  *  composer's whole column four times a minute for a card that is not drawn. */
 const EMPTY_ROWS: SchedEntry[] = [];
+
+/**
+ * THE FLOOR BETWEEN TWO `/api/tasks` READS FOR THIS CHAT'S OWN ROW (🔴 review
+ * 2026-09-12).
+ *
+ * The row is re-read because the queue's fields move under a fixed entry id —
+ * the task in front finishes, somebody skips ahead — and it used to be re-read
+ * once per SCHEDULE POLL LAP. That rate is 3 s while the composer is shut, so a
+ * chat sitting behind a blocker asked the whole tasks listing twenty times a
+ * minute for a handful of fields that change when a FOLDER does.
+ *
+ * 5 s is the floor rather than the interval: the effect still only runs on a
+ * tick, so a slow lap (15 s) re-reads at its own pace and a fast one is capped
+ * here. Low enough that "behind TASK-038" cannot linger visibly after the folder
+ * frees — the long-poll's own wake-ups land inside it.
+ */
+const REC_REFRESH_MS = 5000;
 
 const PLATFORM_API: ScheduleApi = {
   getSchedule: () => getSchedule() as Promise<{ entries?: SchedEntry[] }>,
@@ -218,8 +241,13 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const [recRow, setRecRow] = useState<{
     id: string;
     task: SchedTask | null;
-    /** The poll lap this row was read on (`lap`) — see the fetch's own note on
-     *  why one read per entry is not enough under the queue. */
+    /** WHEN this row was read, in ms (`Date.now()`) — a WALL CLOCK and not the
+     *  poll lap it used to be (🔴 review 2026-09-12). The lap tied the listing's
+     *  cost to the schedule's rate, and that rate is 3 s while the composer is
+     *  shut: a chat sitting behind a blocker asked `/api/tasks` twenty times a
+     *  minute for fields that move when a FOLDER does. The clock caps it at one
+     *  read per `REC_REFRESH_MS` however fast the poll runs, and keeps the row
+     *  fresh on a slow lap as well. */
     at: number;
     /** Bumped on every write, so a caller can tell "the same row again" from "a
      *  fresh answer that happens to say the same thing". */
@@ -522,6 +550,10 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   // `schedTaskRowFor` cache exists to prevent.
   const nextRef = useRef<SchedEntry | null>(next);
   nextRef.current = next;
+  /** …and the clock the floor is measured on, through a ref for `nextRef`'s
+   *  reason: a caller passing a fresh closure must not re-arm the effect. */
+  const nowRef = useRef<() => number>(opts.now ?? Date.now);
+  nowRef.current = opts.now ?? Date.now;
   /** T's `schedTaskRowBusy` (T:17006). ONE listing in flight at a time — and a
    *  read this refuses is not a read lost: the effect re-arms on the next poll's
    *  `tick`, exactly as T's re-render does, so the id that lost the race is
@@ -555,13 +587,18 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     // the folder moves — the task in front finishes, somebody else skips ahead,
     // Run next is pressed — so a row read once said "behind TASK-038" for the
     // life of the chat while the folder had long since freed (Bugbot PR #1124).
-    // So the row is re-read once per poll lap instead: the same cadence the rows
-    // themselves are drawn at, and one listing per fifteen seconds is what this
-    // pane already pays for the schedule.
-    const stale = queueOn && recRow.at !== lap;
+    //
+    // SO IT IS RE-READ ON A CLOCK OF ITS OWN, not once per poll lap (🔴 review
+    // 2026-09-12). The lap looked like the same cadence the rows are drawn at,
+    // and it is not: the schedule poll runs at 3 s while the composer is shut,
+    // which made a chat sitting behind a blocker ask `/api/tasks` twenty times a
+    // minute. `REC_REFRESH_MS` is the floor between two reads whatever the poll
+    // is doing — and it still re-reads on a SLOW lap, because the effect re-runs
+    // on every tick and the clock, not the tick, is what says "again".
+    const stale = queueOn && nowRef.current() - recRow.at >= REC_REFRESH_MS;
     if (rowBusy.current || (recRow.id === nextId && !stale)) return;
     const id = nextId;
-    const at = lap;
+    const at = nowRef.current();
     rowBusy.current = true;
     void (async () => {
       try {
@@ -586,6 +623,9 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         rowBusy.current = false;
       }
     })();
+    // `lap` stays in the deps and is no longer the RULE: it is what re-runs this
+    // effect for a chat with no session (whose `tick` is never stamped), while
+    // the clock above decides whether the run actually spends a read.
   }, [hasCard, nextId, tick, lap, recRow.id, recRow.at, queueOn]);
   /** T:16997-16999 — the row is null the moment it stops being THIS entry's. */
   const rec = recRow.id && recRow.id === nextId ? recRow.task : null;

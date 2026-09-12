@@ -2583,17 +2583,20 @@ input.schedule-when-field {
    costs no hue at all, so the list is back to naming the one mark that has a
    lane. */
 .schedule-ring--upcoming { color: var(--status-upcoming); }
-/* QUEUED IS A FADED IN PROGRESS, and that is the whole design of the hue
-   (`--status-queued`, 2026-09-12). It was `--activity`, the page's blue, for a
-   day — on the reading that blue means "a thing about to happen, or that you can
-   make happen" — and the lane fold is what retired that: `queued` is DRAWN INSIDE
-   the In Progress lane now (schedule-lib.laneOf), so a blue ring sits directly
-   under an amber one in the same column, and two unrelated hues in one lane read
-   as two unrelated kinds of work. They are one kind of work at two strengths, and
-   the token says exactly that — the running amber mixed toward the page's muted
-   ink (tokens.css). Waiting is a quieter running, in the same colour family, and
-   it is still unmistakable beside Upcoming's grey. */
-.schedule-ring--queued { color: var(--status-queued); }
+/* QUEUED IS IN PROGRESS'S OWN YELLOW, DASHED (Akshil, 2026-09-12). It was
+   `--activity`'s blue for a day and a gold of its own for a day; both are gone.
+   `queued` is DRAWN INSIDE the In Progress lane (schedule-lib.laneOf), so a ring
+   of any other hue sits directly under the running one in the same column and
+   reads as a different kind of work — and a third yellow is a colour the reader
+   has to be taught. The colour is therefore IDENTICAL (`--status-queued` is an
+   alias of `--status-progress`, tokens.css) and the SHAPE is the difference: the
+   running ring is solid, the waiting one is dashed, the same "not settled yet"
+   the queued bubble in the chat wears. A dash survives a 16px mark, a dim screen
+   and a colour-blind reader; a hue does none of the three. */
+.schedule-ring--queued {
+  color: var(--status-queued);
+  border-style: dashed;
+}
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }

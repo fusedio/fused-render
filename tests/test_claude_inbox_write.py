@@ -99,6 +99,15 @@ def _drain(run_dir, name):
     os.replace(run_dir / "inbox" / name, done / name)
 
 
+def _echo(run_dir, text):
+    """What the CLI writes back through `--replay-user-messages` when it
+    actually OPENS the turn a drained entry asked for. Until this row lands the
+    message exists nowhere the page can read it."""
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "message": {
+            "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n")
+
+
 def test_the_poll_lists_every_undrained_follow_up_oldest_first(agent, tmp_path):
     run_dir = _run_dir(tmp_path)
     agent._write_inbox_entry(str(run_dir), "first follow-up")
@@ -112,13 +121,21 @@ def test_the_poll_lists_every_undrained_follow_up_oldest_first(agent, tmp_path):
                    if n.endswith(".json"))
     assert [row["id"] for row in inbox] == names
     assert inbox[0]["at"] > 0 and inbox[0]["at"] <= inbox[1]["at"]
+    # …and none of them is on the wire yet, which is the only thing that can
+    # still be thrown away (`_discard_inbox`).
+    assert [row["drained"] for row in inbox] == [False, False]
 
 
-def test_a_drained_entry_leaves_the_poll(agent, tmp_path):
-    """DRAINED MEANS GONE FROM THE DIRECTORY, which is why nothing has to be
-    marked: the host moves each name into `inbox/done/` once its bytes are on
-    the wire, so the listing is exactly the untaken ones and the CLI's own echo
-    is what carries the message from there on."""
+def test_a_drained_entry_is_still_waiting_until_the_cli_echoes_it(agent,
+                                                                  tmp_path):
+    """DRAINED IS NOT DELIVERED (Akshil, 2026-09-12). The host `os.replace`s
+    each entry into `inbox/done/` within 0.2 s of it being written, while the
+    CLI holds it in its own queue until the reply in flight finishes — so
+    "the inbox directory IS the untaken set" made the bubble flash for a fifth
+    of a second and then vanish for the whole of the turn it was typed into.
+
+    What actually says the message has arrived is the CLI's own echo in
+    `out.jsonl`, and nothing else on disk can."""
     run_dir = _run_dir(tmp_path)
     agent._write_inbox_entry(str(run_dir), "first follow-up")
     agent._write_inbox_entry(str(run_dir), "second follow-up")
@@ -126,10 +143,57 @@ def test_a_drained_entry_leaves_the_poll(agent, tmp_path):
                    if n.endswith(".json"))
 
     _drain(run_dir, names[0])
+    inbox = agent._poll("run")["inbox"]
+    assert [row["text"] for row in inbox] == ["first follow-up",
+                                              "second follow-up"]
+    # …and the two are different kinds of waiting: the drained one is past the
+    # point where it could be discarded.
+    assert [row["drained"] for row in inbox] == [True, False]
+    assert [row["id"] for row in inbox] == names
+
+    _drain(run_dir, names[1])
+    assert [row["drained"] for row in agent._poll("run")["inbox"]] == \
+        [True, True]
+
+
+def test_an_echoed_entry_leaves_the_poll_and_takes_the_ones_before_it(agent,
+                                                                      tmp_path):
+    """The echo is the hand-off: once the message is in `out.jsonl` the
+    transcript carries it and this field has nothing left to say. Both sides are
+    FIFO — the host drains in name order and the CLI echoes in the order it
+    drained — so the walk back stops at the first entry that has landed."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "first follow-up")
+    agent._write_inbox_entry(str(run_dir), "second follow-up")
+    names = sorted(n for n in os.listdir(run_dir / "inbox")
+                   if n.endswith(".json"))
+    _drain(run_dir, names[0])
+    _drain(run_dir, names[1])
+
+    _echo(run_dir, "first follow-up")
     assert [row["text"] for row in agent._poll("run")["inbox"]] == \
         ["second follow-up"]
 
-    _drain(run_dir, names[1])
+    _echo(run_dir, "second follow-up")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_drained_control_request_is_not_a_message_on_this_side_either(
+        agent, tmp_path):
+    """`_write_control_request` rows go through the same directory and the same
+    `done/`. They are not words anybody typed, so they are not turns on either
+    side of the comparison — and counting one would push every real entry a
+    place out of step with its echo."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_control_request(str(run_dir), "interrupt")
+    agent._write_inbox_entry(str(run_dir), "the only real one")
+    for name in sorted(n for n in os.listdir(run_dir / "inbox")
+                       if n.endswith(".json")):
+        _drain(run_dir, name)
+
+    assert [row["text"] for row in agent._poll("run")["inbox"]] == \
+        ["the only real one"]
+    _echo(run_dir, "the only real one")
     assert agent._poll("run")["inbox"] == []
 
 
