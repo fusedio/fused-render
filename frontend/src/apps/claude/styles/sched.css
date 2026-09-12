@@ -337,3 +337,27 @@
   flex: 0 0 auto;
   color: var(--c-accent-text);
 }
+/* THE GRAMMAR'S OWN SEPARATOR — `Queued · #2 in line · behind TASK-041 "…" ·
+   Skip · Cancel`. One dot, one weight, in the dim ink the caption already wears,
+   so the row reads as a sentence rather than as a toolbar with a label glued to
+   its left end. Decorative (`aria-hidden`): a screen reader gets the words. */
+.c-schedblock .sb-queued-dot {
+  flex: 0 0 auto;
+  color: var(--c-faint);
+}
+/* SKIP AND CANCEL, IN THAT ORDER AND IN THAT WEIGHT. Skip is the press a reader
+   actually wants; Cancel is the destructive one and is deliberately the quieter
+   of the two — no border, dim until it is pointed at. It is the same hierarchy
+   the Tasks row's own menu draws between "Skip the queue" and its cancel. */
+.c-schedblock .sb-acts--chip {
+  gap: 6px;
+}
+.c-schedblock .sb-acts button.sb-quiet {
+  border-color: transparent;
+  color: var(--c-dim);
+  padding-inline: 4px;
+}
+.c-schedblock .sb-acts button.sb-quiet:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--c-error);
+}

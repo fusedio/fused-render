@@ -125,16 +125,19 @@ def agent(tmp_path, monkeypatch):
 
 
 def stage_run(agent, name, file, session_id="", resumed_from="", alive=True,
-              perms=()):
+              perms=(), pid=None):
     """One run dir as the agent writes it: `meta.json` (the target file and the
-    session it resumed), the `session` file the first poll leaves, and this
-    suite's two stand-ins for a pid and a perm directory."""
+    session it resumed), the `session` file the first poll leaves, the `pid`
+    file the session host overwrites with the CLI's own pid, and this suite's
+    two stand-ins for liveness and a perm directory."""
     run_dir = agent.dir / name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "meta.json").write_text(
         json.dumps({"file": file, "resumed_from": resumed_from, "message": "go"}))
     if session_id:
         (run_dir / "session").write_text(session_id)
+    if pid is not None:
+        (run_dir / "pid").write_text(str(pid))
     if alive:
         (run_dir / "alive").write_text("1")
     (run_dir / "perms.json").write_text(json.dumps(list(perms)))
@@ -488,6 +491,132 @@ def test_a_reservation_names_the_run_that_has_not_named_itself(home, agent):
     assert held["session_id"] == SID and held["task_key"] == SID
     assert pq.is_free(folder_key(work), SID) is True
     assert pq.is_free(folder_key(work), SID2) is False
+
+
+def test_a_run_is_named_by_the_live_registry_through_its_pid(home, agent):
+    """The fix for the `starting` window (Akshil, 2026-09-12). A brand-new
+    chat's run dir names no session — `resumed_from` is empty and the `session`
+    file is written by the first poll — but the CLI registers itself the moment
+    it comes up, and the run dir has carried its pid since the host spawned it.
+    So the run stops being anonymous in seconds rather than in
+    `STARTING_GRACE` minutes."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="busy")
+
+    held = pq.holders()[folder_key(work)]
+    assert held["kind"] == "run"                 # not "starting" any more
+    assert held["session_id"] == SID and held["run_id"] == "r-1"
+    assert pq.is_free(folder_key(work), SID) is True
+    assert pq.is_free(folder_key(work), SID2) is False
+
+
+def test_a_registry_named_run_that_is_idle_holds_nothing(home, agent):
+    """And the other half of Akshil's case: once the run HAS a name, an idle
+    session host holds nothing — which is what lets the second message of a
+    finished conversation run at all."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="idle")
+
+    assert pq.holders() == {}
+    assert pq.is_free(folder_key(work), SID) is True
+
+
+def test_a_run_with_no_pid_or_no_registry_row_is_still_just_starting(home,
+                                                                    agent):
+    """The lookup is a bonus, never a requirement: a run whose pid nothing has
+    registered is exactly the anonymous holder it always was."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=2 ** 22 + 12345)
+    assert pq.holders()[folder_key(work)]["kind"] == "starting"
+
+
+def test_the_chat_that_started_a_run_is_free_to_send_into_it_by_run_id(home,
+                                                                      agent):
+    """AKSHIL'S BUG, at this module's level. The first message of a new chat is
+    admitted with no session id, so the reservation it leaves names nobody and
+    the run it spawns is anonymous — and the second message, which by then DOES
+    carry a session, was told the folder was busy with a run it could not match.
+    The run id is the name the conversation has before it has a session."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="")
+    pq.reserve(folder_key(work), "")          # a new chat: no session yet
+
+    assert pq.is_free(folder_key(work), SID) is False
+    assert pq.is_free(folder_key(work), SID, run_id="r-1") is True
+    # …and it is the RUN that matches, not any run id at all.
+    assert pq.is_free(folder_key(work), SID, run_id="r-2") is False
+    assert pq.is_free(folder_key(work), "", run_id="r-1") is True
+
+
+def test_a_run_id_matches_a_named_holder_too(home, agent):
+    """`run` and `starting` both carry the run they are, so the rule does not
+    depend on which kind the holder happens to be this second."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id=SID)
+    registry(SID, status="busy")
+
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
+    assert pq.is_free(folder_key(work), SID2) is False
+    assert pq.is_free(folder_key(work), SID2, run_id="r-1") is True
+
+
+def test_a_reservation_made_with_no_session_is_renamed_by_its_own_chat(home,
+                                                                      agent):
+    """A reservation taken before the session existed must be CLAIMABLE by the
+    chat that took it, not a wall it then queues behind. Admitting again with a
+    session and the run id rewrites it."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="")
+    pq.reserve(key, "", run_id="r-1")
+
+    assert pq.reserved(key) == "" and pq.reserved_run(key) == "r-1"
+    assert pq.reserve_if_free(key, SID, "r-1") is True
+    assert pq.reserved(key) == SID
+    assert pq.reserved_run(key) == "r-1"
+    # Another conversation still cannot take it.
+    assert pq.reserve_if_free(key, SID2) is False
+
+
+def test_a_reservation_with_no_session_still_names_the_run_it_authorised(home,
+                                                                        agent):
+    """Before the run dir even exists: the admission knew the run, so the
+    holder it derives can be recognised by it."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    pq.reserve(key, "", run_id="r-9")
+
+    held = pq.holders()[key]
+    assert held["kind"] == "reserved" and held["run_id"] == "r-9"
+    assert pq.is_free(key, SID) is False
+    assert pq.is_free(key, SID, run_id="r-9") is True
+
+
+def test_a_reservation_cannot_be_claimed_back_from_a_real_holder(home, agent):
+    """The reservation is a claim on the folder; once something real is in
+    there, the real thing is the only one that counts."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    pq.reserve(key, "", run_id="r-mine")
+    stage_run(agent, "r-other", str(work / "page.html"), session_id=SID2)
+    registry(SID2, status="busy")
+
+    assert pq.holders()[key]["run_id"] == "r-other"
+    assert pq.is_free(key, SID, run_id="r-mine") is False
+    assert pq.reserve_if_free(key, SID, "r-mine") is False
 
 
 def test_an_unnamed_run_stops_holding_once_it_is_plainly_not_starting(home,

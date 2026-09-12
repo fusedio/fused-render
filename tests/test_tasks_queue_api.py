@@ -255,6 +255,62 @@ def park(tmp_path, monkeypatch):
     return stage
 
 
+@pytest.fixture()
+def chat_run(tmp_path, monkeypatch):
+    """A real runs tree and a chat's own live run in it — the run a new chat's
+    first message starts, which names no session until something polls it.
+
+    The `pid` file is the one the session host overwrites with the CLI's own
+    pid, and it is what lets the live registry name the run (`session_for_pid`).
+    """
+    runs = tmp_path / "chat-runs"
+    runs.mkdir()
+    monkeypatch.setattr(project_queue, "agent_module",
+                        lambda: _RunsAgent(runs))
+
+    def stage(run_id, project, pid=None, session_id=""):
+        run_dir = runs / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "meta.json").write_text(
+            json.dumps({"file": project, "resumed_from": ""}))
+        if session_id:
+            (run_dir / "session").write_text(session_id)
+        if pid is not None:
+            (run_dir / "pid").write_text(str(pid))
+        (run_dir / "alive").write_text("1")
+        return run_dir
+
+    return stage
+
+
+@pytest.fixture()
+def registry(tmp_path, monkeypatch):
+    """The live-session registry Claude Code writes, under tmp — one row per
+    call, then a tick to read it in."""
+    sessions = tmp_path / "claude-sessions-registry"
+    sessions.mkdir()
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(sessions))
+    monkeypatch.setattr(tasks_watch, "HISTORY_PATH",
+                        str(tmp_path / "no-history.jsonl"))
+    tasks_watch.reset()
+
+    stamp = [time.time() + 10]
+
+    def write(session_id, status="busy", pid=None, name="p"):
+        path = sessions / (name + ".json")
+        path.write_text(json.dumps(
+            {"pid": os.getpid() if pid is None else pid,
+             "sessionId": session_id, "cwd": "/proj", "status": status,
+             "updatedAt": int(time.time() * 1000)}), encoding="utf-8")
+        stamp[0] += 1
+        os.utime(path, (stamp[0], stamp[0]))
+        tasks_watch.tick()
+        return path
+
+    yield write
+    tasks_watch.reset()
+
+
 def _rows(client):
     r = client.get("/api/tasks")
     assert r.status_code == 200, r.text
@@ -602,6 +658,98 @@ def test_a_second_session_queues_behind_the_first_ones_reservation(
     assert body["entry"]["message"] == "me too"
     assert body["entry"]["state"] == schedule.PENDING
     assert _rows(client)["sess-b"]["status"] == "queued"
+
+
+def test_a_new_chats_second_message_is_not_queued_behind_its_own_run(
+        client, folders, flag, chat_run):
+    """AKSHIL'S BUG, the whole sequence at the router (folder qa-folder-b,
+    2026-09-12).
+
+    A new chat has no session, so its first message is admitted with
+    `session_id: ""` and reserves the folder for nobody. The run that message
+    starts writes no session id into its run dir for a while, so the derivation
+    can only call it `starting` — and the SECOND message, which by then carries
+    the real session, used to be told `#1 in line · behind a run in this
+    folder`: queued behind itself for the whole `STARTING_GRACE`.
+
+    The client sends the run it started, and that is the name the conversation
+    has before it has a session."""
+    flag()
+    alpha, _beta = folders
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "", "message": "first"}
+                 ).json() == {"run": True}
+    assert project_queue.reserved(alpha) == ""
+    # The run appears: alive, in that folder, and it has not named itself.
+    chat_run("run-1", alpha, pid=os.getpid())
+    project_queue.invalidate_holders()
+    assert project_queue.holders()[alpha]["kind"] == "starting"
+    # The session alone still cannot match it — that is the state the bug was
+    # reported from, and what the run id is for.
+    assert project_queue.is_free(alpha, "sess-new") is False
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "sess-new", "run_id": "run-1",
+               "message": "second"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"run": True}
+    assert schedule.list_entries() == []          # nothing was queued
+    # …and the reservation now carries the name the chat finally has.
+    assert project_queue.reserved(alpha) == "sess-new"
+    assert project_queue.reserved_run(alpha) == "run-1"
+
+
+def test_the_registry_names_the_new_chats_run_by_its_pid(
+        client, folders, flag, chat_run, registry):
+    """The other half of the same fix, and the one that needs no client change:
+    the CLI registers its session against its pid, the run dir has carried that
+    pid since it spawned, so the run is named seconds after it starts and the
+    ordinary session match answers."""
+    flag()
+    alpha, _beta = folders
+    _post(client, "/api/tasks/queue/admit",
+          {"project": alpha, "session_id": "", "message": "first"})
+    chat_run("run-1", alpha, pid=os.getpid())
+    registry("sess-new", status="busy")
+    project_queue.invalidate_holders()
+
+    held = project_queue.holders()[alpha]
+    assert held["kind"] == "run" and held["session_id"] == "sess-new"
+    # No run_id needed: the conversation is named now.
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "sess-new", "message": "second"})
+    assert r.json() == {"run": True}
+    assert schedule.list_entries() == []
+
+
+def test_a_run_id_does_not_admit_a_chat_into_somebody_elses_folder(
+        client, folders, flag, chat_run):
+    """The self-match is about identity, not a skeleton key: a run id that
+    names nothing in this folder queues like anything else."""
+    flag()
+    alpha, _beta = folders
+    chat_run("run-other", alpha, pid=os.getpid(), session_id="sess-holder")
+    project_queue.reserve(alpha, "sess-holder")
+    project_queue.invalidate_holders()
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "sess-mine", "run_id": "run-9",
+               "message": "me too"})
+    assert r.status_code == 200, r.text
+    assert r.json()["run"] is False
+    assert _rows(client)["sess-mine"]["status"] == "queued"
+
+
+def test_a_run_id_that_is_a_path_is_refused(client, folders, flag):
+    """Run ids name a directory under the runs tree; one carrying a separator
+    is a client bug, and a 400 is what makes it visible."""
+    flag()
+    alpha, _beta = folders
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "s", "run_id": "../etc",
+               "message": "go"})
+    assert r.status_code == 400
+    assert "run_id" in r.json()["error"]
 
 
 def test_a_queued_send_keeps_every_choice_the_user_made(

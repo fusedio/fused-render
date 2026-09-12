@@ -20,8 +20,8 @@
 // that reads location.pathname is a store that has to be told when the pathname
 // changes.
 import { useEffect, useState } from "react";
-import { getTasksPulse } from "@platform/lib/api";
-import type { Task, TaskPulseTask } from "@platform/lib/api";
+import { getTaskChanges, getTasksPulse } from "@platform/lib/api";
+import type { Task, TaskChanges, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -128,8 +128,168 @@ async function poll() {
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
+  // THE FAST LANE FOLLOWS THE SAME RULE AS THE TIMER, and is started and
+  // stopped from the same place so the two can never disagree about who is
+  // polling: one reader and no feeder means this module is the poller, on both
+  // clocks.
+  syncFastLane();
   if (listeners.size + rowListeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
+}
+
+// ---- the fast lane -----------------------------------------------------------
+//
+// "1 running" IN THE RAIL SHOULD BE INSTANT, and on the two intervals above it
+// was not: a run that started the moment after a poll went unmentioned for ten
+// seconds, and one that started on an idle machine for thirty (Akshil,
+// 2026-09-12: "should be instant… everywhere in UI"). The number itself is
+// cheap to fetch; what was slow was WAITING to ask.
+//
+// So the store watches `/api/tasks/changes` — the same long-poll the Tasks page
+// runs (Scheduled.tsx) against the same server-side watcher, which answers the
+// moment a session starts, resumes, takes a prompt, grows, or any queue verb
+// rings it. On a generation move this calls `poll()` at once; the intervals stay
+// exactly as they were, as the floor under a watcher that missed something.
+//
+// ONE POLLER, STILL. The loop runs only while this module is the poller — a
+// reader mounted and NO feeder — because the Tasks page runs this very lane
+// itself and publishes what it learns (`publishTasks`), which is how the
+// sidebar comes along without a second connection. `useTasksFeeder` therefore
+// stands the whole module down, this lane included, and starting it back up is
+// the same `schedule()` call that re-arms the timer.
+
+/** The long-poll's own wait, in seconds — the server caps it at its own
+ *  `MAX_WAIT_SEC`. Shorter than a proxy's idle timeout on purpose. */
+const CHANGES_WAIT_S = 25;
+/** A failed call backs off rather than hammering a server that is restarting.
+ *  The same 3 s the Tasks page's lane spends. */
+export const FAST_LANE_BACKOFF_MS = 3000;
+
+/** The loop's world, so a suite can drive it with a fake fetch and a fake clock
+ *  instead of a real connection and a real 25 seconds. */
+export interface FastLaneDeps {
+  /** `/api/tasks/changes?since=…`. */
+  changes(since: number): Promise<TaskChanges>;
+  /** Something moved: re-read the pulse NOW. */
+  onChange(): void;
+  visible(): boolean;
+  /** Resolves on the next hidden → visible edge. */
+  untilVisible(): Promise<void>;
+  sleep(ms: number): Promise<void>;
+  /** The lane has been stood down (last reader gone, or a feeder took over). */
+  stopped(): boolean;
+}
+
+/**
+ * Watch the server's change generation, and poke the pulse when it moves.
+ *
+ * THE FIRST ANSWER IS A HANDSHAKE, NOT NEWS. `since < 0` is answered at once
+ * with the current generation and no keys (tasks_watch.wait), which is exactly
+ * what a store that has just mounted wants: a starting point, without a poke —
+ * `useTasksPulse` already reads the pulse on mount, and poking here would make
+ * every mount pay for two.
+ *
+ * WHAT THE ROWS SAY IS NOT READ, deliberately. The page merges them because it
+ * draws them; this module wants the compact `/api/tasks/pulse` shape and gets it
+ * by asking. The long-poll is a doorbell, and the answer to it is one small GET.
+ *
+ * A HIDDEN TAB SITS THE LOOP OUT. The browser throttles its timers to about a
+ * lap a minute anyway, and a backgrounded window holding a connection open is
+ * the one cost this must not add per window; `untilVisible` resumes it, and the
+ * handshake on the way back in re-syncs the generation for free.
+ */
+export async function watchTaskChanges(deps: FastLaneDeps): Promise<void> {
+  let since = -1;
+  while (!deps.stopped()) {
+    if (!deps.visible()) {
+      await deps.untilVisible();
+      continue;
+    }
+    try {
+      const answer = await deps.changes(since);
+      if (deps.stopped()) return;
+      const gen = typeof answer.generation === "number" ? answer.generation : -1;
+      const handshake = since < 0;
+      // `full: true` is "you are further behind than I remember" — a server that
+      // restarted, or a store that slept through the ring. It is news by
+      // definition: read the pulse and start again from the generation it named.
+      const moved =
+        !handshake &&
+        (answer.full === true ||
+          (gen >= 0 && gen > since) ||
+          (answer.rows?.length ?? 0) > 0 ||
+          (answer.gone?.length ?? 0) > 0);
+      if (gen >= 0) since = gen;
+      if (moved) deps.onChange();
+    } catch {
+      if (deps.stopped()) return;
+      await deps.sleep(FAST_LANE_BACKOFF_MS);
+    }
+  }
+}
+
+let lane: { stop(): void } | null = null;
+
+function syncFastLane() {
+  const wanted =
+    listeners.size + rowListeners.size > 0 &&
+    feeders === 0 &&
+    typeof document !== "undefined";
+  if (!wanted) {
+    lane?.stop();
+    lane = null;
+    return;
+  }
+  if (lane) return;
+  let stopped = false;
+  let inflight: AbortController | null = null;
+  /** Set while the lane is parked on a hidden tab: the way to end a wait that
+   *  has no timer and no request behind it. Without this, a sidebar unmounted
+   *  while the window was in the background left a listener and a promise that
+   *  nothing could ever settle. */
+  let wake: (() => void) | null = null;
+  const handle = {
+    stop() {
+      stopped = true;
+      // The open long-poll goes with it: a lane nobody is reading must not hold
+      // a connection until its 25 s lapse.
+      inflight?.abort();
+      wake?.();
+    },
+  };
+  lane = handle;
+  void watchTaskChanges({
+    stopped: () => stopped,
+    visible: () => document.visibilityState === "visible",
+    untilVisible: () =>
+      new Promise<void>((resolve) => {
+        const done = () => {
+          document.removeEventListener("visibilitychange", onChange);
+          wake = null;
+          resolve();
+        };
+        const onChange = () => {
+          if (document.visibilityState === "visible") done();
+        };
+        wake = done;
+        document.addEventListener("visibilitychange", onChange);
+      }),
+    sleep: (ms) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+      }),
+    changes: (since) => {
+      inflight = new AbortController();
+      return getTaskChanges(since, CHANGES_WAIT_S, inflight.signal);
+    },
+    // `poll()` carries the in-flight and generation guards already, so a poke
+    // can never land a stale answer over a fresher one.
+    onChange: () => {
+      void poll();
+    },
+  }).finally(() => {
+    if (lane === handle) lane = null;
+  });
 }
 
 /** The window event a poke sends when a feeder page owns the poll: the store

@@ -96,6 +96,52 @@ def registry_row(session_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def session_for_pid(pid) -> str:
+    """The session id the `claude` process `pid` is holding, or `""`.
+
+    THE REGISTRY READ BACKWARDS, and the reason it exists is a run that has not
+    said who it is yet. A run dir carries the CLI's own pid from the instant the
+    session host spawns it (`run_dir/pid`), but the session id only lands in the
+    run dir once something polls the run — a chat whose first message was sent
+    and then left alone can go a long time without one, and for all that time
+    the project queue can say only "a process is starting in that folder", not
+    WHICH conversation it is. Claude Code itself answers that in
+    `~/.claude/sessions/<pid>.json` from the moment the CLI comes up, and this
+    loop already parses every one of those rows once a second: the map is keyed
+    by session with the pid INSIDE the row, so the reverse lookup is a scan of a
+    map holding one entry per live `claude` on the machine.
+
+    The file is read directly when the map has nothing to say — the watcher may
+    not have ticked yet on a server seconds old, and it is the same file the
+    tick would have read. The pid is checked for life on that path because a
+    crashed CLI leaves its row behind; the map's rows are pruned by the tick
+    itself and need no second check.
+    """
+    pid_s = str(pid or "").strip()
+    if not pid_s.isdigit():
+        return ""
+    with _cond:
+        for sid, row in _registry.items():
+            if str(row.get("pid") or "") == pid_s:
+                return sid
+    try:
+        with open(os.path.join(SESSIONS_DIR, pid_s + ".json"),
+                  encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(row, dict) or str(row.get("pid") or "") != pid_s:
+        return ""
+    sid = row.get("sessionId")
+    # `_pid_alive` wants the int — it trusts anything it cannot read as a pid,
+    # which is the right default for the tick (the file is the authority there)
+    # and the wrong one here, where an unprobed pid would name a crashed
+    # session the map has already pruned.
+    if not isinstance(sid, str) or not sid or not _pid_alive(int(pid_s)):
+        return ""
+    return sid
+
+
 def live_from_registry(session_id: str,
                        transcript_mtime: float | None = None) -> tuple[bool, float] | None:
     """(running, last_active) as the registry tells it, or None to say "no

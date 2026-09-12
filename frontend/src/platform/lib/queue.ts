@@ -37,7 +37,9 @@ export interface QueueFacts {
    *  a fact about one MESSAGE. So the Board card and the List row pass this
    *  field absent and read exactly as they did. */
   behind_own?: boolean;
-  /** …and that holder's title, for a caption only. */
+  /** …and that holder's title, which the caption SPENDS: `behind TASK-038
+   *  "Run python3 -c …"`. Clipped to `QUEUE_AHEAD_TITLE_MAX` in the line and
+   *  handed back whole as `aheadTitle` for the pointer. */
   queue_ahead_title?: string;
   /** Skipped (or holding a held answer): this one goes out next, and has the
    *  claim on the spot to prove it. THE ONLY thing that reads as the head — see
@@ -128,21 +130,58 @@ export function queueLine(facts: QueueFacts): QueueLine | null {
   // whose other half names a stranger's run.
   const head = runsNext ? "runs next" : own ? "" : at > 0 ? `#${at} in line` : "in line";
   const ahead = (facts.queue_ahead || "").trim();
+  const title = (facts.queue_ahead_title || "").trim();
   // …AND THE SAME ORDER OF PREFERENCE AS THE HEAD: the reader's own message
   // first, because a chat that queued two sends is the one place where naming
   // some TASK-nnn would send them looking for a task they do not have.
   const behind = own
     ? "after your previous message"
     : ahead
-      ? `behind ${ahead}`
+      ? `behind ${ahead}${title ? ` ${quoteAhead(title)}` : ""}`
       : "behind a run in this folder";
   return {
     head,
     behind,
     text: head ? `${head} · ${behind}` : behind,
     runsNext,
-    aheadTitle: (facts.queue_ahead_title || "").trim(),
+    aheadTitle: title,
   };
+}
+
+/**
+ * How much of the holder's title a caption may spend.
+ *
+ * FORTY CHARACTERS, because the caption is a ROW and not a paragraph: the chip,
+ * the Board card's footer and the List row's second line all give this cell the
+ * space left over after the word, the place and the task id, and a title longer
+ * than that pushes the end of the sentence out of a 340px pane. The full text is
+ * still there for a pointer — every surface hangs `aheadTitle` off a `title` (or
+ * `data-hint`) attribute — so the clip costs a reader nothing they cannot get.
+ */
+export const QUEUE_AHEAD_TITLE_MAX = 40;
+
+/**
+ * The holder's own words, beside its number: `behind TASK-038 "Run python3 …"`.
+ *
+ * A TASK ID IS NOT A NAME. "behind TASK-038" told the reader that something is
+ * in front and nothing whatever about WHAT — which, in a folder the reader is
+ * working in themselves, is the one question they have (Akshil, browser QA
+ * 2026-09-12). The title is the server's own `queue_ahead_title`, in quotes
+ * because it is somebody else's sentence sitting inside this one, and clipped
+ * with an ellipsis rather than wrapped.
+ *
+ * QUOTED ONLY WHEN THERE IS SOMETHING TO QUOTE: an empty title (an older
+ * server, a holder with no row) leaves the caption exactly as it read before,
+ * rather than trailing a pair of empty quotes.
+ */
+export function quoteAhead(title: string): string {
+  const clean = title.trim().replace(/\s+/g, " ");
+  if (!clean) return "";
+  const clipped =
+    clean.length > QUEUE_AHEAD_TITLE_MAX
+      ? clean.slice(0, QUEUE_AHEAD_TITLE_MAX - 1).trimEnd() + "…"
+      : clean;
+  return `"${clipped}"`;
 }
 
 /**

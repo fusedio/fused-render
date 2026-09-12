@@ -1413,3 +1413,141 @@ def test_run_now_at_is_never_inherited(folders, home, spawned):
     schedule._update(occurrence["id"], state=schedule.SENT, turn="failed",
                      claude_session_id=SID)
     assert schedule.resend(occurrence["id"])["entry"]["run_now_at"] == ""
+
+
+# ================================================ dispatch into a live host
+
+
+class _HostAgent:
+    """The two calls the host dispatch makes on agent.py: "is there a session I
+    can hand a follow-up to" and "here it is"."""
+
+    def __init__(self, runs, run_id="", answer=None):
+        # An empty runs tree, because `holders()` walks it on the same pass.
+        self.RUNS = str(runs)
+        self.run_id = run_id
+        self.answer = answer if answer is not None else {"sent": True}
+        self.live_host_calls = []
+        self.sends = []
+
+    def _alive(self, run_dir):
+        return False
+
+    def _permissions(self, run_dir):
+        return []
+
+    def _live_host(self, file, session_id="", limit=None):
+        self.live_host_calls.append((file, session_id))
+        return {"run_id": self.run_id}
+
+    def _send(self, run_id, message, read_dirs="", model="", effort="",
+              permission_mode=""):
+        self.sends.append({"run_id": run_id, "message": message,
+                           "read_dirs": read_dirs, "model": model,
+                           "effort": effort, "permission_mode": permission_mode})
+        return dict(self.answer)
+
+
+@pytest.fixture()
+def host(tmp_path, monkeypatch):
+    """The agent module `_host_send` loads, replaceable per case."""
+    made = {}
+    runs = tmp_path / "host-runs"
+    runs.mkdir()
+
+    def use(run_id="", answer=None):
+        agent = _HostAgent(runs, run_id, answer)
+        made["agent"] = agent
+        monkeypatch.setattr(pq, "agent_module", lambda: agent)
+        return agent
+
+    return use
+
+
+def test_a_message_for_a_live_host_goes_into_its_inbox_not_a_new_process(
+        folders, home, spawned, host):
+    """AKSHIL'S BUG, the scheduler's half. A chat whose host is up and idle
+    between turns had a scheduled message for its own session spawned BESIDE it
+    — two `claude` processes on one session id, two writers on one transcript.
+    The chat's own composer has never done that: a follow-up goes into the live
+    host's inbox and is absorbed. This is that path, taken by the scheduler."""
+    _on(home)
+    agent = host(run_id="run-live")
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
+                            session_id=SID, model="opus", effort="high")
+
+    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
+    assert spawned == []                                  # nothing was spawned
+    assert agent.live_host_calls == [(str(folders["alpha"]), SID)]
+    assert agent.sends[0]["run_id"] == "run-live"
+    assert "carry on" in agent.sends[0]["message"]
+    assert agent.sends[0]["model"] == "opus"
+    assert agent.sends[0]["effort"] == "high"
+    stored = _stored(entry["id"])
+    assert stored["state"] == schedule.SENT
+    assert stored["run_id"] == "run-live"
+
+
+def test_a_respawn_answer_falls_back_to_the_spawn(folders, home, spawned, host):
+    """`agent._send` says `respawn` when the live host cannot serve the message
+    as it stands — and it has already ended the session by then. The message is
+    owed either way."""
+    _on(home)
+    host(run_id="run-live", answer={"respawn": True})
+    entry = schedule.create(str(folders["alpha"]), "with a picture", _ago(1),
+                            session_id=SID)
+
+    schedule.tick()
+    assert [c["session_id"] for c in spawned] == [SID]
+    assert _stored(entry["id"])["run_id"] == "r-1"
+
+
+def test_no_live_host_and_no_session_both_spawn(folders, home, spawned, host):
+    """A conversation with no host is the ordinary send, and a fresh
+    conversation has no host by definition — neither pays for the lookup twice
+    nor changes shape."""
+    _on(home)
+    agent = host(run_id="")
+    fresh = schedule.create(str(folders["alpha"]), "brand new", _ago(1))
+    schedule.tick()
+    assert [c["session_id"] for c in spawned] == [""]
+    assert agent.live_host_calls == []      # no session: never asked
+
+    resumed = schedule.create(str(folders["beta"]), "carry on", _ago(1),
+                              session_id=SID2)
+    schedule.tick()
+    assert [c["session_id"] for c in spawned] == ["", SID2]
+    assert agent.live_host_calls == [(str(folders["beta"]), SID2)]
+    assert _stored(fresh["id"])["state"] == schedule.SENT
+    assert _stored(resumed["id"])["state"] == schedule.SENT
+
+
+def test_with_the_flag_off_a_live_host_is_never_asked(folders, home, spawned,
+                                                      host):
+    """Flag off is byte-for-byte what shipped: the scheduler spawns, and
+    agent.py is not even loaded."""
+    _on(home, False)
+    agent = host(run_id="run-live")
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID)
+
+    schedule.tick()
+    assert [c["session_id"] for c in spawned] == [SID]
+    assert agent.live_host_calls == [] and agent.sends == []
+
+
+def test_a_host_that_raises_is_a_spawn(folders, home, spawned, monkeypatch, host):
+    """Best-effort: a template we cannot reach is the send the scheduler has
+    always made, never a failed entry."""
+    _on(home)
+    agent = host(run_id="run-live")
+
+    def boom(file, session_id="", limit=None):
+        raise RuntimeError("no agent here")
+
+    monkeypatch.setattr(agent, "_live_host", boom)
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
+                            session_id=SID)
+
+    schedule.tick()
+    assert [c["session_id"] for c in spawned] == [SID]
+    assert _stored(entry["id"])["state"] == schedule.SENT

@@ -86,6 +86,8 @@ interface Harness {
   holdTasks(): void;
   /** Let a wedged `/api/tasks` answer. */
   releaseTasks(): Promise<void>;
+  /** The entry ids the chat is drawing a chip for — the block's filter. */
+  setChips(ids: string[]): Promise<void>;
 }
 
 async function mount(
@@ -97,6 +99,9 @@ async function mount(
    *  drove it by writing that global would be deciding the flag for every other
    *  file in the same bun run. */
   queueEnabled?: boolean,
+  /** Entries the chat is already drawing a Queued chip for: the block does not
+   *  draw those (flag on only). */
+  chips: string[] = [],
 ): Promise<Harness> {
   let served = initial;
   let servedTasks: SchedTask[] = tasks;
@@ -133,7 +138,7 @@ async function mount(
   };
 
   let out: State | null = null;
-  function Probe(props: { sessionId: string }) {
+  function Probe(props: { sessionId: string; chips: string[] }) {
     out = useSchedule({
       controller,
       file: "/w/app",
@@ -142,14 +147,17 @@ async function mount(
       setRunParam: () => {},
       api,
       timers,
+      chipEntryIds: props.chips,
       ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
     return null;
   }
 
   let renderer!: ReactTestRenderer;
+  let session_ = session;
+  let chips_ = chips;
   await act(async () => {
-    renderer = create(createElement(Probe, { sessionId: session }));
+    renderer = create(createElement(Probe, { sessionId: session_, chips: chips_ }));
   });
   mounted.push(renderer);
 
@@ -159,8 +167,15 @@ async function mount(
       return out;
     },
     async setSession(id: string) {
+      session_ = id;
       await act(async () => {
-        renderer.update(createElement(Probe, { sessionId: id }));
+        renderer.update(createElement(Probe, { sessionId: session_, chips: chips_ }));
+      });
+    },
+    async setChips(ids: string[]) {
+      chips_ = ids;
+      await act(async () => {
+        renderer.update(createElement(Probe, { sessionId: session_, chips: chips_ }));
       });
     },
     async poll() {
@@ -473,4 +488,76 @@ test("a row belongs to the entry it was read for", async () => {
   h.serve([pending("z", "2026-09-09T18:00:00+00:00")]);
   await h.poll();
   expect(h.state().rec).toBe(null);
+});
+
+// ── one representation for a queued send ─────────────────────────────────────
+//
+// The chip and this block used to draw the SAME entry at the same time, a few
+// pixels apart, in two vocabularies — "Queued · #1 in line · behind TASK-006"
+// over "Blocked — a scheduled message runs in this chat … Cancel this message"
+// — disagreeing about whether anything was blocked at all (Akshil, browser QA
+// 2026-09-12). The chip is the right card for a message the reader just typed;
+// this block is the right one for a message coming due out of the calendar.
+
+test("the block does not draw an entry the chat is already chipping", async () => {
+  const h = await mount(
+    [
+      pending("a", "2026-09-09T14:00:00+00:00"),
+      pending("b", "2026-09-09T15:00:00+00:00"),
+    ],
+    "s1",
+    [{ key: "k", task_id: "TASK-1", messages: [{ entry_id: "b" }] }],
+    true,
+    ["a"],
+  );
+  // "a" has a chip, so the block takes what is left — and takes it from the
+  // FRONT, which is why the filter lives in the hook: the row's number is read
+  // for `blockers[0]`, and a view that hid the first entry itself would label
+  // the second one with the first one's task.
+  expect(h.state().blockers.map((e) => e.id)).toEqual(["b"]);
+  expect(h.state().rec?.task_id).toBe("TASK-1");
+
+  // Every entry chipped: nothing left to draw, and `SchedBlock` renders null on
+  // an empty list (it has always done exactly that).
+  await h.setChips(["a", "b"]);
+  expect(h.state().blockers).toEqual([]);
+  // …and the composer is still open: the queue never shuts it.
+  expect(h.state().blocked).toBe(false);
+
+  // The chip comes down (its entry fired, or was cancelled from the Tasks page)
+  // and the block has the message back.
+  await h.setChips([]);
+  expect(h.state().blockers.map((e) => e.id)).toEqual(["a", "b"]);
+});
+
+test("flag OFF, a chip id filters nothing — the block is main's byte for byte", async () => {
+  // There are no chips with the flag off (nothing is ever admitted), so this is
+  // belt and braces on the one rule this feature must not break: the block a
+  // flag-off reader sees is the block they saw before it existed.
+  const h = await mount(
+    [pending("a", "2026-09-09T14:00:00+00:00")],
+    "s1",
+    [],
+    false,
+    ["a"],
+  );
+  expect(h.state().blockers.map((e) => e.id)).toEqual(["a"]);
+  expect(h.state().blocked).toBe(true);
+  expect(h.state().schedDisabled).toBe(true);
+});
+
+test("the filtered list keeps its identity when it removes nothing", async () => {
+  // The dedupe `absorb` keeps — one object for one unchanged list — is worth
+  // nothing if the filter hands back a fresh array on every render: the card
+  // would re-render four times a minute over a list that did not move.
+  const h = await mount(
+    [pending("a", "2026-09-09T14:00:00+00:00")],
+    "s1",
+    [],
+    true,
+    ["zzz"],
+  );
+  const first = h.state().blockers;
+  await h.setChips(["yyy"]);
+  expect(h.state().blockers).toBe(first);
 });

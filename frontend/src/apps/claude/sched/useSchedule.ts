@@ -56,6 +56,28 @@ export interface UseScheduleOptions {
    */
   queueEnabled?: boolean;
   /**
+   * ENTRIES THE CHAT IS ALREADY DRAWING A CHIP FOR — which this block therefore
+   * does not draw at all (flag on only).
+   *
+   * One queued send was two cards, a few pixels apart, in two vocabularies: the
+   * chip's "Queued · #1 in line · behind TASK-006" and this block's "Blocked —
+   * a scheduled message runs in this chat … Cancel this message", about the very
+   * same entry, disagreeing about whether the composer was shut (Akshil, browser
+   * QA 2026-09-12). The chip is the right card for a message the reader typed
+   * ten seconds ago; the block is the right one for a message coming due out of
+   * the calendar. So the block takes the entries no chip has, and when that
+   * leaves none it draws nothing at all — `blockers` is empty and everything
+   * downstream of it (`rec`, `hasCard`, the scroll correction) follows.
+   *
+   * FILTERED HERE AND NOT AT THE CALL SITE, because `rec` is fetched for
+   * `blockers[0]`: a view that hid the first entry itself would label the second
+   * one with the first one's task number.
+   *
+   * FLAG OFF THERE ARE NO CHIPS, so nothing is filtered and the block is main's
+   * byte for byte.
+   */
+  chipEntryIds?: readonly string[];
+  /**
    * The three endpoint calls, injectable — and injectable rather than
    * module-mocked for a reason worth recording: `bun test` runs every suite in
    * ONE process, so a `mock.module("@platform/lib/api", …)` replaces that
@@ -138,7 +160,9 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    *  by a suite, never swapped mid-life. */
   const timers = useRef(opts.timers);
 
-  const [blockers, setBlockers] = useState<SchedEntry[]>([]);
+  /** THE POLL'S OWN ANSWER, unfiltered — every pending message aimed at this
+   *  conversation. What the block DRAWS is derived from it below. */
+  const [allBlockers, setAllBlockers] = useState<SchedEntry[]>([]);
   /**
    * The `/api/tasks` answer AND the entry id it was read for, in one state cell
    * — T's `schedTaskRow` + `schedTaskRowFor` pair (T:16997-16999). Held together
@@ -200,7 +224,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    */
   const absorb = useCallback((rows: SchedEntry[]) => {
     if (rows.length) setTick(Date.now());
-    setBlockers((prev) => {
+    setAllBlockers((prev) => {
       const same =
         prev.length === rows.length && prev.every((e, i) => schedSameRow(e, rows[i]));
       return same ? prev : rows;
@@ -256,14 +280,34 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     });
   }, []);
 
-  const next = blockers[0] ?? null;
-  const nextId = next ? String(next.id) : "";
   /** SUBSCRIBED, not read once: the one `/api/prefs` answer may still be in
    *  flight when this mounts, and a composer that learned the flag only on its
    *  next navigation would sit shut for a whole conversation over a message the
    *  queue would have taken. An injected value wins, for the suites. */
   const queuePref = useProjectQueueEnabled();
   const queueOn = opts.queueEnabled ?? queuePref;
+
+  /**
+   * WHAT THE BLOCK DRAWS: the pending messages this pane is not already showing
+   * a chip for (`chipEntryIds` — see the option for the two-cards bug it ends).
+   *
+   * Keyed on the JOINED ids rather than the array, because the caller rebuilds
+   * that array whenever its own list of chips changes identity, and a memo that
+   * re-ran on identity would hand a fresh `blockers` to the card four times a
+   * minute — which is the very re-render `absorb`'s dedupe exists to prevent.
+   */
+  const chipKey = (opts.chipEntryIds ?? []).join("|");
+  const blockers = useMemo(() => {
+    if (!queueOn || !chipKey) return allBlockers;
+    const chips = new Set(chipKey.split("|"));
+    const kept = allBlockers.filter((e) => !chips.has(String(e.id)));
+    // SAME LIST, SAME OBJECT — the dedupe `absorb` keeps is worth nothing if
+    // this hands back a new array for a filter that removed nothing.
+    return kept.length === allBlockers.length ? allBlockers : kept;
+  }, [allBlockers, queueOn, chipKey]);
+
+  const next = blockers[0] ?? null;
+  const nextId = next ? String(next.id) : "";
   /**
    * …AND THE PROJECT QUEUE REOPENS IT (prefs `queue.enabled`).
    *
@@ -518,7 +562,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         // dropped a row that is still pending while leaving its own (Bugbot
         // PR #1075).
         setRefusedId("");
-        setBlockers((prev) =>
+        setAllBlockers((prev) =>
           prev.filter((e) =>
             repeat ? schedStopTarget(e) !== target : String(e.id) !== id,
           ),

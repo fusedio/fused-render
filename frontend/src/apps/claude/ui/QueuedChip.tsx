@@ -19,7 +19,24 @@
 // smaller. SchedBlock's card is a column — a reason line, a task row, a control
 // — because it has to explain why the composer is shut. Nothing is shut here
 // (the composer stays open and more messages queue behind), so this is one row:
-// a ring, the words, and Skip.
+// a ring, the words, Skip and Cancel.
+//
+// AND IT IS THE ONLY THING DRAWING THAT ENTRY. Both used to render for one
+// message — this chip saying "Queued · #1 in line · behind TASK-006" and the
+// block, directly under it, saying "Blocked — a scheduled message runs in this
+// chat … Cancel this message" about the very same entry. Two cards, two
+// vocabularies, and a contradiction about whether anything was blocked at all
+// (Akshil, browser QA 2026-09-12). Under the flag the block now filters out
+// every entry a chip has (`useSchedule.chipEntryIds`) and hides itself when
+// that empties it, and the one capability it had that this lacked — Cancel —
+// moved here. Flag off, the block is untouched: no chips exist.
+//
+// TWO KINDS OF WAITING, ONE CHIP. A message the FOLDER was too busy to take is
+// a scheduler entry with a place in a line (`send`); a follow-up typed into a
+// turn that is already running is held by the live host instead, with no entry,
+// no place and nothing to skip (`kind: "inbox"`). Same word, same ring, same
+// row — because from the reader's side they are the same sentence: "this is
+// waiting, in order, and it is not lost".
 import "../styles/sched.css";
 import { QUEUE_PRIORITY_GLYPH, queueLine } from "@platform/lib/queue";
 import type { QueueFacts } from "@platform/lib/queue";
@@ -65,15 +82,96 @@ export interface QueuedSend extends QueueFacts {
 }
 
 export interface QueuedChipProps {
+  /** The ordinary chip — a message the FOLDER queued. Present so the two kinds
+   *  discriminate on one field; omitted everywhere it is the default. */
+  kind?: "send";
   send: QueuedSend;
   /** Skip is in flight, or already spent: the button is dead either way, and it
    *  is dead rather than gone for the reason the Tasks row's is (see there). */
   busy?: boolean;
   /** Send this to the front of its folder's line. Never offered at the head. */
   onSkip(): void;
+  /**
+   * TAKE THE MESSAGE BACK — the one thing the card this chip replaced could do
+   * and the chip could not.
+   *
+   * Under the queue a chip and the scheduled-message block used to draw the SAME
+   * entry at the same time, a few pixels apart, in two vocabularies: "Queued ·
+   * #1 in line" over "Blocked — a scheduled message runs in this chat … Cancel
+   * this message". One fact, two cards, and they contradicted each other about
+   * whether anything was blocked (Akshil, browser QA 2026-09-12). So the block
+   * no longer draws an entry a chip is drawing, and its capability comes here.
+   *
+   * QUIETER THAN SKIP, and second: Skip is what a reader wants nine times out of
+   * ten, and the destructive one is the one that must never be the easy press.
+   * It is the same `POST /api/schedule/cancel` the block spent — one press, no
+   * arming, because a queued send is a one-off and cancelling it loses exactly
+   * the words still sitting on the chip.
+   */
+  onCancel?(): void;
+  /** A cancel is in flight: both buttons are dead for its duration, because the
+   *  chip is about to leave and a Skip pressed into that window would be a
+   *  request about an entry that is going away. */
+  cancelling?: boolean;
 }
 
-export function QueuedChip({ send, busy, onSkip }: QueuedChipProps) {
+/**
+ * THE FOLLOW-UPS THE LIVE RUN IS HOLDING, which is the queue's other waiting.
+ *
+ * A line typed into a turn that is already going does not reach the model: the
+ * host takes the bytes and the CLI holds them until the turn ends. The bubbles
+ * went up and nothing at all said why they were sitting there — three plain
+ * bubbles and a composer footnote counting them (Akshil, browser QA
+ * 2026-09-12, screenshot 4). That is the same fact as a queued send, one layer
+ * in: waiting, in order, not lost. So it wears the same chip and the same word.
+ *
+ * NO SKIP AND NO CANCEL. They are the live host's now, not the scheduler's —
+ * there is no entry to move and nothing this page can take back (a stop is what
+ * strands them, and the composer's stop button is already the control for that).
+ */
+export interface QueuedInboxProps {
+  kind: "inbox";
+  /** How many follow-ups the run has not answered yet (`ChatState.queued`). */
+  count: number;
+}
+
+/** "3 follow-ups · in this turn" — the inbox chip's half of the grammar, kept
+ *  beside the send chip's so the two read as one sentence with one subject. */
+export function inboxLine(count: number): string {
+  const many = count === 1 ? "1 follow-up" : `${count} follow-ups`;
+  return `${many} · in this turn`;
+}
+
+export function QueuedChip(props: QueuedChipProps | QueuedInboxProps) {
+  if (props.kind === "inbox") {
+    if (props.count <= 0) return null;
+    return (
+      <div className="c-schedblock c-queuechip">
+        <div className="sb-card sb-card--chip" role="status">
+          <span className="sb-ring sb-ring--queued" aria-hidden="true" />
+          <span className="sb-queued-word">Queued</span>
+          <ChipDot />
+          <span className="sb-queued-line">{inboxLine(props.count)}</span>
+          <span className="sb-grow" />
+        </div>
+      </div>
+    );
+  }
+  return <SendChip {...props} />;
+}
+
+/** The separator the grammar is written with — `Queued · #2 in line · behind
+ *  TASK-041 "…"`. A span rather than part of the caption string so the caption
+ *  stays the one builder every surface shares (`platform/lib/queue`). */
+function ChipDot() {
+  return (
+    <span className="sb-queued-dot" aria-hidden="true">
+      ·
+    </span>
+  );
+}
+
+function SendChip({ send, busy, onSkip, onCancel, cancelling }: QueuedChipProps) {
   // `status` is asserted here rather than carried on the send: a chip only
   // exists because the server answered `run: false`, so "is this queued" is not
   // a question this component has — and queueLine's own guard stays the one
@@ -102,6 +200,7 @@ export function QueuedChip({ send, busy, onSkip }: QueuedChipProps) {
             above means: without it "runs next · behind TASK-041" reads as a
             note about somebody else's run. */}
         <span className="sb-queued-word">Queued</span>
+        <ChipDot />
         <span className="sb-queued-line" title={line.aheadTitle || undefined}>
           {line.runsNext && (
             <span className="sb-queued-glyph" aria-hidden="true">
@@ -113,11 +212,13 @@ export function QueuedChip({ send, busy, onSkip }: QueuedChipProps) {
         <span className="sb-grow" />
         {/* SKIP STAYS ON THE CHIP AT THE HEAD OF THE LINE, disabled. It is the
             control that put it there, and taking it away on the press that
-            worked is how a reader ends up unsure whether anything happened. */}
-        <span className="sb-acts">
+            worked is how a reader ends up unsure whether anything happened.
+            CANCEL SITS AFTER IT, quieter: this is the row's destructive verb and
+            it is the second one read, not the first one reached. */}
+        <span className="sb-acts sb-acts--chip">
           <button
             type="button"
-            disabled={busy || line.runsNext}
+            disabled={busy || cancelling || line.runsNext}
             title={
               line.runsNext
                 ? "Already at the front of this folder's queue"
@@ -127,6 +228,20 @@ export function QueuedChip({ send, busy, onSkip }: QueuedChipProps) {
           >
             Skip
           </button>
+          {onCancel ? (
+            <>
+              <ChipDot />
+              <button
+                type="button"
+                className="sb-quiet"
+                disabled={busy || cancelling}
+                title="Cancel this message — the words are dropped and nothing runs"
+                onClick={onCancel}
+              >
+                Cancel
+              </button>
+            </>
+          ) : null}
         </span>
       </div>
     </div>

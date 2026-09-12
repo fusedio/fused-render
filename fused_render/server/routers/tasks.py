@@ -3431,6 +3431,19 @@ def api_queue_admit(body: dict = Body(...),
     entry is a 400 rather than a silent fresh task — the client is looking at a
     queue that has moved on, and the honest answer is what makes it refetch.
 
+    **`run_id` IS THE NAME A CHAT HAS BEFORE IT HAS A SESSION.** A new chat's
+    first message is admitted with `session_id: ""` because Claude Code has not
+    minted one yet, and the run that message starts is anonymous for as long as
+    nothing has polled it. So the second message — which by then DOES carry a
+    session id — asked about a folder held by a process neither id could match,
+    and was told `#1 in line · behind a run in this folder`: queued behind
+    itself, for the whole of `project_queue.STARTING_GRACE` (Akshil, folder
+    qa-folder-b, 2026-09-12). The client passes the run it started; the holder
+    carries the run it is; equal run ids are one conversation whatever the
+    session says (`project_queue.is_free`). The other half of the same fix
+    learns the run's session from the live registry by pid, so the anonymous
+    window is now seconds instead of two minutes (`project_queue.run_sessions`).
+
     **A WORDLESS SEND IS REFUSED ONLY WHERE IT WOULD HAVE TO BE STORED.** The
     composer lets a user send pictures with no words, and into a free folder
     that is an ordinary send this must not stand in the way of — so the message
@@ -3450,6 +3463,16 @@ def api_queue_admit(body: dict = Body(...),
     message = body.get("message")
     message = message if isinstance(message, str) else ""
     session_id = str(body.get("session_id") or "")
+    # The run this chat already has in flight, when it has one. A new chat's
+    # first message is admitted with NO session (there is none yet), so the run
+    # it starts is the only name the conversation has until Claude Code mints
+    # one — and without it the second message queued behind the chat's own
+    # process (Akshil, 2026-09-12). Validated like every other id that reaches
+    # a path: a run id is a directory name under the runs tree.
+    run_id = str(body.get("run_id") or "")
+    if run_id and project_queue.bad_id(run_id):
+        return _error("run_id: not a run id — no leading dot, no separator",
+                      status=400)
     if not project_queue.enabled():
         # Nothing is read, nothing is resolved and nothing is stored: with the
         # flag off this endpoint is a constant, and the client's send path is
@@ -3478,7 +3501,13 @@ def api_queue_admit(body: dict = Body(...),
     # Asked at all only once this chat has nothing of its own in the line: a
     # reservation taken here would be a folder held for a send that is about to
     # be queued anyway.
-    if not behind_own and project_queue.reserve_if_free(key, session_id):
+    #
+    # `run_id` is how a chat that has no session yet still says "that holder is
+    # me": the folder is free FOR THIS CONVERSATION when the thing holding it is
+    # the run this chat started, and the answer is `run: true` so the send goes
+    # down the client's ordinary path — which, for a live host, is the inbox
+    # absorb it has always been (`agent._send`) rather than a second process.
+    if not behind_own and project_queue.reserve_if_free(key, session_id, run_id):
         return {"run": True}
 
     if not message.strip():
@@ -3768,7 +3797,11 @@ def api_queue_decide(body: dict = Body(...),
     run_dir = os.path.join(str(getattr(agent, "RUNS", "")), run_id)
     if (not project_queue.enabled()
             or not session_id
-            or project_queue.is_free(key, session_id)
+            # The run being answered is a name for this chat too — a card raised
+            # by a run that has not published its session yet is still that
+            # chat's own run, and holding its answer would park a decision
+            # behind the very process it unblocks.
+            or project_queue.is_free(key, session_id, run_id)
             or not project_queue.run_alive(agent, run_dir)
             or _already_decided(agent, run_dir, request_id)):
         return {"held": False, **agent._decide(**raw)}

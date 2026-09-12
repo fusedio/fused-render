@@ -137,11 +137,19 @@ _KEY_CACHE: dict[str, str] = {}
 _scan_memo: tuple | None = None
 _scan_lock = threading.Lock()
 
-# key -> (session id, monotonic expiry). In memory and per process on purpose:
-# it describes a spawn THIS server just authorised, and a reservation that
-# outlived the process that made it would be a lease, which is the thing this
-# module exists not to have.
-_reservations: dict[str, tuple[str, float]] = {}
+# key -> (session id, monotonic expiry, run id). In memory and per process on
+# purpose: it describes a spawn THIS server just authorised, and a reservation
+# that outlived the process that made it would be a lease, which is the thing
+# this module exists not to have.
+#
+# THE RUN ID IS THERE FOR THE CHAT THAT HAS NO SESSION YET. A new chat's first
+# message is admitted with `session_id: ""` — there is no session until Claude
+# Code mints one — so the reservation it takes names nobody, and the run it
+# spawns is anonymous too until something polls it. The chat DOES know the run
+# it started, and it sends that id on its next admission; recording it here is
+# what lets the second message be recognised as the same conversation and
+# RENAME the reservation rather than be refused by it.
+_reservations: dict[str, tuple[str, float, str]] = {}
 _res_lock = threading.Lock()
 
 _AGENT_MOD = None
@@ -354,6 +362,26 @@ def run_sessions(agent, run_dir: str, meta: dict) -> set:
     has written one), and either can be the id a task row carries. Matching on
     one of them is how a live run goes unnoticed for exactly the sessions that
     were forked or freshly started — which is most scheduled runs.
+
+    **AND THE PID, WHICH IS THE THIRD SPELLING AND THE FASTEST ONE.** Both
+    spellings above come from the run dir, and a brand-new chat's run dir names
+    NEITHER for as long as nothing polls it: `resumed_from` is empty because
+    there was nothing to resume, and the `session` file is written by the first
+    poll that sees the CLI's id. Until then the folder has a live process with
+    no name, `holders()` calls it `starting`, and the very chat that spawned it
+    queues behind itself for `STARTING_GRACE` — the bug Akshil reported on
+    2026-09-12 (second message in a new chat answered `#1 in line · behind a
+    run in this folder`, and the scheduler then started a SECOND `claude
+    --resume` beside the chat's own idle host).
+
+    The CLI knows its session from the instant it comes up and writes it where
+    the live registry can see it (`~/.claude/sessions/<pid>.json`), and the run
+    dir has carried the CLI's pid since the session host spawned it. So the pid
+    is the bridge: `tasks_watch.session_for_pid` costs a lookup in a map the
+    watcher already rebuilds every second, and a run stops being anonymous
+    seconds after the CLI registers rather than minutes later when something
+    finally polls it. Asked LAST and only when the run dir itself is silent —
+    the cheap local reads answer for every run that has ever been polled.
     """
     out = {str(meta.get("resumed_from") or "")}
     own = ""
@@ -367,9 +395,35 @@ def run_sessions(agent, run_dir: str, meta: dict) -> set:
             own = agent._session_from_out(run_dir)
         except Exception:  # noqa: BLE001 — a head we cannot read is not an id
             own = ""
+    if not own:
+        own = session_from_pid(run_dir)
     out.add(own)
     out.discard("")
     return out
+
+
+def run_pid(run_dir: str) -> str:
+    """The pid in `run_dir/pid`, or `""` — the CLI's own, once the session host
+    has overwritten the transient host pid `_start` leaves there."""
+    try:
+        with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def session_from_pid(run_dir: str) -> str:
+    """The session this run's process is registered under, via the live
+    registry — `""` when the run has no pid, or nothing has registered it.
+
+    Best-effort throughout: `holders()` promises never to raise, and a registry
+    that cannot be read is simply a run that has not named itself yet."""
+    try:
+        return tasks_watch.session_for_pid(run_pid(run_dir))
+    except Exception:  # noqa: BLE001 — an unreadable registry names nobody
+        logger.debug("could not read the live registry for %s", run_dir,
+                     exc_info=True)
+        return ""
 
 
 def scan_runs(agent=None, limit: int | None = None) -> list[dict]:
@@ -539,18 +593,26 @@ def run_waiting(agent, run: dict) -> bool:
 # -------------------------------------------------------------- the reservation
 
 
-def reserve(key: str, session_id: str, ttl: float = RESERVATION_TTL) -> None:
+def reserve(key: str, session_id: str, ttl: float = RESERVATION_TTL,
+            run_id: str = "") -> None:
     """Count `session_id` as `key`'s holder for the next `ttl` seconds.
 
     Called by an admission that answered "run": between that answer and the
     registry row appearing there is nothing on disk saying the folder is taken,
     and a second send arriving in that window would be admitted into it. See
     `RESERVATION_TTL` for why the window is short and why an unclaimed
-    reservation is harmless."""
+    reservation is harmless.
+
+    `run_id` is the run the CALLER already knows about — a chat sending its
+    second message names the run its first one started. A reservation that
+    carries one can be claimed back by that run even when the session on it is
+    still `""`, which is the whole of the new-chat case (see `_reservations`)."""
     if not key:
         return
     with _res_lock:
-        _reservations[key] = (str(session_id or ""), time.monotonic() + max(0.0, ttl))
+        _reservations[key] = (str(session_id or ""),
+                              time.monotonic() + max(0.0, ttl),
+                              str(run_id or ""))
 
 
 def reserved(key: str) -> str:
@@ -562,14 +624,26 @@ def reserved(key: str) -> str:
         found = _reservations.get(key)
         if found is None:
             return ""
-        session_id, expiry = found
+        session_id, expiry, _run = found
         if expiry <= time.monotonic():
             _reservations.pop(key, None)
             return ""
         return session_id
 
 
-def reserve_if_free(key: str, session_id: str, now: float | None = None) -> bool:
+def reserved_run(key: str) -> str:
+    """The run id on `key`'s unexpired reservation, or `""`."""
+    if not key:
+        return ""
+    with _res_lock:
+        found = _reservations.get(key)
+        if found is None or found[1] <= time.monotonic():
+            return ""
+        return found[2]
+
+
+def reserve_if_free(key: str, session_id: str, run_id: str = "",
+                    now: float | None = None) -> bool:
     """Take `key`'s reservation for `session_id` if the folder is free — one
     decision, not a look followed by a write. True when the send may run.
 
@@ -592,44 +666,83 @@ def reserve_if_free(key: str, session_id: str, now: float | None = None) -> bool
     A folder with no key is always free and nothing is stored for it. A folder
     this very session already holds answers True and refreshes the reservation:
     it is the inbox-absorb case, and the send is about to keep the run busy.
+
+    **AND A FOLDER HELD BY THIS CHAT'S OWN RUN ANSWERS TRUE TOO, session or no
+    session** (`run_id`). A new chat's first message is admitted with no session
+    id at all, so the reservation it leaves names nobody and the run it spawns
+    has no name either — and the second message, arriving with the session
+    Claude Code has meanwhile minted, used to be told it was `#1 in line` behind
+    its own process. The run id is the identity both ends can agree on before a
+    session exists: it matches the holder's run, or the run recorded on the
+    reservation, and either way this is one conversation and not two. The
+    reservation is then REWRITTEN with whatever the caller now knows — that is
+    how an anonymous reservation gets its session, and why a chat can claim back
+    a reservation it made before it had a name.
     """
     if not key:
         return True
     sid = str(session_id or "")
+    run = str(run_id or "")
     derived = holders(now)
     with _res_lock:
         _prune_reservations()
         found = _reservations.get(key)
         reserved_by = found[0] if found is not None else None
+        reserved_run_id = found[2] if found is not None else ""
         holder = derived.get(key)
         if holder is not None and holder["kind"] == "reserved":
             holder = None  # stale by construction; the table below is the truth
         if holder is None and reserved_by is not None:
-            holder = {"session_id": reserved_by, "task_key": reserved_by}
+            holder = {"session_id": reserved_by, "task_key": reserved_by,
+                      "run_id": reserved_run_id}
         elif (holder is not None and reserved_by is not None
                 and holder["kind"] == "starting" and not holder["session_id"]):
             # The reservation names the run that has not named itself — the two
             # describe one spawn from opposite ends. `_name_starting` does the
             # same for the map `holders` hands out.
             holder = dict(holder, session_id=reserved_by, task_key=reserved_by)
-        if holder is not None and not (sid and sid in (holder["session_id"],
-                                                       holder["task_key"])):
+        if holder is not None and not _self_held(holder, sid, run):
             return False
-        _reservations[key] = (sid, time.monotonic() + RESERVATION_TTL)
+        _reservations[key] = (sid, time.monotonic() + RESERVATION_TTL,
+                              run or reserved_run_id)
         return True
+
+
+def _self_held(holder: dict, session_id: str, run_id: str) -> bool:
+    """Is this holder the very chat that is asking — by session, or by run?
+
+    The one rule `is_free` and `reserve_if_free` share, and the run half of it
+    is what a conversation with no session id yet has to identify itself with.
+    A holder's `run_id` is the run in flight: a `run` or `starting` holder is a
+    run dir and carries its own, and an anonymous `starting` or a `reserved`
+    holder carries whatever the admission that authorised it knew
+    (`_name_starting`). An equal run id is the same process, whatever either
+    side calls the session.
+
+    THE HOLDER'S OWN RUN ID AND NOTHING ELSE. Matching against the reservation
+    table instead would let a chat that reserved a folder claim it back after a
+    DIFFERENT run took it — the reservation is a claim on the folder, and once
+    something real is holding it, the real thing is the only one that counts.
+    """
+    sid = str(session_id or "")
+    if sid and sid in (holder.get("session_id"), holder.get("task_key")):
+        return True
+    run = str(run_id or "")
+    return bool(run) and run == str(holder.get("run_id") or "")
 
 
 def _prune_reservations() -> None:
     """Drop every expired reservation. Callers hold `_res_lock`."""
     now = time.monotonic()
-    for key in [k for k, (_s, exp) in _reservations.items() if exp <= now]:
+    for key in [k for k, found in _reservations.items() if found[1] <= now]:
         _reservations.pop(key, None)
 
 
-def _live_reservations() -> dict[str, str]:
+def _live_reservations() -> dict[str, tuple[str, str]]:
+    """`{key: (session id, run id)}` for every unexpired reservation."""
     with _res_lock:
         _prune_reservations()
-        return {k: s for k, (s, _exp) in _reservations.items()}
+        return {k: (found[0], found[2]) for k, found in _reservations.items()}
 
 
 # ------------------------------------------------------------------ the holders
@@ -716,10 +829,10 @@ def holders(now: float | None = None) -> dict[str, dict]:
     this existed.
     """
     out = _derived_holders(now)
-    for key, session_id in _live_reservations().items():
+    for key, (session_id, run_id) in _live_reservations().items():
         if key in out:
             continue
-        out[key] = {"session_id": session_id, "run_id": "",
+        out[key] = {"session_id": session_id, "run_id": run_id,
                     "task_key": session_id, "kind": "reserved"}
     _name_starting(out)
     return out
@@ -811,10 +924,15 @@ def _name_starting(out: dict[str, dict]) -> None:
         return
     reservations = _live_reservations()
     for key in anonymous:
-        session_id = reservations.get(key, "")
+        session_id, run_id = reservations.get(key, ("", ""))
         if session_id:
             out[key] = dict(out[key], session_id=session_id,
                             task_key=session_id)
+        elif run_id and not out[key]["run_id"]:
+            # A reservation with no session but a run id still says which run
+            # this folder was authorised for — keep it on the holder so the
+            # chat that named it can still recognise its own process.
+            out[key] = dict(out[key], run_id=run_id)
 
 
 def holder_expires_in(key: str, holder: dict | None,
@@ -865,22 +983,30 @@ def holder_for(key: str, now: float | None = None) -> dict | None:
     return holders(now).get(key)
 
 
-def is_free(key: str, session_id: str, now: float | None = None) -> bool:
-    """May `session_id` run in `key`'s folder right now?
+def is_free(key: str, session_id: str, run_id: str = "",
+            now: float | None = None) -> bool:
+    """May this chat run in `key`'s folder right now?
 
-    True when the folder is free AND when this very session is the thing holding
+    True when the folder is free AND when this very chat is the thing holding
     it — a second message into a conversation that is already running is the
     inbox-absorb case the chat has always had, and gating it would be this
-    feature refusing a send that touches nothing new. A task with no session id
-    yet can never be the holder, so it waits.
+    feature refusing a send that touches nothing new.
+
+    **THE CHAT IS ITS SESSION OR ITS RUN, whichever it can name.** A brand-new
+    chat has no session until Claude Code mints one, and the run it started is
+    anonymous in the same window; asking only about the session made that chat
+    queue behind its own first message (Akshil, 2026-09-12). `run_id` — the run
+    the caller knows it started — matches the holder's own run whatever either
+    side calls the session. A chat that can name NEITHER can never be the
+    holder, so it waits, which is what keeps two brand-new tasks out of one
+    folder.
     """
     if not key:
         return True
     holder = holder_for(key, now)
     if holder is None:
         return True
-    sid = str(session_id or "")
-    return bool(sid) and sid in (holder["session_id"], holder["task_key"])
+    return _self_held(holder, str(session_id or ""), str(run_id or ""))
 
 
 # -------------------------------------------------------------------- the order

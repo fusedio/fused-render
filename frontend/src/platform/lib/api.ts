@@ -3257,6 +3257,23 @@ export function admitQueueSend(body: {
    * claim time.
    */
   follow_of?: string;
+  /**
+   * THE RUN THIS CHAT ALREADY HAS IN FLIGHT, when it has one.
+   *
+   * A folder's holder is a RUN, and "is that holder this chat?" used to be
+   * asked by session id alone — which a chat does not have until its first turn
+   * has opened one. So a second message typed into a brand-new chat whose own
+   * first turn was still going queued behind ITSELF: the holder was this page's
+   * own run and nothing in the body said so. The run id is minted by `POST
+   * /api/run` before any session exists (`ChatState.runId`), so it is the one
+   * name the two halves can be compared by from the first keystroke — the
+   * server reads a holder carrying this same `run_id` as "this chat" and
+   * answers `run: true`, which is the inbox-absorb case the chat has always had.
+   *
+   * Absent while nothing is running, which is the ordinary case and the one a
+   * session id answers on its own.
+   */
+  run_id?: string;
 }): Promise<QueueAdmission> {
   return postJson<QueueAdmission>("/api/tasks/queue/admit", body);
 }

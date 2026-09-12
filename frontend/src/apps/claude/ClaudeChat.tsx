@@ -138,7 +138,12 @@ import { useSchedule } from "./sched/useSchedule";
 import { useQueuedLiveness } from "./sched/queued-sends";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
 import { createLiveWatch } from "./live/watch";
-import { admitQueueSend, getClaudeSessionLiveness, skipQueue } from "@platform/lib/api";
+import {
+  admitQueueSend,
+  cancelScheduledMessage,
+  getClaudeSessionLiveness,
+  skipQueue,
+} from "@platform/lib/api";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -817,14 +822,18 @@ function ChatBody(props: ChatBodyProps) {
    */
   const [queuedSends, setQueuedSends] = useState<QueuedSend[]>([]);
   const [skipping, setSkipping] = useState<ReadonlySet<string>>(() => new Set());
-  // SUBSCRIBED FOR THE READ, NOT FOR THE VALUE. Nothing this view draws depends
-  // on the flag — the admission is asked on the keystroke, from
-  // `queueEnabled()`, which is a plain synchronous read of the same one
-  // `/api/prefs` answer. What this call buys is that the answer is ON ITS WAY
+  /** A cancel in flight, by entry id: the chip's two buttons are dead for its
+   *  duration and the chip leaves when it lands. */
+  const [cancelling, setCancelling] = useState<ReadonlySet<string>>(() => new Set());
+  // SUBSCRIBED, AND NOW ALSO READ. The admission is still asked on the keystroke
+  // from `queueEnabled()` — a plain synchronous read of the same one
+  // `/api/prefs` answer — and subscribing is what puts that answer ON ITS WAY
   // from mount rather than from whenever some other hook happens to ask, so the
   // first send of a freshly opened chat is admitted rather than spawning into a
-  // folder somebody has just protected.
-  useProjectQueueEnabled();
+  // folder somebody has just protected. The VALUE is drawn for exactly one
+  // thing: the chip under a run's held follow-ups, which is new ink the flag
+  // owns (`QueuedChip kind="inbox"`).
+  const queueOn = useProjectQueueEnabled();
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
@@ -2163,6 +2172,19 @@ function ChatBody(props: ChatBodyProps) {
             // message addressed to a conversation AND filed under the task it
             // predates.
             const sid = controller.getState().sessionId ?? "";
+            /**
+             * …AND THE RUN THIS CHAT ALREADY HAS IN FLIGHT, read in the same
+             * breath as the session for the same reason.
+             *
+             * It is what tells the server that the thing holding this folder is
+             * THIS page. A session id cannot say it before the first turn has
+             * opened one, so a second line typed into a brand-new chat that is
+             * still starting queued behind its own run — the reader watched
+             * their own message wait for themselves (Akshil, browser QA
+             * 2026-09-12). `runId` is minted by `POST /api/run` and is live from
+             * the first keystroke of the first turn (`api.admitQueueSend`).
+             */
+            const rid = controller.getState().runId ?? "";
             const follow = leader.followOf(sid);
             /**
              * AND THE NOTES GO WITH THE WORDS, for the pictures' reason.
@@ -2234,6 +2256,9 @@ function ChatBody(props: ChatBodyProps) {
                 // `session_id` above, so the two halves of the body can never
                 // disagree about what this message is addressed to.
                 ...(follow ? { follow_of: follow } : {}),
+                // THE LIVE RUN, so the holder can be recognised as this chat's
+                // own before a session id exists to say it.
+                ...(rid ? { run_id: rid } : {}),
               });
             } catch (err) {
               putDownQueuedShot();
@@ -2716,6 +2741,28 @@ function ChatBody(props: ChatBodyProps) {
     transcriptFollow.current?.();
   }, []);
 
+  /**
+   * THE ENTRIES THIS PANE IS ALREADY DRAWING — so the scheduled-message block
+   * does not draw them a second time, in other words.
+   *
+   * One queued message was two cards: the chip ("Queued · #1 in line · behind
+   * TASK-006") and, directly beneath it, the block ("Blocked — a scheduled
+   * message runs in this chat … Cancel this message") about the very same
+   * entry, disagreeing with the chip about whether anything was blocked
+   * (Akshil, browser QA 2026-09-12). The block is the right card for a message
+   * this chat did not just type — a calendar entry coming due — and the wrong
+   * one for a send the reader made ten seconds ago and can see the chip for.
+   *
+   * The RAW sends, not the liveness-filtered `liveQueued` (which is derived
+   * from this hook's own poll, and would be a circle): the two can only differ
+   * for an entry the poll no longer lists, and an entry the poll no longer
+   * lists is not in `blockers` either.
+   */
+  const chipEntryIds = useMemo(
+    () => queuedSends.map((q) => q.entryId),
+    [queuedSends],
+  );
+
   const sched = useSchedule({
     controller,
     file,
@@ -2724,6 +2771,7 @@ function ChatBody(props: ChatBodyProps) {
     navLocked: ann.locked,
     followBottom,
     onNavigate,
+    chipEntryIds,
     // T:17437 — `history: "replace"`: a fired scheduled run is not a place
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
@@ -2792,6 +2840,49 @@ function ChatBody(props: ChatBodyProps) {
         controller.reportTrouble({ ...t, message: "Skip did not go through: " + t.message });
       } finally {
         setSkipping((cur) => {
+          const next = new Set(cur);
+          next.delete(send.entryId);
+          return next;
+        });
+      }
+    },
+    [controller],
+  );
+
+  /**
+   * Cancel from the chip: the words are dropped and nothing runs.
+   *
+   * THE CAPABILITY THAT CAME OFF THE BLOCK. A queued send used to be drawn
+   * twice — this chip and the scheduled-message block underneath it — and the
+   * block was the only one of the two that could take the message back. Now the
+   * block does not draw an entry a chip has (`chipEntryIds`), so the verb lives
+   * here, on the card the reader is actually looking at.
+   *
+   * THE SAME ENDPOINT, spent the same way: `POST /api/schedule/cancel` on the
+   * ENTRY id, which is what the block's own stop posts for a one-off and what
+   * the Tasks page's cancel posts. One press and no arming — a repeat's stop
+   * spends every future run and has to be confirmed; this drops one message,
+   * whose words are on the chip in front of the reader.
+   *
+   * AND THE CHIP GOES ON THE ANSWER, not on the next poll: a card that stayed
+   * up for fifteen seconds after a successful cancel reads as a button that did
+   * nothing. A refusal (the entry fired while the pointer was travelling) is
+   * said out loud in the chat's trouble slot, exactly as Skip's is.
+   */
+  const cancelQueued = useCallback(
+    async (send: QueuedSend) => {
+      setCancelling((cur) => new Set(cur).add(send.entryId));
+      try {
+        await cancelScheduledMessage(send.entryId);
+        setQueuedSends((cur) => cur.filter((q) => q.entryId !== send.entryId));
+      } catch (err) {
+        const t = troubleFromError(err);
+        controller.reportTrouble({
+          ...t,
+          message: "This message was not cancelled: " + t.message,
+        });
+      } finally {
+        setCancelling((cur) => {
           const next = new Set(cur);
           next.delete(send.entryId);
           return next;
@@ -3403,12 +3494,25 @@ function ChatBody(props: ChatBodyProps) {
                 ABOVE the schedule banner, because it is the nearer fact: this
                 one is about the message the reader just typed, that one is about
                 the schedule this chat is under. */}
+            {/* THE LIVE RUN'S OWN HELD FOLLOW-UPS, in the same words as the
+                folder's line. Their bubbles are already in the transcript above
+                (the controller posted them), so this is ONE row for the group
+                rather than one per bubble — "Queued · 3 follow-ups · in this
+                turn" — and it carries no Skip and no Cancel, because the host
+                holds them and there is no entry to move. The composer's own
+                count stays where it is: this says what the bubbles are, that
+                says what the box will do next. */}
+            {queueOn && state.queued.length > 0 ? (
+              <QueuedChip kind="inbox" count={state.queued.length} />
+            ) : null}
             {liveQueued.map((q) => (
               <QueuedChip
                 key={q.entryId}
                 send={q}
                 busy={skipping.has(q.entryId)}
+                cancelling={cancelling.has(q.entryId)}
                 onSkip={() => void skipQueued(q)}
+                onCancel={() => void cancelQueued(q)}
               />
             ))}
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is

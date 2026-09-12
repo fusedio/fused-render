@@ -2097,28 +2097,100 @@ def _composed(entry: dict) -> str:
     return "\n\n".join(parts + [message])
 
 
+def _host_send(entry: dict) -> dict | None:
+    """Hand this entry's message to the session host the conversation ALREADY
+    has, and answer `{"run_id": …}`; None means there is no such host and the
+    caller should spawn as it always did.
+
+    **NEVER A SECOND PROCESS ON ONE CONVERSATION** (Akshil, 2026-09-12). A chat
+    whose host is up and idle between turns is exactly the thing a scheduled
+    message for that session used to start a `claude --resume` beside: two hosts
+    on one session id, two writers on one transcript, in one working tree. The
+    chat's own composer has never done that — a follow-up goes into the live
+    host's inbox (`agent._send`) and is absorbed into the session — and this is
+    that same path, taken by the scheduler.
+
+    `_live_host` is the question "is there a session I can hand a follow-up to",
+    which is true for the whole life of a chat, turn or no turn; `_live_run`
+    (turn open) is the wrong one here, because a host idling between turns is
+    precisely the case this exists for.
+
+    **A respawn is not a failure.** `agent._send` answers `{"respawn": True}`
+    when the live host cannot serve the message as it stands — an attachment
+    directory it was not granted, an effort fixed at spawn — and it has already
+    ended the session by the time it says so. None back, and the caller spawns:
+    the message is owed either way.
+
+    Flag-gated and best-effort: with the project queue off this is not reached
+    at all and the pass is the one that shipped, and any failure here is simply
+    a spawn, which is what the scheduler did before this existed.
+    """
+    if not _pq().enabled():
+        return None
+    session = str(entry.get("session_id") or "")
+    target = str(entry.get("target") or "")
+    if not (session and target):
+        # No session is a fresh conversation, which by definition has no host.
+        return None
+    # The queue's own accessor rather than `claude_spawn.load_agent`: it
+    # memoizes the exec of a 6000-line template for the life of the process (and
+    # caches the failure), and this is asked on every scheduled send that names
+    # a session. No agent module is no host, which is the spawn this always was.
+    agent = _pq().agent_module()
+    if agent is None:
+        return None
+    try:
+        run_id = str((agent._live_host(target, session) or {}).get("run_id") or "")
+        if not run_id:
+            return None
+        # The same per-message attachment grant `_start` gets, in the spelling
+        # `_send` takes it in (a JSON array, `agent._attach_dirs`). A host that
+        # was not already granted the directory answers `respawn`, which is the
+        # honest outcome: the grant is fixed at spawn.
+        read_dirs = json.dumps([shots_dir()]) if _stored_attachments(entry) else ""
+        res = agent._send(run_id, _composed(entry), read_dirs,
+                          str(entry.get("model") or ""),
+                          str(entry.get("effort") or ""),
+                          str(entry.get("permission_mode")
+                              or _SCHEDULED_PERMISSION_MODE))
+    except Exception:  # noqa: BLE001 — a host we cannot reach is a spawn
+        logger.debug("could not send %s into a live host; spawning instead",
+                     entry.get("id"), exc_info=True)
+        return None
+    if isinstance(res, dict) and res.get("sent"):
+        return {"run_id": run_id}
+    return None
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
+
+    **…or hand it to the session host that conversation already has**, with the
+    project queue on (`_host_send`). Everything after the send is identical
+    either way: the entry records the run it went into and one watcher follows
+    that run's turn to its verdict.
 
     Every failure lands on the ENTRY (state `error`, with the reason) rather
     than propagating: one bad target must not stop the rest of the tick, and a
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
     try:
-        # The extra Read pre-allowance is passed only when this run actually
-        # HAS attachments — not as `None` on every other send. Two reasons, and
-        # the second is the load-bearing one: a directory rule on a run with
-        # nothing to read there is standing permission for no reason, and every
-        # send without images keeps the exact call shape it has always had.
-        attachments = ({"extra_read_dirs": [shots_dir()]}
-                       if _stored_attachments(entry) else {})
-        res = claude_spawn.spawn_helper(
-            entry["target"], _composed(entry),
-            entry.get("permission_mode")
-            or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
-            model=str(entry.get("model") or ""),
-            effort=str(entry.get("effort") or ""),
-            **attachments)
+        res = _host_send(entry)
+        if res is None:
+            # The extra Read pre-allowance is passed only when this run actually
+            # HAS attachments — not as `None` on every other send. Two reasons, and
+            # the second is the load-bearing one: a directory rule on a run with
+            # nothing to read there is standing permission for no reason, and every
+            # send without images keeps the exact call shape it has always had.
+            attachments = ({"extra_read_dirs": [shots_dir()]}
+                           if _stored_attachments(entry) else {})
+            res = claude_spawn.spawn_helper(
+                entry["target"], _composed(entry),
+                entry.get("permission_mode")
+                or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
+                model=str(entry.get("model") or ""),
+                effort=str(entry.get("effort") or ""),
+                **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
         return

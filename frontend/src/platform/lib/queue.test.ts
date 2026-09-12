@@ -5,10 +5,12 @@
 // about the WORDS, because the words are the shared thing.
 import { describe, expect, it } from "bun:test";
 import {
+  QUEUE_AHEAD_TITLE_MAX,
   QUEUE_PRIORITY_GLYPH,
   queueLine,
   queuePosition,
   queueRunsNext,
+  quoteAhead,
 } from "./queue";
 
 describe("queueLine", () => {
@@ -22,11 +24,50 @@ describe("queueLine", () => {
       }),
     ).toMatchObject({
       head: "#2 in line",
-      behind: "behind TASK-041",
-      text: "#2 in line · behind TASK-041",
+      behind: 'behind TASK-041 "Pull today\'s news"',
+      text: '#2 in line · behind TASK-041 "Pull today\'s news"',
       runsNext: false,
       aheadTitle: "Pull today's news",
     });
+  });
+
+  it("says WHAT it is behind, not only which number it is", () => {
+    // "behind TASK-038" said that something is in front and nothing whatever
+    // about what — which, in a folder the reader is working in themselves, is
+    // the one question they have (Akshil, browser QA 2026-09-12). The holder's
+    // own title goes in, in quotes, because it is somebody else's sentence
+    // sitting inside this one.
+    expect(
+      queueLine({
+        status: "queued",
+        queue_position: 1,
+        queue_ahead: "TASK-038",
+        queue_ahead_title: "Run python3 -c print(1)",
+      })?.text,
+    ).toBe('#1 in line · behind TASK-038 "Run python3 -c print(1)"');
+    // CLIPPED, because the caption is a row and not a paragraph — and the whole
+    // title is still handed back for the pointer.
+    const long = "Rebuild the whole index from scratch and then report on it";
+    const line = queueLine({
+      status: "queued",
+      queue_position: 2,
+      queue_ahead: "TASK-038",
+      queue_ahead_title: long,
+    });
+    expect(line?.behind.length).toBeLessThan(`behind TASK-038 "${long}"`.length);
+    expect(line?.behind).toBe('behind TASK-038 "Rebuild the whole index from scratch an…"');
+    expect(line?.aheadTitle).toBe(long);
+    // NO EMPTY QUOTES. An older server, or a holder with no row, reads exactly
+    // as it did before the title existed.
+    expect(
+      queueLine({ status: "queued", queue_ahead: "TASK-038", queue_ahead_title: "  " })
+        ?.behind,
+    ).toBe("behind TASK-038");
+    // …and a title with nothing to attach it to is not printed on its own: a
+    // run the server could not name has no number to quote beside.
+    expect(
+      queueLine({ status: "queued", queue_ahead: "", queue_ahead_title: "News" })?.behind,
+    ).toBe("behind a run in this folder");
   });
 
   it("names SOMETHING when the holder has no id — never a sentence that stops", () => {
@@ -191,5 +232,23 @@ describe("the priority glyph", () => {
     // never does: interrupt the run holding the folder.
     expect(QUEUE_PRIORITY_GLYPH).toBe("⤒");
     expect(QUEUE_PRIORITY_GLYPH).not.toContain("⚡");
+  });
+});
+
+describe("quoteAhead", () => {
+  it("quotes, folds whitespace and clips — never past the row", () => {
+    expect(quoteAhead("Pull the news")).toBe('"Pull the news"');
+    expect(quoteAhead("  Pull   the\n news ")).toBe('"Pull the news"');
+    expect(quoteAhead("")).toBe("");
+    expect(quoteAhead("   ")).toBe("");
+    const long = "x".repeat(QUEUE_AHEAD_TITLE_MAX + 20);
+    const out = quoteAhead(long);
+    // The quotes plus exactly the budget: the last character is the ellipsis,
+    // so the clip is visible rather than a sentence that simply stops.
+    expect(out.length).toBe(QUEUE_AHEAD_TITLE_MAX + 2);
+    expect(out).toContain("…");
+    // A title that fits is printed whole, with no ellipsis bolted on.
+    const fits = "y".repeat(QUEUE_AHEAD_TITLE_MAX);
+    expect(quoteAhead(fits)).toBe(`"${fits}"`);
   });
 });

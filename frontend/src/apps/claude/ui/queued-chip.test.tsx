@@ -172,7 +172,7 @@ describe("the chip under a queued bubble", () => {
     expect(CHIP).toContain('className="c-schedblock c-queuechip"');
     expect(CHIP).toContain('className="sb-card sb-card--chip"');
     expect(CHIP).toContain('className="sb-ring sb-ring--queued"');
-    expect(CHIP).toContain('<span className="sb-acts">');
+    expect(CHIP).toContain('<span className="sb-acts sb-acts--chip">');
     expect(SCHED_CSS).toContain(".c-schedblock .sb-card--chip {");
   });
 
@@ -507,6 +507,191 @@ describe("a card answered while the folder is busy", () => {
       // Ahead of the verdicts, for the reason PermCard's own branch is.
       expect(card.indexOf("const status = held")).toBeGreaterThan(-1);
       expect(card.indexOf("const status = held")).toBeLessThan(card.indexOf('"allow", '));
+    }
+  });
+});
+
+describe("Cancel, from the chip", () => {
+  it("is a second, quieter action beside Skip — never the first press reached", () => {
+    const r = render(
+      <QueuedChip
+        send={{ text: "", entryId: "e1", queue_position: 2, queue_ahead: "TASK-041" }}
+        onSkip={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const buttons = r.root.findAllByType("button");
+    // ORDER IS THE HIERARCHY: Skip is what a reader wants nine times out of ten,
+    // and the destructive one is never the easy press.
+    expect(buttons.length).toBe(2);
+    expect(buttons[0].props.children).toBe("Skip");
+    expect(buttons[1].props.children).toBe("Cancel");
+    expect(buttons[1].props.className).toBe("sb-quiet");
+    act(() => r.unmount());
+  });
+
+  it("calls back once, and is dead while a cancel is in flight", () => {
+    let cancelled = 0;
+    let skipped = 0;
+    const r = render(
+      <QueuedChip
+        send={{ text: "", entryId: "e1", queue_position: 2 }}
+        onSkip={() => {
+          skipped += 1;
+        }}
+        onCancel={() => {
+          cancelled += 1;
+        }}
+      />,
+    );
+    act(() => r.root.findAllByType("button")[1].props.onClick());
+    expect(cancelled).toBe(1);
+    expect(skipped).toBe(0);
+    act(() => r.unmount());
+
+    // …and both buttons go dead for the round trip: the chip is about to leave,
+    // and a Skip pressed into that window is a request about an entry that is
+    // going away.
+    const busy = render(
+      <QueuedChip
+        send={{ text: "", entryId: "e1", queue_position: 2 }}
+        cancelling
+        onSkip={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    for (const b of busy.root.findAllByType("button")) {
+      expect(b.props.disabled).toBe(true);
+    }
+    act(() => busy.unmount());
+  });
+
+  it("spends the schedule's own cancel on the ENTRY, and drops the chip", () => {
+    // The capability that came off the block when the block stopped drawing
+    // this entry. Same endpoint, same id the block's one-off stop posts.
+    const cancel = CHAT.slice(
+      CHAT.indexOf("const cancelQueued = useCallback("),
+      CHAT.indexOf("const adoptSession ="),
+    );
+    expect(cancel).toContain("await cancelScheduledMessage(send.entryId);");
+    expect(cancel).toContain(
+      "setQueuedSends((cur) => cur.filter((q) => q.entryId !== send.entryId));",
+    );
+    // A refusal is said out loud, exactly as Skip's is.
+    expect(cancel).toContain("const t = troubleFromError(err);");
+    expect(cancel).toContain('"This message was not cancelled: " + t.message');
+    // …and the chip is wired to it.
+    expect(CHAT).toContain("onCancel={() => void cancelQueued(q)}");
+    expect(CHAT).toContain("cancelling={cancelling.has(q.entryId)}");
+  });
+
+  it("posts /api/schedule/cancel with the entry id", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
+      bodies.push({ url, ...(JSON.parse(String(init.body)) as Record<string, unknown>) });
+      return { ok: true, json: async () => ({ entry: { id: "e7" } }) } as unknown as Response;
+    };
+    try {
+      const { cancelScheduledMessage } = await import("@platform/lib/api");
+      await cancelScheduledMessage("e7");
+      expect(bodies[0].url).toBe("/api/schedule/cancel");
+      expect(bodies[0].id).toBe("e7");
+    } finally {
+      (globalThis as { fetch: unknown }).fetch = realFetch;
+    }
+  });
+});
+
+describe("one card for one waiting message", () => {
+  it("the block does not draw an entry this chip has", () => {
+    // Two cards for one fact, a few pixels apart, contradicting each other about
+    // whether anything was blocked (browser QA, 2026-09-12). The filter lives in
+    // the hook, because `rec` is read for `blockers[0]`.
+    expect(CHAT).toContain("chipEntryIds,");
+    expect(USE_SCHEDULE).toContain("chipEntryIds?: readonly string[];");
+    expect(USE_SCHEDULE).toContain("if (!queueOn || !chipKey) return allBlockers;");
+    // …and an emptied block draws nothing, which SchedBlock has always done on
+    // an empty list.
+    const block = readFileSync(join(HERE, "SchedBlock.tsx"), "utf8");
+    expect(block).toContain("if (!next) return null;");
+  });
+});
+
+describe("the follow-ups a RUNNING turn is holding", () => {
+  it("wears the same word, in one row for the group", () => {
+    // Three plain bubbles and a composer footnote counting them was the whole of
+    // it (browser QA, screenshot 4): the same fact as a queued send, one layer
+    // in, and nothing on screen said so.
+    const r = render(<QueuedChip kind="inbox" count={3} />);
+    const out = textOf(r);
+    expect(out).toContain("Queued");
+    expect(out).toContain("3 follow-ups · in this turn");
+    // NO SKIP AND NO CANCEL: the live host holds these, there is no entry to
+    // move and nothing this page can take back.
+    expect(r.root.findAllByType("button").length).toBe(0);
+    // The same ring and the same card as the folder's own chip — one state, one
+    // colour, on every surface that names it.
+    expect(out).toContain("sb-ring sb-ring--queued");
+    expect(out).toContain("sb-card sb-card--chip");
+    act(() => r.unmount());
+  });
+
+  it("counts in words, and says nothing at all about none", () => {
+    const one = render(<QueuedChip kind="inbox" count={1} />);
+    expect(textOf(one)).toContain("1 follow-up · in this turn");
+    expect(textOf(one)).not.toContain("follow-ups");
+    act(() => one.unmount());
+    const none = render(<QueuedChip kind="inbox" count={0} />);
+    expect(none.toJSON()).toBe(null);
+    act(() => none.unmount());
+  });
+
+  it("is drawn under the flag only, and leaves the composer's own count alone", () => {
+    expect(CHAT).toContain("{queueOn && state.queued.length > 0 ? (");
+    expect(CHAT).toContain('<QueuedChip kind="inbox" count={state.queued.length} />');
+    const composer = readFileSync(join(HERE, "Composer.tsx"), "utf8");
+    expect(composer).toContain('"1 follow-up is queued for this turn."');
+    expect(composer).toContain("follow-ups are queued for this turn.");
+  });
+});
+
+describe("admission names the run this chat already has", () => {
+  it("puts the live run id in the body, beside the session it may not have yet", () => {
+    // A folder's holder is a RUN. Asking "is that me?" by session id alone left
+    // the second line typed into a brand-new chat queueing behind its own first
+    // turn — the reader waiting for themselves.
+    const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
+    expect(send).toContain('const rid = controller.getState().runId ?? "";');
+    expect(send).toContain("...(rid ? { run_id: rid } : {}),");
+    // Read in the same breath as the session, so the two halves of one body can
+    // never describe two moments.
+    expect(send.indexOf('const sid = controller.getState().sessionId ?? "";')).toBeLessThan(
+      send.indexOf('const rid = controller.getState().runId ?? "";'),
+    );
+  });
+
+  it("is on the wire, and absent when nothing is running", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
+      bodies.push({ url, ...(JSON.parse(String(init.body)) as Record<string, unknown>) });
+      return { ok: true, json: async () => ({ run: true }) } as unknown as Response;
+    };
+    try {
+      const { admitQueueSend } = await import("@platform/lib/api");
+      await admitQueueSend({
+        project: "/w/app",
+        session_id: "",
+        message: "go",
+        run_id: "r-9",
+      });
+      expect(bodies[0].url).toBe("/api/tasks/queue/admit");
+      expect(bodies[0].run_id).toBe("r-9");
+      await admitQueueSend({ project: "/w/app", session_id: "s1", message: "go" });
+      expect(bodies[1]).not.toHaveProperty("run_id");
+    } finally {
+      (globalThis as { fetch: unknown }).fetch = realFetch;
     }
   });
 });
