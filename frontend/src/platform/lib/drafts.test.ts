@@ -30,11 +30,9 @@ import {
   chatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
-  markSentWithoutSession,
   newChatFile,
   rekeyChatDraft,
   saveChatDraft,
-  takeSentWithoutSession,
   saveTaskDraft,
   useAutosave,
   type Autosave,
@@ -412,47 +410,62 @@ describe("the chat rekeys its draft when it learns its session", () => {
     readFileSync(join(import.meta.dir, "../../apps/claude/ui/Composer.tsx"), "utf8");
   const effect = () => {
     const s = chat();
-    const at = s.indexOf("const id = state.sessionId ?? \"\";\n    if (!id) return;");
-    return s.slice(at, s.indexOf("}, [file, state.sessionId]);", at));
+    const at = s.indexOf("const pending = pendingRekey.current;");
+    return s.slice(at, s.indexOf("}, [controller, file, state.sessionId, state.status]);", at));
   };
 
   test("posts the move once, from the `new:<file>` key onto the session", () => {
-    expect(effect()).toContain("void rekeyChatDraft(chatDraftKey(null, file), id);");
+    expect(effect()).toContain("void rekeyChatDraft(pending.key, id);");
     // The same key the composer autosaves under — one function, so the two
     // halves cannot spell the path differently.
-    expect(chat()).toContain(
-      'import { chatDraftKey, rekeyChatDraft, takeSentWithoutSession } from "@platform/lib/drafts";',
-    );
+    expect(chat()).toContain('import { chatDraftKey, rekeyChatDraft } from "@platform/lib/drafts";');
+    expect(chat()).toContain("key: chatDraftKey(null, file)");
   });
 
-  test("gated on the SEND that had no session, not on an observed empty id", () => {
-    // Bugbot, PR #1118 (2026-09-12): the old latch asked whether the first pass
-    // saw an empty `state.sessionId`, which is the ordinary first pass for every
-    // chat — the id arrives only when boot's `openSession` answers. Opening an
-    // existing session in a folder holding a `new:<file>` draft therefore moved
-    // that unsent row, words and TASK number, onto the wrong conversation.
-    const e = effect();
-    expect(e).toContain("if (takeSentWithoutSession(chatDraftKey(null, file))) {");
-    // Nothing infers the answer from what the effect happens to see any more.
+  test("the note is written at the SEND, and only with no session under it", () => {
+    // Not inferred from an observed empty `state.sessionId`: that is the
+    // ordinary first pass for every chat, opened-on-a-session ones included,
+    // because the id only arrives when boot's `openSession` answers.
+    expect(chat()).toContain("if (!controller.getState().sessionId) {");
+    expect(chat()).toContain(
+      "pendingRekey.current = { controller, file, key: chatDraftKey(null, file), live: false };",
+    );
     expect(chat()).not.toContain("startedWithoutSession");
     expect(chat()).not.toContain("rekeyedFor");
   });
 
-  test("the composer marks it, and only when there is no session under the send", () => {
-    const c = composer();
-    expect(c).toContain("if (!sessionId) markSentWithoutSession(draftKeyRef.current);");
-    // The same key the delete on the next line spends, not a re-derived one.
-    expect(c).toContain("deleteChatDraft(draftKeyRef.current)");
-    expect(c).toContain("  markSentWithoutSession,\n");
+  test("the note carries the run, so nobody else can spend it", () => {
+    // Bugbot, PR #1118 (2026-09-12): a module-level "a send is owed a rekey"
+    // set said nothing about WHICH session was allowed to spend it, so
+    // switching conversations in the same folder before the first poll
+    // returned moved the unsent row and its TASK number onto the wrong one.
+    const e = effect();
+    expect(e).toContain("if (pending.controller !== controller || pending.file !== file) {");
+    // Dropped UNSPENT on that road — no rekey between the check and its return.
+    const other = e.slice(e.indexOf("pending.file !== file"), e.indexOf("const id ="));
+    expect(other).toContain("pendingRekey.current = null;");
+    expect(other).not.toContain("rekeyChatDraft(");
+    // And the module-level set it replaces is gone from both sides.
+    const drafts = readFileSync(join(import.meta.dir, "drafts.ts"), "utf8");
+    expect(drafts).not.toContain("SentWithoutSession");
+    expect(composer()).not.toContain("SentWithoutSession");
   });
 
-  test("no per-mount latches left, because the fact is spent on read", () => {
-    // A per-key one-shot needs no controller identity and no reset: the effect
-    // may run many times as the id settles, and two chats in the same
-    // `ChatBody` (not keyed on `file` — see the boot's `bootedFor`, Bugbot PR
-    // #1061) hold different keys and so carry their own answers.
-    expect(chat()).toContain("}, [file, state.sessionId]);");
-    expect(effect()).not.toContain("useRef");
+  test("spent only when the run we sent yields the id, and only once", () => {
+    const e = effect();
+    const landed = e.slice(e.indexOf("if (id) {"), e.indexOf("if (state.status !== "));
+    expect(landed).toContain("pendingRekey.current = null;");
+    expect(landed).toContain("void rekeyChatDraft(pending.key, id);");
+  });
+
+  test("a run that ends without minting an id drops the note", () => {
+    // `RunStatus` is idle|starting|running|stopping — no separate "ended" — so
+    // an end is only an end once the run has been seen live; the idle a send is
+    // dispatched into is not one.
+    const e = effect();
+    expect(e).toContain('if (state.status !== "idle") pending.live = true;');
+    expect(e).toContain("else if (pending.live) pendingRekey.current = null;");
+    expect(chat()).toContain("}, [controller, file, state.sessionId, state.status]);");
   });
 
   test("fire and forget, like every other write in this module", () => {
@@ -461,36 +474,11 @@ describe("the chat rekeys its draft when it learns its session", () => {
     expect(effect()).toContain("void rekeyChatDraft(");
     expect(effect()).not.toContain("await ");
   });
-});
 
-describe("markSentWithoutSession / takeSentWithoutSession", () => {
-  test("a marked key reads back true", () => {
-    const key = chatDraftKey(null, "/Users/me/marked");
-    markSentWithoutSession(key);
-    expect(takeSentWithoutSession(key)).toBe(true);
-  });
-
-  test("spent on read: the second take is false", () => {
-    const key = chatDraftKey(null, "/Users/me/once");
-    markSentWithoutSession(key);
-    expect(takeSentWithoutSession(key)).toBe(true);
-    expect(takeSentWithoutSession(key)).toBe(false);
-  });
-
-  test("an unmarked key is false, and marking one leaves the others alone", () => {
-    const a = chatDraftKey(null, "/Users/me/a");
-    const b = chatDraftKey(null, "/Users/me/b");
-    expect(takeSentWithoutSession(b)).toBe(false);
-    markSentWithoutSession(a);
-    // B's chat never sent from a session-less composer, so nothing is owed to
-    // it — which is the whole of the bug this replaced (Bugbot, PR #1118).
-    expect(takeSentWithoutSession(b)).toBe(false);
-    expect(takeSentWithoutSession(a)).toBe(true);
-  });
-
-  test("an empty key is never marked — there is no draft to move", () => {
-    markSentWithoutSession("");
-    expect(takeSentWithoutSession("")).toBe(false);
+  test("the composer no longer needs to know — it just spends its own key", () => {
+    const c = composer();
+    expect(c).toContain("deleteChatDraft(draftKeyRef.current)");
+    expect(c).not.toContain("markSentWithoutSession");
   });
 });
 
