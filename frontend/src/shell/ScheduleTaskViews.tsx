@@ -3003,9 +3003,11 @@ function TaskNode({
                       shades of the same family. Lower case and in the row's own
                       muted register: it is a fact about the line, not a badge on
                       it. */}
-                  <span className={"tasks-msg-state tasks-msg-state--" + tone.column}>
-                    {tone.word}
-                  </span>
+                  {queueOn ? (
+                    <span className={"tasks-msg-state tasks-msg-state--" + tone.column}>
+                      {tone.word}
+                    </span>
+                  ) : null}
                   {/* The message's own caption, on the text and not on the row —
                       the same rule the task row above follows, and for the same
                       reason: this is the element that ellipsises. The hint is the

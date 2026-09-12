@@ -124,6 +124,19 @@ def agent(tmp_path, monkeypatch):
     return fake
 
 
+@pytest.fixture
+def flag(home):
+    """The pref ON, for the tests that exercise a path only the queue takes —
+    naming a run through the live registry, claiming a folder back. The pid
+    lookup is gated (flag-off audit, 2026-09-12): with the flag off
+    `_parked_runs` walks the same run dirs and must not open the registry."""
+    prefs_path = home / ".fused-render" / "prefs.json"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    prefs_path.write_text(json.dumps({"project_queue_enabled": True}))
+    pq.reset_cache()
+    return prefs_path
+
+
 def stage_run(agent, name, file, session_id="", resumed_from="", alive=True,
               perms=(), pid=None):
     """One run dir as the agent writes it: `meta.json` (the target file and the
@@ -521,7 +534,7 @@ def test_a_reservation_names_the_run_that_has_not_named_itself(home, agent):
     assert pq.is_free(folder_key(work), SID2) is False
 
 
-def test_a_run_is_named_by_the_live_registry_through_its_pid(home, agent):
+def test_a_run_is_named_by_the_live_registry_through_its_pid(home, agent, flag):
     """The fix for the `starting` window (Akshil, 2026-09-12). A brand-new
     chat's run dir names no session — `resumed_from` is empty and the `session`
     file is written by the first poll — but the CLI registers itself the moment
@@ -541,7 +554,7 @@ def test_a_run_is_named_by_the_live_registry_through_its_pid(home, agent):
     assert pq.is_free(folder_key(work), SID2) is False
 
 
-def test_a_registry_named_run_that_is_idle_holds_nothing(home, agent):
+def test_a_registry_named_run_that_is_idle_holds_nothing(home, agent, flag):
     """And the other half of Akshil's case: once the run HAS a name, an idle
     session host holds nothing — which is what lets the second message of a
     finished conversation run at all."""
@@ -972,7 +985,7 @@ def test_a_holder_in_teardown_frees_its_folder_when_the_registry_says_idle(
 
 
 def test_an_anonymous_send_claims_back_the_folder_its_own_run_went_quiet_in(
-        home, agent):
+        home, agent, flag):
     """AKSHIL'S SELF-QUEUE WINDOW, this module's half (browser QA,
     2026-09-12). A brand-new chat says hello, gets its reply, and types again
     while the client still knows neither the session nor the run — so the
@@ -995,7 +1008,7 @@ def test_an_anonymous_send_claims_back_the_folder_its_own_run_went_quiet_in(
     assert pq.reserve_if_free(folder_key(work), "") is True
 
 
-def test_an_anonymous_send_still_queues_while_that_run_is_running(home, agent):
+def test_an_anonymous_send_still_queues_while_that_run_is_running(home, agent, flag):
     """…and not one step further. The same folder, the same nameless send, a
     turn actually in flight: this is the case the whole feature exists for and
     it queues."""
@@ -1227,8 +1240,7 @@ def test_a_dead_run_is_never_a_holder_however_fresh_the_registry_row(home,
     assert pq.is_free(folder_key(work), SID2) is True
 
 
-def test_a_reservation_taken_this_instant_is_never_claimed_anonymously(home,
-                                                                       agent):
+def test_a_reservation_taken_this_instant_is_never_claimed_anonymously(home, agent, flag):
     """The two-admissions-in-one-breath race, which the run dir alone cannot
     see: both sends are nameless, the folder has a quiet recent run of its own,
     and the only thing that tells the cases apart is that the reservation in the
@@ -1248,7 +1260,7 @@ def test_a_reservation_taken_this_instant_is_never_claimed_anonymously(home,
 
 
 def test_an_anonymous_send_never_claims_a_folder_a_claim_is_holding(
-        home, agent, monkeypatch):
+        home, agent, flag, monkeypatch):
     """Only a RESERVATION can be claimed back. A `sending` holder is a folder
     the tick has already claimed for something else, a `starting` or a `run` one
     is a process that is already in there — and a send that cannot name itself
@@ -1598,3 +1610,17 @@ def test_bad_id_spells_the_agents_rule(home):
     assert pq.bad_id("20260912-090000-abc") is False
     for bad in ("", ".", "..", "./x", "a/b", "a\\b", "d:x", None, 7):
         assert pq.bad_id(bad) is True, bad
+
+
+def test_with_the_flag_off_a_run_is_never_named_through_the_registry(home, agent):
+    """Flag-off audit (2026-09-12): `_parked_runs` reads this same walk with the
+    queue off, and main never opened `~/.claude/sessions` for it. A run that
+    names no session stays anonymous — `starting` — until its own files say."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="busy")
+    assert pq.enabled() is False
+    run = pq.scan_runs(agent)[0]
+    assert SID not in pq.run_sessions(agent, run["run_dir"], run.get("meta") or {})

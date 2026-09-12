@@ -358,7 +358,10 @@ describe("opening a waiting NEW chat from somewhere else", () => {
     // walks: `waitingFor` finds its rows, the `pending:<id>` task row gives the
     // header its number, and `adoptSession` swaps in the real transcript the
     // moment the leader runs.
-    expect(CHAT).toContain('const queuedParam = params.get(QUEUED_PARAM) || "";');
+    // …and ONLY under the flag: a `?queued=` link made while the queue was on
+    // must not name a leader on a chat running with the queue off (flag-off
+    // audit, 2026-09-12).
+    expect(CHAT).toContain('const queuedParam = queueOn ? params.get(QUEUED_PARAM) || "" : "";');
     expect(CHAT).toContain('leader.remember("", queuedParam);');
     // REMEMBERED IN AN EFFECT, READ DIRECTLY FOR THE RENDER: `leader` is a ref,
     // so a render that wrote it would answer differently depending on how many

@@ -1957,3 +1957,26 @@ def test_a_resend_of_a_chats_message_is_still_the_chats_message(folders,
     schedule._update(plain["id"], state=schedule.SENT,
                      claude_session_id=SID2, fired=_ago(590).isoformat())
     assert "origin" not in schedule.resend(plain["id"])["entry"]
+
+
+def test_a_run_now_stamp_is_not_read_once_the_flag_is_off(folders, home, spawned,
+                                                          monkeypatch):
+    """Flag-off audit (2026-09-12): a message asked for now while its folder was
+    busy carries `run_now_at`; if the queue is then turned OFF, that stamp must
+    not fire a message due next Tuesday on the first flag-off tick. Off, an
+    entry is due when `due` says."""
+    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": True}))
+    live = {pq.queue_key(str(folders["alpha"])): {"session_id": "other",
+                                                  "run_id": "r-x",
+                                                  "task_key": "other",
+                                                  "kind": "run"}}
+    monkeypatch.setattr(pq, "holders", lambda now=None: dict(live))
+    entry = schedule.create(str(folders["alpha"]), "tomorrow", _ago(-86400))
+    assert schedule.run_now(entry["id"])["reason"] == "queued"
+    assert _stored(entry["id"])["run_now_at"]
+
+    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": False}))
+    monkeypatch.setattr(pq, "holders", lambda now=None: {})
+    assert schedule.queue()["queued"] == []          # not in the line any more
+    assert schedule.tick() == []                     # and not sent
+    assert _stored(entry["id"])["state"] == schedule.PENDING

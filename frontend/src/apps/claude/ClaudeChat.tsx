@@ -2183,7 +2183,10 @@ function ChatBody(props: ChatBodyProps) {
    * stale by construction, and it is cleared from the URL where the session is
    * adopted.
    */
-  const queuedParam = params.get(QUEUED_PARAM) || "";
+  // Read only under the flag: a `?queued=` link made while the queue was on
+  // must not name a leader — and hide Archive / Continue in terminal — on a
+  // chat that is running with the queue off (flag-off audit, 2026-09-12).
+  const queuedParam = queueOn ? params.get(QUEUED_PARAM) || "" : "";
   useEffect(() => {
     if (!queuedParam || state.sessionId) return;
     leader.remember("", queuedParam);

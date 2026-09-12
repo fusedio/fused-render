@@ -413,7 +413,10 @@ def run_sessions(agent, run_dir: str, meta: dict) -> set:
             own = agent._session_from_out(run_dir)
         except Exception:  # noqa: BLE001 — a head we cannot read is not an id
             own = ""
-    if not own:
+    if not own and enabled():
+        # The registry read is the queue's need (a run must be named to be a
+        # holder); `_parked_runs` reads this walk with the flag off too, and
+        # main never opened the registry for it.
         own = session_from_pid(run_dir)
     out.add(own)
     out.discard("")

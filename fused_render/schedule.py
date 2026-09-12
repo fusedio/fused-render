@@ -1821,7 +1821,14 @@ def _queue_due(entry: dict, when: datetime) -> datetime:
     read `upcoming` while the answer to the gesture said `queued`.
 
     An unreadable stamp is no stamp: the entry keeps its own due time, which is
-    the same direction every other defensive read here takes."""
+    the same direction every other defensive read here takes.
+
+    FLAG OFF, THE STAMP IS NOT READ. Run now on a busy folder only ever writes
+    it under the flag, and a reader that honoured it once the pref was turned
+    off would send a message due next Tuesday on the first flag-off tick
+    (flag-off audit, 2026-09-12). Off, an entry is due when `due` says."""
+    if not _pq().enabled():
+        return when
     stamp = str(entry.get("run_now_at") or "")
     if not stamp:
         return when
@@ -3763,9 +3770,13 @@ def tick(now: datetime | None = None) -> list[dict]:
             # it is waiting for (`_verdict_echo`).
             logger.debug("holding %s: session %s has a live turn", entry_id,
                          session)
-            left = _live_expires_in(session, now)
-            if left:
-                held_soon.append(left)
+            # The early wake is the queue's promise (a message goes within
+            # seconds of the folder freeing); with the flag off the 30 s poll
+            # is what shipped, so no timer is armed and no tail is re-read.
+            if folders is not None:
+                left = _live_expires_in(session, now)
+                if left:
+                    held_soon.append(left)
             continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:

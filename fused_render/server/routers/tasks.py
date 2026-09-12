@@ -2571,7 +2571,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
             # `usage_limit` BEFORE `failed`, because it is the same run
             # described more usefully: the button is not Retry, it is nothing —
             # the continuation is already scheduled and `resumes_at` says when.
-            else "usage_limit" if limited
+            # ONLY WHILE THE ROW IS BLOCKED: `limited` is read off the last
+            # completed speaker, so it stays true for the whole of the comeback
+            # turn (and any new turn) until a fresh reply lands — a running row
+            # must not read "paused" (Bugbot, de311131b).
+            else "usage_limit" if limited and status == "blocked"
             else ("failed" if failed or status == "blocked" else "")),
         # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the CONTINUATION the chat
         # scheduled at the reset the CLI reported (PR #1107), and that entry
