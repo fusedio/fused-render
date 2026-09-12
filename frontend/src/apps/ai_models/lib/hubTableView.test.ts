@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
+import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchScoreInt, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -133,13 +133,24 @@ describe("matchTitle", () => {
   });
 });
 
+describe("matchScoreInt", () => {
+  it("is the one rounding rule both the cell and the tooltip read from", () => {
+    // Item 4: a 84.5 `matchScore` must never print "85" in the cell and
+    // "84" in the tooltip — one helper, one answer.
+    expect(matchScoreInt(84.5)).toBe(85);
+    expect(matchScoreInt(84.4)).toBe(84);
+    expect(matchScoreInt(null)).toBeNull();
+    expect(matchScoreInt(undefined)).toBeNull();
+  });
+});
+
 describe("matchRowTip", () => {
-  // D1245/D1246: the row's own short `data-tip` popover — unlike `matchTitle`
-  // above (a 60-word paragraph), this leads with the score then names ONLY
-  // the axes that actually cost THIS row points, biggest loss first, and
-  // always separates "the score" from "the colour" in plain words — the
-  // fix for the "two rows both score 84 but one is yellow and one is
-  // green" complaint (D1246).
+  // D1245/D1246, cut down by D1267: the row's own short `data-tip` popover —
+  // two lines, max ~90 characters total. Line 1 names at most the two
+  // biggest-loss axes (no parentheticals, no raw numbers); line 2 always
+  // states the fit verdict plus its GB numbers, rounded to one decimal —
+  // the fix for two rows that both show "84" with a different bar colour
+  // reading as a bug (D1246) rather than two independent facts.
   const tight = (footprintGb: number, poolGb: number): AiFitVerdict => ({
     verdict: "tight",
     basis: "declared",
@@ -151,14 +162,23 @@ describe("matchRowTip", () => {
   const axis = (partial: Partial<HubMatchAxis> & Pick<HubMatchAxis, "axis" | "gained" | "lost">): HubMatchAxis =>
     partial as HubMatchAxis;
 
-  it("leads with the score out of 100", () => {
+  it("leads with the plain integer score, not a slash-100 paragraph", () => {
     const tip = matchRowTip(tight(17, 22.4), 84, [
       axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
     ]);
-    expect(tip.startsWith("Match 84/100")).toBe(true);
+    expect(tip.startsWith("Match 84")).toBe(true);
+    expect(tip).not.toContain("/100");
   });
 
-  it("names the biggest losers first, capped at three, each with its own number", () => {
+  it("agrees with matchCell's rounding — item 4's 84.5 case", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84.5, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+    ]);
+    expect(matchCell(tight(17, 22.4), 84.5).scoreText).toBe("85");
+    expect(tip.startsWith("Match 85")).toBe(true);
+  });
+
+  it("names the two biggest losers, biggest first, and drops the rest", () => {
     const breakdown: HubMatchAxis[] = [
       axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
       axis({ axis: "popularity", gained: 0.5, lost: 9.5, downloads: 120 }),
@@ -167,16 +187,18 @@ describe("matchRowTip", () => {
       axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
     ];
     const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
-    // Sorted by `lost` descending (14, 10.5, 9.5): fit, recency, popularity —
-    // all three fit within the top-three cap, so all three are named.
-    expect(tip).toContain("popularity (120 downloads)");
-    expect(tip).toContain("3y"); // recency phrased as an age
-    // Full-marks axes never named.
+    // `fit` is never in the loss list (line 2 already tells its whole
+    // story). Of the rest, sorted by `lost` descending: recency (10.5),
+    // popularity (9.5) — capped at two, so only those two are named, and
+    // never with parentheticals or raw numbers.
+    expect(tip).toContain("lost most on recency, then popularity");
+    expect(tip).not.toContain("(");
+    expect(tip).not.toContain("120");
     expect(tip).not.toContain("speed");
-    expect(tip).not.toContain("capability");
+    expect(tip).not.toContain("size");
   });
 
-  it("says nothing lost when every axis scored full marks", () => {
+  it("says full marks when every scoreable axis lost nothing", () => {
     const breakdown: HubMatchAxis[] = [
       axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
       axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
@@ -184,74 +206,58 @@ describe("matchRowTip", () => {
       axis({ axis: "recency", gained: 15, lost: 0, ageDays: 1 }),
       axis({ axis: "popularity", gained: 10, lost: 0, downloads: 6_000_000 }),
     ];
-    const tip = matchRowTip(tight(2, 22.4), 100, breakdown);
-    expect(tip).not.toContain("lost");
+    const tip = matchRowTip({ verdict: "easy", basis: "declared", footprintBytes: 2e9, score: 100 }, 100, breakdown);
+    expect(tip).toContain("full marks");
   });
 
-  it("mentions the already-downloaded bonus when it applied", () => {
-    const breakdown: HubMatchAxis[] = [
-      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
-      axis({ axis: "onDisk", gained: 6, lost: 0 }),
-    ];
-    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
-    expect(tip.toLowerCase()).toContain("already");
-    expect(tip).toContain("+6");
-  });
-
-  it("blames unknown size, not unused capacity, when capability lost points with no params", () => {
-    // C5 (Bugbot): a row with no declared params still uses the capability
-    // axis's default score, but the phrase must not invent "this machine
-    // could run more" reasoning next to a dash it never measured.
-    const breakdown: HubMatchAxis[] = [
-      axis({ axis: "fit", gained: 21, lost: 0, footprintGb: 17, poolGb: 22.4 }),
-      axis({ axis: "capability", gained: 0, lost: 25, params: null }),
-    ];
-    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
-    expect(tip.toLowerCase()).toContain("size unknown");
-    expect(tip.toLowerCase()).not.toContain("could run more");
-  });
-
-  it("names a run-mode penalty as its own loss when it applied", () => {
+  it("names a run-mode penalty as a loss when it applied", () => {
     const breakdown: HubMatchAxis[] = [
       axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
       axis({ axis: "runMode", gained: 0, lost: 10, runMode: "cpu-offload" }),
     ];
-    const tip = matchRowTip(tight(2, 22.4), 90, breakdown);
-    expect(tip.toLowerCase()).toContain("cpu offload");
+    const tip = matchRowTip({ verdict: "easy", basis: "declared", footprintBytes: 2e9, score: 100 }, 90, breakdown);
+    expect(tip).toContain("lost most on offload");
   });
 
-  it("always separates colour from score, and gives the fit its own numbers", () => {
-    const tip = matchRowTip(tight(17, 22.4), 84, [
-      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+  it("rounds the fit GB numbers to one decimal on a tight-fit row", () => {
+    const tip = matchRowTip(tight(18.663, 26.359), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 18.663, poolGb: 26.359 }),
     ]);
-    expect(tip.toLowerCase()).toContain("colour");
-    expect(tip.toLowerCase()).toContain("not this score");
-    expect(tip).toContain("17");
-    expect(tip).toContain("22.4");
+    expect(tip).toContain("Tight fit · needs ~18.7 of 26.4 GB");
   });
 
-  it("explains the same colour sentence even when fit itself lost no points", () => {
-    // Two rows can both score 84 with different colours precisely because
-    // fit is independent of the total — the colour sentence must appear
-    // regardless of whether fit made the top-three loss list.
-    const easy: AiFitVerdict = { verdict: "easy", basis: "declared", footprintBytes: 8.7e9, score: 100, runMode: "gpu" };
+  it("reads 'Fits easily' with both GB numbers for an easy verdict", () => {
+    const easy: AiFitVerdict = { verdict: "easy", basis: "declared", footprintBytes: 9.2e9, score: 100 };
     const tip = matchRowTip(easy, 84, [
-      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 8.7, poolGb: 22.4 }),
-      axis({ axis: "popularity", gained: 0, lost: 10, downloads: 0 }),
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 9.2, poolGb: 26.4 }),
     ]);
-    expect(tip.toLowerCase()).toContain("colour");
-    expect(tip).toContain("8.7");
+    expect(tip).toContain("Fits easily · 9.2 of 26.4 GB");
+  });
+
+  it("reads \"Won't fit\" with just the footprint for a no-fit verdict", () => {
+    const no: AiFitVerdict = { verdict: "no", basis: "declared", footprintBytes: 41e9, score: 0 };
+    const tip = matchRowTip(no, 30, [axis({ axis: "fit", gained: 0, lost: 35, footprintGb: 41, poolGb: 26.4 })]);
+    expect(tip).toContain("Won't fit · needs 41 GB");
   });
 
   it("reads unknown fit honestly rather than inventing a footprint", () => {
     const tip = matchRowTip(null, 40, []);
-    expect(tip.toLowerCase()).toContain("unknown");
+    expect(tip).toContain("Memory not measured");
   });
 
   it("is a dash-safe, terse fallback when there is no breakdown at all", () => {
     const tip = matchRowTip(tight(17, 22.4), 84, undefined);
-    expect(tip.startsWith("Match 84/100")).toBe(true);
-    expect(tip.toLowerCase()).toContain("colour");
+    expect(tip.startsWith("Match 84")).toBe(true);
+    expect(tip).toContain("Tight fit");
+  });
+
+  it("stays within the ~90 character budget", () => {
+    const tip = matchRowTip(tight(18.663, 26.359), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 18.663, poolGb: 26.359 }),
+      axis({ axis: "popularity", gained: 0.5, lost: 9.5, downloads: 120 }),
+      axis({ axis: "recency", gained: 4.5, lost: 10.5, ageDays: 1095 }),
+    ]);
+    expect(tip.length).toBeLessThanOrEqual(90);
   });
 });
 
