@@ -3655,6 +3655,10 @@ export interface HubModelLocal {
   state: "downloaded" | "partial" | "none";
   size?: number;
   files?: number;
+  /** The single GGUF filename on disk when exactly one is present; null for
+   *  a non-GGUF repo, an empty snapshot, or an ambiguous multi-GGUF case
+   *  (the server deliberately refuses to guess which file "is the one"). */
+  file?: string | null;
   lastUsed?: number | null;
   /** Ready for navigate(path, {isDir:true}) — absent unless it is here. */
   path?: string;
@@ -3683,6 +3687,15 @@ export interface HubModel {
   params: number | null;
   /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
   estimatedSize: number | null;
+  /** B (bugbot): where `fit`/`speedEstimate`'s footprint for a GGUF row
+   *  came from — `"cached"` (a real measured byte count, `hub/size`'s own
+   *  cache), `"estimated"` (`params x quant_bytes_per_param` off a
+   *  recognised quant token, no real bytes on hand yet), or `null` (an
+   *  unrecognised token, or params unknown — the row stays unjudgeable).
+   *  The lazy `hub/size` lookup, once it resolves, still supersedes
+   *  whatever this says with the real measured size. Optional: absent on a
+   *  response from a server that predates this field. */
+  sizeSource?: "cached" | "estimated" | null;
   /** Will this fit on THIS machine — the same judgement a downloaded model's
    *  card carries, over the same `fit.verdict` ladder server-side. Null when
    *  there is nothing to judge (no safetensors size, no params). */
@@ -3711,13 +3724,22 @@ export interface HubModel {
    *  safetensors republish of the same base, so the two get their own
    *  family rows instead of one swallowing the other. */
   format: string | null;
-  /** Item 9c (fix round 5): how many distinct weight variants this repo
-   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded) or
-   *  bit-width/dtype subfolders, whichever the repo's own layout shows.
-   *  Best-effort and never 0; see `hub_models.py::_count_variants`'s own
-   *  docstring for the exact rule. Undefined only for a response shape that
-   *  predates this field — a running server always sends it. */
-  variants?: number;
+  /** Item 9c (fix round 5); renamed from `variants` in item 6, which now
+   *  names the array below. How many distinct weight variants this repo
+   *  ships — GGUF quant files (mmproj/vision-projector helpers excluded,
+   *  a shard set collapsed to one) or bit-width/dtype subfolders, whichever
+   *  the repo's own layout shows. Best-effort and never 0; see
+   *  `hub_models.py::_count_variants`'s own docstring for the exact rule.
+   *  Undefined only for a response shape that predates this field — a
+   *  running server always sends it. */
+  variantCount?: number;
+  /** Item 6: the actual GGUF files this repo ships — one entry per file
+   *  `formats.gguf_candidate_files` counted into `variantCount` above, each
+   *  with that file's own published quant token (`formats.gguf_quant_
+   *  token`, or null for an unsuffixed/full-precision file). `null` for
+   *  every non-GGUF row (no per-file listing to offer one for) and for a
+   *  response shape that predates this field. */
+  variants?: { file: string; quant: string | null; downloadable?: boolean }[] | null;
   /** The ONE GGUF file `formats.pick_gguf_file` chose for this row, or null
    *  for every other row (D412's own field). Threaded back into
    *  `getHubModelSize`/`lookupTotalSize` so the lazy size lookup can ask
@@ -3736,8 +3758,67 @@ export interface HubModel {
    *  every axis has an honest default for missing evidence, so this is
    *  never null the way `fit`/`speedEstimate` can be. */
   matchScore: number;
+  /** D1245: the per-axis story behind `matchScore` — one entry per weighted
+   *  axis (`fit`/`capability`/`speed`/`recency`/`popularity`), plus an
+   *  `onDisk` entry when the on-disk bonus applied and a `runMode` entry
+   *  when the CPU-offload/CPU-only penalty did. The weights and axis
+   *  curves live only in `hub_models.py` (`_axis_scores`/`_score_
+   *  breakdown`), so this is the one way a tooltip can say why a row lost
+   *  points without re-deriving them. Optional: absent on a response from
+   *  a server that predates this field. */
+  matchBreakdown?: HubMatchAxis[];
   local: HubModelLocal;
   url: string;
+  /** Item 3: the on-disk weight format read off `siblings`
+   *  ("safetensors" | "gguf" | "npz" | "onnx" | "bin"), independent of
+   *  `format` above (which is a GGUF-republish grouping key, not a general
+   *  file-format fact). Null when nothing in `siblings` matched, or on a
+   *  response that predates this field. `formatToken()` combines this with
+   *  `library`. */
+  fileFormat?: "safetensors" | "gguf" | "npz" | "onnx" | "bin" | null;
+  /** Item 2: whether the runner ACTIVE for `capability` right now will
+   *  actually be able to open this repo once downloaded — never a reason to
+   *  drop the row, only to flag it (a runner-narrower repo still ranks,
+   *  still downloads if the person insists). `true`/undefined on a response
+   *  that predates this field, so an older server's rows read exactly as
+   *  they always have: nothing is flagged. */
+  loadable?: boolean;
+  /** The short clause the frontend's chip appends after "Won't run here · "
+   *  (e.g. "mflux only loads FLUX.2 Klein") — null/absent whenever
+   *  `loadable` is not `false`. */
+  loadableReason?: string | null;
+}
+
+/** One line of `HubModel.matchBreakdown` — see that field's own doc.
+ *  `gained`/`lost` are already in BLENDED points (weight applied), not the
+ *  axis's own raw 0-100, so they can be summed or compared directly
+ *  against `matchScore` itself. `gained + lost` is that axis's full
+ *  weight in blended points for every weighted axis; `onDisk`/`runMode`
+ *  are flat (never both nonzero) and only appear when they actually
+ *  applied. The remaining fields are the raw fact that drove ONE axis —
+ *  only the ones relevant to `axis` are set. */
+export interface HubMatchAxis {
+  axis: "fit" | "capability" | "speed" | "recency" | "popularity" | "onDisk" | "runMode";
+  /** Blended points this axis contributed toward `matchScore`. */
+  gained: number;
+  /** Blended points this axis cost versus a perfect score on it (0 for
+   *  `onDisk`; the flat penalty itself for `runMode`). */
+  lost: number;
+  /** `popularity` only — the raw download count (or null) behind it. */
+  downloads?: number | null;
+  /** `recency` only — how old `created` is, in days (or null). */
+  ageDays?: number | null;
+  /** `capability` only — the raw `params` (or null) behind it. */
+  params?: number | null;
+  /** `speed` only — the raw `tokensPerSecond`, or null when there was no
+   *  real estimate to score (same gate `speedLabel` prints a dash for). */
+  tokensPerSecond?: number | null;
+  /** `fit` only — this repo's own footprint, and the machine's available
+   *  pool, both in GB (or null when unknown). */
+  footprintGb?: number | null;
+  poolGb?: number | null;
+  /** `runMode` only — which penalty this entry is. */
+  runMode?: "cpu-offload" | "cpu-only";
 }
 
 /** One facet option — `HubSearchResult.facets`'s own row shape (fix round 6,
@@ -3767,6 +3848,15 @@ export interface HubSearchResult {
   endpoint?: string;
   authenticated?: boolean;
   facets?: HubSearchFacets;
+  /** On-device catalog build state for this response's `capability` (SPEC
+   *  docs/HUB_CATALOG_SPEC.md item 2): "ready" served from a built pool,
+   *  "building"/"blocked" served from the live-Hub fallback while a pool
+   *  builds or sits out a 429 backoff, "none" when there is no capability
+   *  filter or nothing has ever started. Optional so a response predating
+   *  this field still typechecks. */
+  poolState?: "ready" | "building" | "blocked" | "none";
+  /** Only present when `poolState === "building"` — pages fetched so far. */
+  poolPagesDone?: number;
 }
 
 /** The orderings the Hub's LIST endpoint can perform — the server's own
@@ -3821,22 +3911,31 @@ export function searchHubModels(opts: {
    *  own `author` query parameter, a real narrowing of the WIRE request
    *  rather than a post-join filter (unlike the three above). */
   publisher?: string;
+  /** Round-7 wait-state work: `HubSearchScreen` cancels a slow in-flight
+   *  search (the 12s-and-counting "Cancel" link) by aborting this signal —
+   *  same `AbortSignal` contract `getJson`/`mutateJson` already carry, wired
+   *  through for the one caller that now needs it. */
+  signal?: AbortSignal;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
   // the shape its effect deserves and carries the D3 guard with it. See the
   // endpoint's docstring.
-  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
-    q: opts.q,
-    task: opts.task,
-    capability: opts.capability,
-    sort: opts.sort,
-    limit: opts.limit,
-    fitLevel: opts.fitLevel,
-    quant: opts.quant,
-    paramsBand: opts.paramsBand,
-    publisher: opts.publisher,
-  });
+  return postJson<HubSearchResult>(
+    "/api/ai-models/hub/search",
+    {
+      q: opts.q,
+      task: opts.task,
+      capability: opts.capability,
+      sort: opts.sort,
+      limit: opts.limit,
+      fitLevel: opts.fitLevel,
+      quant: opts.quant,
+      paramsBand: opts.paramsBand,
+      publisher: opts.publisher,
+    },
+    { signal: opts.signal },
+  );
 }
 
 /** One repo's size on the Hub — the whole repo's TOTAL by default, or one
@@ -4347,8 +4446,14 @@ export function loadAiModel(model: string, capability?: string): Promise<AiLoadS
   return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
 }
 
-export function downloadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
-  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability });
+export function downloadAiModel(
+  model: string, capability?: string, file?: string,
+): Promise<AiLoadStarted> {
+  // `file` (item A, per-variant download): names one specific GGUF variant
+  // to fetch instead of whichever one the server would otherwise pick for
+  // this repo. Omitted for an ordinary row-level download, which stays
+  // byte-identical to the request this always sent.
+  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability, file });
 }
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {

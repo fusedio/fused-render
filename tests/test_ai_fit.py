@@ -223,10 +223,18 @@ def test_measured_and_declared_do_not_get_a_second_helping_of_overhead():
 @pytest.mark.parametrize("label,key", [
     ("F32", "f32"), ("fp32", "f32"),
     ("BF16", "bf16"), ("F16", "f16"), ("fp16", "f16"),
+    ("FP8", "fp8"),
     ("Q8_0", "q8_0"), ("GGUF Q8_0", "q8_0"),
-    ("Q6_K", "q6_k"), ("Q5_K_M", "q5_k_m"),
-    ("GGUF Q4_K_M", "q4_k_m"), ("Q4_0", "q4_0"),
-    ("Q3_K_M", "q3_k_m"), ("Q2_K", "q2_k"),
+    ("Q8_K_XL", "q8_k_xl"), ("UD-Q8_K_XL", "q8_k_xl"),
+    ("Q6_K", "q6_k"), ("Q6_K_L", "q6_k_l"),
+    ("Q5_K_M", "q5_k_m"), ("Q5_K_S", "q5_k_s"),
+    ("Q5_1", "q5_1"), ("Q5_0", "q5_0"),
+    ("GGUF Q4_K_M", "q4_k_m"), ("Q4_K_S", "q4_k_s"),
+    ("IQ4_XS", "iq4_xs"), ("IQ4_NL", "iq4_nl"),
+    ("Q4_1", "q4_1"), ("Q4_0", "q4_0"),
+    ("Q3_K_M", "q3_k_m"), ("Q3_K_S", "q3_k_s"), ("IQ3_M", "iq3_m"),
+    ("Q2_K", "q2_k"), ("IQ2_M", "iq2_m"),
+    ("IQ1_M", "iq1_m"),
     ("MLX 8-bit", "mlx_8bit"), ("MLX 4-bit", "mlx_4bit"),
     ("AWQ 4-bit", "awq_4bit"), ("GPTQ 4-bit", "awq_4bit"),
     ("AWQ 8-bit", "awq_8bit"), ("GPTQ 8-bit", "awq_8bit"),
@@ -234,6 +242,18 @@ def test_measured_and_declared_do_not_get_a_second_helping_of_overhead():
 def test_quant_key_recognizes_every_table_entry(label, key):
     assert fit._quant_key(label) == key
     assert fit.quant_bytes_per_param(label) == fit.QUANT_BYTES_PER_PARAM[key]
+
+
+@pytest.mark.parametrize("token", [
+    "Q4_K_S", "Q5_K_S", "Q6_K_L", "IQ4_XS", "IQ4_NL",
+    "Q3_K_S", "IQ3_M", "IQ2_M", "IQ1_M", "Q4_1", "Q5_0", "Q5_1", "Q8_K_XL",
+])
+def test_previously_defaulted_gguf_suffixes_no_longer_use_the_default(token):
+    """SPEC item 4 (round 2): these are real `formats.GGUF_SUFFIX_PRIORITY`/
+    `GGUF_QUALITY_ORDER` tokens that used to silently fall through to
+    `DEFAULT_BYTES_PER_PARAM` — each must now resolve to its OWN figure,
+    not coincidentally equal the default."""
+    assert fit.quant_bytes_per_param(token) != fit.DEFAULT_BYTES_PER_PARAM
 
 
 def test_quant_key_is_none_for_an_unrecognised_or_absent_string():
@@ -561,6 +581,33 @@ def test_run_mode_is_cpu_offload_when_the_footprint_exceeds_vram_but_fits_combin
     assert result is not None
     assert result["runMode"] == "cpu-offload"
     assert result["verdict"] in ("easy", "tight")
+
+
+def test_verdict_exposes_the_selected_pool_bytes_and_name(monkeypatch):
+    """C4: `verdict()` must expose which pool `_select_pool` actually judged
+    the footprint against, not leave a caller re-deriving it (or worse,
+    reading a different, combined-budget figure that can disagree)."""
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)],
+        total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=0.0)
+    monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
+    result = fit.verdict("text-generation", "org/m", size_gb=10.0)
+    assert result is not None
+    assert result["poolName"] == "gpu"
+    assert result["poolBytes"] == pytest.approx(24.0 * fit.GB_BYTES)
+
+
+def test_verdict_pool_bytes_is_the_combined_offload_budget_in_cpu_offload_mode(monkeypatch):
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 3060", vram_gb=8.0)],
+        total_vram_gb=8.0, bandwidth_gb_s=360.0, detected_at=0.0)
+    monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
+    result = fit.verdict("text-generation", "org/m", size_gb=19.5)
+    assert result is not None
+    assert result["poolName"] == "cpu-offload"
+    # 32GB RAM - reserve = usable; combined pool = 8GB VRAM + usable RAM,
+    # strictly more than VRAM alone.
+    assert result["poolBytes"] > 8.0 * fit.GB_BYTES
 
 
 def test_run_mode_is_gpu_for_a_non_apple_unified_memory_device(monkeypatch):

@@ -18,7 +18,7 @@
 // and `hubFamilies.ts`: the two-pane port's search screen (`HubSearchScreen`)
 // draws one row per repo with no family grouping and no dense `<table>`, so
 // there is nothing left to hoist a column out of or collapse a family into.
-import type { AiFitVerdict } from "@platform/lib/api";
+import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 import { formatParams, timeAgo } from "@platform/lib/format";
 
 /** The dash every absent cell in this table shows — one glyph, so a reader's
@@ -78,12 +78,22 @@ export interface MatchCell {
  *  already states which rung of its own ladder it used. */
 export type MatchFitBasis = AiFitVerdict["basis"] | null;
 
+// D1266+1 (item 4): the row's number and its tooltip both used to round
+// `matchScore` independently (`Math.round` in two places) — harmless while
+// the two call sites agreed, but a trap the moment they didn't. One helper,
+// used by both `matchCell` and `matchRowTip`, makes "same integer" structural
+// rather than a coincidence of two copies of the same one-liner.
+export function matchScoreInt(matchScore: number | null | undefined): number | null {
+  return typeof matchScore === "number" ? Math.round(matchScore) : null;
+}
+
 export function matchCell(
   fit: AiFitVerdict | null,
   matchScore: number | null | undefined,
   stale = false,
 ): MatchCell {
-  const scoreText = !stale && typeof matchScore === "number" ? Math.round(matchScore).toString() : DASH;
+  const scoreInt = matchScoreInt(matchScore);
+  const scoreText = !stale && scoreInt != null ? scoreInt.toString() : DASH;
   const verdict = fit?.verdict ?? "unknown";
   const offloadLabel = fit?.runMode === "cpu-offload" ? "offload" : fit?.runMode === "cpu-only" ? "CPU only" : null;
   return { scoreText, verdict, offloadLabel };
@@ -139,6 +149,108 @@ export function matchTitle(
   return `${scoreText} Number colour: ${verdictText}.${modeText}${basisText}`;
 }
 
+// ---------------------------------------------------------------------------
+// D1245/D1246/D1267 — the search hit row's own short `data-tip` popover.
+//
+// `matchTitle` above is a full paragraph meant for a native `title=`; this is
+// the terse replacement `HubSearchScreen.tsx`'s hit row actually shows. The
+// first cut (D1245/D1246) was itself still a paragraph — "lost points on
+// speed (no reliable estimate for this size), model size (9.1B — this
+// machine could run more) and popularity (14K downloads)" reads as noise in
+// a small popover. D1267 cuts it to two short lines, ~90 characters total:
+// a loss line naming at most the two biggest axes with no parentheticals,
+// and a fit line stating the verdict and the GB numbers (rounded to one
+// decimal) in one breath. The per-axis raw numbers (downloads, tok/s, age)
+// this used to spell out are dropped rather than relocated — there is no
+// drawer slot for them, and the loss line's job is now "which two axes cost
+// the most", not "the full ledger".
+
+/** One short, parenthetical-free word naming an axis — the vocabulary the
+ *  loss line draws from. `fit`/`onDisk` never appear here: fit gets its own
+ *  dedicated second line (the verdict + GB numbers), and the on-disk bonus
+ *  is not a loss. */
+function axisShortName(axis: HubMatchAxis["axis"]): string {
+  switch (axis) {
+    case "popularity":
+      return "popularity";
+    case "recency":
+      return "recency";
+    case "capability":
+      return "size";
+    case "speed":
+      return "speed";
+    case "runMode":
+      return "offload";
+    default:
+      return "fit";
+  }
+}
+
+/** "a" / "a, then b" — the loss line's own join rule, capped at two items by
+ *  the caller. */
+function joinWithThen(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items[0]}, then ${items[1]}`;
+}
+
+/** A GB figure rounded to one decimal, for the fit line — never the raw
+ *  float a server-side blend can hand back. */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/** The fit line: verdict word, plus the GB numbers when there is a footprint
+ *  to report. `"Memory not measured"` is the honest fourth state — no
+ *  verdict at all, nothing to squeeze a number out of. */
+function fitLine(fit: AiFitVerdict | null, footprintGb: number | null, poolGb: number | null): string {
+  if (!fit?.verdict) return "Memory not measured";
+  const fg = footprintGb != null ? round1(footprintGb) : null;
+  const pg = poolGb != null ? round1(poolGb) : null;
+  if (fit.verdict === "easy") {
+    return fg != null && pg != null ? `Fits easily · ${fg} of ${pg} GB` : "Fits easily";
+  }
+  if (fit.verdict === "tight") {
+    return fg != null ? `Tight fit · needs ~${fg}${pg != null ? ` of ${pg}` : ""} GB` : "Tight fit";
+  }
+  return fg != null ? `Won't fit · needs ${fg} GB` : "Won't fit";
+}
+
+/** The search hit row's `data-tip` text (D1245/D1246, cut down by D1267) —
+ *  two short lines: "Match N · lost most on A, then B" (silent when every
+ *  axis scored full marks, or when there is no breakdown to judge losses
+ *  from), and a fit line giving the verdict its own words plus the GB
+ *  numbers — the fix for two rows both showing "84" with a different bar
+ *  colour reading as a bug rather than two independent facts that happen to
+ *  total the same. Reads `matchScoreInt` (item 4) so this NEVER disagrees
+ *  with the cell's own printed number. */
+export function matchRowTip(
+  fit: AiFitVerdict | null,
+  matchScore: number | null | undefined,
+  breakdown: HubMatchAxis[] | null | undefined,
+): string {
+  const scoreInt = matchScoreInt(matchScore);
+  const scoreText = scoreInt != null ? scoreInt.toString() : DASH;
+  const entries = breakdown ?? [];
+
+  const losses = entries
+    .filter((e) => e.axis !== "onDisk" && e.axis !== "fit" && e.lost > 0.05)
+    .sort((a, b) => b.lost - a.lost)
+    .slice(0, 2)
+    .map((e) => axisShortName(e.axis));
+
+  let line1 = `Match ${scoreText}`;
+  if (losses.length > 0) {
+    line1 += ` · lost most on ${joinWithThen(losses)}`;
+  } else if (entries.length > 0) {
+    line1 += " · full marks";
+  }
+
+  const fitEntry = entries.find((e) => e.axis === "fit");
+  const line2 = fitLine(fit, fitEntry?.footprintGb ?? null, fitEntry?.poolGb ?? null);
+
+  return `${line1}\n${line2}`;
+}
+
 /** "18d ago", or the dash when the Hub did not say (or said something this
  *  page cannot parse) — `created` is an ISO8601 string or null, and
  *  `timeAgo` wants epoch SECONDS, so the one unit conversion lives here
@@ -157,6 +269,53 @@ export function ageLabel(created: string | null): string {
  *  exactly the kind of guess this column exists to refuse. */
 export function quantLabel(quant: string | null): string {
   return quant ?? DASH;
+}
+
+/** Item A (per-variant download): the row's "✓ Downloaded" caption, once the
+ *  on-disk file might not be the DEFAULT variant a plain row-level Download
+ *  would have fetched. `model.local.file` names whichever single GGUF is
+ *  actually on disk (`hub_models.py::_local_state`'s own "exactly one, or
+ *  null" rule — an ambiguous multi-file cache reads the same as none here,
+ *  matching that same refusal-to-guess); `model.file` is the file a plain
+ *  download would pick. When they differ, the caption names the count of
+ *  variants this repo offers alongside the quant actually downloaded, so a
+ *  reader is not told "Downloaded" for a file that quietly is not the one
+ *  they would get by pressing Download again. Callers pass `null`
+ *  `variantCount`/`quant` when the row has none (a non-GGUF format) and get
+ *  the plain default caption back. */
+export function downloadedVariantLabel(model: {
+  variantCount: number | null;
+  variants: { file: string; quant: string | null }[] | null;
+  file: string | null;
+  quant: string | null;
+  localFile: string | null;
+}): string {
+  const isNonDefault =
+    model.localFile != null && model.file != null && model.localFile !== model.file;
+  if (!isNonDefault || !model.variantCount || model.variantCount <= 1) {
+    return model.quant ? `${model.quant} downloaded` : "Downloaded";
+  }
+  const variant = model.variants?.find((v) => v.file === model.localFile);
+  const quant = variant?.quant ?? model.quant;
+  return quant
+    ? `${model.variantCount} variants · ${quant} downloaded`
+    : `${model.variantCount} variants downloaded`;
+}
+
+/** Whether a variant row's Download button should show at all.
+ *
+ *  Item 2 (code review): `HubModel.variants[].downloadable` is documented on
+ *  `api.ts` as absent for a response shape that PREDATES the field (a
+ *  replayed cached search response) — so it must be treated as optional,
+ *  never as a required boolean. Treating `undefined` the same as `false`
+ *  (which a bare truthiness check on the field does, since `undefined` is
+ *  falsy) would hide the Download button on EVERY variant of a stale cached
+ *  response, not just the sharded ones `downloadable: false` is meant to
+ *  flag. The correct read is "downloadable unless the server said
+ *  otherwise": only an explicit `false` (a shard the server actually
+ *  checked and rejected) hides the button. */
+export function variantIsDownloadable(v: { downloadable?: boolean }): boolean {
+  return v.downloadable !== false;
 }
 
 /** Downloads, compacted the same way the rest of the page counts things
@@ -212,5 +371,175 @@ export function verdictGlyph(verdict: AiFitVerdict["verdict"] | "unknown"): stri
     default:
       return "?";
   }
+}
+
+// ---------------------------------------------------------------------------
+// SPEC docs/HUB_CATALOG_SPEC.md item 2 — the on-device catalog build banner.
+//
+// A capability pane's FIRST search always serves live Hub results while its
+// pool builds behind it (or sits out a 429 backoff) — this is the one-line,
+// non-modal text for that state, read from the search response's
+// `poolState`/`poolPagesDone`. `null` means "no banner" (poolState is
+// "ready" or "none" — the pane is either already on the fast catalog path or
+// has never tried to build one for this capability/no-capability search).
+
+/** Seconds until `until` (a `blockedUntil` epoch-seconds deadline) reads as
+ *  a short clock time, or "a bit" if it has already passed / is absent —
+ *  never a negative or nonsensical duration. */
+function untilLabel(blockedUntil: number | null | undefined, nowMs: number): string {
+  if (typeof blockedUntil !== "number") return "shortly";
+  const seconds = Math.round(blockedUntil - nowMs / 1000);
+  if (seconds <= 0) return "shortly";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+
+/** The banner text for the current `poolState`, or `null` for no banner.
+ *  `nowMs`: caller-supplied `Date.now()` so this stays a pure function
+ *  testable without faking the clock globally. */
+export function poolBuildBanner(
+  poolState: "ready" | "building" | "blocked" | "none" | undefined,
+  poolPagesDone: number | null | undefined,
+  blockedUntil: number | null | undefined,
+  nowMs: number,
+): string | null {
+  if (poolState === "building") {
+    const pages = typeof poolPagesDone === "number" ? poolPagesDone : 0;
+    return (
+      `Building the full catalog for this capability (${pages} page${pages === 1 ? "" : "s"} so far)… ` +
+      `showing live Hub results until it finishes.`
+    );
+  }
+  if (poolState === "blocked") {
+    const when = untilLabel(blockedUntil, nowMs);
+    return `Hub rate limit hit; the full catalog resumes after ${when}. Showing live results.`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// The animated first-run build card (replaces the plain `poolBuildBanner`
+// text while `poolState === "building"`). Two small pure helpers live here so
+// the timing-free parts of the card stay testable; the actual hold-then-fade
+// on completion is a timer in the component and isn't covered here.
+
+/** The progress row's page count, or a "still connecting" placeholder before
+ *  the first page has landed — `poolPagesDone` is 0/null/undefined on a pane
+ *  that has only just started polling. */
+export function pagesFetchedLabel(poolPagesDone: number | null | undefined): string {
+  if (!poolPagesDone) return "connecting to the Hub…";
+  return `${poolPagesDone} page${poolPagesDone === 1 ? "" : "s"} fetched`;
+}
+
+// ---------------------------------------------------------------------------
+// Round 7 — the "v2 staged status" wait state, replacing the plain
+// "Asking {host}…" line a FIRST search (no rows on the pane yet) used to
+// show for the whole round trip. Approved from
+// `hub-wait-variants.html`'s own `v2` block: one centred stage line + sub-
+// caption + sweep bar + a three-dot "Hub · Size · Rank" step row.
+//
+// The three stages are honest about what is and is not known: "Hub" is the
+// only one gated on the real network call — there is no timer that ever
+// advances it, only the response actually arriving. Once the response lands,
+// "Size" and "Rank" play in quick, fixed succession (the component's own
+// ~250ms-each timers) because both are genuinely instantaneous client-side
+// work by then — the server already ranked and sized every row before it
+// answered. What is pure and testable here is the per-stage copy and the
+// slow-line text; the phase clock itself is a component-owned timer chain
+// (mirroring `nextPoolPhase`'s own split above).
+
+/** One of the three stages the wait block ever names — `"hub"` is the only
+ *  one a pane can sit in for an unbounded time; `"size"`/`"rank"` are each a
+ *  fixed ~250ms beat played once the response has actually arrived. */
+export type HubWaitStage = "hub" | "size" | "rank";
+
+/** Facts the "Sizing…" sub-caption can fold in when the component already
+ *  has them — it does not today (round 7), so every caller sees the plain
+ *  fallback, but the shape exists so a future caller wiring in real
+ *  memory/runner facts is a one-line change here rather than a new
+ *  function. */
+export interface HubWaitFacts {
+  ramGb: number | null;
+  runnerCount: number | null;
+}
+
+const NO_HUB_WAIT_FACTS: HubWaitFacts = { ramGb: null, runnerCount: null };
+
+/** The stage line + sub-caption for one of the three wait stages — copy
+ *  lifted verbatim from the approved mockup's own `stage()` text map.
+ *
+ *  `poolReady` is the honesty fix from the user's D1273 feedback: when the
+ *  pool for this capability is (or was last seen) "ready", the search runs
+ *  entirely against the local DuckDB pool — zero Hub requests — so the
+ *  "hub" stage must not claim to be asking the Hub anything. Defaults to
+ *  `false` (the pre-existing "Asking {host}" copy) so every other call site
+ *  and the pre-existing tests keep behaving exactly as before. */
+export function hubWaitStageText(
+  stage: HubWaitStage,
+  host: string,
+  poolReady: boolean = false,
+  facts: HubWaitFacts = NO_HUB_WAIT_FACTS,
+): { line: string; sub: string } {
+  if (stage === "hub") {
+    if (poolReady) {
+      return {
+        line: "Searching the local catalog",
+        sub: "every model on the Hub this Mac can run, already on disk",
+      };
+    }
+    return { line: `Asking ${host}`, sub: "one request, then everything else runs here" };
+  }
+  if (stage === "size") {
+    const sub =
+      facts.ramGb != null && facts.runnerCount != null
+        ? `${round1(facts.ramGb)} GB of unified memory, ${facts.runnerCount} runner${
+            facts.runnerCount === 1 ? "" : "s"
+          } installed`
+        : "sized against this Mac's memory";
+    return { line: "Sizing each model for this Mac", sub };
+  }
+  return { line: "Ranking for this Mac", sub: "memory fit first, then speed, freshness, popularity" };
+}
+
+/** The amber "still waiting" line a pane shows once stage `"hub"` has held
+ *  for 12s or more, with a live seconds counter — never claims progress
+ *  that hasn't happened, only names how long the wait has been.
+ *
+ *  Same `poolReady` honesty fix as `hubWaitStageText`: a ready-pool search
+ *  never talks to the Hub at all, so the slow line must not blame it —
+ *  "ranking" is what could plausibly still be slow client-side. Defaults to
+ *  `false` to keep the pre-existing copy/tests unchanged. */
+export function hubWaitSlowLabel(seconds: number, poolReady: boolean = false): string {
+  if (poolReady) return `Still ranking. ${seconds} s and counting.`;
+  return `The Hub is slow right now. ${seconds} s and counting.`;
+}
+
+/** Whether a response that arrived `elapsedMs` after the request went out is
+ *  fast enough that the wait block must never have flashed on screen at
+ *  all — under 400ms, per the approved design ("If the response arrives
+ *  within 400 ms of the request, skip the block entirely"). */
+export function shouldSkipHubWait(elapsedMs: number): boolean {
+  return elapsedMs < 400;
+}
+
+/** The build card's own tiny state machine: `"hidden"` (nothing to show),
+ *  `"building"` (shimmer + page count), `"done"` (the success beat that
+ *  holds briefly before the caller collapses it back to `"hidden"`).
+ *
+ *  Deliberately ignorant of time — the 2.5s hold and the fade-out are a
+ *  `setTimeout` in the component, which is the only part of this that
+ *  can't be driven as a pure function. What IS pure, and what bit us before
+ *  in earlier "banner" work, is the transition rule: `"done"` must only ever
+ *  be reached by *leaving* `"building"`, never by a pane that opened on an
+ *  already-`"ready"` pool — such a pane has nothing to celebrate. */
+export function nextPoolPhase(
+  phase: "hidden" | "building" | "done",
+  poolState: "ready" | "building" | "blocked" | "none" | undefined,
+): "hidden" | "building" | "done" {
+  if (poolState === "building") return "building";
+  if (phase === "done") return "done"; // the hold — the component's timer clears this
+  if (poolState === "ready") return phase === "building" ? "done" : "hidden";
+  return "hidden";
 }
 

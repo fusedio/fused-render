@@ -124,11 +124,14 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
+from fused_render.ai import hub_catalog, hub_catalog_builder
+from fused_render.ai import hub_loadable
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
+    _default_snapshot,
     _entry_is_dir,
     _quantization as _config_quantization_bits,
     _scan_repo,
@@ -217,6 +220,26 @@ _FIT_SORT = "fit"
 # there is no Hub wire field for it either, so it asks for the same
 # most-downloaded candidate set and reorders it here.
 _BEST_SORT = "best"
+
+# D1268 (round-6 item 3): `_FIT_TIER` orders `best`'s rows by memory-fit
+# TIER first, composite score only as the tie-break WITHIN a tier. Before
+# this, `best` ranked purely by the D780 composite, and that composite
+# weights fit at only 0.35 of the blend — enough that a "tight" row with a
+# strong score on the other four axes can outscore an "easy" row that is
+# weaker on them, so a yellow (tight-fit) row interleaved between two green
+# (easy-fit) ones even though the legend says "memory fit first". A verdict
+# nothing could be judged for (`None`) sits between "tight" and "no": it is
+# neither a measured squeeze nor a measured failure, so it ranks below every
+# row this machine is KNOWN to run easily or tightly, but above a row known
+# NOT to fit (dropped by default anyway, and kept here only for
+# `includeUnfit`/local-join rows the "no" filter never removes).
+_FIT_TIER = {"easy": 0, "tight": 1, None: 2, "no": 3}
+
+
+def _fit_tier(row: dict) -> int:
+    """The `best` sort's primary key (D1268) — see `_FIT_TIER`'s own doc."""
+    verdict = (row.get("fit") or {}).get("verdict")
+    return _FIT_TIER.get(verdict, 2)
 
 # ---- D780's composite score: weights, defaults, and the axis curves -------
 #
@@ -462,6 +485,29 @@ def _popularity_score(downloads: int | None) -> float:
     return min(100.0, 100.0 * math.log1p(downloads) / math.log1p(_POPULARITY_ANCHOR_DOWNLOADS))
 
 
+def _axis_scores(row: dict, ram_gb: float | None) -> dict:
+    """The five raw 0-100 axis scores plus the flat-adjustment facts, read
+    off `row` exactly once — the single source both `_composite_raw_score`
+    (the blend) and `_score_breakdown` (the per-axis explanation, D1245)
+    read from, so the two can never disagree about what one row's axes
+    actually are."""
+    fit_verdict = row.get("fit")
+    fit_axis = (
+        float(fit_verdict["score"])
+        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
+        else _FIT_DEFAULT
+    )
+    return {
+        "fit": fit_axis,
+        "capability": _capability_score(row.get("params"), ram_gb),
+        "speed": _speed_score(row.get("speedEstimate"), row.get("params")),
+        "recency": _recency_score(row.get("created")),
+        "popularity": _popularity_score(row.get("downloads")),
+        "on_disk": (row.get("local") or {}).get("state", "none") != "none",
+        "run_mode": fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None,
+    }
+
+
 def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     """The composite blend BEFORE the `[0, 100]` clamp `_composite_score`
     applies for display — see that function for the full description of the
@@ -479,31 +525,132 @@ def _composite_raw_score(row: dict, ram_gb: float | None) -> float:
     downloads order for every tied-at-zero row. `_ON_DISK_BONUS` does the
     same at the ceiling. The fix is to compare on THIS unclamped figure and
     only clamp the number actually shown."""
-    fit_verdict = row.get("fit")
-    fit_axis = (
-        float(fit_verdict["score"])
-        if isinstance(fit_verdict, dict) and isinstance(fit_verdict.get("score"), (int, float))
-        else _FIT_DEFAULT
-    )
-    capability_axis = _capability_score(row.get("params"), ram_gb)
-    speed_axis = _speed_score(row.get("speedEstimate"), row.get("params"))
-    recency_axis = _recency_score(row.get("created"))
-    popularity_axis = _popularity_score(row.get("downloads"))
+    axes = _axis_scores(row, ram_gb)
     blended = (
-        _WEIGHT_FIT * fit_axis
-        + _WEIGHT_CAPABILITY * capability_axis
-        + _WEIGHT_SPEED * speed_axis
-        + _WEIGHT_RECENCY * recency_axis
-        + _WEIGHT_POPULARITY * popularity_axis
+        _WEIGHT_FIT * axes["fit"]
+        + _WEIGHT_CAPABILITY * axes["capability"]
+        + _WEIGHT_SPEED * axes["speed"]
+        + _WEIGHT_RECENCY * axes["recency"]
+        + _WEIGHT_POPULARITY * axes["popularity"]
     )
-    if (row.get("local") or {}).get("state", "none") != "none":
+    if axes["on_disk"]:
         blended += _ON_DISK_BONUS
-    run_mode = fit_verdict.get("runMode") if isinstance(fit_verdict, dict) else None
-    if run_mode == "cpu-offload":
+    if axes["run_mode"] == "cpu-offload":
         blended -= _CPU_OFFLOAD_PENALTY
-    elif run_mode == "cpu-only":
+    elif axes["run_mode"] == "cpu-only":
         blended -= _CPU_ONLY_PENALTY
     return blended
+
+
+# The weight each axis in `_score_breakdown`'s output carries — read off the
+# same five constants `_composite_raw_score` blends with, so the two can
+# never drift apart.
+_AXIS_WEIGHTS = {
+    "fit": _WEIGHT_FIT,
+    "capability": _WEIGHT_CAPABILITY,
+    "speed": _WEIGHT_SPEED,
+    "recency": _WEIGHT_RECENCY,
+    "popularity": _WEIGHT_POPULARITY,
+}
+
+
+def _age_days(created: str | None) -> float | None:
+    """The same age-in-days `_recency_score` decays on, exposed on its own
+    for the breakdown's `ageDays` fact — a reader/tooltip wants "2 years
+    old", not the 0-100 recency score that number was folded into."""
+    if not created:
+        return None
+    try:
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+
+
+def _score_breakdown(row: dict, ram_gb: float | None,
+                      pool_gb: float | None = None) -> list[dict]:
+    """D1245/D1246: `row["matchBreakdown"]` — one entry per axis (plus the
+    on-disk bonus and any run-mode penalty) explaining, in the SAME blended
+    points `matchScore` is made of, what this row gained and lost.
+
+    Each of the five weighted axes reports `gained` (`weight * axis`, the
+    blended points this row actually earned) and `lost` (`weight * (100 -
+    axis)`, the blended points a perfect score on that one axis would have
+    added) — the two always sum to that axis's full weight in blended
+    points, so a reader can see exactly how much of the 100-point ceiling
+    one weak axis cost without re-deriving the weights or anchors, which
+    live only in this module (frontend cannot reconstruct them, see D1245).
+
+    Each axis also carries the raw fact that drove it — `downloads`,
+    `ageDays`, `params`, `tokensPerSecond`, or `footprintGb`/`poolGb` for
+    fit — so a tooltip can name a number ("12 downloads", "2 years old")
+    instead of only a 0-100 axis score nobody outside this module can
+    interpret. `poolGb` is the caller's own machine-pool reading (`fit.
+    available_budget_bytes`, threaded through rather than computed per row
+    here) — `None` when the caller does not have one, matching `fit.verdict`
+    itself returning no pool when RAM cannot be read.
+
+    The on-disk bonus and run-mode penalty are flat, not scaled off an
+    0-100 axis, so they report only `gained`/`lost` (never both nonzero)
+    and are OMITTED entirely when they do not apply — a row that runs on
+    the GPU has no run-mode entry at all, rather than a zero-cost one a
+    frontend would have to know to ignore."""
+    axes = _axis_scores(row, ram_gb)
+    entries: list[dict] = []
+    for axis, weight in _AXIS_WEIGHTS.items():
+        score = axes[axis]
+        gained = round(weight * score, 2)
+        lost = round(weight * (100.0 - score), 2)
+        entry = {"axis": axis, "gained": gained, "lost": lost}
+        if axis == "popularity":
+            entry["downloads"] = row.get("downloads")
+        elif axis == "recency":
+            entry["ageDays"] = _age_days(row.get("created"))
+        elif axis == "capability":
+            entry["params"] = row.get("params")
+        elif axis == "speed":
+            speed_estimate = row.get("speedEstimate")
+            tok_s = speed_estimate.get("tokensPerSecond") if isinstance(speed_estimate, dict) else None
+            params = row.get("params")
+            below_anchor = isinstance(params, (int, float)) and params < _SPEED_ANCHOR_PARAMS
+            entry["tokensPerSecond"] = None if below_anchor else tok_s
+        elif axis == "fit":
+            fit_verdict = row.get("fit")
+            footprint_bytes = (
+                fit_verdict.get("footprintBytes")
+                if isinstance(fit_verdict, dict) else None
+            )
+            entry["footprintGb"] = (
+                round(footprint_bytes / fit.GB_BYTES, 2)
+                if isinstance(footprint_bytes, (int, float)) else None
+            )
+            # C4: prefer the pool `fit.verdict()` actually selected for THIS
+            # row (`poolBytes`, e.g. VRAM alone for a row that fits on the
+            # GPU) over the caller's combined-budget `pool_gb` reading — the
+            # two can disagree whenever a discrete GPU is present, since
+            # `available_budget_bytes()` always reports the bigger combined
+            # VRAM+RAM figure regardless of which pool this row was actually
+            # judged against. Fall back to `pool_gb` only when this row has
+            # no verdict (`fit` is None) to read a pool from.
+            row_pool_bytes = (
+                fit_verdict.get("poolBytes") if isinstance(fit_verdict, dict) else None
+            )
+            if isinstance(row_pool_bytes, (int, float)):
+                entry["poolGb"] = round(row_pool_bytes / fit.GB_BYTES, 2)
+            else:
+                entry["poolGb"] = round(pool_gb, 2) if isinstance(pool_gb, (int, float)) else None
+        entries.append(entry)
+    if axes["on_disk"]:
+        entries.append({"axis": "onDisk", "gained": _ON_DISK_BONUS, "lost": 0.0})
+    if axes["run_mode"] == "cpu-offload":
+        entries.append({"axis": "runMode", "gained": 0.0, "lost": _CPU_OFFLOAD_PENALTY,
+                         "runMode": "cpu-offload"})
+    elif axes["run_mode"] == "cpu-only":
+        entries.append({"axis": "runMode", "gained": 0.0, "lost": _CPU_ONLY_PENALTY,
+                         "runMode": "cpu-only"})
+    return entries
 
 
 def _composite_score(row: dict, ram_gb: float | None) -> float:
@@ -925,10 +1072,25 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
         return {"state": "none"}
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
+    gguf_on_disk: list[str] = []
+    snapshot = _default_snapshot(repo_dir)
+    if snapshot is not None:
+        try:
+            gguf_on_disk = [f for f in os.listdir(snapshot) if f.lower().endswith(".gguf")]
+        except OSError:
+            gguf_on_disk = []
     return {
         "state": "partial" if _unfinished_fetch(repo_dir) else "downloaded",
         "size": scan.size,
         "files": scan.files,
+        # Item 6: WHICH GGUF file is actually on disk, when exactly one is —
+        # so a row's variant list (`_model_row`'s new `variants` array) can
+        # mark the already-downloaded one without the caller re-deriving it
+        # from `files` itself. `None` for a non-GGUF repo, an empty snapshot,
+        # or (deliberately) a repo with more than one `.gguf` present — an
+        # ambiguous case this field refuses to guess at rather than naming
+        # the wrong file as "the one you have".
+        "file": gguf_on_disk[0] if len(gguf_on_disk) == 1 else None,
         # Newest atime — "last read", the same measure the cached tab shows.
         "lastUsed": scan.atime or None,
         # Canonicalized like every other fs path the frontend gets, so it can go
@@ -1010,24 +1172,23 @@ def _gate(raw) -> str | None:
     return "auto" if raw == "auto" else "manual"
 
 
-#: Substrings that mark a GGUF sibling as a helper file rather than a weight
-#: variant of its own — a vision projector ("mmproj") shipped alongside a
-#: multimodal GGUF repo. Counted separately would inflate "N variants" by
-#: one for every repo that ships one, which is every popular VLM GGUF repo.
-_GGUF_HELPER_MARKERS = ("mmproj", "vision")
-
-
 def _count_variants(raw: dict) -> int:
-    """Item 9c (fix round 5): how many distinct weight variants this repo
-    ships, best-effort and from data already in `raw` (`siblings`, `gguf`,
-    `safetensors` — all already in `_EXPAND`, so this costs no extra
-    request). 1 when nothing suggests more than one, never 0 — a repo the
-    rest of this row exists to describe always has at least the one weight
-    set the Download button would fetch.
+    """Item 9c (fix round 5); item 5 (round 2): how many distinct weight
+    variants this repo ships, best-effort and from data already in `raw`
+    (`siblings`, `gguf`, `safetensors` — all already in `_EXPAND`, so this
+    costs no extra request). 1 when nothing suggests more than one, never 0
+    — a repo the rest of this row exists to describe always has at least
+    the one weight set the Download button would fetch.
 
     GGUF repos: one `.gguf` sibling is one quantization of the SAME
-    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted directly, minus any
-    helper file (`_GGUF_HELPER_MARKERS`) that is not a weight variant at all.
+    checkpoint (`Q4_K_M.gguf`, `Q8_0.gguf`, …) — counted via
+    `formats.gguf_candidate_files`, the SAME root-level/non-auxiliary/
+    shard-collapsing filter `pick_gguf_file` itself uses to decide what
+    counts as a real quantization (round 2: this used to be a narrower,
+    ad-hoc `("mmproj", "vision")` substring exclusion of its own, which
+    could both undercount a sharded quant — one `.gguf` sibling per shard,
+    not per quantization — and overcount a `mtp-`/`draft-`/`projector`-named
+    helper file the picker already knew to refuse).
 
     Safetensors/MLX repos: no per-file quant list to count the same way (a
     dtype conversion is usually one subfolder, not one file) — counted only
@@ -1042,9 +1203,7 @@ def _count_variants(raw: dict) -> int:
     names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
               if isinstance(siblings, list) else [])
     names = [n for n in names if isinstance(n, str)]
-    gguf_files = [n for n in names
-                  if n.lower().endswith(".gguf")
-                  and not any(marker in n.lower() for marker in _GGUF_HELPER_MARKERS)]
+    gguf_files = formats.gguf_candidate_files(siblings if isinstance(siblings, list) else [])
     if gguf_files:
         return max(1, len(gguf_files))
     dtype_dirs = {
@@ -1055,6 +1214,42 @@ def _count_variants(raw: dict) -> int:
     if len(dtype_dirs) > 1:
         return len(dtype_dirs)
     return 1
+
+
+_FILE_FORMAT_EXTS: tuple[tuple[str, str], ...] = (
+    (".safetensors", "safetensors"),
+    (".gguf", "gguf"),
+    (".npz", "npz"),
+    (".onnx", "onnx"),
+    (".bin", "bin"),
+)
+
+
+def _file_format(raw: dict) -> str | None:
+    """Item 3: the repo's on-disk weight format, read off the SAME
+    `siblings` list `_count_variants`/`pick_gguf_file` already read (already
+    in `_EXPAND`, so no extra request) — first match in
+    `_FILE_FORMAT_EXTS`'s own order, since a repo can ship more than one
+    extension (a `.safetensors` main tree beside a `README.md`/config files
+    is the common case; a community GGUF republish that also carries an
+    unrelated `.bin` LFS pointer is not — `safetensors` before `gguf` before
+    the rest matches how `weight_format`/`_quant` already prefer
+    safetensors-first when both are present).
+
+    `None` for a repo whose `siblings` names none of these — a PyTorch
+    `.pt`/`.ckpt`-only repo, or one this server could not read `siblings`
+    for at all. Never guessed from `library`/`pipeline_tag`; only from the
+    files actually listed.
+    """
+    siblings = raw.get("siblings")
+    if not isinstance(siblings, list):
+        return None
+    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
+    names = [n.lower() for n in names if isinstance(n, str)]
+    for ext, token in _FILE_FORMAT_EXTS:
+        if any(n.endswith(ext) for n in names):
+            return token
+    return None
 
 
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
@@ -1275,12 +1470,65 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # re-open the door it came out of.
     size_gb = (estimated_size / fit.GB_BYTES) if estimated_size else None
     judgeable = file is None and not params_from_gguf
+    # SPEC item 3: a GGUF row's `file` may ALREADY have a real byte count on
+    # hand — not guessed, not fetched here, but the exact same
+    # `("size", ...)` cache entry `api_hub_size` populates once a card for
+    # this (model_id, file) pair scrolled into view and resolved its true
+    # size (see that route's own docstring for why a per-row Hub round trip
+    # inside a search reply is refused). Reusing it here costs nothing
+    # extra — no request, just a dict read — and turns "you have to open
+    # this card once before its verdict shows up on the NEXT search" into
+    # "shows up immediately once it is known at all". A cache miss (the
+    # common case, nothing has ever measured this file) leaves `judgeable`
+    # exactly as the three code-review rounds above pinned it: unconditionally
+    # unjudgeable off `params * DEFAULT_BYTES_PER_PARAM`.
+    # `params=None` on this branch specifically — NOT the shared `params`
+    # variable — is load-bearing: `_weight_bytes` prefers `params x bpp` over
+    # a real `size_gb` whenever the quant token is one `_quant_key` happens to
+    # recognise (see its own docstring's "measured beats guessed" precedence,
+    # one level down), which for a recognised token like `Q8_K_XL` would
+    # silently throw the real bytes away and reconstruct the exact guess this
+    # whole `judgeable` gate exists to refuse. Passing `None` here forces
+    # `_weight_bytes` onto its `size_gb`-branch, the same way `api_hub_size`
+    # itself already calls `fit.verdict(..., params=None, ...)` for the
+    # identical reason.
+    real_file_size = _cached_gguf_file_size(model_id, file) if file is not None else None
+    size_source = None
+    if real_file_size is not None:
+        size_gb = real_file_size / fit.GB_BYTES
+        judgeable = True
+        verdict_params = None
+        size_source = "cached"
+    else:
+        verdict_params = params
+        # B (bugbot): a GGUF row with no cached byte count is not
+        # automatically ungoverned by the `judgeable` refusal above (D1249) —
+        # the reason that gate exists is `_weight_bytes` silently falling
+        # back to `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") for a quant
+        # token it does NOT recognise. D1250 filled `QUANT_BYTES_PER_PARAM`
+        # with real bytes/param figures for the GGUF suffixes this codebase
+        # already ranks, so a token `fit._quant_key` DOES recognise, paired
+        # with a real `params` count (read off the Hub's `gguf.total`/
+        # safetensors metadata above, not guessed), is a real footprint —
+        # `params x quant_bytes_per_param(token)` — not the guess the gate
+        # was written to refuse. Only fires when there is no better, real
+        # per-file size on hand (the branch above) and only for a
+        # recognised token; an unrecognised one (`IQ9_FAKE`) still leaves
+        # this row unjudgeable exactly as before.
+        if (not judgeable and quant is not None
+                and fit._quant_key(quant) is not None
+                and isinstance(params, (int, float)) and params > 0):
+            bpp = fit.quant_bytes_per_param(quant)
+            size_gb = (params * bpp) / fit.GB_BYTES
+            judgeable = True
+            verdict_params = None
+            size_source = "estimated"
     fit_verdict = (
-        fit.verdict(capability, model_id, size_gb, params=params,
+        fit.verdict(capability, model_id, size_gb, params=verdict_params,
                     footprint_store=footprint_store, hardware=hardware)
         if judgeable else None)
     speed_estimate = (
-        speed.estimate_tok_s(size_gb, params=params, hardware=hardware)
+        speed.estimate_tok_s(size_gb, params=verdict_params, hardware=hardware)
         if judgeable and capability == TEXT_GENERATION else None)
     created = raw.get("createdAt") if isinstance(raw.get("createdAt"), str) else None
     base_model, relation = _base_model(raw.get("tags"))
@@ -1299,6 +1547,24 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # so it was always the variant behind the expander. Read off the Hub, not
     # guessed from the repo's name, exactly like `_quant` and `library`.
     weight_format = "gguf" if gguf_meta and not isinstance(raw.get("safetensors"), dict) else None
+    # Item 3: the on-disk FILE format, read off the same `siblings` list
+    # `_count_variants`/`pick_gguf_file` already read (no extra request) —
+    # first match in priority order, since a repo can ship more than one
+    # (a safetensors main tree beside a community GGUF quant folder is
+    # common; the main tree is what `formatToken()` should name).
+    file_format = _file_format(raw)
+    # Item 2 (scope-corrected): is the runner ACTIVE for this row's
+    # capability actually going to be able to open it, once downloaded?
+    # `runner` is the same local this function already resolved above for
+    # the GGUF-picker branch — the capability's active runner is one fact,
+    # asked twice for two different questions, not two lookups.
+    model_type = config.get("model_type") if isinstance(config, dict) else None
+    if runner is not None:
+        loadable, loadable_reason = hub_loadable.admission(
+            runner_code=runner.code, runner_short=getattr(runner, "short", runner.code),
+            model_id=model_id, model_type=model_type)
+    else:
+        loadable, loadable_reason = True, None
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -1314,8 +1580,23 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "relation": relation,
         # Item 9c (fix round 5): how many weight variants this repo ships —
         # `_count_variants`'s own docstring for the (best-effort, no extra
-        # request) rule.
-        "variants": _count_variants(raw),
+        # request) rule. Renamed from `variants` (item 6): that name now
+        # belongs to the array below, and a bare count vs. a list of the
+        # actual files must not share one key.
+        "variantCount": _count_variants(raw),
+        # Item 6: the actual GGUF files this repo ships, one entry per
+        # `formats.gguf_candidate_files` result (same filter `variantCount`
+        # itself now reads, D1251) — `None` for every non-GGUF row, since
+        # there is no per-file listing to offer one for (a safetensors/MLX
+        # "variant" is a whole subfolder, not a pickable single file this
+        # download path could act on). Each entry's `quant` is `formats.
+        # gguf_quant_token`'s read of the file's OWN name — the same real,
+        # published fact `_quant` itself prefers over a repo-name guess.
+        "variants": (
+            [{"file": f, "quant": formats.gguf_quant_token(f),
+              "downloadable": formats.gguf_file_is_downloadable(f)}
+             for f in formats.gguf_candidate_files(raw.get("siblings") or [])]
+            if weight_format == "gguf" else None),
         # "gguf" or None — the other half of that grouping key. See
         # `weight_format` above.
         "format": weight_format,
@@ -1359,8 +1640,28 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
         "params": params,
         "estimatedSize": estimated_size,
+        # B (bugbot): whether this row's fit/speed footprint came from a real
+        # measured byte count ("cached"), a `params x quant_bytes_per_param`
+        # estimate off a recognised GGUF quant token ("estimated"), or
+        # neither (`None` — an unrecognised token, or params unknown). The
+        # client's lazy `hub/size` lookup, once it lands, still overrides
+        # whatever this says with the real measured size.
+        "sizeSource": size_source,
         "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
+        # Item 3: the on-disk file format read off `siblings` — see
+        # `_file_format`'s own docstring. Independent of `format` above,
+        # which is a grouping key for GGUF republishes specifically, not a
+        # general "what's in the repo" fact; `formatToken()` combines this
+        # with `library` for the badge text.
+        "fileFormat": file_format,
+        # Item 2 (scope-corrected): never drops a row — `admission()` only
+        # flags one the ACTIVE runner for this capability will refuse once
+        # downloaded. `loadableReason` is the bare clause the frontend's
+        # chip appends after "Won't run here · "; always `None` when
+        # `loadable` is True.
+        "loadable": loadable,
+        "loadableReason": loadable_reason,
     }
 
 
@@ -1568,6 +1869,20 @@ def _cached(key: tuple):
     return None
 
 
+def _cached_gguf_file_size(model_id: str, file: str) -> int | None:
+    """A real byte count for `(model_id, file)`, IF `api_hub_size` already
+    resolved and cached one within its own TTL — the exact same `("size",
+    ...)` cache key that route reads/writes, never a second cache with its
+    own invalidation story. `None` for a miss (never measured, or the TTL
+    already lapsed), which callers must treat as "unknown", not "zero"."""
+    key = ("size", hub_endpoint(), model_id, file, bool(_token()))
+    payload = _cached(key)
+    if not isinstance(payload, dict):
+        return None
+    size = payload.get("fileSize")
+    return size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else None
+
+
 def _store(key: tuple, value: dict) -> None:
     with _cache_lock:
         if len(_cache) >= _CACHE_MAX:
@@ -1679,6 +1994,177 @@ def _pull_in_family_members(kept: list[dict], remaining: list[dict]) -> list[dic
     return result
 
 
+#: The escape character used by every `_catalog_ilike_escape`d clause's own
+#: `ESCAPE '\'` — a literal backslash must be doubled FIRST (before `%`/`_`
+#: are prefixed with one), or a caller-supplied backslash would itself start
+#: escaping the following character.
+_CATALOG_LIKE_ESCAPE = "\\"
+
+
+def _catalog_ilike_escape(value: str) -> str:
+    """Quote a value for embedding inside a DuckDB SQL string literal used in
+    an ILIKE/LIKE clause. Three things need escaping, not one: a literal
+    single quote (the standard SQL-string escape, doubled), and `%`/`_` —
+    LIKE/ILIKE wildcards (any-substring / any-single-char) DuckDB otherwise
+    honours even inside caller-supplied search text, so `llama_3` would also
+    match `llama-3`/`llama33` and a bare `%` would match the whole pool,
+    silently widening the substring match every caller of this function
+    assumes. Every clause built from this escaped value MUST append
+    `ESCAPE '\\'` (see `_CATALOG_LIKE_ESCAPE`) so DuckDB treats the inserted
+    backslashes as the escape character rather than literal text."""
+    value = value.replace("\\", "\\\\")
+    value = value.replace("%", "\\%").replace("_", "\\_")
+    return value.replace("'", "''")
+
+
+def _catalog_search(capability_filter: str, query: str, publisher: str | None,
+                     count: int, sort: str, fit_level: str, quant_filter: str,
+                     params_band: str, task_filter: str) -> dict:
+    """The whole-pool search path (SPEC docs/HUB_CATALOG_SPEC.md, item 3):
+    every row of `capability_filter`'s on-device pool, run through the exact
+    same `_model_row` drop rules and D780 scoring the live path uses, then the
+    same post-join filters/sort/facets/pull-in/pagination — but over the
+    WHOLE pool rather than one overfetched Hub page, and with zero Hub
+    requests. No `_MAX_FETCH`/`_OVERFETCH`, no 90s `_cache`: the pool query
+    itself is the only "fetch", and it is cheap enough (a local DuckDB scan)
+    that recomputing it every request is simpler than caching a second thing
+    that would need its own invalidation story once the daily delta lands.
+    """
+    cfg = hub_catalog.load_config()
+    query_conditions = []
+    if query:
+        query_conditions.append(
+            f"id ILIKE '%{_catalog_ilike_escape(query)}%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
+    conditions = list(query_conditions)
+    if publisher:
+        conditions.append(
+            f"id ILIKE '{_catalog_ilike_escape(publisher)}/%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
+    where = " AND ".join(conditions) if conditions else None
+    raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=where)
+
+    cache_dir = hub_cache_dir()
+    dirs = _cached_dirs()
+    footprint_store = footprints.load_store()
+    hardware = hw_detect.cached_hardware()
+    models = [row
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                          for r in raw_rows if isinstance(r, dict))
+              if row is not None]
+    # Same over-match guard the live path applies (D851): the pool was built
+    # from a `filter=<tag>` request too, which matches ANY tag in a repo's
+    # list, not only its classified `pipeline_tag`.
+    models = [row for row in models if row.get("capability") == capability_filter]
+
+    # D853's live-path behaviour, mirrored here: the publisher facet must be
+    # computed over the slice WITHOUT the publisher filter (all other filters
+    # still applied) or picking a publisher collapses the dropdown to just
+    # that one entry with no way back to "any". Unlike the live path there is
+    # no Hub round-trip to save — a second local pool query is cheap — so
+    # this simply re-runs `query_pool` with the publisher condition dropped
+    # rather than caching a second fetch.
+    if publisher:
+        facet_where = " AND ".join(query_conditions) if query_conditions else None
+        facet_raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=facet_where)
+        facet_models = [row
+                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                                    for r in facet_raw_rows if isinstance(r, dict))
+                        if row is not None]
+        facet_models = [row for row in facet_models
+                        if row.get("capability") == capability_filter]
+    else:
+        facet_models = models
+
+    facets = _facets(facet_models)
+    _pin_publisher_facets(facets, facet_models, capability_filter, hardware)
+
+    ram_gb = fit.machine_ram_gb()
+    # D1245: one `available_budget_bytes` reading per REQUEST (not per row —
+    # it is the same machine for every row `_score_breakdown` explains), the
+    # same `hardware` reading already threaded through `_model_row` above
+    # rather than a second `hw_detect.cached_hardware()` call.
+    pool_bytes = fit.available_budget_bytes(hardware=hardware)
+    pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
+    raw_scores: dict[int, float] = {}
+    for row in models:
+        raw_score = _composite_raw_score(row, ram_gb)
+        raw_scores[id(row)] = raw_score
+        row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
+
+    sort_field, direction = _SORTS[sort] if sort in _SORTS else _SORTS["downloads"]
+    if sort == _BEST_SORT:
+        # D1268: tier first (easy/tight/unknown/no), composite score only the
+        # tie-break WITHIN a tier — see `_fit_tier`'s own doc for why a
+        # tight-fit row could otherwise interleave between two easy ones.
+        models.sort(key=lambda row: (_fit_tier(row), -raw_scores.get(id(row), 0.0)))
+    elif sort == _FIT_SORT:
+        models.sort(key=lambda row: (row.get("fit") or {}).get("score", -1.0),
+                    reverse=True)
+    else:
+        models.sort(key=lambda row: (row.get(sort_field) is not None,
+                                     row.get(sort_field) if row.get(sort_field) is not None else 0),
+                    reverse=(direction == -1))
+
+    if fit_level != "any":
+        allowed = {"easy"} if fit_level == "easy" else {"easy", "tight"}
+        models = [
+            row for row in models
+            if (row.get("fit") or {}).get("verdict") in allowed
+            or (row.get("fit") or {}).get("verdict") is None
+        ]
+    if quant_filter:
+        models = [row for row in models if (row.get("quant") or "").upper() == quant_filter]
+    if params_band != "any":
+        models = [row for row in models if _params_band(row.get("params")) == params_band]
+
+    # `includeUnfit` is unconditionally True today (see the live path's own
+    # comment) — the unfit-hide-by-default block never runs there either, so
+    # `hiddenUnfit` is always 0 on both paths.
+    hidden_unfit = 0
+
+    if sort == _BEST_SORT:
+        # D1268: re-sort after `_pull_in_family_members` the same tier-first
+        # way as the initial sort above — a pulled-in family member must not
+        # re-flatten the tier ordering back to score-only.
+        def _rank_key_best(row: dict) -> tuple[bool, int, float]:
+            # Use the SAME unclamped raw_scores the initial sort above
+            # used, not the clamped/rounded matchScore stored on the row —
+            # two rows that both clamp to 100 but differ before clamping
+            # would otherwise swap order after _pull_in_family_members.
+            value = raw_scores.get(id(row))
+            return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        _rank_key = _rank_key_best
+        rank_reverse = True
+    elif sort == _FIT_SORT:
+        def _rank_key_fit(row: dict) -> tuple[bool, float]:
+            value = row.get("matchScore")
+            return (value is not None, value if value is not None else 0.0)
+        _rank_key = _rank_key_fit
+        rank_reverse = True
+    else:
+        def _rank_key_default(row: dict) -> tuple[bool, object]:
+            value = row.get(sort_field)
+            return (value is not None, value if value is not None else 0)
+        _rank_key = _rank_key_default
+        rank_reverse = direction == -1
+
+    models = _pull_in_family_members(models[:count], models[count:])
+    models.sort(key=_rank_key, reverse=rank_reverse)
+    return {
+        "models": models,
+        "query": {"q": query, "task": task_filter, "capability": capability_filter,
+                  "sort": sort, "limit": count},
+        "endpoint": hub_endpoint(),
+        "authenticated": bool(_token()),
+        "hiddenUnfit": hidden_unfit,
+        "facets": facets,
+        # SPEC item 2: the pool backing THIS response is already built and
+        # being served from, so the pane never shows the "still building"
+        # banner over rows that already came from the finished pool.
+        "poolState": "ready",
+    }
+
+
 @router.post("/api/ai-models/hub/search")
 def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
     """Hub models matching a query, each told apart from the local cache.
@@ -1780,6 +2266,35 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
+
+    # SPEC docs/HUB_CATALOG_SPEC.md item 3: a BUILT on-device pool for this
+    # capability serves the whole request locally, zero Hub calls, ranked
+    # over the whole pool rather than one overfetched page. Only reachable
+    # via `capability` (the pool is keyed by capability, not by a bare Hub
+    # tag) — a request that only sends the legacy `task` param always takes
+    # the live path below.
+    if capability_filter and hub_catalog.pool_exists(hub_catalog.load_config(), capability_filter):
+        # C3 follow-up: `ensure_build_started` is a no-op unless the pool is
+        # missing, blocked, or `_formats_are_stale` (D1258) says this
+        # machine can now serve a wider format set than the built pool
+        # covers — the catalog gate above returning early on `pool_exists`
+        # meant a stale-but-existing pool never reached this call, so a
+        # second runner installed after the pool was built stayed invisible
+        # forever. The stale pool still serves THIS request; the wider
+        # rebuild (if one starts) lands for the next one.
+        hub_catalog_builder.ensure_build_started(capability_filter)
+        return _catalog_search(capability_filter, query, publisher, count, sort,
+                                fit_level, quant_filter, params_band, task_filter)
+    pool_state = "none"
+    pool_pages_done: int | None = None
+    if capability_filter:
+        # Non-blocking: kicks off a background build if none is running,
+        # blocked on a 429 backoff, or already built. The pane stays on the
+        # live path below for this and every request until the build lands.
+        hub_catalog_builder.ensure_build_started(capability_filter)
+        status = hub_catalog_builder.build_status(capability_filter)
+        pool_state = status["state"]
+        pool_pages_done = status["pagesDone"]
 
     # "fit" is not a Hub field: the candidate set the Hub is asked for is the
     # same honest default `size` uses on the frontend — most-downloaded — and
@@ -1977,17 +2492,23 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # own docstring for why sorting on the clamped number ties a real slice
     # of a GPU-less machine's tail at exactly 0.0.
     ram_gb = fit.machine_ram_gb()
+    pool_bytes = fit.available_budget_bytes(hardware=hardware)
+    pool_gb = pool_bytes / fit.GB_BYTES if pool_bytes else None
     raw_scores: dict[int, float] = {}
     for row in models:
         raw_score = _composite_raw_score(row, ram_gb)
         raw_scores[id(row)] = raw_score
         row["matchScore"] = round(min(100.0, max(0.0, raw_score)), 1)
+        row["matchBreakdown"] = _score_breakdown(row, ram_gb, pool_gb=pool_gb)
 
     if sort == _BEST_SORT:
-        # Descending composite score, on the UNCLAMPED figure (finding 8) —
-        # stable sort keeps the Hub's own most-downloaded order as the
-        # tie-break, same guarantee `_FIT_SORT` documents below.
-        models.sort(key=lambda row: raw_scores.get(id(row), 0.0), reverse=True)
+        # D1268: tier first (easy/tight/unknown/no) — see `_fit_tier`'s own
+        # doc — then descending composite score, on the UNCLAMPED figure
+        # (finding 8), as the tie-break WITHIN a tier. `sort` is Python's own
+        # stable sort, so ties within a tier keep the Hub's own
+        # most-downloaded order as the further tie-break, same guarantee
+        # `_FIT_SORT` documents below.
+        models.sort(key=lambda row: (_fit_tier(row), -raw_scores.get(id(row), 0.0)))
     elif sort == _FIT_SORT:
         # Descending score, nulls (nothing to judge) sorted last — `sort` is
         # Python's own stable sort, so ties (including every null-fit row
@@ -2077,20 +2598,35 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # uses for a Hub sort. `HubSearchScreen.tsx` draws every row flat in
     # payload order with no family grouping, so this is the only ordering
     # rule left that the page actually honours.
-    if sort in (_BEST_SORT, _FIT_SORT):
-        def _rank_key(row: dict) -> tuple[bool, float]:
+    if sort == _BEST_SORT:
+        # D1268: re-sort after `_pull_in_family_members` the same tier-first
+        # way as the initial sort above — a pulled-in family member must not
+        # re-flatten the tier ordering back to score-only.
+        def _rank_key_best(row: dict) -> tuple[bool, int, float]:
+            # Use the SAME unclamped raw_scores the initial sort above
+            # used, not the clamped/rounded matchScore stored on the row —
+            # two rows that both clamp to 100 but differ before clamping
+            # would otherwise swap order after _pull_in_family_members.
+            value = raw_scores.get(id(row))
+            return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
+        _rank_key = _rank_key_best
+        rank_reverse = True
+    elif sort == _FIT_SORT:
+        def _rank_key_fit(row: dict) -> tuple[bool, float]:
             value = row.get("matchScore")
             return (value is not None, value if value is not None else 0.0)
+        _rank_key = _rank_key_fit
         rank_reverse = True
     else:
-        def _rank_key(row: dict) -> tuple[bool, object]:
+        def _rank_key_default(row: dict) -> tuple[bool, object]:
             value = row.get(sort_field)
             return (value is not None, value if value is not None else 0)
+        _rank_key = _rank_key_default
         rank_reverse = direction == -1
 
     models = _pull_in_family_members(models[:count], models[count:])
     models.sort(key=_rank_key, reverse=rank_reverse)
-    return {
+    response = {
         "models": models,
         "query": {"q": query, "task": task_filter, "capability": capability_filter,
                   "sort": sort, "limit": count},
@@ -2098,7 +2634,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         "authenticated": bool(_token()),
         "hiddenUnfit": hidden_unfit,
         "facets": facets,
+        # SPEC item 2: "none" when there is no capability filter (no pool is
+        # ever built for a bare `task` search) or nothing has started yet;
+        # "building"/"blocked" mirror `hub_catalog_builder.build_status`.
+        "poolState": pool_state,
     }
+    if pool_state == "building":
+        response["poolPagesDone"] = pool_pages_done
+    return response
 
 
 @router.post("/api/ai-models/hub/size")

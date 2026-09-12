@@ -14,10 +14,12 @@
 // device-code flow. What is NOT ported is family grouping
 // (`hubFamilies.ts`) and the dense `<table>` (`HubResultsTable.tsx`) — the
 // brief for this screen is one row per hit, the mockup's own `hit()`.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ClockIcon, DownloadIcon, HeartIcon } from "./HitStatIcons";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
 import { formatToken } from "@apps/ai_models/lib/formatToken";
+import { loadableChipText } from "@apps/ai_models/lib/loadableChip";
 import { type DiskCard, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
@@ -30,10 +32,19 @@ import {
 import { hubSizeBytes, knownTotalSize, lookupTotalSize } from "@apps/ai_models/lib/hubSize";
 import {
   ageLabel,
+  downloadedVariantLabel,
+  hubWaitSlowLabel,
+  hubWaitStageText,
   matchCell,
+  matchRowTip,
+  nextPoolPhase,
+  pagesFetchedLabel,
   paramsLabel,
+  poolBuildBanner,
   popLabel,
   quantLabel,
+  shouldSkipHubWait,
+  variantIsDownloadable,
   verdictGlyph,
 } from "@apps/ai_models/lib/hubTableView";
 import {
@@ -46,6 +57,7 @@ import {
   type HubModel,
   type HubParamsBand,
   type HubSearchFacets,
+  type HubSearchResult,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
@@ -186,11 +198,22 @@ function HubLogin({ onSignedIn }: { onSignedIn: () => void }) {
 function HitDrawer({
   model,
   authenticated,
+  busy,
+  onDownloadFile,
   onSignedIn,
   onClose,
 }: {
   model: HubModel;
   authenticated: boolean;
+  /** Item A: the row's own busy state (a download already in flight for
+   *  THIS repo) — a per-variant button is disabled the same way the
+   *  row-level one is, rather than letting a reader start a second
+   *  concurrent download of the same repo under a different filename. */
+  busy: boolean;
+  /** Item A (per-variant download): fetches exactly `file` rather than
+   *  whichever one the server's picker would otherwise choose. Absent for
+   *  the row-level Download button, which keeps its unchanged behaviour. */
+  onDownloadFile: (file: string) => void;
   onSignedIn: () => void;
   onClose: () => void;
 }) {
@@ -219,6 +242,55 @@ function HitDrawer({
         <dd className="plain">{quantLabel(model.quant)}</dd>
         <dt>Size</dt>
         <dd className="plain">{sizeLabel}</dd>
+        {/* Item 6 (round 8): list the actual GGUF files a multi-variant repo
+         *  offers, not just the count — `variants` is only ever populated for
+         *  a GGUF row (null for safetensors/MLX, which don't have a per-file
+         *  quant to pick between). The file this repo's own picker would fetch
+         *  (`model.file`, unchanged from before) and the file already on this
+         *  disk (`model.local.file`) each get a quiet marker so a reader can
+         *  tell "what I'd get" and "what I already have" apart from the rest.
+         *  Item A (per-variant download) turned this from a read-only list
+         *  into a picker: `/api/ai/runtime/download` now accepts an explicit
+         *  `file`, validated server-side against this same repo's own real
+         *  GGUF candidates — see D1252 for the gap this closed. Each row
+         *  reuses the row-level Download button's own `.btn` styling, and is
+         *  disabled with "On disk" for whichever variant is already
+         *  cached — the same fact `v.file === model.local?.file` already
+         *  annotated in prose below, now also driving the control. */}
+        {model.variants && model.variants.length > 1 && (
+          <>
+            <dt>Variants</dt>
+            <dd className="plain">
+              <ul className="variant-list">
+                {model.variants.map((v) => {
+                  const onDisk = v.file === model.local?.file;
+                  return (
+                    <li key={v.file}>
+                      <code>{v.file}</code>
+                      {v.quant ? ` — ${v.quant}` : ""}
+                      {v.file === model.file ? " (default)" : ""}
+                      {onDisk ? " (on disk)" : ""}
+                      {variantIsDownloadable(v) ? (
+                        <button
+                          type="button"
+                          className="btn variant-download"
+                          disabled={busy || onDisk}
+                          onClick={() => onDownloadFile(v.file)}
+                        >
+                          {onDisk ? "On disk" : "Download"}
+                        </button>
+                      ) : (
+                        <span className="variant-download variant-unsupported">
+                          multi-part, not supported
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </dd>
+          </>
+        )}
       </dl>
       {/* Item D: the search screen no longer shows a standing `.am-hub-login`
        *  banner over the whole results column — a login prompt over every
@@ -249,10 +321,12 @@ function HitRow({
   busy,
   infoOpen,
   onDownload,
+  onDownloadFile,
   onCancel,
   onToggleInfo,
   onSignedIn,
   job,
+  revealDelayMs = 0,
 }: {
   model: HubModel;
   disk: ReturnType<typeof resultDisk>;
@@ -260,8 +334,17 @@ function HitRow({
   busy: boolean;
   infoOpen: boolean;
   onDownload: () => void;
+  /** Item A (per-variant download): fetches exactly `file`, threaded down to
+   *  the drawer's own per-variant Download button. */
+  onDownloadFile: (file: string) => void;
   onCancel: (job: Job) => void;
   onToggleInfo: () => void;
+  /** Round 7: the `.reveal` fade-in stagger's own per-row delay — 0 for
+   *  everything past the first five rows, and for a re-search's dimmed
+   *  stale rows (the caller never staggers those). Applied as a CSS custom
+   *  property rather than a class-per-index list, since the mockup's own
+   *  `nth-child` delays only cover exactly five rows. */
+  revealDelayMs?: number;
   onSignedIn: () => void;
   job: Job | undefined;
 }) {
@@ -269,12 +352,19 @@ function HitRow({
   // Item 3 (fix round 5): `matchTitle`'s full sentence (still used for other
   // rows elsewhere) reads as a 60-word paragraph in a native `title=` —
   // small, unstyled, one-line-wrapped, ugly. This row instead carries a
-  // short `data-tip` for a real (CSS-only) popover — see `.tp .match[data-tip]`
+  // short `data-match-tip` for a real (CSS-only) popover — see `.tp .match[data-match-tip]`
   // in ai-models.css — that keeps the score and the colour legend and drops
   // the rest.
-  const matchTip =
-    `Match ${cell.scoreText}/100 — memory fit, size vs this machine, speed, recency, popularity ` +
-    `(+bonus if already downloaded). Colour = memory fit: ${cell.verdict}.`;
+  //
+  // D1245/D1246/D1267: `matchRowTip` (not a generic ingredients list any
+  // more) names only the one or two axes that cost THIS row the most, and
+  // always gives fit its own second line — the fix for two rows that both
+  // show "84" with a different colour reading as a bug. It carries `\n`
+  // between its two lines; `matchTipLabel` below flattens that into one
+  // sentence for the `aria-label` a screen reader reads (the CSS popover
+  // itself, `data-match-tip`, is silent to assistive tech — it is not a `title`).
+  const matchTip = matchRowTip(model.fit, model.matchScore, model.matchBreakdown);
+  const matchTipLabel = matchTip.replace(/\n/g, ". ");
   const glyph = verdictGlyph(cell.verdict);
   const have = disk.state === "downloaded";
   const gate = have ? null : gateChrome(model.gated, authenticated);
@@ -294,7 +384,8 @@ function HitRow({
   const formatLabel = formatToken(model);
   // Item 9a: only worth a mention once there is more than one to count —
   // "1 variant" would be true of nearly every row and add noise, not signal.
-  const variantsLabel = model.variants && model.variants > 1 ? `${model.variants} variants` : null;
+  const variantsLabel =
+    model.variantCount && model.variantCount > 1 ? `${model.variantCount} variants` : null;
   const metaParts = [
     paramsLabel(model.params),
     quantLabel(model.quant),
@@ -302,16 +393,25 @@ function HitRow({
     formatLabel,
     variantsLabel,
   ].filter((v): v is string => Boolean(v) && v !== "—");
+  // Item 2 (scope-corrected): never drops the row — see `loadableChipText`'s
+  // own docstring. A cached-on-disk row still shows this: the on-disk state
+  // above only says a snapshot exists, not that it ever successfully loaded.
+  const wontRunHere = loadableChipText(model);
 
   return (
-    <div className="rowwrap" data-part="hit">
+    <div
+      className="rowwrap"
+      data-part="hit"
+      style={revealDelayMs ? { animationDelay: `${revealDelayMs}ms` } : undefined}
+    >
       <div
         className={`row hit rich${have ? " have" : ""}${model.fit?.verdict === "no" ? " unfit" : ""}`}
       >
         <span
           className={`match fit-${cell.verdict}`}
-          data-tip={matchTip}
+          data-match-tip={matchTip}
           data-verdict={cell.verdict}
+          aria-label={matchTipLabel}
           tabIndex={0}
         >
           <span className="glyph">{glyph}</span>
@@ -350,6 +450,11 @@ function HitRow({
             {gate && (
               <span className="chip warn-chip" title={gate.title}>
                 Gated
+              </span>
+            )}
+            {wontRunHere && (
+              <span className="chip warn-chip" title={model.loadableReason ?? undefined}>
+                {wontRunHere}
               </span>
             )}
           </div>
@@ -391,14 +496,27 @@ function HitRow({
           )}
         </div>
         <span className="row-facts pop">
-          <span title="Downloads in the last month">↓ {popLabel(model.downloads)}</span>
-          <span title="Likes on the Hub">♥ {popLabel(model.likes)}</span>
-          <span title="Last updated">{ageLabel(model.updated ?? model.created)}</span>
+          <span title="Downloads in the last month">
+            <DownloadIcon aria-label="downloads" /> {popLabel(model.downloads)}
+          </span>
+          <span title="Likes on the Hub">
+            <HeartIcon aria-label="likes" /> {popLabel(model.likes)}
+          </span>
+          <span title="Last updated">
+            <ClockIcon aria-label="updated" /> {ageLabel(model.updated ?? model.created)}
+          </span>
         </span>
         <span className="row-act">
           {have ? (
             <span className="downloaded" title="Already on this Mac — use it from its capability">
-              ✓ Downloaded
+              ✓{" "}
+              {downloadedVariantLabel({
+                variantCount: model.variantCount ?? null,
+                variants: model.variants ?? null,
+                file: model.file,
+                quant: model.quant,
+                localFile: model.local?.file ?? null,
+              })}
             </span>
           ) : busy ? (
             <button type="button" className="btn" onClick={() => job && onCancel(job)}>
@@ -415,7 +533,12 @@ function HitRow({
               {gate.action}
             </a>
           ) : (
-            <button type="button" className="btn" onClick={onDownload}>
+            <button
+              type="button"
+              className={wontRunHere ? "btn btn-muted" : "btn"}
+              title={wontRunHere ? model.loadableReason ?? wontRunHere : undefined}
+              onClick={onDownload}
+            >
               Download
             </button>
           )}
@@ -425,7 +548,14 @@ function HitRow({
         </span>
       </div>
       {infoOpen && (
-        <HitDrawer model={model} authenticated={authenticated} onSignedIn={onSignedIn} onClose={onToggleInfo} />
+        <HitDrawer
+          model={model}
+          authenticated={authenticated}
+          busy={busy}
+          onDownloadFile={onDownloadFile}
+          onSignedIn={onSignedIn}
+          onClose={onToggleInfo}
+        />
       )}
     </div>
   );
@@ -448,7 +578,10 @@ export function HubSearchScreen({
   cards: ReadonlyMap<string, DiskCard> | null;
   jobByModel: Map<string, Job>;
   pulling: (id: string) => boolean;
-  onDownload: (id: string, capability: string) => void;
+  /** Item A: `file` names one specific GGUF variant — absent for the
+   *  row-level Download button, which keeps sending the exact request it
+   *  always did. */
+  onDownload: (id: string, capability: string, file?: string) => void;
   onCancel: (job: Job) => void;
   /** Live query text — separate from `settled.q` for the same reason
    *  `LocalTab` used to keep them apart: a burst of typing is one request,
@@ -472,6 +605,35 @@ export function HubSearchScreen({
   const [sizes, setSizes] = useState<ReadonlyMap<string, number | null> | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
+  // SPEC item 2: while this capability's on-device pool is still building (or
+  // sitting out a 429 backoff), the server answers over the live Hub path and
+  // reports that in `poolState`/`poolPagesDone` so the pane can say so rather
+  // than silently look like the finished catalog.
+  const [poolState, setPoolState] = useState<HubSearchResult["poolState"]>(undefined);
+  const [poolPagesDone, setPoolPagesDone] = useState<number | null>(null);
+  // The first-run build card's own state machine (`nextPoolPhase`): a pane
+  // that opens already "ready" never enters "building", so it never sees the
+  // "done" success beat either — only a build that finishes WHILE the pane
+  // is open earns the celebration.
+  const [poolPhase, setPoolPhase] = useState<"hidden" | "building" | "done">("hidden");
+  // True for the ~250ms height/opacity collapse right before "done" clears
+  // to "hidden" — kept separate from `poolPhase` so `nextPoolPhase` stays a
+  // pure hidden/building/done machine with no timing baked into it.
+  const [poolCardCollapsing, setPoolCardCollapsing] = useState(false);
+  // Bumped to force a one-off refetch (see the poll effect below) without
+  // otherwise touching `settled`/`limit`/`authEpoch`.
+  const [pollEpoch, setPollEpoch] = useState(0);
+  // Round 7: the "v2 staged status" wait block replacing the plain "Asking
+  // {host}…" line — see `hub-wait-variants.html`'s own `v2` block. Only a
+  // FIRST search (no rows on the pane yet) drives this; a re-search with
+  // rows already present keeps the old dimmed `am-hub-stale` rows and shows
+  // a small "Re-ranking…" caption instead (see the render below).
+  const [waitPhase, setWaitPhase] = useState<"hidden" | "hub" | "size" | "rank">("hidden");
+  // Seconds since the request went out, once stage "hub" has held 12s or
+  // more — null the rest of the time, including the whole "size"/"rank" tail.
+  const [slowSeconds, setSlowSeconds] = useState<number | null>(null);
+  const requestStartRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const debounce = useRef<number | null>(null);
   // Item 2 (fix round 4): the timer must merge into whatever `settled` is
   // CURRENT when it fires, not the value closed over when it was scheduled —
@@ -483,6 +645,25 @@ export function HubSearchScreen({
   // render reads it) sidesteps that with no extra effect dependency.
   const settledRef = useRef(settled);
   settledRef.current = settled;
+  // D1273: the last poolState this capability's Hub responses reported,
+  // remembered per-capability so a FIRST search (before any response of
+  // its own has landed) can still tell the honest "hub" stage copy from the
+  // dishonest one — a pool that was "ready" last time almost certainly
+  // still is, and the search this component is about to run will hit zero
+  // Hub requests. Wrapped in try/catch: private-browsing/storage-disabled
+  // must degrade to the safe default (assume not ready, keep the Hub
+  // copy), never throw.
+  // Re-derived whenever `capabilityKey` changes, not just on mount — this
+  // screen can stay mounted across a capability switch, and a `useState`
+  // initializer only runs once, which would leave the FIRST search for the
+  // new capability reading the OLD capability's remembered pool state.
+  const rememberedPoolReady = useMemo(() => {
+    try {
+      return window.localStorage.getItem(`hubPoolState:${capabilityKey}`) === "ready";
+    } catch {
+      return false;
+    }
+  }, [capabilityKey]);
 
   useEffect(() => {
     if (debounce.current) window.clearTimeout(debounce.current);
@@ -509,6 +690,18 @@ export function HubSearchScreen({
 
   useEffect(() => {
     let alive = true;
+    // Only a genuinely FIRST search (no rows on the pane at all yet) drives
+    // the staged wait block — a re-search (rows already present) or a
+    // poll-while-building refetch (`pollEpoch`, below) must not restart it,
+    // since `models` is already non-null in both those cases. Read once, at
+    // effect-start, before this run's fetch can change it.
+    const isFirstSearch = models === null;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    if (isFirstSearch) {
+      requestStartRef.current = performance.now();
+      setWaitPhase("hub");
+    }
     setLoading(true);
     searchHubModels({
       q: settled.q,
@@ -530,8 +723,9 @@ export function HubSearchScreen({
       paramsBand: settled.paramsBand,
       quant: settled.quant || undefined,
       publisher: settled.publisher || undefined,
+      signal: controller.signal,
     }).then(
-      (data) => {
+      (data: HubSearchResult) => {
         if (!alive) return;
         setLoading(false);
         setError(data.error ?? null);
@@ -539,17 +733,127 @@ export function HubSearchScreen({
         setEndpoint(data.endpoint ?? null);
         setAuthenticated(!!data.authenticated);
         setFacets(data.facets ?? null);
+        setPoolState(data.poolState);
+        setPoolPagesDone(data.poolPagesDone ?? null);
+        // D1273: persist the freshest known state so the NEXT time this
+        // capability's search screen mounts, a first search can trust
+        // `rememberedPoolReady` instead of defaulting to the Hub copy.
+        try {
+          window.localStorage.setItem(`hubPoolState:${capabilityKey}`, data.poolState ?? "");
+        } catch {
+          // Storage disabled/unavailable — the honest copy just falls back
+          // to the Hub-request wording for this capability's next mount.
+        }
+        if (isFirstSearch) {
+          const elapsed = performance.now() - (requestStartRef.current ?? 0);
+          // A response inside 400ms must never have flashed the block at
+          // all — jump straight to "hidden" rather than playing the Size/Rank
+          // beats over an answer that was already fast.
+          setWaitPhase(shouldSkipHubWait(elapsed) ? "hidden" : "size");
+        }
       },
       (e: Error) => {
         if (!alive) return;
         setLoading(false);
+        if (e.name === "AbortError") {
+          // The Cancel link, below — return to a clean idle pane rather than
+          // surfacing the abort as an error. `postJson`/`mutateJson` never
+          // catch or rewrap a fetch abort (frontend/src/platform/lib/api.ts,
+          // `mutateJson`) — it's the raw DOMException straight from `fetch`,
+          // so `e.name` really is "AbortError" here, not a plain Error that
+          // would slip past this check. Also clear any stale error/timer
+          // state left over from a PRIOR run so Cancel always lands on a
+          // genuinely clean idle pane.
+          setWaitPhase("hidden");
+          setModels(null);
+          setError(null);
+          requestStartRef.current = null;
+          return;
+        }
         setError(e.message);
+        if (isFirstSearch) setWaitPhase("hidden");
       },
     );
     return () => {
       alive = false;
+      controller.abort();
     };
-  }, [settled, limit, authEpoch]);
+    // `pollEpoch` is intentionally in the deps: it is bumped ONLY by the
+    // poll-while-building effect below (every 15s while `poolState ===
+    // "building"`, and once more on the transition out of it), so it never
+    // fires on its own outside that loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settled, limit, authEpoch, pollEpoch]);
+
+  // Plays the "size" -> "rank" -> "hidden" tail once the response has
+  // arrived (each stage a fixed ~250ms beat, per the approved design) — the
+  // one part of this machine that IS a clock, because by the time the
+  // response exists both stages are genuinely instantaneous client-side
+  // work, not something worth waiting on for real.
+  useEffect(() => {
+    if (waitPhase !== "size") return;
+    const id = window.setTimeout(() => setWaitPhase("rank"), 250);
+    return () => window.clearTimeout(id);
+  }, [waitPhase]);
+
+  useEffect(() => {
+    if (waitPhase !== "rank") return;
+    const id = window.setTimeout(() => setWaitPhase("hidden"), 250);
+    return () => window.clearTimeout(id);
+  }, [waitPhase]);
+
+  // The 12s-and-counting amber line — only while stage "hub" is still
+  // holding (the response has not arrived at all), never during the
+  // "size"/"rank" tail. Ticks every second so the count stays live.
+  useEffect(() => {
+    if (waitPhase !== "hub") {
+      setSlowSeconds(null);
+      return;
+    }
+    const start = requestStartRef.current ?? performance.now();
+    const id = window.setInterval(() => {
+      const elapsed = Math.floor((performance.now() - start) / 1000);
+      setSlowSeconds(elapsed >= 12 ? elapsed : null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [waitPhase]);
+
+  // SPEC item 2: re-poll while the pool is building so the banner's page
+  // count moves and the pane picks up the finished catalog the moment it is
+  // ready, without the reader doing anything. `blockedUntil` isn't part of
+  // the response today, so the copy for that state just says "shortly" via
+  // `poolBuildBanner`'s own fallback.
+  useEffect(() => {
+    if (poolState !== "building") return;
+    const id = window.setInterval(() => setPollEpoch((e) => e + 1), 15_000);
+    return () => window.clearInterval(id);
+  }, [poolState]);
+
+  // Drives the build card's phase off `poolState`. `nextPoolPhase` is pure —
+  // it decides WHETHER to move, this effect just applies it whenever
+  // `poolState` changes.
+  useEffect(() => {
+    setPoolPhase((phase) => nextPoolPhase(phase, poolState));
+  }, [poolState]);
+
+  // The success beat ("Catalog ready…") holds for ~2.5s, then the card
+  // collapses (height + opacity, `.pool-build-card-collapsing`) for ~250ms
+  // before finally unmounting. Only "done" schedules this — "building" and
+  // "hidden" have nothing to collapse.
+  useEffect(() => {
+    if (poolPhase !== "done") {
+      setPoolCardCollapsing(false);
+      return;
+    }
+    const holdId = window.setTimeout(() => setPoolCardCollapsing(true), 2_500);
+    return () => window.clearTimeout(holdId);
+  }, [poolPhase]);
+
+  useEffect(() => {
+    if (!poolCardCollapsing) return;
+    const id = window.setTimeout(() => setPoolPhase("hidden"), 250);
+    return () => window.clearTimeout(id);
+  }, [poolCardCollapsing]);
 
   useEffect(() => {
     if (!sortsOnPage(settled.sort) || !models || models.length === 0) {
@@ -582,6 +886,13 @@ export function HubSearchScreen({
   }, [models, settled.sort]);
 
   const host = (endpoint || "https://huggingface.co").replace(/^https?:\/\//, "");
+  // D1273: `poolState` itself is only known once a response for THIS mount
+  // has landed — before that (including the very first search) fall back
+  // to the remembered state from a previous mount. "building"/"blocked"
+  // both correctly fall through to `false` here (the live-fallback path
+  // really does hit the Hub).
+  const poolReady = poolState === undefined ? rememberedPoolReady : poolState === "ready";
+  const waitText = waitPhase !== "hidden" ? hubWaitStageText(waitPhase, host, poolReady) : null;
   const shown =
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
@@ -593,7 +904,10 @@ export function HubSearchScreen({
       </button>
       <div className="adv-head">
         <h4>Search Hugging Face</h4>
-        <p>Every model on the Hub this Mac can run, ranked for this Mac. Nothing here is curated by us.</p>
+        <p>
+          Every model on the Hub for this pane's format, ranked for this Mac — flagged when the
+          engine running here won't open it. Nothing here is curated by us.
+        </p>
       </div>
       <div className="bigsearch">
         <input
@@ -605,7 +919,7 @@ export function HubSearchScreen({
         />
         <button
           type="button"
-          className="btn btn-primary btn-lg"
+          className="btn btn-accent btn-lg"
           onClick={() => {
             setLimit(INITIAL_LIMIT);
             onSettle({ ...settled, q: liveQuery });
@@ -638,8 +952,80 @@ export function HubSearchScreen({
         not fit ? not measured yet.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
-      {models !== null && models.length === 0 && !error && (
+      {!error && poolState === "blocked" && (
+        <p className="pool-build-banner pool-build-banner-blocked">
+          {poolBuildBanner(poolState, poolPagesDone, null, Date.now())}
+        </p>
+      )}
+      {!error && poolPhase === "building" && (
+        <div className="pool-build-card" role="status">
+          <div className="pool-build-head">
+            <span className="pool-build-title">Building this Mac&rsquo;s catalog of {meta.searchNoun}</span>
+          </div>
+          <p className="pool-build-sub">
+            Live Hub results are shown meanwhile — once the catalog is built, searches run on this Mac with no Hub
+            requests.
+          </p>
+          <div className="pool-build-progress">
+            <div className="pool-build-bar" aria-hidden="true">
+              <div className="pool-build-bar-sweep" />
+            </div>
+            <span className="pool-build-count" key={poolPagesDone ?? 0}>
+              {pagesFetchedLabel(poolPagesDone)}
+            </span>
+          </div>
+        </div>
+      )}
+      {!error && poolPhase === "done" && (
+        <div
+          className={
+            poolCardCollapsing ? "pool-build-card pool-build-card-done pool-build-card-collapsing" : "pool-build-card pool-build-card-done"
+          }
+          role="status"
+        >
+          <span className="pool-build-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15">
+              <path className="pool-build-check-path" d="M4 12.5 9.5 18 20 6" fill="none" strokeWidth="2.5" />
+            </svg>
+          </span>
+          <span className="pool-build-title">Catalog ready. Searches now run on this Mac.</span>
+        </div>
+      )}
+      {/* Round 7: the approved "v2 staged status" wait block, replacing the
+       *  plain "Asking {host}…" line — see `hub-wait-variants.html`'s own
+       *  `v2` block for the exact markup/copy this mirrors. Only a first
+       *  search (no rows yet) reaches this; the component's own effects
+       *  above are what walk `waitPhase` through hub -> size -> rank ->
+       *  hidden, and skip it entirely for a response inside 400ms. */}
+      {!error && waitPhase !== "hidden" && waitText && (
+        <div className="hub-wait" role="status" aria-live="polite">
+          <p className="hub-wait-line anim">{waitText.line}</p>
+          <p className="hub-wait-sub">{waitText.sub}</p>
+          <div className="hub-wait-track" aria-hidden="true">
+            <i className="hub-wait-sweep anim" />
+          </div>
+          <div className="hub-wait-steps">
+            <span className={waitPhase !== "hub" ? "done" : "now"}>{poolReady ? "Catalog" : "Hub"}</span>
+            <span className={waitPhase === "rank" ? "done" : waitPhase === "size" ? "now" : ""}>Size</span>
+            <span className={waitPhase === "rank" ? "now" : ""}>Rank</span>
+          </div>
+          {slowSeconds != null && (
+            <p className="hub-wait-slow">
+              {hubWaitSlowLabel(slowSeconds, poolReady)}{" "}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  abortRef.current?.abort();
+                }}
+              >
+                Cancel
+              </a>
+            </p>
+          )}
+        </div>
+      )}
+      {waitPhase === "hidden" && models !== null && models.length === 0 && !error && (
         <p className="cc-empty">
           {/* Item 3 (fix round 4): `settled.q` is often empty here — a task
            *  filter with no typed query is the default state reached from a
@@ -651,9 +1037,9 @@ export function HubSearchScreen({
             : `No ${meta.searchNoun} the Hub knows about will run here.`}
         </p>
       )}
-      {shown && shown.length > 0 && (
-        <div className={loading || measuring ? "am-hub-stale hits" : "hits"}>
-          {shown.map((m) => (
+      {waitPhase === "hidden" && shown && shown.length > 0 && (
+        <div className={loading || measuring ? "am-hub-stale hits" : "hits reveal"}>
+          {shown.map((m, i) => (
             <HitRow
               key={m.id}
               model={m}
@@ -662,7 +1048,13 @@ export function HubSearchScreen({
               busy={pulling(m.id)}
               infoOpen={openInfoId === m.id}
               job={jobByModel.get(m.id)}
+              // The mockup's own `.reveal` stagger only ever staggers the
+              // first five rows (`nth-child(2..5)`) — everything past that
+              // appears immediately rather than queuing a long, visible
+              // cascade down a page of results.
+              revealDelayMs={!(loading || measuring) && i > 0 && i < 5 ? i * 50 : 0}
               onDownload={() => onDownload(m.id, m.capability)}
+              onDownloadFile={(file) => onDownload(m.id, m.capability, file)}
               onCancel={onCancel}
               onToggleInfo={() => setOpenInfoId((cur) => (cur === m.id ? null : m.id))}
               onSignedIn={() => setAuthEpoch((n) => n + 1)}
@@ -670,7 +1062,13 @@ export function HubSearchScreen({
           ))}
         </div>
       )}
-      {models !== null && models.length >= limit && !error && (
+      {/* Re-search: rows already present, a new search in flight. Keeps the
+       *  existing dimmed `am-hub-stale` rows above rather than swapping to
+       *  the full staged block, and adds this small caption instead. */}
+      {waitPhase === "hidden" && loading && models !== null && (
+        <p className="hub-wait-restale">Re-ranking…</p>
+      )}
+      {waitPhase === "hidden" && models !== null && models.length >= limit && !error && (
         <div className="advfoot">
           <button type="button" className="btn" onClick={() => setLimit((n) => n + LOAD_MORE)}>
             Load 20 more

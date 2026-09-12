@@ -1038,6 +1038,26 @@ GGUF_RECIPES = {
 }
 
 
+def gguf_repo_for(model_id: str) -> str:
+    """The Hub repo id `model_id` actually names, resolving a curated
+    filename key (a `GGUF_RECIPES` key such as `"Qwen3.5-4B-Q4_K_M.gguf"`) to
+    its `repo`; any other `model_id` is already a bare repo id and is
+    returned unchanged.
+
+    Item 1 (code review): `llama_text.download`'s `file`-override branch
+    inlined exactly this `model_id in GGUF_RECIPES` check to find the repo a
+    curated key means, but the route that VALIDATES `file` before ever
+    calling `download`
+    (`ai_runtime._validate_download_file` -> `_repo_gguf_siblings`) passed
+    `model_id` to `huggingface_hub.list_repo_files` verbatim — a curated key
+    is never a real Hub repo id, so that lookup 400'd before `download` was
+    ever reached, and a curated key + a valid `file` could never actually
+    work end to end. Both call sites now share this one mapping so they
+    cannot drift apart again."""
+    recipe = GGUF_RECIPES.get(model_id)
+    return recipe["repo"] if recipe is not None else model_id
+
+
 # ---------------------------------------------------------------------------
 # Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
@@ -1257,6 +1277,64 @@ def pick_gguf_file(filenames) -> str | None:
     if len(candidates) == 1:
         return candidates[0]
     return None
+
+
+def gguf_candidate_files(siblings) -> list[str]:
+    """Root-level, non-auxiliary GGUF filenames out of a repo's own
+    `siblings` listing (dicts with `rfilename`, or bare filename strings —
+    either shape a caller's own `raw["siblings"]` might already be in), with
+    a multi-part shard set (`GGUF_SPLIT_RE`) COLLAPSED to its first part —
+    one entry per distinct WEIGHT VARIANT the repo ships, not one per file
+    on disk.
+
+    Item 5 (SPEC AI-19 round 2): `hub_models._count_variants` used to
+    exclude helper files with its own narrower `("mmproj", "vision")`
+    substring list, so a `mtp-`/`draft-`/`projector`-named auxiliary file
+    `pick_gguf_file` already knows to refuse could still inflate a repo's
+    variant count by one, AND a sharded quant (`-00001-of-00005.gguf`)
+    counted once per shard rather than once per quantization. Reusing
+    `pick_gguf_file`'s own `GGUF_SPLIT_RE`/`GGUF_AUXILIARY_RE` here means
+    the two can never quietly disagree about what counts as a real,
+    downloadable quantization again — one filter, two callers.
+    """
+    names = []
+    for entry in siblings or []:
+        name = entry.get("rfilename") if isinstance(entry, dict) else entry
+        if isinstance(name, str):
+            names.append(name)
+    candidates: list[str] = []
+    seen_shard_bases: set[str] = set()
+    for name in names:
+        if "/" in name or not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_AUXILIARY_RE.search(name):
+            continue
+        split_match = GGUF_SPLIT_RE.search(name)
+        if split_match:
+            base = name[:split_match.start()]
+            if base in seen_shard_bases:
+                continue
+            seen_shard_bases.add(base)
+        candidates.append(name)
+    return candidates
+
+
+def gguf_file_is_downloadable(filename: str) -> bool:
+    """Whether `filename` (one entry out of `gguf_candidate_files`) names a
+    file a per-variant download can actually fetch and use on its own.
+
+    `gguf_candidate_files` deliberately keeps ONE entry — shard part 1 —
+    per multi-part `-00001-of-0000N.gguf` set, because that is correct for
+    COUNTING distinct weight variants a repo ships. But shard part 1 alone
+    is not a servable model: `pick_gguf_file` itself refuses every shard
+    (`GGUF_SPLIT_RE`), so a download of just that file leaves a runner
+    unable to load anything. This is the one-line test every caller that
+    turns a candidate into an offered Download action must run first —
+    `hub_models._model_row`'s `variants` array, and `ai_runtime.
+    _validate_download_file`'s server-side gate — so the two can never
+    quietly disagree about which files are actually fetchable.
+    """
+    return not GGUF_SPLIT_RE.search(filename)
 
 
 def gguf_quant_token(filename: str) -> str | None:

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, matchCell, matchTitle, popLabel, quantLabel, splitRepoId, verdictGlyph } from "./hubTableView";
-import type { AiFitVerdict } from "@platform/lib/api";
+import { ageLabel, downloadedVariantLabel, hubWaitSlowLabel, hubWaitStageText, matchCell, matchRowTip, matchScoreInt, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, shouldSkipHubWait, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
+import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
 // function — a wrong number reads as a real measurement, so every cell whose
@@ -133,6 +133,134 @@ describe("matchTitle", () => {
   });
 });
 
+describe("matchScoreInt", () => {
+  it("is the one rounding rule both the cell and the tooltip read from", () => {
+    // Item 4: a 84.5 `matchScore` must never print "85" in the cell and
+    // "84" in the tooltip — one helper, one answer.
+    expect(matchScoreInt(84.5)).toBe(85);
+    expect(matchScoreInt(84.4)).toBe(84);
+    expect(matchScoreInt(null)).toBeNull();
+    expect(matchScoreInt(undefined)).toBeNull();
+  });
+});
+
+describe("matchRowTip", () => {
+  // D1245/D1246, cut down by D1267: the row's own short `data-tip` popover —
+  // two lines, max ~90 characters total. Line 1 names at most the two
+  // biggest-loss axes (no parentheticals, no raw numbers); line 2 always
+  // states the fit verdict plus its GB numbers, rounded to one decimal —
+  // the fix for two rows that both show "84" with a different bar colour
+  // reading as a bug (D1246) rather than two independent facts.
+  const tight = (footprintGb: number, poolGb: number): AiFitVerdict => ({
+    verdict: "tight",
+    basis: "declared",
+    footprintBytes: footprintGb * 1e9,
+    score: 60,
+    runMode: "gpu",
+  });
+
+  const axis = (partial: Partial<HubMatchAxis> & Pick<HubMatchAxis, "axis" | "gained" | "lost">): HubMatchAxis =>
+    partial as HubMatchAxis;
+
+  it("leads with the plain integer score, not a slash-100 paragraph", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+    ]);
+    expect(tip.startsWith("Match 84")).toBe(true);
+    expect(tip).not.toContain("/100");
+  });
+
+  it("agrees with matchCell's rounding — item 4's 84.5 case", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84.5, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+    ]);
+    expect(matchCell(tight(17, 22.4), 84.5).scoreText).toBe("85");
+    expect(tip.startsWith("Match 85")).toBe(true);
+  });
+
+  it("names the two biggest losers, biggest first, and drops the rest", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 17, poolGb: 22.4 }),
+      axis({ axis: "popularity", gained: 0.5, lost: 9.5, downloads: 120 }),
+      axis({ axis: "recency", gained: 4.5, lost: 10.5, ageDays: 1095 }),
+      axis({ axis: "speed", gained: 15, lost: 0, tokensPerSecond: 40 }),
+      axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
+    ];
+    const tip = matchRowTip(tight(17, 22.4), 84, breakdown);
+    // `fit` is never in the loss list (line 2 already tells its whole
+    // story). Of the rest, sorted by `lost` descending: recency (10.5),
+    // popularity (9.5) — capped at two, so only those two are named, and
+    // never with parentheticals or raw numbers.
+    expect(tip).toContain("lost most on recency, then popularity");
+    expect(tip).not.toContain("(");
+    expect(tip).not.toContain("120");
+    expect(tip).not.toContain("speed");
+    expect(tip).not.toContain("size");
+  });
+
+  it("says full marks when every scoreable axis lost nothing", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
+      axis({ axis: "capability", gained: 25, lost: 0, params: 8_000_000_000 }),
+      axis({ axis: "speed", gained: 15, lost: 0, tokensPerSecond: 40 }),
+      axis({ axis: "recency", gained: 15, lost: 0, ageDays: 1 }),
+      axis({ axis: "popularity", gained: 10, lost: 0, downloads: 6_000_000 }),
+    ];
+    const tip = matchRowTip({ verdict: "easy", basis: "declared", footprintBytes: 2e9, score: 100 }, 100, breakdown);
+    expect(tip).toContain("full marks");
+  });
+
+  it("names a run-mode penalty as a loss when it applied", () => {
+    const breakdown: HubMatchAxis[] = [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 2, poolGb: 22.4 }),
+      axis({ axis: "runMode", gained: 0, lost: 10, runMode: "cpu-offload" }),
+    ];
+    const tip = matchRowTip({ verdict: "easy", basis: "declared", footprintBytes: 2e9, score: 100 }, 90, breakdown);
+    expect(tip).toContain("lost most on offload");
+  });
+
+  it("rounds the fit GB numbers to one decimal on a tight-fit row", () => {
+    const tip = matchRowTip(tight(18.663, 26.359), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 18.663, poolGb: 26.359 }),
+    ]);
+    expect(tip).toContain("Tight fit · needs ~18.7 of 26.4 GB");
+  });
+
+  it("reads 'Fits easily' with both GB numbers for an easy verdict", () => {
+    const easy: AiFitVerdict = { verdict: "easy", basis: "declared", footprintBytes: 9.2e9, score: 100 };
+    const tip = matchRowTip(easy, 84, [
+      axis({ axis: "fit", gained: 35, lost: 0, footprintGb: 9.2, poolGb: 26.4 }),
+    ]);
+    expect(tip).toContain("Fits easily · 9.2 of 26.4 GB");
+  });
+
+  it("reads \"Won't fit\" with just the footprint for a no-fit verdict", () => {
+    const no: AiFitVerdict = { verdict: "no", basis: "declared", footprintBytes: 41e9, score: 0 };
+    const tip = matchRowTip(no, 30, [axis({ axis: "fit", gained: 0, lost: 35, footprintGb: 41, poolGb: 26.4 })]);
+    expect(tip).toContain("Won't fit · needs 41 GB");
+  });
+
+  it("reads unknown fit honestly rather than inventing a footprint", () => {
+    const tip = matchRowTip(null, 40, []);
+    expect(tip).toContain("Memory not measured");
+  });
+
+  it("is a dash-safe, terse fallback when there is no breakdown at all", () => {
+    const tip = matchRowTip(tight(17, 22.4), 84, undefined);
+    expect(tip.startsWith("Match 84")).toBe(true);
+    expect(tip).toContain("Tight fit");
+  });
+
+  it("stays within the ~90 character budget", () => {
+    const tip = matchRowTip(tight(18.663, 26.359), 84, [
+      axis({ axis: "fit", gained: 21, lost: 14, footprintGb: 18.663, poolGb: 26.359 }),
+      axis({ axis: "popularity", gained: 0.5, lost: 9.5, downloads: 120 }),
+      axis({ axis: "recency", gained: 4.5, lost: 10.5, ageDays: 1095 }),
+    ]);
+    expect(tip.length).toBeLessThanOrEqual(90);
+  });
+});
+
 describe("quantLabel", () => {
   it("renders a measured quant as-is", () => {
     expect(quantLabel("BF16")).toBe("BF16");
@@ -188,3 +316,296 @@ describe("verdictGlyph", () => {
   });
 });
 
+describe("poolBuildBanner", () => {
+  const now = 1_700_000_000_000;
+
+  it("is null when the pool is ready", () => {
+    expect(poolBuildBanner("ready", null, null, now)).toBeNull();
+  });
+
+  it("is null when there is no pool at all", () => {
+    expect(poolBuildBanner("none", null, null, now)).toBeNull();
+  });
+
+  it("is null when poolState is undefined (older API response)", () => {
+    expect(poolBuildBanner(undefined, null, null, now)).toBeNull();
+  });
+
+  it("reports pages built so far while building", () => {
+    expect(poolBuildBanner("building", 4, null, now)).toBe(
+      "Building the full catalog for this capability (4 pages so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("singularizes 'page' for exactly one page done", () => {
+    expect(poolBuildBanner("building", 1, null, now)).toBe(
+      "Building the full catalog for this capability (1 page so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("treats a missing pagesDone as zero while building", () => {
+    expect(poolBuildBanner("building", null, null, now)).toBe(
+      "Building the full catalog for this capability (0 pages so far)… showing live Hub results until it finishes.",
+    );
+  });
+
+  it("reports a short countdown when blocked", () => {
+    const blockedUntil = now / 1000 + 45; // epoch seconds, 45s out
+    expect(poolBuildBanner("blocked", null, blockedUntil, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after 45s. Showing live results.",
+    );
+  });
+
+  it("falls back to 'shortly' when blockedUntil is missing or already past", () => {
+    expect(poolBuildBanner("blocked", null, null, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after shortly. Showing live results.",
+    );
+    const past = now / 1000 - 10;
+    expect(poolBuildBanner("blocked", null, past, now)).toBe(
+      "Hub rate limit hit; the full catalog resumes after shortly. Showing live results.",
+    );
+  });
+});
+
+describe("pagesFetchedLabel", () => {
+  it("shows a connecting placeholder before any page has landed", () => {
+    expect(pagesFetchedLabel(null)).toBe("connecting to the Hub…");
+    expect(pagesFetchedLabel(undefined)).toBe("connecting to the Hub…");
+    expect(pagesFetchedLabel(0)).toBe("connecting to the Hub…");
+  });
+
+  it("singularizes 'page' for exactly one", () => {
+    expect(pagesFetchedLabel(1)).toBe("1 page fetched");
+  });
+
+  it("pluralizes for more than one", () => {
+    expect(pagesFetchedLabel(4)).toBe("4 pages fetched");
+  });
+});
+
+describe("nextPoolPhase", () => {
+  it("goes to building whenever poolState is building, from any phase", () => {
+    expect(nextPoolPhase("hidden", "building")).toBe("building");
+    expect(nextPoolPhase("building", "building")).toBe("building");
+    expect(nextPoolPhase("done", "building")).toBe("building");
+  });
+
+  it("only reaches done by leaving building for ready", () => {
+    expect(nextPoolPhase("building", "ready")).toBe("done");
+  });
+
+  it("never celebrates a pane that opened already ready", () => {
+    expect(nextPoolPhase("hidden", "ready")).toBe("hidden");
+  });
+
+  it("holds done until the component's timer clears it", () => {
+    expect(nextPoolPhase("done", "ready")).toBe("done");
+    expect(nextPoolPhase("done", "none")).toBe("done");
+    expect(nextPoolPhase("done", undefined)).toBe("done");
+  });
+
+  it("is hidden for blocked/none/undefined outside a hold", () => {
+    expect(nextPoolPhase("hidden", "blocked")).toBe("hidden");
+    expect(nextPoolPhase("hidden", "none")).toBe("hidden");
+    expect(nextPoolPhase("hidden", undefined)).toBe("hidden");
+    expect(nextPoolPhase("building", "blocked")).toBe("hidden");
+  });
+});
+
+
+
+describe("downloadedVariantLabel", () => {
+  it("names the plain quant for the default variant", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 3,
+        variants: [
+          { file: "model-Q4_K_M.gguf", quant: "Q4_K_M" },
+          { file: "model-Q8_0.gguf", quant: "Q8_0" },
+        ],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-Q4_K_M.gguf",
+      }),
+    ).toBe("Q4_K_M downloaded");
+  });
+
+  it("names the variant count and quant when a non-default variant is on disk", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 3,
+        variants: [
+          { file: "model-Q4_K_M.gguf", quant: "Q4_K_M" },
+          { file: "model-Q8_0.gguf", quant: "Q8_0" },
+        ],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-Q8_0.gguf",
+      }),
+    ).toBe("3 variants · Q8_0 downloaded");
+  });
+
+  it("falls back to the plain default caption for a non-GGUF row (no variants at all)", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: null,
+        variants: null,
+        file: null,
+        quant: "BF16",
+        localFile: null,
+      }),
+    ).toBe("BF16 downloaded");
+  });
+
+  it("reads 'Downloaded' with no quant known at all", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: null,
+        variants: null,
+        file: null,
+        quant: null,
+        localFile: null,
+      }),
+    ).toBe("Downloaded");
+  });
+
+  it("does not treat a single-variant repo as a non-default download even if file differs", () => {
+    // variantCount <= 1 means there is nothing to disambiguate — the plain
+    // caption applies regardless of any (theoretical) file mismatch.
+    expect(
+      downloadedVariantLabel({
+        variantCount: 1,
+        variants: [{ file: "model.gguf", quant: "Q4_K_M" }],
+        file: "model.gguf",
+        quant: "Q4_K_M",
+        localFile: "model.gguf",
+      }),
+    ).toBe("Q4_K_M downloaded");
+  });
+
+  it("falls back to the row's own quant when the local file isn't in the variant list", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 2,
+        variants: [{ file: "model-Q4_K_M.gguf", quant: "Q4_K_M" }],
+        file: "model-Q4_K_M.gguf",
+        quant: "Q4_K_M",
+        localFile: "model-mystery.gguf",
+      }),
+    ).toBe("2 variants · Q4_K_M downloaded");
+  });
+
+  it("names the variant count alone when no quant is known at all", () => {
+    expect(
+      downloadedVariantLabel({
+        variantCount: 2,
+        variants: [{ file: "model-Q4_K_M.gguf", quant: null }],
+        file: "model-Q4_K_M.gguf",
+        quant: null,
+        localFile: "model-Q8_0.gguf",
+      }),
+    ).toBe("2 variants downloaded");
+  });
+});
+
+describe("variantIsDownloadable", () => {
+  it("is downloadable when the server says true", () => {
+    expect(variantIsDownloadable({ downloadable: true })).toBe(true);
+  });
+
+  it("is not downloadable when the server says false (a sharded quant)", () => {
+    expect(variantIsDownloadable({ downloadable: false })).toBe(false);
+  });
+
+  it("is downloadable when the field is absent (a cached response predating it)", () => {
+    expect(variantIsDownloadable({})).toBe(true);
+  });
+});
+
+describe("hubWaitStageText", () => {
+  it("Hub stage names the host and the one-request promise", () => {
+    expect(hubWaitStageText("hub", "huggingface.co")).toEqual({
+      line: "Asking huggingface.co",
+      sub: "one request, then everything else runs here",
+    });
+  });
+
+  it("Size stage falls back to the plain caption when no facts are known", () => {
+    expect(hubWaitStageText("size", "huggingface.co")).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "sized against this Mac's memory",
+    });
+  });
+
+  it("Size stage folds in ram/runner facts when the caller has them", () => {
+    expect(
+      hubWaitStageText("size", "huggingface.co", false, { ramGb: 26.4, runnerCount: 4 }),
+    ).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "26.4 GB of unified memory, 4 runners installed",
+    });
+  });
+
+  it("Size stage singularizes one runner", () => {
+    expect(
+      hubWaitStageText("size", "huggingface.co", false, { ramGb: 26.4, runnerCount: 1 }),
+    ).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "26.4 GB of unified memory, 1 runner installed",
+    });
+  });
+
+  it("Rank stage names the ranking order", () => {
+    expect(hubWaitStageText("rank", "huggingface.co")).toEqual({
+      line: "Ranking for this Mac",
+      sub: "memory fit first, then speed, freshness, popularity",
+    });
+  });
+
+  // D1273: when the pool is (or was last seen) ready, the search never hits
+  // the Hub at all — the "hub" stage copy must say so instead of claiming
+  // to ask a host it never contacts.
+  it("Hub stage reads as a local catalog search when the pool is ready", () => {
+    expect(hubWaitStageText("hub", "huggingface.co", true)).toEqual({
+      line: "Searching the local catalog",
+      sub: "every model on the Hub this Mac can run, already on disk",
+    });
+  });
+
+  it("a ready pool does not change the size/rank stages' copy", () => {
+    expect(hubWaitStageText("size", "huggingface.co", true)).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "sized against this Mac's memory",
+    });
+    expect(hubWaitStageText("rank", "huggingface.co", true)).toEqual({
+      line: "Ranking for this Mac",
+      sub: "memory fit first, then speed, freshness, popularity",
+    });
+  });
+});
+
+describe("hubWaitSlowLabel", () => {
+  it("names the live seconds count", () => {
+    expect(hubWaitSlowLabel(12)).toBe("The Hub is slow right now. 12 s and counting.");
+    expect(hubWaitSlowLabel(47)).toBe("The Hub is slow right now. 47 s and counting.");
+  });
+
+  // D1273: a ready-pool wait never touches the Hub, so the slow line must
+  // not blame it — only ranking could plausibly still be running long.
+  it("does not blame the Hub when the pool is ready", () => {
+    expect(hubWaitSlowLabel(12, true)).toBe("Still ranking. 12 s and counting.");
+    expect(hubWaitSlowLabel(47, true)).toBe("Still ranking. 47 s and counting.");
+  });
+});
+
+describe("shouldSkipHubWait", () => {
+  it("skips the block for a response inside 400ms", () => {
+    expect(shouldSkipHubWait(0)).toBe(true);
+    expect(shouldSkipHubWait(399)).toBe(true);
+  });
+
+  it("shows the block from 400ms onward", () => {
+    expect(shouldSkipHubWait(400)).toBe(false);
+    expect(shouldSkipHubWait(2000)).toBe(false);
+  });
+});

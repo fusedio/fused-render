@@ -22,6 +22,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.ai import fit
 from fused_render.ai import hw_detect
 from fused_render.ai import registry
 from fused_render.ai import tasks as ai_tasks
@@ -548,14 +549,14 @@ def test_gguf_row_with_no_gguf_metadata_at_all_still_has_no_params(client, hub_c
 
 def test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone(
         client, hub_cache, monkeypatch):
-    """`params` (the Hub's real `gguf.total`) still moves the ranking even
-    though fit/speed derivation for a GGUF row was deleted entirely (see the
-    DECISIONS.md entry recorded alongside this test): `_capability_score`
-    reads `params` with no bytes-per-param conversion, so a row that knows
-    its real parameter count scores above one that does not, on the
-    capability axis alone, with `fit` staying `None` on BOTH — a GGUF row
-    never gets a server-derived fit verdict any more, recognized quant token
-    or not."""
+    """`params` (the Hub's real `gguf.total`) still moves the ranking: a row
+    that knows its real parameter count scores above one that does not, on
+    the capability axis alone. B (bugbot) changes what happens to `fit` for
+    the meta row specifically — a recognised quant token (`Q4_K_M`) paired
+    with a real params count is now judgeable (`params x
+    quant_bytes_per_param`, `sizeSource: "estimated"`) — but the no-meta row
+    has no params at all, so it stays unjudgeable regardless of its quant
+    token, exactly as before."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
@@ -572,29 +573,30 @@ def test_gguf_row_with_real_params_scores_above_no_params_via_capability_alone(
     by_id = {m["id"]: m for m in body["models"]}
     with_meta = by_id["org/gguf-with-meta"]
     no_meta = by_id["org/gguf-no-meta"]
-    assert with_meta["fit"] is None
+    assert with_meta["fit"] is not None
+    assert with_meta["sizeSource"] == "estimated"
     assert no_meta["fit"] is None
-    assert with_meta["speedEstimate"] is None
     assert no_meta["speedEstimate"] is None
     assert with_meta["params"] == 7_000_000_000
     assert no_meta["params"] is None
     assert with_meta["matchScore"] > no_meta["matchScore"]
 
 
-def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
+def test_gguf_row_with_recognized_quant_and_no_cache_estimates_from_params(
         client, hub_cache, monkeypatch):
-    """The bug that survived two prior guard-based rounds: `formats.gguf_
-    quant_token`'s regex RESOLVES many tokens (`Q8_K_XL`, `FP8`, `Q5_1`,
-    `IQ4_NL`, `Q4_1`, ...) that `fit._quant_key` has no bytes-per-param entry
-    for, and `formats.pick_gguf_file` actively SELECTS files carrying them —
-    so gating the derivation on "`quant` resolved a token" (round 2's fix)
-    was never the same guarantee as "a quant this server can actually turn
-    into real bytes". A 30B `Q8_K_XL` file's real footprint is ~31.5GB
-    (~1.05 bytes/param); `_weight_bytes`'s `DEFAULT_BYTES_PER_PARAM` (0.58)
-    guess would be 17.4GB, comfortably "easy" on a 32GB machine when it is
-    not. There is no whitelist fix for this — `fit`/`speedEstimate` must be
-    unconditionally `None` for every GGUF row, recognized token or not, so
-    this specific under-report can never resurface."""
+    """B (bugbot): D1249's gate refused to turn ANY GGUF row's `params` into
+    a footprint, on the reasoning that an unrecognised quant token would
+    silently fall back to `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish") — a
+    guess that could be badly wrong. D1250 then filled `QUANT_BYTES_PER_PARAM`
+    with real bytes/param figures for the GGUF suffixes this codebase already
+    ranks, which reopens exactly the case the old gate could not tell apart
+    from a guess: a RECOGNISED token paired with a REAL params count is not a
+    guess, it is `params x quant_bytes_per_param(token)` — the same formula
+    `_weight_bytes` already trusts for a curated catalog entry. A 30B
+    `Q8_K_XL` file's real bytes/param (1.06, D1250) puts its footprint at
+    ~31.8GB, which must read as unfit (`"no"`) on a 32GB machine — the OLD
+    default-bpp guess (0.58) would have read 17.4GB, comfortably "easy",
+    which is exactly the under-report this round closes."""
     _pin_hardware(monkeypatch, ram_gb=32.0)
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
     monkeypatch.setattr(httpx, "get", _reply([_hit(
@@ -603,13 +605,98 @@ def test_gguf_row_with_recognized_quant_still_reports_no_derived_fit(
     )]))
     row = _search(client).json()["models"][0]
     assert row["file"] == "x-Q8_K_XL.gguf"
-    # The token IS recognized by the regex — this is not the round-2 case.
     assert row["quant"] == "Q8_K_XL"
-    # The real, quantization-invariant params count is still shown...
     assert row["params"] == 30_000_000_000
-    # ...but never turned into a synthesized footprint or verdict.
+    assert row["sizeSource"] == "estimated"
+    assert row["fit"] is not None
+    assert row["fit"]["verdict"] == "no"
+    assert row["fit"]["footprintBytes"] == pytest.approx(
+        30_000_000_000 * 1.06 + fit.RUNTIME_OVERHEAD_BYTES, rel=0.01)
+    assert row["speedEstimate"] is not None
+
+
+def test_gguf_row_with_unrecognized_quant_still_reports_no_derived_fit(
+        client, hub_cache, monkeypatch):
+    """An unrecognised quant token (`fit._quant_key` returns `None`) must
+    stay unjudgeable — the whole point of D1249's original gate — rather
+    than silently falling back to `DEFAULT_BYTES_PER_PARAM`."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/gguf-fake", siblings=[{"rfilename": "x-IQ9_FAKE.gguf"}],
+        gguf={"total": 30_000_000_000, "architecture": "llama"},
+    )]))
+    row = _search(client).json()["models"][0]
     assert row["fit"] is None
     assert row["speedEstimate"] is None
+    assert row["sizeSource"] is None
+
+
+def test_gguf_estimated_row_ranks_below_a_fitting_q4_row(client, hub_cache, monkeypatch):
+    """The estimated footprint must actually feed `matchScore` (D780's
+    composite), not merely be computed and discarded: a 30B Q8_K_XL row that
+    reads unfit must rank below a 7B Q4_K_M row that comfortably fits."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    same = dict(downloads=1000, createdAt="2026-08-01T00:00:00.000Z")
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/big-q8", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
+             gguf={"total": 30_000_000_000, "architecture": "llama"}, **same),
+        _hit("org/small-q4", siblings=[{"rfilename": "y-Q4_K_M.gguf"}],
+             gguf={"total": 7_000_000_000, "architecture": "llama"}, **same),
+    ]))
+    body = _search(client).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/big-q8"]["fit"]["verdict"] == "no"
+    assert by_id["org/small-q4"]["fit"]["verdict"] in ("easy", "tight")
+    assert by_id["org/small-q4"]["matchScore"] > by_id["org/big-q8"]["matchScore"]
+
+
+def test_gguf_row_uses_a_cached_real_file_size_when_hub_size_already_resolved_one(
+        client, hub_cache, monkeypatch):
+    """SPEC item 3: a real byte count for this exact (id, file) pair, already
+    cached by `api_hub_size` (the lazy per-card lookup — see its own
+    docstring), is reused here rather than left on the floor — the row's
+    `fit`/`speedEstimate` are judged off THOSE real bytes, never a
+    `params * bpp` estimate, even when the estimate would ALSO be judgeable
+    (B, bugbot: a recognised quant plus known params now estimates on its
+    own — this test's "unknown" row has no `params` at all, so it stays
+    unjudgeable by either path, proving a cache miss with nothing else to go
+    on is still refused)."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/gguf-known-size", siblings=[{"rfilename": "x-Q8_K_XL.gguf"}],
+             gguf={"total": 30_000_000_000}),
+        _hit("org/gguf-unknown-size", siblings=[{"rfilename": "y-Q8_K_XL.gguf"}]),
+    ]))
+    # ~31.5GB real bytes for the known row — the same figure this file's own
+    # docstrings use as the "real" contrast against the 17.4GB guess.
+    real_bytes = 31_500_000_000
+    key = ("size", hub.hub_endpoint(), "org/gguf-known-size", "x-Q8_K_XL.gguf", False)
+    hub._store(key, {"usedStorage": None, "fileSize": real_bytes})
+
+    body = _search(client).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    known = by_id["org/gguf-known-size"]
+    unknown = by_id["org/gguf-unknown-size"]
+
+    assert known["fit"] is not None
+    # `footprintBytes` is the weight bytes PLUS `fit.RUNTIME_OVERHEAD_BYTES`
+    # (0.5GB) — the "download" rung's own fixed runtime allowance, unrelated
+    # to which source (real cache vs. a guess) supplied the weight bytes.
+    assert known["fit"]["footprintBytes"] == real_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    # The guessed figure `Q8_K_XL`'s recognised bpp would have produced for
+    # 30B params (~32GB weights, ~32.5GB with overhead) must NOT be what won
+    # — proves the real cached bytes were used, not `params * bpp`.
+    guessed_weight_bytes = 30_000_000_000 * fit.quant_bytes_per_param("Q8_K_XL")
+    assert known["fit"]["footprintBytes"] != guessed_weight_bytes + fit.RUNTIME_OVERHEAD_BYTES
+    assert known["speedEstimate"] is not None
+    assert known["sizeSource"] == "cached"
+
+    assert unknown["fit"] is None
+    assert unknown["speedEstimate"] is None
+    assert unknown["sizeSource"] is None
 
 
 # -- D793: a GGUF row outside text generation is rankable and findable ------
@@ -722,7 +809,7 @@ def test_a_multi_quant_gguf_repo_counts_each_quant_as_a_variant(client, hub_cach
             {"rfilename": "model-Q8_0.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 3
+    assert _search(client).json()["models"][0]["variantCount"] == 3
 
 
 def test_an_mmproj_sibling_is_not_counted_as_its_own_variant(client, hub_cache, monkeypatch):
@@ -736,7 +823,7 @@ def test_an_mmproj_sibling_is_not_counted_as_its_own_variant(client, hub_cache, 
             {"rfilename": "mmproj-model-f16.gguf"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
 
 
 def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch):
@@ -747,7 +834,152 @@ def test_a_single_safetensors_repo_is_one_variant(client, hub_cache, monkeypatch
         safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
         siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "config.json"}],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 1
+    assert _search(client).json()["models"][0]["variantCount"] == 1
+
+
+def test_a_sharded_gguf_quant_counts_once_not_once_per_shard(client, hub_cache, monkeypatch):
+    """Item 5: `_count_variants` reuses `formats.pick_gguf_file`'s own split-
+    shard exclusion (`GGUF_SPLIT_RE`) — a multi-part `-00001-of-00003.gguf`
+    shard set is ONE quantization, not three, so a sharded repo does not
+    inflate its variant count by however many parts that one quant happens
+    to be split into."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/sharded-gguf",
+        siblings=[
+            {"rfilename": "model-Q8_0-00001-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00002-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00003-of-00003.gguf"},
+            {"rfilename": "model-Q4_K_M.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variantCount"] == 2
+
+
+def test_a_draft_or_projector_gguf_sibling_is_not_counted_as_its_own_variant(
+        client, hub_cache, monkeypatch):
+    """Item 5: `_count_variants` now excludes the SAME auxiliary markers
+    `formats.GGUF_AUXILIARY_RE` does (`mmproj`/`mtp`/`draft`/`projector`),
+    not just its own narrower ad-hoc `("mmproj", "vision")` list — a
+    speculative-decoding draft model shipped alongside the real quants must
+    not inflate the count either."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/with-draft",
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+            {"rfilename": "draft-model-Q4_0.gguf"},
+        ],
+    )]))
+    assert _search(client).json()["models"][0]["variantCount"] == 2
+
+
+# -- item 6: the variant list itself -----------------------------------------
+
+
+def test_a_gguf_repos_variants_array_lists_each_file_and_its_quant(
+        client, hub_cache, monkeypatch):
+    """Item 6: a GGUF row's `variants` array names every candidate file (the
+    same set `variantCount` above counts), each paired with its own published
+    quant token off the filename — not a guess from the repo name."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/multi-quant",
+        gguf={"total": 4_000_000_000},
+        siblings=[
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "model-Q8_0.gguf"},
+        ],
+    )]))
+    model = _search(client).json()["models"][0]
+    assert model["variantCount"] == 2
+    by_file = {v["file"]: v["quant"] for v in model["variants"]}
+    assert by_file == {
+        "model-Q4_K_M.gguf": "Q4_K_M",
+        "model-Q8_0.gguf": "Q8_0",
+    }
+    assert all(v["downloadable"] for v in model["variants"])
+
+
+def test_a_sharded_quants_variant_entry_is_marked_not_downloadable(
+        client, hub_cache, monkeypatch):
+    """Item 3 (code review): a multi-part shard set's collapsed entry (shard
+    part 1) must be flagged `downloadable: False` — offering it for download
+    would fetch one unusable shard, since `pick_gguf_file` refuses the same
+    file as non-servable."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/sharded",
+        gguf={"total": 4_000_000_000},
+        siblings=[
+            {"rfilename": "model-Q8_0-00001-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00002-of-00003.gguf"},
+            {"rfilename": "model-Q8_0-00003-of-00003.gguf"},
+            {"rfilename": "model-Q4_K_M.gguf"},
+        ],
+    )]))
+    model = _search(client).json()["models"][0]
+    by_file = {v["file"]: v["downloadable"] for v in model["variants"]}
+    assert by_file == {
+        "model-Q8_0-00001-of-00003.gguf": False,
+        "model-Q4_K_M.gguf": True,
+    }
+
+
+def test_a_non_gguf_repos_variants_array_is_null(client, hub_cache, monkeypatch):
+    """A safetensors/MLX row has no per-file quant listing to offer — `variants`
+    is null rather than a fake single-entry list, mirroring how `_count_variants`
+    still gives it a `variantCount` of 1 from its subfolder/dtype convention."""
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/plain-st",
+        safetensors={"parameters": {"BF16": 1_000_000}, "total": 1_000_000},
+        siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "config.json"}],
+    )]))
+    model = _search(client).json()["models"][0]
+    assert model["variantCount"] == 1
+    assert model["variants"] is None
+
+
+def test_the_on_disk_gguf_file_is_named_in_local_state(client, hub_cache, monkeypatch):
+    """Item 6: when exactly one `.gguf` file sits in a repo's default snapshot,
+    `local.file` names it — so a variant list can mark which one is already on
+    disk without re-deriving it from `local.files`' bare count."""
+    repo_dir = hub_cache / "models--org--have-gguf"
+    blob = repo_dir / "blobs" / "b1"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 64)
+    snapshot = repo_dir / "snapshots" / "c1"
+    snapshot.mkdir(parents=True)
+    try:
+        os.symlink(blob, snapshot / "model-Q4_K_M.gguf")
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    refs = repo_dir / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("c1")
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/have-gguf")]))
+    model = _search(client).json()["models"][0]
+    assert model["local"]["file"] == "model-Q4_K_M.gguf"
+
+
+def test_local_file_is_none_when_more_than_one_gguf_is_on_disk(client, hub_cache, monkeypatch):
+    """An ambiguous multi-GGUF snapshot refuses to guess which file "is the
+    one" rather than naming the wrong one."""
+    repo_dir = hub_cache / "models--org--two-guffs"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "b1").write_bytes(b"x" * 64)
+    (blobs / "b2").write_bytes(b"y" * 64)
+    snapshot = repo_dir / "snapshots" / "c1"
+    snapshot.mkdir(parents=True)
+    try:
+        os.symlink(blobs / "b1", snapshot / "model-Q4_K_M.gguf")
+        os.symlink(blobs / "b2", snapshot / "model-Q8_0.gguf")
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    refs = repo_dir / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("c1")
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/two-guffs")]))
+    model = _search(client).json()["models"][0]
+    assert model["local"]["file"] is None
 
 
 def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub_cache, monkeypatch):
@@ -762,7 +994,7 @@ def test_a_bitwidth_subfoldered_repo_counts_each_folder_as_a_variant(client, hub
             {"rfilename": "8bit/config.json"},
         ],
     )]))
-    assert _search(client).json()["models"][0]["variants"] == 2
+    assert _search(client).json()["models"][0]["variantCount"] == 2
 
 
 # -- the request ------------------------------------------------------------
@@ -939,12 +1171,29 @@ def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypa
 
 
 def test_a_capability_with_one_tag_behaves_like_the_old_task_filter(client, hub_cache, monkeypatch):
+    # D1235: IMAGE_GENERATION stopped being a one-tag capability once
+    # `image-to-image` joined `text-to-image` under it (tasks.py), so
+    # SPEECH_TO_TEXT (still one tag: `automatic-speech-recognition`) is the
+    # example here now; the two-tag case is covered just below.
+    fake = _reply([_hit("org/m", pipeline_tag="automatic-speech-recognition")])
+    monkeypatch.setattr(httpx, "get", fake)
+    resp = _search(client, {"capability": registry.SPEECH_TO_TEXT})
+    assert resp.status_code == 200
+    assert len(fake.calls) == 1
+    assert "filter=automatic-speech-recognition" in fake.calls[0][0]
+
+
+def test_image_generation_now_reaches_two_tags(client, hub_cache, monkeypatch):
+    """D1235: `image-to-image` joined `text-to-image` under IMAGE_GENERATION,
+    so a capability search over it fetches both tags — one Hub request per
+    tag, same as any other multi-tag capability."""
     fake = _reply([_hit("org/m", pipeline_tag="text-to-image")])
     monkeypatch.setattr(httpx, "get", fake)
     resp = _search(client, {"capability": registry.IMAGE_GENERATION})
     assert resp.status_code == 200
-    assert len(fake.calls) == 1
-    assert "filter=text-to-image" in fake.calls[0][0]
+    assert len(fake.calls) == 2
+    assert any("filter=text-to-image" in c[0] for c in fake.calls)
+    assert any("filter=image-to-image" in c[0] for c in fake.calls)
 
 
 def test_an_unrecognised_capability_400s(client, hub_cache):
@@ -1063,7 +1312,7 @@ def test_a_row_with_params_carries_fit_speed_and_created(client, hub_cache, monk
     row = _search(client).json()["models"][0]
     assert row["created"] == "2026-08-01T00:00:00.000Z"
     assert row["fit"] is not None
-    assert set(row["fit"]) == {"verdict", "basis", "footprintBytes", "score", "runMode"}
+    assert set(row["fit"]) == {"verdict", "basis", "footprintBytes", "score", "runMode", "poolBytes", "poolName"}
     assert row["speedEstimate"] is not None
     assert "tokensPerSecond" in row["speedEstimate"]
 
@@ -1302,6 +1551,36 @@ def test_sort_fit_orders_by_descending_score_and_still_asks_the_hub_for_download
     assert [m["id"] for m in body["models"]] == ["org/tiny", "org/huge"]
     url = fake.calls[0][0]
     assert "sort=downloads" in url
+
+
+def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monkeypatch):
+    """D1268 (round-6 item 3), live-path equivalent of the catalog-path test
+    of the same name: the legend says "memory fit first" but the D780
+    composite alone weights fit at only 0.35 — a tight-fit row can still
+    outscore an easy-fit row on the other four axes and rank between two
+    easy rows. Pin `matchScore` directly (90 for the tight row, 80 for the
+    easy one) so the fit VERDICT, not the raw score, decides the order."""
+    _pin_hardware(monkeypatch, ram_gb=32.0)
+    fake = _reply([
+        _fitted("org/easy-fit", score=80, safetensors_gb=5),
+        _fitted("org/tight-fit", score=90, safetensors_gb=20),
+    ])
+    monkeypatch.setattr(httpx, "get", fake)
+
+    def _fake_raw_score(row, ram_gb):
+        return 90.0 if row.get("id") == "org/tight-fit" else 80.0
+
+    monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
+
+    body = _search(client, {"sort": "best"}).json()
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/easy-fit"]["fit"]["verdict"] == "easy"
+    assert by_id["org/tight-fit"]["fit"]["verdict"] == "tight"
+    assert by_id["org/easy-fit"]["matchScore"] == 80.0
+    assert by_id["org/tight-fit"]["matchScore"] == 90.0
+
+    ids = [m["id"] for m in body["models"]]
+    assert ids.index("org/easy-fit") < ids.index("org/tight-fit")
 
 
 def test_a_pulled_in_base_never_outranks_the_variant_that_named_it(
@@ -2792,3 +3071,243 @@ def test_a_gpu_less_machines_tail_keeps_a_strict_ordering():
     # clamp floor even though the raw blends plainly do not.
     displayed = [hub._composite_score(r, 32.0) for r in (high, mid, low)]
     assert displayed[0] == displayed[1] == displayed[2] == 0.0
+
+
+# ---- D1245/D1246: per-axis breakdown for the row-level tooltip -----------
+
+
+def test_score_breakdown_gained_plus_lost_accounts_for_every_axis_weight():
+    # Each of the five weighted axes must reconcile: `gained` (blended points
+    # earned) plus `lost` (blended points short of a perfect 100 on that
+    # axis) always equals that axis's own full weight in blended points —
+    # nothing invented, nothing dropped.
+    row = {"fit": {"score": 62, "runMode": "gpu"}, "params": 3_000_000_000,
+           "speedEstimate": {"tokensPerSecond": 9}, "created": "2024-01-01T00:00:00Z",
+           "downloads": 1200, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    by_axis = {e["axis"]: e for e in entries}
+    weights = {"fit": hub._WEIGHT_FIT, "capability": hub._WEIGHT_CAPABILITY,
+               "speed": hub._WEIGHT_SPEED, "recency": hub._WEIGHT_RECENCY,
+               "popularity": hub._WEIGHT_POPULARITY}
+    for axis, weight in weights.items():
+        entry = by_axis[axis]
+        assert entry["gained"] + entry["lost"] == pytest.approx(weight * 100.0, abs=0.15)
+
+
+def test_score_breakdown_axis_gains_sum_to_the_raw_score_with_bonus_and_penalty():
+    have_offload = {"fit": {"score": 90, "runMode": "cpu-offload"}, "params": 7_000_000_000,
+                     "speedEstimate": {"tokensPerSecond": 20}, "created": "2026-01-01T00:00:00Z",
+                     "downloads": 900_000, "local": {"state": "downloaded"}}
+    entries = hub._score_breakdown(have_offload, 32.0)
+    total = sum(e["gained"] for e in entries) - sum(
+        e["lost"] for e in entries if e["axis"] == "runMode")
+    assert total == pytest.approx(hub._composite_raw_score(have_offload, 32.0), abs=0.15)
+
+
+def test_score_breakdown_perfect_axis_loses_nothing():
+    row = {"fit": {"score": 100, "runMode": "gpu"}, "params": None,
+           "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["lost"] == 0.0
+    assert fit_entry["gained"] == pytest.approx(hub._WEIGHT_FIT * 100.0)
+
+
+def test_score_breakdown_reports_the_raw_downloads_behind_the_popularity_axis():
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+           "downloads": 42, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    popularity = next(e for e in entries if e["axis"] == "popularity")
+    assert popularity["downloads"] == 42
+
+
+def test_score_breakdown_reports_age_days_behind_the_recency_axis():
+    from datetime import datetime, timedelta, timezone
+    created = (datetime.now(timezone.utc) - timedelta(days=730)).isoformat()
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": created,
+           "downloads": None, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    recency = next(e for e in entries if e["axis"] == "recency")
+    assert recency["ageDays"] == pytest.approx(730.0, abs=1.0)
+
+
+def test_score_breakdown_only_includes_on_disk_bonus_when_actually_on_disk():
+    absent = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+              "downloads": None, "local": {"state": "none"}}
+    have = dict(absent, local={"state": "downloaded"})
+    assert not any(e["axis"] == "onDisk" for e in hub._score_breakdown(absent, 32.0))
+    bonus = next(e for e in hub._score_breakdown(have, 32.0) if e["axis"] == "onDisk")
+    assert bonus["gained"] == hub._ON_DISK_BONUS
+    assert bonus["lost"] == 0.0
+
+
+def test_score_breakdown_reports_run_mode_penalty_matching_the_composite():
+    base = {"params": None, "speedEstimate": None, "created": None, "downloads": None,
+            "local": {"state": "none"}}
+    offload = dict(base, fit={"score": 80, "runMode": "cpu-offload"})
+    cpu_only = dict(base, fit={"score": 80, "runMode": "cpu-only"})
+    gpu = dict(base, fit={"score": 80, "runMode": "gpu"})
+    offload_entry = next(e for e in hub._score_breakdown(offload, 32.0) if e["axis"] == "runMode")
+    cpu_only_entry = next(e for e in hub._score_breakdown(cpu_only, 32.0) if e["axis"] == "runMode")
+    assert offload_entry["lost"] == hub._CPU_OFFLOAD_PENALTY
+    assert offload_entry["runMode"] == "cpu-offload"
+    assert cpu_only_entry["lost"] == hub._CPU_ONLY_PENALTY
+    assert not any(e["axis"] == "runMode" for e in hub._score_breakdown(gpu, 32.0))
+
+
+def test_score_breakdown_reports_footprint_and_pool_gb_for_the_fit_axis():
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0, pool_gb=22.4)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["footprintGb"] == pytest.approx(17.0, abs=0.1)
+    assert fit_entry["poolGb"] == pytest.approx(22.4)
+
+
+def test_score_breakdown_omits_pool_gb_when_not_supplied():
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] is None
+
+
+def test_score_breakdown_pool_gb_prefers_the_rows_own_selected_pool(monkeypatch):
+    """C4: a row selected onto VRAM (a smaller pool than the machine's
+    combined VRAM+RAM offload budget) must report ITS OWN pool in the
+    tooltip, not the caller's `pool_gb` reading of the bigger combined
+    figure — the two disagree whenever a discrete GPU is present."""
+    row = {"fit": {"score": 40, "runMode": "gpu", "footprintBytes": 17 * hub.fit.GB_BYTES,
+                   "poolBytes": 24 * hub.fit.GB_BYTES, "poolName": "gpu"},
+           "params": None, "speedEstimate": None, "created": None, "downloads": None,
+           "local": {"state": "none"}}
+    # The caller's own combined-budget reading (e.g. VRAM + system RAM) —
+    # deliberately a different, larger figure than the row's own VRAM pool.
+    entries = hub._score_breakdown(row, 32.0, pool_gb=48.0)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] == pytest.approx(24.0)
+
+
+def test_score_breakdown_pool_gb_falls_back_when_row_has_no_verdict():
+    row = {"fit": None, "params": None, "speedEstimate": None, "created": None,
+           "downloads": None, "local": {"state": "none"}}
+    entries = hub._score_breakdown(row, 32.0, pool_gb=22.4)
+    fit_entry = next(e for e in entries if e["axis"] == "fit")
+    assert fit_entry["poolGb"] == pytest.approx(22.4)
+
+
+# -- item 2 (scope-corrected): runner-aware admission, flag not drop --------
+
+
+def _mflux_runner():
+    runner = _gguf_runner(tags=(), code="mflux-image")
+    runner.short = "mflux"
+    return runner
+
+
+def test_allowlist_kind_flags_a_repo_outside_the_set(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _mflux_runner())
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("allowlist", frozenset({"org/allowed"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/allowed", pipeline_tag="text-to-image"),
+        _hit("org/blocked", pipeline_tag="text-to-image"),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert set(by_id) == {"org/allowed", "org/blocked"}
+    assert by_id["org/allowed"]["loadable"] is True
+    assert by_id["org/allowed"]["loadableReason"] is None
+    assert by_id["org/blocked"]["loadable"] is False
+    assert by_id["org/blocked"]["loadableReason"] == "mflux only loads FLUX.2 Klein"
+
+
+def test_model_types_kind_flags_an_unsupported_architecture(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mlx-text"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/llama-repo", config={"model_type": "llama"}),
+        _hit("org/neo-repo", config={"model_type": "neo_chat"}),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["org/llama-repo"]["loadable"] is True
+    assert by_id["org/neo-repo"]["loadable"] is False
+    assert by_id["org/neo-repo"]["loadableReason"] == "neo_chat not supported by mlx-vlm"
+
+
+def test_model_types_kind_with_unknown_model_type_stays_loadable(client, hub_cache, monkeypatch):
+    """A row with no `config.model_type` at all is never flagged — an
+    unknown fact about the ROW, same as an unknown SET for the runner."""
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mlx-text"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/no-config-repo")]))
+    row = _search(client).json()["models"][0]
+    assert row["loadable"] is True
+    assert row["loadableReason"] is None
+
+
+def test_any_kind_never_flags_any_row(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("unsloth/x-GGUF", siblings=[
+        {"rfilename": "x-Q4_K_M.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["loadable"] is True
+    assert row["loadableReason"] is None
+
+
+def test_admission_never_drops_a_row_ordering_stays_unchanged(client, hub_cache, monkeypatch):
+    """Order is decided ELSEWHERE (score/sort) and must not move because a
+    row got flagged — the scope correction's other half of "flag, don't
+    drop": popularity ordering here, unrelated to loadability, must survive
+    untouched."""
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mflux-image"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("allowlist", frozenset({"org/allowed"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/blocked", pipeline_tag="text-to-image", downloads=999),
+        _hit("org/allowed", pipeline_tag="text-to-image", downloads=1),
+    ]))
+    resp = _search(client, {"sort": "downloads"})
+    ids = [m["id"] for m in resp.json()["models"]]
+    assert ids == ["org/blocked", "org/allowed"]
+    by_id = {m["id"]: m for m in resp.json()["models"]}
+    assert by_id["org/blocked"]["loadable"] is False
+    assert by_id["org/allowed"]["loadable"] is True
+
+
+# -- item 3: fileFormat off `siblings` --------------------------------------
+
+
+def test_file_format_reads_the_first_matching_extension_off_siblings(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/st-repo", siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "README.md"}]),
+        _hit("org/npz-repo", siblings=[{"rfilename": "weights.npz"}]),
+        _hit("org/onnx-repo", siblings=[{"rfilename": "model.onnx"}]),
+        _hit("org/bin-repo", siblings=[{"rfilename": "pytorch_model.bin"}]),
+        _hit("org/none-repo", siblings=[{"rfilename": "README.md"}]),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["org/st-repo"]["fileFormat"] == "safetensors"
+    assert by_id["org/npz-repo"]["fileFormat"] == "npz"
+    assert by_id["org/onnx-repo"]["fileFormat"] == "onnx"
+    assert by_id["org/bin-repo"]["fileFormat"] == "bin"
+    assert by_id["org/none-repo"]["fileFormat"] is None
+
+
+def test_file_format_prefers_safetensors_over_a_coincidental_bin_sibling(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/mixed", siblings=[
+        {"rfilename": "model.safetensors"}, {"rfilename": "optimizer.bin"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["fileFormat"] == "safetensors"

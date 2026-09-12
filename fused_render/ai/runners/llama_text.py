@@ -547,7 +547,7 @@ def _resolve_model_id(model_id):
 # --------------------------------------------------------------- model loading
 
 
-def download(model_id):
+def download(model_id, file=None):
     """The one GGUF file this model means — never the whole repo.
 
     A repo in `formats.GGUF_RECIPES` publishes many more files than the one
@@ -557,8 +557,28 @@ def download(model_id):
     counterpart `torch_image.py` uses for its own quantized-transformer swap,
     and it is already progress-instrumented against that ONE file's size
     rather than the repo's.
-    """
-    _key, recipe = _resolve_model_id(model_id)
+
+    `file` (item A, per-variant download) overrides whichever filename
+    `_resolve_model_id`/`pick_gguf_file` would otherwise have chosen — the
+    server route has already checked it is one of this repo's own real GGUF
+    candidates before this ever runs, so it is trusted here without a second
+    check. Absent `file` (the default, `None`) leaves this function
+    byte-identical to before this parameter existed: `_resolve_model_id`
+    still runs and still picks exactly what it always picked.
+
+    Item 5 (code review): when `file` IS given, `_resolve_model_id` is never
+    called at all — only the bare repo id is needed, and `_resolve_model_id`
+    (through `_resolve_uncurated_repo`/`pick_gguf_file`) can raise for a repo
+    whose quants are ALL sharded, or that otherwise has no default candidate
+    to pick. That repo is exactly the case a caller passes an explicit
+    `file` to work around, so resolving the repo id FIRST and consulting the
+    validated `file` before `pick_gguf_file` ever runs is what makes the
+    override actually able to rescue it, rather than failing before `file`
+    is ever consulted."""
+    if file:
+        recipe = {"repo": formats.gguf_repo_for(model_id), "file": file}
+    else:
+        _key, recipe = _resolve_model_id(model_id)
     filename = recipe["file"]
     return worker_base.download_file(
         recipe["repo"], filename, detail=f"Fetching {filename}…")

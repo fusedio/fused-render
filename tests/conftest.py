@@ -36,6 +36,7 @@ import os
 import shutil
 import signal
 import tempfile
+import types
 
 import pytest
 
@@ -643,6 +644,58 @@ def _no_ai_hub_metadata_refresh_thread(monkeypatch):
     from fused_render.ai import supervisor
 
     monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hub_catalog_refresh_thread(monkeypatch):
+    """`create_app` also starts the daily hub-catalog delta-refresh thread
+    (`supervisor.start_hub_catalog_refresh`, SPEC docs/HUB_CATALOG_SPEC.md
+    item 4); no test may let it run.
+
+    Same hazard, same fix, as its two siblings immediately above: the thread
+    fires one sweep immediately, and a sweep can call
+    `hub_catalog_builder.refresh_capability_pool_delta`, which makes REAL
+    `httpx.get` calls against the Hub, under whatever `FUSED_RENDER_HOME`
+    happens to be current when the daemon thread gets scheduled — the same
+    race the hardware/hub-metadata fixtures already guard against.
+
+    No test asserts `start_hub_catalog_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_catalog_refresh.py`)
+    drives `_hub_catalog_refresh_tick()` directly, never the thread."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_catalog_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_hub_catalog_background_build(monkeypatch):
+    """`api_hub_search` (hub_models.py, SPEC docs/HUB_CATALOG_SPEC.md item 3)
+    fires `hub_catalog_builder.ensure_build_started(capability)` on every
+    request that falls back to the live path with a `capability` set — a
+    background daemon thread that pages the REAL Hub via its own `httpx.get`
+    calls (not `hub_models._get`/`_fetch`). Any test that monkeypatches
+    `httpx.get` to assert call counts or URL params on the live path (the
+    large majority of `test_hub_models.py`) would otherwise have its fake
+    invoked a second, racy, unbounded-timing time from a thread the test
+    never asked for and cannot join — the exact hazard the hardware/
+    hub-metadata refresh fixtures above already guard against, here for a
+    build triggered per-REQUEST rather than at startup.
+
+    Tests that are ABOUT the builder (`tests/test_ai_hub_catalog_builder.py`,
+    the catalog-path tests in `test_hub_models.py`) call
+    `hub_catalog_builder.ensure_build_started`/`build_capability_pool`
+    directly, never through a search request — and this patches only the
+    NAME `hub_models` bound at import (`from fused_render.ai import
+    hub_catalog_builder`), not the real module object, so a test calling the
+    real module's `ensure_build_started` directly is untouched by this."""
+    from fused_render.server.routers import hub_models
+
+    monkeypatch.setattr(hub_models, "hub_catalog_builder",
+                        types.SimpleNamespace(
+                            ensure_build_started=lambda *a, **k: False,
+                            build_status=lambda *a, **k: {
+                                "state": "none", "pagesDone": None,
+                                "startedAt": None, "blockedUntil": None}))
 
 
 @pytest.fixture(scope="session", autouse=True)

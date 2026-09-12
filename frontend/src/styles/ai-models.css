@@ -3069,11 +3069,21 @@ button.am-bench-model:focus-visible {
   min-width: 0;
   /* Item 8 (fix round 5): `.tp` itself no longer scrolls (only `.tp-pane`,
      the right column, does) so this does not need to stick against a
-     scrolling ancestor to stay visible — it already stays put. `align-self:
-     start` just stops the grid's own `align-items: stretch` from forcing
-     this column to match the right pane's (now scrollable, effectively
-     unbounded) height. */
-  align-self: start;
+     scrolling ancestor to stay visible — it already stays put.
+     D1273 (item 3, reverses this rule's own former `align-self: start`):
+     that override made the nav's `border-right` divider stop at the nav's
+     own short content height, leaving it hanging well above the bottom of
+     an otherwise-tall pane — the wait block below it then read as floating
+     in the empty area rather than sitting beside a continuous divider. `.tp`
+     itself is bounded (not "effectively unbounded" the way this comment
+     used to warn — `.tp-page-fill > .tp` gives it a definite, viewport-
+     derived height via `flex: 1 1 auto` + `overflow: hidden`), so letting
+     this column stretch to the grid row's height (`.tp`'s own
+     `align-items: stretch`, same as `.tp-pane` already does) just runs the
+     divider the full height of that bounded row — it does not chase
+     `.tp-pane`'s internal scroll content. The nav's own contents stay
+     top-aligned regardless (`flex-direction: column` has no
+     `justify-content` here), so nothing about the button list moves. */
 }
 
 .tp-nav h5 {
@@ -3539,6 +3549,42 @@ button.am-bench-model:focus-visible {
   font-style: italic;
 }
 
+.tp .drawer .variant-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* Item A (per-variant download): each variant row gets its own Download
+ * button, reusing `.btn`'s own look but sized down to sit beside a
+ * monospace filename rather than competing with the row-level one. */
+.tp .drawer .variant-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.tp .drawer .variant-download {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+/* Item 3 (code review): a sharded quant's variant row has no Download
+ * button at all (server refuses the fetch — see `_validate_download_file`)
+ * — this caption fills the same slot so the row's layout doesn't shift. */
+.tp .drawer .variant-unsupported {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
 .tp .drawer .why {
   margin: 12px 0 0;
   padding-top: 10px;
@@ -3707,6 +3753,18 @@ button.am-bench-model:focus-visible {
   border-color: var(--accent);
 }
 
+/* Item 2 (scope-corrected): de-emphasizes (never disables — the row still
+   downloads if the person insists) the Download button for a row the
+   ACTIVE runner will refuse once it lands. Dimmer than the plain `.btn`
+   quiet-bg default rather than a different color, so the chip beside the
+   name is what actually says why — this button just recedes. */
+.tp .btn-muted {
+  opacity: 0.55;
+}
+.tp .btn-muted:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
 /* The Engine files pane's own closing note — no search here on purpose. */
 .tp .scoped {
   margin: 14px 2px 0;
@@ -3805,6 +3863,361 @@ button.am-bench-model:focus-visible {
 .tp .sorthint .k {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 10.5px;
+}
+
+/* SPEC docs/HUB_CATALOG_SPEC.md item 2 — the on-device catalog build banner.
+ * Deliberately neutral (not the red ErrorBanner styling): the live results
+ * shown underneath are correct, just slower/narrower than the finished
+ * catalog will be. */
+.pool-build-banner {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* The "blocked" state keeps the plain-text banner (no shimmer — there is
+   nothing moving to show), just tinted amber instead of neutral. */
+.pool-build-banner-blocked {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-alt));
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+}
+
+/* The animated first-run build card — same footprint/radius as
+   `.pool-build-banner` (a card, not a paragraph) so it doesn't jump the
+   layout when it swaps in or out. */
+.pool-build-card {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.pool-build-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pool-build-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pool-build-sub {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.pool-build-progress {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Indeterminate — the number of pages ahead is unknown up front (text
+   generation is ~24, small capabilities 1-3), so a sweeping fill rather than
+   a percentage bar is the honest shape here. */
+.pool-build-bar {
+  position: relative;
+  flex: 1;
+  min-width: 60px;
+  max-width: 160px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent-rgb, var(--accent)) 14%, var(--border));
+  overflow: hidden;
+}
+
+.pool-build-bar-sweep {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.pool-build-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.pool-build-card-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* A fixed cap (comfortably above this one-line card's real height) so the
+     collapse below has a numeric `max-height` to animate FROM — `auto`
+     doesn't transition. */
+  max-height: 60px;
+  opacity: 1;
+}
+
+/* The collapse right before the done card unmounts. */
+.pool-build-card-collapsing {
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+
+.pool-build-check {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.pool-build-check-path {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pool-build-card-done {
+    transition: max-height 220ms ease-in, opacity 220ms ease-in, margin 220ms ease-in, padding 220ms ease-in;
+  }
+
+  .pool-build-bar-sweep {
+    animation: pool-build-sweep 1.4s ease-in-out infinite;
+  }
+
+  .pool-build-count {
+    animation: pool-build-pulse 500ms ease-out;
+  }
+
+  .pool-build-check-path {
+    stroke-dasharray: 24;
+    stroke-dashoffset: 24;
+    animation: pool-build-check-draw 420ms ease-out 80ms forwards;
+  }
+
+  .pool-build-card-done {
+    animation: pool-build-fade-in 220ms ease-out;
+  }
+}
+
+@keyframes pool-build-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes pool-build-pulse {
+  0% {
+    color: var(--accent);
+  }
+  100% {
+    color: var(--fg-muted);
+  }
+}
+
+@keyframes pool-build-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes pool-build-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pool-build-bar-sweep {
+    width: 100%;
+    opacity: 0.5;
+  }
+
+  .pool-build-check-path {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Round 7 — the "v2 staged status" wait block, approved from
+   `hub-wait-variants.html`'s own `v2` card. Replaces the plain "Asking
+   {host}…" line for a FIRST search only; a re-search keeps the existing
+   dimmed `.am-hub-stale` rows and gets `.hub-wait-restale` instead (below). */
+/* D1273 (item 3): anchored a fixed 40px under the legend above, never
+   vertically centred in whatever empty space is left below it — with the
+   divider now full-height (`.tp-nav`, below) a centred block read as
+   floating, detached from the rest of the pane's top-down flow. */
+.hub-wait {
+  max-width: 420px;
+  margin: 40px auto 0;
+  text-align: center;
+}
+
+.hub-wait-line {
+  font-size: 14px;
+  color: var(--fg);
+  margin: 0;
+}
+
+.hub-wait-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 6px 0 0;
+  min-height: 16px;
+}
+
+.hub-wait-track {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--border));
+  overflow: hidden;
+  margin: 16px auto 0;
+  width: 220px;
+}
+
+.hub-wait-sweep {
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.hub-wait-steps {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.hub-wait-steps span::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.hub-wait-steps span.done::before {
+  background: var(--success);
+}
+
+.hub-wait-steps span.now {
+  color: var(--fg);
+}
+
+.hub-wait-steps span.now::before {
+  background: var(--accent);
+}
+
+.hub-wait-slow {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.hub-wait-slow a {
+  color: var(--accent-soft);
+  text-decoration: underline;
+  margin-left: 6px;
+  cursor: pointer;
+}
+
+/* Re-search caption — small and centred under the existing dimmed
+   `.am-hub-stale` rows, never the full staged block: there is nothing to
+   narrate here that the reader has not already seen once. */
+.hub-wait-restale {
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hub-wait-sweep {
+    animation: hub-wait-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  .hub-wait-steps span.now::before {
+    animation: hub-wait-pulse 1.2s ease-in-out infinite;
+  }
+
+  /* The stagger itself — up to five rows, per the mockup's own `.reveal`
+     rule; `HitRow`'s `revealDelayMs` supplies the per-row `animation-delay`
+     as an inline style, so this rule only needs to define the animation. */
+  .hits.reveal .rowwrap {
+    animation: hub-hit-fadeup 0.32s ease-out both;
+  }
+}
+
+@keyframes hub-wait-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+@keyframes hub-wait-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes hub-hit-fadeup {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-wait-sweep {
+    width: 100%;
+    opacity: 0.5;
+  }
+
+  .hub-wait-steps span.now::before {
+    opacity: 1;
+  }
+
+  .hits.reveal .rowwrap {
+    animation: none;
+  }
 }
 
 .advfoot {
@@ -3956,20 +4369,34 @@ button.am-bench-model:focus-visible {
    the global `[data-tip]` primitive in schedule.css (deliberately not that
    rule itself — that one is `white-space: nowrap`, sized for 4-char labels,
    and global; this one wraps a real sentence and only ever applies to this
-   cell). `.rowwrap`/`.hits`/the row grid above have no `overflow: hidden`
-   (checked), so opening upward is safe. */
-.tp .match[data-tip] {
+   cell).
+   D-next (round 7): the attribute is `data-match-tip`, not the shared
+   `data-tip` — schedule.css's `[data-tip]:not([data-tip=""])` selector has
+   no scoping of its own and matched this same span, so a reader hovering
+   the match cell saw TWO popovers at once: this scoped `::after` and the
+   global `::before` stacked under it (the "duplicate row-wide black strip"
+   bug report). Renaming the attribute is the fix rather than teaching
+   schedule.css's global rule to exclude `.match` — it keeps this cell's
+   popover a private concern of this file, with nothing for a future global
+   `[data-tip]` change to accidentally re-collide with. `.rowwrap`/`.hits`/
+   the row grid above have no `overflow: hidden` (checked), so opening
+   upward is safe. */
+.tp .match[data-match-tip] {
   position: relative;
 }
 
-.tp .match[data-tip]::after {
-  content: attr(data-tip);
+.tp .match[data-match-tip]::after {
+  content: attr(data-match-tip);
   position: absolute;
   left: 0;
   bottom: calc(100% + 6px);
   width: max-content;
-  max-width: 280px;
-  white-space: normal;
+  max-width: 220px;
+  /* D1267: the tip is now exactly two lines ("Match N · …" then the fit
+     line) joined by a literal "\n" in the attribute value — `pre-line`
+     renders that as a real line break instead of collapsing it to a
+     space the way `normal` would. */
+  white-space: pre-line;
   font-family: var(--font-sans, inherit);
   font-size: 11.5px;
   line-height: 1.45;
@@ -3987,8 +4414,8 @@ button.am-bench-model:focus-visible {
   z-index: 5;
 }
 
-.tp .match[data-tip]:hover::after,
-.tp .match[data-tip]:focus-visible::after {
+.tp .match[data-match-tip]:hover::after,
+.tp .match[data-match-tip]:focus-visible::after {
   opacity: 1;
 }
 

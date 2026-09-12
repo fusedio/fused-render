@@ -3446,3 +3446,57 @@ def test_every_os_open_in_worker_base_asks_for_BINARY_mode():
     assert missing == [], (
         f"os.open without _BINARY at {missing}: on Windows that fd translates "
         f"every 0x0a it writes, and no test on this platform can see it")
+
+
+# -- item A: per-variant download's --file plumbing through serve() -------------
+
+
+def test_serve_download_only_passes_file_when_download_declares_it(base):
+    """A runner whose `download(model_id, file=None)` declares the parameter
+    gets `file=` threaded straight through from `--file`."""
+    calls = []
+
+    def download(model_id, file=None):
+        calls.append((model_id, file))
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only",
+                         "--file", "model-Q4_K_M.gguf"])
+    assert excinfo.value.code == 0
+    assert calls == [("org/model", "model-Q4_K_M.gguf")]
+
+
+def test_serve_download_only_omits_file_kwarg_when_absent(base):
+    """No `--file` at all: `download` is called with exactly the one
+    positional argument it always got before item A — byte-identical."""
+    calls = []
+
+    def download(model_id, file=None):
+        calls.append((model_id, file))
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only"])
+    assert excinfo.value.code == 0
+    assert calls == [("org/model", None)]
+
+
+def test_serve_download_only_ignores_file_for_a_runner_without_the_param(base, caplog):
+    """A runner whose `download(model_id)` has no `file` parameter (every
+    runner but llama_text, today) is called with just the model id — its
+    signature has no place to put `--file`, so it is dropped with a debug
+    log rather than raising a TypeError."""
+    calls = []
+
+    def download(model_id):
+        calls.append(model_id)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(SystemExit) as excinfo:
+            base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                       argv=["--model", "org/model", "--download-only",
+                             "--file", "model-Q4_K_M.gguf"])
+    assert excinfo.value.code == 0
+    assert calls == ["org/model"]
+    assert any("ignores --file" in r.message for r in caplog.records)
