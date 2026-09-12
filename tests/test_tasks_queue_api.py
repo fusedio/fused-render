@@ -631,7 +631,9 @@ def test_a_queued_send_keeps_every_choice_the_user_made(
     assert entry["permission_mode"] == "plan"
     assert entry["title"] == "A queued send"
     assert entry["description"] == "with everything on it"
-    assert entry["images"] == [shot]
+    # The store keeps the canonical forward-slash spelling of a path (schedule
+    # `_images`), whatever spelling the request used — on Windows the two differ.
+    assert entry["images"] == [canonical_fs_path(shot)]
     assert entry["attachments"][0]["name"] == "shot.png"
 
 
