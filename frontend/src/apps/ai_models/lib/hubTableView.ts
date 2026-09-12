@@ -467,13 +467,27 @@ export interface HubWaitFacts {
 const NO_HUB_WAIT_FACTS: HubWaitFacts = { ramGb: null, runnerCount: null };
 
 /** The stage line + sub-caption for one of the three wait stages — copy
- *  lifted verbatim from the approved mockup's own `stage()` text map. */
+ *  lifted verbatim from the approved mockup's own `stage()` text map.
+ *
+ *  `poolReady` is the honesty fix from the user's D1273 feedback: when the
+ *  pool for this capability is (or was last seen) "ready", the search runs
+ *  entirely against the local DuckDB pool — zero Hub requests — so the
+ *  "hub" stage must not claim to be asking the Hub anything. Defaults to
+ *  `false` (the pre-existing "Asking {host}" copy) so every other call site
+ *  and the pre-existing tests keep behaving exactly as before. */
 export function hubWaitStageText(
   stage: HubWaitStage,
   host: string,
+  poolReady: boolean = false,
   facts: HubWaitFacts = NO_HUB_WAIT_FACTS,
 ): { line: string; sub: string } {
   if (stage === "hub") {
+    if (poolReady) {
+      return {
+        line: "Searching the local catalog",
+        sub: "every model on the Hub this Mac can run, already on disk",
+      };
+    }
     return { line: `Asking ${host}`, sub: "one request, then everything else runs here" };
   }
   if (stage === "size") {
@@ -490,8 +504,14 @@ export function hubWaitStageText(
 
 /** The amber "still waiting" line a pane shows once stage `"hub"` has held
  *  for 12s or more, with a live seconds counter — never claims progress
- *  that hasn't happened, only names how long the wait has been. */
-export function hubWaitSlowLabel(seconds: number): string {
+ *  that hasn't happened, only names how long the wait has been.
+ *
+ *  Same `poolReady` honesty fix as `hubWaitStageText`: a ready-pool search
+ *  never talks to the Hub at all, so the slow line must not blame it —
+ *  "ranking" is what could plausibly still be slow client-side. Defaults to
+ *  `false` to keep the pre-existing copy/tests unchanged. */
+export function hubWaitSlowLabel(seconds: number, poolReady: boolean = false): string {
+  if (poolReady) return `Still ranking. ${seconds} s and counting.`;
   return `The Hub is slow right now. ${seconds} s and counting.`;
 }
 

@@ -539,7 +539,7 @@ describe("hubWaitStageText", () => {
 
   it("Size stage folds in ram/runner facts when the caller has them", () => {
     expect(
-      hubWaitStageText("size", "huggingface.co", { ramGb: 26.4, runnerCount: 4 }),
+      hubWaitStageText("size", "huggingface.co", false, { ramGb: 26.4, runnerCount: 4 }),
     ).toEqual({
       line: "Sizing each model for this Mac",
       sub: "26.4 GB of unified memory, 4 runners installed",
@@ -548,7 +548,7 @@ describe("hubWaitStageText", () => {
 
   it("Size stage singularizes one runner", () => {
     expect(
-      hubWaitStageText("size", "huggingface.co", { ramGb: 26.4, runnerCount: 1 }),
+      hubWaitStageText("size", "huggingface.co", false, { ramGb: 26.4, runnerCount: 1 }),
     ).toEqual({
       line: "Sizing each model for this Mac",
       sub: "26.4 GB of unified memory, 1 runner installed",
@@ -561,12 +561,40 @@ describe("hubWaitStageText", () => {
       sub: "memory fit first, then speed, freshness, popularity",
     });
   });
+
+  // D1273: when the pool is (or was last seen) ready, the search never hits
+  // the Hub at all — the "hub" stage copy must say so instead of claiming
+  // to ask a host it never contacts.
+  it("Hub stage reads as a local catalog search when the pool is ready", () => {
+    expect(hubWaitStageText("hub", "huggingface.co", true)).toEqual({
+      line: "Searching the local catalog",
+      sub: "every model on the Hub this Mac can run, already on disk",
+    });
+  });
+
+  it("a ready pool does not change the size/rank stages' copy", () => {
+    expect(hubWaitStageText("size", "huggingface.co", true)).toEqual({
+      line: "Sizing each model for this Mac",
+      sub: "sized against this Mac's memory",
+    });
+    expect(hubWaitStageText("rank", "huggingface.co", true)).toEqual({
+      line: "Ranking for this Mac",
+      sub: "memory fit first, then speed, freshness, popularity",
+    });
+  });
 });
 
 describe("hubWaitSlowLabel", () => {
   it("names the live seconds count", () => {
     expect(hubWaitSlowLabel(12)).toBe("The Hub is slow right now. 12 s and counting.");
     expect(hubWaitSlowLabel(47)).toBe("The Hub is slow right now. 47 s and counting.");
+  });
+
+  // D1273: a ready-pool wait never touches the Hub, so the slow line must
+  // not blame it — only ranking could plausibly still be running long.
+  it("does not blame the Hub when the pool is ready", () => {
+    expect(hubWaitSlowLabel(12, true)).toBe("Still ranking. 12 s and counting.");
+    expect(hubWaitSlowLabel(47, true)).toBe("Still ranking. 47 s and counting.");
   });
 });
 
