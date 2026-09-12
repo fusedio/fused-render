@@ -4536,6 +4536,25 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
       .toBeLessThan(ARM.indexOf("openForm("));
   });
 
+  it("drops a fetch that a later press has overtaken", () => {
+    // Because it fetches first, this is the one opening that can arrive LATE
+    // (Bugbot on PR #1126, 2026-09-12): a second press used to be painted over
+    // when the first fetch resolved. The click's generation is taken before
+    // the fetch and compared before the open; every door (`openForm`) bumps
+    // it, so an in-flight answer for an older press is abandoned.
+    expect(ARM).toContain("const gen = ++chatDraftGen.current;");
+    expect(ARM).toContain("if (gen !== chatDraftGen.current) return;");
+    expect(ARM.indexOf("const gen = ++chatDraftGen.current;"))
+      .toBeLessThan(ARM.indexOf("fetchChatDraft(task.key)"));
+    expect(ARM.indexOf("if (gen !== chatDraftGen.current) return;"))
+      .toBeLessThan(ARM.indexOf("openForm("));
+    const door = SCHEDULED.slice(
+      SCHEDULED.indexOf("const openForm = ("),
+      SCHEDULED.indexOf("const [draftRow, setDraftRow]"),
+    );
+    expect(door).toContain("chatDraftGen.current++;");
+  });
+
   it("is the Scheduled page's first question about a draft row's press", () => {
     // A chat draft has no form to re-open and no `draft_id` to fall through to,
     // so the hop arm has to be asked before the stored-form arm.

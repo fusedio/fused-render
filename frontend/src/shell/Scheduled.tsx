@@ -304,6 +304,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     entry: ScheduledMessage | null,
     seed: HopSeed = NO_HOP,
   ) => {
+    // Every opening ABANDONS any chat-draft fetch still in flight (Bugbot on
+    // PR #1126, 2026-09-12): a press that lands here through any door — New
+    // task, a calendar slot, an Edit, a draft row, or a resolved hop — is the
+    // opening the reader meant, and an older `openChatDraft` answer arriving
+    // afterwards must not paint over it. See `chatDraftGen` below.
+    chatDraftGen.current++;
     setOpenSeq((n) => n + 1);
     setHop(seed);
     setEditing(entry);
@@ -339,7 +345,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * unreadable answer falls back to the preview rather than refusing the press
    * — a truncated draft is worth more than a dead row — and `fetchChatDraft`
    * already answers null instead of throwing.
+   *
+   * AND BECAUSE IT FETCHES FIRST, IT IS THE ONE OPENING THAT CAN ARRIVE LATE
+   * (Bugbot on PR #1126, 2026-09-12): a second press — another draft row, "+
+   * New task", or this same row again — used to be overwritten when the first
+   * fetch resolved, so the modal showed the wrong hop or minted two task drafts
+   * from one chat row. `chatDraftGen` is the click's generation: each press
+   * takes the next number, `openForm` (every door) takes one too, and an
+   * answer whose number is no longer current is dropped on the floor. The
+   * number is captured BEFORE the fetch and compared BEFORE this arm's own
+   * `openForm` call, so the bump that call makes cannot invalidate itself.
    */
+  const chatDraftGen = useRef(0);
   const openChatDraft = (task: Task) => {
     // The chat's own `file` FIRST, for platform/lib/drafts.chatDraftKey's
     // reason: the draft is keyed on that exact string, and the way back has to
@@ -347,7 +364,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // wrote. `target` is the fallback for a server that sends the row without
     // it.
     const at = task.file || task.target || "";
+    const gen = ++chatDraftGen.current;
     void fetchChatDraft(task.key).then((stored) => {
+      // A newer press, through this arm or any other door, owns the modal now.
+      if (gen !== chatDraftGen.current) return;
       const seed: HopSeed = {
         target: at || null,
         message: stored?.text ?? task.draft?.preview ?? null,
