@@ -889,7 +889,7 @@ export function HubSearchScreen({
         />
         <button
           type="button"
-          className="btn btn-primary btn-lg"
+          className="btn btn-accent btn-lg"
           onClick={() => {
             setLimit(INITIAL_LIMIT);
             onSettle({ ...settled, q: liveQuery });
