@@ -414,3 +414,37 @@ export function poolBuildBanner(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// The animated first-run build card (replaces the plain `poolBuildBanner`
+// text while `poolState === "building"`). Two small pure helpers live here so
+// the timing-free parts of the card stay testable; the actual hold-then-fade
+// on completion is a timer in the component and isn't covered here.
+
+/** The progress row's page count, or a "still connecting" placeholder before
+ *  the first page has landed — `poolPagesDone` is 0/null/undefined on a pane
+ *  that has only just started polling. */
+export function pagesFetchedLabel(poolPagesDone: number | null | undefined): string {
+  if (!poolPagesDone) return "connecting to the Hub…";
+  return `${poolPagesDone} page${poolPagesDone === 1 ? "" : "s"} fetched`;
+}
+
+/** The build card's own tiny state machine: `"hidden"` (nothing to show),
+ *  `"building"` (shimmer + page count), `"done"` (the success beat that
+ *  holds briefly before the caller collapses it back to `"hidden"`).
+ *
+ *  Deliberately ignorant of time — the 2.5s hold and the fade-out are a
+ *  `setTimeout` in the component, which is the only part of this that
+ *  can't be driven as a pure function. What IS pure, and what bit us before
+ *  in earlier "banner" work, is the transition rule: `"done"` must only ever
+ *  be reached by *leaving* `"building"`, never by a pane that opened on an
+ *  already-`"ready"` pool — such a pane has nothing to celebrate. */
+export function nextPoolPhase(
+  phase: "hidden" | "building" | "done",
+  poolState: "ready" | "building" | "blocked" | "none" | undefined,
+): "hidden" | "building" | "done" {
+  if (poolState === "building") return "building";
+  if (phase === "done") return "done"; // the hold — the component's timer clears this
+  if (poolState === "ready") return phase === "building" ? "done" : "hidden";
+  return "hidden";
+}
+

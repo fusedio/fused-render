@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
+import { ageLabel, downloadedVariantLabel, matchCell, matchRowTip, matchTitle, nextPoolPhase, pagesFetchedLabel, poolBuildBanner, popLabel, quantLabel, splitRepoId, variantIsDownloadable, verdictGlyph } from "./hubTableView";
 import type { AiFitVerdict, HubMatchAxis } from "@platform/lib/api";
 
 // Every cell rule the search screen draws a value from, tested as a pure
@@ -358,6 +358,51 @@ describe("poolBuildBanner", () => {
     expect(poolBuildBanner("blocked", null, past, now)).toBe(
       "Hub rate limit hit; the full catalog resumes after shortly. Showing live results.",
     );
+  });
+});
+
+describe("pagesFetchedLabel", () => {
+  it("shows a connecting placeholder before any page has landed", () => {
+    expect(pagesFetchedLabel(null)).toBe("connecting to the Hub…");
+    expect(pagesFetchedLabel(undefined)).toBe("connecting to the Hub…");
+    expect(pagesFetchedLabel(0)).toBe("connecting to the Hub…");
+  });
+
+  it("singularizes 'page' for exactly one", () => {
+    expect(pagesFetchedLabel(1)).toBe("1 page fetched");
+  });
+
+  it("pluralizes for more than one", () => {
+    expect(pagesFetchedLabel(4)).toBe("4 pages fetched");
+  });
+});
+
+describe("nextPoolPhase", () => {
+  it("goes to building whenever poolState is building, from any phase", () => {
+    expect(nextPoolPhase("hidden", "building")).toBe("building");
+    expect(nextPoolPhase("building", "building")).toBe("building");
+    expect(nextPoolPhase("done", "building")).toBe("building");
+  });
+
+  it("only reaches done by leaving building for ready", () => {
+    expect(nextPoolPhase("building", "ready")).toBe("done");
+  });
+
+  it("never celebrates a pane that opened already ready", () => {
+    expect(nextPoolPhase("hidden", "ready")).toBe("hidden");
+  });
+
+  it("holds done until the component's timer clears it", () => {
+    expect(nextPoolPhase("done", "ready")).toBe("done");
+    expect(nextPoolPhase("done", "none")).toBe("done");
+    expect(nextPoolPhase("done", undefined)).toBe("done");
+  });
+
+  it("is hidden for blocked/none/undefined outside a hold", () => {
+    expect(nextPoolPhase("hidden", "blocked")).toBe("hidden");
+    expect(nextPoolPhase("hidden", "none")).toBe("hidden");
+    expect(nextPoolPhase("hidden", undefined)).toBe("hidden");
+    expect(nextPoolPhase("building", "blocked")).toBe("hidden");
   });
 });
 
