@@ -2571,11 +2571,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
             # `usage_limit` BEFORE `failed`, because it is the same run
             # described more usefully: the button is not Retry, it is nothing —
             # the continuation is already scheduled and `resumes_at` says when.
-            # ONLY WHILE THE ROW IS BLOCKED: `limited` is read off the last
+            # NEVER OVER A RUNNING TURN: `limited` is read off the last
             # completed speaker, so it stays true for the whole of the comeback
             # turn (and any new turn) until a fresh reply lands — a running row
-            # must not read "paused" (Bugbot, de311131b).
-            else "usage_limit" if limited and status == "blocked"
+            # must not read "paused" (Bugbot, de311131b). A limited session
+            # whose folder is held reads `queued`, and is still paused: the
+            # reason stays (Bugbot, 358864c30).
+            else "usage_limit" if limited and status in ("blocked", "queued")
             else ("failed" if failed or status == "blocked" else "")),
         # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the CONTINUATION the chat
         # scheduled at the reset the CLI reported (PR #1107), and that entry
