@@ -33,6 +33,8 @@ import {
   downloadedVariantLabel,
   matchCell,
   matchRowTip,
+  nextPoolPhase,
+  pagesFetchedLabel,
   paramsLabel,
   poolBuildBanner,
   popLabel,
@@ -568,6 +570,15 @@ export function HubSearchScreen({
   // than silently look like the finished catalog.
   const [poolState, setPoolState] = useState<HubSearchResult["poolState"]>(undefined);
   const [poolPagesDone, setPoolPagesDone] = useState<number | null>(null);
+  // The first-run build card's own state machine (`nextPoolPhase`): a pane
+  // that opens already "ready" never enters "building", so it never sees the
+  // "done" success beat either — only a build that finishes WHILE the pane
+  // is open earns the celebration.
+  const [poolPhase, setPoolPhase] = useState<"hidden" | "building" | "done">("hidden");
+  // True for the ~250ms height/opacity collapse right before "done" clears
+  // to "hidden" — kept separate from `poolPhase` so `nextPoolPhase` stays a
+  // pure hidden/building/done machine with no timing baked into it.
+  const [poolCardCollapsing, setPoolCardCollapsing] = useState(false);
   // Bumped to force a one-off refetch (see the poll effect below) without
   // otherwise touching `settled`/`limit`/`authEpoch`.
   const [pollEpoch, setPollEpoch] = useState(0);
@@ -667,6 +678,32 @@ export function HubSearchScreen({
     return () => window.clearInterval(id);
   }, [poolState]);
 
+  // Drives the build card's phase off `poolState`. `nextPoolPhase` is pure —
+  // it decides WHETHER to move, this effect just applies it whenever
+  // `poolState` changes.
+  useEffect(() => {
+    setPoolPhase((phase) => nextPoolPhase(phase, poolState));
+  }, [poolState]);
+
+  // The success beat ("Catalog ready…") holds for ~2.5s, then the card
+  // collapses (height + opacity, `.pool-build-card-collapsing`) for ~250ms
+  // before finally unmounting. Only "done" schedules this — "building" and
+  // "hidden" have nothing to collapse.
+  useEffect(() => {
+    if (poolPhase !== "done") {
+      setPoolCardCollapsing(false);
+      return;
+    }
+    const holdId = window.setTimeout(() => setPoolCardCollapsing(true), 2_500);
+    return () => window.clearTimeout(holdId);
+  }, [poolPhase]);
+
+  useEffect(() => {
+    if (!poolCardCollapsing) return;
+    const id = window.setTimeout(() => setPoolPhase("hidden"), 250);
+    return () => window.clearTimeout(id);
+  }, [poolCardCollapsing]);
+
   useEffect(() => {
     if (!sortsOnPage(settled.sort) || !models || models.length === 0) {
       setSizes(null);
@@ -754,12 +791,46 @@ export function HubSearchScreen({
         not fit ? not measured yet.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!error &&
-        (() => {
-          const banner = poolBuildBanner(poolState, poolPagesDone, null, Date.now());
-          return banner && <p className="pool-build-banner">{banner}</p>;
-        })()}
-      {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
+      {!error && poolState === "blocked" && (
+        <p className="pool-build-banner pool-build-banner-blocked">
+          {poolBuildBanner(poolState, poolPagesDone, null, Date.now())}
+        </p>
+      )}
+      {!error && poolPhase === "building" && (
+        <div className="pool-build-card" role="status">
+          <div className="pool-build-head">
+            <span className="pool-build-title">Building this Mac&rsquo;s catalog of {meta.searchNoun}</span>
+          </div>
+          <p className="pool-build-sub">
+            Live Hub results are shown meanwhile — once the catalog is built, searches run on this Mac with no Hub
+            requests.
+          </p>
+          <div className="pool-build-progress">
+            <div className="pool-build-bar" aria-hidden="true">
+              <div className="pool-build-bar-sweep" />
+            </div>
+            <span className="pool-build-count" key={poolPagesDone ?? 0}>
+              {pagesFetchedLabel(poolPagesDone)}
+            </span>
+          </div>
+        </div>
+      )}
+      {!error && poolPhase === "done" && (
+        <div
+          className={
+            poolCardCollapsing ? "pool-build-card pool-build-card-done pool-build-card-collapsing" : "pool-build-card pool-build-card-done"
+          }
+          role="status"
+        >
+          <span className="pool-build-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15">
+              <path className="pool-build-check-path" d="M4 12.5 9.5 18 20 6" fill="none" strokeWidth="2.5" />
+            </svg>
+          </span>
+          <span className="pool-build-title">Catalog ready. Searches now run on this Mac.</span>
+        </div>
+      )}
+      {loading && models === null && <p className="cc-empty cc-empty-loading">Asking {host}</p>}
       {models !== null && models.length === 0 && !error && (
         <p className="cc-empty">
           {/* Item 3 (fix round 4): `settled.q` is often empty here — a task
