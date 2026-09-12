@@ -3825,22 +3825,31 @@ export function searchHubModels(opts: {
    *  own `author` query parameter, a real narrowing of the WIRE request
    *  rather than a post-join filter (unlike the three above). */
   publisher?: string;
+  /** Round-7 wait-state work: `HubSearchScreen` cancels a slow in-flight
+   *  search (the 12s-and-counting "Cancel" link) by aborting this signal —
+   *  same `AbortSignal` contract `getJson`/`mutateJson` already carry, wired
+   *  through for the one caller that now needs it. */
+  signal?: AbortSignal;
 }): Promise<HubSearchResult> {
   // A POST, unlike every other read in this file. Search is the one that leaves
   // the machine — the server calls the Hub with the user's token — so it takes
   // the shape its effect deserves and carries the D3 guard with it. See the
   // endpoint's docstring.
-  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
-    q: opts.q,
-    task: opts.task,
-    capability: opts.capability,
-    sort: opts.sort,
-    limit: opts.limit,
-    fitLevel: opts.fitLevel,
-    quant: opts.quant,
-    paramsBand: opts.paramsBand,
-    publisher: opts.publisher,
-  });
+  return postJson<HubSearchResult>(
+    "/api/ai-models/hub/search",
+    {
+      q: opts.q,
+      task: opts.task,
+      capability: opts.capability,
+      sort: opts.sort,
+      limit: opts.limit,
+      fitLevel: opts.fitLevel,
+      quant: opts.quant,
+      paramsBand: opts.paramsBand,
+      publisher: opts.publisher,
+    },
+    { signal: opts.signal },
+  );
 }
 
 /** One repo's size on the Hub — the whole repo's TOTAL by default, or one

@@ -3965,13 +3965,6 @@ button.am-bench-model:focus-visible {
   stroke-linejoin: round;
 }
 
-/* The "Asking {host}…" empty-state line and the build card's own connecting
-   copy share this three-dot pulse so the two loading moments read as one
-   system rather than two unrelated spinners. */
-.cc-empty-loading::after {
-  content: "\2026";
-}
-
 @media (prefers-reduced-motion: no-preference) {
   .pool-build-card-done {
     transition: max-height 220ms ease-in, opacity 220ms ease-in, margin 220ms ease-in, padding 220ms ease-in;
@@ -3993,14 +3986,6 @@ button.am-bench-model:focus-visible {
 
   .pool-build-card-done {
     animation: pool-build-fade-in 220ms ease-out;
-  }
-
-  .cc-empty-loading::after {
-    display: inline-block;
-    width: 1.2em;
-    overflow: hidden;
-    vertical-align: bottom;
-    animation: pool-build-ellipsis 1.2s steps(4, end) infinite;
   }
 }
 
@@ -4039,15 +4024,6 @@ button.am-bench-model:focus-visible {
   }
 }
 
-@keyframes pool-build-ellipsis {
-  0% {
-    width: 0;
-  }
-  100% {
-    width: 1.2em;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .pool-build-bar-sweep {
     width: 100%;
@@ -4057,9 +4033,189 @@ button.am-bench-model:focus-visible {
   .pool-build-check-path {
     stroke-dashoffset: 0;
   }
+}
 
-  .cc-empty-loading::after {
+/* ---------------------------------------------------------------------------
+   Round 7 — the "v2 staged status" wait block, approved from
+   `hub-wait-variants.html`'s own `v2` card. Replaces the plain "Asking
+   {host}…" line for a FIRST search only; a re-search keeps the existing
+   dimmed `.am-hub-stale` rows and gets `.hub-wait-restale` instead (below). */
+.hub-wait {
+  max-width: 420px;
+  margin: 56px auto 0;
+  text-align: center;
+}
+
+.hub-wait-line {
+  font-size: 14px;
+  color: var(--fg);
+  margin: 0;
+}
+
+.hub-wait-dots::after {
+  content: "\2026";
+}
+
+.hub-wait-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 6px 0 0;
+  min-height: 16px;
+}
+
+.hub-wait-track {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--border));
+  overflow: hidden;
+  margin: 16px auto 0;
+  width: 220px;
+}
+
+.hub-wait-sweep {
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.hub-wait-steps {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.hub-wait-steps span::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.hub-wait-steps span.done::before {
+  background: var(--success);
+}
+
+.hub-wait-steps span.now {
+  color: var(--fg);
+}
+
+.hub-wait-steps span.now::before {
+  background: var(--accent);
+}
+
+.hub-wait-slow {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.hub-wait-slow a {
+  color: var(--accent-soft);
+  text-decoration: underline;
+  margin-left: 6px;
+  cursor: pointer;
+}
+
+/* Re-search caption — small and centred under the existing dimmed
+   `.am-hub-stale` rows, never the full staged block: there is nothing to
+   narrate here that the reader has not already seen once. */
+.hub-wait-restale {
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hub-wait-dots::after {
+    display: inline-block;
+    width: 1.2em;
+    overflow: hidden;
+    vertical-align: bottom;
+    animation: pool-build-ellipsis-hub 1.2s steps(4, end) infinite;
+  }
+
+  .hub-wait-sweep {
+    animation: hub-wait-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  .hub-wait-steps span.now::before {
+    animation: hub-wait-pulse 1.2s ease-in-out infinite;
+  }
+
+  /* The stagger itself — up to five rows, per the mockup's own `.reveal`
+     rule; `HitRow`'s `revealDelayMs` supplies the per-row `animation-delay`
+     as an inline style, so this rule only needs to define the animation. */
+  .hits.reveal .rowwrap {
+    animation: hub-hit-fadeup 0.32s ease-out both;
+  }
+}
+
+@keyframes pool-build-ellipsis-hub {
+  0% {
+    width: 0;
+  }
+  100% {
+    width: 1.2em;
+  }
+}
+
+@keyframes hub-wait-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+@keyframes hub-wait-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes hub-hit-fadeup {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-wait-dots::after {
     content: "\2026";
+  }
+
+  .hub-wait-sweep {
+    width: 100%;
+    opacity: 0.5;
+  }
+
+  .hub-wait-steps span.now::before {
+    opacity: 1;
+  }
+
+  .hits.reveal .rowwrap {
+    animation: none;
   }
 }
 

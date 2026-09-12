@@ -32,6 +32,8 @@ import { hubSizeBytes, knownTotalSize, lookupTotalSize } from "@apps/ai_models/l
 import {
   ageLabel,
   downloadedVariantLabel,
+  hubWaitSlowLabel,
+  hubWaitStageText,
   matchCell,
   matchRowTip,
   nextPoolPhase,
@@ -40,6 +42,7 @@ import {
   poolBuildBanner,
   popLabel,
   quantLabel,
+  shouldSkipHubWait,
   variantIsDownloadable,
   verdictGlyph,
 } from "@apps/ai_models/lib/hubTableView";
@@ -322,6 +325,7 @@ function HitRow({
   onToggleInfo,
   onSignedIn,
   job,
+  revealDelayMs = 0,
 }: {
   model: HubModel;
   disk: ReturnType<typeof resultDisk>;
@@ -334,6 +338,12 @@ function HitRow({
   onDownloadFile: (file: string) => void;
   onCancel: (job: Job) => void;
   onToggleInfo: () => void;
+  /** Round 7: the `.reveal` fade-in stagger's own per-row delay — 0 for
+   *  everything past the first five rows, and for a re-search's dimmed
+   *  stale rows (the caller never staggers those). Applied as a CSS custom
+   *  property rather than a class-per-index list, since the mockup's own
+   *  `nth-child` delays only cover exactly five rows. */
+  revealDelayMs?: number;
   onSignedIn: () => void;
   job: Job | undefined;
 }) {
@@ -384,7 +394,11 @@ function HitRow({
   ].filter((v): v is string => Boolean(v) && v !== "—");
 
   return (
-    <div className="rowwrap" data-part="hit">
+    <div
+      className="rowwrap"
+      data-part="hit"
+      style={revealDelayMs ? { animationDelay: `${revealDelayMs}ms` } : undefined}
+    >
       <div
         className={`row hit rich${have ? " have" : ""}${model.fit?.verdict === "no" ? " unfit" : ""}`}
       >
@@ -594,6 +608,17 @@ export function HubSearchScreen({
   // Bumped to force a one-off refetch (see the poll effect below) without
   // otherwise touching `settled`/`limit`/`authEpoch`.
   const [pollEpoch, setPollEpoch] = useState(0);
+  // Round 7: the "v2 staged status" wait block replacing the plain "Asking
+  // {host}…" line — see `hub-wait-variants.html`'s own `v2` block. Only a
+  // FIRST search (no rows on the pane yet) drives this; a re-search with
+  // rows already present keeps the old dimmed `am-hub-stale` rows and shows
+  // a small "Re-ranking…" caption instead (see the render below).
+  const [waitPhase, setWaitPhase] = useState<"hidden" | "hub" | "size" | "rank">("hidden");
+  // Seconds since the request went out, once stage "hub" has held 12s or
+  // more — null the rest of the time, including the whole "size"/"rank" tail.
+  const [slowSeconds, setSlowSeconds] = useState<number | null>(null);
+  const requestStartRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const debounce = useRef<number | null>(null);
   // Item 2 (fix round 4): the timer must merge into whatever `settled` is
   // CURRENT when it fires, not the value closed over when it was scheduled —
@@ -631,6 +656,18 @@ export function HubSearchScreen({
 
   useEffect(() => {
     let alive = true;
+    // Only a genuinely FIRST search (no rows on the pane at all yet) drives
+    // the staged wait block — a re-search (rows already present) or a
+    // poll-while-building refetch (`pollEpoch`, below) must not restart it,
+    // since `models` is already non-null in both those cases. Read once, at
+    // effect-start, before this run's fetch can change it.
+    const isFirstSearch = models === null;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    if (isFirstSearch) {
+      requestStartRef.current = performance.now();
+      setWaitPhase("hub");
+    }
     setLoading(true);
     searchHubModels({
       q: settled.q,
@@ -652,6 +689,7 @@ export function HubSearchScreen({
       paramsBand: settled.paramsBand,
       quant: settled.quant || undefined,
       publisher: settled.publisher || undefined,
+      signal: controller.signal,
     }).then(
       (data: HubSearchResult) => {
         if (!alive) return;
@@ -663,21 +701,71 @@ export function HubSearchScreen({
         setFacets(data.facets ?? null);
         setPoolState(data.poolState);
         setPoolPagesDone(data.poolPagesDone ?? null);
+        if (isFirstSearch) {
+          const elapsed = performance.now() - (requestStartRef.current ?? 0);
+          // A response inside 400ms must never have flashed the block at
+          // all — jump straight to "hidden" rather than playing the Size/Rank
+          // beats over an answer that was already fast.
+          setWaitPhase(shouldSkipHubWait(elapsed) ? "hidden" : "size");
+        }
       },
       (e: Error) => {
         if (!alive) return;
         setLoading(false);
+        if (e.name === "AbortError") {
+          // The Cancel link, below — return to a clean idle pane rather than
+          // surfacing the abort as an error.
+          setWaitPhase("hidden");
+          setModels(null);
+          return;
+        }
         setError(e.message);
+        if (isFirstSearch) setWaitPhase("hidden");
       },
     );
     return () => {
       alive = false;
+      controller.abort();
     };
     // `pollEpoch` is intentionally in the deps: it is bumped ONLY by the
     // poll-while-building effect below (every 15s while `poolState ===
     // "building"`, and once more on the transition out of it), so it never
     // fires on its own outside that loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled, limit, authEpoch, pollEpoch]);
+
+  // Plays the "size" -> "rank" -> "hidden" tail once the response has
+  // arrived (each stage a fixed ~250ms beat, per the approved design) — the
+  // one part of this machine that IS a clock, because by the time the
+  // response exists both stages are genuinely instantaneous client-side
+  // work, not something worth waiting on for real.
+  useEffect(() => {
+    if (waitPhase !== "size") return;
+    const id = window.setTimeout(() => setWaitPhase("rank"), 250);
+    return () => window.clearTimeout(id);
+  }, [waitPhase]);
+
+  useEffect(() => {
+    if (waitPhase !== "rank") return;
+    const id = window.setTimeout(() => setWaitPhase("hidden"), 250);
+    return () => window.clearTimeout(id);
+  }, [waitPhase]);
+
+  // The 12s-and-counting amber line — only while stage "hub" is still
+  // holding (the response has not arrived at all), never during the
+  // "size"/"rank" tail. Ticks every second so the count stays live.
+  useEffect(() => {
+    if (waitPhase !== "hub") {
+      setSlowSeconds(null);
+      return;
+    }
+    const start = requestStartRef.current ?? performance.now();
+    const id = window.setInterval(() => {
+      const elapsed = Math.floor((performance.now() - start) / 1000);
+      setSlowSeconds(elapsed >= 12 ? elapsed : null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [waitPhase]);
 
   // SPEC item 2: re-poll while the pool is building so the banner's page
   // count moves and the pane picks up the finished catalog the moment it is
@@ -747,6 +835,7 @@ export function HubSearchScreen({
   }, [models, settled.sort]);
 
   const host = (endpoint || "https://huggingface.co").replace(/^https?:\/\//, "");
+  const waitText = waitPhase !== "hidden" ? hubWaitStageText(waitPhase, host) : null;
   const shown =
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
@@ -842,8 +931,44 @@ export function HubSearchScreen({
           <span className="pool-build-title">Catalog ready. Searches now run on this Mac.</span>
         </div>
       )}
-      {loading && models === null && <p className="cc-empty cc-empty-loading">Asking {host}</p>}
-      {models !== null && models.length === 0 && !error && (
+      {/* Round 7: the approved "v2 staged status" wait block, replacing the
+       *  plain "Asking {host}…" line — see `hub-wait-variants.html`'s own
+       *  `v2` block for the exact markup/copy this mirrors. Only a first
+       *  search (no rows yet) reaches this; the component's own effects
+       *  above are what walk `waitPhase` through hub -> size -> rank ->
+       *  hidden, and skip it entirely for a response inside 400ms. */}
+      {!error && waitPhase !== "hidden" && waitText && (
+        <div className="hub-wait" role="status" aria-live="polite">
+          <p className="hub-wait-line anim">
+            {waitText.line}
+            <span className="hub-wait-dots" />
+          </p>
+          <p className="hub-wait-sub">{waitText.sub}</p>
+          <div className="hub-wait-track" aria-hidden="true">
+            <i className="hub-wait-sweep anim" />
+          </div>
+          <div className="hub-wait-steps">
+            <span className={waitPhase !== "hub" ? "done" : "now"}>Hub</span>
+            <span className={waitPhase === "rank" ? "done" : waitPhase === "size" ? "now" : ""}>Size</span>
+            <span className={waitPhase === "rank" ? "now" : ""}>Rank</span>
+          </div>
+          {slowSeconds != null && (
+            <p className="hub-wait-slow">
+              {hubWaitSlowLabel(slowSeconds)}{" "}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  abortRef.current?.abort();
+                }}
+              >
+                Cancel
+              </a>
+            </p>
+          )}
+        </div>
+      )}
+      {waitPhase === "hidden" && models !== null && models.length === 0 && !error && (
         <p className="cc-empty">
           {/* Item 3 (fix round 4): `settled.q` is often empty here — a task
            *  filter with no typed query is the default state reached from a
@@ -855,9 +980,9 @@ export function HubSearchScreen({
             : `No ${meta.searchNoun} the Hub knows about will run here.`}
         </p>
       )}
-      {shown && shown.length > 0 && (
-        <div className={loading || measuring ? "am-hub-stale hits" : "hits"}>
-          {shown.map((m) => (
+      {waitPhase === "hidden" && shown && shown.length > 0 && (
+        <div className={loading || measuring ? "am-hub-stale hits" : "hits reveal"}>
+          {shown.map((m, i) => (
             <HitRow
               key={m.id}
               model={m}
@@ -866,6 +991,11 @@ export function HubSearchScreen({
               busy={pulling(m.id)}
               infoOpen={openInfoId === m.id}
               job={jobByModel.get(m.id)}
+              // The mockup's own `.reveal` stagger only ever staggers the
+              // first five rows (`nth-child(2..5)`) — everything past that
+              // appears immediately rather than queuing a long, visible
+              // cascade down a page of results.
+              revealDelayMs={!(loading || measuring) && i > 0 && i < 5 ? i * 50 : 0}
               onDownload={() => onDownload(m.id, m.capability)}
               onDownloadFile={(file) => onDownload(m.id, m.capability, file)}
               onCancel={onCancel}
@@ -875,7 +1005,13 @@ export function HubSearchScreen({
           ))}
         </div>
       )}
-      {models !== null && models.length >= limit && !error && (
+      {/* Re-search: rows already present, a new search in flight. Keeps the
+       *  existing dimmed `am-hub-stale` rows above rather than swapping to
+       *  the full staged block, and adds this small caption instead. */}
+      {waitPhase === "hidden" && loading && models !== null && (
+        <p className="hub-wait-restale">Re-ranking…</p>
+      )}
+      {waitPhase === "hidden" && models !== null && models.length >= limit && !error && (
         <div className="advfoot">
           <button type="button" className="btn" onClick={() => setLimit((n) => n + LOAD_MORE)}>
             Load 20 more
