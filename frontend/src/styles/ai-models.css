@@ -3069,11 +3069,21 @@ button.am-bench-model:focus-visible {
   min-width: 0;
   /* Item 8 (fix round 5): `.tp` itself no longer scrolls (only `.tp-pane`,
      the right column, does) so this does not need to stick against a
-     scrolling ancestor to stay visible — it already stays put. `align-self:
-     start` just stops the grid's own `align-items: stretch` from forcing
-     this column to match the right pane's (now scrollable, effectively
-     unbounded) height. */
-  align-self: start;
+     scrolling ancestor to stay visible — it already stays put.
+     D1273 (item 3, reverses this rule's own former `align-self: start`):
+     that override made the nav's `border-right` divider stop at the nav's
+     own short content height, leaving it hanging well above the bottom of
+     an otherwise-tall pane — the wait block below it then read as floating
+     in the empty area rather than sitting beside a continuous divider. `.tp`
+     itself is bounded (not "effectively unbounded" the way this comment
+     used to warn — `.tp-page-fill > .tp` gives it a definite, viewport-
+     derived height via `flex: 1 1 auto` + `overflow: hidden`), so letting
+     this column stretch to the grid row's height (`.tp`'s own
+     `align-items: stretch`, same as `.tp-pane` already does) just runs the
+     divider the full height of that bounded row — it does not chase
+     `.tp-pane`'s internal scroll content. The nav's own contents stay
+     top-aligned regardless (`flex-direction: column` has no
+     `justify-content` here), so nothing about the button list moves. */
 }
 
 .tp-nav h5 {
@@ -4040,9 +4050,13 @@ button.am-bench-model:focus-visible {
    `hub-wait-variants.html`'s own `v2` card. Replaces the plain "Asking
    {host}…" line for a FIRST search only; a re-search keeps the existing
    dimmed `.am-hub-stale` rows and gets `.hub-wait-restale` instead (below). */
+/* D1273 (item 3): anchored a fixed 40px under the legend above, never
+   vertically centred in whatever empty space is left below it — with the
+   divider now full-height (`.tp-nav`, below) a centred block read as
+   floating, detached from the rest of the pane's top-down flow. */
 .hub-wait {
   max-width: 420px;
-  margin: 56px auto 0;
+  margin: 40px auto 0;
   text-align: center;
 }
 
@@ -4050,10 +4064,6 @@ button.am-bench-model:focus-visible {
   font-size: 14px;
   color: var(--fg);
   margin: 0;
-}
-
-.hub-wait-dots::after {
-  content: "\2026";
 }
 
 .hub-wait-sub {
@@ -4137,14 +4147,6 @@ button.am-bench-model:focus-visible {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .hub-wait-dots::after {
-    display: inline-block;
-    width: 1.2em;
-    overflow: hidden;
-    vertical-align: bottom;
-    animation: pool-build-ellipsis-hub 1.2s steps(4, end) infinite;
-  }
-
   .hub-wait-sweep {
     animation: hub-wait-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
@@ -4158,15 +4160,6 @@ button.am-bench-model:focus-visible {
      as an inline style, so this rule only needs to define the animation. */
   .hits.reveal .rowwrap {
     animation: hub-hit-fadeup 0.32s ease-out both;
-  }
-}
-
-@keyframes pool-build-ellipsis-hub {
-  0% {
-    width: 0;
-  }
-  100% {
-    width: 1.2em;
   }
 }
 
@@ -4201,10 +4194,6 @@ button.am-bench-model:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hub-wait-dots::after {
-    content: "\2026";
-  }
-
   .hub-wait-sweep {
     width: 100%;
     opacity: 0.5;
