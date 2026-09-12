@@ -297,6 +297,85 @@ describe("resumeRun reconciles against what is already on screen", () => {
     ]);
   });
 
+  test("A MOVED WINDOW REFRESHES ON THE ERROR ROAD TOO: the failure hangs under the right line", async () => {
+    // THE OTHER HALF OF THE SAME REPAIR (Bugbot, PR #1124). Everything the
+    // success path knows about a moved cursor was true of a FAILED follower and
+    // the error path asked none of it: `matches` still points at the leader's
+    // first prompt, so the failure was printed under the line that produced the
+    // reply above it — a CLI death blamed on the wrong message — and the
+    // follow-up's own prompt never came in at all, because only the refresh
+    // brings it.
+    const rig = makeController({
+      history: movedWindowHistory(true),
+      live_run: () => ({ run_id: "" }),
+      poll: () =>
+        poll({
+          done: true,
+          message: "count the rows",
+          window: 4096,
+          error: "the CLI died",
+        }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    // The transcript was asked, exactly as it is when the turn succeeded.
+    expect(rig.agent.of("history").length).toBe(2);
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "and the columns?",
+    ]);
+    // …and the failure is the LAST row, which is what puts it under the
+    // follow-up's own line rather than under the leader's.
+    expect(rig.controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "error",
+    ]);
+    expect(rig.controller.getState().trouble?.message).toBe("the CLI died");
+  });
+
+  test("A MOVED WINDOW REFRESHES ON THE ERROR ROAD: a failure the file already carries is not doubled", async () => {
+    // The refresh can bring the failure in with the prompt — `historyToTurns`
+    // maps a transcript `error` row to its text verbatim — and printing the
+    // probe's copy under it would be one death said twice. The same
+    // `errorShown` rule the `shownAlready` branch reads.
+    const rig = makeController({
+      history: (_f: Record<string, unknown>, n: number) => ({
+        turns:
+          n === 0
+            ? [
+                { role: "user", text: "count the rows", uuid: "u1" },
+                { role: "assistant", text: "SECOND", uuid: "a1" },
+              ]
+            : [
+                { role: "user", text: "count the rows", uuid: "u1" },
+                { role: "assistant", text: "SECOND", uuid: "a1" },
+                { role: "user", text: "and the columns?", uuid: "u2" },
+                { role: "error", text: "the CLI died", uuid: "e1" },
+              ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      live_run: () => ({ run_id: "" }),
+      poll: () =>
+        poll({
+          done: true,
+          message: "count the rows",
+          window: 4096,
+          error: "the CLI died",
+        }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    expect(
+      rig.controller
+        .getState()
+        .turns.filter((t) => t.role === "error")
+        .map((t) => t.text),
+    ).toEqual(["the CLI died"]);
+  });
+
   test("A MOVED WINDOW REFRESHES: the same on the LIVE road, and polling carries on", async () => {
     // The turn was still running when the chat attached, so the probe hands off
     // to `pollLoop` — which renders the window it is given and has no way to put

@@ -1,10 +1,12 @@
 // THE CHAT'S HALF OF THE PROJECT QUEUE (prefs `queue.enabled`).
 //
 // What has to be true, and none of it is visible from a unit test of the
-// caption: the admission is asked BEFORE anything is spent, a queued send keeps
-// its bubble, the composer stays open, the chip reuses the scheduled-message
-// block's own row rather than inventing a second one, and a decide on a parked
-// card goes through the queue's door only while the flag is on.
+// caption: the admission is asked BEFORE anything is spent, a queued send's
+// words move from the transcript onto the chip (the one place that survives a
+// history refresh and the leader's adoption), the composer stays open, the chip
+// reuses the scheduled-message block's own row rather than inventing a second
+// one, and a decide on a parked card goes through the queue's door only while
+// the flag is on.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { describe, expect, it } from "bun:test";
@@ -43,6 +45,7 @@ describe("the chip under a queued bubble", () => {
       <QueuedChip
         send={{
           entryId: "e1",
+          text: "",
           queue_position: 2,
           queue_ahead: "TASK-041",
           queue_ahead_title: "Pull today's news",
@@ -62,7 +65,7 @@ describe("the chip under a queued bubble", () => {
   it("offers Skip everywhere but on a spot already claimed", () => {
     const mid = render(
       <QueuedChip
-        send={{ entryId: "e1", queue_position: 3 }}
+        send={{ text: "", entryId: "e1", queue_position: 3 }}
         onSkip={() => {}}
       />,
     );
@@ -73,7 +76,7 @@ describe("the chip under a queued bubble", () => {
     // so the row that most wants Skip still has it (browser QA, 2026-09-12).
     const first = render(
       <QueuedChip
-        send={{ entryId: "e1", queue_position: 1 }}
+        send={{ text: "", entryId: "e1", queue_position: 1 }}
         onSkip={() => {}}
       />,
     );
@@ -85,7 +88,7 @@ describe("the chip under a queued bubble", () => {
     // disappearing on the press that worked.
     const head = render(
       <QueuedChip
-        send={{ entryId: "e1", queue_position: 1, queue_priority: true }}
+        send={{ text: "", entryId: "e1", queue_position: 1, queue_priority: true }}
         onSkip={() => {}}
       />,
     );
@@ -104,7 +107,7 @@ describe("the chip under a queued bubble", () => {
     // phrase itself.
     const r = render(
       <QueuedChip
-        send={{ entryId: "e2", behind_own: true, queue_ahead: "" }}
+        send={{ text: "", entryId: "e2", behind_own: true, queue_ahead: "" }}
         onSkip={() => {}}
       />,
     );
@@ -125,7 +128,7 @@ describe("the chip under a queued bubble", () => {
     // strangers' tasks this message is not standing behind.
     const placed = render(
       <QueuedChip
-        send={{ entryId: "e2", behind_own: true, queue_position: 2 }}
+        send={{ text: "", entryId: "e2", behind_own: true, queue_position: 2 }}
         onSkip={() => {}}
       />,
     );
@@ -138,7 +141,7 @@ describe("the chip under a queued bubble", () => {
     // Skipped, the one head a follow-up keeps: a claim on the spot, not a count.
     const next = render(
       <QueuedChip
-        send={{ entryId: "e2", behind_own: true, queue_position: 2, queue_priority: true }}
+        send={{ text: "", entryId: "e2", behind_own: true, queue_position: 2, queue_priority: true }}
         onSkip={() => {}}
       />,
     );
@@ -150,7 +153,7 @@ describe("the chip under a queued bubble", () => {
     let pressed = 0;
     const r = render(
       <QueuedChip
-        send={{ entryId: "e1", queue_position: 4 }}
+        send={{ text: "", entryId: "e1", queue_position: 4 }}
         onSkip={() => {
           pressed += 1;
         }}
@@ -205,14 +208,93 @@ describe("admission, in the send window", () => {
     expect(send.indexOf("if (queueEnabled()) {")).toBeLessThan(capture);
   });
 
-  it("keeps the bubble when the folder was busy — the words are not lost", () => {
+  it("hands the words to the chip when the folder was busy — never lost, never doubled", () => {
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
     const queued = send.indexOf("if (verdict && verdict.run === false) {");
     expect(queued).toBeGreaterThan(0);
-    // `taken` is what stops the `finally` dropping the optimistic row. A bubble
-    // that vanished on Enter would read as a message that was lost.
-    expect(send.slice(queued, queued + 700)).toContain("taken = true;");
+    const road = send.slice(queued, queued + 5000);
+    // THE WORDS GO ON THE SEND, which is what survives the two things that
+    // replace the live transcript under a queued message: the standing watch's
+    // `refreshHistory` and the adoption of the leader's session. The optimistic
+    // row does NOT stay — `taken` is left false, so the `finally` drops it and
+    // the chip's own bubble is the one copy on screen (Bugbot, PR #1124).
+    expect(road).toContain("text,");
+    expect(road).not.toContain("taken = true;");
     expect(send).toContain("if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);");
+  });
+
+  it("draws those words in the transcript's own bubble, above the chip", () => {
+    const r = render(
+      <QueuedChip
+        send={{ entryId: "e1", text: "count the rows", queue_position: 2 }}
+        onSkip={() => {}}
+      />,
+    );
+    const bubbles = r.root.findAll(
+      (n) => typeof n.type === "string" && n.props.className === "bubble",
+    );
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]!.props.children).toBe("count the rows");
+    // The transcript's OWN classes, not a second skin: `.turn.user .bubble` is
+    // what dresses it, and this block sits in the log's own column.
+    const row = r.root.findAll(
+      (n) => typeof n.type === "string" && n.props.className === "turn user c-queuesaid",
+    );
+    expect(row).toHaveLength(1);
+    expect(SCHED_CSS).toContain(".c-schedblock.c-queuechip .turn.user.c-queuesaid {");
+    // …and the caption is still there, under the words.
+    expect(textOf(r)).toContain("#2 in line");
+    act(() => r.unmount());
+  });
+
+  it("draws no row for a WORDLESS send, whose bubble is markers only the controller can build", () => {
+    const r = render(
+      <QueuedChip send={{ entryId: "e1", text: "", queue_position: 2 }} onSkip={() => {}} />,
+    );
+    expect(
+      r.root.findAll((n) => typeof n.type === "string" && n.props.className === "bubble"),
+    ).toHaveLength(0);
+    expect(textOf(r)).toContain("Queued");
+    act(() => r.unmount());
+  });
+
+  it("keeps every queued message's words through the adoption that replaces the transcript", () => {
+    // THE FAILURE (Bugbot, PR #1124): a new chat's first message queues, a
+    // second queues behind it, the leader runs, and the chat adopts the session
+    // its run opened — `openSession` REPLACES the transcript with the JSONL,
+    // which holds neither follower. The chips stayed and said "Queued" over a
+    // conversation showing none of the words they were about.
+    //
+    // The chips are drawn from `queuedSends`, which the adoption does not touch
+    // (only Back and an explicit session switch clear it), so the words come
+    // with them — one source, no re-posting of bubbles the next refresh would
+    // drop all over again.
+    const sends = [
+      { entryId: "e1", text: "count the rows", queue_position: 1 },
+      { entryId: "e2", text: "and the columns?", behind_own: true },
+    ];
+    const r = render(
+      <>
+        {sends.map((s) => (
+          <QueuedChip key={s.entryId} send={s} onSkip={() => {}} />
+        ))}
+      </>,
+    );
+    const out = textOf(r);
+    expect(out).toContain("count the rows");
+    expect(out).toContain("and the columns?");
+    act(() => r.unmount());
+    // …and the row goes with the chip when the entry fires, because they are one
+    // component: `liveQueued` is what the chat maps over.
+    expect(CHAT).toContain("useQueuedLiveness(queuedSends, sched.pendingIds)");
+    expect(CHAT).toContain("{liveQueued.map((q) => (");
+    // The adoption leaves the list alone — only Back clears it (the leader's own
+    // suite asserts that half).
+    const adopt = CHAT.slice(
+      CHAT.indexOf("const adoptSession = leaderSession("),
+      CHAT.indexOf("}, [adoptSession, controller, cardPolicy]);"),
+    );
+    expect(adopt).not.toContain("setQueuedSends");
   });
 
   it("sends NOTHING when the ask does not come back with a clean answer", () => {
@@ -251,7 +333,7 @@ describe("admission, in the send window", () => {
     // the entry is not in the message that eventually goes. The bytes travel the
     // same road "Schedule this as a task" already uses.
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
-    const carry = send.indexOf("await carryForQueue()");
+    const carry = send.indexOf("await carryForQueue(");
     const admit = send.indexOf("await admitQueueSend({");
     expect(carry).toBeGreaterThan(0);
     expect(carry).toBeLessThan(admit);
@@ -261,7 +343,7 @@ describe("admission, in the send window", () => {
     // entry has its own copies now, and chips left behind would ride the NEXT
     // message a second time.
     const queued = send.indexOf("if (verdict && verdict.run === false) {");
-    expect(send.slice(queued, queued + 900)).toContain("spendTrayForQueue();");
+    expect(send.slice(queued, queued + 5000)).toContain("spendTrayForQueue();");
   });
 
   it("leaves the composer OPEN under the flag, and shut without it", () => {
@@ -299,7 +381,7 @@ describe("admission, in the send window", () => {
     // …and the entry just queued becomes the leader for everything typed after
     // it, while this chat still has no session.
     const queued = send.indexOf("if (verdict && verdict.run === false) {");
-    expect(send.slice(queued, queued + 1200)).toContain("leader.remember(sid, entryId);");
+    expect(send.slice(queued, queued + 5000)).toContain("leader.remember(sid, entryId);");
   });
 
   it("takes a chip down when its entry stops being pending — and not one poll sooner", () => {

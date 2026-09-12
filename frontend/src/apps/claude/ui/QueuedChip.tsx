@@ -41,6 +41,27 @@ export interface QueuedSend extends QueueFacts {
    * `POST /api/tasks/queue/skip` takes `{entry_id}` for that reason.
    */
   entryId: string;
+  /**
+   * THE WORDS THIS CHIP IS ABOUT, kept here because the transcript loses them.
+   *
+   * The bubble a queued send posts is optimistic — a row in the live document
+   * and in no file — and the thing that reliably replaces the live document is
+   * the adoption this very feature causes: a chat whose leader ran adopts the
+   * session it opened (`ClaudeChat`'s `adoptSession` → `openSession`), the
+   * transcript is re-read from the JSONL, and every follower whose entry has NOT
+   * fired is nowhere in it. So the chips stayed — their entries really are still
+   * pending — over a conversation that no longer showed what they were for.
+   *
+   * The send carries its own words and this component draws them: ONE source of
+   * truth (re-posting optimistic bubbles after the adoption would leave rows the
+   * next refresh drops all over again), and the row goes with the chip when the
+   * entry fires — by which time the JSONL has the real one.
+   *
+   * EMPTY IS A REAL VALUE: a wordless send (pictures or notes alone) has no
+   * typed line, and its bubble in the transcript is markers only the controller
+   * can compose. No row is drawn for one.
+   */
+  text: string;
 }
 
 export interface QueuedChipProps {
@@ -61,6 +82,17 @@ export function QueuedChip({ send, busy, onSkip }: QueuedChipProps) {
   if (!line) return null;
   return (
     <div className="c-schedblock c-queuechip">
+      {/* THE MESSAGE ITSELF, in the transcript's own user bubble — same class,
+          same skin, same column (`.c-schedblock` and `.chat-log` share the
+          720px measure and the 20px gutter), so it reads as the last row of the
+          conversation rather than as a quotation of one. It is here rather than
+          in the transcript because the transcript cannot keep it: see
+          `QueuedSend.text`. */}
+      {send.text ? (
+        <div className="turn user c-queuesaid">
+          <div className="bubble">{send.text}</div>
+        </div>
+      ) : null}
       {/* `role=status`: a message that did not start is news, and it has to
           reach a reader who is not looking at this corner of the pane —
           exactly the reason SchedBlock's own card carries one. */}

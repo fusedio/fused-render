@@ -289,6 +289,15 @@
 .c-schedblock.c-queuechip {
   padding-bottom: 8px;
 }
+/* THE QUEUED MESSAGE'S OWN BUBBLE, borrowed from the transcript rather than
+   re-skinned: `.turn.user .bubble` dresses it (transcript.css), and this block
+   shares the log's 720px measure and 20px gutter — so the row lands in the same
+   column as the turns above it and reads as the last one of them. Only the gap
+   is ours: a transcript turn is followed by another turn 20px down, and this one
+   is followed by the chip that belongs to it. */
+.c-schedblock.c-queuechip .turn.user.c-queuesaid {
+  margin: 0 0 6px;
+}
 .c-schedblock .sb-card--chip {
   flex-direction: row;
   align-items: center;

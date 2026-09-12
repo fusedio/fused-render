@@ -70,7 +70,7 @@ import {
   type Recorder,
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
-import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   CHAT_FRAME_FALLBACK_MS,
@@ -2011,14 +2011,23 @@ function ChatBody(props: ChatBodyProps) {
    *
    * ONE FAILURE COSTS ONE ATTACHMENT and never the send: `copyToTaskShots` is
    * `allSettled` inside, and a wholesale failure answers `[]`.
+   *
+   * `lead` IS THE NOTES' OVERVIEW, and it rides in front for the reason it does
+   * on the live wire (`beginSend`'s `takeAttachments(lead)`): the
+   * `<annotations>` block tells the model to read "the attached overview
+   * screenshot", so a queued entry carrying the words without the picture names
+   * one that never travelled.
    */
-  const carryForQueue = useCallback(async (): Promise<SchedAttachment[]> => {
-    const tray = attach.items;
-    // Pending chips have no bytes yet, and an empty carry must not buy a round
-    // trip in front of every send.
-    if (!tray.some((a: Attachment) => !a.pending && !!a.view)) return [];
-    return copyToTaskShots(tray).catch(() => []);
-  }, [attach]);
+  const carryForQueue = useCallback(
+    async (lead: readonly Attachment[] = []): Promise<SchedAttachment[]> => {
+      const tray = [...lead, ...attach.items];
+      // Pending chips have no bytes yet, and an empty carry must not buy a round
+      // trip in front of every send.
+      if (!tray.some((a: Attachment) => !a.pending && !!a.view)) return [];
+      return copyToTaskShots(tray).catch(() => []);
+    },
+    [attach],
+  );
 
   /**
    * THE TRAY IS SPENT ON A QUEUED SEND, exactly as it is on one that ran.
@@ -2155,18 +2164,65 @@ function ChatBody(props: ChatBodyProps) {
             // predates.
             const sid = controller.getState().sessionId ?? "";
             const follow = leader.followOf(sid);
-            const carried = await carryForQueue();
+            /**
+             * AND THE NOTES GO WITH THE WORDS, for the pictures' reason.
+             *
+             * A queued send is a scheduler entry that fires minutes later with
+             * whatever is written ON IT, and a round of pane notes left in the
+             * tray is half the message: the reader drew on the app, pressed
+             * Enter, and what eventually reached the agent was the typed line
+             * alone. Worse than missing — the notes stayed UNMARKED, so the
+             * next send into a free folder silently took somebody else's round
+             * (`takeAnnotations` → `markSent`).
+             *
+             * Taken exactly as `beginSend` takes them (the badge letters, one
+             * picture of the pane with those letters burned in, the block built
+             * out of both) and composed into the admitted `message` through
+             * `composeOutgoing` — the same call the live send's wire goes
+             * through — so the entry carries the text this send would have sent.
+             *
+             * NOT MARKED YET, because the verdict decides who owns them:
+             * `run: false` stamps them below (nothing may take them again), and
+             * a `run: true` leaves them pending for `beginSend`, which takes its
+             * own round the ordinary way. That is the same price `carryForQueue`
+             * pays one line down — a send into a free folder buys a capture
+             * nobody reads — and it is paid for the same reason: the answer
+             * arrives too late to take anything after it.
+             */
+            const notes = await takeAnnotations();
+            const carried = await carryForQueue(notes.overview ? [notes.overview] : []);
+            /**
+             * THE BADGED PICTURE, PUT DOWN — on every road out of here, and it
+             * is only ever the picture.
+             *
+             * Queued: its COPY is on the entry (`carryForQueue` led with it) and
+             * nothing on screen draws the original, so holding the blob would
+             * pin a full-pane image for the life of the document (Bugbot, PR
+             * #1064's rule). Admitted or refused: it is this page's photograph of
+             * a pane that has since moved on, and the send that actually goes
+             * takes a fresh one — exactly what `beginSend`'s `done(false)` does
+             * with one.
+             *
+             * The NOTES are a different question and are not touched here: they
+             * are marked only where the entry took them (below), so on every
+             * other road their chips stand.
+             */
+            const putDownQueuedShot = () => {
+              if (notes.overview) ATTACH_API.revoke(notes.overview);
+            };
             let verdict: Awaited<ReturnType<typeof admitQueueSend>> | null = null;
             try {
               verdict = await admitQueueSend({
                 project: file || "",
                 session_id: sid,
-                // EMPTY IS SENT, not withheld. A wordless send (pictures or
-                // notes alone) is a send like any other and has to be admitted
-                // like one; whether an empty message with attachments may be
-                // queued is the server's call, and a refusal is an answer this
-                // road already knows how to show.
-                message: text,
+                // EMPTY IS SENT, not withheld. A wordless send (pictures alone)
+                // is a send like any other and has to be admitted like one;
+                // whether an empty message with attachments may be queued is the
+                // server's call, and a refusal is an answer this road already
+                // knows how to show. A send carrying NOTES is not one of those:
+                // its `<annotations>` block is the message, composed in here the
+                // way the live wire composes it.
+                message: composeOutgoing(text, [notes.block]),
                 ...(opts.model ? { model: opts.model } : {}),
                 ...(opts.effort ? { effort: opts.effort } : {}),
                 ...(opts.permission ? { permission_mode: opts.permission } : {}),
@@ -2180,6 +2236,7 @@ function ChatBody(props: ChatBodyProps) {
                 ...(follow ? { follow_of: follow } : {}),
               });
             } catch (err) {
+              putDownQueuedShot();
               refuseQueuedSend(text, err);
               return;
             }
@@ -2188,18 +2245,45 @@ function ChatBody(props: ChatBodyProps) {
             // MEANT to answer.
             const run = (verdict as { run?: unknown } | null)?.run;
             if (run !== true && run !== false) {
+              putDownQueuedShot();
               refuseQueuedSend(text, new Error("the queue gave no answer."));
               return;
             }
             if (verdict && verdict.run === false) {
-              // THE BUBBLE STAYS. The words are safe — the server has them as a
-              // pending entry — and a bubble that vanished on Enter would read
-              // as a message that was lost, which is the one thing this must
-              // never look like. `taken` is what says so to the `finally`.
-              taken = true;
+              // THE WORDS STAY AND THE ROW MOVES — from the transcript, which
+              // cannot keep them, to the chip, which can.
+              //
+              // This used to keep the optimistic bubble (`taken = true`), on the
+              // rule that a bubble vanishing on Enter reads as a message that
+              // was lost. That rule is right and the bubble was the wrong home
+              // for it: the optimistic row lives only in the live document, and
+              // both of the things that replace that document happen to a queued
+              // send routinely — the standing watch's `refreshHistory` (a full
+              // `turns` replace from the JSONL, four times a minute) and the
+              // adoption of the leader's session (`adoptSession` → `openSession`
+              // below). A message the scheduler has not sent is in no file, so
+              // either one wiped the words and left the chip talking about
+              // nothing (Bugbot, PR #1124).
+              //
+              // So the chip carries the text (`QueuedSend.text`) and draws it in
+              // the transcript's own user bubble, directly under the log and in
+              // the same column — and the optimistic row goes, because two
+              // copies of one message is the other way to get this wrong.
+              // `taken` stays false, which is exactly what the `finally` reads
+              // to drop it: the same handover a send that reached the controller
+              // makes, one paint, no gap where the words are nowhere.
+              //
               // …and the tray is spent, because the entry now carries its own
               // copies of those pictures (`spendTrayForQueue`).
               spendTrayForQueue();
+              // THE NOTES ARE SPENT TOO, on the same argument and for a sharper
+              // reason: their words are on the entry now, so leaving them
+              // pending would hand this round to the NEXT send — the very
+              // double-take `markSent` exists to stop, and the one a queued send
+              // used to cause every time. Stamped exactly where `beginSend`
+              // stamps them: after the request the words went out on.
+              if (notes.notes.length) annRef.current?.markSent(notes.notes);
+              putDownQueuedShot();
               const entryId = String(verdict.entry?.id ?? "");
               // …and if this chat still has no session, THIS is the entry every
               // later message in it joins (`sched/queue-leader`, which ignores
@@ -2215,6 +2299,16 @@ function ChatBody(props: ChatBodyProps) {
                   // stale the moment the store rekeys that task onto the session
                   // the leader's run opens (`api.skipQueue`).
                   entryId,
+                  // THE WORDS, BECAUSE THE TRANSCRIPT CANNOT BE TRUSTED TO KEEP
+                  // THEM. The optimistic bubble this send just posted is only a
+                  // row in the live document: adopting the leader's session
+                  // (`adoptSession` → `openSession`) REPLACES the transcript
+                  // with what the JSONL holds, and a follow-up whose entry has
+                  // not fired yet is in no file — so the chip stayed and the
+                  // words under it vanished. Kept here, drawn beside the chip,
+                  // and gone with it when the entry fires and the real row
+                  // arrives (`sched/queued-sends`).
+                  text,
                   queue_position: verdict.position,
                   queue_ahead: verdict.ahead,
                   queue_ahead_title: verdict.ahead_title,
@@ -2228,7 +2322,10 @@ function ChatBody(props: ChatBodyProps) {
             }
             // `run: true` — the ordinary road, on the ORIGINAL receipts: the
             // copies made above are task-shots nobody will read, which is the
-            // price of asking before spending (see `carryForQueue`).
+            // price of asking before spending (see `carryForQueue`). The round
+            // of notes is put down the same way: still pending, still chipped,
+            // and `beginSend` below takes it the ordinary way.
+            putDownQueuedShot();
           }
           const { merged, done } = await beginSend(opts);
           const wire: SendOptions = {
@@ -2274,6 +2371,7 @@ function ChatBody(props: ChatBodyProps) {
       beginSend,
       releaseSend,
       carryForQueue,
+      takeAnnotations,
       refuseQueuedSend,
       spendTrayForQueue,
       leader,

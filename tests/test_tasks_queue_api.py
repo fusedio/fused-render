@@ -29,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import project_queue, schedule, tasks_store, tasks_watch
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -117,14 +118,24 @@ def flag(home):
 
 @pytest.fixture()
 def folders(tmp_path):
-    """Two real working trees. Real, because `queue_key` reads the disk to tell
-    a folder from a file target and a path that does not exist answers with its
-    parent — which would silently key two tests' folders the same."""
+    """Two real working trees, spelled the way the queue spells a folder.
+
+    Real, because `queue_key` reads the disk to tell a folder from a file target
+    and a path that does not exist answers with its parent — which would
+    silently key two tests' folders the same.
+
+    CANONICAL, because these strings are used at BOTH ends: as a target/project
+    handed to the router (raw input, any spelling) and as the folder KEY a
+    stubbed `holders()` is filed under and a row's `queue_key` is compared with.
+    `queue_key` answers `canonical_fs_path` — forward slashes, always — so on
+    Windows `str(WindowsPath)` would key the fixture on a backslashed spelling
+    the router never produces and every lookup would miss. On POSIX this is
+    `str(path)` unchanged."""
     a = tmp_path / "trees" / "alpha"
     b = tmp_path / "trees" / "beta"
     a.mkdir(parents=True)
     b.mkdir(parents=True)
-    return str(a), str(b)
+    return canonical_fs_path(str(a)), canonical_fs_path(str(b))
 
 
 @pytest.fixture()

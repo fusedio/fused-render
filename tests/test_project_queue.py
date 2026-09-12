@@ -21,9 +21,25 @@ import pytest
 
 from fused_render import current_apps, project_queue as pq
 from fused_render import registered_apps, session_liveness, tasks_store, tasks_watch
+from fused_render._view_url_codec import canonical_fs_path
 
 SID = "11111111-1111-1111-1111-111111111111"
 SID2 = "22222222-2222-2222-2222-222222222222"
+
+
+def folder_key(path) -> str:
+    """`path` spelled the way this module spells a folder — the canonical
+    forward-slash form (`canonical_fs_path`), which is what `queue_key` answers
+    and therefore what `holders()` is filed under and what `is_free`, `reserve`
+    and `holder_for` are asked about.
+
+    On POSIX it is `str(path)` and this helper is invisible. On Windows
+    `str(WindowsPath(...))` is backslashed and `queue_key` never produces that
+    spelling, so a test that asserted against it would be asserting the wrong
+    contract — and one that keyed a fake holder on it would file the folder
+    under a name no production caller will ever look up.
+    """
+    return canonical_fs_path(str(path))
 
 
 @pytest.fixture(autouse=True)
@@ -175,7 +191,66 @@ def test_home_and_the_filesystem_root_are_never_keys(home):
 def test_a_plain_folder_is_its_own_key(home):
     work = home / "work" / "scratch"
     work.mkdir(parents=True)
-    assert pq.queue_key(str(work)) == str(work)
+    assert pq.queue_key(str(work)) == folder_key(work)
+
+
+def test_the_key_is_the_canonical_forward_slash_spelling(home):
+    """THE CONTRACT EVERY OTHER READER LEANS ON. A key is `canonical_fs_path`'s
+    spelling of the folder — forward slashes — and never the OS's own. On
+    Windows `str(Path)` is backslashed, so the two spellings of one folder are
+    visibly different there and only this one is ever a key: a holder filed
+    under the other, or a `is_free` asked about it, silently misses.
+
+    Pinned here rather than left implicit in thirty assertions, because it is
+    the single fact `holders`, `is_free`, `reserve`, `holder_for`, the
+    scheduler's `_queue_position` and the router's `_queue_lines` all agree on.
+    """
+    work = home / "work" / "scratch"
+    work.mkdir(parents=True)
+    key = pq.queue_key(str(work))
+    assert key == canonical_fs_path(os.path.abspath(str(work)))
+    assert key == canonical_fs_path(key)  # idempotent: a key is already canonical
+    # …and that spelling is forward slashes wherever a drive letter appears,
+    # which is the half of the rule this suite cannot otherwise reach on POSIX.
+    assert canonical_fs_path("C:\\Users\\a\\proj") == "C:/Users/a/proj"
+
+
+def test_every_reader_speaks_the_spelling_queue_key_answers(home, agent,
+                                                            monkeypatch):
+    """WINDOWS IN MINIATURE, on any OS.
+
+    There a folder has two spellings — `str(Path)`'s backslashes and
+    `canonical_fs_path`'s forward slashes — and everything that files or looks
+    up a folder must speak the second. Simulated by making the canonical
+    spelling visibly different from the path on disk (through the one branch
+    that returns without stat'ing what it answers, a wedged mount), so the
+    invariant is tested rather than hidden behind a POSIX identity: whatever
+    `queue_key` answers is what `holders` is keyed on and what `is_free` and
+    `holder_for` are asked about — and the raw path is not a key at all.
+    """
+    class AlwaysWedged:
+        def blocks(self, path):
+            return True
+
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), SID)
+    registry(SID, status="busy")
+
+    pq.reset_cache()
+    monkeypatch.setattr(pq, "canonical_fs_path", lambda path: path + "~canon")
+    monkeypatch.setattr(pq, "_GUARD", AlwaysWedged())
+
+    target = str(work / "page.html")
+    key = pq.queue_key(target)
+    assert key == target + "~canon"
+
+    held = pq.holders()
+    assert held[key]["run_id"] == "r-1"
+    assert target not in held          # the raw spelling is not a key
+    assert pq.holder_for(key)["kind"] == "run"
+    assert pq.is_free(key, SID) is True
+    assert pq.is_free(key, SID2) is False
 
 
 def test_a_file_target_keys_on_its_folder(home):
@@ -186,8 +261,8 @@ def test_a_file_target_keys_on_its_folder(home):
     work.mkdir()
     (work / "page.html").write_text("x")
     (work / "other.html").write_text("x")
-    assert pq.queue_key(str(work / "page.html")) == str(work)
-    assert pq.queue_key(str(work / "other.html")) == str(work)
+    assert pq.queue_key(str(work / "page.html")) == folder_key(work)
+    assert pq.queue_key(str(work / "other.html")) == folder_key(work)
 
 
 def test_two_subfolders_of_one_app_share_a_key(home, monkeypatch):
@@ -197,9 +272,9 @@ def test_two_subfolders_of_one_app_share_a_key(home, monkeypatch):
     monkeypatch.setattr(registered_apps, "read_entries",
                         lambda: [{"path": str(app)}])
     pq.reset_cache()
-    assert pq.queue_key(str(app / "a")) == str(app)
-    assert pq.queue_key(str(app / "b")) == str(app)
-    assert pq.queue_key(str(app)) == str(app)
+    assert pq.queue_key(str(app / "a")) == folder_key(app)
+    assert pq.queue_key(str(app / "b")) == folder_key(app)
+    assert pq.queue_key(str(app)) == folder_key(app)
 
 
 def test_the_nearest_git_ancestor_wins_over_a_deeper_folder(home):
@@ -207,7 +282,7 @@ def test_the_nearest_git_ancestor_wins_over_a_deeper_folder(home):
     (repo / ".git").mkdir(parents=True)
     deep = repo / "src" / "inner"
     deep.mkdir(parents=True)
-    assert pq.queue_key(str(deep)) == str(repo)
+    assert pq.queue_key(str(deep)) == folder_key(repo)
 
 
 def test_a_worktree_keys_on_itself_not_on_the_repo_it_came_from(home):
@@ -220,8 +295,8 @@ def test_a_worktree_keys_on_itself_not_on_the_repo_it_came_from(home):
     tree = home / "code" / "repo-wt" / "branch"
     tree.mkdir(parents=True)
     (tree / ".git").write_text("gitdir: " + str(repo / ".git" / "worktrees" / "b"))
-    assert pq.queue_key(str(tree)) == str(tree)
-    assert pq.queue_key(str(repo)) == str(repo)
+    assert pq.queue_key(str(tree)) == folder_key(tree)
+    assert pq.queue_key(str(repo)) == folder_key(repo)
     assert pq.queue_key(str(tree)) != pq.queue_key(str(repo))
 
 
@@ -231,7 +306,7 @@ def test_a_git_dir_above_home_is_not_climbed_to(home):
     (home / ".git").mkdir()
     work = home / "notes"
     work.mkdir()
-    assert pq.queue_key(str(work)) == str(work)
+    assert pq.queue_key(str(work)) == folder_key(work)
 
 
 def test_a_wedged_mount_answers_with_the_path_and_makes_no_syscall(
@@ -248,7 +323,7 @@ def test_a_wedged_mount_answers_with_the_path_and_makes_no_syscall(
         raise AssertionError("app_dir_for must not be reached on a wedged mount")
 
     monkeypatch.setattr(current_apps, "app_dir_for", boom)
-    assert pq.queue_key(str(wedged / "share" / "proj")) == str(wedged / "share" / "proj")
+    assert pq.queue_key(str(wedged / "share" / "proj")) == folder_key(wedged / "share" / "proj")
 
 
 def test_the_key_is_memoized_and_reset_cache_forgets_it(home):
@@ -257,13 +332,13 @@ def test_the_key_is_memoized_and_reset_cache_forgets_it(home):
     needs the reset."""
     work = home / "work"
     work.mkdir()
-    assert pq.queue_key(str(work)) == str(work)
+    assert pq.queue_key(str(work)) == folder_key(work)
     (work / ".git").mkdir()
     sub = work / "sub"
     sub.mkdir()
-    assert pq.queue_key(str(work)) == str(work)  # cached, unchanged
+    assert pq.queue_key(str(work)) == folder_key(work)  # cached, unchanged
     pq.reset_cache()
-    assert pq.queue_key(str(sub)) == str(work)
+    assert pq.queue_key(str(sub)) == folder_key(work)
 
 
 # ================================================================== holders
@@ -276,9 +351,10 @@ def test_a_live_unparked_run_holds_its_folder(home, agent):
     registry(SID, status="busy")
 
     held = pq.holders()
-    assert held == {str(work): {"session_id": SID, "run_id": "20260912-100000-aaa",
-                                "task_key": SID, "kind": "run"}}
-    assert pq.holder_for(str(work))["kind"] == "run"
+    assert held == {folder_key(work): {
+        "session_id": SID, "run_id": "20260912-100000-aaa",
+        "task_key": SID, "kind": "run"}}
+    assert pq.holder_for(folder_key(work))["kind"] == "run"
 
 
 def test_a_shell_status_holds_too_and_idle_does_not(home, agent):
@@ -290,7 +366,7 @@ def test_a_shell_status_holds_too_and_idle_does_not(home, agent):
     for status, expected in (("shell", True), ("busy", True),
                              ("waiting", False), ("idle", False)):
         registry(SID, status=status)
-        assert (str(work) in pq.holders()) is expected, status
+        assert (folder_key(work) in pq.holders()) is expected, status
 
 
 def test_a_parked_run_does_not_hold_the_folder(home, agent):
@@ -310,7 +386,7 @@ def test_a_parked_run_does_not_hold_the_folder(home, agent):
     stage_run(agent, "r-1", str(work / "page.html"), SID,
               perms=[{"id": "p1", "tool": "Bash", "decision": "allow"}])
     pq.invalidate_holders()
-    assert pq.holders()[str(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
 
 
 def test_a_killed_holder_stops_holding_at_once(home, agent):
@@ -321,7 +397,7 @@ def test_a_killed_holder_stops_holding_at_once(home, agent):
     run_dir = stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
     transcript(SID, ago=1.0)
-    assert str(work) in pq.holders()
+    assert folder_key(work) in pq.holders()
 
     os.remove(run_dir / "alive")
     assert pq.holders() == {}
@@ -336,7 +412,7 @@ def test_a_departed_registry_row_beats_a_warm_transcript(home, agent):
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
     transcript(SID, ago=1.0)
-    assert str(work) in pq.holders()
+    assert folder_key(work) in pq.holders()
 
     os.remove(os.path.join(tasks_watch.SESSIONS_DIR, "p.json"))
     tasks_watch.tick()
@@ -353,7 +429,7 @@ def test_a_registry_row_with_a_dead_pid_holds_nothing(home, agent):
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
     transcript(SID, ago=1.0)
-    assert str(work) in pq.holders()
+    assert folder_key(work) in pq.holders()
 
     registry(SID, status="busy", pid=2 ** 22 - 1)   # a pid nothing can hold
     assert pq.holders() == {}
@@ -368,7 +444,7 @@ def test_with_no_registry_opinion_the_transcript_decides(home, agent):
     assert pq.holders() == {}          # nothing registered, nothing written
 
     transcript(SID, ago=1.0)
-    assert pq.holders()[str(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
 
     transcript(SID, ago=600.0)         # cold: not mid-turn
     assert pq.holders() == {}
@@ -385,11 +461,11 @@ def test_a_live_run_that_has_not_named_itself_yet_holds_its_folder(home, agent):
     work = home / "work"
     work.mkdir()
     stage_run(agent, "r-1", str(work / "page.html"), session_id="")
-    held = pq.holders()[str(work)]
+    held = pq.holders()[folder_key(work)]
     assert held["kind"] == "starting"
     assert held["run_id"] == "r-1"
     # Nobody can match an anonymous holder, so everything queues behind it…
-    assert pq.is_free(str(work), SID) is False
+    assert pq.is_free(folder_key(work), SID) is False
     # …and the rule the flip does NOT touch: a parked run still holds nothing.
     stage_run(agent, "r-1", str(work / "page.html"), session_id="",
               perms=[{"id": "p1", "tool": "Bash", "decision": ""}])
@@ -405,13 +481,13 @@ def test_a_reservation_names_the_run_that_has_not_named_itself(home, agent):
     work = home / "work"
     work.mkdir()
     stage_run(agent, "r-1", str(work / "page.html"), session_id="")
-    pq.reserve(str(work), SID)
+    pq.reserve(folder_key(work), SID)
 
-    held = pq.holders()[str(work)]
+    held = pq.holders()[folder_key(work)]
     assert held["kind"] == "starting"
     assert held["session_id"] == SID and held["task_key"] == SID
-    assert pq.is_free(str(work), SID) is True
-    assert pq.is_free(str(work), SID2) is False
+    assert pq.is_free(folder_key(work), SID) is True
+    assert pq.is_free(folder_key(work), SID2) is False
 
 
 def test_an_unnamed_run_stops_holding_once_it_is_plainly_not_starting(home,
@@ -437,7 +513,7 @@ def test_a_run_answers_to_the_session_it_resumed(home, agent):
     stage_run(agent, "r-1", str(work / "page.html"), session_id="",
               resumed_from=SID2)
     registry(SID2, status="busy")
-    assert pq.holders()[str(work)]["session_id"] == SID2
+    assert pq.holders()[folder_key(work)]["session_id"] == SID2
 
 
 def test_an_unreadable_run_dir_costs_that_run_and_nothing_else(home, agent):
@@ -449,7 +525,7 @@ def test_an_unreadable_run_dir_costs_that_run_and_nothing_else(home, agent):
     (agent.dir / "r-empty").mkdir()
     stage_run(agent, "r-ok", str(work / "page.html"), SID)
     registry(SID, status="busy")
-    assert pq.holders()[str(work)]["run_id"] == "r-ok"
+    assert pq.holders()[folder_key(work)]["run_id"] == "r-ok"
 
 
 def test_the_run_scan_is_bounded_to_the_newest_dirs(home, agent, monkeypatch):
@@ -483,7 +559,7 @@ def test_a_claimed_scheduler_entry_holds_the_folder(home, agent, monkeypatch):
          "session_id": "", "claude_session_id": ""},
         {"id": "e2", "state": schedule.PENDING, "target": str(work / "page.html")},
     ])
-    held = pq.holders()[str(work)]
+    held = pq.holders()[folder_key(work)]
     assert held["kind"] == "sending"
     assert held["task_key"] == "pending:e1"
 
@@ -499,7 +575,7 @@ def test_a_running_run_outranks_a_claimed_entry_in_the_same_folder(
     monkeypatch.setattr(schedule, "list_entries", lambda: [
         {"id": "e1", "state": schedule.SENDING, "target": str(work),
          "session_id": SID2}])
-    assert pq.holders()[str(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
 
 
 def test_a_starting_run_outranks_a_claimed_entry_in_the_same_folder(
@@ -518,11 +594,11 @@ def test_a_starting_run_outranks_a_claimed_entry_in_the_same_folder(
         {"id": "e1", "state": schedule.SENDING, "target": str(work),
          "session_id": SID2}])
 
-    held = pq.holders()[str(work)]
+    held = pq.holders()[folder_key(work)]
     assert held["kind"] == "starting"
     assert held["run_id"] == "r-1"
     # …and nobody can match it, which is the whole point of holding it.
-    assert pq.is_free(str(work), SID2) is False
+    assert pq.is_free(folder_key(work), SID2) is False
 
 
 def test_an_unreadable_schedule_holds_nothing(home, agent, monkeypatch):
@@ -567,8 +643,8 @@ def test_a_reservation_never_masks_a_real_holder(home, agent):
     work.mkdir()
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
-    pq.reserve(str(work), SID2)
-    assert pq.holders()[str(work)]["session_id"] == SID
+    pq.reserve(folder_key(work), SID2)
+    assert pq.holders()[folder_key(work)]["session_id"] == SID
 
 
 def test_a_holder_on_a_clock_says_how_long_it_has_left(home, agent):
@@ -653,8 +729,8 @@ def test_reserve_if_free_queues_behind_a_real_holder(home, agent):
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
 
-    assert pq.reserve_if_free(str(work), SID2) is False
-    assert pq.reserved(str(work)) == ""
+    assert pq.reserve_if_free(folder_key(work), SID2) is False
+    assert pq.reserved(folder_key(work)) == ""
 
 
 def test_a_folder_with_no_key_is_admitted_and_nothing_is_stored(home, agent):
@@ -676,8 +752,8 @@ def test_one_walk_of_the_runs_tree_answers_every_reader_in_a_second(home, agent,
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
 
-    assert pq.holders()[str(work)]["kind"] == "run"
-    assert pq.holders()[str(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
     assert pq.scan_runs()[0]["run_id"] == "r-1"
     assert walks == [1]
 
@@ -693,9 +769,9 @@ def test_one_walk_of_the_runs_tree_answers_every_reader_in_a_second(home, agent,
 def test_a_free_folder_is_free_for_anybody(home, agent):
     work = home / "work"
     work.mkdir()
-    assert pq.holder_for(str(work)) is None
-    assert pq.is_free(str(work), SID) is True
-    assert pq.is_free(str(work), "") is True
+    assert pq.holder_for(folder_key(work)) is None
+    assert pq.is_free(folder_key(work), SID) is True
+    assert pq.is_free(folder_key(work), "") is True
 
 
 def test_a_folder_with_no_key_is_always_free():
@@ -711,10 +787,10 @@ def test_the_holder_is_free_to_send_into_its_own_folder(home, agent):
     work.mkdir()
     stage_run(agent, "r-1", str(work / "page.html"), SID)
     registry(SID, status="busy")
-    assert pq.is_free(str(work), SID) is True
-    assert pq.is_free(str(work), SID2) is False
+    assert pq.is_free(folder_key(work), SID) is True
+    assert pq.is_free(folder_key(work), SID2) is False
     # A task with no session id yet can never be the holder, so it waits.
-    assert pq.is_free(str(work), "") is False
+    assert pq.is_free(folder_key(work), "") is False
 
 
 # ================================================================= order_key
@@ -904,8 +980,8 @@ def test_the_walk_resolves_no_folder_key_of_its_own(home, agent):
 
     run = pq.scan_runs()[0]
     assert "key" not in run
-    assert pq.run_key(run) == str(work)
-    assert run["key"] == str(work)          # …and remembered on the record
+    assert pq.run_key(run) == folder_key(work)
+    assert run["key"] == folder_key(work)          # …and remembered on the record
 
 
 def test_one_card_list_per_run_per_scan_window(home, agent, monkeypatch):
@@ -923,7 +999,7 @@ def test_one_card_list_per_run_per_scan_window(home, agent, monkeypatch):
     monkeypatch.setattr(agent, "_permissions",
                         lambda run_dir: (reads.append(run_dir), real(run_dir))[1])
 
-    assert pq.holders()[str(work)]["kind"] == "run"
+    assert pq.holders()[folder_key(work)]["kind"] == "run"
     run = pq.scan_runs()[0]
     assert [p["id"] for p in pq.run_permissions(agent, run)] == ["p1"]
     assert len(reads) == 1
@@ -964,12 +1040,12 @@ def test_the_folder_key_table_is_capped(home, monkeypatch):
     for n in range(3):
         folder = home / "work" / f"p{n}"
         folder.mkdir(parents=True)
-        assert pq.queue_key(str(folder)) == str(folder)
+        assert pq.queue_key(str(folder)) == folder_key(folder)
     assert len(pq._KEY_CACHE) == 3
 
     folder = home / "work" / "p3"
     folder.mkdir()
-    assert pq.queue_key(str(folder)) == str(folder)
+    assert pq.queue_key(str(folder)) == folder_key(folder)
     assert len(pq._KEY_CACHE) == 1
 
 

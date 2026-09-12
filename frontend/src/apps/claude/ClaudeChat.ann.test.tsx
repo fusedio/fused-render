@@ -36,6 +36,7 @@ const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
+const { publishProjectQueueEnabled } = await import("./feature-flag");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 
@@ -57,6 +58,14 @@ let audioSource: Record<string, unknown> = { audio: { available: true, reason: n
 /** Set by `heldStart()` — the `start` request, parked until the test says go. */
 let holdStart: Promise<void> | null = null;
 
+/** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
+let prefsBody: Record<string, unknown> = {};
+/** Every body `/api/tasks/queue/admit` was asked with, and what it answers. The
+ *  queue is the one road on which a send does not reach `/api/run` at all, so
+ *  the ENTRY is where a queued round of notes has to be looked for. */
+const admits: Array<Record<string, unknown>> = [];
+let admitAnswer: Record<string, unknown> = { run: true };
+
 const realFetch = globalThis.fetch;
 
 function jsonRes(body: unknown): Response {
@@ -76,7 +85,11 @@ function stubFetch(): void {
         templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
       });
     }
-    if (url === "/api/prefs") return jsonRes({});
+    if (url === "/api/prefs") return jsonRes(prefsBody);
+    if (url === "/api/tasks/queue/admit") {
+      admits.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return jsonRes(admitAnswer);
+    }
     // A34's boot probe (`captureSources`) — what this machine can record, asked
     // without prompting for permission.
     if (url === "/api/capture") return jsonRes({ sources: audioSource });
@@ -186,6 +199,12 @@ beforeEach(() => {
   overviews = 0;
   revoked = [];
   holdStart = null;
+  prefsBody = {};
+  admits.length = 0;
+  admitAnswer = { run: true };
+  // PROCESS-GLOBAL, like the native flag beside it: left on, it would admit
+  // every send in every suite that mounts a chat after this one.
+  publishProjectQueueEnabled(false);
   keydowns.length = 0;
   asFound = { ...API };
   resetAgentDirCacheForTests();
@@ -378,6 +397,7 @@ let swallowed = { prevented: 0, stopped: 0 };
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  publishProjectQueueEnabled(false);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   const doc = globalThis.document as unknown as Record<string, unknown>;
   doc.addEventListener = realAdd;
@@ -1292,4 +1312,111 @@ test("the transcript's words make the mark sendable, walkthrough or no", async (
   expect(message).toContain("<" + ANN_TAG + ">");
   expect(message).toContain("this header is wrong");
   expect(annChips(r)).toHaveLength(0);
+});
+
+// ---- the project queue: a send the folder was too busy to take -------------
+//
+// A queued send never reaches `/api/run`. It becomes a scheduler entry that
+// fires minutes later with WHATEVER IS WRITTEN ON IT — so everything the live
+// wire composes has to be composed before the admission, or it is simply not in
+// the message that eventually runs. The pictures already travelled
+// (`carryForQueue`); the NOTES did not, and they stayed unmarked, which is the
+// worse half: the next send into a free folder took somebody else's round
+// (Bugbot, PR #1124).
+
+/** The chat with the queue on, ready to admit. Published rather than left to
+ *  the prefs read, so the switch cannot land a tick after the send. */
+async function queuedChat(answer: Record<string, unknown>, content?: string) {
+  prefsBody = { queue: { enabled: true } };
+  admitAnswer = answer;
+  const rig = content === undefined ? await armedWithANote() : await armedWithANote(content);
+  // Inside `act`: the switch has subscribers on screen (`useProjectQueueEnabled`
+  // through the schedule hook), so publishing it is a state update like any
+  // other.
+  await act(async () => publishProjectQueueEnabled(true));
+  return rig;
+}
+
+test("a QUEUED send writes its notes ONTO the entry, and spends the round", async () => {
+  const { r } = await queuedChat(
+    {
+      run: false,
+      entry: { id: "q1" },
+      key: "pending:q1",
+      position: 2,
+      ahead: "TASK-041",
+      ahead_title: "Pull today's news",
+    },
+    "the header is wrong",
+  );
+  await typeInBox(r, "please fix this");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  // Nothing spawned — which is the whole point of the admission.
+  expect(started()).toHaveLength(0);
+  // …and the entry carries the message the live send would have carried: the
+  // typed line and the annotations block, composed the one way
+  // (`composeOutgoing`).
+  expect(admits).toHaveLength(1);
+  const message = String(admits[0]!.message);
+  expect(message).toContain("please fix this");
+  expect(message).toContain("<" + ANN_TAG + ">");
+  expect(message).toContain("the header is wrong");
+  // THE ROUND IS SPENT. Unmarked notes are notes the NEXT send takes — a queued
+  // message's words arriving a second time, under somebody else's prompt.
+  expect(annChips(r)).toHaveLength(0);
+  expect(annotationsForTests()!.annotations.every((n) => !!n.sent)).toBe(true);
+  // ONE picture, taken once: its copy is what the entry carries
+  // (`carryForQueue` led with it), and the original's blob is put down rather
+  // than pinned for the life of the document — nothing on screen draws it.
+  expect(overviews).toBe(1);
+  expect(revoked).toHaveLength(1);
+  // The chip is up, and it is the one thing on screen still saying the words.
+  expect(byClass(r, "c-queuechip")).toHaveLength(1);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+    "please fix this",
+  ]);
+});
+
+test("an ADMITTED send takes its notes the ordinary way — once, and only in beginSend", async () => {
+  // `run: true` is today's road byte for byte: the notes are still pending when
+  // the verdict lands, `beginSend` takes them, and the capture the admission
+  // paid for is put down (revoked) rather than double-stamping the round — the
+  // same price `carryForQueue` pays for asking before spending.
+  const { r } = await queuedChat({ run: true }, "this button is too small");
+  await typeInBox(r, "have a look at this");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  expect(admits).toHaveLength(1);
+  expect(started()).toHaveLength(1);
+  const message = started()[0]!.params.message;
+  expect(message).toContain("have a look at this");
+  expect(message).toContain("<" + ANN_TAG + ">");
+  expect(message).toContain("this button is too small");
+  // ONE round of notes on the wire, never two.
+  expect(message.split("<" + ANN_TAG + ">")).toHaveLength(2);
+  // The admission's own capture is the only thing spent for nothing.
+  expect(overviews).toBe(2);
+  expect(revoked).toHaveLength(1);
+  expect(annChips(r)).toHaveLength(0);
+});
+
+test("a REFUSED admission leaves the round exactly where the reader left it", async () => {
+  // The queue would not take the message, so nothing was sent — and nothing may
+  // be spent either: the chips stay, the notes stay pending, and the words go
+  // back in the box. Only the capture is put down, because a picture of a pane
+  // that has moved on is no use to the retry.
+  const { r } = await queuedChat({ nope: true }, "this row is wrong");
+  await typeInBox(r, "words that did not go");
+  await pressEnterInBox(r);
+  await settle(30);
+
+  expect(started()).toHaveLength(0);
+  expect(byClass(r, "c-queuechip")).toHaveLength(0);
+  expect(boxValue(r)).toBe("words that did not go");
+  expect(annChips(r)).toHaveLength(1);
+  expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();
+  expect(revoked).toHaveLength(1);
 });

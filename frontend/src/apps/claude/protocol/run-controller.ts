@@ -2925,7 +2925,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
           addError(message);
         };
         if (poll.error) {
-          if (matches || !users.length) {
+          if (matches && windowMoved) {
+            // A FAILED FOLLOW-UP HANGS UNDER ITS OWN LINE (round-4 review,
+            // 2026-09-12). `matches` compares the last bubble against
+            // `poll.message` — the run's FIRST message — so a run that absorbed
+            // a scheduler follow-up matches the LEADER'S line while the payload
+            // above a moved cursor belongs to the follow-up. The success path
+            // below already answers that by asking the transcript
+            // (`refreshFromTranscript`); the error path did not, and filed the
+            // failure under the prompt that produced the reply ABOVE it — an
+            // error blamed on the wrong message, and the follow-up's own prompt
+            // still nowhere on screen.
+            //
+            // Same repair, same order: refresh first so the file puts the
+            // follow-up's line where it belongs, THEN append the failure, which
+            // lands under that line because it is now the last one. And only if
+            // the transcript is not already carrying the failure itself
+            // (`errorShown`, the rule the `shownAlready` branch below spells
+            // out): a refresh that brought an `error` row in with the prompt has
+            // said it already.
+            if (await refreshFromTranscript()) appended = true;
+            if (!errorShown(poll.error)) {
+              reportProbeError(poll.error);
+              appended = true;
+            }
+          } else if (matches || !users.length) {
             reportProbeError(poll.error);
             appended = true;
           } else if (unseen) {
