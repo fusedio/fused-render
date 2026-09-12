@@ -322,7 +322,17 @@ describe("the session the leader's run opened", () => {
     expect(effect).toContain("void controller.openSession(adoptSession);");
     // NO GUARD REF: `openSession` emits the id, the rule answers "" from then
     // on, and the effect's own dependency is what closes it.
-    expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params]);");
+    expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params, file]);");
+    // …AND THE UNSENT WORDS COME WITH THE SESSION. The composer keys its draft on
+    // `new:<file>` while there is none, so the flip would leave that record
+    // standing and the next keystroke would autosave the same sentence under the
+    // session — one message, two drafts, and a draft ROW beside the conversation
+    // (review, PR #1124). Moved HERE and not on any key change: a key that flips
+    // because the reader opened some other chat is not an adoption.
+    expect(effect).toContain(
+      'void moveChatDraft(chatDraftKey(null, file || ""), adoptSession);',
+    );
+    expect(CHAT).not.toContain("moveChatDraft(draftKey");
     // …AND THE DOOR THE PANE CAME IN BY IS SHUT. A chat opened on `?queued=<id>`
     // takes that entry as its leader on every render (see `queuedParam`), so
     // leaving the param standing beside the session just adopted would keep

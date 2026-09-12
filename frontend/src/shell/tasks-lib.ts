@@ -1927,7 +1927,14 @@ export function canRunNow(task: Task): boolean {
  *
  *   * the LANE, from taskColumn — the same function that files the card into the
  *     Board's lanes, so the List and the Board cannot disagree about what
- *     "Upcoming" means.
+ *     "Upcoming" means. QUEUED COUNTS TOO, and it is the same row: a one-off due
+ *     into a folder somebody's run is holding is upcoming work that has been
+ *     told to wait, and the queue is not supposed to change what a task IS. It
+ *     was the one lane whose row could not be pressed at all — no session to
+ *     open (nothing has run), no chat door (its `entry_origin` is not "chat"),
+ *     and this arm declining left `pressable` false, so a row with a time, a
+ *     title and a place in the line was inert (review, PR #1124). The other two
+ *     conditions carry the weight, exactly as they do for `upcoming`.
  *   * EXACTLY ONE MESSAGE, from soleMessage. Which is the case the user asked
  *     for and it lands where they meant: a task scheduled but never run has
  *     exactly one message — the pending one — so "one message and upcoming" IS
@@ -1954,7 +1961,8 @@ export function canRunNow(task: Task): boolean {
  * run — an older server without the `next_run` fields.
  */
 export function upcomingEditEntry(task: Task, held?: TaskMessage[]): string | null {
-  if (taskColumn(task) !== "upcoming") return null;
+  const lane = taskColumn(task);
+  if (lane !== "upcoming" && lane !== "queued") return null;
   if (soleMessage(task, held) === null) return null;
   return runNowTarget(task)?.entryId ?? null;
 }

@@ -4649,6 +4649,20 @@ def api_queue_admit(body: dict = Body(...),
     learns the run's session from the live registry by pid, so the anonymous
     window is now seconds instead of two minutes (`project_queue.run_sessions`).
 
+    **`draft_key` IS THE DRAFT THIS SEND SPENT**, and it is how a queued chat
+    keeps the name it already had. A session-less composer autosaves under
+    `new:<file>` and the listing numbers that key, so the row the reader has been
+    watching is TASK-057 before a word of it has gone anywhere. Queueing it used
+    to mint a SECOND number for `pending:<entry-id>` and leave the spent key in
+    `task_ids.json` for ever — the reader watched TASK-057 become TASK-058 on the
+    send, and every later listing paid a scan of the runs tree for a draft
+    nothing would settle (`_settle_new_chats`). The client names the key it is
+    spending, exactly as the run it would otherwise have started names it
+    (`agent._start`'s `meta.json draft_key`), and the entry inherits both the
+    number and the delete (`schedule.spend_chat_draft`). Optional, and ignored
+    when the folder was free: a send that RUNS spends its draft the way it always
+    did, through the run it starts.
+
     **A WORDLESS SEND IS REFUSED ONLY WHERE IT WOULD HAVE TO BE STORED.** The
     composer lets a user send pictures with no words, and into a free folder
     that is an ordinary send this must not stand in the way of — so the message
@@ -4747,6 +4761,14 @@ def api_queue_admit(body: dict = Body(...),
                                           schedule._now(), origin="chat")
     except ValueError as exc:
         return _error(str(exc), status=400)
+
+    # THE DRAFT THIS SEND SPENT, settled BEFORE anything is numbered below —
+    # `_task_number` allocates, and the whole point of the rekey inside is that
+    # it finds the number already sitting on `pending:<entry-id>` and mints
+    # nothing. The schedule router owns the move because it owns the other one
+    # exactly like it (a scheduled form's `draft_id`), and one copy is what keeps
+    # the two from drifting. Best-effort and silent: see its docstring.
+    schedule_api.spend_chat_draft(body.get("draft_key"), entry)
 
     # The row this message landed on, read the same way the listing files it:
     # the session it named, else the LEADER's key for a follower, else its own

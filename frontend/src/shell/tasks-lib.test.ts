@@ -3590,6 +3590,23 @@ describe("an upcoming row's click", () => {
     ).toBe(null);
   });
 
+  it("claims a QUEUED one-off too — the same row, told to wait", () => {
+    // A one-off due into a folder somebody's run is holding is upcoming work
+    // that has been asked to wait, and the queue is not supposed to change what
+    // a task IS. It was the one lane whose row could not be pressed at all: no
+    // session to open (nothing has run), no chat door (its origin is the form,
+    // not a composer), and this arm declining left the row inert (review, PR
+    // #1124).
+    const waiting = { ...oneOff, status: "queued" as const };
+    expect(taskColumn(waiting)).toBe("queued");
+    expect(upcomingEditEntry(waiting)).toBe("e9");
+    // Which IS the press: nothing else answers for this row.
+    expect(openThreadIntent(waiting)).toBe(null);
+    // The other two conditions still carry the weight — a queued row with a
+    // thread behind it is the accordion, exactly as an upcoming one is.
+    expect(upcomingEditEntry({ ...soon, status: "queued" as const })).toBe(null);
+  });
+
   it("names the entry run-now and the drag would name — never a second one", () => {
     // runNowTarget's answer, so Edit and Run now act on the same run: a one-off's is
     // the pending message it holds, and a row that names a run it does not hold uses

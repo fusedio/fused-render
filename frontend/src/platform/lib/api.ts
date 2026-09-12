@@ -3420,6 +3420,20 @@ export function admitQueueSend(body: {
    * session id answers on its own.
    */
   run_id?: string;
+  /**
+   * THE CHAT DRAFT THIS SEND SPENDS — `new:<file>`, and only ever sent by a chat
+   * that has no session yet.
+   *
+   * A session-less composer autosaves under that key and the listing gives it a
+   * TASK number, so the row the reader is watching is named before anything has
+   * run. A send into a FREE folder spends it through the run it starts (the
+   * start request's own `draft_key`, which `agent._start` writes into
+   * `meta.json`); a send that QUEUES starts no run, so it says it here instead
+   * and the entry inherits both the number and the delete
+   * (`routers/schedule.py::spend_chat_draft`). Without it the queued task minted
+   * a second number and the spent key was never cleaned up (review, PR #1124).
+   */
+  draft_key?: string;
 }): Promise<QueueAdmission> {
   return postJson<QueueAdmission>("/api/tasks/queue/admit", body);
 }

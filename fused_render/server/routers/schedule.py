@@ -280,6 +280,58 @@ def create_entry(target: str, body: dict, due, *, repeats: str = "",
         create_target=create_target)
 
 
+def spend_chat_draft(key, entry: dict) -> bool:
+    """The chat draft a QUEUED SEND spent: its TASK number moves onto the entry
+    that message became, and the record goes. True if anything moved.
+
+    THE SAME TWO MOVES `api_schedule_create` MAKES FOR A FORM, one surface over.
+    A New task card that is scheduled hands over its `draft_id`, and the number
+    the draft row was wearing is rekeyed onto `pending:<entry-id>` before the
+    record is dropped, so the TASK-118 somebody has been typing into is the
+    TASK-118 they end up with. A chat whose send is QUEUED is that same event —
+    the words in the composer have just become a booked message — and until this
+    it made neither move: the `new:<file>` draft kept the number it was
+    allocated at the first keystroke, `_task_number` minted a SECOND one for
+    `pending:<entry-id>`, and the reader watched TASK-057 become TASK-058 on the
+    send that queued it. The abandoned key then sat in `task_ids.json` for ever,
+    which also left `_settle_new_chats` scanning the runs tree on every listing
+    for a draft nothing would ever settle (review, PR #1124).
+
+    THE NUMBER ONLY MOVES OFF A `new:<file>` KEY, which is the schedule form's
+    own rule read through the other door: a chat that HAS a session is numbered
+    under that session, and this message is landing in it, so there is nothing to
+    carry forward and only the record goes. Moving anything onto
+    `pending:<entry-id>` there would invent a second identity for a task that
+    already has one.
+
+    Best-effort like every other draft write on this road, and for the same
+    reason: the message IS queued, and a read-only state dir must not turn that
+    into a 500. A draft that could not be dropped costs one stale row, never the
+    task. `""` — an absent or malformed key, which is what every client written
+    before the queue sends — does nothing at all.
+    """
+    key = drafts.chat_key(key)
+    if not key:
+        return False
+    moved = False
+    try:
+        if drafts.is_new_chat_key(key):
+            tasks_store.rekey(
+                key, tasks_store.pending_key(str(entry.get("id") or "")))
+            moved = True
+        if drafts.delete_chat(key):
+            moved = True
+    except OSError:
+        return moved
+    if moved:
+        # A `new:<file>` draft IS a row (`routers/tasks.py::_new_chat_draft_row`),
+        # and it has just stopped being one — a page holding the changes
+        # long-poll should hear that in the same breath as the queued row it
+        # turned into, not on its next full listing.
+        tasks_watch.notify({key})
+    return moved
+
+
 @router.post("/api/schedule")
 def api_schedule_create(body: dict = Body(...),
                         x_fused: str | None = Header(default=None)):

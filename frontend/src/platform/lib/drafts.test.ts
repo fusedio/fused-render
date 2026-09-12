@@ -30,6 +30,7 @@ import {
   chatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
+  moveChatDraft,
   newChatFile,
   saveChatDraft,
   saveTaskDraft,
@@ -560,5 +561,84 @@ describe("fetchChatDraft re-checks spent after the answer", () => {
 
     expect(await reading).toBeNull();
     globalThis.fetch = real;
+  });
+});
+
+// ---- the adoption carries the unsent words, and only those --------------------
+//
+// A chat whose first message QUEUED has no session until the scheduler runs it;
+// the page then adopts the session that run opened (`ClaudeChat`'s
+// `adoptSession`) and the composer's key flips from `new:<file>` to it. Anything
+// typed while the chat was waiting is still filed under the old key, so the next
+// keystroke autosaves the same sentence twice over — one unsent message, two
+// drafts, and a draft ROW beside the conversation it belongs to (review, PR
+// #1124). `moveChatDraft` is the one move that closes it, and what it must never
+// move is a draft that was SENT.
+
+describe("moveChatDraft", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+
+  /** `fetch` serving `GET /api/drafts` and recording every write with its body. */
+  function serve(chat: Record<string, ChatDraft>) {
+    const calls: { method: string; url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url,
+        body: init?.body ? JSON.parse(init.body as string) : undefined,
+      });
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ chat, task: {} }),
+      } as unknown as Response);
+    }) as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = real; } };
+  }
+
+  const writes = (calls: { method: string; url: string; body: unknown }[]) =>
+    calls.filter((c) => c.method !== "GET");
+
+  test("writes the words under the session and takes the folder's copy down", async () => {
+    const from = "new:/Users/me/adopted";
+    const f = serve({ [from]: { text: "while I waited", attachments: [{ path: "/tmp/a.png", name: "a.png", kind: "image" }], updated_at: 9 } });
+    expect(await moveChatDraft(from, "sess-adopted")).toBe(true);
+    const [put, del] = writes(f.calls);
+    // The save FIRST, so a failure between the two leaves the words where they
+    // are rather than nowhere — and it carries the tray as well as the text.
+    expect(put.method).toBe("PUT");
+    expect(put.url).toBe("/api/drafts/chat/sess-adopted");
+    expect((put.body as { text: string }).text).toBe("while I waited");
+    expect((put.body as { attachments: unknown[] }).attachments.length).toBe(1);
+    expect(del.method).toBe("DELETE");
+    expect(del.url).toBe(`/api/drafts/chat/${from.split("/").map(encodeURIComponent).join("/")}`);
+    // …and the old key is spent from here on, so a composer remounting on the
+    // folder cannot seed the words back out from under the move.
+    expect(await fetchChatDraft(from)).toBeNull();
+    f.restore();
+  });
+
+  test("a SENT draft moves nothing — the spent key answers nothing to move", async () => {
+    // The ordinary queued send: the composer deleted its own key on Enter, and
+    // the words are on the entry. Carrying them onto the session would put the
+    // message the reader sent back in their box as an unsent draft.
+    const from = "new:/Users/me/queued-and-sent";
+    const f = serve({ [from]: held("the message that queued") });
+    void deleteChatDraft(from);
+    expect(await moveChatDraft(from, "sess-queued")).toBe(false);
+    expect(writes(f.calls).filter((c) => c.url.includes("sess-queued"))).toEqual([]);
+    f.restore();
+  });
+
+  test("nothing to carry is not a write", async () => {
+    // An empty draft, a key with no record at all, and the degenerate asks.
+    const f = serve({ "new:/Users/me/blank": held("   ") });
+    expect(await moveChatDraft("new:/Users/me/blank", "sess-a")).toBe(false);
+    expect(await moveChatDraft("new:/Users/me/never-typed", "sess-a")).toBe(false);
+    expect(await moveChatDraft("", "sess-a")).toBe(false);
+    expect(await moveChatDraft("new:/Users/me/blank", "")).toBe(false);
+    expect(await moveChatDraft("sess-a", "sess-a")).toBe(false);
+    expect(writes(f.calls)).toEqual([]);
+    f.restore();
   });
 });

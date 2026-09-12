@@ -593,6 +593,21 @@ describe("admission, in the send window", () => {
     expect(send.slice(queued, queued + 5000)).toContain("spendTrayForQueue();");
   });
 
+  it("names the draft it is spending, so the queued task keeps the reader's TASK number", () => {
+    // A session-less composer drafts (and is NUMBERED) under `new:<file>`. A send
+    // into a FREE folder spends that key through the run it starts — the start
+    // request's `draft_key`, read back off `meta.json` — and a send that QUEUES
+    // starts no run at all, so it has to say so here or the entry mints a SECOND
+    // number and the reader watches TASK-057 become TASK-058 on the send (review,
+    // PR #1124).
+    const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
+    expect(send).toContain(
+      '...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),',
+    );
+    // The same function the composer keys on, so the two spellings cannot drift.
+    expect(CHAT).toContain('import { chatDraftKey, moveChatDraft } from "@platform/lib/drafts";');
+  });
+
   it("joins a follow-up to the message already in the line, not to a new task", () => {
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
     expect(send).toContain('const sid = live.sessionId || params.get("session_id") || "";');

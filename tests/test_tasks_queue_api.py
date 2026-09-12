@@ -28,7 +28,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import project_queue, schedule, tasks_store, tasks_watch
+from fused_render import drafts, project_queue, schedule, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
@@ -69,6 +69,12 @@ def state_dir(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     monkeypatch.setattr(tasks_store, "STATE_DIR", str(d))
     monkeypatch.setattr(sessions_mod, "STATE_DIR", str(d))
+    # ...AND THE DRAFT STORE, which shares the dir. `drafts.STATE_DIR` is derived
+    # from the env at import, like the two above, so conftest's per-RUN tmp home
+    # is one store for every test in the process — a draft written by one case
+    # would be listed (and numbered) by the next (tests/test_drafts.py redirects
+    # it in exactly this seat, for exactly this reason).
+    monkeypatch.setattr(drafts, "STATE_DIR", str(d))
     return d
 
 
@@ -2163,6 +2169,92 @@ def test_a_queued_new_chat_is_named_the_moment_it_queues(
     # …and the same key still answers the same number on every listing after
     # that: allocation is once, keyed by the task key (`ensure_ids`).
     assert _rows(client)[key]["task_id"] == number
+
+
+def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
+        client, projects_dir, folders, monkeypatch, flag):
+    """THE NAME SURVIVES THE QUEUE. A composer with no session autosaves under
+    `new:<file>` and the listing numbers that key, so the reader is watching
+    TASK-001 before a word of it has gone anywhere. Queueing the send is the
+    same event for that row as scheduling a form is for a `draft:<id>` one — the
+    thing keeps going, under a new key — so the number is REKEYED onto
+    `pending:<entry-id>` rather than a second one being minted, and the spent
+    draft goes in the same request (review, PR #1124)."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
+    assert drafts.put_chat(key, "half a thought") is not None
+    named = _rows(client)[key]
+    assert named["kind"] == "draft"
+    number = named["task_id"]
+    assert number.startswith("TASK-")
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "half a thought", "draft_key": key})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run"] is False
+    # THE SAME NAME the draft row wore, in the answer that queued it...
+    assert body["task_id"] == number
+    pending = tasks_store.pending_key(body["entry"]["id"])
+    assert body["key"] == pending
+    # ...and on every listing after it.
+    rows = _rows(client)
+    assert rows[pending]["task_id"] == number
+    assert rows[pending]["status"] == "queued"
+    # THE DRAFT IS OVER: no row, no record, and no number record left behind —
+    # which is also `_settle_new_chats`' whole waiting set, so no later listing
+    # scans the runs tree for a draft nothing will ever settle.
+    assert key not in rows
+    assert drafts.get_chat(key) is None
+    assert [k for k in tasks_store.task_ids()
+            if drafts.is_new_chat_key(k)] == []
+
+
+def test_a_queued_send_from_a_chat_that_has_a_session_moves_no_number(
+        client, projects_dir, folders, monkeypatch, flag):
+    """A chat that HAS a session is numbered under that session, and this
+    message is landing in it — so the draft record goes and nothing is carried
+    anywhere. Moving a number onto `pending:<entry-id>` here would invent a
+    second identity for a task that already has one (the schedule form's own
+    rule, read through the other door)."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-b", alpha, "a conversation of its own")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    assert drafts.put_chat("sess-b", "typed, not sent") is not None
+    before = _rows(client)["sess-b"]["task_id"]
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "session_id": "sess-b", "message": "go",
+               "draft_key": "sess-b"})
+    assert r.json()["run"] is False
+    rows = _rows(client)
+    # The conversation keeps its own number and loses only the `Draft` chip.
+    assert rows["sess-b"]["task_id"] == before
+    assert rows["sess-b"]["draft"] is None
+    assert drafts.get_chat("sess-b") is None
+    assert tasks_store.pending_key(r.json()["entry"]["id"]) not in tasks_store.task_ids()
+
+
+def test_an_admitted_send_leaves_its_chat_draft_alone(
+        client, folders, flag):
+    """`run: true` spends nothing. Such a send starts a RUN, and that run
+    carries the key in its own `meta.json` (`_settle_new_chats`) — so a server
+    that also deleted the draft here would destroy the words of a send that then
+    failed to spawn."""
+    flag()
+    alpha, _beta = folders
+    key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
+    drafts.put_chat(key, "half a thought")
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "message": "half a thought",
+                  "draft_key": key}).json() == {"run": True}
+    assert drafts.get_chat(key) is not None
 
 
 def test_two_admissions_of_one_task_in_two_threads_mint_one_number(

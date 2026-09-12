@@ -31,6 +31,7 @@ import {
 } from "react";
 
 import { currentUrl, navigateUrl } from "@platform/lib/router";
+import { chatDraftKey, moveChatDraft } from "@platform/lib/drafts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -2406,6 +2407,17 @@ function ChatBody(props: ChatBodyProps) {
                 // THE LIVE RUN, so the holder can be recognised as this chat's
                 // own before a session id exists to say it.
                 ...(rid ? { run_id: rid } : {}),
+                // THE DRAFT THIS SEND SPENDS, on the one road where the server
+                // has to be told: a send that RUNS tags the run it starts
+                // (`run-controller`'s own `draft_key`, read back off
+                // `meta.json`), and a send that QUEUES starts no run at all —
+                // so without this the composer's `new:<file>` draft kept the
+                // TASK number the reader had been watching and the entry minted
+                // a second one (review, PR #1124). The same key the composer
+                // autosaves under, spelled by the same function, and sent only
+                // while there is no session: a chat that has one is numbered
+                // under it and has nothing to carry forward.
+                ...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),
               });
             } catch (err) {
               putDownQueuedShot();
@@ -3199,8 +3211,22 @@ function ChatBody(props: ChatBodyProps) {
     // leaving `?queued=` beside it would re-remember a leader this chat has just
     // outgrown on any later render (see `queuedParam`).
     params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
+    // AND THE UNSENT WORDS COME WITH IT. The composer keys its draft on the
+    // session, or on `new:<file>` while there is none — so the line below
+    // silently moves the box's key, and a sentence typed while this chat was
+    // waiting would be autosaved again under the session while the `new:<file>`
+    // record stood: one unsent message, two drafts, and a draft ROW on the
+    // Tasks page beside the conversation it belongs to (review, PR #1124).
+    //
+    // Here and not in the composer, because THIS is the event: a key that flips
+    // because the reader opened some other conversation is not an adoption, and
+    // moving words on it would carry a folder's unsent draft onto a thread it
+    // was never typed into (the failure four rounds of Bugbot found in the old
+    // client-side rekey, PR #1118). A send's own draft is never moved either:
+    // it is spent, and `moveChatDraft` answers nothing for a spent key.
+    void moveChatDraft(chatDraftKey(null, file || ""), adoptSession);
     void controller.openSession(adoptSession);
-  }, [adoptSession, controller, cardPolicy, params]);
+  }, [adoptSession, controller, cardPolicy, params, file]);
 
   /**
    * T:16776/18000 — the block and both attach sets belong to the conversation
