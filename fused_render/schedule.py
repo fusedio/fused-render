@@ -2115,37 +2115,43 @@ def _host_send(entry: dict) -> dict | None:
     (turn open) is the wrong one here, because a host idling between turns is
     precisely the case this exists for.
 
-    **A GUEST CHANGES NOTHING.** No permission mode is passed at all, and the
-    model and the effort only where the entry names one: `agent._send` turns
-    any of them into a `set_model`/`set_permission_mode` control request the CLI
-    keeps for the rest of the session, so this send would otherwise rewrite the
-    settings of a chat the user is sitting in front of — and the mode it would
-    rewrite them to is this module's `auto`, which is broader than the chat's
-    own default. An inbox message runs under the settings its session already
-    has, exactly as a message typed into that composer would.
+    **A LIVE HOST ALWAYS WINS, AND THE GUEST ADAPTS TO IT** (bugbot HIGH,
+    2026-09-12). The round before this one asked the host first whether it could
+    serve the message unchanged — an attachment directory it was not granted, an
+    effort or a model the entry named and it was not on — and took the spawn
+    where it could not. But the spawn is a `claude --resume` on that same session
+    **while the idle host is still alive**: two writers on one transcript, which
+    is the exact failure this whole path exists to prevent. A mismatch is not a
+    reason to start a second process next to a live one; it is a reason for the
+    GUEST to give something up. So where there is a host, the message goes into
+    it with **nothing of the entry's own settings attached**:
+
+    * **No read-dir grant.** `--allowed-tools` is fixed at spawn, so a directory
+      the host was not started with cannot be added by sending; asking for one
+      makes `agent._send` TREE-KILL the chat's session to force a respawn. Sent
+      with `read_dirs=""`, an image the host cannot read raises an ordinary
+      permission card in a chat that is open, which the user is sitting in front
+      of and can answer — strictly better than either ending their session or
+      running a second `claude` beside it.
+    * **The host's own model and effort**, and (as before) its own permission
+      mode. `effort` is fixed at spawn; `set_model`/`set_permission_mode` are
+      applied MID-SESSION and stay applied, so an entry naming either would
+      quietly rewrite the settings of a chat somebody is using, for every turn
+      after this one. An inbox message runs under the settings its session
+      already has, exactly as a message typed into that composer would.
+
+    With all four empty, `agent._send` can never reach its respawn arm: the host
+    is never killed, and no second process is ever spawned beside it. Only when
+    there is NO live host does `_send` spawn.
+
+    An `{"error": …}` back — the host died between `_live_host` and the write —
+    is None, and the caller spawns: the host is gone, so there is nothing to
+    race, and the message is owed either way.
 
     **The entry is marked `host_sent`**, because what this returns is not a run
     of ours: the run id is the CHAT'S session host, shared with the page, and a
     cancel aimed at this entry must never tear it down (see `_send` and
     `_turn_tick`).
-
-    **AND IT IS ASKED WHETHER IT CAN SERVE THIS MESSAGE BEFORE IT IS HANDED
-    ONE** (`_host_serves`, reviewer 2026-09-12). `agent._send` answers
-    `{"respawn": True}` when the host cannot take the message as it stands — an
-    attachment directory it was not granted, an effort fixed at spawn — and by
-    the time it says so it has already TREE-KILLED the session to say it. That
-    is the right answer for a caller that owns the run; it is the wrong one for
-    a guest, because the run here is a chat the user may be sitting in front of,
-    and one scheduled message with an image or an explicit effort would end
-    their live session out from under them. So `host.json` is read first and the
-    inbox is used only when nothing about this entry would change the session:
-    otherwise None, and the message takes the ordinary spawn — which is what it
-    would have got anyway, minus the kill. (Nothing runs twice: the per-session
-    hold keeps a spawn out while the host is mid-turn.)
-
-    A `respawn` that still comes back — a host that changed under us between the
-    read and the send — is not a failure either: None, and the caller spawns.
-    The message is owed either way.
 
     Flag-gated and best-effort: with the project queue off this is not reached
     at all and the pass is the one that shipped, and any failure here is simply
@@ -2169,34 +2175,16 @@ def _host_send(entry: dict) -> dict | None:
         run_id = str((agent._live_host(target, session) or {}).get("run_id") or "")
         if not run_id:
             return None
-        # The same per-message attachment grant `_start` gets, in the spelling
-        # `_send` takes it in (a JSON array, `agent._attach_dirs`) — and it is
-        # checked against the host's own grant BEFORE the send, because a host
-        # that was not given the directory answers `respawn` by killing the
-        # chat's session (`_host_serves`).
-        read_dirs = json.dumps([shots_dir()]) if _stored_attachments(entry) else ""
-        if not _host_serves(agent, run_id, entry, read_dirs):
-            return None
-        # NO PERMISSION MODE AT ALL, WHICH MEANS "THE CHAT'S OWN" (bugbot,
-        # 2026-09-12). `agent._send` turns any mode it is given that differs
-        # from the host's into a `set_permission_mode` control request, and the
-        # CLI keeps it for the rest of the session — so a scheduled follow-up
-        # was silently rewriting the permission mode of a chat somebody was
-        # sitting in front of, and leaving it rewritten. Worse in one
-        # direction than the sentence makes it sound: every entry carries a
-        # mode (`create` fills the field in with this module's own default,
-        # `auto`, so "the user chose auto" and "the user chose nothing" are the
-        # same stored value), and `auto` is BROADER than the chat's own default
-        # of `prompt` — an unattended message walking into someone's live
-        # session and loosening it permanently. A spawn is a process of its own
-        # and keeps the entry's mode; an inbox message is a guest in somebody
-        # else's session and runs under the settings that session already has,
-        # exactly as a message typed into that composer would. `model` and
-        # `effort` are read straight off the entry and are empty unless the
-        # entry names one, so both already say nothing when nothing was chosen.
-        res = agent._send(run_id, _composed(entry), read_dirs,
-                          str(entry.get("model") or ""),
-                          str(entry.get("effort") or ""), "")
+        logger.debug(
+            "%s: delivered into the live host %s with its own model/effort; "
+            "%d attachment dirs not pre-granted", entry.get("id"), run_id,
+            _ungranted_dirs(agent, run_id, entry))
+        # Four empty strings, and every one of them is load-bearing — see the
+        # docstring. read_dirs and effort keep `agent._send` off its respawn
+        # arm (which tree-kills the chat's session); model and permission_mode
+        # keep it from queueing a `set_model`/`set_permission_mode` the CLI
+        # would apply for the rest of somebody's live session.
+        res = agent._send(run_id, _composed(entry), "", "", "", "")
     except Exception:  # noqa: BLE001 — a host we cannot reach is a spawn
         logger.debug("could not send %s into a live host; spawning instead",
                      entry.get("id"), exc_info=True)
@@ -2206,51 +2194,26 @@ def _host_send(entry: dict) -> dict | None:
     return None
 
 
-def _host_serves(agent, run_id: str, entry: dict, read_dirs: str) -> bool:
-    """Can this host take this entry's message AS IT STANDS — without the send
-    ending the chat's live session to make room for it?
+def _ungranted_dirs(agent, run_id: str, entry: dict) -> int:
+    """How many of this entry's attachment directories the live host was NOT
+    spawned with — i.e. what the guest gives up by asking for no new grant.
 
-    The three facts `agent._send` compares against `host.json`, asked here
-    instead, because the two calls disagree about what a mismatch COSTS. To
-    `_send` a mismatch is a respawn it may pay for with a tree-kill of the run;
-    to this module the run is not ours at all — it is a session host the page
-    owns and the user may be typing into — so the same mismatch is simply "not
-    the inbox, then", and the entry goes down the spawn path it took before any
-    of this existed.
-
-    * **Read dirs.** `--allowed-tools` is fixed at spawn: a message naming a
-      directory the host was not granted cannot be honoured by sending. Asked in
-      the host's own spelling (`agent._attach_dirs`, the same normalisation
-      `_send` runs on the same string), so the answer here and the answer there
-      are the same answer.
-    * **Effort.** Also fixed at spawn — there is no control request for it — so
-      an entry naming one the host was not started with would force the respawn.
-      An entry naming NONE says nothing and is served by whatever the session
-      has, which is the guest rule this dispatch follows everywhere else.
-    * **Model**, for the reason the permission mode is left behind (see
-      `_host_send`): `set_model` is applied MID-SESSION and stays applied, so an
-      entry naming a different model would not respawn — it would quietly rewrite
-      the model of somebody's live chat for every turn after this one. Same
-      class of harm, same answer: spawn instead.
-
-    Best-effort: a `host.json` we cannot read or parse is not a host we can
-    reason about, and False sends the entry to the spawn, which is safe."""
+    Debug only, and it is the whole of what is left of the old `_host_serves`:
+    the answer no longer changes what happens (a live host takes the message
+    either way), it only says in the log why an attachment may card. Reads
+    `host.json` at all only when there is an attachment to give up."""
+    if not _stored_attachments(entry):
+        return 0
+    granted: set[str] = set()
     try:
         with open(os.path.join(agent.RUNS, run_id, "host.json"),
                   encoding="utf-8") as fh:
             host = json.load(fh)
+        if isinstance(host, dict):
+            granted = {str(d) for d in (host.get("read_dirs") or [])}
     except (OSError, ValueError):
-        return False
-    if not isinstance(host, dict):
-        return False
-    effort = str(entry.get("effort") or "")
-    if effort and effort != str(host.get("effort") or ""):
-        return False
-    model = str(entry.get("model") or "")
-    if model and model != str(host.get("model") or ""):
-        return False
-    wanted = set(agent._attach_dirs(read_dirs))
-    return wanted <= set(host.get("read_dirs") or [])
+        pass
+    return len([d for d in (shots_dir(),) if d not in granted])
 
 
 def _send(entry: dict) -> None:

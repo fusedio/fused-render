@@ -1514,25 +1514,30 @@ def test_a_message_for_a_live_host_goes_into_its_inbox_not_a_new_process(
     assert agent.live_host_calls == [(str(folders["alpha"]), SID)]
     assert agent.sends[0]["run_id"] == "run-live"
     assert "carry on" in agent.sends[0]["message"]
-    assert agent.sends[0]["model"] == "opus"
-    assert agent.sends[0]["effort"] == "high"
     stored = _stored(entry["id"])
     assert stored["state"] == schedule.SENT
     assert stored["run_id"] == "run-live"
+    assert stored["host_sent"] is True
 
 
-def test_a_respawn_answer_falls_back_to_the_spawn(folders, home, spawned, host):
-    """`agent._send` says `respawn` when the live host cannot serve the message
-    as it stands — and it has already ended the session by then. The message is
-    owed either way."""
+def test_a_host_that_died_under_us_falls_back_to_the_spawn(folders, home,
+                                                           spawned, host):
+    """The ONE thing that still spawns for a session that had a host: the host
+    was gone by the time the write reached it (`agent._send` answers
+    `{"error": …}`, its own liveness check). There is nothing left to race, and
+    the message is owed either way. (`{"respawn": True}` cannot come back at
+    all now — the send names no read dir and no effort, which are the only two
+    things that reach that arm — but a dict without `sent` is a spawn whatever
+    it says.)"""
     _on(home)
-    host(run_id="run-live", answer={"respawn": True})
-    entry = schedule.create(str(folders["alpha"]), "with a picture", _ago(1),
+    host(run_id="run-live", answer={"error": "no live session"})
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
                             session_id=SID)
 
     schedule.tick()
     assert [c["session_id"] for c in spawned] == [SID]
-    assert _stored(entry["id"])["run_id"] == "r-1"
+    stored = _stored(entry["id"])
+    assert stored["run_id"] == "r-1" and "host_sent" not in stored
 
 
 def test_no_live_host_and_no_session_both_spawn(folders, home, spawned, host):
@@ -1586,31 +1591,25 @@ def test_a_host_that_raises_is_a_spawn(folders, home, spawned, monkeypatch, host
     assert _stored(entry["id"])["state"] == schedule.SENT
 
 
-def test_a_host_send_never_rewrites_the_chats_own_settings(folders, home,
-                                                           spawned, host):
-    """BUGBOT, 2026-09-12. The mode went in as the scheduler's own default
-    (`auto`), `agent._send` turned that into a `set_permission_mode` control
-    request, and the CLI kept it — so a scheduled follow-up silently changed
-    the permission mode of a chat somebody was sitting in front of, for the rest
-    of the session. An empty value means "whatever this chat is already set to",
-    which is the only thing a guest may say."""
-    _on(home)
-    agent = host(run_id="run-live")
-    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID)
-
-    schedule.tick()
-    assert agent.sends[0]["permission_mode"] == ""
-    assert agent.sends[0]["model"] == "" and agent.sends[0]["effort"] == ""
-
-
-def test_no_mode_is_carried_into_a_live_host_even_an_explicit_one(
+def test_nothing_of_the_entrys_own_settings_is_carried_into_a_live_host(
         folders, home, spawned, host):
-    """The mode is left behind whatever the entry says, and the model and the
-    effort still travel. Every entry carries a mode — `create` fills the field
-    with this module's default — so "the user chose one" is not a thing this
-    send can read; and the one it would carry most often is `auto`, broader than
-    the chat's own default. A spawn keeps the entry's mode (the case below it);
-    a guest in a live session does not get to set the house rules."""
+    """BUGBOT, 2026-09-12. A guest changes NOTHING about the house it walks
+    into — all four of the settings `agent._send` can act on go in empty, even
+    when the entry names one:
+
+    * `permission_mode` becomes a `set_permission_mode` the CLI keeps for the
+      rest of the session, and every entry carries one (`create` fills the
+      field with this module's `auto`, BROADER than a chat's default
+      `prompt`) — a scheduled follow-up was loosening a live chat's
+      permissions and leaving them loosened;
+    * `model` is the same shape (`set_model`, applied mid-session and kept);
+    * `effort` and `read_dirs` are fixed at spawn, so naming either makes
+      `_send` TREE-KILL the chat's session to force a respawn.
+
+    Empty means "whatever this chat is already set to", which is the only thing
+    a guest may say — and, since the two respawn triggers are never named, the
+    host can never be killed by this path either. A spawn keeps the entry's
+    mode (the case below); a message into somebody's live session does not."""
     _on(home)
     agent = host(run_id="run-live")
     schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
@@ -1618,8 +1617,9 @@ def test_no_mode_is_carried_into_a_live_host_even_an_explicit_one(
 
     schedule.tick()
     assert agent.sends[0]["permission_mode"] == ""
-    assert agent.sends[0]["model"] == "opus"
-    assert agent.sends[0]["effort"] == "high"
+    assert agent.sends[0]["model"] == "" and agent.sends[0]["effort"] == ""
+    assert agent.sends[0]["read_dirs"] == ""
+    assert spawned == [] and agent.cancels == []
 
 
 def test_a_spawn_still_carries_the_entrys_mode(folders, home, spawned, host,
@@ -1643,31 +1643,35 @@ def test_a_spawn_still_carries_the_entrys_mode(folders, home, spawned, host,
     assert modes == ["plan"]
 
 
-def test_an_attachment_the_host_was_not_granted_spawns_instead_of_killing_it(
+def test_an_attachment_the_host_was_not_granted_goes_in_without_the_grant(
         folders, home, spawned, host):
-    """REVIEWER, 2026-09-12. `agent._send` answers `respawn` when a message
-    names a Read directory the host was not granted — and it TREE-KILLS the
-    session to say so, because `--allowed-tools` is fixed at spawn. The run here
-    is not ours: it is the chat's own session host, so one scheduled message
-    with an image would have ended the live session of whoever was typing in it.
-    The grant is read off `host.json` first and the message takes the ordinary
-    spawn, which is what it would have got anyway — minus the kill."""
+    """BUGBOT HIGH, 2026-09-12. The round before this one read the host's grant
+    off `host.json` and took the SPAWN when the directory was missing — a
+    `claude --resume` on that session while its idle host was still alive, i.e.
+    the two-writers bug this whole path exists to prevent, arriving through the
+    guard meant to stop it. A live host always wins: the message goes in with no
+    new grant asked for (which is also what keeps `_send` off the tree-kill),
+    and an image the host cannot read raises an ordinary permission card in a
+    chat that is open with the user in front of it."""
     _on(home)
     agent = host(run_id="run-live")                      # granted nothing
     entry = schedule.create(str(folders["alpha"]), "look at this", _ago(1),
                             session_id=SID, images=[_shot(home)])
 
     schedule.tick()
-    assert agent.sends == [] and agent.cancels == []
-    assert [c["session_id"] for c in spawned] == [SID]
-    stored = _stored(entry["id"])
-    assert stored["state"] == schedule.SENT and "host_sent" not in stored
+    assert spawned == [] and agent.cancels == []
+    assert agent.sends[0]["run_id"] == "run-live"
+    assert agent.sends[0]["read_dirs"] == ""
+    assert _stored(entry["id"])["host_sent"] is True
 
 
-def test_an_attachment_the_host_already_has_still_goes_into_the_inbox(
+def test_an_attachment_the_host_already_has_still_asks_for_no_grant(
         folders, home, spawned, host):
-    """…and not one step further: a host spawned WITH the task-shots directory
-    can serve the message as it stands, so it does."""
+    """…and a host that WAS spawned with the task-shots directory takes the
+    same send, byte for byte: the grant is not a decision this path makes any
+    more, so both hosts get the identical empty string and neither is
+    respawned. (The difference between them survives only as a debug line
+    counting what the guest gave up.)"""
     _on(home)
     agent = host(run_id="run-live", read_dirs=[schedule.shots_dir()])
     entry = schedule.create(str(folders["alpha"]), "look at this", _ago(1),
@@ -1675,66 +1679,57 @@ def test_an_attachment_the_host_already_has_still_goes_into_the_inbox(
 
     schedule.tick()
     assert spawned == []
-    assert agent.sends[0]["read_dirs"] == json.dumps([schedule.shots_dir()])
+    assert agent.sends[0]["read_dirs"] == ""
     assert _stored(entry["id"])["host_sent"] is True
 
 
-def test_an_effort_the_host_was_not_started_with_spawns(folders, home, spawned,
-                                                        host):
-    """Effort is fixed at spawn too — there is no control request for it — so
-    `_send` would respawn, which for a guest means killing somebody's live chat
-    to run one scheduled message. The entry's effort is worth a process of its
-    own; it is not worth that."""
+def test_an_effort_the_host_was_not_started_with_is_left_behind(
+        folders, home, spawned, host):
+    """Effort is fixed at spawn — there is no control request for it — so
+    naming one the host lacks is what USED to force the respawn, and then (the
+    round before this) the spawn beside a live host. The entry's effort is worth
+    a process of its own only when there is no session to join; where there is
+    one, the turn runs at the effort that session already has."""
     _on(home)
     agent = host(run_id="run-live", effort="medium")
     schedule.create(str(folders["alpha"]), "think harder", _ago(1),
                     session_id=SID, effort="high")
 
     schedule.tick()
-    assert agent.sends == [] and agent.cancels == []
-    assert [c["session_id"] for c in spawned] == [SID]
+    assert spawned == [] and agent.cancels == []
+    assert agent.sends[0]["effort"] == ""
 
 
-def test_a_model_the_chat_is_not_on_spawns_rather_than_switching_it(
-        folders, home, spawned, host):
-    """`set_model` is applied MID-SESSION and kept — the same class as the
-    permission mode, and quieter than a respawn in the worst way: nothing is
-    killed, the chat is simply on another model for every turn after this
-    one."""
+def test_a_model_the_chat_is_not_on_is_left_behind_too(folders, home, spawned,
+                                                       host):
+    """`set_model` is applied MID-SESSION and kept, so carrying the entry's
+    model would leave somebody's chat on another model for every turn after
+    this one — and spawning instead would put a second process on their
+    transcript. Neither: the message runs on the model the chat is on."""
     _on(home)
     agent = host(run_id="run-live", model="sonnet")
     schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
                     model="opus")
 
     schedule.tick()
-    assert agent.sends == [] and agent.cancels == []
-    assert [c["session_id"] for c in spawned] == [SID]
-
-
-def test_a_host_that_matches_on_every_count_takes_the_message(folders, home,
-                                                              spawned, host):
-    """The control: nothing about this entry would change the session, so the
-    inbox is used exactly as it was before any of this was asked."""
-    _on(home)
-    agent = host(run_id="run-live", model="opus", effort="high")
-    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
-                    model="opus", effort="high")
-
-    schedule.tick()
     assert spawned == []
     assert agent.sends[0]["run_id"] == "run-live"
+    assert agent.sends[0]["model"] == ""
 
 
-def test_a_host_with_no_host_json_is_a_spawn(folders, home, spawned, host):
-    """Best-effort: a record we cannot read is not a host we can reason about,
-    and the spawn is the safe half of the answer."""
+def test_a_host_with_no_host_json_is_still_a_live_host(folders, home, spawned,
+                                                       host):
+    """`host.json` no longer decides anything: `_live_host` said there is a
+    session to hand a follow-up to, and that is the whole question. A record we
+    cannot read is not a reason to start a second process on that session —
+    the only spawn left is "no host at all"."""
     _on(home)
     agent = host(run_id="run-live", host_json=False)
     schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID)
 
     schedule.tick()
-    assert agent.sends == []
-    assert [c["session_id"] for c in spawned] == [SID]
+    assert spawned == []
+    assert agent.sends[0]["run_id"] == "run-live"
 
 
 def _cancel_requested(monkeypatch):
