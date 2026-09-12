@@ -88,7 +88,7 @@ def mlx_vlm_model_types() -> frozenset | None:
     return result
 
 
-def loadable_kind(code: str) -> tuple[str, object]:
+def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
     """`("allowlist", frozenset[str])` | `("model_types", frozenset[str] | None)`
     | `("any", None)` for runner `code` — the one fact `admission()` checks a
     row against. Declared here rather than hard-coded per capability in
@@ -117,11 +117,11 @@ def admission(*, runner_code: str, runner_short: str, model_id: str,
     """
     kind, data = loadable_kind(runner_code)
     if kind == "allowlist":
-        if model_id in data:
+        if isinstance(data, frozenset) and model_id in data:
             return True, None
         return False, f"{runner_short} only loads FLUX.2 Klein"
     if kind == "model_types":
-        if data is None or model_type is None or model_type in data:
+        if not isinstance(data, frozenset) or model_type is None or model_type in data:
             return True, None
         return False, f"{model_type} not supported by mlx-vlm"
     return True, None
