@@ -13,6 +13,14 @@ import {
   type ReactNode,
 } from "react";
 import { useAutoGrow } from "@platform/lib/autoGrow";
+import {
+  chatDraftKey,
+  deleteChatDraft,
+  fetchChatDraft,
+  saveChatDraft,
+  useAutosave,
+  type DraftAttachment,
+} from "@platform/lib/drafts";
 import "../styles/composer.css";
 import type { PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
@@ -413,6 +421,95 @@ export function ComposerCard({
     if (back.length) restoreAttachments.current?.(back.map((a) => a.path));
   }, [file]);
   const { ref: boxRef, grow } = useAutoGrow(text);
+
+  // ---- THE SERVER-SIDE DRAFT (design.md, "Client behavior / Chat composer") --
+  //
+  // The stash above is the SCHEDULE HOP — one navigation, this tab, spent on
+  // read. This is the other lifetime: what the reader typed and did not send,
+  // kept on the server so it survives a reload, another window, and opening a
+  // different chat and coming back. Additive in one direction, exactly as the
+  // design says: the hop is untouched and wins, because it is the more specific
+  // fact (a draft that was on its way to the task form thirty seconds ago).
+  //
+  // The key is the session, or `new:<file>` while the chat has not got one yet
+  // (chatDraftKey). A brand-new chat's first send both creates the session and
+  // deletes the draft, so nothing is ever re-keyed under the reader.
+  const draftKey = chatDraftKey(sessionId, file);
+  // What the box holds RIGHT NOW, for the async seed below to check against —
+  // `text` inside that closure is the value from the render that started the
+  // fetch, which is precisely the one that may be stale by the time it answers.
+  const textRef = useRef(text);
+  textRef.current = text;
+  // ONCE PER KEY, and never killed by a cleanup. The first shape latched a
+  // single "seeded" ref AND flipped an `alive` flag in the effect's cleanup;
+  // the two together lost every draft (owner E2E flow D, 2026-09-11): the
+  // key changes once on most mounts (the session id lands a render after the
+  // box does, `new:<file>` → `<session>`), so the cleanup killed the fetch in
+  // flight and the latch refused the re-run. Now each key fetches once, a
+  // late answer is judged only by whether the box is still empty, and a
+  // StrictMode double mount costs one duplicate GET whose second answer is a
+  // no-op `setText` of the same words.
+  const seededKeys = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (seededKeys.current.has(draftKey)) return;
+    seededKeys.current.add(draftKey);
+    // The hop already filled the box: it is newer and more specific, and the
+    // server's copy is about to be overwritten by the first autosave anyway.
+    if (textRef.current) return;
+    void fetchChatDraft(draftKey).then((saved) => {
+      if (!saved) return;
+      // WORDS TYPED WHILE THE FETCH WAS IN FLIGHT outrank anything it can
+      // answer (design.md: "a composer that is focused ignores incoming draft
+      // updates"). The test is the words, NOT the caret: `autoFocus` below puts
+      // the caret in the box on mount, before any fetch can answer.
+      if (textRef.current) return;
+      if (saved.text) {
+        setText(saved.text);
+        // Restored words are already the server's words: tell the autosave so
+        // the box coming back does not cost a PUT of the same text.
+        autosaveRef.current.reset({ text: saved.text, attachments: saved.attachments ?? [] });
+        grow();
+      }
+      // The tray's half, through the same door "Back to chat" uses: these are
+      // real paths, so they are registered rather than uploaded.
+      if (saved.attachments?.length) {
+        restoreAttachments.current?.(saved.attachments.map((a) => a.path));
+      }
+    });
+  }, [draftKey, grow]);
+
+  // What the tray holds, in the draft's own three fields. Read during render
+  // because `attachments()` is a plain read of the host's state (ClaudeChat
+  // passes `() => attach.items`), and `pending`/`view`-less chips are left out
+  // for SchedButton's reason: a chip still uploading names no file yet.
+  const trayDraft: DraftAttachment[] = attachments
+    ? attachments()
+        .filter((a) => !a.pending && !!a.view)
+        .map((a) => ({
+          path: a.view as string,
+          name: a.name || (a.view as string),
+          // Anything that is not a picture wears the glyph, the same floor
+          // `parseAttachmentsParam` applies to a stash row.
+          kind: a.kind === "image" ? "image" : "file",
+        }))
+    : [];
+  // 600 ms after the last keystroke, plus blur / pagehide / unmount. Empty text
+  // with an empty tray is a DELETE server-side, so clearing the box by hand
+  // clears the draft too without this having to know the difference.
+  // Returns the write's own promise (rather than `void`-discarding it, like
+  // most fire-and-forget callers of `saveChatDraft`) so `autosave.settle()`
+  // below can tell when it actually lands (Akshil, 2026-09-11).
+  const autosave = useAutosave({ text, attachments: trayDraft }, (value, opts) =>
+    saveChatDraft(draftKey, value.text, value.attachments, opts),
+  );
+  // `submit` is a useCallback built below; it needs the autosave handle, and the
+  // handle's identity is stable, so it is read through the ref every other seat
+  // in this file uses for the same reason.
+  const autosaveRef = useRef(autosave);
+  autosaveRef.current = autosave;
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the
   // element it measures, and a modal's `initialFocus` only needs to be able to
@@ -499,6 +596,16 @@ export function ComposerCard({
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
     if (!message && !hasAttachments) return false;
     setText("");
+    // THE DRAFT IS SPENT. `reset` first and with the value the box is ABOUT to
+    // have: a write debounced a keystroke ago would otherwise land after the
+    // DELETE and put the sent message back on the list as an unsent draft.
+    // `reset` only cancels that PENDING timer, though — a PUT already in
+    // flight (fired a keystroke before this one) cannot be cancelled and
+    // would still land after an immediate delete. `settle()` waits out
+    // whichever write is running, THEN the delete goes out; `submit` itself
+    // does not wait on either (Akshil, 2026-09-11).
+    autosaveRef.current.reset({ text: "", attachments: [] });
+    void autosaveRef.current.settle().then(() => deleteChatDraft(draftKeyRef.current));
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);

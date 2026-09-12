@@ -2583,6 +2583,13 @@ input.schedule-when-field {
    costs no hue at all, so the list is back to naming the one mark that has a
    lane. */
 .schedule-ring--upcoming { color: var(--status-upcoming); }
+/* A draft wears UPCOMING'S hue and no hue of its own, which is the same claim
+   the board makes with its lanes: a draft draws inside Upcoming (laneOf), so a
+   colour arguing with that lane would be the one place on the page where the
+   mark and the column disagree. The `✎ Draft` chip beside the title is what
+   tells the two apart — one mark for one fact (design.md, Akshil 2026-09-11). */
+.schedule-ring--draft { color: var(--status-upcoming); }
+
 /* QUEUED IS IN PROGRESS'S OWN YELLOW, DASHED (Akshil, 2026-09-12). It was
    `--activity`'s blue for a day and a gold of its own for a day; both are gone.
    `queued` is DRAWN INSIDE the In Progress lane (schedule-lib.laneOf), so a ring

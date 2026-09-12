@@ -347,12 +347,26 @@ export const BOARD_COLUMNS = [
   { key: "archived", label: "Archive" },
 ] as const;
 
-export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"];
+/**
+ * …PLUS `draft`, which is deliberately NOT in the array above.
+ *
+ * A draft is a status a row can be in (api.Task.status) but never a COLUMN: the
+ * array is the board's lanes and the List's ranks, and drafts draw inside
+ * Upcoming (laneOf) with no lane, no header and no count of their own — "no new
+ * lane; six columns is already the width budget" (design.md, Decisions, Akshil
+ * 2026-09-11). Adding it to BOARD_COLUMNS would have drawn a seventh lane and
+ * put a "Draft" entry in the Status filter, neither of which was asked for.
+ *
+ * So the union is widened here and the array is left alone, which is also what
+ * keeps every `Record<BoardColumn, …>` in this page honest: a draft has to be
+ * given an answer in each of them rather than inheriting one by accident.
+ */
+export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"] | "draft";
 
-/** A column the BOARD actually draws. Every status is one except the two that
- *  share — `needs_attention` in Blocked and `queued` in In Progress. See
- *  `laneOf`. */
-export type BoardLane = Exclude<BoardColumn, "needs_attention" | "queued">;
+/** A column the BOARD actually draws. Every status is one except the three that
+ *  share a lane — `needs_attention` in Blocked, `queued` in In Progress, and
+ *  `draft` in Upcoming. See `laneOf`. */
+export type BoardLane = Exclude<BoardColumn, "needs_attention" | "queued" | "draft">;
 
 /**
  * The lanes, left to right — the columns that are their own lane.
@@ -362,7 +376,7 @@ export type BoardLane = Exclude<BoardColumn, "needs_attention" | "queued">;
  * silently does not draw, and a status that starts sharing a lane leaves this
  * array by changing exactly one line (`laneOf`) instead of two that have to be
  * kept in step. The cast is the price of `filter` widening a literal tuple; the
- * FILTER is the claim, and the type keeps both sharers out of every lane-shaped
+ * FILTER is the claim, and the type keeps every sharer out of every lane-shaped
  * position after it.
  */
 export const BOARD_LANES = BOARD_COLUMNS.filter(
@@ -370,10 +384,11 @@ export const BOARD_LANES = BOARD_COLUMNS.filter(
 ) as readonly { key: BoardLane; label: string }[];
 
 /**
- * Which lane a status is DRAWN in. Identity for five of the seven.
+ * Which lane a status is DRAWN in. Identity for five of the eight.
  *
- * The two mappings are the whole of "needs attention lives in Blocked" and
- * "queued lives in In Progress", written once here rather than as an
+ * The three mappings are the whole of "needs attention lives in Blocked",
+ * "queued lives in In Progress" and "a draft lives in Upcoming", written once
+ * here rather than as an
  * `=== "needs_attention"` in each of the board's three passes (bucketing, drop
  * legality, the rail's count) — three places that would each have to be
  * remembered again the next time a status is added.
@@ -386,6 +401,10 @@ export function laneOf(column: BoardColumn): BoardLane {
   // "1 running · 2 waiting", and the ring's own hue), which is a far better fit
   // for how often a card crosses between them than a column boundary was.
   if (column === "queued") return "in_progress";
+  // An unfinished task is the most upcoming thing there is (design.md), and it
+  // sorts to the head of that lane — tasks-lib.groupByColumn does the hoist,
+  // the same stable partition that puts a waiting card at the top of Blocked.
+  if (column === "draft") return "upcoming";
   return column;
 }
 
@@ -578,6 +597,27 @@ export function repeatChoicesFor(picked: Date): RepeatChoice[] {
 // how two surfaces end up disagreeing about where a conversation lives.
 export function explorerUrl(target: string, sessionId: string): string {
   return chatUrl(target, sessionId);
+}
+
+/**
+ * THE SAME DOOR WITH NO CONVERSATION NAMED — the folder, with the Claude pane
+ * on it, and no `session_id` at all.
+ *
+ * Split out of `explorerUrl` rather than spelled again because the two differ
+ * in exactly one param and share the whole /view path codec. `explorerUrl` keeps
+ * emitting an EMPTY `session_id=` for its own no-session callers (`folderHref`,
+ * `taskHref`) — those name a task whose session has not been reported yet, and
+ * the empty value is the chat pane's own "this folder's sessions" signal there.
+ * A never-sent chat is a different fact: there is no session to be waiting for,
+ * so the parameter is omitted rather than sent empty (Akshil, 2026-09-11).
+ *
+ * Built off the SAME codec rather than spelling the /view path a second time
+ * (see `explorerUrl` above): `queue.chatUrl` always ends a session-less URL with
+ * the empty `&session_id=`, and this drops exactly that tail. One builder, two
+ * doors — a second copy of the path encoder is how they drift apart.
+ */
+export function chatPaneUrl(target: string): string {
+  return chatUrl(target, "").replace(/&session_id=$/, "");
 }
 
 // The same door, for a task that has no thread to open YET.
@@ -942,6 +982,12 @@ export function taskChips(
   for (const day of days) out.set(dayKey(day), []);
   for (const task of tasks) {
     if (isArchivedTask(task)) continue;
+    // A DRAFT IS NOT A PLAN (design.md, Decisions: List and Board only, never
+    // Cards or Calendar). It names no time — that is most of what makes it
+    // unfinished — so a calendar drawing it would have to invent a day for it.
+    // `kind`, not `status`: a draft row arrives as `status: "upcoming"` so the
+    // rest of the page needs no new word (api.Task.kind).
+    if (task.kind === "draft") continue;
     const messages = threads[task.key] ?? task.messages ?? [];
     const byDay = new Map<string, TaskMessage[]>();
     const seen = new Set<string>();

@@ -2541,6 +2541,7 @@ function ChatBody(props: ChatBodyProps) {
     },
     [
       controller,
+      file,
       beginSend,
       releaseSend,
       carryForQueue,
@@ -3260,6 +3261,29 @@ function ChatBody(props: ChatBodyProps) {
     });
     return watch.start();
   }, [controller, inChat, state.sessionId]);
+
+  /**
+   * THE DRAFT'S TASK NUMBER FOLLOWS THE SESSION THE CHAT TURNS OUT TO BE — and
+   * NOT FROM HERE (design.md, Round 2: "Every draft has a TASK number").
+   *
+   * A brand-new conversation drafts under `new:<file>` and is numbered under
+   * that key; the first send creates the session, and the number has to follow
+   * it or the row the reader has been watching is stranded. This page used to
+   * make that move itself, and four rounds of bugbot said it cannot: every way
+   * a page has of telling "this session id is the one MY send created" is an
+   * inference, and each one had a gap — a send that threw, a refusal that never
+   * left `idle`, a Back before the id landed — that left the note for the next
+   * session id to claim, walking an unsent row onto a conversation the send had
+   * nothing to do with (Bugbot, PR #1118, 2026-09-12).
+   *
+   * What the send CAN say is which draft it is spending — it knows that before
+   * it leaves — so a session-less start carries the key (`draft_key`,
+   * `protocol/run-controller.ts`), `agent._start` writes it into the run's
+   * `meta.json`, and the server moves the number onto the session that run
+   * turns out to have made (`routers/tasks.py::_settle_new_chats`). Nothing on
+   * this page decides which session that was; all it still owes the draft is
+   * the DELETE the composer already fires on send.
+   */
 
   const card = useMemo(
     () => ({

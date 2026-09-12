@@ -313,6 +313,44 @@ describe("start → poll → done", () => {
     }
   });
 
+  // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
+  //
+  // A chat with no session has been drafting — and carrying its TASK number —
+  // under `new:<file>`, and the number has to follow the session this start
+  // mints. Nothing here can tell afterwards WHICH session that was, so the run
+  // is tagged with the key on the way out and the server reads it back off
+  // `meta.json` (`routers/tasks.py::_settle_new_chats`). The tag rides exactly
+  // the sends that create a session, because a run nobody could spend the draft
+  // on is a claim on words somebody may still be typing.
+
+  test("a session-less start names the draft it is spending", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("hi");
+    // `platform/lib/drafts.chatDraftKey(null, file)` — the chat's own `file`,
+    // verbatim and unnormalised, which is the spelling the composer drafts
+    // under and the server matches on.
+    expect(agent.of("start")[0].fields.draft_key).toBe("new:/proj/app.py");
+  });
+
+  test("a start that has a session to resume names no draft", async () => {
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, agent } = makeController(
+      {
+        live_host: () => ({ error: "no host" }),
+        start: () => ({ run_id: "r2" }),
+        poll: () => poll({ done: true }),
+      },
+      params,
+    );
+    await controller.sendMessage("again");
+    const started = agent.of("start")[0].fields;
+    expect(started.session_id).toBe("s1");
+    expect("draft_key" in started).toBe(false);
+  });
+
   test("`start` refusing rolls the bubble back and reports the failure", async () => {
     const { controller, params } = makeController({
       start: () => ({ error: "(empty message)" }),
@@ -516,7 +554,12 @@ describe("follow-ups (T:16024, D687)", () => {
     });
     await made.controller.sendMessage("go");
     const started = made.agent.of("start")[0]!;
+    // `draft_key` is the one field T never sent, and it is native's own: this
+    // send has no session, so it is the send that CREATES one and it names the
+    // `new:<file>` draft whose TASK number has to follow (PR #1118 round 5).
+    // Every other field is T's, spelled T's way.
     expect(Object.keys(started.fields).sort()).toEqual([
+      "draft_key",
       "effort",
       "file",
       "has_pane",
