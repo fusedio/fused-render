@@ -3503,6 +3503,19 @@ export default function NewJobModal({
     // the bound draft outlives the words being handed back to the composer —
     // which is the duplicate the whole move exists to prevent.
     const id = draftIdRef.current;
+    // ONE RECORD, TWO DOORS (Bugbot, PR #1126, 2026-09-12). A draft bound to a
+    // session IS the chat draft: the server's chat view reads the form's words
+    // off the same record the autosave just wrote (`put_chat` writes the bound
+    // form when the key is that session). Re-saving the chat draft here would
+    // only update that record, and the delete that follows would remove it —
+    // the composer then seeds from nothing. So on the bound arm the record must
+    // survive: stop, settle, walk through the other door. Only the unbound
+    // draft (`new:<file>`, no session) is two records, and only it re-seeds by
+    // hand and deletes.
+    if (boundSessionId) {
+      navigateUrl(chatBack || backChatHref(backChatKey, target));
+      return;
+    }
     if (backChatKey) {
       // The inverse of the split the hop made — `joinDraft` puts the title line
       // and the body back into the one block of prose the composer holds. The

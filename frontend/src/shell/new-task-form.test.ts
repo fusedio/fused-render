@@ -1961,10 +1961,40 @@ describe("a draft moves with the reader, never duplicating", () => {
     // and puts the row back.
     expect(back.indexOf("autosaveRef.current.stop()"))
       .toBeLessThan(back.indexOf("await autosaveRef.current.settle()"));
+    // …on the UNBOUND arm, the only one that deletes (see the next test).
+    const unbound = back.slice(back.indexOf("if (backChatKey) {"));
     expect(back.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(back.indexOf("deleteTaskDraft(id)"));
-    expect(back.indexOf("deleteTaskDraft(id)"))
-      .toBeLessThan(back.indexOf("navigateUrl(chatBack || backChatHref("));
+      .toBeLessThan(back.indexOf("if (backChatKey) {"));
+    expect(unbound.indexOf("deleteTaskDraft(id)"))
+      .toBeLessThan(unbound.indexOf("navigateUrl(chatBack || backChatHref("));
+  });
+
+  test("a BOUND draft goes back through the other door — no re-seed, no delete", () => {
+    // `put_chat` writes the bound form when the key is that session, so the
+    // task draft and the chat draft are ONE record: saving the chat draft would
+    // update it and the delete that followed would remove it, and the composer
+    // seeded from nothing (Bugbot, PR #1126, 2026-09-12). The bound arm stops,
+    // settles and navigates; the record survives for the chat view to read.
+    const s = src();
+    const back = s.slice(
+      s.indexOf("const backToChat = async () => {"),
+      s.indexOf("// The replacement was created but the original could not be withdrawn"),
+    );
+    const bound = back.slice(back.indexOf("if (boundSessionId) {"),
+                             back.indexOf("if (backChatKey) {"));
+    expect(bound.length).toBeGreaterThan(0);
+    expect(bound).not.toContain("saveChatDraft(");
+    expect(bound).not.toContain("deleteTaskDraft(");
+    expect(bound).toContain("navigateUrl(chatBack || backChatHref(");
+    expect(bound).toContain("return;");
+    expect(back.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(back.indexOf("if (boundSessionId) {"));
+    // …and the unbound arm keeps both, in order.
+    const unbound = back.slice(back.indexOf("if (backChatKey) {"));
+    expect(unbound.indexOf("await saveChatDraft(backChatKey"))
+      .toBeLessThan(unbound.indexOf("deleteTaskDraft(id)"));
+    expect(unbound.indexOf("deleteTaskDraft(id)"))
+      .toBeLessThan(unbound.indexOf("navigateUrl(chatBack || backChatHref("));
   });
 
   test("a REOPENED draft can go back too — the key is stored, not in the URL", () => {
