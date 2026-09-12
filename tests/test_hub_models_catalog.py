@@ -204,6 +204,76 @@ def test_best_sort_ranks_fit_tier_before_composite_score(client, hub_cache, monk
     assert ids.index("org/easy-fit") < ids.index("org/tight-fit")
 
 
+def test_best_sort_pull_in_keeps_unclamped_raw_order_when_scores_clamp_equal(
+        client, hub_cache, monkeypatch):
+    """Code review finding: the family pull-in re-sort keyed on the CLAMPED
+    `matchScore` while the initial sort keys on UNCLAMPED `raw_scores` — two
+    rows that both clamp to 100 but differ before clamping could swap order
+    once `_pull_in_family_members` runs its own re-sort. `org/variant`
+    declares `org/base` as its base model via the Hub's own
+    `base_model:finetune:<id>` tag, so with `limit=1` the initial (correct)
+    sort keeps only `org/variant` and the pull-in reinserts `org/base`
+    BEFORE it (case (c) in `_pull_in_family_members`'s own docstring) — the
+    pre-resort order is therefore [org/base, org/variant], the WRONG way
+    round. A matchScore-keyed re-sort sees two equal 100.0 values and (being
+    stable) leaves that wrong order untouched; a raw_scores-keyed re-sort
+    correctly restores org/variant (raw 250) ahead of org/base (raw 100)."""
+    hub_catalog.write_pool(hub_catalog.load_config(), registry.TEXT_GENERATION, [
+        {
+            "capability": registry.TEXT_GENERATION,
+            "format": "",
+            "raw": {
+                "id": "org/base",
+                "pipeline_tag": "text-generation",
+                "downloads": 1,
+                "likes": 1,
+                "lastModified": "2026-01-01T00:00:00.000Z",
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "library_name": "transformers",
+                "gated": False,
+                "private": False,
+                "tags": ["text-generation"],
+                "safetensors": None,
+            },
+        },
+        {
+            "capability": registry.TEXT_GENERATION,
+            "format": "",
+            "raw": {
+                "id": "org/variant",
+                "pipeline_tag": "text-generation",
+                "downloads": 1,
+                "likes": 1,
+                "lastModified": "2026-01-01T00:00:00.000Z",
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "library_name": "transformers",
+                "gated": False,
+                "private": False,
+                "tags": ["text-generation", "base_model:finetune:org/base"],
+                "safetensors": None,
+            },
+        },
+    ])
+
+    def _fake_raw_score(row, ram_gb):
+        # Both clamp to matchScore 100.0 (min(100.0, max(0.0, raw))) despite
+        # differing wildly before clamping.
+        return 250.0 if row.get("id") == "org/variant" else 100.0
+
+    monkeypatch.setattr(hub, "_composite_raw_score", _fake_raw_score)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "best", "limit": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    by_id = {m["id"]: m for m in body["models"]}
+    assert by_id["org/variant"]["matchScore"] == 100.0
+    assert by_id["org/base"]["matchScore"] == 100.0
+
+    ids = [m["id"] for m in body["models"]]
+    assert ids.index("org/variant") < ids.index("org/base")
+
+
 def test_catalog_path_publisher_facet_does_not_collapse_on_filter(client, hub_cache, monkeypatch):
     """C2: the publisher facet must be computed over the slice WITHOUT the
     publisher filter (matching D853's live-path behaviour) or picking one

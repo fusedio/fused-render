@@ -2127,7 +2127,11 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
         # way as the initial sort above — a pulled-in family member must not
         # re-flatten the tier ordering back to score-only.
         def _rank_key_best(row: dict) -> tuple[bool, int, float]:
-            value = row.get("matchScore")
+            # Use the SAME unclamped raw_scores the initial sort above
+            # used, not the clamped/rounded matchScore stored on the row —
+            # two rows that both clamp to 100 but differ before clamping
+            # would otherwise swap order after _pull_in_family_members.
+            value = raw_scores.get(id(row))
             return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
         _rank_key = _rank_key_best
         rank_reverse = True
@@ -2599,7 +2603,11 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         # way as the initial sort above — a pulled-in family member must not
         # re-flatten the tier ordering back to score-only.
         def _rank_key_best(row: dict) -> tuple[bool, int, float]:
-            value = row.get("matchScore")
+            # Use the SAME unclamped raw_scores the initial sort above
+            # used, not the clamped/rounded matchScore stored on the row —
+            # two rows that both clamp to 100 but differ before clamping
+            # would otherwise swap order after _pull_in_family_members.
+            value = raw_scores.get(id(row))
             return (value is not None, -_fit_tier(row), value if value is not None else 0.0)
         _rank_key = _rank_key_best
         rank_reverse = True
