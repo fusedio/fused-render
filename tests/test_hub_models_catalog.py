@@ -370,3 +370,94 @@ def test_catalog_path_starts_a_stale_rebuild_but_still_serves_the_existing_pool(
     assert started == [registry.TEXT_GENERATION]
     body = resp.json()
     assert [m["id"] for m in body["models"]] == ["only/gguf-model"]
+
+
+# -- item 2 (scope-corrected): the flag survives the catalog path too -------
+
+
+def test_catalog_path_flags_an_unloadable_row_instead_of_dropping_it(client, hub_cache, monkeypatch):
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION, [
+        _pool_row("org/llama-repo", downloads=5),
+        _pool_row("org/neo-repo", downloads=10),
+    ])
+    # `_pool_row` does not carry `config` — patch it in directly, the same
+    # `config.model_type` shape `_EXPAND` already returns live.
+    rows = hub_catalog.query_pool(cfg, registry.TEXT_GENERATION)
+    assert len(rows) == 2
+
+    runner = types.SimpleNamespace(hub_filter_tags=(), code="mlx-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+
+    def _model_type_for(model_id):
+        return {"org/llama-repo": "llama", "org/neo-repo": "neo_chat"}[model_id]
+
+    real_model_row = hub._model_row
+
+    def patched_model_row(raw, *a, **k):
+        raw = dict(raw)
+        raw["config"] = {"model_type": _model_type_for(raw["id"])}
+        return real_model_row(raw, *a, **k)
+
+    monkeypatch.setattr(hub, "_model_row", patched_model_row)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    by_id = {m["id"]: m for m in resp.json()["models"]}
+    assert set(by_id) == {"org/llama-repo", "org/neo-repo"}
+    assert by_id["org/llama-repo"]["loadable"] is True
+    assert by_id["org/neo-repo"]["loadable"] is False
+    assert by_id["org/neo-repo"]["loadableReason"] == "neo_chat not supported by mlx-vlm"
+    # Order is untouched by the flag — same downloads-desc order as if
+    # neither row had been judged at all.
+    assert [m["id"] for m in resp.json()["models"]] == ["org/neo-repo", "org/llama-repo"]
+
+
+def test_catalog_path_flags_a_cached_on_disk_row_too_no_exemption(
+        client, hub_cache, monkeypatch, tmp_path):
+    """The scope correction's explicit callout: a repo already on this
+    disk still shows the chip if the active runner cannot load it — there
+    is no on-disk exemption the way the ORIGINAL (drop-based) brief had
+    one, because nothing here drops rows to need exempting from in the
+    first place."""
+    cache = tmp_path / "hf-cache"
+    cache.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+    dirname = "models--org--neo-repo"
+    blob = cache / dirname / "blobs" / "b1"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 64)
+    snapshot = cache / dirname / "snapshots" / "c1"
+    snapshot.mkdir(parents=True)
+    try:
+        (snapshot / "model.safetensors").symlink_to(blob)
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    (cache / dirname / "refs").mkdir()
+    (cache / dirname / "refs" / "main").write_text("c1")
+
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION,
+                            [_pool_row("org/neo-repo", downloads=5)])
+
+    runner = types.SimpleNamespace(hub_filter_tags=(), code="mlx-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+
+    real_model_row = hub._model_row
+
+    def patched_model_row(raw, *a, **k):
+        raw = dict(raw)
+        raw["config"] = {"model_type": "neo_chat"}
+        return real_model_row(raw, *a, **k)
+
+    monkeypatch.setattr(hub, "_model_row", patched_model_row)
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    row = resp.json()["models"][0]
+    assert row["local"]["state"] == "downloaded"
+    assert row["loadable"] is False
+    assert row["loadableReason"] == "neo_chat not supported by mlx-vlm"

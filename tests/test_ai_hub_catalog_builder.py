@@ -557,3 +557,46 @@ def test_ensure_build_started_does_not_rebuild_an_entry_with_no_formats_recorded
 
     started = builder.ensure_build_started("text-generation", cfg=cfg)
     assert started is False
+
+
+def test_ensure_build_started_rebuilds_when_schema_version_is_missing(monkeypatch):
+    """D1276 (item 2b): a pool written before the `modelType` column existed
+    has no `schemaVersion` key at all — OPPOSITE polarity from the
+    `formats`-absent case above, since `write_pool` writes this key
+    unconditionally on every build from here on, so absence unambiguously
+    means "older than this column", not "older than this whole mechanism"."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ])
+    entry = dict(hub_catalog.pool_entry(cfg, "text-generation"))
+    del entry["schemaVersion"]
+    manifest = hub_catalog.read_manifest(cfg)
+    manifest["capabilities"]["text-generation"] = entry
+    hub_catalog._write_manifest(cfg, manifest)
+    assert "schemaVersion" not in hub_catalog.pool_entry(cfg, "text-generation")
+
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _resp([_hit("org/existing")]))
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is True
+    thread = builder._building["text-generation"]
+    thread.join(timeout=5)
+    assert hub_catalog.pool_entry(cfg, "text-generation")["schemaVersion"] == (
+        hub_catalog.ROW_SCHEMA_VERSION
+    )
+
+
+def test_ensure_build_started_skips_when_schema_version_is_current(monkeypatch):
+    """A pool whose `schemaVersion` already matches
+    `hub_catalog.ROW_SCHEMA_VERSION` is not stale on that account — the
+    common case, every build from here on writes it fresh."""
+    cfg = load_config()
+    hub_catalog.write_pool(cfg, "text-generation", [
+        {"capability": "text-generation", "format": "mlx", "raw": _hit("org/existing")},
+    ])
+    monkeypatch.setattr(builder, "available_runners", lambda cap: ())
+
+    started = builder.ensure_build_started("text-generation", cfg=cfg)
+    assert started is False

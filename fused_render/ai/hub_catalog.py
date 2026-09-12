@@ -34,6 +34,19 @@ from fused_render.ai.hub_catalog_config import HubCatalogConfig, load_config
 #: change; `read_manifest` treats an unrecognised version as "no catalog".
 VERSION = 1
 
+#: Pool ROW schema version (D1276) — distinct from `VERSION` above, which is
+#: the MANIFEST's own shape. This one counts the declared parquet `schema`
+#: in `write_pool`: bumped when a column is added (`modelType`, for item 2b),
+#: so `hub_catalog_builder._schema_is_stale` can tell a pool built before
+#: that column existed (no `schemaVersion` key at all, or an older number)
+#: from one that already has it, and trigger a rebuild — the opposite
+#: polarity from `formats` staleness (D1258), where an ABSENT field reads as
+#: "never stale": a pool with no `formats` list predates that whole
+#: mechanism and every such pool would otherwise mass-rebuild at once, while
+#: a pool with no `schemaVersion` is simply every pool that predates THIS
+#: column, which is exactly the one-time rebuild this exists to force.
+ROW_SCHEMA_VERSION = 2
+
 
 @contextlib.contextmanager
 def store_lock(cfg: HubCatalogConfig):
@@ -169,9 +182,16 @@ def _row_columns(rows: list[dict]) -> dict:
             return v
         return "manual" if v is True else ""
 
+    def model_type(v):
+        """`raw["config"]["model_type"]` — a bare string when `config` is a
+        dict with one, `""` otherwise (a repo with no `config` expand, or
+        whose `config` is not itself a dict — both seen in practice)."""
+        config = v.get("config")
+        return s(config.get("model_type")) or "" if isinstance(config, dict) else ""
+
     cols = {"id": [], "capability": [], "format": [], "downloads": [],
             "likes": [], "lastModified": [], "createdAt": [], "libraryName": [],
-            "gated": [], "private": [], "raw": []}
+            "gated": [], "private": [], "modelType": [], "raw": []}
     for row in rows:
         raw = row.get("raw") or {}
         cols["id"].append(s(raw.get("id")) or "")
@@ -184,6 +204,13 @@ def _row_columns(rows: list[dict]) -> dict:
         cols["libraryName"].append(s(raw.get("library_name")) or "")
         cols["gated"].append(gated_str(raw.get("gated")))
         cols["private"].append(bool(raw.get("private")))
+        # Item 2b: a queryable `modelType` column alongside the existing
+        # facet columns — `_model_row`/`hub_loadable.admission` still read
+        # the SAME fact off `raw["config"]["model_type"]` at query time (no
+        # parquet read needed there, `raw` already carries it), so this
+        # column exists for DIRECT SQL filtering/facet use, not because
+        # anything downstream depends on it being here.
+        cols["modelType"].append(model_type(raw))
         cols["raw"].append(json.dumps(raw))
     return cols
 
@@ -238,13 +265,19 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
             ("libraryName", pa.string()),
             ("gated", pa.string()),
             ("private", pa.bool_()),
+            ("modelType", pa.string()),
             ("raw", pa.string()),
         ])
         table = pa.table(_row_columns(rows), schema=schema)
         pq.write_table(table, path)
 
         entry = {"file": filename, "generation": generation, "rows": len(rows),
-                  "updated": time.time(), "blockedUntil": None}
+                  "updated": time.time(), "blockedUntil": None,
+                  # D1276: written on every build, unconditionally (unlike
+                  # `formats` below, which is caller-optional) — every pool
+                  # from here on has this key, so an ABSENT key unambiguously
+                  # means "built before this column existed".
+                  "schemaVersion": ROW_SCHEMA_VERSION}
         if build_seconds is not None:
             entry["buildSeconds"] = build_seconds
         if pages is not None:

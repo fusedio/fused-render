@@ -3753,6 +3753,18 @@ button.am-bench-model:focus-visible {
   border-color: var(--accent);
 }
 
+/* Item 2 (scope-corrected): de-emphasizes (never disables — the row still
+   downloads if the person insists) the Download button for a row the
+   ACTIVE runner will refuse once it lands. Dimmer than the plain `.btn`
+   quiet-bg default rather than a different color, so the chip beside the
+   name is what actually says why — this button just recedes. */
+.tp .btn-muted {
+  opacity: 0.55;
+}
+.tp .btn-muted:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
 /* The Engine files pane's own closing note — no search here on purpose. */
 .tp .scoped {
   margin: 14px 2px 0;

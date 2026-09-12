@@ -3197,3 +3197,117 @@ def test_score_breakdown_pool_gb_falls_back_when_row_has_no_verdict():
     entries = hub._score_breakdown(row, 32.0, pool_gb=22.4)
     fit_entry = next(e for e in entries if e["axis"] == "fit")
     assert fit_entry["poolGb"] == pytest.approx(22.4)
+
+
+# -- item 2 (scope-corrected): runner-aware admission, flag not drop --------
+
+
+def _mflux_runner():
+    runner = _gguf_runner(tags=(), code="mflux-image")
+    runner.short = "mflux"
+    return runner
+
+
+def test_allowlist_kind_flags_a_repo_outside_the_set(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _mflux_runner())
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("allowlist", frozenset({"org/allowed"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/allowed", pipeline_tag="text-to-image"),
+        _hit("org/blocked", pipeline_tag="text-to-image"),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert set(by_id) == {"org/allowed", "org/blocked"}
+    assert by_id["org/allowed"]["loadable"] is True
+    assert by_id["org/allowed"]["loadableReason"] is None
+    assert by_id["org/blocked"]["loadable"] is False
+    assert by_id["org/blocked"]["loadableReason"] == "mflux only loads FLUX.2 Klein"
+
+
+def test_model_types_kind_flags_an_unsupported_architecture(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mlx-text"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/llama-repo", config={"model_type": "llama"}),
+        _hit("org/neo-repo", config={"model_type": "neo_chat"}),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["org/llama-repo"]["loadable"] is True
+    assert by_id["org/neo-repo"]["loadable"] is False
+    assert by_id["org/neo-repo"]["loadableReason"] == "neo_chat not supported by mlx-vlm"
+
+
+def test_model_types_kind_with_unknown_model_type_stays_loadable(client, hub_cache, monkeypatch):
+    """A row with no `config.model_type` at all is never flagged — an
+    unknown fact about the ROW, same as an unknown SET for the runner."""
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mlx-text"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("model_types", frozenset({"llama"})))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/no-config-repo")]))
+    row = _search(client).json()["models"][0]
+    assert row["loadable"] is True
+    assert row["loadableReason"] is None
+
+
+def test_any_kind_never_flags_any_row(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("unsloth/x-GGUF", siblings=[
+        {"rfilename": "x-Q4_K_M.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["loadable"] is True
+    assert row["loadableReason"] is None
+
+
+def test_admission_never_drops_a_row_ordering_stays_unchanged(client, hub_cache, monkeypatch):
+    """Order is decided ELSEWHERE (score/sort) and must not move because a
+    row got flagged — the scope correction's other half of "flag, don't
+    drop": popularity ordering here, unrelated to loadability, must survive
+    untouched."""
+    monkeypatch.setattr(hub, "for_capability",
+                         lambda capability: _gguf_runner(tags=(), code="mflux-image"))
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("allowlist", frozenset({"org/allowed"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/blocked", pipeline_tag="text-to-image", downloads=999),
+        _hit("org/allowed", pipeline_tag="text-to-image", downloads=1),
+    ]))
+    resp = _search(client, {"sort": "downloads"})
+    ids = [m["id"] for m in resp.json()["models"]]
+    assert ids == ["org/blocked", "org/allowed"]
+    by_id = {m["id"]: m for m in resp.json()["models"]}
+    assert by_id["org/blocked"]["loadable"] is False
+    assert by_id["org/allowed"]["loadable"] is True
+
+
+# -- item 3: fileFormat off `siblings` --------------------------------------
+
+
+def test_file_format_reads_the_first_matching_extension_off_siblings(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/st-repo", siblings=[{"rfilename": "model.safetensors"}, {"rfilename": "README.md"}]),
+        _hit("org/npz-repo", siblings=[{"rfilename": "weights.npz"}]),
+        _hit("org/onnx-repo", siblings=[{"rfilename": "model.onnx"}]),
+        _hit("org/bin-repo", siblings=[{"rfilename": "pytorch_model.bin"}]),
+        _hit("org/none-repo", siblings=[{"rfilename": "README.md"}]),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["org/st-repo"]["fileFormat"] == "safetensors"
+    assert by_id["org/npz-repo"]["fileFormat"] == "npz"
+    assert by_id["org/onnx-repo"]["fileFormat"] == "onnx"
+    assert by_id["org/bin-repo"]["fileFormat"] == "bin"
+    assert by_id["org/none-repo"]["fileFormat"] is None
+
+
+def test_file_format_prefers_safetensors_over_a_coincidental_bin_sibling(client, hub_cache, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/mixed", siblings=[
+        {"rfilename": "model.safetensors"}, {"rfilename": "optimizer.bin"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["fileFormat"] == "safetensors"

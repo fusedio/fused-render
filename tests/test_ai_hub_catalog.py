@@ -160,6 +160,41 @@ def test_query_pool_on_blocked_before_any_build_returns_empty_not_keyerror():
     assert hub_catalog.query_pool(cfg, "text-generation") == []
 
 
+def test_write_pool_records_the_current_row_schema_version():
+    """Item 2b/D1276: every build writes `schemaVersion` unconditionally, so
+    `hub_catalog_builder._schema_is_stale` can tell a pool built before the
+    `modelType` column existed from one that already has it."""
+    cfg = load_config()
+    entry = hub_catalog.write_pool(cfg, "text-generation", [_row("org/a")])
+    assert entry["schemaVersion"] == hub_catalog.ROW_SCHEMA_VERSION
+    assert hub_catalog.pool_entry(cfg, "text-generation")["schemaVersion"] == (
+        hub_catalog.ROW_SCHEMA_VERSION
+    )
+
+
+def test_model_type_is_read_off_config_into_its_own_column():
+    """Item 2b: `config.model_type` — already in `_EXPAND`, no extra
+    request — lands in the pool's `modelType` column, queryable directly
+    rather than only reachable through `raw`."""
+    cfg = load_config()
+    row = _row("org/llama")
+    row["raw"]["config"] = {"model_type": "llama"}
+    hub_catalog.write_pool(cfg, "text-generation", [row])
+    got = hub_catalog.query_pool(cfg, "text-generation", where="modelType = 'llama'")
+    assert [r["id"] for r in got] == ["org/llama"]
+
+
+def test_model_type_absent_or_non_dict_config_degrades_to_blank():
+    cfg = load_config()
+    no_config = _row("org/no-config")
+    weird_config = _row("org/weird-config")
+    weird_config["raw"]["config"] = "not-a-dict"
+    entry = hub_catalog.write_pool(cfg, "text-generation", [no_config, weird_config])
+    assert entry["rows"] == 2
+    got = hub_catalog.query_pool(cfg, "text-generation", where="modelType = ''")
+    assert {r["id"] for r in got} == {"org/no-config", "org/weird-config"}
+
+
 def test_malformed_row_fields_degrade_rather_than_raise():
     cfg = load_config()
     bad_row = {"capability": "text-generation", "format": "mlx", "raw": {

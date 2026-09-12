@@ -563,6 +563,26 @@ def _formats_are_stale(cfg: HubCatalogConfig, capability: str) -> bool:
     return set(stored) < current
 
 
+def _schema_is_stale(cfg: HubCatalogConfig, capability: str) -> bool:
+    """D1276: whether `capability`'s built pool predates the `modelType`
+    parquet column (item 2b). OPPOSITE polarity from `_formats_are_stale`
+    above, deliberately: that check treats an absent `formats` field as
+    never-stale because it predates the field's very existence and nothing
+    written it could be compared against, one pool among many written under
+    many different histories. `schemaVersion` is different — `write_pool`
+    has written it on EVERY build since it was introduced, unconditionally,
+    so an entry with no `schemaVersion` key (or one below
+    `hub_catalog.ROW_SCHEMA_VERSION`) unambiguously means "built before the
+    column exists", not "built before this check existed". Every such pool
+    IS stale, and each rebuilds once, the same way a machine that just
+    gained a new runner's format rebuilds once under the check above."""
+    entry = hub_catalog.pool_entry(cfg, capability)
+    if not entry:
+        return False
+    stored = entry.get("schemaVersion")
+    return not isinstance(stored, int) or stored < hub_catalog.ROW_SCHEMA_VERSION
+
+
 def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None) -> bool:
     """Kick off a background build for `capability` if one is not already
     running, blocked on a 429 backoff, or already built. Non-blocking —
@@ -575,7 +595,9 @@ def ensure_build_started(capability: str, *, cfg: HubCatalogConfig | None = None
     FORCE a rebuild, e.g. the daily delta, calls `build_capability_pool`
     directly instead)."""
     cfg = cfg or load_config()
-    if hub_catalog.pool_exists(cfg, capability) and not _formats_are_stale(cfg, capability):
+    if (hub_catalog.pool_exists(cfg, capability)
+            and not _formats_are_stale(cfg, capability)
+            and not _schema_is_stale(cfg, capability)):
         return False
     if hub_catalog.is_blocked(cfg, capability):
         return False

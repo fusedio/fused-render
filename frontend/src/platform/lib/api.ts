@@ -3701,6 +3701,24 @@ export interface HubModel {
   matchBreakdown?: HubMatchAxis[];
   local: HubModelLocal;
   url: string;
+  /** Item 3: the on-disk weight format read off `siblings`
+   *  ("safetensors" | "gguf" | "npz" | "onnx" | "bin"), independent of
+   *  `format` above (which is a GGUF-republish grouping key, not a general
+   *  file-format fact). Null when nothing in `siblings` matched, or on a
+   *  response that predates this field. `formatToken()` combines this with
+   *  `library`. */
+  fileFormat?: "safetensors" | "gguf" | "npz" | "onnx" | "bin" | null;
+  /** Item 2: whether the runner ACTIVE for `capability` right now will
+   *  actually be able to open this repo once downloaded — never a reason to
+   *  drop the row, only to flag it (a runner-narrower repo still ranks,
+   *  still downloads if the person insists). `true`/undefined on a response
+   *  that predates this field, so an older server's rows read exactly as
+   *  they always have: nothing is flagged. */
+  loadable?: boolean;
+  /** The short clause the frontend's chip appends after "Won't run here · "
+   *  (e.g. "mflux only loads FLUX.2 Klein") — null/absent whenever
+   *  `loadable` is not `false`. */
+  loadableReason?: string | null;
 }
 
 /** One line of `HubModel.matchBreakdown` — see that field's own doc.

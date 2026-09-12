@@ -125,6 +125,7 @@ from fastapi import APIRouter, Body, Header
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
 from fused_render.ai import hub_catalog, hub_catalog_builder
+from fused_render.ai import hub_loadable
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
 from fused_render.ai.runners import formats
@@ -1215,6 +1216,42 @@ def _count_variants(raw: dict) -> int:
     return 1
 
 
+_FILE_FORMAT_EXTS: tuple[tuple[str, str], ...] = (
+    (".safetensors", "safetensors"),
+    (".gguf", "gguf"),
+    (".npz", "npz"),
+    (".onnx", "onnx"),
+    (".bin", "bin"),
+)
+
+
+def _file_format(raw: dict) -> str | None:
+    """Item 3: the repo's on-disk weight format, read off the SAME
+    `siblings` list `_count_variants`/`pick_gguf_file` already read (already
+    in `_EXPAND`, so no extra request) — first match in
+    `_FILE_FORMAT_EXTS`'s own order, since a repo can ship more than one
+    extension (a `.safetensors` main tree beside a `README.md`/config files
+    is the common case; a community GGUF republish that also carries an
+    unrelated `.bin` LFS pointer is not — `safetensors` before `gguf` before
+    the rest matches how `weight_format`/`_quant` already prefer
+    safetensors-first when both are present).
+
+    `None` for a repo whose `siblings` names none of these — a PyTorch
+    `.pt`/`.ckpt`-only repo, or one this server could not read `siblings`
+    for at all. Never guessed from `library`/`pipeline_tag`; only from the
+    files actually listed.
+    """
+    siblings = raw.get("siblings")
+    if not isinstance(siblings, list):
+        return None
+    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
+    names = [n.lower() for n in names if isinstance(n, str)]
+    for ext, token in _FILE_FORMAT_EXTS:
+        if any(n.endswith(ext) for n in names):
+            return token
+    return None
+
+
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
                footprint_store: dict | None, hardware) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
@@ -1510,6 +1547,24 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # so it was always the variant behind the expander. Read off the Hub, not
     # guessed from the repo's name, exactly like `_quant` and `library`.
     weight_format = "gguf" if gguf_meta and not isinstance(raw.get("safetensors"), dict) else None
+    # Item 3: the on-disk FILE format, read off the same `siblings` list
+    # `_count_variants`/`pick_gguf_file` already read (no extra request) —
+    # first match in priority order, since a repo can ship more than one
+    # (a safetensors main tree beside a community GGUF quant folder is
+    # common; the main tree is what `formatToken()` should name).
+    file_format = _file_format(raw)
+    # Item 2 (scope-corrected): is the runner ACTIVE for this row's
+    # capability actually going to be able to open it, once downloaded?
+    # `runner` is the same local this function already resolved above for
+    # the GGUF-picker branch — the capability's active runner is one fact,
+    # asked twice for two different questions, not two lookups.
+    model_type = config.get("model_type") if isinstance(config, dict) else None
+    if runner is not None:
+        loadable, loadable_reason = hub_loadable.admission(
+            runner_code=runner.code, runner_short=getattr(runner, "short", runner.code),
+            model_id=model_id, model_type=model_type)
+    else:
+        loadable, loadable_reason = True, None
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -1594,6 +1649,19 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         "sizeSource": size_source,
         "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
+        # Item 3: the on-disk file format read off `siblings` — see
+        # `_file_format`'s own docstring. Independent of `format` above,
+        # which is a grouping key for GGUF republishes specifically, not a
+        # general "what's in the repo" fact; `formatToken()` combines this
+        # with `library` for the badge text.
+        "fileFormat": file_format,
+        # Item 2 (scope-corrected): never drops a row — `admission()` only
+        # flags one the ACTIVE runner for this capability will refuse once
+        # downloaded. `loadableReason` is the bare clause the frontend's
+        # chip appends after "Won't run here · "; always `None` when
+        # `loadable` is True.
+        "loadable": loadable,
+        "loadableReason": loadable_reason,
     }
 
 

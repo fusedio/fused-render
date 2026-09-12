@@ -19,6 +19,7 @@ import { ClockIcon, DownloadIcon, HeartIcon } from "./HitStatIcons";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
 import { formatToken } from "@apps/ai_models/lib/formatToken";
+import { loadableChipText } from "@apps/ai_models/lib/loadableChip";
 import { type DiskCard, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
@@ -392,6 +393,10 @@ function HitRow({
     formatLabel,
     variantsLabel,
   ].filter((v): v is string => Boolean(v) && v !== "—");
+  // Item 2 (scope-corrected): never drops the row — see `loadableChipText`'s
+  // own docstring. A cached-on-disk row still shows this: the on-disk state
+  // above only says a snapshot exists, not that it ever successfully loaded.
+  const wontRunHere = loadableChipText(model);
 
   return (
     <div
@@ -445,6 +450,11 @@ function HitRow({
             {gate && (
               <span className="chip warn-chip" title={gate.title}>
                 Gated
+              </span>
+            )}
+            {wontRunHere && (
+              <span className="chip warn-chip" title={model.loadableReason ?? undefined}>
+                {wontRunHere}
               </span>
             )}
           </div>
@@ -523,7 +533,12 @@ function HitRow({
               {gate.action}
             </a>
           ) : (
-            <button type="button" className="btn" onClick={onDownload}>
+            <button
+              type="button"
+              className={wontRunHere ? "btn btn-muted" : "btn"}
+              title={wontRunHere ? model.loadableReason ?? wontRunHere : undefined}
+              onClick={onDownload}
+            >
               Download
             </button>
           )}
@@ -877,7 +892,10 @@ export function HubSearchScreen({
       </button>
       <div className="adv-head">
         <h4>Search Hugging Face</h4>
-        <p>Every model on the Hub this Mac can run, ranked for this Mac. Nothing here is curated by us.</p>
+        <p>
+          Every model on the Hub for this pane's format, ranked for this Mac — flagged when the
+          engine running here won't open it. Nothing here is curated by us.
+        </p>
       </div>
       <div className="bigsearch">
         <input
