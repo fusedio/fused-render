@@ -984,6 +984,566 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply[1]!.text).not.toContain("before the reload");
   });
 
+  // THE RELOAD ROAD WITHOUT A SEAM. `_absorbed_turn_breaks` only reports a
+  // genuine boundary when the previous `result` is the row RIGHT BEFORE this
+  // send's echo — a D415 wake (or anything else) sitting between them makes it
+  // withhold the seam entirely (agent.py's own adjacency rule), and the test
+  // above assumes the seam always arrives. `priorReply` (what the restored
+  // transcript already had on screen, seeded before `turn_breaks` is even
+  // read) is the fallback for exactly this.
+  //
+  // Without it, the payload below (no `turn_breaks`, both replies' segments in
+  // one window) lands in ONE bubble carrying BOTH replies — reply A rendered a
+  // second time, alongside B, for as long as the disk cursor has not yet
+  // stepped over the boundary. The NEXT poll (cursor advanced, B alone) then
+  // silently overwrites that bubble down to just B, so a final-state assertion
+  // never sees it: the duplication is a one-tick flash, exactly "the last
+  // response gets duplicated ... before the new response starts streaming" —
+  // which is why every intermediate frame is inspected here, the same way the
+  // R4-3 test above catches it for the same-tab shape.
+  test("a send into a restored session never flashes the old reply into the new bubble (no seam)", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          // No `turn_breaks` at all — a wake sat between the old `result` and
+          // this send's echo, so agent.py cannot prove the seam. Without
+          // `priorReply` this is exactly the payload that flashes the old
+          // reply into the new bubble.
+          if (n === 1) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    // The new bubble (the last assistant turn in every frame) must never carry
+    // reply A's text alongside reply B's — whatever it holds mid-stream, it is
+    // either A alone (untouched, from before the send) or B alone/growing,
+    // never both together.
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
+  });
+
+  // THE REAL SEND ROAD, not the bare `sendMessage()` every other test in this
+  // file uses. `dispatchSend` (ClaudeChat.tsx) calls `postOptimisticUser` —
+  // which posts this send's OWN user bubble — synchronously, BEFORE
+  // `sendMessage` ever runs, so by the time `sendMessage` reads `state.turns`
+  // for `priorReply` the last turn is usually this message's own words, not
+  // the reply before it (`addUser` only ADOPTS that row in place; it never
+  // pushes a second one). Every test above called `sendMessage` bare, with no
+  // optimistic bubble first, which is exactly why none of them could catch
+  // this: `priorReply` silently read back nothing, `baseText` never seeded,
+  // and the reload's old reply rendered in full inside the new bubble anyway
+  // (user recording, PR #1119, reproduced on 0af2328 too — the hang fix
+  // changed nothing about this).
+  test("a send into a restored session still finds the prior reply behind its own optimistic bubble", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          if (n === 1) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    // Exactly what `dispatchSend` does: post the optimistic bubble FIRST,
+    // then send with its key so `addUser` adopts that same row.
+    const optimisticKey = controller.postOptimisticUser("and now this");
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this", { optimisticKey });
+    off();
+
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
+  });
+
+  // BUGBOT, PR #1119: a `continue` here used to skip every poll for as long as
+  // `baseSegTrusted` stayed down, waiting for the "already landed prefix
+  // retires" check to notice `fullText` no longer starts with the old reply.
+  // A short new reply that happens to share the old one's own prefix ("OK"
+  // answering into "OK, done.") never makes that true — so that shape skipped
+  // `poll.done` forever, never cleared `sending`, and left the composer stuck.
+  // This is that exact shape, and it must still terminate.
+  //
+  // What it must NOT do is trust `segs` just because time (or polls) passed
+  // (Bugbot, PR #1119, second pass): earlier attempts spent a one-poll
+  // allowance unconditionally, which — on a payload where the FIRST body
+  // this loop ever sees is not yet the cursor-advancing one (a busy host, not
+  // an idle one — see `baseSegTrusted`'s own note) — burns it on the wrong
+  // poll and trusts an unsliced `segs` on the poll that actually needed
+  // protecting. So trust here is never time-based: it is earned (a reported
+  // seam, or the prefix genuinely retiring) or not earned at all, and NOT
+  // earning it for this reply's whole duration renders it as plain text
+  // rather than segments — losing the shared "OK" out of the display (an
+  // accepted, cosmetic cost of `baseText` never being disprovable here), but
+  // never duplicating anything and never leaving a poll unhandled.
+  test("a short reply sharing the old reply's own prefix still finishes and clears `sending` (no seam)", async () => {
+    const A = text("OK");
+    const Bgrowing = text("OK, d");
+    const Bfull = text("OK, done.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller, returned } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          if (n === 0) return poll({ segments: [], text: "" });
+          // No `turn_breaks` reported, ever — `baseSegTrusted` has nothing to
+          // earn it with, on this poll or any later one.
+          if (n === 1) return poll({ segments: [A, Bgrowing], text: A.text + Bgrowing.text });
+          // The cursor has advanced (a clean window, B alone) — but B's own
+          // full text STILL starts with "OK", so a check keyed on the prefix
+          // no longer matching would never fire here either.
+          return poll({ done: true, segments: [Bfull], text: Bfull.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    // Must resolve on its own — a hang here means `sending` never clears.
+    await controller.sendMessage("and now what?");
+
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().working).toBeNull();
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    // NEVER a duplicate: the new turn's own segments array stays empty the
+    // whole time (never earned), so it falls back to plain text — the tail
+    // beyond the shared "OK" prefix, not "OK, done." in full (see the test's
+    // own note above) and never `A.text` alongside it.
+    expect((reply[1] as { segments?: unknown[] }).segments || []).toEqual([]);
+    expect(reply[1]!.text).toBe(Bfull.text.slice(A.text.length));
+    expect(reply.length).toBe(2);
+
+    // `sending` itself cleared: a second send is accepted, not refused.
+    const returnedBefore = returned.length;
+    await controller.sendMessage("one more");
+    expect(returned.length).toBe(returnedBefore);
+  });
+
+  // BUGBOT, PR #1119, second pass: a BUSY host (a D415 wake in progress, not
+  // an idle one) means `pending_echo` never blanks the polls before the
+  // combined window lands — those earlier polls carry the OLD reply alone,
+  // non-blank, same as every ordinary poll of a settled turn. A one-poll
+  // "grace" spent unconditionally on the first non-blank poll — this loop's
+  // earlier fix — burns itself on one of THESE, and the actually-ambiguous
+  // combined poll (old + new, no seam) then lands with the allowance already
+  // gone, `baseSegTrusted` wrongly flipped, and `segs` sliced from 0 as if it
+  // were clean. Two non-blank, old-reply-only polls stand in for the busy
+  // host here, before the combined one arrives.
+  test("a busy host's non-blank polls before the echo lands do not spend the same allowance a hang fix once relied on", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // NOT blank: the host is busy (a wake in flight), so `pending_echo`
+          // never applies. Both of these are the OLD reply alone — nothing
+          // of this send is in the window yet.
+          if (n === 0 || n === 1) return poll({ segments: [A], text: A.text });
+          // The echo has landed. Old + new, combined, no `turn_breaks` — the
+          // one poll this whole mechanism exists to protect.
+          if (n === 2) return poll({ segments: [A, B], text: A.text + B.text });
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    const newBubbleFrames = seen.map((assistantTurns) => assistantTurns[assistantTurns.length - 1] || []);
+    const flashed = newBubbleFrames.filter(
+      (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+    );
+    expect(flashed).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply.length).toBe(2);
+  });
+
+  // …AND THE SEAM THAT ARRIVES A POLL LATE IS STILL ADOPTED. Same busy host,
+  // but agent.py DOES name the boundary once the echo lands (it does now, for
+  // every genuine boundary — `_absorbed_turn_breaks` no longer requires the
+  // `result` to be the row immediately before the echo). `adoptFirstSeam` used
+  // to be spent on the first payload carrying any body at all, which here is a
+  // pre-echo one with no seam in it, so the real seam was thrown away and the
+  // reply rendered without its segments for the rest of the turn.
+  test("a seam reported after the first non-blank poll is still adopted as the base", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // Busy host: the old reply alone, non-blank, before the echo lands.
+          if (n === 0) return poll({ segments: [A], text: A.text });
+          // The echo landed and agent.py names the boundary.
+          if (n === 1) {
+            return poll({
+              segments: [A, B],
+              text: A.text + B.text,
+              turn_breaks: [{ segments: 1, text: A.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    const newBubbleFrames = seen.map((t) => t[t.length - 1] || []);
+    expect(
+      newBubbleFrames.filter(
+        (segs) => segs.some((s) => s.includes(A.text)) && segs.some((s) => s.includes(B.text)),
+      ),
+    ).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    // The seam WAS adopted, so the reply keeps its segments rather than being
+    // held back to plain text for the whole turn.
+    expect((reply[1]!.segments || []).map(bodyOf)).toEqual([B.text]);
+    expect(reply.length).toBe(2);
+  });
+
+  // …AND A WAKE GROWING THE TURN ALREADY ON SCREEN DOES NOT SPEND THE WAIT
+  // (Bugbot, PR #1119). A D415 wake appends to the PREVIOUS turn, so the
+  // payload grows past `priorReply`'s text while this send's own echo is still
+  // outstanding. Treating any growth as "this turn has started" spent the
+  // arming on one of those polls, and the real seam — which lands with the
+  // echo a poll later — was then read as this send's own follow-up instead of
+  // as the base, putting the old reply back in the new bubble.
+  // …BUT A FOLLOW-UP LANDING IN THIS LOOP DOES SPEND IT (Bugbot, PR #1119).
+  // Once one has, a seam can be the `result` closing the reply that follow-up
+  // was folded into — this send's OWN boundary, which belongs to a bubble.
+  // Adopting it as the base instead would swallow this send's reply whole. The
+  // gate for that was first written against `seenFollowupSeq`, which the top of
+  // every poll has already synced to `followupSeq`, so it could never fire.
+  test("a follow-up landing in this loop stops a later seam being taken as the base", async () => {
+    let controller!: ChatController;
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const C = text("And the follow-up's answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const made = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: async (_f, n) => {
+          // Still the old reply alone — the echo has not landed, so the wait
+          // for the base seam is still armed and nothing is ours yet.
+          if (n === 0) return poll({ segments: [A], text: A.text });
+          // A follow-up is typed into this very loop while that is still true.
+          if (n === 1) {
+            await controller.sendFollowUp("and one more thing");
+            return poll({ segments: [A], text: A.text });
+          }
+          // Now the echo lands, and the payload carries TWO seams: the
+          // pre-send boundary (end of the reply already on screen) and the
+          // `result` closing the reply the follow-up was folded into. The
+          // first is the base; the second is ours.
+          const twoSeams = [
+            { segments: 1, text: A.text.length },
+            { segments: 2, text: A.text.length + B.text.length },
+          ];
+          if (n === 2) {
+            return poll({
+              segments: [A, B, C],
+              text: A.text + B.text + C.text,
+              turn_breaks: twoSeams,
+            });
+          }
+          return poll({ done: true, segments: [A, B, C], text: A.text + B.text + C.text,
+                        turn_breaks: twoSeams });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.openSession("s1");
+    await controller.sendMessage("and now this");
+
+    // This send's own reply survives: it is NOT swallowed into the base.
+    // Read through whichever mode it rendered in — with the adoption refused
+    // there is no confirmed segment count, so it falls back to plain text.
+    const bodies = assistants(controller).map(
+      (t) => (t.segments || []).map(bodyOf).join("") + (t.text || ""),
+    );
+    expect(bodies.some((b) => b.includes(B.text))).toBe(true);
+    // …and the reply already on screen is still not duplicated into it.
+    expect(bodies.slice(1).some((b) => b.includes(A.text))).toBe(false);
+    // The follow-up's own answer is here too, and in its own bubble rather
+    // than merged into this send's.
+    expect(bodies.some((b) => b.includes(C.text))).toBe(true);
+    expect(bodies.some((b) => b.includes(B.text) && b.includes(C.text))).toBe(false);
+  });
+
+  // AND THE BASE SEAM IS STILL ADOPTED AFTERWARDS (Bugbot, PR #1119). Refusing
+  // to adopt once a follow-up had landed — the first attempt at the test above
+  // — left the pre-send boundary unadopted too, and `priorReply`'s text was
+  // sampled when this send was composed, BEFORE a wake appended anything to
+  // the turn already on screen. So the wake's continuation had nothing
+  // excluding it and rendered into this turn's bubble: the same duplication
+  // the rest of this PR closes, arriving by the other door.
+  test("a wake that grew the previous turn after the send is still excluded", async () => {
+    let controller!: ChatController;
+    const A = text("The answer from before the reload.");
+    const WAKE = text(" And the background task finished.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const made = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: async (_f, n) => {
+          // The wake grows the turn already on screen — AFTER `priorReply`
+          // sampled its text, so `baseText` alone cannot exclude it.
+          if (n === 0) return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          // A follow-up lands before this send's own echo does.
+          if (n === 1) {
+            await controller.sendFollowUp("and one more thing");
+            return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          }
+          // The echo lands and the pre-send boundary is named — past the
+          // wake's continuation, which belongs to the previous turn.
+          return poll({
+            done: n > 2,
+            segments: [A, WAKE, B],
+            text: A.text + WAKE.text + B.text,
+            turn_breaks: [{ segments: 2, text: A.text.length + WAKE.text.length }],
+          });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.openSession("s1");
+    await controller.sendMessage("and now this");
+
+    const bodies = assistants(controller).map(
+      (t) => (t.segments || []).map(bodyOf).join("") + (t.text || ""),
+    );
+    // This send's reply is here, and neither the old reply NOR the wake's
+    // continuation came with it.
+    expect(bodies.some((b) => b.includes(B.text))).toBe(true);
+    expect(bodies.slice(1).some((b) => b.includes(WAKE.text))).toBe(false);
+    expect(bodies.slice(1).some((b) => b.includes(A.text))).toBe(false);
+  });
+
+  test("a wake growing the previous turn does not spend the wait for the seam", async () => {
+    const A = text("The answer from before the reload.");
+    const WAKE = text(" And the background task finished.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // The wake appends to the turn already on screen: the payload grows
+          // past `priorReply`'s text, and none of it is ours.
+          if (n === 0) return poll({ segments: [A, WAKE], text: A.text + WAKE.text });
+          // Now the echo lands and agent.py names the boundary — past the
+          // wake's own continuation, which belongs to the previous turn.
+          if (n === 1) {
+            return poll({
+              segments: [A, WAKE, B],
+              text: A.text + WAKE.text + B.text,
+              turn_breaks: [{ segments: 2, text: A.text.length + WAKE.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+
+    const seen: string[][][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf)));
+    });
+    await controller.sendMessage("and now this");
+    off();
+
+    // The new bubble never carries the old reply OR the wake's continuation.
+    const newBubbleFrames = seen.map((t) => t[t.length - 1] || []);
+    expect(
+      newBubbleFrames.filter((segs) =>
+        segs.some((s) => s.includes(A.text) || s.includes(WAKE.text)),
+      ),
+    ).toEqual([]);
+
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect((reply[1]!.segments || []).map(bodyOf)).toEqual([B.text]);
+    expect(reply.length).toBe(2);
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and
@@ -1036,6 +1596,163 @@ describe("follow-ups (T:16024, D687)", () => {
     // The answer sits BELOW the message it answers, not on top of the reply
     // before it, and the counted list is still intact.
     expect(reply[0]!.text).toBe(A.text);
+  });
+
+  // ── the SECOND WINDOW's duplicate (PR #1119), from a real `poll` capture ──
+  //
+  // The reported symptom, in the reporter's words: "if multiple tabs are open
+  // to the same conversation, the last response gets duplicated into the UI
+  // before the new response starts streaming when a new prompt is sent".
+  //
+  // The window a second tab adopts opens on the PREVIOUS turn, and it stays
+  // that way for several polls: agent.py's cursor cannot step past that reply
+  // until a NEWER turn's echo proves it closed, and the echo does not land the
+  // moment the other tab sends — the CLI writes `system/init` and
+  // `system/status` first. Every poll in between hands this loop the previous
+  // reply in full (`echo_pending` does not blank them: the run is not idle any
+  // more, those two rows came after the `result`).
+  //
+  // `sendMessage`'s road has always seeded `priorReply` against exactly that.
+  // The ADOPTED road seeded nothing, so the reply already on screen was typed
+  // into a fresh bubble underneath itself — and then, once the new reply began,
+  // it was left stranded in a bubble of its own below it.
+  //
+  // Every payload below is the shape agent.py actually produced, replayed out
+  // of the capture the reporter sent: `window` and `turn_breaks` included, the
+  // seam arriving only on the poll where the newer echo does.
+  const CAPTURED_PREV = "P".repeat(483); // the real lengths, from the capture
+  const CAPTURED_NEW = "Yes";
+  /** The captured poll sequence a second window sees, from its first lap. */
+  const capturedSecondWindow = (n: number): PollResponse => {
+    // Laps 0-3: the send has gone out in the other tab, the echo has not
+    // landed, and the window is still the previous reply alone. No seam —
+    // there is no boundary inside a window holding one turn.
+    if (n <= 3) {
+      return poll({ window: 0, segments: [text(CAPTURED_PREV)], text: CAPTURED_PREV });
+    }
+    // The echo lands: two replies in one window, and agent.py names the seam.
+    // The separator rides INSIDE the newer segment (`_segments_from_rows`'s
+    // `grow`), so the seam is at the previous reply's own length.
+    if (n === 4) {
+      return poll({
+        window: 0,
+        segments: [text(CAPTURED_PREV), text("\n\n" + CAPTURED_NEW)],
+        text: CAPTURED_PREV + "\n\n" + CAPTURED_NEW,
+        turn_breaks: [{ segments: 1, text: CAPTURED_PREV.length }],
+      });
+    }
+    // The cursor steps over the boundary: the newer reply alone, no seam left.
+    if (n === 5) return poll({ window: 9537, segments: [text(CAPTURED_NEW)], text: CAPTURED_NEW });
+    return poll({
+      done: true,
+      window: 9537,
+      segments: [text(CAPTURED_NEW + ", that is correct")],
+      text: CAPTURED_NEW + ", that is correct",
+    });
+  };
+
+  test("a second window adopting a live run never re-types the reply on screen", async () => {
+    let live = false;
+    const made = makeController({
+      history: () => ({
+        turns: [
+          { role: "user" as const, text: "the run's first message", uuid: "u0" },
+          { role: "assistant" as const, text: "An older answer.", uuid: "a0" },
+          { role: "user" as const, text: "the previous question", uuid: "u1" },
+          { role: "assistant" as const, text: CAPTURED_PREV, uuid: "a1" },
+        ],
+      }),
+      live_run: () => ({ run_id: live ? "r-live" : "" }),
+      // agent.py's `message` is the run's FIRST message, not the turn in
+      // flight — which is why a second window cannot reconcile the new turn
+      // against its own last user line, and goes straight to `pollLoop`.
+      poll: (_f, n) => ({ ...capturedSecondWindow(n), message: "the run's first message" }),
+    });
+    await made.controller.openSession("s1");
+    // Let `openSession`'s own adoption window run out before the run starts,
+    // so this is the STANDING WATCH's posture — a tab that was already open.
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // EVERY FRAME, not the final state. The duplicate is a FLASH: it is on
+    // screen only until agent.py's cursor steps over the boundary, and the
+    // payload after that step overwrites the bubble down to the newer reply —
+    // which is precisely the reported symptom ("duplicated into the UI BEFORE
+    // the new response starts streaming") and precisely what a final-state
+    // assertion cannot see.
+    const seen: string[][] = [];
+    const off = made.controller.subscribe(() => {
+      seen.push(assistants(made.controller).map((t) => t.text));
+    });
+    live = true;
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    await new Promise<void>((r) => setTimeout(r, 30));
+    off();
+
+    // No frame ever shows the restored reply twice.
+    expect(seen.filter((f) => f.filter((t) => t === CAPTURED_PREV).length > 1)).toEqual([]);
+    // And the run lands as three bubbles, not four: before the fix the last
+    // frame carried a stray "\n\nYes" the newer reply had been lifted out of.
+    expect(assistants(made.controller).map((t) => t.text)).toEqual([
+      "An older answer.",
+      CAPTURED_PREV,
+      CAPTURED_NEW + ", that is correct",
+    ]);
+  });
+
+  test("an adopted loop never skips past a seam the prefix on screen does not reach", async () => {
+    // THE LIMIT ON THE FIX ABOVE, and the reason the adopted road cannot just
+    // borrow `adoptFirstSeam`.
+    //
+    // A loop started by a send owns only the turn it sent, so every span the
+    // first payload has already closed off predates it and the base may
+    // advance to the first of them, wherever it falls. An ADOPTED loop owns
+    // nothing: a span past the prefix already on screen may be a reply this
+    // page has never rendered, and advancing past one would drop it outright.
+    //
+    // So the adopted road takes a seam only where it CONFIRMS the base — at
+    // exactly the end of the prefix on screen, which costs nothing to believe
+    // — and leaves every other seam alone. Here agent.py reports one seam and
+    // it is past the prefix: taking it would swallow the reply in between.
+    const NEW = "The reply this window is here for. ";
+    const EXTRA = "And what came after it.";
+    let live = false;
+    const made = makeController({
+      history: () => ({
+        turns: [
+          { role: "user" as const, text: "the previous question", uuid: "u1" },
+          { role: "assistant" as const, text: CAPTURED_PREV, uuid: "a1" },
+        ],
+      }),
+      live_run: () => ({ run_id: live ? "r-live" : "" }),
+      poll: (_f, n) => ({
+        ...(n <= 1
+          ? poll({ window: 0, segments: [text(CAPTURED_PREV)], text: CAPTURED_PREV })
+          : poll({
+              done: n > 2,
+              window: 0,
+              segments: [text(CAPTURED_PREV), text(NEW), text(EXTRA)],
+              text: CAPTURED_PREV + NEW + EXTRA,
+              // The ONLY seam, and it is past the prefix on screen.
+              turn_breaks: [{ segments: 2, text: CAPTURED_PREV.length + NEW.length }],
+            })),
+        // After the spread, or `poll`'s own default blanks it — and a blank
+        // `message` reaches `pollLoop` down a DIFFERENT road (no reconciliation
+        // at all), which is not the one this test is about.
+        message: "the run's first message",
+      }),
+    });
+    await made.controller.openSession("s1");
+    await new Promise<void>((r) => setTimeout(r, 30));
+    live = true;
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // Nothing is dropped: the reply between the prefix and the seam is on
+    // screen, and the reply already there was still not typed twice.
+    const shown = assistants(made.controller).map((t) => t.text).join("\n");
+    expect(shown).toContain(NEW);
+    expect(shown).toContain(EXTRA);
+    expect(shown.split(CAPTURED_PREV).length - 1).toBe(1);
   });
 
   test("an agent.py with no `turn_breaks` keeps one payload as one reply", async () => {
