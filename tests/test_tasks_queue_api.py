@@ -2217,7 +2217,8 @@ def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
 def test_a_queued_send_from_a_chat_that_has_a_session_moves_no_number(
         client, projects_dir, folders, monkeypatch, flag):
     """A chat that HAS a session is numbered under that session, and this
-    message is landing in it — so the draft record goes and nothing is carried
+    message is landing in it — so the draft record (still holding the sent
+    words) goes and nothing is carried
     anywhere. Moving a number onto `pending:<entry-id>` here would invent a
     second identity for a task that already has one (the schedule form's own
     rule, read through the other door)."""
@@ -2226,7 +2227,10 @@ def test_a_queued_send_from_a_chat_that_has_a_session_moves_no_number(
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     _transcript(projects_dir, "sess-b", alpha, "a conversation of its own")
     _holders(monkeypatch, {alpha: "sess-holder"})
-    assert drafts.put_chat("sess-b", "typed, not sent") is not None
+    # The store holds exactly the words that are about to queue — the ordinary
+    # shape; a record holding OTHER words is a follow-up and is kept (see
+    # `test_a_follow_up_typed_during_the_admit_survives_the_spend`).
+    assert drafts.put_chat("sess-b", "go") is not None
     before = _rows(client)["sess-b"]["task_id"]
 
     r = _post(client, "/api/tasks/queue/admit",
@@ -2410,3 +2414,31 @@ def test_a_pending_row_says_whether_a_chat_or_a_calendar_asked_for_it(
     assert rows[chat["key"]]["entry_id"] == chat["entry"]["id"]
     assert scheduled[0]["entry_id"] == \
         tasks_store.pending_entry(scheduled[0]["key"])
+
+
+def test_a_follow_up_typed_during_the_admit_survives_the_spend(
+        client, folders, flag, monkeypatch, projects_dir):
+    """Bugbot (1d50d4303): the composer autosaves under `new:<file>` while the
+    first send is still being admitted, so the record can already hold the NEXT
+    message when the spend runs. The number moves; the words stay."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
+    # What the store holds by the time the spend runs is the follow-up, not
+    # the message that queued.
+    assert drafts.put_chat(key, "and then the second thought") is not None
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "first thought", "draft_key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["run"] is False
+    kept = drafts.get_chat(key)
+    assert kept is not None and kept["text"] == "and then the second thought"
+    # …while a record that still holds exactly the sent words is spent.
+    key2 = drafts.NEW_CHAT_PREFIX + alpha + "/other.py"
+    assert drafts.put_chat(key2, "first thought") is not None
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "first thought", "draft_key": key2})
+    assert r.status_code == 200, r.text
+    assert drafts.get_chat(key2) is None

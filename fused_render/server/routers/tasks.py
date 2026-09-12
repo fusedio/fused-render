@@ -4768,7 +4768,8 @@ def api_queue_admit(body: dict = Body(...),
     # nothing. The schedule router owns the move because it owns the other one
     # exactly like it (a scheduled form's `draft_id`), and one copy is what keeps
     # the two from drifting. Best-effort and silent: see its docstring.
-    schedule_api.spend_chat_draft(body.get("draft_key"), entry)
+    schedule_api.spend_chat_draft(body.get("draft_key"), entry,
+                                  sent=str(body.get("message") or ""))
 
     # The row this message landed on, read the same way the listing files it:
     # the session it named, else the LEADER's key for a follower, else its own

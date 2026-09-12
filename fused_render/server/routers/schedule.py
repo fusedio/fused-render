@@ -280,7 +280,7 @@ def create_entry(target: str, body: dict, due, *, repeats: str = "",
         create_target=create_target)
 
 
-def spend_chat_draft(key, entry: dict) -> bool:
+def spend_chat_draft(key, entry: dict, sent: str = "") -> bool:
     """The chat draft a QUEUED SEND spent: its TASK number moves onto the entry
     that message became, and the record goes. True if anything moved.
 
@@ -304,6 +304,16 @@ def spend_chat_draft(key, entry: dict) -> bool:
     `pending:<entry-id>` there would invent a second identity for a task that
     already has one.
 
+    THE RECORD GOES ONLY IF IT STILL HOLDS THE WORDS THAT WERE SENT. The key is
+    the still-open composer's own, and a follow-up typed while the first send
+    was being admitted (the notes capture and the tray copy run first) can
+    autosave under it before this runs — deleting then would lose that
+    follow-up from the store while the box still showed it, so a reload dropped
+    it (Bugbot, 1d50d4303). With `sent` given, a record whose text differs from
+    the message that queued is left alone; the number still moves, since it is
+    the entry's now either way. Without `sent` (a form draft's road) the record
+    goes as before.
+
     Best-effort like every other draft write on this road, and for the same
     reason: the message IS queued, and a read-only state dir must not turn that
     into a 500. A draft that could not be dropped costs one stale row, never the
@@ -319,7 +329,12 @@ def spend_chat_draft(key, entry: dict) -> bool:
             tasks_store.rekey(
                 key, tasks_store.pending_key(str(entry.get("id") or "")))
             moved = True
-        if drafts.delete_chat(key):
+        stale = False
+        if sent:
+            record = drafts.get_chat(key) or {}
+            held = str(record.get("text") or "").strip()
+            stale = bool(held) and held != sent.strip()
+        if not stale and drafts.delete_chat(key):
             moved = True
     except OSError:
         return moved
