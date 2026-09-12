@@ -2660,10 +2660,15 @@ function ChatBody(props: ChatBodyProps) {
       setAdmitAhead(null);
       setAdmitTaskId("");
       setDroppedEntries(NO_DROPPED);
+      // …and the LEADER, same as Back: `leaderId` reads `leader.peek()` before
+      // it reads the session, so a leader left behind here would keep drawing
+      // (and acting on) the previous chat's waiting rows under the new
+      // transcript until something else re-rendered (Bugbot, d9f041e11).
+      leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
       void controller.openSession(sessionId);
     },
-    [controller, cardPolicy, params],
+    [controller, cardPolicy, leader, params],
   );
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs

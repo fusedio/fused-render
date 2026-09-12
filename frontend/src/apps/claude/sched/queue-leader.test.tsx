@@ -337,6 +337,12 @@ describe("the session the leader's run opened", () => {
     expect(back).toContain("setWaitingSeeds([]);");
     expect(back).toContain("setAdmitAhead(null);");
     expect(back).toContain("leader.forget();");
+    // …and OPENING ANOTHER SESSION from a queued chat forgets it too: `leaderId`
+    // reads `leader.peek()` first, so a leader left behind would keep drawing
+    // the previous chat's waiting rows under the new transcript (Bugbot).
+    const open = CHAT.slice(CHAT.indexOf("const onOpenSession = useCallback("));
+    const openBody = open.slice(0, open.indexOf("void controller.openSession(sessionId);"));
+    expect(openBody).toContain("leader.forget();");
   });
 });
 
