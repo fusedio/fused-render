@@ -1040,12 +1040,14 @@ button.tasks-caret,
   border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
-/* Skip the queue. Same group, same size, same silence at rest — and NEUTRAL
-   under the pointer, deliberately NOT Run now's `--activity` blue. That hue is
-   the page's "this STARTS something", and skipping starts nothing: the run
-   holding the folder keeps running, and all this does is move a card to the
-   front of a line. Borrowing the blue would promise the one thing this button
-   must never be read as offering. */
+/* RUN NEXT (the verb was "Skip the queue" until 2026-09-12 — see
+   platform/lib/queue.RUN_NEXT_LABEL for why it changed). Same group, same size,
+   same silence at rest — and NEUTRAL under the pointer, deliberately NOT Run
+   now's `--activity` blue. That hue is the page's "this STARTS something", and
+   this starts nothing: the run holding the folder keeps running, and all the
+   press does is move a card to the front of a line so it goes when that run
+   ends. Borrowing the blue would promise the one thing this button must never be
+   read as offering. */
 .tasks-act--skip,
 .prefs-section .tasks-act--skip {
   /* The glyph is a CHARACTER, not an inline svg like every sibling here, so it
@@ -1071,8 +1073,9 @@ button.tasks-caret,
    So it shrinks, hard, and the caption and this button are both gone before the
    title gives a pixel. A ratio and an overflow, not a width and not a
    breakpoint — the browser measures the real row. The capability is not lost
-   with it: the Board's drag and the chat's own chip both still skip, and at the
-   width this happens at there is no room to draw a control anyway.
+   with it: the Board's drag and the chat's own card over the composer both still
+   run next, and at the width this happens at there is no room to draw a control
+   anyway.
 
    THE LIST ROW'S ONLY, which is where the shortfall is: a Board card's act
    strip has one or two glyphs and all the room it needs, and a control that
@@ -1789,10 +1792,10 @@ button.tasks-caret,
 }
 
 /* ---- where a task stands in its folder's line -------------------------------
-   The project queue's one sentence — "#2 in line · behind TASK-041" — worn by a
+   The project queue's one sentence — "1st in line · behind TASK-038" — worn by a
    List row (`.tasks-row-queue`, in the flow after the title's marks) and by a
    Board card (`.tasks-card-queue`, its own line under the title). One builder
-   writes the words (tasks-lib.queueLine); these two only place them.
+   writes the words (tasks-lib.queueCaption); these two only place them.
 
    NOT A PILL and not a chip. The outcome tag below is the page's only bordered
    object and it earned that by having to INTERRUPT — this is the opposite kind
@@ -1873,12 +1876,60 @@ button.tasks-caret,
 
 /* AT THE HEAD OF THE LINE the caption stops being muted, on both surfaces. It
    is the one card in the lane whose work goes out next, and a reader sweeping a
-   column of identical grey sentences has nothing to find it by otherwise. The
-   page's `--activity` blue, which is what it already spends on "a thing that is
-   about to happen or can be made to". */
+   column of identical grey sentences has nothing to find it by otherwise.
+   `--status-queued`, the faded yellow this state wears everywhere since
+   2026-09-12 — NOT `--activity`. The blue was retired from every queued surface
+   when the lane folded into In Progress: waiting is a quieter running, in the
+   running hue, and a blue caption under an amber card said the opposite
+   (tokens.css). */
 .tasks-row-queue.is-next,
 .tasks-card-queue.is-next {
-  color: var(--activity);
+  color: var(--status-queued);
+}
+
+/* THE ID INSIDE THE CAPTION — "behind TASK-038", where TASK-038 is a press into
+   the conversation that is in the way (ScheduleTaskViews.QueueCaptionText).
+   It inherits the caption's size and colour and takes only the underline, so the
+   sentence still reads as one sentence rather than as a label with a link glued
+   to the end. The holder's own title is on the pointer, where it stopped being
+   ink. */
+.tasks-queue-ahead {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.tasks-queue-ahead:hover {
+  color: var(--status-queued);
+  text-decoration-color: currentColor;
+}
+
+/* ---- what one message in an expanded thread is doing ------------------------
+   The state word between the id and the body (tasks-lib.messageState). It used
+   to exist only as the ring's tooltip, which is to say nowhere a person reading
+   down a thread would find it — and with the queue on, a `running` row and a
+   `queued` row sit one line apart in two strengths of one hue, which is exactly
+   the pair a tooltip is the wrong place to distinguish.
+
+   IT IS NOT A PILL. Every other caption on this page is muted inline text and
+   this is the same kind of fact; the ring beside it already carries the colour,
+   so the word only has to be readable and out of the body's way. `flex: 0 0 auto`
+   for the reason the id chip beside it is: the BODY is the element that gives
+   way on a narrow pane, and it must be the last one to. */
+.tasks-msg-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+/* …and the two the queue actually separates take the ring's own hue, because
+   that is the pair a reader has to tell apart at a glance. Everything else stays
+   in the muted register: "done" on forty rows in forty colours would be a thread
+   nobody can scan. */
+.tasks-msg-state--in_progress {
+  color: var(--status-progress);
+}
+.tasks-msg-state--queued {
+  color: var(--status-queued);
 }
 
 /* The ⤒ that leads a priority caption (tasks-lib.QUEUE_PRIORITY_GLYPH). Its own

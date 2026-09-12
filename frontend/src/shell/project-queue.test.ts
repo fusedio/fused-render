@@ -16,9 +16,15 @@ const VIEWS = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
 const PAGE = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
 const PREFS = readFileSync(join(SHELL, "Preferences.tsx"), "utf8");
 const APPS = readFileSync(join(SHELL, "CurrentAppsSection.tsx"), "utf8");
+const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
 const SIDEBAR_CSS = readFileSync(join(SHELL, "../styles/sidebar.css"), "utf8");
+const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
+/** The chat's own half of the queue's skin — an app stylesheet, read from the
+ *  shell's suite because the COLOUR is one decision for the whole app and this
+ *  is where it is held still. */
+const CHAT_CSS = readFileSync(join(SHELL, "../apps/claude/styles/sched.css"), "utf8");
 
 const CARD = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
 const ROW = VIEWS.slice(VIEWS.indexOf("function TaskNode("), VIEWS.indexOf("function TaskCard("));
@@ -103,22 +109,50 @@ describe("the Preferences switch", () => {
   });
 });
 
-describe("the Board's Queued lane", () => {
+describe("the Board's waiting cards", () => {
   it("draws the card's place in the line, and the ⤒ only at the head", () => {
-    expect(CARD).toContain("const queue = queueLine(task);");
+    expect(CARD).toContain("const queue = queueCaption(task);");
     expect(CARD).toContain('className={"tasks-card-queue" + (queue.runsNext ? " is-next" : "")}');
     expect(CARD).toContain("{queue.runsNext && (");
     expect(CARD).toContain("{QUEUE_PRIORITY_GLYPH}");
+    // …and the caption's one actionable token is a LINK into the conversation
+    // that is in the way. The same component the List row draws, because it is
+    // one sentence (ScheduleTaskViews.QueueCaptionText).
+    expect(CARD).toContain("<QueueCaptionText queue={queue} />");
+    expect(VIEWS).toContain("export function QueueCaptionText({ queue }: { queue: QueueCaption })");
+    expect(VIEWS).toContain("href={queue.aheadHref}");
+    // The press must not also fire the card it sits in.
+    expect(VIEWS).toContain("onClick={(e) => e.stopPropagation()}");
   });
 
-  it("calls SKIP on the drop, never run-now", () => {
+  it("draws them INSIDE In Progress, under a dashed rule, running first", () => {
+    // `queued` had a lane of its own between Upcoming and In Progress for a day.
+    // Work that is due, asked for and about to run is work in progress in every
+    // sense a person means it — the only thing separating a queued task from a
+    // running one is which second its folder frees (schedule-lib.laneOf; the
+    // grouping and the counts are tested in tasks-lib.test.ts).
+    expect(BOARD).toContain("const splitAt = laneSplitAt(col.key, cards);");
+    expect(BOARD).toContain("{ix === splitAt && (");
+    expect(BOARD).toContain('<p className="schedule-tv-lane-split" aria-hidden="true">');
+    expect(BOARD).toContain("{LANE_SPLIT_LABEL}");
+    // The header counts the two halves rather than printing a bare total over a
+    // column holding three running tasks and four waiting ones.
+    expect(BOARD).toContain("{laneCountLabel(col.key, lane)}");
+  });
+
+  it("calls RUN NEXT on the drop, never run-now", () => {
     // The drop lands on the lane the Upcoming drag lands on and must not mean
     // the same thing: firing here would be two runs in one folder.
     expect(BOARD).toContain('if (action.kind === "skip") {');
     expect(BOARD).toContain("onQueued?.(await performSkip(task));");
-    // …and the warning under the cursor says so, rather than borrowing "Run now".
-    expect(BOARD).toContain("Skip the queue — it runs next, nothing is interrupted");
+    // …and the warning under the cursor says so, in the verb's own words rather
+    // than borrowing "Run now".
+    expect(BOARD).toContain("RUN_NEXT_HINT");
     expect(BOARD).toContain('skip: kind === "skip"');
+    // The one wording, from the one place — never a literal in a view. (The
+    // file's other "Skip" is the repeat-occurrence verb on a message row, which
+    // is a different feature and keeps its own word.)
+    expect(VIEWS).not.toContain("Skip the queue");
   });
 
   it("offers the same verb as a button, unguarded by the hover-actions flag", () => {
@@ -136,40 +170,87 @@ describe("the Board's Queued lane", () => {
     // Drawn and disabled at the head, not dropped: taking a control away on the
     // press that worked is how a reader ends up unsure anything happened.
     expect(strip).toContain("disabled={busy || queue.runsNext}");
+    expect(strip).toContain("RUN_NEXT_DONE_HINT");
   });
 });
 
-describe("the List's queued row", () => {
+describe("the List's waiting row", () => {
   it("says where it stands, in the flow — never as a second line", () => {
     // Every row here is one line tall, and one row growing to two would break
     // the rhythm the whole column is scanned down. The card is what grows.
     expect(ROW).toContain('className={"tasks-row-queue" + (queue.runsNext ? " is-next" : "")}');
+    expect(ROW).toContain("<QueueCaptionText queue={queue} />");
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
   });
 
-  it("grows a Skip only on a queued row, and not behind the hover-actions flag", () => {
+  it("grows a Run next only on a waiting row, and not behind the hover-actions flag", () => {
     expect(ROW).toContain('className="tasks-act tasks-act--skip"');
     const at = ROW.indexOf("tasks-act--skip");
     // The guard immediately above it is the queue's, not SHOW_ROW_ACTIONS's.
     expect(ROW.slice(at - 400, at)).toContain("{queue && (");
-    expect(ROW).toContain("aria-label={`Skip the queue for ${task.task_id}`}");
+    expect(ROW).toContain("aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}");
     expect(ROW).toContain("void skip();");
     expect(ROW).toContain("onQueued?.(await performSkip(task));");
+  });
+
+  it("says what each MESSAGE in an expanded thread is doing, in a word", () => {
+    // It used to live only in the ring's tooltip, which is to say nowhere a
+    // person reading down a thread would find it — and with the queue on, a
+    // `running` row and a `queued` row sit one line apart in two strengths of one
+    // hue (tasks-lib.messageState carries the four words).
+    expect(ROW).toContain("const tone = messageState(task, m);");
+    expect(ROW).toContain('<span className={"tasks-msg-state tasks-msg-state--" + tone.column}>');
+    expect(ROW).toContain("{tone.word}");
+    expect(ROW).toContain("<StatusIcon\n                    status={tone.column}");
+    expect(css(TASKS_CSS)).toContain(".tasks-msg-state {");
+    expect(css(TASKS_CSS)).toContain(".tasks-msg-state--queued {");
+    expect(css(TASKS_CSS)).toContain(".tasks-msg-state--in_progress {");
   });
 });
 
 describe("the queue's ink", () => {
-  it("wears the page's own blue on every surface that names the state", () => {
-    // `--activity` stopped being a status hue in 2026-08 and became "a thing
-    // about to happen, or that you can make happen" — which is exactly what a
-    // queued task is. One state, one colour, on the ring, the row and the card.
-    expect(SCHEDULE_CSS).toContain(".schedule-ring--queued { color: var(--activity); }");
+  it("is a FADED IN PROGRESS, and `--activity` is gone from every queued surface", () => {
+    // Blue was the queue's colour for a day, on the reading that `--activity`
+    // means "a thing about to happen, or that you can make happen". The lane fold
+    // retired it: `queued` is DRAWN INSIDE In Progress now, so a blue ring sits
+    // directly under an amber one in the same column — and two unrelated hues in
+    // one lane read as two unrelated kinds of work. They are one kind of work at
+    // two strengths, and the token says exactly that.
+    expect(SCHEDULE_CSS).toContain(".schedule-ring--queued { color: var(--status-queued); }");
     expect(css(TASKS_CSS)).toContain(
-      ".tasks-row-queue.is-next,\n.tasks-card-queue.is-next {\n  color: var(--activity);\n}",
+      ".tasks-row-queue.is-next,\n.tasks-card-queue.is-next {\n  color: var(--status-queued);\n}",
     );
-    // …and no hex was minted for it.
+    // NOT `--activity`, on any surface that names the state. Read off the real
+    // rules with the prose stripped, since the comments discuss the retired hue.
+    for (const rule of [
+      ".schedule-ring--queued",
+      ".tasks-row-queue.is-next",
+      ".tasks-msg-state--queued",
+      ".schedule-tv-lane-split",
+    ]) {
+      const at = css(TASKS_CSS + SCHEDULE_CSS).indexOf(rule);
+      expect(at).toBeGreaterThan(-1);
+      expect(css(TASKS_CSS + SCHEDULE_CSS).slice(at, at + 260)).not.toContain("--activity");
+    }
+    expect(css(CHAT_CSS)).not.toContain("--activity");
+    expect(css(CHAT_CSS)).toContain("var(--status-queued)");
+  });
+
+  it("DERIVES that yellow from the running one rather than minting a hex", () => {
+    // The two have to read as the same state at two strengths — one moving, one
+    // about to — which a colour of its own cannot promise and a mix of the
+    // running hue with the page's muted ink states outright. Change the amber and
+    // this follows it, in both themes, by construction.
+    const rule = "--status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));";
+    // Once per theme: test_theme.py requires every dark token to have a light
+    // value, and the mix is the DEFINITION rather than a second hand-picked
+    // yellow, so both palettes reach it the same way from their own amber.
+    expect(TOKENS_CSS.split(rule)).toHaveLength(3);
+    expect(css(TOKENS_CSS)).not.toMatch(/--status-queued:\s*#[0-9a-fA-F]{3,8}/);
+    // …and no surface mints one either.
     expect(css(SCHEDULE_CSS)).not.toMatch(/schedule-ring--queued[^}]*#[0-9a-f]{3,6}/);
+    expect(css(CHAT_CSS)).not.toMatch(/c-waiting[^}]*#[0-9a-f]{3,6}/);
   });
 
   it("gives the caption no width and no breakpoint — it measures, it does not guess", () => {
@@ -188,18 +269,12 @@ describe("the queue's ink", () => {
     // a size (browser QA round 2). `flex: 0 1 auto` beside a title that also
     // shrinks by 1 splits a shortfall in proportion to each item's base width,
     // which at a 400px pane left the 150px caption AND the 72px title at ~1px
-    // — both of the row's pieces of writing invisible at once. The caption has
-    // to absorb the whole shortfall and reach zero before the title gives a
-    // pixel, and only a much larger factor says that.
+    // — both of the row's pieces of writing invisible at once.
     const shrink = /flex:\s*0\s+(\d+)\s+auto/.exec(row);
     expect(shrink).not.toBe(null);
     expect(Number(shrink![1])).toBeGreaterThan(1);
-    // THE ELLIPSIS LIVES ON THE WORDS, NOT ON THE FLEX BOX AROUND THEM. The
-    // caption is `inline-flex` (the ⤒ sits beside the sentence) and
-    // `text-overflow` never reaches a flex item, so the declaration was inert
-    // where it shipped and the sentence clipped mid-glyph. The inner span is
-    // the block-with-inline-content the property needs.
-    expect(ROW).toContain('<span className="tasks-queue-text">{queue.text}</span>');
+    // THE ELLIPSIS LIVES ON THE WORDS, NOT ON THE FLEX BOX AROUND THEM.
+    expect(ROW).toContain('<span className="tasks-queue-text">');
     const words = css(TASKS_CSS).slice(
       css(TASKS_CSS).indexOf(".tasks-queue-text {"),
       css(TASKS_CSS).indexOf("}", css(TASKS_CSS).indexOf(".tasks-queue-text {")),
@@ -214,13 +289,11 @@ describe("the queue's ink", () => {
     );
     expect(card).toContain("overflow-wrap: anywhere");
     expect(card).not.toMatch(/(?<!-)\bwidth:\s*\d/);
-    // …AND NEITHER DOES THE SKIP BUTTON, which is the queue's other piece of
+    // …AND NEITHER DOES THE RUN NEXT BUTTON, which is the queue's other piece of
     // permanent row chrome. `.tasks-act` reserves a 22px box at rest so a row
-    // does not reflow under the pointer — right for actions that exist on no
-    // row while SHOW_ROW_ACTIONS is down, and wrong for one drawn on every
-    // queued row: at a 400px pane the reservation plus its gap left the title
-    // at 2.8px. On a LIST ROW it shrinks away with the caption, before the
-    // title gives a pixel, and comes back the moment a keyboard reaches it.
+    // does not reflow under the pointer — right for actions that exist on no row
+    // while SHOW_ROW_ACTIONS is down, and wrong for one drawn on every waiting
+    // row: at a 400px pane the reservation plus its gap left the title at 2.8px.
     const skip = css(TASKS_CSS).slice(
       css(TASKS_CSS).indexOf(".tasks-row .tasks-act--skip {"),
       css(TASKS_CSS).indexOf("}", css(TASKS_CSS).indexOf(".tasks-row .tasks-act--skip {")),
@@ -231,9 +304,40 @@ describe("the queue's ink", () => {
     expect(Number(/flex-shrink:\s*(\d+)/.exec(skip)![1])).toBeGreaterThan(1);
     expect(skip).not.toMatch(/(?<!-)\bwidth:\s*\d/);
     expect(css(TASKS_CSS)).toContain(".tasks-row .tasks-act--skip:focus-visible {");
-    // No media query was added for any of it.
+    // No media query was added for any of it — here or in the chat, whose pane is
+    // 340px in a sidebar and 900px in a canvas and knows neither.
     expect(css(TASKS_CSS)).not.toMatch(/@media[^{]*\{[^}]*tasks-(row|card)-queue/);
     expect(css(TASKS_CSS)).not.toMatch(/@media[^{]*\{[^}]*tasks-act--skip/);
+    expect(css(CHAT_CSS)).not.toMatch(/@media[^{]*\{[^}]*c-wait/);
+    // …and the divider is a border on a growing row rather than a measured rule.
+    const split = css(SCHEDULE_CSS).slice(
+      css(SCHEDULE_CSS).indexOf(".schedule-tv-lane-split {"),
+      css(SCHEDULE_CSS).indexOf("}", css(SCHEDULE_CSS).indexOf(".schedule-tv-lane-split {")),
+    );
+    expect(split).not.toMatch(/(?<!-)\bwidth:\s*\d/);
+  });
+});
+
+describe("the Status filter", () => {
+  it("offers Queued exactly the way it offers Needs attention — clubbed", () => {
+    // The menu offers the LANES THE BOARD DRAWS (Akshil, 2026-09-06: "blocked
+    // should be clubbed and needs attention"), so `needs_attention` has never had
+    // a tick of its own: one Blocked tick brings the broken run AND the one
+    // waiting on you, because that is the column a reader would go looking in.
+    //
+    // `queued` mirrors it exactly. It is drawn in In Progress, so In Progress is
+    // the tick — and turning it on brings the running cards and the waiting ones
+    // together, which is the only reading that agrees with the board a press
+    // takes the reader back to.
+    expect(VIEWS).toContain("const statusColumns = hideArchiveStatus");
+    expect(VIEWS).toContain('? BOARD_LANES.filter((c) => c.key !== "archived")\n    : BOARD_LANES;');
+    // The MATCH is by lane for the same reason, so a stored `queued` (or
+    // `needs_attention`) can never leave a filter applied that no tick shows.
+    expect(VIEWS).toContain(
+      "const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));",
+    );
+    expect(LIB).toContain("const lane = laneOf(taskColumn(task));");
+    expect(LIB).toContain("if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;");
   });
 });
 
@@ -264,9 +368,11 @@ describe("the page holds the optimistic claims, not the view", () => {
 });
 
 describe("the sidebar", () => {
-  it("says '· 2 queued' in words, and keeps its one dot for running", () => {
+  it("says '· 2 waiting' in words, and keeps its one dot for running", () => {
     // The row already spends its one dot slot on running-or-unread, and what a
-    // reader wants from a queue is the NUMBER, which a dot cannot say.
+    // reader wants from a queue is the NUMBER, which a dot cannot say. The WORD
+    // is "waiting" — `queued` is the status word, and a count beside "1 running"
+    // is a person being told what their machine is doing (tasks-lib.queuedLabel).
     expect(APPS).toContain('<span className="current-app-queued">{"· " + queuedLabel(app.queued)}</span>');
     expect(APPS).toContain("{app.queued > 0 && (");
     expect(APPS).toContain("rows.filter((r) => isQueued(r)).map((r) => r.project");

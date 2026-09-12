@@ -1372,11 +1372,17 @@ test("a QUEUED send writes its notes ONTO the entry, and spends the round", asyn
   // than pinned for the life of the document — nothing on screen draws it.
   expect(overviews).toBe(1);
   expect(revoked).toHaveLength(1);
-  // The chip is up, and it is the one thing on screen still saying the words.
-  expect(byClass(r, "c-queuechip")).toHaveLength(1);
-  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+  // The WAITING ROW is up, and it is the one thing on screen still saying the
+  // words — the reader's own bubble, dashed, at its place in the transcript
+  // (ui/Waiting), drawn from the admission until the next poll carries the
+  // entry the server just created.
+  expect(byClass(r, "c-waiting")).toHaveLength(1);
+  expect(byClass(r, "c-waiting-bubble").map((n) => String(n.props.children))).toEqual([
     "please fix this",
   ]);
+  // …and exactly ONE copy of it: the optimistic transcript row is dropped on the
+  // same paint the waiting row goes up, so the words are never in two places.
+  expect(byClass(r, "bubble")).toHaveLength(1);
 });
 
 test("an ADMITTED send takes its notes the ordinary way — once, and only in beginSend", async () => {
@@ -1414,7 +1420,7 @@ test("a REFUSED admission leaves the round exactly where the reader left it", as
   await settle(30);
 
   expect(started()).toHaveLength(0);
-  expect(byClass(r, "c-queuechip")).toHaveLength(0);
+  expect(byClass(r, "c-waiting")).toHaveLength(0);
   expect(boxValue(r)).toBe("words that did not go");
   expect(annChips(r)).toHaveLength(1);
   expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();

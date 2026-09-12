@@ -275,89 +275,235 @@
   color: var(--c-accent);
 }
 
-/* ── the queue chip ──────────────────────────────────────────────────────────
-   The same block, one row instead of a column (ui/QueuedChip.tsx). A queued
-   message shuts nothing — the composer stays open and the next line queues
-   behind this one — so there is no reason line to explain and no lid to draw:
-   the card is a ring, the words and Skip, on one line that wraps when the pane
-   is narrow.
+/* ── a message this chat has not sent yet ────────────────────────────────────
+   The reader's own bubble, at its place in the conversation, with a DASHED edge
+   and no ground where a sent one has a filled one — plus one muted line under it
+   (ui/Waiting.tsx).
 
-   NO WIDTH AND NO BREAKPOINT ANYWHERE IN IT. This pane is 340px in a sidebar and
-   900px in a canvas, and "#12 in line · behind TASK-1041" is as long as the data
-   makes it — so the row WRAPS (flex-wrap) and the caption is the part allowed to
-   give way, rather than any cell being told a size. */
-.c-schedblock.c-queuechip {
-  padding-bottom: 8px;
+   WHAT IT REPLACES. This was a CHIP until 2026-09-12: a card with a ring, the
+   word "Queued", a place ("#2 in line"), a Skip and a Cancel, parked under the
+   transcript with the message's own words re-drawn inside it. It said everything
+   and belonged to nothing — a second kind of object in a column of bubbles,
+   describing a message sitting right above it in a bubble of its own, which the
+   reader had to pair up before either meant anything.
+
+   DASHED, NOT FADED, and the distinction is the whole skin. A dashed edge is a
+   shape that says "not yet"; dimming the text says "less important", and these
+   are the reader's own words, which are not. So the BUBBLE keeps the transcript's
+   full-strength ink and loses only its fill, and the LINE underneath is the muted
+   one — the fact about the message is quiet, the message is not.
+
+   IT BORROWS `.turn.user .bubble` (transcript.css) rather than re-skinning it,
+   and `.c-waiting` shares the log's 720px measure and 20px gutter, so the row
+   lands in the same column as the turns above it and reads as the next one of
+   them. */
+.c-waiting {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 20px 6px;
 }
-/* THE QUEUED MESSAGE'S OWN BUBBLE, borrowed from the transcript rather than
-   re-skinned: `.turn.user .bubble` dresses it (transcript.css), and this block
-   shares the log's 720px measure and 20px gutter — so the row lands in the same
-   column as the turns above it and reads as the last one of them. Only the gap
-   is ours: a transcript turn is followed by another turn 20px down, and this one
-   is followed by the chip that belongs to it. */
-.c-schedblock.c-queuechip .turn.user.c-queuesaid {
-  margin: 0 0 6px;
+/* A transcript turn is followed by another turn 20px down; this one is followed
+   by the line that belongs to it. */
+.c-waiting .turn.user.c-waiting-turn {
+  margin: 0 0 4px;
 }
-.c-schedblock .sb-card--chip {
-  flex-direction: row;
+/* THE EDGE IS THE WHOLE STATEMENT. `background: none` rather than a paler tint:
+   a tint is still a filled bubble and reads as a weaker message, where an empty
+   one reads as an outline of a message that has not happened. The border colour
+   is the state's own faded yellow at half strength, so the dash is legible
+   without becoming the loudest thing in the column. */
+.c-waiting .bubble.c-waiting-bubble {
+  background: none;
+  border: 1px dashed color-mix(in srgb, var(--status-queued) 60%, transparent);
+  color: var(--c-fg);
+}
+/* THE ONE LINE UNDER IT — `queued · behind TASK-038 · delete`. 12px, muted, in
+   the register every other caption in this pane uses, and WRAPPING rather than
+   ellipsising: this pane is 340px in a sidebar and 900px in a canvas, and the
+   sentence's length is the data's. A second line of 12px text is a cheaper
+   failure here than a truncated task id, which is the one token in it a reader
+   can act on. No width anywhere and no breakpoint. */
+.c-waiting-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0;
+  /* Lines up under the bubble's own text, not under the bubble's edge: the
+     bubble is right-aligned in the user turn, so this sits at the log's left
+     margin and reads as a note about the row rather than as part of it. */
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-dim);
+}
+/* The state word — `queued` or `scheduled`. It leads, because it is the word
+   that changes what the bubble above it means: without it "behind TASK-038"
+   reads as a note about somebody else's run. In the state's own hue, which is
+   the only ink on this line that is not muted. */
+.c-waiting-word {
+  color: var(--status-queued);
+  font-weight: 600;
+}
+.c-waiting-when,
+.c-waiting-behind {
+  min-width: 0;
+}
+/* THE ID IS THE PRESS — into the conversation that is in the way. Inherits the
+   line's size and colour and takes only an underline, so the sentence stays a
+   sentence; the holder's title is on the pointer, where it stopped being ink. */
+.c-waiting-ahead {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+a.c-waiting-ahead:hover {
+  color: var(--c-fg);
+  text-decoration-color: currentColor;
+}
+/* THE SEPARATOR, one dot in the line's own ink, so the row reads as a sentence
+   rather than as a label with controls glued to it. */
+.c-waiting-dot {
+  color: var(--c-faint);
+}
+/* DELETE IS A WORD IN THE SENTENCE, not a button bolted to the end of one. No
+   border, no ground, no padding to speak of, lower case like the words beside
+   it — and the error colour only under the pointer, which is where the promise
+   is made. One press and no arming: this drops ONE message, whose words are in
+   the bubble directly above it. */
+.c-waiting-del {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--c-dim);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.c-waiting-del:hover:not(:disabled) {
+  color: var(--c-error);
+  text-decoration-color: currentColor;
+}
+.c-waiting-del:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.c-waiting-del:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── the card over the composer ──────────────────────────────────────────────
+   "2 messages waiting · behind TASK-038", and the one press that changes it.
+
+   IT IS NOT A SECOND COPY OF THE ROWS. The rows are in a transcript, which
+   scrolls; this is pinned where the composer is, so a reader twenty turns down
+   still knows something of theirs is held and what by. Everything per-message —
+   the words, the delete — is on the row and never here.
+
+   THE SAME COLUMN AS THE COMPOSER (720px, 20px gutter), like the scheduled-
+   message block it sits where: a lid on that box rather than a band across the
+   pane. No entry animation and no reserved space — the composer is anchored at
+   the bottom and only the transcript grows, so this appears into height the
+   transcript gives up. */
+.c-waitcard {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 20px 6px;
+}
+.c-waitcard .wc-card {
+  display: flex;
   align-items: center;
   /* The one concession to a narrow pane: the words drop under the ring rather
-     than the Skip button being pushed off the card. */
+     than Run next being pushed off the card. */
   flex-wrap: wrap;
   gap: 8px;
   padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--status-queued) 45%, var(--c-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--status-queued) 8%, var(--c-surface));
+  font-size: 12px;
+  line-height: 1.45;
 }
-/* QUEUED IS THE PAGE'S BLUE — `--activity`, the same token the Tasks board's
-   Queued ring and the List chip wear. Not the chat's accent: that is salmon, and
-   browser QA read it as a third colour for one state. One state, one colour, on
-   every surface that names it. */
-.c-schedblock .sb-ring--queued {
-  color: var(--activity);
+/* The ring the state is read by — the same 2px currentColor circle the shell's
+   rows wear, in the same faded yellow, at 12px because this line is 12px. */
+.c-waitcard .wc-ring {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  color: var(--status-queued);
 }
-.c-schedblock .sb-queued-word {
-  flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--c-fg);
-}
-.c-schedblock .sb-queued-line {
-  /* The cell that gives way: it shrinks and ellipsises inside itself, so a
-     narrow pane loses the end of "behind TASK-041" rather than the button. */
+.c-waitcard .wc-text {
+  /* The cell that gives way: it shrinks and wraps inside itself, so a narrow
+     pane loses nothing and the button keeps its size. */
   flex: 1 1 auto;
   min-width: 0;
   display: inline-flex;
-  align-items: center;
-  gap: 3px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
   color: var(--c-dim);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.c-schedblock .sb-queued-glyph {
-  flex: 0 0 auto;
-  color: var(--c-accent-text);
+.c-waitcard .wc-count {
+  color: var(--c-fg);
+  font-weight: 600;
 }
-/* THE GRAMMAR'S OWN SEPARATOR — `Queued · #2 in line · behind TASK-041 "…" ·
-   Skip · Cancel`. One dot, one weight, in the dim ink the caption already wears,
-   so the row reads as a sentence rather than as a toolbar with a label glued to
-   its left end. Decorative (`aria-hidden`): a screen reader gets the words. */
-.c-schedblock .sb-queued-dot {
-  flex: 0 0 auto;
+.c-waitcard .wc-dot {
   color: var(--c-faint);
 }
-/* SKIP AND CANCEL, IN THAT ORDER AND IN THAT WEIGHT. Skip is the press a reader
-   actually wants; Cancel is the destructive one and is deliberately the quieter
-   of the two — no border, dim until it is pointed at. It is the same hierarchy
-   the Tasks row's own menu draws between "Skip the queue" and its cancel. */
-.c-schedblock .sb-acts--chip {
-  gap: 6px;
+.c-waitcard .wc-ahead {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
 }
-.c-schedblock .sb-acts button.sb-quiet {
-  border-color: transparent;
-  color: var(--c-dim);
-  padding-inline: 4px;
+a.c-waitcard .wc-ahead:hover,
+.c-waitcard a.wc-ahead:hover {
+  color: var(--c-fg);
+  text-decoration-color: currentColor;
 }
-.c-schedblock .sb-acts button.sb-quiet:hover:not(:disabled) {
-  border-color: transparent;
-  color: var(--c-error);
+.c-waitcard .wc-grow {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+/* RUN NEXT, and only when there is something to get in front of (ui/Waiting).
+   NEUTRAL, deliberately: this starts nothing — the run holding the folder keeps
+   running — and a primary-coloured button here would promise the one thing the
+   press must never be read as offering. */
+.c-waitcard .wc-run {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 3px 9px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-panel);
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.c-waitcard .wc-run:hover:not(:disabled) {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.c-waitcard .wc-run:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.c-waitcard .wc-run:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
 }

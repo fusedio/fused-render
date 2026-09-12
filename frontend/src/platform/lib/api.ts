@@ -3120,9 +3120,17 @@ export interface Task {
   // claimed, a run whose task row is gone). The empty case is a real answer and
   // the views say "behind a run in this folder" for it rather than a blank.
   queue_ahead?: string;
-  // …and that holder's title, for the caption only. Never the ink: an id is
-  // what a reader can go and find, a title is what it was about.
+  // …and that holder's title, for the POINTER only. Never the ink since
+  // 2026-09-12: an id is what a reader can go and find, and a quoted title
+  // inside the caption was a second sentence nested in the first one.
   queue_ahead_title?: string;
+  // WHERE THAT ID GOES. "behind TASK-038" is only worth printing if TASK-038 is
+  // somewhere the reader can open, so the server names the holder's Claude
+  // session and its folder beside its id and every surface draws the id as a
+  // link (platform/lib/queue.queueAheadHref). Absent on an older server, and the
+  // id is then plain text rather than a link to nothing.
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
   // Skipped: this task's pending work jumped to the head of its folder's line
   // (`POST /api/tasks/queue/skip`, or a held answer, which is always priority).
   // It still never interrupts the run in flight.
@@ -3226,12 +3234,13 @@ export type QueueAdmission =
       position: number;
       ahead: string;
       ahead_title: string;
-      /** WHAT IS IN FRONT IS THE CALLER'S OWN EARLIER MESSAGE, not another
-       *  task: a second send into a chat whose first one is still waiting. The
-       *  FOLDER may be free — this is the scheduler keeping one conversation's
-       *  messages in the order they were typed — so `ahead` is "" and there is
-       *  no task to name. The caption says so (`queue.ts behind_own`). */
-      behind_own?: boolean;
+      /** WHERE THAT ID GOES — the holder's Claude session and folder, so the
+       *  waiting row's "behind TASK-038" is a link into the conversation that is
+       *  in the way (queue.queueAheadHref). Both "" when the folder is free,
+       *  which is the ordinary answer for a second send into a chat whose first
+       *  one is still waiting: nothing is in front but the reader's own line. */
+      ahead_session?: string;
+      ahead_target?: string;
     };
 
 export function admitQueueSend(body: {
@@ -4945,6 +4954,22 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // WHO PUT THIS ENTRY IN THE LINE — "chat" for a message the project queue
+  // admitted out of a composer, ABSENT for everything a person scheduled (the
+  // calendar, the New task form, a repeat's occurrence).
+  //
+  // The chat reads exactly one thing off it, and it is the difference between
+  // two states that look identical in the store: a chat-origin entry is a
+  // message the reader typed into THIS box ten seconds ago and the box stays
+  // open behind it, while a calendar entry aimed at this session is a run the
+  // scheduler is about to start here — and a line typed over THAT is two
+  // messages racing into one turn, which is what the closed composer has always
+  // been there to prevent. Absent on every entry stored before the field
+  // existed, which reads as "scheduled", i.e. the cautious half.
+  origin?: string;
+  // Skipped to the head of its folder's line (`POST /api/tasks/queue/skip`, or a
+  // held answer, which is always priority). Never interrupts the run in flight.
+  priority?: boolean;
   // On a follow-up into a chat that has not run yet: the QUEUED ENTRY this
   // message was typed behind (`admitQueueSend`'s `follow_of`). The entry groups
   // under that leader's task instead of minting one of its own, and takes its

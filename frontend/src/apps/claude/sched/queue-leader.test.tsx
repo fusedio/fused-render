@@ -323,10 +323,14 @@ describe("the session the leader's run opened", () => {
     // NO GUARD REF: `openSession` emits the id, the rule answers "" from then
     // on, and the effect's own dependency is what closes it.
     expect(effect).toContain("}, [adoptSession, controller, cardPolicy]);");
-    // …and Back takes the leader AND the chips with it, so the adoption can
-    // never reach across a conversation the reader has closed.
+    // …and Back takes the leader AND the waiting-row memories with it, so the
+    // adoption can never reach across a conversation the reader has closed.
+    // (The ROWS themselves are the server's and come back on the next poll for
+    // whatever conversation is on screen — what is cleared here is this page's
+    // memory of what IT admitted.)
     const back = CHAT.slice(CHAT.indexOf("const onBack = useCallback("), CHAT.indexOf("const onOpenSession ="));
-    expect(back).toContain("setQueuedSends([]);");
+    expect(back).toContain("setWaitingSeeds([]);");
+    expect(back).toContain("setAdmitAhead(null);");
     expect(back).toContain("leader.forget();");
   });
 });

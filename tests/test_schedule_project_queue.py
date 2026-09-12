@@ -1813,3 +1813,92 @@ def test_a_cancel_on_a_spawned_entry_still_stops_the_run(folders, home,
     assert schedule._turn_tick(dict(stored), stored["run_id"], agent, {}) is False
     assert agent.cancels == [stored["run_id"]]
     assert _stored(entry["id"])["turn"] == "cancelled"
+
+
+# =============================================== origin — who asked for this
+
+# WHY THE FIELD EXISTS (Akshil, 2026-09-12). A message somebody SCHEDULED into a
+# conversation still shuts that chat's composer until it goes — the scheduler is
+# about to send it into this very session, and a line typed over it is two
+# messages racing into one run, which is the pre-queue behaviour and the one the
+# user asked to keep. A message the CHAT itself queued is that conversation's own
+# next line, ordered by the admission that stored it, and it must never block.
+# Both are the same pending entry in the same store, so the store has to be able
+# to tell them apart: `origin` is that one word, written by the admission
+# endpoint and by nothing else.
+
+
+def test_origin_is_stored_only_when_there_is_one(folders):
+    """The absence IS the meaning — "nobody's chat queued this" — so an ordinary
+    spawn's entry is main's, field for field, and a stored `"origin": ""` would
+    be the same sentence said in a way that rewrites every entry on disk."""
+    plain = schedule.create(str(folders["alpha"]), "go", _ago(60))
+    assert "origin" not in plain
+
+    chat = schedule.create(str(folders["alpha"]), "go", _ago(60), origin="chat")
+    assert chat["origin"] == "chat"
+    # Normalised like every other string the router hands this module: None and
+    # blank space are the one thing they both mean.
+    assert "origin" not in schedule.create(str(folders["alpha"]), "go",
+                                           _ago(60), origin="   ")
+    assert "origin" not in schedule.create(str(folders["alpha"]), "go",
+                                           _ago(60), origin=None)
+
+
+def test_origin_survives_the_store(folders):
+    """The client reads it off `/api/schedule`, which serializes the store's
+    dicts as they are — so a field that did not come back out of a read would be
+    a field the composer could not see."""
+    chat = schedule.create(str(folders["alpha"]), "go", _ago(60), origin="chat")
+    plain = schedule.create(str(folders["alpha"]), "go", _ago(59))
+
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert stored[chat["id"]]["origin"] == "chat"
+    assert "origin" not in stored[plain["id"]]
+
+
+def test_a_materialized_occurrence_is_born_without_an_origin(folders):
+    """A repeat is a SCHEDULE, whoever first typed it: every run of it is a
+    message the calendar put there, and one that inherited "chat" would leave a
+    conversation's composer open to a message nothing ordered against it."""
+    template = schedule.create(str(folders["alpha"]), "nightly",
+                               repeats="0 3 * * *", origin="chat")
+    assert template["origin"] == "chat"
+
+    occurrence = next(e for e in schedule.list_entries()
+                      if e.get("template_id") == template["id"])
+    assert "origin" not in occurrence
+
+
+def test_restore_invents_no_origin(folders):
+    """Un-skipping is a decision about WHEN a run happens and about nothing
+    else; it has no more business minting a provenance than it has rewriting the
+    message."""
+    template = schedule.create(str(folders["alpha"]), "nightly",
+                               repeats="0 3 * * *")
+    occurrence = next(e for e in schedule.list_entries()
+                      if e.get("template_id") == template["id"])
+    schedule.cancel(occurrence["id"])
+
+    assert "origin" not in schedule.restore(occurrence["id"])
+
+
+def test_a_resend_of_a_chats_message_is_still_the_chats_message(folders,
+                                                                spawned):
+    """Asking again is the same ask: the composer that stayed open for the first
+    send has no reason to shut for the second, and the re-ask is filed under the
+    same conversation."""
+    original = schedule.create(str(folders["alpha"]), "go", _ago(600),
+                               origin="chat")
+    schedule._update(original["id"], state=schedule.SENT,
+                     claude_session_id=SID, fired=_ago(590).isoformat())
+
+    answer = schedule.resend(original["id"])
+
+    assert answer["ok"] is True
+    assert answer["entry"]["origin"] == "chat"
+    # …and a re-ask of a scheduled message stays a scheduled message.
+    plain = schedule.create(str(folders["alpha"]), "go", _ago(600))
+    schedule._update(plain["id"], state=schedule.SENT,
+                     claude_session_id=SID2, fired=_ago(590).isoformat())
+    assert "origin" not in schedule.resend(plain["id"])["entry"]

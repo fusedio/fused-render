@@ -37,7 +37,7 @@
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
-import { queuePosition } from "@platform/lib/queue";
+import { queuePosition, runningWaitingLabel, waitingLabel } from "@platform/lib/queue";
 import {
   addDays,
   BOARD_COLUMNS,
@@ -355,6 +355,81 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
   if (taskColumn(task) !== "archived") return tone;
   if (tone.column === "in_progress") return tone;
   return { ...tone, column: "archived", failed: false };
+}
+
+/**
+ * THE STATE WORD AND RING ONE MESSAGE WEARS inside an expanded List row.
+ *
+ * The thread used to draw a ring and nothing else: the hue said "upcoming" or
+ * "in progress" and the word for it lived only in the ring's tooltip, which is
+ * to say nowhere a person reading down a thread would find it. With the queue on,
+ * a thread routinely holds a message that is RUNNING directly above one that is
+ * WAITING for the same folder, and those two are the same shade of yellow family
+ * apart — so the row says which, in a word, beside the ring (Akshil, 2026-09-12).
+ *
+ * FOUR WORDS FOR THE FOUR THINGS THAT HAPPEN, and they are the lane's own words
+ * so a reader carries one vocabulary between the two:
+ *
+ *   * `running` — the turn is in flight (amber, `--status-progress`).
+ *   * `queued` — its time has come and its folder is busy (faded yellow,
+ *     `--status-queued`), which is exactly the lane's waiting half.
+ *   * `failed` — settled badly, whatever spelling of badly.
+ *   * `done` — settled.
+ *
+ * …plus `scheduled` for a message whose time has NOT come, which is not a queue
+ * state at all and must not be dressed as one, and the archive's own two words
+ * (`cancelled` / `skipped`) for a message nothing will ever do again.
+ *
+ * QUEUED IS DERIVED FROM THE TASK, not from the message: a message is `pending`
+ * whether its folder is busy or free, and only the task row carries the server's
+ * verdict about the folder (`Task.status === "queued"`). The message's own half
+ * of it — past due, still pending — is schedule-lib's `queueRole` fallback rule,
+ * which that module already calls "not a guess"; both halves have to hold.
+ */
+export interface MessageState {
+  /** The word the row prints. */
+  word: string;
+  /** The ring's hue, as a BoardColumn — `queued` and `in_progress` are the two
+   *  the queue actually separates. */
+  column: BoardColumn;
+  /** Paint the ring red: settled, but not well. */
+  failed: boolean;
+  /** The ring's tooltip — `messageTone`'s own English, unchanged. */
+  label: string;
+}
+
+export function messageState(
+  task: Task,
+  m: TaskMessage,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): MessageState {
+  const tone = threadTone(task, m);
+  if (tone.column === "in_progress") {
+    return { word: "running", column: "in_progress", failed: false, label: tone.label };
+  }
+  // Past due, still pending, and the server says this task is waiting on its
+  // folder. Both halves, for the reason above.
+  if (
+    isQueued(task) &&
+    m.state === "pending" &&
+    m.at > 0 &&
+    m.at <= nowSec
+  ) {
+    return { word: "queued", column: "queued", failed: false, label: "Queued" };
+  }
+  if (tone.failed) return { word: "failed", column: tone.column, failed: true, label: tone.label };
+  if (tone.column === "upcoming") {
+    return { word: "scheduled", column: "upcoming", failed: false, label: tone.label };
+  }
+  if (tone.column === "archived") {
+    return {
+      word: tone.label.toLowerCase(),
+      column: "archived",
+      failed: false,
+      label: tone.label,
+    };
+  }
+  return { word: "done", column: tone.column, failed: false, label: tone.label };
 }
 
 /** Is any message in this thread mid-turn? The client's half of the running
@@ -1672,22 +1747,31 @@ export function isQueued(task: { status: string }): boolean {
 }
 
 /**
- * The caption a queued row, card or chat chip prints, and the two readings under
- * it — RE-EXPORTED from platform, not defined here.
+ * The queue's whole vocabulary — RE-EXPORTED from platform, not defined here.
  *
- * The chat's chip says the same sentence and lives in `apps/claude`, which may
- * not import shell (scripts/check-boundaries.mjs). So the builder sits in
+ * The chat says the same sentences and lives in `apps/claude`, which may not
+ * import shell (scripts/check-boundaries.mjs). So the builder sits in
  * `platform/lib/queue.ts`, where both layers can read it, and this file passes
  * it through so every reader on this page still takes its vocabulary from
  * tasks-lib like everything else about a row.
  */
 export {
-  queueLine,
+  canRunNext,
+  queueAheadHref,
+  queueBehind,
+  queueCaption,
+  queueOrdinal,
   queuePosition,
   queueRunsNext,
+  runningWaitingLabel,
+  waitingCount,
+  waitingLabel,
   QUEUE_PRIORITY_GLYPH,
+  RUN_NEXT_DONE_HINT,
+  RUN_NEXT_HINT,
+  RUN_NEXT_LABEL,
 } from "@platform/lib/queue";
-export type { QueueFacts, QueueLine } from "@platform/lib/queue";
+export type { QueueCaption, QueueFacts } from "@platform/lib/queue";
 
 /**
  * The same move the drag makes, reachable without dragging (Akshil,
@@ -2810,8 +2894,70 @@ export function groupByColumn(
       ...blocked.filter((t) => !needsAttention(t)),
     ]);
   }
+  // RUNNING FIRST, THEN WAITING — the other lane that holds two statuses, and the
+  // partition is the whole reason `queued` could give up its column
+  // (schedule-lib.laneOf). What is actually going is what the lane is read for;
+  // what is waiting on a busy folder goes underneath it, in THE LINE'S OWN ORDER
+  // rather than the lane's, because a place in a queue is the only order a
+  // waiting card can honestly claim (LANE_SORTS.queued, which is still keyed by
+  // BoardColumn exactly so this call can ask for it).
+  //
+  // Applied AFTER the lane's own sort and by a stable partition, so recency still
+  // orders the running half and no card moves for any other reason.
+  const progress = map.get("in_progress");
+  if (progress && progress.length > 1) {
+    const waiting = progress.filter((t) => isQueued(t));
+    if (waiting.length && waiting.length < progress.length) {
+      map.set("in_progress", [
+        ...progress.filter((t) => !isQueued(t)),
+        ...sortLane(waiting, "queued", now),
+      ]);
+    } else if (waiting.length) {
+      map.set("in_progress", sortLane(waiting, "queued", now));
+    }
+  }
   return map;
 }
+
+/**
+ * WHAT A LANE HEADER COUNTS — "7", or "1 running · 2 waiting".
+ *
+ * Only In Progress ever says the second thing, and only when it holds both kinds.
+ * That is the price of folding `queued` into this lane (schedule-lib.laneOf): a
+ * bare total over a column holding three running tasks and four waiting ones
+ * answers a question nobody asked, and the ONE thing a person sweeping the board
+ * wants from this lane is how much of it is actually moving.
+ *
+ * Every other lane keeps the plain number it has always had, and so does an In
+ * Progress lane with nothing waiting in it — which is every board on a machine
+ * that has not turned the queue on.
+ */
+export function laneCountLabel(lane: BoardLane, tasks: readonly Task[]): string {
+  if (lane !== "in_progress") return String(tasks.length);
+  const waiting = tasks.filter((t) => isQueued(t)).length;
+  if (!waiting) return String(tasks.length);
+  return runningWaitingLabel(tasks.length - waiting, waiting);
+}
+
+/**
+ * WHERE THE DASHED "waiting" DIVIDER GOES inside the In Progress lane, or -1 for
+ * "nothing to divide".
+ *
+ * The index of the first waiting card, and only when running cards precede it:
+ * a lane that is ALL waiting needs no line across the top of itself (the header
+ * already says "3 waiting"), and neither does one with nothing waiting at all.
+ * Read off the same array the lane draws, so the divider cannot land anywhere but
+ * on the seam `groupByColumn` put there.
+ */
+export function laneSplitAt(lane: BoardLane, tasks: readonly Task[]): number {
+  if (lane !== "in_progress") return -1;
+  const at = tasks.findIndex((t) => isQueued(t));
+  return at > 0 ? at : -1;
+}
+
+/** The word on that divider. The reader's word, not the enum's — see
+ *  `queuedLabel` for the whole of that distinction. */
+export const LANE_SPLIT_LABEL = "waiting";
 
 // ---- which lanes are rolled up -----------------------------------------------
 // A lane is either an open column or a 52px rail. Two things decide which, in
@@ -2986,14 +3132,29 @@ export function laneRolledUp(
 // explicitly (sortLane's rule 1, for sortLane's reason: two rows that ran in
 // the same second must not trade places between polls).
 
-/** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
- * holds it to that, so a seventh status cannot be silently unsortable. */
+/**
+ * Rank order, top to bottom. Every BoardColumn appears exactly once — the test
+ * holds it to that, so a seventh status cannot be silently unsortable.
+ *
+ * `queued` SITS AFTER `in_progress`, not before it (2026-09-12). It sat before
+ * for a day, on the board's old geography — Upcoming, then Queued, then In
+ * Progress — and that geography is gone: queued work is DRAWN INSIDE the In
+ * Progress lane now (schedule-lib.laneOf), running cards first and waiting ones
+ * under a dashed divider beneath them. A List that put the waiting rows ABOVE the
+ * running ones would be the two views reading the same lane in opposite
+ * directions, which is exactly the drift the test comparing these two arrays
+ * exists to catch. One picture: what is going, then what is about to go.
+ *
+ * The two ranks the List still hoists above everything (needs_attention and
+ * blocked) are unchanged and are the reason this is a second array at all —
+ * urgency reorders the List, and only the List.
+ */
 export const LIST_ORDER: BoardColumn[] = [
   "needs_attention",
   "blocked",
   "upcoming",
-  "queued",
   "in_progress",
+  "queued",
   "done",
   "archived",
 ];
@@ -3145,7 +3306,7 @@ export function emptyPaneText(
  *  say) was BOTH outside the two names the exclusion spared and flattened into
  *  one that is settled — and the card told the reader no chat was ever recorded
  *  for a run happening as they read it. Hence the RAW status: the flooring is
- *  right for a board that must file every row into one of six columns, and
+ *  right for a board that must file every row into one of its lanes, and
  *  wrong for a question whose honest answer about an unrecognised lane is "I
  *  don't know". An unknown lane falls through to "Starting…", which is what
  *  this card said before FIX-A and is wrong only in being optimistic.
@@ -4033,11 +4194,21 @@ export function attentionLabel(n: number): string {
   return `${n} blocked`;
 }
 
-/** "2 queued" — the project queue's readout, worded like the two above it. No
- *  noun and no plural fork, for `attentionLabel`'s reason: one word names one
- *  state on every surface that says it. */
+/**
+ * "2 waiting" — the project queue's readout, worded like the two above it. No
+ * noun and no plural fork, for `attentionLabel`'s reason: one word names one
+ * state on every surface that says it.
+ *
+ * THE WORD IS "waiting", NOT "queued" (Akshil, 2026-09-12). `queued` is the
+ * status word — the enum, the ring, the filter, what a row says about itself —
+ * and it stays exactly that everywhere in the code and on a row. A COUNT beside
+ * "1 running" is a different register: it is a person being told what their
+ * machine is doing, and "2 waiting" is the sentence they would say. Re-exported
+ * from `platform/lib/queue.waitingLabel` so the chat's own card, the lane header
+ * and this rail cannot spell it three ways.
+ */
 export function queuedLabel(n: number): string {
-  return `${n} queued`;
+  return waitingLabel(n);
 }
 
 export function pulseTitle(pulse: TasksPulse): string {

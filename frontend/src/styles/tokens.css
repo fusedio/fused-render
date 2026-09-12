@@ -262,6 +262,23 @@
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
 
+  /* WAITING — a FADED YELLOW, and derived rather than minted (2026-09-12).
+     `queued` gave up its own lane and is now drawn inside In Progress
+     (schedule-lib.laneOf): running cards in `--status-progress`'s amber, waiting
+     ones under a dashed rule in this. So the two have to read as the SAME STATE
+     AT TWO STRENGTHS — one moving, one about to — which a colour of its own
+     cannot promise and a mix of the running hue with the page's muted ink states
+     outright. Change the amber and this follows it, in both themes, by
+     construction.
+     It replaces `--activity`, the page's blue, which the queue wore for a day.
+     Blue is what this page already spends on "a thing you can make happen" (Run
+     now, the drag-to-run outline, the live ping), and a lane where the blue rows
+     sit under the yellow ones taught the reader that waiting and running are
+     unrelated kinds of thing. They are one kind of thing.
+     55% is the weakest mix that still reads as YELLOW rather than as tinted grey
+     at 14px, which is the size the rings and the chat's own line are drawn at. */
+  --status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));
+
   /* The Playground sidebar's model-card fills. A step DARKER than the usual
      raised surface, which no single wash can do in both themes (--tint
      lightens in dark and darkens in light), so each palette names its own
@@ -476,6 +493,11 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
+  /* The same expression, restated because the light palette must redefine every
+     token (test_theme.py) — and deliberately the same expression rather than a
+     second hand-picked yellow: the mix is the DEFINITION of this colour, so both
+     themes reach it the same way from their own amber and their own muted ink. */
+  --status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));
   --pg-card-bg: #eaebee;
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;

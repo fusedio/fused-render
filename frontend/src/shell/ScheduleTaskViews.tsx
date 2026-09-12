@@ -84,7 +84,6 @@ import {
   messageEditEntry,
   messageHref,
   taskFile,
-  threadTone,
   messageWhenTitle,
   scheduledMark,
   outcomeTag,
@@ -93,8 +92,15 @@ import {
   opensElsewhere,
   parseLaneChoices,
   parseListMemory,
-  queueLine,
+  laneCountLabel,
+  laneSplitAt,
+  LANE_SPLIT_LABEL,
+  messageState,
+  queueCaption,
   QUEUE_PRIORITY_GLYPH,
+  RUN_NEXT_DONE_HINT,
+  RUN_NEXT_HINT,
+  RUN_NEXT_LABEL,
   skippedOverride,
   projectOptions,
   relativeWhen,
@@ -122,6 +128,7 @@ import type {
   ListMemory,
   OpenThreadIntent,
   OutcomeTag,
+  QueueCaption,
   QueueOverride,
   TaskFilters,
   TaskRunIntent,
@@ -394,6 +401,52 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  * A leaf keeps its `title` — the status word, no count, and a slow native tooltip
  * is the right speed for a word nobody is waiting on.
  */
+/**
+ * THE QUEUE'S CAPTION, with its one actionable token drawn as a link —
+ * "1st in line · behind TASK-038".
+ *
+ * One component for the List row and the Board card, because the sentence is one
+ * sentence: `tasks-lib.queueCaption` writes the words, this places them, and
+ * neither view holds an opinion about either.
+ *
+ * THE ID IS THE LINK AND "behind" IS NOT. The reader's question about the thing
+ * in their way is what it is doing, and TASK-038 is where that is answered — so
+ * it is a press, with the holder's own title on the pointer. That title used to
+ * be INK, quoted inside this caption, and it was the first thing to push the id
+ * off the end of a 340px row (Akshil, 2026-09-12). A holder with no session to
+ * open yet is plain text rather than a link to nothing.
+ *
+ * `e.stopPropagation()`: both hosts are themselves a press (a row opens its
+ * thread, a card opens its conversation), and a link inside one must not also
+ * fire the thing it sits in.
+ */
+export function QueueCaptionText({ queue }: { queue: QueueCaption }) {
+  return (
+    <>
+      {queue.place}
+      {queue.behind && (
+        <>
+          {" · behind "}
+          {queue.aheadHref ? (
+            <a
+              className="tasks-queue-ahead"
+              href={queue.aheadHref}
+              title={queue.aheadTitle || undefined}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {queue.ahead}
+            </a>
+          ) : (
+            <span className="tasks-queue-ahead" title={queue.aheadTitle || undefined}>
+              {queue.ahead}
+            </span>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 export function StatusIcon({
   status,
   failed,
@@ -1782,9 +1835,10 @@ function TaskNode({
   // 2026-09-11: "we don't need to show time 2 times on the right side").
   const sched = scheduledMark(task);
   // Where this row stands in its folder's line, when it is waiting on one. The
-  // SAME builder the Board card and the chat's chip ask (tasks-lib.queueLine),
-  // so a task's place is worded once for the whole app. Null on every other row.
-  const queue = queueLine(task);
+  // SAME builder the Board card and the chat's own rows ask
+  // (tasks-lib.queueCaption), so a task's place is worded once for the whole app.
+  // Null on every other row.
+  const queue = queueCaption(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -1859,7 +1913,7 @@ function TaskNode({
       // the row Upcoming would read as a press that did nothing.
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Queued — ${queueLine({ ...task, ...said.queued })?.text ?? "runs next"}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
       }
     } catch (e) {
       // The server's own sentence, verbatim. Its common refusal is a 409
@@ -1875,7 +1929,7 @@ function TaskNode({
     }
   };
 
-  // Skip the queue: this row's pending work to the head of its folder's line.
+  // Run next: this row's pending work to the head of its folder's line.
   // The same performer the Board's drag and its card button spend, so one
   // gesture cannot mean two things on two views — and it NEVER interrupts the
   // run holding the folder, which is why the sentence it leaves says so.
@@ -2503,7 +2557,9 @@ function TaskNode({
                 {QUEUE_PRIORITY_GLYPH}
               </span>
             )}
-            <span className="tasks-queue-text">{queue.text}</span>
+            <span className="tasks-queue-text">
+              <QueueCaptionText queue={queue} />
+            </span>
           </span>
         )}
 
@@ -2555,10 +2611,10 @@ function TaskNode({
             className="tasks-act tasks-act--skip"
             title={
               queue.runsNext
-                ? "Already at the front of this folder's queue"
-                : "Skip the queue — it runs next, nothing is interrupted"
+                ? RUN_NEXT_DONE_HINT
+                : RUN_NEXT_HINT
             }
-            aria-label={`Skip the queue for ${task.task_id}`}
+            aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
             disabled={acting || queue.runsNext}
             onClick={(e) => {
               e.stopPropagation();
@@ -2823,10 +2879,16 @@ function TaskNode({
       {open && (
         <div className="tasks-thread">
           {view.messages.map((m) => {
-            // threadTone, not messageTone: a thread under an archived task is
-            // archived with it, except for a turn that is still running
-            // (tasks-lib says why).
-            const tone = threadTone(task, m);
+            // THE MESSAGE'S OWN STATE, in a word and a ring — `running`,
+            // `queued`, `scheduled`, `done`, `failed` (tasks-lib.messageState).
+            // It wraps `threadTone` rather than replacing it (a thread under an
+            // archived task is archived with it, except for a turn still
+            // running) and adds the one distinction the tone cannot make: a
+            // `pending` message whose folder is BUSY is queued, and a `pending`
+            // message whose time has not come is merely scheduled. Two rows of
+            // one thread now routinely hold exactly those two states, one above
+            // the other, so the difference had to become ink.
+            const tone = messageState(task, m);
             const mark = unreadMarker(task.key, m, read);
             const isNew = mark.unread;
             const stop = cancelIntent(m);
@@ -2904,6 +2966,16 @@ function TaskNode({
                       distinction the row's own words and time make anyway. The
                       id and the body lead now. */}
                   <IdChip id={m.message_id} kind="message" />
+                  {/* THE STATE WORD, between the id and the body. It used to
+                      live only in the ring's tooltip, which is to say nowhere a
+                      person reading down a thread would find it — and with the
+                      queue on, `running` and `queued` sit one row apart in two
+                      shades of the same family. Lower case and in the row's own
+                      muted register: it is a fact about the line, not a badge on
+                      it. */}
+                  <span className={"tasks-msg-state tasks-msg-state--" + tone.column}>
+                    {tone.word}
+                  </span>
                   {/* The message's own caption, on the text and not on the row —
                       the same rule the task row above follows, and for the same
                       reason: this is the element that ellipsises. The hint is the
@@ -3170,12 +3242,12 @@ export function TaskBoard({
   }, [dragging]);
   const runLane = runDrop?.lane ?? null;
   const runTitle = runDrop?.skip
-    ? "Send this to the front of its folder's queue"
+    ? RUN_NEXT_HINT
     : runDrop?.rerun
       ? "Send the last message again"
       : "Run the next scheduled message now";
   const runHint = runDrop?.skip
-    ? "Skip the queue — it runs next, nothing is interrupted"
+    ? RUN_NEXT_HINT
     : runDrop?.rerun
       ? "Re-run — the last message goes again"
       : "Run now — the time stays put";
@@ -3311,7 +3383,7 @@ export function TaskBoard({
       if (said.note) setNote(said.note);
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Queued — ${queueLine({ ...task, ...said.queued })?.text ?? "runs next"}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
       }
     } catch (e) {
       setNote((e as Error).message);
@@ -3484,6 +3556,10 @@ export function TaskBoard({
           }
           const shown = visible[col.key] ?? LANE_INITIAL_VISIBLE;
           const cards = lane.slice(0, shown);
+          /** Where the "waiting" rule goes, or -1 — read off the same array the
+           *  lane draws, so it cannot land anywhere but on `groupByColumn`'s own
+           *  seam, and never below the fold's last visible card. */
+          const splitAt = laneSplitAt(col.key, cards);
           const hidden = Math.max(lane.length - cards.length, 0);
           return (
             <div className="schedule-tv-lane" key={col.key}>
@@ -3498,7 +3574,13 @@ export function TaskBoard({
                     unread, and naming the number on hover. */}
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-lane-label">{col.label}</span>
-                <span className="schedule-tv-lane-count">{lane.length}</span>
+                {/* "7", or "1 running · 2 waiting" on the one lane that now holds
+                    two statuses (tasks-lib.laneCountLabel). A bare total over a
+                    column of three running tasks and four waiting ones answers a
+                    question nobody asked. */}
+                <span className="schedule-tv-lane-count">
+                  {laneCountLabel(col.key, lane)}
+                </span>
               </button>
               <div
                 className={
@@ -3512,7 +3594,22 @@ export function TaskBoard({
                 {runLane === col.key && (
                   <p className="tasks-run-hint">{runHint}</p>
                 )}
-                {cards.map((task) => (
+                {cards.map((task, ix) => (
+                  <Fragment key={task.key}>
+                    {/* THE SEAM, drawn only where there is one: a thin dashed
+                        rule between the cards that are RUNNING and the ones
+                        waiting on a busy folder, with the reader's own word on
+                        it. It is what lets `queued` give up its column without
+                        the two halves of this lane reading as one undifferentiated
+                        pile (schedule-lib.laneOf, tasks-lib.laneSplitAt). Dashed
+                        rather than solid because it is a grouping, not a
+                        boundary — the cards under it are in the same lane and one
+                        press away from crossing it. */}
+                    {ix === splitAt && (
+                      <p className="schedule-tv-lane-split" aria-hidden="true">
+                        <span>{LANE_SPLIT_LABEL}</span>
+                      </p>
+                    )}
                   <TaskCard
                     key={task.key}
                     task={task}
@@ -3536,6 +3633,7 @@ export function TaskBoard({
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                   />
+                  </Fragment>
                 ))}
                 {hidden > 0 && (
                   <button
@@ -3682,10 +3780,10 @@ function TaskCard({
   const failedOffLane = isFailedTask(task) && lane !== "blocked";
   const waiting = needsAttention(task);
   // Where this card stands in its folder's line, when it is waiting on one —
-  // the SAME builder the List row and the chat's chip ask (tasks-lib.queueLine),
-  // so one task's place is described in one wording wherever it is read. Null on
-  // every other card, which draws nothing.
-  const queue = queueLine(task);
+  // the SAME builder the List row and the chat's own rows ask
+  // (tasks-lib.queueCaption), so one task's place is described in one wording
+  // wherever it is read. Null on every other card, which draws nothing.
+  const queue = queueCaption(task);
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
@@ -3861,7 +3959,7 @@ function TaskCard({
             one thing the reader came to the card for.
 
             NO WIDTH ANYWHERE ON IT, and that is deliberate rather than
-            incidental. A lane is 260px, the sentence is "#12 in line · behind
+            incidental. A lane is 260px, the sentence is "12th in line · behind
             TASK-1041", and a folder name or an id can be any length — so it
             WRAPS (tasks.css) and the card gets taller, exactly as a long title
             already makes it taller. A fixed width here would clip the id, which
@@ -3880,7 +3978,7 @@ function TaskCard({
                 {QUEUE_PRIORITY_GLYPH}
               </span>
             )}
-            {queue.text}
+            <QueueCaptionText queue={queue} />
           </span>
         )}
         {/* The foot is the folder and the run ahead, so when neither says
@@ -3974,10 +4072,10 @@ function TaskCard({
               className="tasks-act tasks-card-act tasks-act--skip"
               title={
                 queue.runsNext
-                  ? "Already at the front of this folder's queue"
-                  : "Skip the queue — it runs next, nothing is interrupted"
+                  ? RUN_NEXT_DONE_HINT
+                  : RUN_NEXT_HINT
               }
-              aria-label={`Skip the queue for ${task.task_id}`}
+              aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
               disabled={busy || queue.runsNext}
               onClick={() => {
                 setBusy(true);

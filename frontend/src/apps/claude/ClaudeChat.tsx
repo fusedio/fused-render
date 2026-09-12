@@ -129,13 +129,21 @@ import {
 } from "./ui";
 import { recapAnchor } from "./protocol/recap";
 import { queueEnabled, useChatRecapEnabled, useProjectQueueEnabled } from "./feature-flag";
-import { QueuedChip } from "./ui/QueuedChip";
-import type { QueuedSend } from "./ui/QueuedChip";
+import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
 import type { SchedAttachment } from "./ui/sched-draft";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
-import { NO_DISMISSED, pruneDismissed, useQueuedLiveness } from "./sched/queued-sends";
+import type { QueueFacts } from "@platform/lib/queue";
+import {
+  NO_DROPPED,
+  pruneDropped,
+  useLiveSeeds,
+  waitingFacts,
+  waitingRows,
+} from "./sched/waiting";
+import type { WaitingSeed } from "./sched/waiting";
+import { schedFollowing } from "./sched/scheduled";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
 import { createLiveWatch } from "./live/watch";
 import {
@@ -806,40 +814,56 @@ function ChatBody(props: ChatBodyProps) {
   /** The same fact as state, for the send button's `disabled`. */
   const [sendLocked, setSendLocked] = useState(false);
   /**
-   * Sends this folder was too busy to take (the project queue). The bubble went
-   * up and nothing spawned; each of these is the chip under the transcript that
-   * says where in the line the words landed.
+   * THE MESSAGES THIS FOLDER WAS TOO BUSY TO TAKE, as the ADMISSION answered
+   * them — a seed, not the row.
    *
-   * A LIST, not one: the composer stays open under the queue, so a reader may
-   * put three messages into a busy folder and every one of them is owed its own
-   * place. Keyed by the scheduler entry the admission created, which is also how
-   * each comes DOWN — see the `pendingIds` filter below.
+   * The row itself is drawn from the SERVER (`sched.waitingHere`, or the leader's
+   * followers on a chat with no session): that is what makes a reload show the
+   * identical picture, and it is the whole difference between this and the chip
+   * it replaces. What this holds is the window before the next poll has listed
+   * the new entry — up to fifteen seconds in which a bubble the reader just
+   * pressed Enter on would otherwise not be on screen at all.
    *
-   * `queueOn` is subscribed rather than read once (`useProjectQueueEnabled`)
-   * because the prefs GET may still be in flight when this mounts, and a chat
-   * that learned the flag only on its next navigation would be a chat that
-   * spawns a second run in a folder somebody has just protected.
+   * A LIST, not one: the composer stays open under the queue, so a reader may put
+   * three messages into a busy folder and every one of them is owed its place.
+   * Each seed is retired the moment the poll carries its entry (`waitingRows`
+   * drops a seed the server has published), and on a bounded number of laps when
+   * the entry ran before any poll ever saw it (`useLiveSeeds`).
+   *
+   * IT CARRIES THE TYPED LINE, because the stored entry holds the COMPOSED
+   * message — attachment markers and all — and swapping one for the other under
+   * the reader on the next poll would be the row silently rewriting itself.
    */
-  const [queuedSends, setQueuedSends] = useState<QueuedSend[]>([]);
-  const [skipping, setSkipping] = useState<ReadonlySet<string>>(() => new Set());
-  /** A cancel in flight, by entry id: the chip's two buttons are dead for its
-   *  duration and the chip leaves when it lands. */
-  const [cancelling, setCancelling] = useState<ReadonlySet<string>>(() => new Set());
-  /** Entries a chip has TAKEN BACK — cancelled here, and dropped from
-   *  `queuedSends` on the server's answer rather than on the next poll. Kept
-   *  until a poll stops listing them, because until then the block's own list
-   *  still has them and would draw the card the cancel just took down
-   *  (`sched/queued-sends` `pruneDismissed`). */
-  const [dismissedEntries, setDismissedEntries] =
-    useState<ReadonlySet<string>>(NO_DISMISSED);
+  const [waitingSeeds, setWaitingSeeds] = useState<WaitingSeed[]>([]);
+  /**
+   * WHAT THE ADMISSION SAID WAS IN FRONT — the fallback for "behind TASK-038"
+   * until this conversation's own `/api/tasks` row has been read.
+   *
+   * ONE ANSWER FOR THE WHOLE CHAT, not one per message, because that is what the
+   * fact IS: a folder is held by one task, and three messages waiting in one line
+   * are all behind the same thing. The authority is the server row
+   * (`sched.rec`); this is what the first paint has before that row arrives, and
+   * the only thing a chat with no session — which has no row — ever has.
+   */
+  const [admitAhead, setAdmitAhead] = useState<QueueFacts | null>(null);
+  /** Run next is in flight, or already spent: the card's one button is dead. */
+  const [runningNext, setRunningNext] = useState(false);
+  /** A delete in flight, by entry id: that row's one control is dead for its
+   *  duration and the row leaves when it lands. */
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
+  /** Entries a `delete` has TAKEN BACK — dropped on the server's answer rather
+   *  than on the next poll, and remembered until a poll stops listing them
+   *  because until then the poll's own list still has them and would draw the row
+   *  the delete just took down (`sched/waiting` `pruneDropped`). */
+  const [droppedEntries, setDroppedEntries] = useState<ReadonlySet<string>>(NO_DROPPED);
   // SUBSCRIBED, AND NOW ALSO READ. The admission is still asked on the keystroke
   // from `queueEnabled()` — a plain synchronous read of the same one
   // `/api/prefs` answer — and subscribing is what puts that answer ON ITS WAY
   // from mount rather than from whenever some other hook happens to ask, so the
   // first send of a freshly opened chat is admitted rather than spawning into a
-  // folder somebody has just protected. The VALUE is drawn for exactly one
-  // thing: the chip under a run's held follow-ups, which is new ink the flag
-  // owns (`QueuedChip kind="inbox"`).
+  // folder somebody has just protected. The VALUE is drawn for two things the
+  // flag owns outright: the waiting rows, and the composer's own follow-up note,
+  // which the flag takes away (see the Composer's `queueOn`).
   const queueOn = useProjectQueueEnabled();
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
@@ -2345,34 +2369,30 @@ function ChatBody(props: ChatBodyProps) {
               // the call when a leader is already remembered or a session has
               // arrived).
               leader.remember(sid, entryId);
-              setQueuedSends((cur) => [
+              // THE ROW IS THE SERVER'S; THIS IS ONLY THE FIRST PAINT OF IT.
+              // The entry exists now, so the next schedule tick will list it and
+              // the chat will draw it from that (`waitingRows`). The seed covers
+              // the up-to-fifteen-seconds before that tick, in which a message
+              // the reader just sent would otherwise be nowhere on screen — and
+              // it carries the TYPED line, so the row does not rewrite itself
+              // when the server's copy (the composed message, markers and all)
+              // takes over. Same entry id, so it is never two rows.
+              setWaitingSeeds((cur) => [
                 ...cur,
-                {
-                  // THE ENTRY ID AND NOTHING ELSE FOR IDENTITY. The answer also
-                  // carries a task `key`, and this used to keep it for Skip to
-                  // spend: `pending:<leader id>` on a chat with no session, and
-                  // stale the moment the store rekeys that task onto the session
-                  // the leader's run opens (`api.skipQueue`).
-                  entryId,
-                  // THE WORDS, BECAUSE THE TRANSCRIPT CANNOT BE TRUSTED TO KEEP
-                  // THEM. The optimistic bubble this send just posted is only a
-                  // row in the live document: adopting the leader's session
-                  // (`adoptSession` → `openSession`) REPLACES the transcript
-                  // with what the JSONL holds, and a follow-up whose entry has
-                  // not fired yet is in no file — so the chip stayed and the
-                  // words under it vanished. Kept here, drawn beside the chip,
-                  // and gone with it when the entry fires and the real row
-                  // arrives (`sched/queued-sends`).
-                  text,
-                  queue_position: verdict.position,
-                  queue_ahead: verdict.ahead,
-                  queue_ahead_title: verdict.ahead_title,
-                  // Behind the reader's OWN earlier message rather than behind
-                  // a stranger's run — the caption is a different sentence, and
-                  // only the server can tell the two apart (`queue.ts`).
-                  ...(verdict.behind_own ? { behind_own: true } : {}),
-                },
+                { entryId, text, due: String(verdict?.entry?.due ?? "") },
               ]);
+              // …AND WHAT IS IN FRONT, for the paint before this conversation's
+              // own `/api/tasks` row has been read. One answer for the whole
+              // chat, because a folder is held by one task and every message in
+              // this line is behind the same thing.
+              setAdmitAhead({
+                status: "queued",
+                queue_position: verdict.position,
+                queue_ahead: verdict.ahead,
+                queue_ahead_title: verdict.ahead_title,
+                queue_ahead_session: verdict.ahead_session ?? "",
+                queue_ahead_target: verdict.ahead_target ?? "",
+              });
               return;
             }
             // `run: true` — the ordinary road, on the ORIGINAL receipts: the
@@ -2517,10 +2537,11 @@ function ChatBody(props: ChatBodyProps) {
     // ADOPTS the session its leader's run opens — left standing it would pull
     // the reader back into the conversation they just left, on the next poll.
     // The entries themselves are untouched; the Tasks page is where they live.
-    setQueuedSends([]);
-    // …and the dismissals with them: both are memories of the chips that were on
-    // this screen, and the block the next conversation draws is its own.
-    setDismissedEntries(NO_DISMISSED);
+    setWaitingSeeds([]);
+    setAdmitAhead(null);
+    // …and the deletions with them: both are memories of the rows that were on
+    // this screen, and the next conversation's waiting messages are its own.
+    setDroppedEntries(NO_DROPPED);
     leader.forget();
   }, [controller, cardPolicy, leader]);
   const onOpenSession = useCallback(
@@ -2531,8 +2552,9 @@ function ChatBody(props: ChatBodyProps) {
       // in, and this is a different one — and so do the queued chips, which sit
       // under a transcript that is about to be replaced.
       setStranded(null);
-      setQueuedSends([]);
-      setDismissedEntries(NO_DISMISSED);
+      setWaitingSeeds([]);
+      setAdmitAhead(null);
+      setDroppedEntries(NO_DROPPED);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
@@ -2776,34 +2798,6 @@ function ChatBody(props: ChatBodyProps) {
     transcriptFollow.current?.();
   }, []);
 
-  /**
-   * THE ENTRIES THIS PANE IS ALREADY DRAWING — so the scheduled-message block
-   * does not draw them a second time, in other words.
-   *
-   * One queued message was two cards: the chip ("Queued · #1 in line · behind
-   * TASK-006") and, directly beneath it, the block ("Blocked — a scheduled
-   * message runs in this chat … Cancel this message") about the very same
-   * entry, disagreeing with the chip about whether anything was blocked
-   * (Akshil, browser QA 2026-09-12). The block is the right card for a message
-   * this chat did not just type — a calendar entry coming due — and the wrong
-   * one for a send the reader made ten seconds ago and can see the chip for.
-   *
-   * The RAW sends, not the liveness-filtered `liveQueued` (which is derived
-   * from this hook's own poll, and would be a circle): the two can only differ
-   * for an entry the poll no longer lists, and an entry the poll no longer
-   * lists is not in `blockers` either.
-   */
-  const chipEntryIds = useMemo(() => {
-    const ids = queuedSends.map((q) => q.entryId);
-    // …AND THE ONES A CHIP TOOK BACK, which no longer have a send to be read
-    // off. A cancel drops its chip on the server's answer while `blockers` is
-    // still a photograph from before the press, so an id that left this list in
-    // the same paint unmasked the block over the very message the reader had
-    // just cancelled. It stays here until a poll no longer lists the entry.
-    for (const id of dismissedEntries) if (!ids.includes(id)) ids.push(id);
-    return ids;
-  }, [queuedSends, dismissedEntries]);
-
   const sched = useSchedule({
     controller,
     file,
@@ -2812,151 +2806,156 @@ function ChatBody(props: ChatBodyProps) {
     navLocked: ann.locked,
     followBottom,
     onNavigate,
-    chipEntryIds,
     // T:17437 — `history: "replace"`: a fired scheduled run is not a place
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
   });
-  /**
-   * A CHIP COMES DOWN WHEN ITS ENTRY GOES — and not one poll sooner.
-   *
-   * "The entry fired" is exactly "it is no longer pending", and it is also what a
-   * cancel from the Tasks page looks like: either way the words are no longer
-   * waiting, so the chip has nothing left to say. `pendingIds` is the schedule
-   * poll's UNFILTERED pending set (useSchedule) rather than `blockers`, because
-   * the chat that most needs a chip is a brand-new one with no session yet, and
-   * `blockers` is filtered by session and would answer `[]` for it.
-   *
-   * NOT A PLAIN FILTER, and that was the bug. A non-null `pendingIds` is a
-   * photograph taken up to a poll interval before this send existed, so the
-   * entry the admission has just created is legitimately missing from it — and
-   * filtering against it dropped the chip in the same breath as it went up. The
-   * rule (sched/queued-sends) is that an id is UNSEEN until a poll has once
-   * listed it, and only from then on does its absence mean the words have gone.
-   */
-  const liveQueued = useQueuedLiveness(queuedSends, sched.pendingIds);
   /** Stable across renders (`useSchedule` memoises it on the watcher), so the
-   *  cancel below may depend on it by name. */
+   *  delete below may depend on it by name. */
   const schedRefresh = sched.refresh;
 
   /**
-   * …AND A DISMISSAL IS FORGOTTEN once a poll agrees the entry is gone.
+   * A SEED COMES DOWN WHEN ITS ENTRY GOES — and not one poll sooner.
    *
-   * `pendingIds` and `blockers` are published by the SAME tick, so a poll that
-   * no longer lists an id is exactly the poll after which the block cannot draw
-   * it either — the memory has nothing left to do and holding it for ever would
-   * mask a real entry that happened to reuse the id. In an effect rather than a
-   * render for the reason the liveness watch is: a render that writes the memory
-   * it read answers differently depending on how many times React ran it.
+   * "The entry fired" is exactly "it is no longer pending", and it is also what a
+   * cancel from the Tasks page looks like. `pendingIds` is the schedule poll's
+   * UNFILTERED pending set rather than `waitingHere`, because the chat that most
+   * needs this is a brand-new one with no session yet, for which the
+   * session-filtered list is empty by construction.
+   *
+   * NOT A PLAIN FILTER, and that was the bug the chip version shipped with: a
+   * non-null `pendingIds` is a photograph taken up to a poll interval before this
+   * send existed, so the entry the admission has just created is legitimately
+   * missing from it (`sched/waiting`).
+   */
+  const liveSeeds = useLiveSeeds(waitingSeeds, sched.pendingIds);
+
+  /**
+   * …AND A DELETION IS FORGOTTEN once a poll agrees the entry is gone.
+   *
+   * In an effect rather than a render for the liveness watch's reason: a render
+   * that writes the memory it read answers differently depending on how many
+   * times React ran it.
    */
   useEffect(() => {
-    setDismissedEntries((cur) => pruneDismissed(cur, sched.pendingIds));
+    setDroppedEntries((cur) => pruneDropped(cur, sched.pendingIds));
   }, [sched.pendingIds]);
 
   /**
-   * Skip from the chip: this message to the front of its folder's line. The same
-   * endpoint the Tasks row and the Board's drag spend, so one verb cannot mean
-   * two things in two places — and it interrupts nothing, which is why the chip
-   * latches to "runs next" rather than to "running".
+   * THE WAITING MESSAGES THIS CHAT DRAWS, and the two addresses they come from.
    *
-   * BY ENTRY ID, NEVER BY TASK KEY, and that was round two's finding. The
-   * admission also answers a `key`, and this used to post it: for a chat with no
-   * session that key is `pending:<leader entry id>`, and the store REKEYS the
-   * task onto the Claude session id the moment the leader's run opens one. So
-   * every chip in a new chat carried a key that goes stale on the first run, the
-   * skip 404'd, and the catch below swallowed it — Skip on a follower chip
-   * silently did nothing at all. An entry id is minted once and never rekeyed
-   * (`api.skipQueue`, `QueuedSend.entryId`).
+   * A chat WITH a session reads the poll's session-filtered list — every pending
+   * entry aimed at this conversation, whoever created it. A chat with NO session
+   * (its first message was queued, so nothing has run) has no such list: the
+   * filter needs a session. Its messages are found in the unfiltered pending rows
+   * by the leader entry they were admitted behind (`schedFollowing`).
    *
-   * The claim is painted straight onto the chip. This pane has no listing to
-   * correct it from, and the server's answer is the position it just set.
+   * BOTH ARE THE SERVER'S ANSWER, which is the whole point: a reload re-reads the
+   * same list and paints the same rows, where the chip this replaces was client
+   * state and vanished.
    */
-  const skipQueued = useCallback(
-    async (send: QueuedSend) => {
-      setSkipping((cur) => new Set(cur).add(send.entryId));
-      try {
-        const res = await skipQueue({ entry_id: send.entryId });
-        setQueuedSends((cur) =>
-          cur.map((q) =>
-            q.entryId === send.entryId
-              ? { ...q, queue_position: res.position || 1, queue_priority: true }
-              : q,
-          ),
-        );
-      } catch (err) {
-        // AND A REFUSAL IS SAID OUT LOUD. This was a bare swallow, on the
-        // reading that a 400 only ever means "the folder freed while the pointer
-        // was travelling" and the next poll takes the chip down anyway. Two
-        // things are wrong with that: the press has a visible control behind it,
-        // so silence is a button that did nothing, and the failure that actually
-        // happened in review was a 404 on a stale key — a real bug, invisible for
-        // exactly as long as nobody was reading the network tab. The server's own
-        // sentence goes in the chat's trouble slot, the same one a failed send
-        // writes, because from the reader's side this is the same kind of event:
-        // something they asked for did not happen.
-        const t = troubleFromError(err);
-        controller.reportTrouble({ ...t, message: "Skip did not go through: " + t.message });
-      } finally {
-        setSkipping((cur) => {
-          const next = new Set(cur);
-          next.delete(send.entryId);
-          return next;
-        });
-      }
-    },
-    [controller],
+  const leaderId = leader.peek();
+  const serverWaiting = useMemo(
+    () =>
+      (state.sessionId ?? "")
+        ? sched.waitingHere
+        : schedFollowing(sched.pendingRows, leaderId),
+    [state.sessionId, sched.waitingHere, sched.pendingRows, leaderId],
+  );
+  /** The rows themselves — server first, then the seeds no poll has listed yet,
+   *  one row per entry id. */
+  const waiting = useMemo(
+    () => waitingRows(serverWaiting, liveSeeds, droppedEntries),
+    [serverWaiting, liveSeeds, droppedEntries],
+  );
+  /**
+   * WHAT IS IN FRONT, for every one of those rows and for the card above the box.
+   *
+   * ONE ANSWER, from this conversation's own `/api/tasks` row (`sched.rec`, which
+   * the schedule hook already fetches) — the server's, so a reload says the same
+   * thing. `admitAhead` is the fallback for the paint before that row lands and
+   * for a chat with no session, which has no row at all.
+   */
+  const waitFacts = useMemo(
+    () => waitingFacts(sched.rec, admitAhead),
+    [sched.rec, admitAhead],
   );
 
   /**
-   * Cancel from the chip: the words are dropped and nothing runs.
+   * RUN NEXT — this conversation's waiting work to the front of its folder's
+   * line. The same endpoint the Tasks row and the Board's drag spend, so one verb
+   * cannot mean two things in two places, and it interrupts NOTHING: the run
+   * holding the folder keeps running and this goes when it ends.
    *
-   * THE CAPABILITY THAT CAME OFF THE BLOCK. A queued send used to be drawn
-   * twice — this chip and the scheduled-message block underneath it — and the
-   * block was the only one of the two that could take the message back. Now the
-   * block does not draw an entry a chip has (`chipEntryIds`), so the verb lives
-   * here, on the card the reader is actually looking at.
-   *
-   * THE SAME ENDPOINT, spent the same way: `POST /api/schedule/cancel` on the
-   * ENTRY id, which is what the block's own stop posts for a one-off and what
-   * the Tasks page's cancel posts. One press and no arming — a repeat's stop
-   * spends every future run and has to be confirmed; this drops one message,
-   * whose words are on the chip in front of the reader.
-   *
-   * AND THE CHIP GOES ON THE ANSWER, not on the next poll: a card that stayed
-   * up for fifteen seconds after a successful cancel reads as a button that did
-   * nothing. A refusal (the entry fired while the pointer was travelling) is
-   * said out loud in the chat's trouble slot, exactly as Skip's is.
+   * THE TASK WHEN THERE IS ONE, THE ENTRY OTHERWISE. `sched.rec.key` is read off
+   * a listing the poll just took, so it cannot be the stale `pending:<leader>`
+   * key the admission answered and the store has since rekeyed — and the task
+   * form promotes every message this chat has waiting, which is what the card
+   * over the composer is a summary of. With no row yet there is no key to trust,
+   * and one entry id — minted once, never rekeyed — is the honest fallback.
    */
-  const cancelQueued = useCallback(
-    async (send: QueuedSend) => {
-      setCancelling((cur) => new Set(cur).add(send.entryId));
+  const runNext = useCallback(async () => {
+    const key = sched.rec?.key || "";
+    const first = waiting[0]?.entryId || "";
+    if (!key && !first) return;
+    setRunningNext(true);
+    try {
+      await skipQueue(key ? { key } : { entry_id: first });
+      // The claim is painted straight onto the card: this pane has no listing to
+      // correct it from, and the server's answer is the position it just set.
+      setAdmitAhead((cur) => ({ ...(cur ?? {}), status: "queued", queue_priority: true }));
+      schedRefresh();
+    } catch (err) {
+      // AND A REFUSAL IS SAID OUT LOUD. The press has a visible control behind
+      // it, so silence is a button that did nothing — and the failure that
+      // actually happened in review was a 404 on a stale key, invisible for
+      // exactly as long as nobody was reading the network tab.
+      const t = troubleFromError(err);
+      controller.reportTrouble({ ...t, message: "Run next did not go through: " + t.message });
+    } finally {
+      setRunningNext(false);
+    }
+  }, [controller, schedRefresh, sched.rec, waiting]);
+
+  /**
+   * DELETE, from a waiting row: the words are dropped and nothing runs.
+   *
+   * THE SAME ENDPOINT the Tasks page's cancel posts — `POST /api/schedule/cancel`
+   * on the ENTRY id. One press and no arming: a repeat's stop spends every future
+   * run and has to be confirmed; this drops one message, whose words are in the
+   * bubble directly above the word the reader pressed.
+   *
+   * AND THE ROW GOES ON THE ANSWER, not on the next poll: a row that stayed up
+   * for fifteen seconds after a successful delete reads as a control that did
+   * nothing. It is remembered as dropped until a poll stops listing the entry,
+   * because the poll's own list is up to a lap older than the press and would
+   * otherwise put the row straight back (`sched/waiting` `pruneDropped`).
+   */
+  const deleteWaiting = useCallback(
+    async (entryId: string) => {
+      setDeleting((cur) => new Set(cur).add(entryId));
       try {
-        await cancelScheduledMessage(send.entryId);
-        // THE CHIP GOES, AND THE BLOCK DOES NOT TAKE ITS PLACE. Dropping the
-        // send also drops its id from `chipEntryIds`, and the schedule poll's
-        // own list is up to a lap older than this press — so the entry was
-        // unmasked and the block popped up over a message that no longer
-        // existed. Remembered here until a poll stops listing it, and the poll
-        // is asked NOW rather than at the end of the lap.
-        setDismissedEntries((cur) => new Set(cur).add(send.entryId));
-        setQueuedSends((cur) => cur.filter((q) => q.entryId !== send.entryId));
+        await cancelScheduledMessage(entryId);
+        setDroppedEntries((cur) => new Set(cur).add(entryId));
+        setWaitingSeeds((cur) => cur.filter((q) => q.entryId !== entryId));
         schedRefresh();
       } catch (err) {
         const t = troubleFromError(err);
         controller.reportTrouble({
           ...t,
-          message: "This message was not cancelled: " + t.message,
+          message: "This message was not deleted: " + t.message,
         });
       } finally {
-        setCancelling((cur) => {
+        setDeleting((cur) => {
           const next = new Set(cur);
-          next.delete(send.entryId);
+          next.delete(entryId);
           return next;
         });
       }
     },
     [controller, schedRefresh],
   );
+
 
   /**
    * THE LEADER RAN, SO THIS CHAT HAS A SESSION NOW — adopt it.
@@ -3175,6 +3174,11 @@ function ChatBody(props: ChatBodyProps) {
       blocked: sched.blocked,
       blockedPlaceholder: sched.placeholder,
       blockedReason: sched.reason,
+      // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
+      // under the queue this pane says "waiting" about messages that really are,
+      // and a count of follow-ups the live host will drain in seconds is the one
+      // waiting state with nothing to act on.
+      queueOn,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -3222,6 +3226,7 @@ function ChatBody(props: ChatBodyProps) {
       sched.blocked,
       sched.placeholder,
       sched.reason,
+      queueOn,
     ],
   );
   /**
@@ -3550,37 +3555,49 @@ function ChatBody(props: ChatBodyProps) {
                 ) : null
               }
             />
-            {/* UNDER THE BUBBLE, WHICH IS UNDER THE TRANSCRIPT. A queued send's
-                bubble is the last row in the transcript by construction (it was
-                just posted), so a chip pinned immediately below the transcript
-                IS a chip under that bubble — without threading a per-turn slot
-                through the transcript for a row that belongs to the send rather
-                than to the conversation.
+            {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
+                conversation. They are the LAST rows of the transcript by
+                construction — the scheduler sends in `due` order, which for a
+                chat's own sends is the order they were typed, and nothing of
+                this conversation's can be after them — so drawing them
+                immediately under the log IS drawing them in the transcript,
+                without threading a per-turn slot through it for rows that belong
+                to the schedule rather than to the run.
 
-                ABOVE the schedule banner, because it is the nearer fact: this
-                one is about the message the reader just typed, that one is about
-                the schedule this chat is under. */}
-            {/* THE LIVE RUN'S OWN HELD FOLLOW-UPS, in the same words as the
-                folder's line. Their bubbles are already in the transcript above
-                (the controller posted them), so this is ONE row for the group
-                rather than one per bubble — "Queued · 3 follow-ups · in this
-                turn" — and it carries no Skip and no Cancel, because the host
-                holds them and there is no entry to move. The composer's own
-                count stays where it is: this says what the bubbles are, that
-                says what the box will do next. */}
-            {queueOn && state.queued.length > 0 ? (
-              <QueuedChip kind="inbox" count={state.queued.length} />
-            ) : null}
-            {liveQueued.map((q) => (
-              <QueuedChip
-                key={q.entryId}
-                send={q}
-                busy={skipping.has(q.entryId)}
-                cancelling={cancelling.has(q.entryId)}
-                onSkip={() => void skipQueued(q)}
-                onCancel={() => void cancelQueued(q)}
+                DRAWN FROM THE SERVER (`waiting`), which is what makes a reload
+                paint the identical picture. The row the admission puts up a
+                second after Enter is the same row, minted early from the
+                answer and replaced by the server's own on the next poll.
+
+                NOTHING HERE FOR A FOLLOW-UP INTO THIS CHAT'S OWN RUNNING TURN.
+                Those bubbles are ordinary bubbles the controller posted, they
+                are held by the live host for a matter of seconds, and there is
+                no entry to be behind, to run next, or to delete — so they get no
+                second row, no card, and (under the flag) not even the composer's
+                old footnote. A count of something nobody can act on was three
+                pieces of chrome for a state that resolves itself. */}
+            {queueOn &&
+              waiting.map((row) => (
+                <WaitingRow
+                  key={row.entryId}
+                  row={row}
+                  facts={waitFacts}
+                  deleting={deleting.has(row.entryId)}
+                  onDelete={() => void deleteWaiting(row.entryId)}
+                />
+              ))}
+            {/* …AND ONE SUMMARY OVER THE BOX. The rows are in a transcript that
+                scrolls; this is pinned where the composer is, so a reader twenty
+                turns down still knows something of theirs is held, what by, and
+                the one press that changes it. */}
+            {queueOn && waiting.length > 0 ? (
+              <WaitingCard
+                count={waiting.length}
+                facts={waitFacts}
+                busy={runningNext}
+                onRunNext={() => void runNext()}
               />
-            ))}
+            ) : null}
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
                 T's own arrangement: `body.chat-compact` and `body.chat-peek`
                 take the topbar, the strip, the box and the footnote and leave

@@ -8,6 +8,10 @@ import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf, peekFrameSrc } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
+  laneCountLabel,
+  laneSplitAt,
+  LANE_SPLIT_LABEL,
+  messageState,
   ALL_MESSAGES,
   attentionRows,
   IMMINENT,
@@ -919,8 +923,14 @@ describe("threadTone: archiving a task archives its thread", () => {
     expect(threadRunning([])).toBe(false);
   });
 
-  it("is what the List's thread rows actually ask", () => {
-    expect(VIEWS).toContain("const tone = threadTone(task, m);");
+  it("is what the List's thread rows ask THROUGH — messageState wraps it", () => {
+    // The rows stopped asking `threadTone` directly on 2026-09-12: they need the
+    // one distinction it cannot make (a `pending` message whose FOLDER is busy is
+    // queued; one whose time has not come is merely scheduled), and the archive
+    // cascade this describes still applies underneath because `messageState`
+    // calls it.
+    expect(VIEWS).toContain("const tone = messageState(task, m);");
+    expect(LIB).toContain("const tone = threadTone(task, m);");
   });
 });
 
@@ -993,21 +1003,37 @@ describe("taskColumn", () => {
     // wants a person's hands comes before one that wants only their eyes.
     // `needs_attention` sits beside it and is DRAWN inside it — see BOARD_LANES.
     //
-    // QUEUED SITS BETWEEN UPCOMING AND IN PROGRESS (2026-09-12, the project
-    // queue), and the position is the argument: those three are one sequence in
-    // TIME — asked for and not due, due and waiting on the folder, running — so
-    // a reader sweeping left to right reads a task's life in order. Putting it
-    // anywhere else would make the board's own axis stop meaning anything.
+    // QUEUED STAYS BETWEEN UPCOMING AND IN PROGRESS in this list even though it
+    // no longer has a lane there: the list is the STATUS SEQUENCE, and those
+    // three are one sequence in TIME — asked for and not due, due and waiting on
+    // the folder, running.
     expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
       "upcoming", "queued", "in_progress", "needs_attention", "blocked", "done", "archived",
     ]);
-    // The LANES are those minus the one that shares, in the same order — the
-    // board draws six columns and every status is drawn in one of them.
+    // …AND THE BOARD DRAWS FIVE LANES, not seven columns and not six (2026-09-12).
+    // Two statuses share a lane with the one they are a phase of, and both for
+    // the same reason: a board is read by sweeping across it, and a column that
+    // is empty except during the minutes somebody is waiting teaches the reader
+    // to skip it.
     expect(BOARD_LANES.map((c) => c.key)).toEqual([
-      "upcoming", "queued", "in_progress", "blocked", "done", "archived",
+      "upcoming", "in_progress", "blocked", "done", "archived",
     ]);
     expect(laneOf("needs_attention")).toBe("blocked");
+    // QUEUED IS DRAWN IN IN PROGRESS. Work that is due, asked for and about to
+    // run is work in progress in every sense a person means it — the only thing
+    // separating a queued task from a running one is which second its folder
+    // frees, and a column boundary is far too strong a line between two states
+    // that swap every few minutes. They are told apart INSIDE the lane instead:
+    // running first, then a dashed "waiting" rule, then the waiting ones by their
+    // place in the line (groupByColumn, laneCountLabel, laneSplitAt).
+    expect(laneOf("queued")).toBe("in_progress");
     for (const col of BOARD_LANES) expect(laneOf(col.key)).toBe(col.key);
+    // A LANE IS A COLUMN THAT MAPS TO ITSELF, which is how the array above is
+    // derived — so a status that starts sharing a lane leaves it by changing one
+    // line rather than two that have to be kept in step.
+    expect(BOARD_LANES.map((c) => c.key as string)).toEqual(
+      BOARD_COLUMNS.filter((c) => laneOf(c.key) === (c.key as never)).map((c) => c.key as string),
+    );
   });
 });
 
@@ -6647,11 +6673,20 @@ describe("sortByLane", () => {
       "needs_attention",
       "blocked",
       "upcoming",
-      "queued",
       "in_progress",
+      "queued",
       "done",
       "archived",
     ]);
+    // QUEUED SITS AFTER IN PROGRESS, not before it (2026-09-12), and the reason
+    // is the Board's new geography rather than a change of mind about the List.
+    // Queued work is DRAWN INSIDE the In Progress lane now (schedule-lib.laneOf):
+    // running cards first, then a dashed "waiting" rule, then the waiting ones.
+    // A List that put the waiting rows ABOVE the running ones would be the two
+    // views reading one lane in opposite directions — which is exactly the drift
+    // the comparison below exists to catch. One picture, in both views: what is
+    // going, then what is about to go.
+    expect(LIST_ORDER.indexOf("queued")).toBeGreaterThan(LIST_ORDER.indexOf("in_progress"));
     // ONE VOCABULARY FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling), with
     // ONE deliberate difference (2026-09-03: "in list view they should be at
     // top"). The two views briefly disagreed about Failed and Done — the List
@@ -6666,8 +6701,20 @@ describe("sortByLane", () => {
     // set — that is what a drift would break.
     const HOISTED: BoardColumn[] = ["needs_attention", "blocked"];
     expect(LIST_ORDER.slice(0, HOISTED.length)).toEqual(HOISTED);
+    // …and under them the board's own sequence, read the way the BOARD now draws
+    // it: lane by lane, and inside the one lane that holds two statuses, running
+    // before waiting. `BOARD_COLUMNS` is the status sequence in TIME and still
+    // lists `queued` between Upcoming and In Progress, which is true of the
+    // statuses and no longer true of the geometry — so the comparison is against
+    // the LANES, with each lane's sharer folded in behind it.
+    const BOARD_READING_ORDER: BoardColumn[] = BOARD_LANES.flatMap((lane) => [
+      lane.key as BoardColumn,
+      ...BOARD_COLUMNS.map((c) => c.key).filter(
+        (k) => k !== lane.key && laneOf(k) === lane.key,
+      ),
+    ]);
     expect(LIST_ORDER.filter((k) => !HOISTED.includes(k))).toEqual(
-      BOARD_COLUMNS.map((c) => c.key).filter((k) => !HOISTED.includes(k)),
+      BOARD_READING_ORDER.filter((k) => !HOISTED.includes(k)),
     );
     // Same set, so a seventh status cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
@@ -6881,7 +6928,7 @@ describe("cardsForTasks", () => {
     // in it is still a real board column.
     expect(CARD_LANES).toEqual(LIST_ORDER);
     expect(CARD_LANES).toEqual(
-      ["needs_attention", "blocked", "upcoming", "queued", "in_progress", "done", "archived"],
+      ["needs_attention", "blocked", "upcoming", "in_progress", "queued", "done", "archived"],
     );
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
     const rows = [
@@ -8800,36 +8847,38 @@ describe("isQueued", () => {
   });
 });
 
-describe("the Queued lane", () => {
+describe("the waiting half of the In Progress lane", () => {
   const waiting = (key: string, at: number, active: number) =>
     task({ key, task_id: `TASK-${key}`, status: "queued", queue_position: at, last_active: active });
+  const running = (key: string, active: number) =>
+    task({ key, task_id: `TASK-${key}`, status: "in_progress", last_active: active });
 
   it("orders by the LINE, not by a clock", () => {
-    // The lane holds two folders' lines interleaved, so the only order it can
+    // The half holds two folders' lines interleaved, so the only order it can
     // honestly claim is where each card stands in its own — which is what the
-    // server already computed.
+    // server already computed. It is not a time key and cannot be.
     const rows = [waiting("c", 3, 900), waiting("a", 1, 100), waiting("b", 2, 500)];
-    expect(keys(groupByColumn(rows, NOW), "queued")).toEqual(["a", "b", "c"]);
+    expect(keys(groupByColumn(rows, NOW), "in_progress")).toEqual(["a", "b", "c"]);
   });
 
-  it("breaks a tie on recency — two folders both at #1 is the common case", () => {
+  it("breaks a tie on recency — two folders both at 1st is the common case", () => {
     const rows = [waiting("old", 1, 100), waiting("new", 1, 900)];
-    expect(keys(groupByColumn(rows, NOW), "queued")).toEqual(["new", "old"]);
+    expect(keys(groupByColumn(rows, NOW), "in_progress")).toEqual(["new", "old"]);
   });
 
   it("puts a card with NO position last rather than first", () => {
     // 0 is "the server said nothing" (an older server), and sorting it as zero
-    // would hand the top of the lane — the slot that means something — to the
+    // would hand the top of the group — the slot that means something — to the
     // one card that has no claim on it.
     const rows = [waiting("none", 0, 900), waiting("second", 2, 100)];
-    expect(keys(groupByColumn(rows, NOW), "queued")).toEqual(["second", "none"]);
+    expect(keys(groupByColumn(rows, NOW), "in_progress")).toEqual(["second", "none"]);
   });
 
   it("keeps the server's order for cards that are equal in every way", () => {
-    // sortLane's rule 1, restated for this lane: a card that traded places
-    // between polls would be worse than any ordering.
+    // sortLane's rule 1, restated here: a card that traded places between polls
+    // would be worse than any ordering.
     const rows = [waiting("first", 2, 500), waiting("second", 2, 500)];
-    expect(keys(groupByColumn(rows, NOW), "queued")).toEqual(["first", "second"]);
+    expect(keys(groupByColumn(rows, NOW), "in_progress")).toEqual(["first", "second"]);
   });
 
   it("never mutates the list it was handed", () => {
@@ -8838,16 +8887,101 @@ describe("the Queued lane", () => {
     expect(rows.map((t) => t.key)).toEqual(["c", "a"]);
   });
 
-  it("draws a lane of its own and takes nothing out of the others", () => {
+  it("puts every RUNNING card above every waiting one", () => {
+    // What the lane is read for is what is actually going; what is waiting on a
+    // busy folder goes underneath it. The partition is applied after the lane's
+    // own sort and is stable, so recency still orders the running half.
+    const rows = [
+      waiting("q1", 1, 900),
+      running("r1", 100),
+      waiting("q2", 2, 800),
+      running("r2", 500),
+    ];
+    // The running half keeps the lane's own order (last run, descending — these
+    // rows have no run to date, so it falls through to the server's order, which
+    // is sortLane's rule 1). The waiting half is the LINE, 1st then 2nd,
+    // regardless of how recently either was touched.
+    expect(keys(groupByColumn(rows, NOW), "in_progress")).toEqual(["r1", "r2", "q1", "q2"]);
+  });
+
+  it("counts the two halves separately in the lane header", () => {
+    // A bare total over a column of three running tasks and four waiting ones
+    // answers a question nobody asked.
+    const both = [running("r", 1), waiting("a", 1, 1), waiting("b", 2, 1)];
+    expect(laneCountLabel("in_progress", both)).toBe("1 running · 2 waiting");
+    // …and every other shape keeps the plain number it has always had, which is
+    // every board on a machine that has not turned the queue on.
+    expect(laneCountLabel("in_progress", [running("r", 1), running("s", 1)])).toBe("2");
+    expect(laneCountLabel("in_progress", [waiting("a", 1, 1)])).toBe("1 waiting");
+    expect(laneCountLabel("upcoming", both)).toBe("3");
+  });
+
+  it("puts the dashed rule exactly on the seam, and nowhere else", () => {
+    const both = [running("r", 1), waiting("a", 1, 1)];
+    expect(laneSplitAt("in_progress", both)).toBe(1);
+    // A lane that is ALL waiting needs no line across the top of itself — the
+    // header already says "2 waiting" — and neither does one with nothing
+    // waiting at all.
+    expect(laneSplitAt("in_progress", [waiting("a", 1, 1), waiting("b", 2, 1)])).toBe(-1);
+    expect(laneSplitAt("in_progress", [running("r", 1)])).toBe(-1);
+    expect(laneSplitAt("upcoming", both)).toBe(-1);
+    expect(LANE_SPLIT_LABEL).toBe("waiting");
+  });
+
+  it("takes nothing out of the other lanes", () => {
     const rows = [
       waiting("q", 2, 100),
       task({ key: "up", task_id: "TASK-up", status: "upcoming" }),
       task({ key: "run", task_id: "TASK-run", status: "in_progress" }),
     ];
     const by = groupByColumn(rows, NOW);
-    expect(keys(by, "queued")).toEqual(["q"]);
+    expect(keys(by, "in_progress")).toEqual(["run", "q"]);
     expect(keys(by, "upcoming")).toEqual(["up"]);
-    expect(keys(by, "in_progress")).toEqual(["run"]);
+    // …and there is no lane of its own left to look in.
+    expect(by.has("queued" as never)).toBe(false);
+  });
+});
+
+describe("one message's own state inside an expanded row", () => {
+  const msg = (over: Partial<TaskMessage> = {}): TaskMessage =>
+    ({
+      message_id: "MSG-1",
+      kind: "scheduled",
+      body: "go",
+      at: 1000,
+      state: "pending",
+      ...over,
+    }) as TaskMessage;
+
+  it("says `running`, `queued`, `done` and `failed` in the lane's own words", () => {
+    // The thread used to draw a ring and nothing else, with the word only in the
+    // ring's tooltip — and with the queue on, a running row and a waiting row sit
+    // one line apart in two strengths of one hue.
+    const queuedTask = task({ status: "queued" });
+    expect(messageState(queuedTask, msg({ at: 100 }), 900).word).toBe("queued");
+    expect(messageState(queuedTask, msg({ at: 100 }), 900).column).toBe("queued");
+    expect(messageState(task({ status: "in_progress" }), msg({ state: "sent", turn: "" }), 900).word)
+      .toBe("running");
+    expect(
+      messageState(task({ status: "done" }), msg({ state: "sent", turn: "ok" as never }), 900).word,
+    ).toBe("done");
+    expect(messageState(task({ status: "done" }), msg({ state: "error" }), 900).word).toBe("failed");
+  });
+
+  it("does not dress a message whose TIME has not come as queued", () => {
+    // `pending` is `pending` whether the folder is busy or free. The queue word
+    // needs BOTH halves: the server's verdict about the folder (the task's own
+    // status) and the message being past due.
+    const queuedTask = task({ status: "queued" });
+    expect(messageState(queuedTask, msg({ at: 5000 }), 900).word).toBe("scheduled");
+    expect(messageState(task({ status: "upcoming" }), msg({ at: 100 }), 900).word).toBe("scheduled");
+  });
+
+  it("keeps the archive's own two words rather than collapsing them into done", () => {
+    expect(messageState(task({ status: "archived" }), msg({ state: "cancelled" }), 900).word)
+      .toBe("cancelled");
+    expect(messageState(task({ status: "archived" }), msg({ state: "skipped" }), 900).word)
+      .toBe("skipped");
   });
 });
 

@@ -349,7 +349,17 @@ def test_a_task_waiting_on_a_busy_folder_reads_queued(
     assert row["queue_position"] == 1
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
     assert row["queue_ahead_title"] == "holding the folder"
+    # …and the click that follows it: `tasks-lib.taskHref`'s own pair, read off
+    # the very row the reader would land on.
+    assert row["queue_ahead_session"] == "sess-holder"
+    assert row["queue_ahead_target"] == rows["sess-holder"]["target"]
     assert row["queue_priority"] is False
+    # The card says how much is waiting without counting entries client-side —
+    # and this one IS a scheduled message aimed at this session, which is the
+    # case that still shuts its composer. (The chat's own queued send is the
+    # other half, and has its own case below.)
+    assert row["queue_waiting"] == 1
+    assert row["queue_blocking"] is True
     # The holder is not in its own line.
     assert rows["sess-holder"]["queue_position"] == 0
 
@@ -369,7 +379,14 @@ def test_the_flag_off_never_derives_queued(
     assert row["queue_key"] == ""
     assert row["queue_position"] == 0
     assert row["queue_ahead"] == ""
+    assert row["queue_ahead_session"] == ""
+    assert row["queue_ahead_target"] == ""
     assert row["queue_priority"] is False
+    # The card's summary is a queue fact too: with the flag off the composer
+    # blocks on every pending entry the way it always did, and the client has
+    # no use for a count it is not drawing.
+    assert row["queue_waiting"] == 0
+    assert row["queue_blocking"] is False
 
 
 def test_the_holder_of_a_folder_does_not_queue_behind_itself(
@@ -580,9 +597,14 @@ def test_the_pulse_carries_where_a_row_stands(
     assert row["queue_position"] == 1
     assert row["queue_ahead"].startswith("TASK-")
     assert row["queue_priority"] is False
-    # Compact stays compact: the folder and the holder's title are not here.
+    # The sidebar's rows are links too, and one message is waiting on this one.
+    assert row["queue_ahead_session"] == "sess-holder"
+    assert row["queue_waiting"] == 1
+    # Compact stays compact: the folder, the holder's title and the holder's
+    # own path are not here.
     assert "queue_key" not in row
     assert "queue_ahead_title" not in row
+    assert "queue_ahead_target" not in row
 
 
 def test_the_changes_answer_names_a_holder_it_was_not_asked_about(
@@ -655,8 +677,14 @@ def test_a_second_session_queues_behind_the_first_ones_reservation(
     assert body["position"] == 1
     assert body["ahead"] == ahead
     assert body["ahead_title"] == "holding the folder"
+    # The chip under the bubble links to the chat in front, off the same two
+    # fields every other thread link in this app is built from.
+    assert body["ahead_session"] == "sess-a"
+    assert body["ahead_target"] == alpha
     assert body["entry"]["message"] == "me too"
     assert body["entry"]["state"] == schedule.PENDING
+    # WHO ASKED: this chat did, which is what keeps its own composer open.
+    assert body["entry"]["origin"] == "chat"
     assert _rows(client)["sess-b"]["status"] == "queued"
 
 
@@ -1202,7 +1230,10 @@ def test_run_now_maps_a_queued_hold_onto_a_200_that_names_who_is_ahead(
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": False, "reason": "queued", "entry": entry,
                         "position": 2, "ahead": ahead,
-                        "ahead_title": "holding the folder"}
+                        "ahead_title": "holding the folder",
+                        # …and where "behind TASK-041" goes when it is clicked.
+                        "ahead_session": "sess-holder",
+                        "ahead_target": alpha}
 
 
 def test_run_now_still_refuses_everything_it_used_to(
@@ -1356,6 +1387,8 @@ def test_run_now_into_a_busy_folder_queues_through_the_real_model(
     assert body["position"] == 1
     assert body["ahead"] == ahead
     assert body["ahead_title"] == "holding the folder"
+    assert body["ahead_session"] == "sess-holder"
+    assert body["ahead_target"] == alpha
     assert body["entry"]["state"] == schedule.PENDING
     assert body["entry"]["priority"] is True
 
@@ -1444,7 +1477,14 @@ def test_run_now_names_a_holder_that_has_no_session_yet(
     assert body["reason"] == "queued"
     assert body["ahead"] == ahead
     assert body["ahead_title"] == "the claimed one"
-    assert _rows(client)["sess-a"]["queue_ahead"] == ahead
+    # NAMEABLE BUT NOT OPENABLE. There is no conversation yet, so there is
+    # nothing to link to — `tasks-lib.taskHref` answers null for exactly this —
+    # and the folder it will run in is no substitute for one.
+    assert body["ahead_session"] == ""
+    assert body["ahead_target"] == alpha
+    row = _rows(client)["sess-a"]
+    assert row["queue_ahead"] == ahead
+    assert row["queue_ahead_session"] == ""
 
 
 # =========================================== follow-ups into a queued new chat
@@ -1839,3 +1879,181 @@ def test_a_card_on_a_run_with_no_session_is_delivered_not_held(
     assert len(agent.calls) == 1
     assert project_queue.held_answers() == []
     assert set() not in rings
+
+
+# ================================= the chat in front, and the card's summary
+#
+# Three decisions from 2026-09-12, all about what a QUEUED row has to be able to
+# say without a second request:
+#
+# * "behind TASK-041" is a LINK — the chat in front is one click away, and the
+#   two fields that open it (`tasks-lib.taskHref`) ride on the row, the admit
+#   answer and run-now's queued answer alike;
+# * the card says "2 messages waiting" off `queue_waiting`, so it never counts
+#   entries client-side;
+# * and `queue_blocking` says whether that waiting work shuts the composer —
+#   true only for a message somebody SCHEDULED into this conversation, never for
+#   one the chat itself queued.
+
+
+def test_a_starting_run_has_no_chat_to_link_to_until_it_names_itself(
+        client, projects_dir, folders, monkeypatch, flag, chat_run, registry):
+    """A brand-new chat's run holds its folder before it has said who it is:
+    alive, in that tree, and anonymous. There is nothing to name and nothing to
+    open — "behind a run in this folder" is the whole of what a reader can be
+    told — and the line is re-derived on every listing, so the moment the CLI
+    registers its session against its pid the row fills in by itself
+    (`project_queue.run_sessions`, the pid spelling).
+
+    The queued row is unchanged across the two: what it is waiting for never
+    moved, only what can be said about it."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    schedule._write([_entry("e-wait", "run the report", alpha,
+                            session_id="sess-wait")])
+    chat_run("run-1", alpha, pid=os.getpid())
+    project_queue.invalidate_holders()
+    assert project_queue.holders()[alpha]["kind"] == "starting"
+
+    row = _rows(client)["sess-wait"]
+    assert row["status"] == "queued"
+    assert row["queue_position"] == 1
+    assert row["queue_ahead"] == ""
+    assert row["queue_ahead_session"] == ""
+    assert row["queue_ahead_target"] == ""
+
+    # Seconds later: the registry names the run by its pid.
+    registry("sess-holder", status="busy")
+    # Only the holder memo: `tasks_mod.reset_cache()` would take the live
+    # registry with it (it resets the watcher), which is the very thing that
+    # has just named this run.
+    project_queue.invalidate_holders()
+
+    rows = _rows(client)
+    row = rows["sess-wait"]
+    assert row["status"] == "queued"
+    assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
+    assert row["queue_ahead_session"] == "sess-holder"
+    assert row["queue_ahead_target"] == alpha
+
+
+def test_the_card_counts_every_message_waiting_and_not_the_ones_that_are_not(
+        client, projects_dir, folders, monkeypatch, flag):
+    """ONE NUMBER, THE CARD'S OWN. The line places a TASK (one slot, however
+    many messages it has queued); this says how much that slot is holding, which
+    is the sentence the card prints. Only work that is waiting RIGHT NOW counts:
+    a message due next week is waiting on the clock, not on the folder."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-wait", alpha, "two of mine")
+    schedule._write([
+        _entry("e1", "first", alpha, due=_iso(-300), session_id="sess-wait"),
+        _entry("e2", "second", alpha, due=_iso(-200), session_id="sess-wait"),
+        _entry("e3", "next week", alpha, due=_iso(86400 * 7),
+               session_id="sess-wait"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    row = _rows(client)["sess-wait"]
+    # One slot in the line, two messages in it.
+    assert row["queue_position"] == 1
+    assert row["queue_waiting"] == 2
+
+
+def test_a_scheduled_message_blocks_this_chats_composer_and_its_own_does_not(
+        client, projects_dir, folders, monkeypatch, flag):
+    """THE DECISION THIS FIELD EXISTS FOR (Akshil, 2026-09-12). A message the
+    calendar or the Tasks page aimed at this conversation is one the chat cannot
+    order itself against — the scheduler is about to send it into this very
+    session — so the composer still shuts on it, exactly as it did before the
+    queue existed. A message the chat itself queued went through admission and
+    IS the conversation's next line, so it never shuts anything."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-wait", alpha, "mine")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    schedule._write([_entry("e1", "typed here", alpha, session_id="sess-wait",
+                            origin="chat")])
+    row = _rows(client)["sess-wait"]
+    assert row["queue_waiting"] == 1
+    assert row["queue_blocking"] is False
+
+    # The same row, with a message somebody SCHEDULED into it beside the one it
+    # queued itself.
+    schedule._write([
+        _entry("e1", "typed here", alpha, session_id="sess-wait",
+               origin="chat"),
+        _entry("e2", "from the calendar", alpha, session_id="sess-wait"),
+    ])
+    row = _rows(client)["sess-wait"]
+    assert row["queue_waiting"] == 2
+    assert row["queue_blocking"] is True
+
+
+def test_a_message_scheduled_for_next_week_still_shuts_the_composer(
+        client, projects_dir, folders, flag):
+    """The two halves of the answer are two different questions. Waiting is
+    about NOW — the card counts what the folder is between the user and — while
+    the block is about the session: a chat holding next Tuesday's message is
+    every bit as blocked as one holding the next thirty seconds', which is the
+    rule the client has always applied (`sched/scheduled.schedPendingHere`).
+
+    Nothing is holding this folder at all, which is the point: the block has
+    never been a queue fact."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-wait", alpha, "mine")
+    schedule._write([_entry("e1", "next week", alpha, due=_iso(86400 * 7),
+                            session_id="sess-wait")])
+
+    row = _rows(client)["sess-wait"]
+    assert row["status"] != "queued"        # nothing is holding this folder
+    assert row["queue_waiting"] == 0
+    assert row["queue_blocking"] is True
+
+
+def test_a_message_aimed_at_another_conversation_blocks_nothing_here(
+        client, projects_dir, folders, monkeypatch, flag):
+    """`queue_blocking` is about THIS session and no other. The entry below is
+    filed under this task's row — it runs in the same folder — and it names
+    somebody else's conversation, which is a composer this one has no business
+    shutting."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-wait", alpha, "mine")
+    schedule._write([_entry("e1", "someone else's", alpha,
+                            session_id="sess-other")])
+
+    rows = _rows(client)
+    assert rows["sess-wait"]["queue_blocking"] is False
+    assert rows["sess-other"]["queue_blocking"] is True
+
+
+def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
+        client, projects_dir, folders, flag):
+    """END TO END, through the endpoint that writes the word: the send the chat
+    queued comes back as an ordinary pending entry, and the row it lands on does
+    not ask its own composer to shut."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-b", alpha, "me too")
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-a",
+                  "message": "go"}).json() == {"run": True}
+
+    body = _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-b",
+                  "message": "me too"}).json()
+    assert body["run"] is False
+    assert body["entry"]["origin"] == "chat"
+
+    row = _rows(client)["sess-b"]
+    assert row["status"] == "queued"
+    assert row["queue_waiting"] == 1
+    assert row["queue_blocking"] is False
+

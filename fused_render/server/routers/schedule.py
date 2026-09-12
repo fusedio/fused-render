@@ -219,7 +219,8 @@ def resolve_target(value, field: str = "target"):
 
 
 def create_entry(target: str, body: dict, due, *, repeats: str = "",
-                 rule: dict | None = None, create_target: bool = False) -> dict:
+                 rule: dict | None = None, create_target: bool = False,
+                 origin: str = "") -> dict:
     """`schedule.create` with a request body's optional fields forwarded exactly
     as this router forwards them. Raises `ValueError` with the model's sentence.
 
@@ -247,6 +248,13 @@ def create_entry(target: str, body: dict, due, *, repeats: str = "",
     is still queued has no session id to pass, and this is what keeps the two
     of them one task.
 
+    `origin` is the one field here that is NOT taken from the body, and that is
+    the whole of it: it says which surface asked for this message, and a request
+    cannot be trusted to say. The chat admission passes `"chat"` because it IS
+    the chat's send path; the New task form and the calendar pass nothing, and
+    their entries carry none — which is what lets a chat tell a message it
+    queued itself from one somebody scheduled into it (`schedule.create`).
+
     `model` and `effort` are likewise not validated into a 400: `--model` takes
     an alias or a full id and `--effort` one of five levels, and the authority on
     both is the CLI this server shells out to, not a list in this file that would
@@ -268,6 +276,7 @@ def create_entry(target: str, body: dict, due, *, repeats: str = "",
         images=body.get("images"),
         attachments=body.get("attachments"),
         follow_of=str(body.get("follow_of") or ""),
+        origin=origin,
         create_target=create_target)
 
 
@@ -512,6 +521,12 @@ def api_schedule_run_now(body: dict = Body(...),
     kept only as the fallback for a task the listing does not place. Both are
     read off ONE collection, because they are two facts about one set of tasks.
 
+    Naming it carries the LINK as well as the words — `ahead_session` and
+    `ahead_target`, `tasks-lib.taskHref`'s own pair — so the card that says
+    "behind TASK-041" can be clicked through to the conversation in front. Both
+    "" for a holder that has no session yet, which is the case the sentence
+    below is about.
+
     The holder is named by its TASK key (`ahead_task_key`) rather than by its
     session: an entry the scheduler has claimed but not yet spawned has no
     session at all, and it is `pending:<id>` — a real row, with a real number —
@@ -534,12 +549,12 @@ def api_schedule_run_now(body: dict = Body(...),
         # glob over every transcript on the machine — asking each to collect for
         # itself walked it twice for one reply (round-2 review, 2026-09-12).
         tasks = tasks_api._collect()
-        ahead, ahead_title = tasks_api.queue_ahead_of(ahead_key, tasks)
+        ahead = tasks_api.queue_ahead_of(ahead_key, tasks)
         place = tasks_api._queue_place(
             schedule._task_key(result["entry"]), tasks)
         return {"ok": False, "reason": "queued", "entry": result["entry"],
                 "position": place["position"] or int(result.get("position") or 1),
-                "ahead": ahead, "ahead_title": ahead_title}
+                **ahead}
     if not result["ok"]:
         return _error(result["reason"],
                       status=404 if not result["found"] else 409)

@@ -1071,7 +1071,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
-           follow_of: str = "") -> dict:
+           follow_of: str = "", origin: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -1114,6 +1114,22 @@ def create(target: str, message: str, due=None, session_id: str = "",
     (400 otherwise), and everything downstream — the Tasks row it is filed
     under, its place in the line, the session it resumes when it finally goes —
     reads the leader's answer through `leader_of`.
+
+    `origin` is WHO ASKED FOR THIS MESSAGE, and it is "" for everything the
+    calendar and the Tasks page create — which is what makes it readable the
+    other way round: an entry with no origin is a message somebody SCHEDULED,
+    and a chat with one of those aimed at it still shuts its composer until it
+    goes, exactly as it did before the queue existed (Akshil, 2026-09-12).
+    `"chat"` is written by the admission endpoint and by nothing else: a
+    message the chat itself queued is that conversation's own next line, so the
+    composer stays open and the waiting bubble says so under itself instead.
+
+    Stored ONLY when non-empty, so an ordinary spawn's entry is main's field for
+    field, and never invented downstream: `_materialize` mints an occurrence
+    without one (a repeat is a schedule, whoever first typed it) and `restore`
+    leaves alone what is there. `resend` is the exception that proves the rule —
+    it copies the original's, because asking a chat's queued message again is
+    still the chat's message.
 
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
@@ -1259,6 +1275,12 @@ def create(target: str, message: str, due=None, session_id: str = "",
         if not known:
             raise ValueError(
                 f"follow_of: no scheduled message with id {follow_of!r}")
+
+    # No vocabulary check: the one word anything writes is "chat" (the chat
+    # admission), and a store that refused an unknown one would be this layer
+    # holding a list of its callers. Normalised like every other string here so
+    # "absent", None and "  " are the one thing they mean.
+    origin = str(origin or "").strip()
 
     entry = {
         # Due-time-ordered id: the store is a list a human may well read, and an
@@ -1409,6 +1431,12 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # with — that app addresses a session by this id and nothing else.
         "claude_session_id": "",
     }
+    # WRITTEN ONLY WHEN THERE IS ONE, unlike every field above it. The absence
+    # is the meaning — "nobody's chat queued this, somebody scheduled it" — and
+    # a stored `"origin": ""` would be the same sentence said in a way that
+    # changes the bytes of every entry main writes. Same rule as `host_sent`.
+    if origin:
+        entry["origin"] = origin
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",
@@ -4098,7 +4126,12 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         title=original.get("title"), description=original.get("description"),
         # The system learned this id from a run; nobody chose it. Same marker
         # `_chain_session` writes, for the same fact.
-        session_learned=bool(session))
+        session_learned=bool(session),
+        # KEPT, where there is one: a re-ask of a message a chat queued is
+        # still that chat's message, and the composer it belongs to should no
+        # more be shut by the second ask than it was by the first. An original
+        # with no origin copies "" and the new entry has none either.
+        origin=str(original.get("origin") or ""))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

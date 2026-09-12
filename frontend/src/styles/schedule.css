@@ -2583,17 +2583,17 @@ input.schedule-when-field {
    costs no hue at all, so the list is back to naming the one mark that has a
    lane. */
 .schedule-ring--upcoming { color: var(--status-upcoming); }
-/* QUEUED IS THE PAGE'S OWN BLUE (`--activity`), and it is not a sixth status
-   token. The blue stopped being a status hue on 2026-08-17 when Upcoming went
-   grey, and what it has meant ever since is "a thing that is about to happen, or
-   that you can make happen" — the Run now affordance, the drag-to-run outline.
-   A queued task is exactly that: work that has been asked for, is ready, and is
-   waiting on the folder rather than on anybody's decision. So the lane borrows
-   the meaning that is already there instead of minting a colour.
-   It also has to be told apart from its two neighbours at a glance, which the
-   blue does in both themes: Upcoming's grey is `--fg-muted` and In Progress's is
-   yellow, and blue sits nowhere near either. */
-.schedule-ring--queued { color: var(--activity); }
+/* QUEUED IS A FADED IN PROGRESS, and that is the whole design of the hue
+   (`--status-queued`, 2026-09-12). It was `--activity`, the page's blue, for a
+   day — on the reading that blue means "a thing about to happen, or that you can
+   make happen" — and the lane fold is what retired that: `queued` is DRAWN INSIDE
+   the In Progress lane now (schedule-lib.laneOf), so a blue ring sits directly
+   under an amber one in the same column, and two unrelated hues in one lane read
+   as two unrelated kinds of work. They are one kind of work at two strengths, and
+   the token says exactly that — the running amber mixed toward the page's muted
+   ink (tokens.css). Waiting is a quieter running, in the same colour family, and
+   it is still unmistakable beside Upcoming's grey. */
+.schedule-ring--queued { color: var(--status-queued); }
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }
@@ -3943,4 +3943,34 @@ input.schedule-when-field {
     background-clip: padding-box;
     -webkit-text-fill-color: var(--pill);
   }
+}
+
+/* THE SEAM INSIDE THE IN PROGRESS LANE — a thin dashed rule with the reader's
+   own word on it, between the cards that are running and the ones waiting on a
+   busy folder (ScheduleTaskViews, tasks-lib.laneSplitAt).
+
+   DASHED, NOT SOLID: the cards under it are in the SAME lane and one press away
+   from crossing it, so the line is a grouping rather than a boundary — the same
+   argument the waiting bubble in the chat is dashed for.
+
+   NO WIDTH ANYWHERE ON IT. The rule is a border on a flex row that grows to
+   whatever the lane is, and the word is a label sitting in the middle of it, so
+   a 260px lane and a 400px one draw the same thing at their own size. */
+.schedule-tv-lane-split {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--status-queued);
+}
+.schedule-tv-lane-split::before,
+.schedule-tv-lane-split::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px dashed color-mix(in srgb, var(--status-queued) 55%, transparent);
+}
+.schedule-tv-lane-split > span {
+  flex: 0 0 auto;
 }

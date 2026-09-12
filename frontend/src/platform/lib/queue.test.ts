@@ -1,254 +1,196 @@
-// The project queue's ONE caption builder. Three surfaces print what this
-// returns — a Tasks List row, a Tasks Board card and the native chat's chip —
-// and the whole reason it is a pure function in `platform` is that two of those
-// are shell and one is an app, which may not read shell. So these tests are
-// about the WORDS, because the words are the shared thing.
+// THE PROJECT QUEUE'S WORDS (platform/lib/queue.ts).
+//
+// Every string three surfaces say about one waiting task is built here, so this
+// is where the wording is held still. The vocabulary was replaced wholesale on
+// 2026-09-12 (Akshil) and each test below names the sentence it retired, because
+// a caption that reads fine in isolation is exactly the kind of thing that drifts
+// back.
 import { describe, expect, it } from "bun:test";
 import {
-  QUEUE_AHEAD_TITLE_MAX,
+  canRunNext,
+  chatUrl,
+  NEXT_IN_FOLDER,
   QUEUE_PRIORITY_GLYPH,
-  queueLine,
+  queueAheadHref,
+  queueBehind,
+  queueCaption,
+  queueOrdinal,
   queuePosition,
   queueRunsNext,
-  quoteAhead,
+  RUN_NEXT_DONE_HINT,
+  RUN_NEXT_HINT,
+  RUN_NEXT_LABEL,
+  runningWaitingLabel,
+  waitingCardText,
+  waitingCount,
+  waitingLabel,
 } from "./queue";
 
-describe("queueLine", () => {
-  it("says where it stands and who is in front", () => {
-    expect(
-      queueLine({
-        status: "queued",
-        queue_position: 2,
-        queue_ahead: "TASK-041",
-        queue_ahead_title: "Pull today's news",
-      }),
-    ).toMatchObject({
-      head: "#2 in line",
-      behind: 'behind TASK-041 "Pull today\'s news"',
-      text: '#2 in line · behind TASK-041 "Pull today\'s news"',
-      runsNext: false,
-      aheadTitle: "Pull today's news",
-    });
+const queued = (extra: Record<string, unknown> = {}) => ({ status: "queued", ...extra });
+
+describe("a place in the line", () => {
+  it("is an ORDINAL, the way a person says it out loud", () => {
+    // "#2 in line" was the shipped wording and it is a database row number.
+    expect(queueCaption(queued({ queue_position: 1 }))?.text).toBe("1st in line");
+    expect(queueCaption(queued({ queue_position: 2 }))?.text).toBe("2nd in line");
+    expect(queueCaption(queued({ queue_position: 3 }))?.text).toBe("3rd in line");
+    expect(queueCaption(queued({ queue_position: 4 }))?.text).toBe("4th in line");
   });
 
-  it("says WHAT it is behind, not only which number it is", () => {
-    // "behind TASK-038" said that something is in front and nothing whatever
-    // about what — which, in a folder the reader is working in themselves, is
-    // the one question they have (Akshil, browser QA 2026-09-12). The holder's
-    // own title goes in, in quotes, because it is somebody else's sentence
-    // sitting inside this one.
-    expect(
-      queueLine({
-        status: "queued",
-        queue_position: 1,
-        queue_ahead: "TASK-038",
-        queue_ahead_title: "Run python3 -c print(1)",
-      })?.text,
-    ).toBe('#1 in line · behind TASK-038 "Run python3 -c print(1)"');
-    // CLIPPED, because the caption is a row and not a paragraph — and the whole
-    // title is still handed back for the pointer.
-    const long = "Rebuild the whole index from scratch and then report on it";
-    const line = queueLine({
-      status: "queued",
-      queue_position: 2,
-      queue_ahead: "TASK-038",
-      queue_ahead_title: long,
-    });
-    expect(line?.behind.length).toBeLessThan(`behind TASK-038 "${long}"`.length);
-    expect(line?.behind).toBe('behind TASK-038 "Rebuild the whole index from scratch an…"');
-    expect(line?.aheadTitle).toBe(long);
-    // NO EMPTY QUOTES. An older server, or a holder with no row, reads exactly
-    // as it did before the title existed.
-    expect(
-      queueLine({ status: "queued", queue_ahead: "TASK-038", queue_ahead_title: "  " })
-        ?.behind,
-    ).toBe("behind TASK-038");
-    // …and a title with nothing to attach it to is not printed on its own: a
-    // run the server could not name has no number to quote beside.
-    expect(
-      queueLine({ status: "queued", queue_ahead: "", queue_ahead_title: "News" })?.behind,
-    ).toBe("behind a run in this folder");
+  it("gets the teens right, which is the only reason it is a function", () => {
+    // 11/12/13 take "th" where 21/22/23 do not, and a folder twelve deep is not
+    // a hypothetical.
+    expect(queueOrdinal(11)).toBe("11th");
+    expect(queueOrdinal(12)).toBe("12th");
+    expect(queueOrdinal(13)).toBe("13th");
+    expect(queueOrdinal(21)).toBe("21st");
+    expect(queueOrdinal(22)).toBe("22nd");
+    expect(queueOrdinal(23)).toBe("23rd");
+    expect(queueOrdinal(112)).toBe("112th");
   });
 
-  it("names SOMETHING when the holder has no id — never a sentence that stops", () => {
-    // A folder can be held by a run with no task row: a scheduler entry already
-    // claimed, a transcript that has gone. "behind" followed by nothing reads as
-    // a bug; "behind a run in this folder" is the honest answer and is still a
-    // sentence.
-    expect(queueLine({ status: "queued", queue_position: 3, queue_ahead: "" })?.text)
-      .toBe("#3 in line · behind a run in this folder");
-    expect(queueLine({ status: "queued", queue_position: 3 })?.text)
-      .toBe("#3 in line · behind a run in this folder");
-    // Whitespace is not an id either.
-    expect(queueLine({ status: "queued", queue_position: 3, queue_ahead: "  " })?.text)
-      .toBe("#3 in line · behind a run in this folder");
-  });
-
-  it("reads 'runs next' ONLY for a spot that has been claimed", () => {
-    // A position is where this stood when the server last looked; anything else
-    // in the folder can be skipped over it a second later. Only `queue_priority`
-    // is a claim — so #1 without it is still "#1 in line", with a live Skip that
-    // turns it into the other sentence.
-    const ahead = { status: "queued", queue_ahead: "TASK-041" };
-    expect(queueLine({ ...ahead, queue_position: 1 })?.head).toBe("#1 in line");
-    expect(queueLine({ ...ahead, queue_position: 1 })?.runsNext).toBe(false);
-    expect(queueLine({ ...ahead, queue_position: 1, queue_priority: true })?.head)
-      .toBe("runs next");
-    expect(queueLine({ ...ahead, queue_position: 9, queue_priority: true })?.head)
-      .toBe("runs next");
-    // …and it is still BEHIND something: skipping the queue never interrupts the
-    // run holding the folder, and the caption must not imply that it did.
-    expect(queueLine({ ...ahead, queue_position: 9, queue_priority: true })?.text)
-      .toBe("runs next · behind TASK-041");
-  });
-
-  it("says 'in line' with no number when the server could not place it", () => {
-    // Position 0 is "I could not say", and the views may NOT round that up to
-    // first: a chip reading "runs next" over work that is actually fifth is the
-    // one thing this caption can get actively wrong. No number, no ⤒ — and, the
-    // part the reader can act on, Skip stays live (see `queueRunsNext`).
-    expect(
-      queueLine({ status: "queued", queue_position: 0, queue_ahead: "TASK-041" }),
-    ).toMatchObject({
-      head: "in line",
-      text: "in line · behind TASK-041",
-      runsNext: false,
-    });
-    expect(queueLine({ status: "queued", queue_ahead: "" })?.text).toBe(
-      "in line · behind a run in this folder",
-    );
-    // …unless the server DID say this one goes out next, which it can say
-    // without a number: a skip sets the flag and the position follows later.
-    expect(queueLine({ status: "queued", queue_position: 0, queue_priority: true })?.head)
-      .toBe("runs next");
-  });
-
-  it("names the reader's OWN earlier message when that is what is in front", () => {
-    // `behind_own` — a follow-up typed into a chat whose first message is still
-    // waiting (admit's `follow_of`). The FOLDER may be free; what holds this one
-    // is the line above it, so "behind TASK-041" would be a sentence about a
-    // stranger's run and "behind a run in this folder" a sentence about a folder
-    // that is not busy.
-    //
-    // AND NEVER A "#n" IN FRONT OF IT, placed or not (browser QA round 2): the
-    // phrase already IS the position — it names the exact thing this is behind
-    // — so "#1 in line · after your previous message" says it twice, and
-    // "#3 in line · after your previous message" says two different things,
-    // because the server's number counts a folder's line that also holds
-    // strangers' tasks the reader is not standing behind.
-    expect(
-      queueLine({ status: "queued", queue_position: 2, behind_own: true }),
-    ).toMatchObject({
-      head: "",
-      behind: "after your previous message",
-      text: "after your previous message",
-      runsNext: false,
-    });
-    expect(
-      queueLine({ status: "queued", queue_position: 1, behind_own: true })?.text,
-    ).toBe("after your previous message");
-    // The ordinary case — a follower's place is not known until its leader has
-    // run — reads exactly the same, which is the point.
-    expect(queueLine({ status: "queued", behind_own: true })).toMatchObject({
-      head: "",
-      text: "after your previous message",
-    });
-    // It outranks a task id the server sent anyway: the specific sentence wins.
-    expect(
-      queueLine({ status: "queued", behind_own: true, queue_ahead: "TASK-041" })?.text,
-    ).toBe("after your previous message");
-    // A skipped follower still reads as the head, and still names what it is
-    // behind — skipping never interrupts anything. "runs next" is the ONE head
-    // a follow-up keeps, because it is a claim about the spot rather than a
-    // count of a line.
-    expect(
-      queueLine({ status: "queued", behind_own: true, queue_priority: true })?.text,
-    ).toBe("runs next · after your previous message");
-    expect(
-      queueLine({
-        status: "queued",
-        behind_own: true,
-        queue_position: 4,
-        queue_priority: true,
-      })?.text,
-    ).toBe("runs next · after your previous message");
-    // ABSENT IS THE ROW'S CASE, and it must read exactly as it always has: a
-    // `/api/tasks` row never carries this (a row is about a TASK's place in its
-    // folder; whose message is in front is a fact about one MESSAGE), so the
-    // Board card and the List row are untouched by the field existing.
-    expect(queueLine({ status: "queued", queue_ahead: "TASK-041" })?.text).toBe(
-      "in line · behind TASK-041",
-    );
-    expect(queueLine({ status: "queued", behind_own: false, queue_ahead: "" })?.text).toBe(
-      "in line · behind a run in this folder",
-    );
-  });
-
-  it("says nothing at all about a task that is not queued", () => {
-    // The three surfaces draw NOTHING on a null, so this is the gate that keeps
-    // the caption off every other row on the page.
-    for (const status of ["upcoming", "in_progress", "done", "archived", "", "weird"]) {
-      expect(queueLine({ status, queue_position: 2, queue_ahead: "TASK-041" })).toBe(null);
-    }
-    expect(queueLine({ queue_position: 2 })).toBe(null);
-  });
-});
-
-describe("queuePosition", () => {
-  it("treats anything that is not a real place as no place at all", () => {
-    // 0 is what an older server sends, and what a row the server could not
-    // place carries. It is NOT "#0", and it is not the head either — the
-    // callers print it as a bare "in line".
-    expect(queuePosition({ queue_position: 4 })).toBe(4);
-    expect(queuePosition({})).toBe(0);
+  it("says a bare 'in line' when the server could not place it, never '0th'", () => {
+    expect(queueOrdinal(0)).toBe("");
+    expect(queueOrdinal(-3)).toBe("");
     expect(queuePosition({ queue_position: 0 })).toBe(0);
-    expect(queuePosition({ queue_position: -2 })).toBe(0);
-    expect(queuePosition({ queue_position: Number.NaN })).toBe(0);
-    expect(queuePosition({ queue_position: Number.POSITIVE_INFINITY })).toBe(0);
-    // A float is a server bug, not a reason to print "#2.5 in line".
-    expect(queuePosition({ queue_position: 2.7 })).toBe(2);
+    expect(queueCaption(queued())?.text).toBe("in line");
+    expect(queueCaption(queued({ queue_position: 0 }))?.text).toBe("in line");
+  });
+
+  it("has nothing to say about a row that is not queued", () => {
+    expect(queueCaption({ status: "in_progress", queue_position: 2 })).toBe(null);
+    expect(queueCaption({})).toBe(null);
   });
 });
 
-describe("queueRunsNext", () => {
-  it("is the priority flag, and is never inferred from a position", () => {
-    // The ⤒ glyph and a DEAD Skip button both hang off this, so every position
-    // that read as the head was a row told "runs next" about a spot it had not
-    // claimed — with the one control that would have claimed it taken away
-    // (browser QA, 2026-09-12).
-    expect(queueRunsNext({ queue_priority: true })).toBe(true);
-    expect(queueRunsNext({ queue_position: 5, queue_priority: true })).toBe(true);
+describe("what is in front", () => {
+  it("names a task ONLY when a different one is holding the folder", () => {
+    expect(queueBehind({ queue_ahead: "TASK-038" })).toBe("behind TASK-038");
+    expect(queueCaption(queued({ queue_position: 1, queue_ahead: "TASK-038" }))?.text).toBe(
+      "1st in line · behind TASK-038",
+    );
+  });
+
+  it("says NOTHING at all when there is no name to give", () => {
+    // "behind a run in this folder" was the shipped empty case, and it is a
+    // sentence with a hole in it: nothing to look at, nothing to press, and a
+    // reader who has just typed into their own chat being told about a stranger
+    // who may not exist. The folder is often simply free.
+    expect(queueBehind({ queue_ahead: "" })).toBe("");
+    expect(queueBehind({})).toBe("");
+    const line = queueCaption(queued({ queue_position: 2 }));
+    expect(line?.text).toBe("2nd in line");
+    expect(line?.text).not.toContain("behind");
+  });
+
+  it("keeps the holder's title OFF the caption and ON the pointer", () => {
+    // `behind TASK-041 "Pull today's news"` was a second sentence nested inside
+    // the first, and it was the first thing to push the one actionable token off
+    // the end of a 340px row.
+    const line = queueCaption(
+      queued({ queue_position: 1, queue_ahead: "TASK-038", queue_ahead_title: "Pull the news" }),
+    );
+    expect(line?.text).toBe("1st in line · behind TASK-038");
+    expect(line?.text).not.toContain("Pull the news");
+    expect(line?.aheadTitle).toBe("Pull the news");
+  });
+
+  it("hands back where that id GOES, and null when there is nowhere", () => {
+    const href = queueAheadHref({
+      queue_ahead: "TASK-038",
+      queue_ahead_session: "sess-1",
+      queue_ahead_target: "/Users/me/app",
+    });
+    expect(href).toBe("/explorer/view/Users/me/app?_side=claude&session_id=sess-1");
+    // ONE CODEC: the shell's explorerUrl delegates to this, so the app layer and
+    // the shell cannot disagree about where a conversation lives.
+    expect(href).toBe(chatUrl("/Users/me/app", "sess-1"));
+    // An older server sends neither half. Plain text beats a link to nothing.
+    expect(queueAheadHref({ queue_ahead: "TASK-038" })).toBe(null);
+    expect(queueAheadHref({ queue_ahead_session: "sess-1" })).toBe(null);
+    expect(queueAheadHref({ queue_ahead_target: "/Users/me/app" })).toBe(null);
+  });
+
+  it("encodes a path with spaces and a Windows drive", () => {
+    expect(chatUrl("/Users/me/my app", "s")).toContain("/explorer/view/Users/me/my%20app");
+    expect(chatUrl("C:\\work\\app", "s")).toContain("/explorer/view/C%3A/work/app");
+  });
+});
+
+describe("runs next", () => {
+  it("is the PRIORITY FLAG and never a position", () => {
+    // Standing 1st is where this stood when the server last looked; anything in
+    // the folder can be skipped over it in the next second. Only the flag is a
+    // claim on the spot, and reading 1st as the head took Run next away from the
+    // row that most wanted to press it (browser QA, 2026-09-12).
     expect(queueRunsNext({ queue_position: 1 })).toBe(false);
-    expect(queueRunsNext({ queue_position: 2 })).toBe(false);
-    expect(queueRunsNext({})).toBe(false);
-    expect(queueRunsNext({ queue_position: 0 })).toBe(false);
-    expect(queueRunsNext({ queue_position: 1, queue_priority: false })).toBe(false);
+    expect(queueRunsNext({ queue_priority: true })).toBe(true);
+    expect(queueCaption(queued({ queue_position: 1 }))?.runsNext).toBe(false);
+    expect(queueCaption(queued({ queue_position: 1, queue_priority: true }))?.runsNext).toBe(true);
   });
-});
 
-describe("the priority glyph", () => {
-  it("means 'to the top of this' and not 'now'", () => {
-    // An arrow to a bar. A bolt or a star would promise the one thing skipping
-    // never does: interrupt the run holding the folder.
+  it("is what the Run next press is offered for, and only that", () => {
+    // Something else in front AND the spot not already claimed. Either half
+    // missing and the press could only put the reader back where they are.
+    expect(canRunNext({ queue_ahead: "TASK-038" })).toBe(true);
+    expect(canRunNext({ queue_ahead: "TASK-038", queue_priority: true })).toBe(false);
+    expect(canRunNext({ queue_ahead: "" })).toBe(false);
+  });
+
+  it("is the verb every surface says, in one place", () => {
+    // "Skip the queue" read as skipping the MESSAGE. The press makes the message
+    // RUN, next — and interrupts nothing, which is the half the hint says aloud.
+    expect(RUN_NEXT_LABEL).toBe("Run next");
+    expect(RUN_NEXT_HINT).toContain("nothing is interrupted");
+    expect(RUN_NEXT_HINT).not.toContain("Skip");
+    expect(RUN_NEXT_DONE_HINT).toBe("Already next in this folder");
+    // The mark means "to the top of this" and not "faster" — a bolt would promise
+    // the one thing this feature must never be read as offering.
     expect(QUEUE_PRIORITY_GLYPH).toBe("⤒");
-    expect(QUEUE_PRIORITY_GLYPH).not.toContain("⚡");
   });
 });
 
-describe("quoteAhead", () => {
-  it("quotes, folds whitespace and clips — never past the row", () => {
-    expect(quoteAhead("Pull the news")).toBe('"Pull the news"');
-    expect(quoteAhead("  Pull   the\n news ")).toBe('"Pull the news"');
-    expect(quoteAhead("")).toBe("");
-    expect(quoteAhead("   ")).toBe("");
-    const long = "x".repeat(QUEUE_AHEAD_TITLE_MAX + 20);
-    const out = quoteAhead(long);
-    // The quotes plus exactly the budget: the last character is the ellipsis,
-    // so the clip is visible rather than a sentence that simply stops.
-    expect(out.length).toBe(QUEUE_AHEAD_TITLE_MAX + 2);
-    expect(out).toContain("…");
-    // A title that fits is printed whole, with no ellipsis bolted on.
-    const fits = "y".repeat(QUEUE_AHEAD_TITLE_MAX);
-    expect(quoteAhead(fits)).toBe(`"${fits}"`);
+describe("counting what is waiting", () => {
+  it("says the noun once, where the noun is spoken", () => {
+    expect(waitingCount(1)).toBe("1 message waiting");
+    expect(waitingCount(2)).toBe("2 messages waiting");
+  });
+
+  it("says 'waiting' and not 'queued' wherever a person is being told a number", () => {
+    // `queued` is the STATUS WORD — the enum, the ring, the filter. A count
+    // beside "1 running" is a different register (Akshil, 2026-09-12).
+    expect(waitingLabel(2)).toBe("2 waiting");
+    expect(runningWaitingLabel(1, 2)).toBe("1 running · 2 waiting");
+    // Either half alone when the other is empty, so a lane with nothing waiting
+    // reads exactly as it always did.
+    expect(runningWaitingLabel(3, 0)).toBe("3 running");
+    expect(runningWaitingLabel(0, 3)).toBe("3 waiting");
+    expect(runningWaitingLabel(0, 0)).toBe("");
+  });
+
+  it("builds the chat card's whole sentence, in its three states", () => {
+    expect(waitingCardText(1, { queue_ahead: "TASK-038" })).toBe(
+      "1 message waiting · behind TASK-038",
+    );
+    // After Run next: the spot is claimed, so nothing is in front any more even
+    // though TASK-038 is still holding the folder.
+    expect(waitingCardText(2, { queue_ahead: "TASK-038", queue_priority: true })).toBe(
+      "2 messages waiting · next in this folder",
+    );
+    // …and the same sentence for a chat whose folder was never busy at all: one
+    // wording for one fact, whichever road reached it.
+    expect(waitingCardText(2, {})).toBe("2 messages waiting · next in this folder");
+    expect(NEXT_IN_FOLDER).toBe("next in this folder");
+  });
+});
+
+describe("the retired vocabulary", () => {
+  it("is gone from the module, not merely unused by its callers", async () => {
+    // A builder left exported is a builder a later surface picks up, and the
+    // whole point of this file is that there is one wording.
+    const mod = await import("./queue");
+    for (const dead of ["queueLine", "quoteAhead", "QUEUE_AHEAD_TITLE_MAX"]) {
+      expect(dead in mod).toBe(false);
+    }
   });
 });

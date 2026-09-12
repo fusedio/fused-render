@@ -1,16 +1,37 @@
-// THE PROJECT QUEUE'S WORDS, in one place — "#2 in line · behind TASK-041".
+// THE PROJECT QUEUE'S WORDS, in one place — "1st in line · behind TASK-038".
 //
 // Three surfaces say it: the Tasks List row, the Tasks Board card and the native
-// chat's chip under a queued bubble. Two of those are shell and one is an app,
-// and an app may not import shell (scripts/check-boundaries.mjs) — so the
-// builder lives here, in the layer both may read, rather than as two copies that
-// describe one task's place in two wordings.
+// chat (its waiting rows and the card over the composer). Two of those are shell
+// and one is an app, and an app may not import shell
+// (scripts/check-boundaries.mjs) — so the builder lives here, in the layer both
+// may read, rather than as two copies that describe one task's place in two
+// wordings.
 //
-// PURE, AND NOTHING BUT THE WORDS. It takes the four fields the server already
-// decided (`Task.queue_*`, routers/tasks.py) and returns strings. It does not
-// know what a Task is, it never asks whether a folder is busy — that is a fact
-// about live processes and the server's alone — and it has no opinion about
-// which ink any surface spends on it.
+// PURE, AND NOTHING BUT THE WORDS (and one href). It takes the fields the server
+// already decided (`Task.queue_*`, routers/tasks.py) and returns strings. It
+// does not know what a Task is, it never asks whether a folder is busy — that is
+// a fact about live processes and the server's alone — and it has no opinion
+// about which ink any surface spends on it.
+//
+// THE VOCABULARY CHANGED ON 2026-09-12 (Akshil), and the old one is worth
+// naming because every one of these strings replaces one:
+//
+//   * `#2 in line` → `2nd in line`. A `#` is a database row number; an ordinal
+//     is how a person says their place in a queue out loud.
+//   * `behind TASK-041 "Pull today's news"` → `behind TASK-038`, a LINK. The
+//     quoted title was a second sentence inside the first one, and it pushed the
+//     one actionable token — the id — off the end of a narrow row. The title is
+//     still there, on the pointer; the id is now something to press.
+//   * `behind a run in this folder` → nothing at all. "Behind" with no name to
+//     give was a half-sentence the reader could do nothing with; the honest
+//     shape of "this is waiting and nothing else holds the folder" is to say
+//     only that it is waiting.
+//   * `Skip the queue` → `Run next`. Skip read as "skip this message"; the whole
+//     point of the verb is that the message RUNS, next, and that nothing in
+//     flight is interrupted.
+//   * `queued` stays the STATUS WORD in code and on a row; `waiting` is the word
+//     a count is said in ("2 waiting"), because a person reading a sidebar wants
+//     the state described, not the enum named.
 
 /** The queue facts a caption is built from — the subset of a task row that says
  *  where it stands, so a caller holding an admission answer rather than a row
@@ -21,45 +42,42 @@ export interface QueueFacts {
   status?: string;
   /** 1-based place in the folder's line. 0 or absent is an honest answer — an
    *  older server, or a row the server could not place yet — and it is NOT the
-   *  head: it is "somewhere in the line", printed without a number. */
+   *  head: it is "somewhere in the line", printed without an ordinal. */
   queue_position?: number;
-  /** The holder's task id ("TASK-041"), or "" when the server could not name
-   *  what is in front. */
+  /** The holder's task id ("TASK-038"), or "" when the server could not name
+   *  what is in front — which is also what a FREE folder answers. Empty means
+   *  the caption says nothing about being behind anything: see `queueBehind`. */
   queue_ahead?: string;
-  /** WHAT IS IN FRONT IS THIS CHAT'S OWN EARLIER MESSAGE — a follow-up typed
-   *  into a chat whose first message is still waiting in the line (admit's
-   *  `follow_of`). The folder itself may be perfectly free; what this one is
-   *  behind is the reader's own previous send, which is a different sentence
-   *  from "behind TASK-041" and the only one that is true here.
-   *
-   *  ONLY EVER FROM AN ADMISSION ANSWER, never from a `/api/tasks` row: a row
-   *  describes a TASK's place in its folder, and "whose message is in front" is
-   *  a fact about one MESSAGE. So the Board card and the List row pass this
-   *  field absent and read exactly as they did. */
-  behind_own?: boolean;
-  /** …and that holder's title, which the caption SPENDS: `behind TASK-038
-   *  "Run python3 -c …"`. Clipped to `QUEUE_AHEAD_TITLE_MAX` in the line and
-   *  handed back whole as `aheadTitle` for the pointer. */
+  /** …and that holder's title. NEVER ink any more — it is the pointer's text
+   *  and nothing else. A row's one actionable token is the id. */
   queue_ahead_title?: string;
+  /** The holder's Claude session and its folder — the two halves of the link the
+   *  id is drawn as (`queueAheadHref`). Absent on an older server, and then the
+   *  id is plain text rather than a dead link. */
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
   /** Skipped (or holding a held answer): this one goes out next, and has the
    *  claim on the spot to prove it. THE ONLY thing that reads as the head — see
    *  `queueRunsNext`. */
   queue_priority?: boolean;
 }
 
-export interface QueueLine {
-  /** "#2 in line", "runs next" at the head, or a bare "in line" when the server
-   *  could not say where. */
-  head: string;
-  /** "behind TASK-041", or "behind a run in this folder". */
+export interface QueueCaption {
+  /** "1st in line", or a bare "in line" when the server could not place it. */
+  place: string;
+  /** "behind TASK-038", or "" when nothing has a name to give. */
   behind: string;
   /** The two, joined — what the ink actually says. */
   text: string;
-  /** Whether this is the one that goes out next — `queue_priority` alone. The
-   *  ⤒ glyph's condition, and the condition a surface disables Skip on. */
-  runsNext: boolean;
-  /** The holder's title, for a tooltip. "" when the server named none. */
+  /** The holder's task id, for the link. "" when there is none. */
+  ahead: string;
+  /** The holder's title, for a pointer. "" when the server named none. */
   aheadTitle: string;
+  /** Where the id points, or null when the holder has no session to open. */
+  aheadHref: string | null;
+  /** Whether this is the one that goes out next — `queue_priority` alone. The
+   *  ⤒ glyph's condition, and the condition a surface kills Run next on. */
+  runsNext: boolean;
 }
 
 /** Where in its folder's line, 1-based, 0 for "the server said nothing". */
@@ -72,124 +90,191 @@ export function queuePosition(facts: QueueFacts): number {
  * Does this go out the moment its folder frees?
  *
  * `queue_priority` AND NOTHING ELSE — never inferred from a position. Standing
- * at #1 looks like the same sentence, and it is not one: a position is where
- * this stood when the server last looked, and anything else in the folder can
- * be skipped over it in the next second. Only the flag is a CLAIM on the spot.
- * Reading #1 as the head told the reader "runs next" about a place they might
+ * at 1st looks like the same sentence, and it is not one: a position is where
+ * this stood when the server last looked, and anything else in the folder can be
+ * skipped over it in the next second. Only the flag is a CLAIM on the spot.
+ * Reading 1st as the head told the reader "runs next" about a place they might
  * lose — and, worse, took away the one control that would have made it true, by
- * drawing the ⤒ and killing Skip on the row that most wanted to press it
- * (browser QA, 2026-09-12).
- *
- * So #1 without the flag reads "#1 in line" with Skip LIVE, and pressing it
- * locks the spot; 0 (the server could not place this at all) reads a bare "in
- * line", also with Skip live. Both are one idempotent call away from the flag
- * they are missing, which is the cheap direction to be wrong in.
+ * killing Run next on the row that most wanted to press it (browser QA,
+ * 2026-09-12).
  */
 export function queueRunsNext(facts: QueueFacts): boolean {
   return facts.queue_priority === true;
 }
 
 /**
- * The caption, or null when this is not queued at all.
+ * "1st", "2nd", "3rd", "12th" — a place said the way a person says it.
  *
- * "behind a run in this folder" IS THE EMPTY CASE, not a blank. A folder can be
- * held by something with no task row to name — a scheduler entry already
- * claimed, a run whose transcript has gone — and a caption trailing off after
- * "behind" would read as a bug rather than as the honest "something".
- *
- * The status test is a plain `!== "queued"` rather than the shell's
- * `statusColumn` narrowing, which is not importable from here. The two agree on
- * the only value this asks about: an unknown status is not `"queued"` either way.
- *
- * "runs next" IS THE SKIPPED CASE ONLY, and a bare "in line" the unplaced one
- * (`queue_position` 0): "#0 in line" is not a place, and "runs next" would be a
- * claim about a spot nobody has taken — see `queueRunsNext`.
- *
- * `behind_own` REPLACES BOTH HALVES OF THE "stranger's run" READING: "after
- * your previous message" instead of "behind TASK-041", and NOTHING at all in
- * front of that phrase — placed or not — because the phrase IS the position
- * and a "#n" beside it counts a line the reader is not standing in. Only an
- * admission answer ever sets it (see the field).
+ * The teens are the whole reason this is a function and not a suffix table
+ * lookup: 11, 12 and 13 take "th" while 21, 22 and 23 do not, and a queue twelve
+ * deep in a busy folder is not a hypothetical. 0 and anything unreadable answer
+ * "" so the caller can fall back to the placeless wording rather than printing
+ * "0th".
  */
-export function queueLine(facts: QueueFacts): QueueLine | null {
-  if (facts.status !== "queued") return null;
-  const runsNext = queueRunsNext(facts);
-  const at = queuePosition(facts);
-  const own = facts.behind_own === true;
-  // NO POSITION AT ALL FOR A FOLLOW-UP, placed or not (browser QA round 2,
-  // 2026-09-12). "#1 in line · after your previous message" was the reading
-  // that sent this back: the second half already IS the position — it names the
-  // exact thing in front, which is the one message the reader can see for
-  // themselves — so a number in front of it either repeats it ("#1") or
-  // contradicts it, because the folder's line counts a stranger's tasks the
-  // reader is not behind. The head is dropped and the sentence reads
-  // "after your previous message"; a SKIPPED follow-up keeps "runs next",
-  // which is a claim about the spot rather than a count of it.
-  //
-  // Everywhere else the bare "in line" is still the honest half of a caption
-  // whose other half names a stranger's run.
-  const head = runsNext ? "runs next" : own ? "" : at > 0 ? `#${at} in line` : "in line";
+export function queueOrdinal(n: number): string {
+  if (!Number.isFinite(n) || n < 1) return "";
+  const i = Math.floor(n);
+  const tens = i % 100;
+  if (tens >= 11 && tens <= 13) return `${i}th`;
+  switch (i % 10) {
+    case 1:
+      return `${i}st`;
+    case 2:
+      return `${i}nd`;
+    case 3:
+      return `${i}rd`;
+    default:
+      return `${i}th`;
+  }
+}
+
+/**
+ * "behind TASK-038" — ONLY when a DIFFERENT task is holding the folder.
+ *
+ * An empty `queue_ahead` is a real answer and it gets NO words. It used to read
+ * "behind a run in this folder", which is a sentence with a hole in it: there is
+ * nothing to look at, nothing to press and nothing to do about it, and a reader
+ * who has just typed into their own chat is being told about a stranger that may
+ * not exist. The folder can be perfectly free — a second message waits behind
+ * the first one this chat sent, which is the conversation keeping its own order
+ * — and the honest rendering of that is that it is waiting, full stop.
+ */
+export function queueBehind(facts: QueueFacts): string {
   const ahead = (facts.queue_ahead || "").trim();
-  const title = (facts.queue_ahead_title || "").trim();
-  // …AND THE SAME ORDER OF PREFERENCE AS THE HEAD: the reader's own message
-  // first, because a chat that queued two sends is the one place where naming
-  // some TASK-nnn would send them looking for a task they do not have.
-  const behind = own
-    ? "after your previous message"
-    : ahead
-      ? `behind ${ahead}${title ? ` ${quoteAhead(title)}` : ""}`
-      : "behind a run in this folder";
+  return ahead ? `behind ${ahead}` : "";
+}
+
+/**
+ * WHERE THE ID POINTS: the holder's own conversation.
+ *
+ * "behind TASK-038" is only worth printing if TASK-038 is somewhere the reader
+ * can go — the one question a person has about the thing in their way is what it
+ * is doing. The server names the holder's session and folder beside its id
+ * (`queue_ahead_session` / `queue_ahead_target`); with either missing the id
+ * stays plain text, which is what an older server produces and is a strictly
+ * better answer than a link to nothing.
+ *
+ * THE SAME CODEC THE SHELL'S `explorerUrl` SPENDS — and the shell's now
+ * delegates here, so the app layer and the shell cannot disagree about where a
+ * conversation lives. It is written out rather than imported from
+ * `platform/lib/router`, which touches `location` and `history` at module init:
+ * this module is pure, and every one of its callers' tests depends on that.
+ */
+export function queueAheadHref(facts: QueueFacts): string | null {
+  const session = (facts.queue_ahead_session || "").trim();
+  const target = (facts.queue_ahead_target || "").trim();
+  if (!session || !target) return null;
+  return chatUrl(target, session);
+}
+
+/** The codec itself, so `shell/schedule-lib.explorerUrl` has one to delegate to
+ *  instead of keeping a second copy of the same three lines. */
+export function chatUrl(target: string, sessionId: string): string {
+  const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
+  const encoded = norm
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}`;
+}
+
+/**
+ * The caption a Tasks row or Board card wears, or null when this is not queued.
+ *
+ * "1st in line · behind TASK-038", and a bare "1st in line" when nothing else
+ * holds the folder. The status test is a plain `!== "queued"` rather than the
+ * shell's `statusColumn` narrowing, which is not importable from here. The two
+ * agree on the only value this asks about: an unknown status is not `"queued"`
+ * either way.
+ */
+export function queueCaption(facts: QueueFacts): QueueCaption | null {
+  if (facts.status !== "queued") return null;
+  const at = queuePosition(facts);
+  const ord = queueOrdinal(at);
+  const place = ord ? `${ord} in line` : "in line";
+  const behind = queueBehind(facts);
   return {
-    head,
+    place,
     behind,
-    text: head ? `${head} · ${behind}` : behind,
-    runsNext,
-    aheadTitle: title,
+    text: behind ? `${place} · ${behind}` : place,
+    ahead: (facts.queue_ahead || "").trim(),
+    aheadTitle: (facts.queue_ahead_title || "").trim(),
+    aheadHref: queueAheadHref(facts),
+    runsNext: queueRunsNext(facts),
   };
 }
 
 /**
- * How much of the holder's title a caption may spend.
+ * "1 message waiting" / "2 messages waiting" — the card over the chat composer.
  *
- * FORTY CHARACTERS, because the caption is a ROW and not a paragraph: the chip,
- * the Board card's footer and the List row's second line all give this cell the
- * space left over after the word, the place and the task id, and a title longer
- * than that pushes the end of the sentence out of a 340px pane. The full text is
- * still there for a pointer — every surface hangs `aheadTitle` off a `title` (or
- * `data-hint`) attribute — so the clip costs a reader nothing they cannot get.
+ * The one place in this vocabulary that forks on plural, because it is the one
+ * place the noun is spoken: "2 waiting" below needs no noun and therefore no
+ * fork, while "2 messages waiting" would read as a typo without one.
  */
-export const QUEUE_AHEAD_TITLE_MAX = 40;
+export function waitingCount(n: number): string {
+  return n === 1 ? "1 message waiting" : `${n} messages waiting`;
+}
+
+/** "2 waiting" — the sidebar's and the lane header's readout, worded like the
+ *  "2 running" it sits beside. No noun and no plural fork: one word names one
+ *  state on every surface that says it. */
+export function waitingLabel(n: number): string {
+  return `${n} waiting`;
+}
+
+/** "1 running · 2 waiting" — the In Progress lane header, where the two groups
+ *  the lane now holds are counted separately. Either half alone when the other
+ *  is empty, so a lane with nothing waiting reads exactly as it always did. */
+export function runningWaitingLabel(running: number, waiting: number): string {
+  const parts: string[] = [];
+  if (running > 0) parts.push(`${running} running`);
+  if (waiting > 0) parts.push(waitingLabel(waiting));
+  return parts.join(" · ");
+}
 
 /**
- * The holder's own words, beside its number: `behind TASK-038 "Run python3 …"`.
+ * WHAT IS IN FRONT, FOR THE CARD OVER THE COMPOSER — "behind TASK-038", or
+ * "next in this folder" once nothing is.
  *
- * A TASK ID IS NOT A NAME. "behind TASK-038" told the reader that something is
- * in front and nothing whatever about WHAT — which, in a folder the reader is
- * working in themselves, is the one question they have (Akshil, browser QA
- * 2026-09-12). The title is the server's own `queue_ahead_title`, in quotes
- * because it is somebody else's sentence sitting inside this one, and clipped
- * with an ellipsis rather than wrapped.
- *
- * QUOTED ONLY WHEN THERE IS SOMETHING TO QUOTE: an empty title (an older
- * server, a holder with no row) leaves the caption exactly as it read before,
- * rather than trailing a pair of empty quotes.
+ * The second half is not a consolation wording: it is the state a press of Run
+ * next PRODUCES, and it is also the state a chat whose folder was never busy is
+ * in from the start. One sentence for one fact, whichever road reached it.
  */
-export function quoteAhead(title: string): string {
-  const clean = title.trim().replace(/\s+/g, " ");
-  if (!clean) return "";
-  const clipped =
-    clean.length > QUEUE_AHEAD_TITLE_MAX
-      ? clean.slice(0, QUEUE_AHEAD_TITLE_MAX - 1).trimEnd() + "…"
-      : clean;
-  return `"${clipped}"`;
+export const NEXT_IN_FOLDER = "next in this folder";
+
+export function waitingCardText(count: number, facts: QueueFacts): string {
+  const behind = queueRunsNext(facts) ? "" : queueBehind(facts);
+  return `${waitingCount(count)} · ${behind || NEXT_IN_FOLDER}`;
 }
+
+/** Is there anything for Run next to DO — i.e. is another task actually in front
+ *  and has this one not already claimed the spot? The button's whole condition,
+ *  written once so the card, the row and the board cannot disagree. */
+export function canRunNext(facts: QueueFacts): boolean {
+  return !queueRunsNext(facts) && !!queueBehind(facts);
+}
+
+/**
+ * THE VERB, in the words every surface says it in.
+ *
+ * "Skip the queue" was the first wording and it was wrong in the one direction
+ * that matters: it reads as skipping the MESSAGE. What the press does is send
+ * this work to the front of its folder's line so that it is the next thing that
+ * runs — and, critically, it interrupts nothing, which is the sentence the hint
+ * exists to say out loud.
+ */
+export const RUN_NEXT_LABEL = "Run next";
+export const RUN_NEXT_HINT = "Run next — nothing is interrupted";
+export const RUN_NEXT_DONE_HINT = "Already next in this folder";
 
 /**
  * The mark a row or card wears when its work is the next out of its folder.
  *
  * AN ARROW TO A BAR, and not a star or a bolt. It means "to the top of this",
- * which is exactly what skipping the queue does and is the only thing it does:
- * the run holding the folder keeps running. A lightning glyph would promise the
- * one thing this feature must never be read as offering.
+ * which is exactly what Run next does and is the only thing it does: the run
+ * holding the folder keeps running. A lightning glyph would promise the one
+ * thing this feature must never be read as offering.
  */
 export const QUEUE_PRIORITY_GLYPH = "⤒";

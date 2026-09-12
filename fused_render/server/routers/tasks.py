@@ -1313,8 +1313,9 @@ def _queue_lines(tasks: dict[str, dict], now: float,
 
     `ahead_key` is the holder's TASK key — a session id, or `pending:<entry>` for
     a claimed message that has not minted one yet. `ahead` is the number a reader
-    sees and is filled in by `_name_ahead`, which needs the listing's own
-    allocation pass and therefore cannot happen here.
+    sees, `ahead_session` and `ahead_target` the pair a reader CLICKS
+    (tasks-lib `taskHref`), and all four are filled in by `_name_ahead`, which
+    needs the listing's own allocation pass and therefore cannot happen here.
 
     `by_id` is the scheduler's store keyed by entry id — the map `order_key`
     needs to keep a follower behind the message it was typed behind. A caller
@@ -1377,6 +1378,14 @@ def _queue_lines(tasks: dict[str, dict], now: float,
                 "ahead_key": holder["task_key"],
                 "ahead": "",
                 "ahead_title": "",
+                # "Behind TASK-041" is a sentence the reader wants to FOLLOW,
+                # and the chat in front is one link away: the same two fields
+                # every other thread link in this app is built from. "" for a
+                # holder nothing can name — a run that has not published its
+                # session yet — and the client then prints the words without
+                # the link rather than offering a click that goes nowhere.
+                "ahead_session": "",
+                "ahead_target": "",
                 # THE HEAD OF THE LINE IS RUNS-NEXT WHETHER OR NOT ANYBODY
                 # SKIPPED. `priority` here says only what the store says — Skip
                 # set it, or a held answer is always one — and the client is
@@ -1396,9 +1405,10 @@ def _has_priority(task: dict | None) -> bool:
 
 def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
                 tasks: dict[str, dict]) -> None:
-    """Fill each queued task's `ahead` and `ahead_title` — the number and the
-    name of the task in front, which is the only way a reader ever refers to one
-    ("behind TASK-041 · Nightly deploy").
+    """Fill each queued task's `ahead`, `ahead_title`, `ahead_session` and
+    `ahead_target` — the number and the name of the task in front, which is the
+    only way a reader ever refers to one ("behind TASK-041 · Nightly deploy"),
+    and the pair that opens its conversation.
 
     `numbers` is the listing's own allocation pass where there is one, because
     that is the map that has just MINTED a number for a task seeing its first
@@ -1412,12 +1422,19 @@ def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
     and the client says "behind a run in this folder". Naming half of it would be
     worse than naming none: a number with no title reads as a row the user can
     click through to, and there would be nothing there.
+
+    The LINK is the same answer read one field further on. `ahead_session` and
+    `ahead_target` are `tasks-lib.taskHref`'s two arguments, taken off the same
+    collected task as the title so the three cannot describe different rows, and
+    both "" for a holder that has not got a session yet (a `starting` run, a
+    claimed message the scheduler has not spawned) — there is no conversation to
+    open until one exists, and `taskHref` itself answers null for exactly that.
     """
     wanted = {q["ahead_key"] for q in queue.values() if q["ahead_key"]}
     if not wanted:
         return
     stored = tasks_store.task_ids() if wanted - set(numbers) else {}
-    titles = {key: _title_of(tasks, key) for key in wanted}
+    facts = {key: _ahead_facts(tasks, key) for key in wanted}
     for q in queue.values():
         key = q["ahead_key"]
         if not key:
@@ -1427,44 +1444,64 @@ def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
             record = stored.get(key) or {}
             if record.get("n"):
                 number = tasks_store.format_task_id(record["n"])
+        fact = facts.get(key) or _NO_AHEAD
         q["ahead"] = number
-        q["ahead_title"] = titles.get(key, "")
+        q["ahead_title"] = fact["title"]
+        q["ahead_session"] = fact["session"]
+        q["ahead_target"] = fact["target"]
 
 
-def _title_of(tasks: dict[str, dict], key: str) -> str:
-    """One task's title, for a caller that has the collection but not the rows.
+_NO_AHEAD = {"title": "", "session": "", "target": ""}
 
-    The queue's surfaces print WHO is ahead ("behind TASK-041 · Nightly deploy"),
-    and the task ahead is by definition another row — often one a narrowed answer
-    was never asked about. Built from the same three-source precedence the
-    listing uses (`_title`), off the same cached transcript head, so the two
-    cannot name one task differently. "" for a task that is not collected, which
-    is the honest answer and what every caller prints as nothing at all."""
+
+def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:
+    """One task's `{"title", "session", "target"}` — everything the queue's
+    surfaces say about the row in FRONT, for a caller that has the collection
+    but not the rows.
+
+    The surfaces print who is ahead ("behind TASK-041 · Nightly deploy") and
+    open it, and the task ahead is by definition another row — often one a
+    narrowed answer was never asked about. The title is built from the same
+    three-source precedence the listing uses (`_title`), off the same cached
+    transcript head, so the two cannot name one task differently; the session
+    and the target are `_place`'s own answers, which is what the row itself
+    carries. `_NO_AHEAD` for a task that is not collected, which is the honest
+    answer and what every caller prints as nothing at all."""
     task = tasks.get(key)
     if task is None:
-        return ""
+        return _NO_AHEAD
     try:
         _place(task)
         record = _scan(task["path"]) if task["path"] else None
         title, _source = _title(task, record, task["first_prompt"])
-        return title
+        return {"title": title,
+                # A `pending:<entry>` row has no session and therefore no chat
+                # to open: "" here is the same absence `taskHref` refuses on.
+                "session": str(task["session_id"] or ""),
+                "target": canonical_fs_path(task["target"] or task["project"])}
     except (OSError, ValueError, KeyError, TypeError):
-        return ""
+        return _NO_AHEAD
 
 
-def _ahead_name(tasks: dict[str, dict], key: str) -> tuple[str, str]:
-    """`(TASK-nnn, title)` for the task holding a folder — the pair every queue
-    answer carries, resolved in one place so the three endpoints and the row
-    cannot disagree about who is in front."""
+def _ahead_name(tasks: dict[str, dict], key: str) -> dict:
+    """`{"ahead", "ahead_title", "ahead_session", "ahead_target"}` for the task
+    holding a folder — the four fields every queue answer carries, resolved in
+    one place so the three endpoints and the row cannot disagree about who is in
+    front or where the click goes."""
     if not key:
-        return "", ""
-    queue = {"": {"ahead_key": key, "ahead": "", "ahead_title": ""}}
+        return {"ahead": "", "ahead_title": "",
+                "ahead_session": "", "ahead_target": ""}
+    queue = {"": {"ahead_key": key, "ahead": "", "ahead_title": "",
+                  "ahead_session": "", "ahead_target": ""}}
     _name_ahead(queue, {}, tasks)
-    return queue[""]["ahead"], queue[""]["ahead_title"]
+    answer = queue[""]
+    return {field: answer[field] for field in
+            ("ahead", "ahead_title", "ahead_session", "ahead_target")}
 
 
-def queue_ahead_of(key: str, tasks: dict[str, dict] | None = None) -> tuple[str, str]:
-    """`(TASK-nnn, title)` for one task key, collecting for itself.
+def queue_ahead_of(key: str, tasks: dict[str, dict] | None = None) -> dict:
+    """`{"ahead", "ahead_title", "ahead_session", "ahead_target"}` for one task
+    key, collecting for itself.
 
     The seam the schedule router reads: `POST /api/schedule/run-now` can be
     answered "queued", and the sentence it owes the user names the task in front
@@ -2297,6 +2334,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         queue_on = project_queue.enabled()
     if reserved is None:
         reserved = _reserved_sessions(queue_on)
+    # The card's two summary facts, asked once here for the same reason `queued`
+    # is: they are about this task's own entries, and the row is where those
+    # are. Flag off costs one branch and nothing else.
+    waiting_count, blocking = _queue_summary(task, now) if queue_on else (0, False)
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued),
                      reserved=reserved)
@@ -2380,13 +2421,79 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # blank.
         "queue_ahead": queued.get("ahead", ""),
         "queue_ahead_title": queued.get("ahead_title", ""),
+        # …AND WHERE "behind TASK-041" GOES WHEN IT IS CLICKED: the holder's own
+        # session and target, which is the pair every thread link in this app is
+        # built from (tasks-lib `taskHref`). Both "" for a holder with no
+        # session yet — a run that has not published one, a claimed message that
+        # has not spawned — and the client then prints the name unlinked.
+        "queue_ahead_session": queued.get("ahead_session", ""),
+        "queue_ahead_target": queued.get("ahead_target", ""),
         # Does this task's work go out the moment the folder frees? True for a
         # skipped task (`schedule.set_priority`, which Skip and Run-now write)
         # and for a held answer, which is always at the head.
         "queue_priority": bool(queued.get("priority")),
+        # HOW MANY MESSAGES OF THIS TASK'S ARE WAITING — the card's own summary
+        # line ("2 messages waiting"), counted here because the row is the only
+        # place that has the entries. Every kind of waiting message counts: the
+        # ones the chat queued and the ones somebody scheduled are the same
+        # thing to a reader looking at a card. 0 for a task with nothing due,
+        # and 0 with the flag off like every other queue field on this row.
+        "queue_waiting": waiting_count,
+        # DOES THE COMPOSER HAVE TO SHUT? True only for a message somebody
+        # SCHEDULED into this conversation (no `origin`), which is the one the
+        # chat cannot order itself against — the scheduler is about to send it
+        # into this very session, and a line typed over it is two messages
+        # racing into one run. A message the chat itself queued is that
+        # conversation's own next line and never blocks it (Akshil,
+        # 2026-09-12). See `_queue_summary`.
+        "queue_blocking": blocking,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
+
+
+def _queue_summary(task: dict, now: float) -> tuple[int, bool]:
+    """`(how many of this task's messages are waiting, must its composer shut)`.
+
+    **Waiting** is the same three-part test the line itself applies
+    (`_due_pending`) minus the folder: pending, and due — by `_queue_at`, so a
+    message Run now was pressed on counts from that moment rather than from next
+    Tuesday. Without the folder because this is a count of MESSAGES, not a place
+    in a line: a task with two queued sends says "2 messages waiting" whether or
+    not the second one is in a folder anybody is holding, and the card would
+    otherwise have to count the entries client-side to say so.
+
+    **Blocking** is the older question, and it is `origin` that finally answers
+    it. Before the queue, a pending entry aimed at this conversation shut its
+    composer — the scheduler was about to send it into this very session, and a
+    line typed over it is two messages racing into one run. Under the queue a
+    chat's own send is ADMITTED first and takes its place in the order, so
+    nothing it queues can race anything: those entries carry `origin: "chat"`
+    and never block. What is left is the message somebody SCHEDULED into this
+    session from the calendar or the Tasks page, which the chat still has no way
+    to order itself against — so it still shuts the box, exactly as it did
+    before (Akshil, 2026-09-12).
+
+    NO DUE FILTER on that half, deliberately: a chat holding next Tuesday's
+    message is every bit as blocked as one holding the next thirty seconds' (the
+    rule the client has always applied, `sched/scheduled.schedPendingHere`), and
+    the two halves of this answer are two different questions about one set of
+    entries. Aimed at THIS session by either spelling — the id the entry names
+    and the id its run landed in — for the reason `schedPendingHere` reads both.
+    """
+    session = str(task["session_id"] or "")
+    waiting, blocking = 0, False
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if due and due <= now:
+            waiting += 1
+        if (session and not str(entry.get("origin") or "")
+                and session in (str(entry.get("session_id") or ""),
+                                str(entry.get("claude_session_id") or ""))):
+            blocking = True
+    return waiting, blocking
 
 
 def _description(task: dict) -> str:
@@ -2704,6 +2811,19 @@ _PULSE_FIELDS = (
     "queue_position",
     "queue_ahead",
     "queue_priority",
+    # …and the session that name opens, because the sidebar's rows are links
+    # too: a Notifications row already carries `session_id` and `target` for its
+    # OWN thread (`taskHref`), and the row in front is the other thread a queued
+    # row can send a reader to. One short string. The target is not here for the
+    # same reason `queue_key` is not — the pulse carries the queued row's own
+    # `target`, and a folder-key-length path per row for a link the sidebar does
+    # not yet draw is weight this endpoint exists to avoid.
+    "queue_ahead_session",
+    # How many messages are waiting, for the sidebar's "n queued" line: the
+    # count of ROWS is what that number is today, and a row that could not say
+    # how much work it is holding made a task with three queued sends look like
+    # one. A single integer on a row that is already being built.
+    "queue_waiting",
 )
 
 
@@ -3585,8 +3705,16 @@ def api_queue_admit(body: dict = Body(...),
         # compared against the scheduler's own `now` on every tick, and two
         # clocks over one comparison is how a message due "now" lands a second in
         # the future and waits a whole tick for nothing.
+        #
+        # `origin="chat"` AND NOT A FIELD OF THE BODY: this endpoint is the one
+        # thing a chat's own queued message comes through, so the fact is the
+        # endpoint's to state rather than the request's to claim. It is what
+        # keeps this message from shutting the composer it was typed into
+        # (`_queue_summary`), and a body that could set it would let the New
+        # task form silently opt a calendar message out of the block it is
+        # supposed to cause.
         entry = schedule_api.create_entry(resolved, dict(body, message=message),
-                                          schedule._now())
+                                          schedule._now(), origin="chat")
     except ValueError as exc:
         return _error(str(exc), status=400)
 
@@ -3600,6 +3728,12 @@ def api_queue_admit(body: dict = Body(...),
     return {"run": False, "entry": entry, "key": task_key,
             "position": place["position"], "ahead": place["ahead"],
             "ahead_title": place["ahead_title"],
+            # WHERE "behind TASK-041" GOES when the chip is clicked — the
+            # holder's session and target, `taskHref`'s own pair. Both "" for a
+            # holder with no session yet, and the chip then says the words
+            # without the link.
+            "ahead_session": place["ahead_session"],
+            "ahead_target": place["ahead_target"],
             # WHY it queued, where the line alone cannot say: the folder can be
             # free and the position 0 with nobody ahead, and this is still a
             # message waiting on an earlier one of its own.
@@ -3638,8 +3772,9 @@ def _behind_own(session_id: str, follow_of: str, by_id: dict) -> bool:
 
 
 def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
-    """Where one task stands right now — `{"position", "ahead", "ahead_title"}`,
-    re-derived from scratch, or from a collection the caller already holds.
+    """Where one task stands right now — `{"position", "ahead", "ahead_title",
+    "ahead_session", "ahead_target"}`, re-derived from scratch, or from a
+    collection the caller already holds.
 
     The three endpoints below all answer with a place in a line, and all three
     have just CHANGED that line (stored an entry, set a priority, held an
@@ -3663,7 +3798,12 @@ def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
     place = queue.get(task_key) or {}
     return {"position": place.get("position", 0),
             "ahead": place.get("ahead", ""),
-            "ahead_title": place.get("ahead_title", "")}
+            "ahead_title": place.get("ahead_title", ""),
+            # The chip under a queued bubble links to the chat in front, the
+            # same way the row does — one derivation, so the two surfaces cannot
+            # send a reader to different places.
+            "ahead_session": place.get("ahead_session", ""),
+            "ahead_target": place.get("ahead_target", "")}
 
 
 @router.post("/api/tasks/queue/skip")
