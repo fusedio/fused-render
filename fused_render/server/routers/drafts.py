@@ -28,13 +28,23 @@ to repaint — but an unsent chat IS a row now, filed under the folder it was
 opened on (`routers/tasks.py::_new_chat_draft_row`), so it has to appear and
 vanish live like every other (design.md, "Round 2"; Akshil, 2026-09-11).
 
+**Moving that key onto a session is not a route here**, and the missing
+endpoint is deliberate. A chat's first send is what creates the session, and no
+page can prove which session id its own send made — every client-side version
+of that inference had a gap (Bugbot, PR #1118, 2026-09-12). What the send does
+say is which draft it is SPENDING: it tags its own run with the key
+(`draft_key`, written into the run's `meta.json` by `agent._start`), and the
+server moves the number when that run's session id appears, at listing time:
+`routers/tasks.py::_settle_new_chats`. The composer still DELETEs its own
+`new:<file>` draft on send, which is the ordinary way one goes away.
+
 Routes take `{key:path}` rather than `{key}` for one reason: a `new:<file>` key
 carries a file path, separators and all, and a plain path parameter stops at
 the first one.
 """
 from fastapi import APIRouter, Body, HTTPException
 
-from fused_render import drafts, tasks_store, tasks_watch
+from fused_render import drafts, tasks_watch
 
 router = APIRouter()
 
@@ -76,61 +86,6 @@ def api_drafts():
     paying for a request per conversation."""
     task, chat = drafts.list_all()  # one file, one read
     return {"chat": chat, "task": task}
-
-
-@router.post("/api/drafts/chat/rekey")
-def api_draft_chat_rekey(body: dict = Body(default={})):
-    """`{from, to}` — the first send has learned the session id.
-
-    A chat opened on a folder is drafted under `new:<file>` and listed under
-    that key, TASK number and all. The moment its first message is sent Claude
-    Code mints a session, and the conversation the user is looking at is now
-    filed somewhere else. Without this the number would be stranded on a row
-    nobody can reach and the session would allocate a second one — the same
-    break `pending:<entry-id>` → session id already has an answer for, which is
-    why this is that answer: one `tasks_store.rekey`, same file, same
-    allocate-once promise, same refusal to overwrite a number `to` already has
-    (design.md, "Round 2").
-
-    A no-op that still answers 200 when `from` has no number — a chat sent
-    before the debounce ever saved a draft never had a row to number — because
-    the client fires this on every first send and cannot know which it was.
-
-    THE TEXT MOVES WITH THE NUMBER, when there is any. Normally there is none:
-    the send is what cleared the composer, so `from` is already empty and this
-    is purely a delete. When the user typed on after sending, the leftover
-    text belongs to the conversation that send created. A draft already stored
-    under `to` is left alone — it is the newer of the two and the one the
-    composer is actually showing.
-    """
-    src = _chat_key(body.get("from"))
-    dst = drafts.session_key(body.get("to"))
-    if not dst:
-        raise HTTPException(
-            status_code=400, detail="to: expected a session id")
-    if src == dst:
-        raise HTTPException(
-            status_code=400, detail="from and to: expected two different keys")
-
-    number = ""
-    try:
-        number = tasks_store.rekey(src, dst)
-    except OSError:
-        # The message IS sent and the conversation IS open; a read-only state
-        # dir must not turn that into a 500. The session simply allocates its
-        # own number on the next listing. Same posture as the rekey in
-        # `routers/schedule.py`.
-        pass
-
-    record = drafts.get_chat(src)
-    moved = False
-    if record and drafts.get_chat(dst) is None:
-        moved = drafts.put_chat(dst, record.get("text"),
-                                record.get("attachments")) is not None
-    drafts.delete_chat(src)
-    _announce(src, dst)
-    return {"ok": True, "from": src, "to": dst,
-            "task_id": number, "moved": moved}
 
 
 @router.put("/api/drafts/chat/{key:path}")

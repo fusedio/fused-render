@@ -11,7 +11,11 @@ Nothing here reads the real ~/.claude or the real ~/.fused-render: every path is
 under tmp_path, and `drafts.STATE_DIR` is redirected alongside tasks_store's
 because both are computed at import from the same env var.
 """
+import importlib.util
+import io
 import json
+import os
+import time
 from urllib.parse import quote
 
 import pytest
@@ -66,6 +70,39 @@ def _clear_caches():
 @pytest.fixture(autouse=True)
 def no_real_wake(monkeypatch):
     monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
+
+
+@pytest.fixture(autouse=True)
+def runs(tmp_path, monkeypatch):
+    """A runs tree of our own, and the stand-in that reads it.
+
+    The listing looks in here to settle a `new:<file>` key onto the session its
+    first send created (`tasks_mod._settle_new_chats`), and the real tree is a
+    per-user directory under the machine's temp root — the developer's own live
+    chats. Autouse, so no test in this file can read it, and so a draft test
+    that stages no run gets the same empty answer every time.
+
+    A stand-in rather than the real `agent.py` for the reason `test_tasks_api`'s
+    own fake gives: it is a TEMPLATE, outside the package's import graph by
+    design (SPEC PY-15), and what is under test is what the router does with its
+    answers."""
+    d = tmp_path / "runs"
+    d.mkdir()
+
+    class _Agent:
+        RUNS = str(d)
+
+        def _permissions(self, run_dir):
+            return []
+
+        def _alive(self, run_dir):
+            return False
+
+        def _session_from_out(self, run_dir):
+            return ""   # the `session` file is the only id these tests write
+
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _Agent())
+    return d
 
 
 @pytest.fixture()
@@ -183,9 +220,51 @@ def test_when_and_repeat_pass_through_whatever_the_form_held(state_dir):
     """A structured repeat is an object and a cron line is a string; the modal
     has to reopen on exactly what it closed on."""
     stored = drafts.put_task("draft-0001", {
+        "title": "Standup",
         "when": "2026-09-12T09:00", "repeat": {"every": "week", "on": ["mon"]}})
     assert stored["when"] == "2026-09-12T09:00"
     assert stored["repeat"] == {"every": "week", "on": ["mon"]}
+
+
+def test_only_words_or_files_make_a_task_draft(state_dir):
+    """WHAT A DRAFT IS: `title.strip() or description.strip() or attachments`,
+    and nothing else (Akshil, 2026-09-12).
+
+    Everything else the form holds — the folder, the model, the effort, the
+    permission mode, the time, the repeat rule — is a setting that rides along
+    with a draft. They used to count, so changing the folder or picking a time
+    on an untouched card minted an "Untitled draft" row holding nothing anybody
+    had typed."""
+    for settings in ({"target": "/tmp/proj"}, {"model": "opus"},
+                     {"effort": "high"}, {"permission": "auto"},
+                     {"when": "2026-09-12T09:00"}, {"repeat": "week"},
+                     {"custom_rule": {"freq": "day"}},
+                     {"new_task_each_run": True}):
+        assert drafts.put_task("draft-0001", settings) is None, settings
+        assert drafts.get_task("draft-0001") is None, settings
+
+    # The three that DO make one, each on its own.
+    assert drafts.put_task("draft-0001", {"title": "Ship it"}) is not None
+    assert drafts.delete_task("draft-0001") is True
+    assert drafts.put_task("draft-0001", {"description": "roll up the PRs"}) is not None
+    assert drafts.delete_task("draft-0001") is True
+    assert drafts.put_task("draft-0001", {"attachments": [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]}) is not None
+
+
+def test_clearing_the_words_then_the_last_file_lets_the_draft_go(state_dir):
+    """THE REPORTED DEAD END (Akshil, 2026-09-12): "if I clear the text it says
+    untitled draft, after that if I lose the attachment it doesn't clear the
+    draft". `target` was counted as content, so the record outlived everything
+    a person had actually put in it."""
+    shot = [{"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]
+    drafts.put_task("draft-0001", {"title": "Ship it", "target": "/tmp/proj",
+                                   "model": "opus", "attachments": shot})
+    # Text cleared: still a draft, because the picture is still in the tray.
+    assert drafts.put_task("draft-0001", {"title": "", "description": ""}) is not None
+    # …and the picture removed after it: now there is nothing left to keep.
+    assert drafts.put_task("draft-0001", {"attachments": []}) is None
+    assert drafts.get_task("draft-0001") is None
 
 
 def test_an_all_empty_task_draft_is_a_delete(state_dir):
@@ -333,7 +412,10 @@ def test_a_draft_row_falls_back_to_its_description_then_to_a_name(client):
                json={"description": "  \nroll up yesterday's PRs\nand file them"})
     assert _by_key(client)["draft:draft-0001"]["title"] == "roll up yesterday's PRs"
 
-    client.put("/api/drafts/task/draft-0002", json={"model": "opus"})
+    # …and "Untitled draft" is now reachable ONLY by an attachment-only draft:
+    # a settings-only form is not a draft at all (Akshil, 2026-09-12).
+    client.put("/api/drafts/task/draft-0002", json={"attachments": [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]})
     assert _by_key(client)["draft:draft-0002"]["title"] == "Untitled draft"
 
 
@@ -635,11 +717,55 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
     assert [t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]] == []
 
 
-# ------------------------------------------------- round 2: rekey forward
+# ----------------------------------- round 2: the first send's session
+#
+# A chat with no session drafts under `new:<file>` and is numbered under that
+# key. The first send creates the session, and the number has to follow it —
+# but WHICH session a send created is not a question the page can answer, and
+# four rounds of bugbot went into trying (PR #1118, 2026-09-12). What the send
+# CAN say is which draft it is spending, so it says that: a session-less start
+# carries `draft_key`, `agent._start` writes it into the run's `meta.json`, and
+# the listing build moves the number onto the session that run made
+# (`routers/tasks.py::_settle_new_chats`).
+#
+# The first build of this matched on the target and an empty `resumed_from`
+# instead — "a first-ever run on this folder" — and every other way a folder
+# gets its first run passes those guards too: a scheduled task's first fire,
+# a `new_task_each_run` entry, canvases.py's spawn. Each would have taken the
+# number AND deleted the unsent words (review, 2026-09-12). That is the second
+# test below, and it is the one this round exists for.
 
 
-def test_the_rekey_route_moves_the_number_onto_the_session(client, projects_dir,
-                                                           tmp_path):
+def _stage_run(runs, name, file, session_id="", resumed_from="", started=None,
+               draft_key=None):
+    """One run dir as `agent._start` leaves it: `meta.json` with the target, the
+    session it resumed (empty when the send had none) and — for a native
+    composer's session-less send only — the draft key that send is spending,
+    plus the `session` file `_poll` writes once the CLI reports an id.
+
+    `draft_key=None` is every OTHER caller of `_start`: the scheduler, the apps
+    API, canvases.py. They write no such field, which is exactly what stops them
+    claiming a draft.
+
+    `started` back-dates `meta.json` — the run's own clock, which is what tells
+    a draft the send spent from one typed into after it."""
+    d = runs / name
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {"file": str(file), "resumed_from": resumed_from,
+            "message": "first message"}
+    if draft_key is not None:
+        meta["draft_key"] = draft_key
+    path = d / "meta.json"
+    path.write_text(json.dumps(meta))
+    if started is not None:
+        os.utime(path, (started, started))
+    if session_id:
+        (d / "session").write_text(session_id)
+    return d
+
+
+def test_a_session_less_send_carries_the_number_onto_the_session_it_made(
+        client, projects_dir, runs, tmp_path):
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
@@ -647,67 +773,214 @@ def test_the_rekey_route_moves_the_number_onto_the_session(client, projects_dir,
     number = _by_key(client)[key]["task_id"]
     assert number == "TASK-001"
 
-    # The send happened: Claude Code minted a session and wrote a transcript.
+    # The send: a run tagged with this draft's key, and Claude Code minted a
+    # session for it.
     _write_transcript(projects_dir, "sess-a", str(folder),
                       [_user("first message", T9)])
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json()["task_id"] == number
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
 
     rows = _by_key(client)
     assert key not in rows, "the folder row is the session's row now"
     assert rows["sess-a"]["task_id"] == number
     assert tasks_store.task_number("sess-a") == number
+    # And the draft the send spent is gone — never copied onto the session:
+    # those words are in the transcript.
+    assert client.get("/api/drafts").json()["chat"] == {}
 
 
-def test_the_rekey_route_deletes_a_draft_the_send_already_emptied(client, tmp_path):
-    """The normal case: the send cleared the box, so there is nothing to move
-    and the `new:` key is simply gone."""
+def test_a_first_run_nobody_tagged_leaves_the_draft_whole(
+        client, projects_dir, runs, tmp_path):
+    """THE ONE THIS ROUND EXISTS FOR (review, 2026-09-12).
+
+    A scheduled task's first fire on the same folder is a run with no
+    `resumed_from` and a brand-new session — identical, on disk, to a composer's
+    first send in every way except the tag. It must leave the unsent words, the
+    draft and the number exactly where they are; the earlier target-matching
+    version deleted all three.
+    """
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "still typing this"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("the scheduled prompt", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               started=time.time() + 5)
+
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert rows["sess-a"]["task_id"] != number, "the scheduler gets its own"
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == \
+        "still typing this"
+
+
+def test_a_run_tagged_for_another_chat_is_not_this_key_s_send(
+        client, projects_dir, runs, tmp_path):
+    """The tag is matched verbatim and nothing else is consulted. A folder and a
+    file inside it are two chats to draft in, and a number that crossed between
+    them would land on a conversation the reader never typed into."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    (folder / "app.py").write_text("x = 1\n")
+    key = "new:" + str(folder / "app.py")
+    client.put(_chat_url(key), json={"text": "first message"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               draft_key="new:" + str(folder), started=time.time() + 5)
+
+    assert _by_key(client)[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "first message"
+
+
+def test_a_send_into_a_session_leaves_another_chats_draft_alone(
+        client, projects_dir, runs, tmp_path):
+    """The bug this whole move was rewritten for. Opening a recent session in a
+    folder that holds an unsent draft used to walk that row — words, number and
+    all — onto a conversation the send had nothing to do with. A send with a
+    session to send into creates nothing, so it carries no tag."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "still typing this"})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("something else", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a",
+               resumed_from="sess-a", started=time.time() + 5)
+
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert rows["sess-a"]["task_id"] != number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "still typing this"
+
+
+def test_a_run_that_never_minted_a_session_leaves_the_draft_alone(
+        client, runs, tmp_path):
+    """`_start` failed, or the CLI died before its first row. There is nothing
+    to carry the number to, and the draft is still the only copy of what the
+    user typed."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
     client.put(_chat_url(key), json={"text": "first message"})
-    client.put(_chat_url(key), json={"text": ""})  # the send
+    number = _by_key(client)[key]["task_id"]
 
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json()["moved"] is False
-    assert drafts.get_chat(key) is None
-    assert drafts.get_chat("sess-a") is None
+    _stage_run(runs, "20260912-090000-aa", folder, draft_key=key,
+               started=time.time() + 5)
+
+    assert _by_key(client)[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "first message"
 
 
-def test_the_rekey_route_carries_text_typed_after_the_send(client, tmp_path):
+def test_words_typed_after_the_run_started_are_not_that_run_s_draft(
+        client, projects_dir, runs, tmp_path):
+    """A draft saved AFTER the run began is not the message it sent — it is the
+    next one, typed into the same box while the session id was still on its way
+    — so the key keeps both its words and its number."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() - 60)
     client.put(_chat_url(key), json={"text": "and one more thing"})
+    number = _by_key(client)[key]["task_id"]
 
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.json()["moved"] is True
-    assert drafts.get_chat(key) is None
-    assert drafts.get_chat("sess-a")["text"] == "and one more thing"
-
-
-def test_the_rekey_route_is_a_no_op_for_a_draft_that_never_existed(client, tmp_path):
-    """The client fires this on every first send and cannot know whether the
-    debounce ever got round to a first save."""
-    key = "new:" + str(tmp_path / "proj")
-    r = client.post("/api/drafts/chat/rekey", json={"from": key, "to": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "from": key, "to": "sess-a",
-                        "task_id": "", "moved": False}
+    rows = _by_key(client)
+    assert rows[key]["task_id"] == number
+    assert client.get("/api/drafts").json()["chat"][key]["text"] == "and one more thing"
 
 
-def test_the_rekey_route_refuses_a_to_that_is_not_a_session(client, tmp_path):
-    key = "new:" + str(tmp_path / "proj")
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": key, "to": "new:/tmp/x"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": key, "to": "/etc/passwd"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": "/etc/passwd", "to": "sess-a"}).status_code == 400
-    assert client.post("/api/drafts/chat/rekey",
-                       json={"from": "sess-a", "to": "sess-a"}).status_code == 400
+def test_the_number_moves_even_though_the_composer_deleted_the_draft(
+        client, projects_dir, runs, tmp_path):
+    """The ORDINARY case, and the one with no draft record left to read: the
+    composer deletes its own `new:<file>` draft in the same tick as the send, so
+    by the next build the number is all that is still filed under the key. It
+    still has to reach the session — which is why the settle asks the numbers
+    store and not only the drafts store."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "first message"})
+    number = _by_key(client)[key]["task_id"]
+    client.delete(_chat_url(key))
+    assert client.get("/api/drafts").json()["chat"] == {}
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
+
+    assert _by_key(client)["sess-a"]["task_id"] == number
+    assert tasks_store.task_number(key) == ""
+
+
+# ------------------------------- round 2: the template's half of the tag
+#
+# The settle above reads a field somebody else writes. `agent.py` is a TEMPLATE
+# — outside the package's import graph by design (SPEC PY-15), so it cannot be
+# imported, only loaded by path — and it is the process that actually spends the
+# draft. These two tests are the contract between the halves: the key goes into
+# `meta.json` verbatim when a send hands one over, and the field is ABSENT for
+# every other caller of `_start` (the scheduler, the apps API, canvases.py),
+# which is what keeps them from claiming a draft.
+
+
+def _load_agent_template():
+    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent_drafts", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeHost:
+    """The session host `_start` spawns. What is under test is the file it
+    writes BEFORE the spawn, and a real host would go looking for a CLI."""
+
+    pid = 4242
+
+    def __init__(self):
+        self.stdin = io.BytesIO()
+
+
+def _start_a_run(tmp_path, monkeypatch, target, **kw):
+    agent = _load_agent_template()
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda *a, **kwargs: _FakeHost())
+    out = agent._start(str(target), "first message", "", "", "", **kw)
+    assert "error" not in out, out
+    with open(os.path.join(agent.RUNS, out["run_id"], "meta.json"),
+              encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_start_writes_the_draft_key_it_was_handed(tmp_path, monkeypatch):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    meta = _start_a_run(tmp_path, monkeypatch, folder, draft_key=key)
+    # VERBATIM: the key is stored unnormalised on both sides on purpose, so a
+    # tilde or a trailing slash that the template "helpfully" resolved would be
+    # a key the server can never match.
+    assert meta["draft_key"] == key
+    assert meta["resumed_from"] == ""
+
+
+def test_start_writes_no_draft_key_when_nobody_sent_one(tmp_path, monkeypatch):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    meta = _start_a_run(tmp_path, monkeypatch, folder)
+    assert "draft_key" not in meta
 
 
 # --------------------------------------- round 2: a draft moves, never twice
@@ -902,7 +1175,8 @@ def test_a_custom_repeat_keeps_its_rule(state_dir):
     # Pass-through, not parsed: this store is not the authority on what a
     # recurrence rule looks like, and a shape it validated would be a second
     # copy of `recur`'s grammar going stale.
-    assert drafts.put_task("draft-0002", {"custom_rule": {"freq": "fortnight"}}
+    assert drafts.put_task("draft-0002", {"title": "Retro",
+                                         "custom_rule": {"freq": "fortnight"}}
                            )["custom_rule"] == {"freq": "fortnight"}
     # A field the client omits keeps what the stored draft had, like every other.
     assert drafts.put_task("draft-0001", {"title": "Standup"}
@@ -912,13 +1186,17 @@ def test_a_custom_repeat_keeps_its_rule(state_dir):
                            )["custom_rule"] is None
 
 
-def test_a_rule_alone_is_still_a_draft(state_dir):
-    """`_empty_task` asks "is there anything a person chose here", and opening
-    the recurrence dialog and building a rule is exactly that."""
+def test_a_rule_alone_is_not_a_draft(state_dir):
+    """A recurrence rule is a SETTING — how a task would run, not a task
+    (Akshil, 2026-09-12). It used to count, and the cost was an "Untitled draft"
+    row minted by opening the when-row and picking a time."""
     assert drafts.put_task("draft-0001",
-                           {"custom_rule": {"freq": "month"}}) is not None
-    assert drafts.put_task("draft-0001", {"custom_rule": None}) is None
+                           {"custom_rule": {"freq": "month"}}) is None
     assert drafts.get_task("draft-0001") is None
+    # …and it rides along perfectly well once there are words to ride with.
+    assert drafts.put_task("draft-0001", {"title": "Monthly report",
+                                          "custom_rule": {"freq": "month"}}
+                           )["custom_rule"] == {"freq": "month"}
 
 
 def test_the_rule_rides_down_on_the_draft_row(client, tmp_path):

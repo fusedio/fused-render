@@ -2098,8 +2098,8 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     composer already holding the text (design.md, "Round 2").
 
     THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
-    session (there is none until the first send — that send is what
-    `POST /api/drafts/chat/rekey` reports, and it carries this number forward),
+    session (there is none until the first send — and the run that send starts
+    is what carries this number forward, `_settle_new_chats`),
     no messages, nothing that has happened. `form` is null rather than a dict:
     a chat draft is text and attachments, which is what `draft` already
     carries, and there is no form to reopen.
@@ -2213,6 +2213,144 @@ def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
         return tasks_store.ensure_ids(items, reproject=True)
     except OSError:
         return {}
+
+
+# How many run dirs (newest first) one settle pass reads. The run that created
+# the session a `new:<file>` key is waiting for is by construction a recent one
+# — the draft is the message that started it — and nothing prunes RUNS, so the
+# tail of that tree is months of dead runs. Deliberately the same order of
+# magnitude as `_PARKED_SCAN_LIMIT` and agent.py's own `_LIVE_SCAN_LIMIT`.
+_NEW_CHAT_SCAN_LIMIT = 60
+
+
+def _settle_new_chats(chat_drafts: dict) -> bool:
+    """Walk a `new:<file>` key's TASK number onto the session the send that
+    SPENT it created, and drop the draft that send spent. True if anything
+    moved.
+
+    THE SEND NAMES ITS OWN DRAFT, and nothing here infers it. A chat with no
+    session drafts under `new:<file>` and is numbered under that key; the first
+    send creates the session, and the number has to follow it or the row the
+    user has been watching is stranded on a key nothing reads again. So the
+    composer's session-less send puts the key it is spending in the start
+    request (`protocol/run-controller.ts`, `draft_key`), `agent._start` writes
+    it into `meta.json` verbatim before it spawns anything, and this reads it
+    back. The draft key is a RECEIPT written by the process that spent it,
+    which is the one thing about that send nobody has to guess at.
+
+    WHY NOT THE TARGET. The first build of this matched a run to a draft by
+    "same file, and `resumed_from` is empty" — a first-ever run on that
+    folder — and every OTHER way a folder gets its first run passes those same
+    two guards: a scheduled task's first fire (`schedule.py::_send` →
+    `claude_spawn.spawn_helper` → `agent._start`), a `new_task_each_run` entry,
+    canvases.py's own spawn. Any of them would have taken the number off a chat
+    the reader was still typing into and `delete_chat` would have destroyed the
+    unsent words with it (review, 2026-09-12). None of them sends a
+    `draft_key`, so none of them can claim a draft now.
+
+    (The four rounds before that asked the CLIENT which session its own send
+    created, and each answer was an inference with a gap — a send that threw, a
+    refusal that never left `idle`, a Back before the id landed — that left the
+    move owed to whichever session id turned up next. Tagging the run is not
+    that: the page is not saying which session it made, it says which draft
+    it spent, which it knows at the moment it spends it.)
+
+    WHERE IT RUNS. `agent.py` is a TEMPLATE — outside the package's import
+    graph by design (SPEC PY-15), so it cannot call `tasks_store` or `drafts`
+    at the moment it learns the id — and a chat's own run is started and polled
+    in an executor subprocess, never in this process. The nearest thing the
+    server has to that moment is the build below: it is the only reader of the
+    number, it already scans this tree for parked runs, and it runs BEFORE
+    `_numbers` allocates, so the session this settles is still unnumbered when
+    it gets here. Latency is one listing (the changes long-poll the chat itself
+    holds, in practice).
+
+    TWO GUARDS BESIDES THE KEY:
+
+    * **A session id, or nothing happens.** A run that never got one (`_start`
+      failed, the CLI died before its first row) has nothing to carry the
+      number to, and the draft is still the only copy of what was typed. Asked
+      again on the next build.
+    * **Nothing newer than the run.** A draft whose last save is AFTER this run
+      started is not the message it sent — it is words typed into the same box
+      while the session id was still on its way — so the key is left whole,
+      number and text both. Everything else under the key predates the send and
+      IS what was sent, which is why the draft is deleted and its text is never
+      copied forward: the words are in the transcript already.
+    """
+    records = {key: rec for key, rec in chat_drafts.items()
+               if drafts.is_new_chat_key(key)}
+    # The ordinary case has no record at all — the composer deletes the draft
+    # on send, in the same tick as the send — so the NUMBER alone is what is
+    # usually left to move, and the numbers store is the only place it is. That
+    # is why this read is not gated on `records` being non-empty (review perf
+    # note, 2026-09-12): gating it there would skip exactly the common case and
+    # strand the number the send was supposed to carry. One small json file,
+    # read before anything decides to touch the runs tree.
+    waiting = set(records) | {key for key in tasks_store.task_ids()
+                              if drafts.is_new_chat_key(key)}
+    if not waiting:
+        return False  # nothing unsent is numbered: no reason to read the tree
+    agent = _agent_module()
+    runs = getattr(agent, "RUNS", "") if agent is not None else ""
+    if not runs:
+        return False
+    try:
+        names = sorted(os.listdir(runs), reverse=True)[:_NEW_CHAT_SCAN_LIMIT]
+    except OSError:
+        return False  # no runs tree yet: nothing has ever chatted here
+    moved = False
+    for name in names:
+        if not waiting:
+            break  # every key settled; the older runs have nothing to say
+        run_dir = os.path.join(runs, name)
+        meta_path = os.path.join(run_dir, "meta.json")
+        try:
+            # The mtime of the file `_start` writes once, before it spawns: when
+            # this run began, which is the floor the second guard reads.
+            started = os.path.getmtime(meta_path)
+            with open(meta_path, encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue  # one unreadable run, not an unsettled draft for ever
+        if not isinstance(meta, dict):
+            continue
+        # VERBATIM ON BOTH SIDES. The key is stored unnormalised on purpose
+        # (`drafts.chat_key`, `chatDraftKey`) and rides the request untouched,
+        # so this is a string comparison and never a path one: a run tagged for
+        # another key — or for a key some earlier run already settled — is not
+        # this draft's send.
+        key = str(meta.get("draft_key") or "")
+        if key not in waiting:
+            continue
+        # The session this run MADE. `_run_sessions` answers both spellings —
+        # the one it resumed and the one the CLI minted — and a tagged run has
+        # no `resumed_from` by construction (the composer tags only a send with
+        # no session id), so subtracting it is belt and braces rather than a
+        # second guess.
+        ids = _run_sessions(agent, run_dir, meta) - {
+            str(meta.get("resumed_from") or "")}
+        if not ids:
+            continue  # no id minted yet (or ever): ask again next build
+        session_id = sorted(ids)[0]
+        record = records.get(key)
+        if record and float(record.get("updated_at") or 0.0) > started:
+            continue  # typed into again since: not this send's draft
+        try:
+            tasks_store.rekey(key, session_id)
+            drafts.delete_chat(key)
+        except OSError:
+            # A read-only state dir costs the number's continuity and nothing
+            # else. Same posture as `_numbers` and the schedule router's own
+            # rekey: the listing still answers.
+            continue
+        waiting.discard(key)
+        moved = True
+        # Both rows moved: the draft row is gone and the session wears its
+        # number. The chat holding the changes long-poll hears it now rather
+        # than on its next full pass.
+        tasks_watch.notify({key, session_id})
+    return moved
 
 
 def _draft_shaped(only: frozenset | set) -> bool:
@@ -2413,6 +2551,14 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
     task_drafts, chat_drafts = drafts.list_all()
+    # A FIRST SEND'S SESSION IS SETTLED HERE, before a number is allocated
+    # below: `new:<file>` hands its number to the session that send created and
+    # the spent draft goes (`_settle_new_chats` — and see its docstring for why
+    # this is the server's job and not the composer's). A settle rewrites the
+    # store this build has already read, so the read is taken again; it is one
+    # small file, and it only happens on the build a send is settled in.
+    if _settle_new_chats(chat_drafts):
+        task_drafts, chat_drafts = drafts.list_all()
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)

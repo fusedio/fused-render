@@ -205,9 +205,8 @@ async function write(
  * (`ClaudeChat`'s remount on the first send). The new mount seeds itself from
  * the server (`fetchChatDraft`), and that GET can overtake a DELETE that is
  * still in flight. What it answers is the sentence that was just sent, into a
- * box the send had emptied; the rekey that follows then walks those words onto
- * the session, and the message the reader sent is sitting on their own task row
- * as an unsent draft.
+ * box the send had emptied — the message the reader sent, back in their
+ * composer as an unsent draft.
  *
  * NOTHING INSIDE ONE MOUNT CAN FIX IT. `reset`, `stop` and `settle` all belong
  * to a component that is being thrown away at that instant, and the seed that
@@ -245,86 +244,37 @@ export function saveChatDraft(
   return write("PUT", chatUrl(key), { text, attachments }, opts);
 }
 
-/**
- * DELETES STILL IN THE AIR, one per key at most — what `rekeyChatDraft` waits
- * on so a move cannot overtake the removal of the thing it is moving (Bugbot,
- * PR #1118, 2026-09-11).
- *
- * `spent` already stops a REMOUNT from reading the sent words back; this stops
- * the SERVER from being asked to copy them. The two requests the first send
- * fires — `DELETE new:<file>` and `POST /api/drafts/chat/rekey` — are otherwise
- * unordered, and the order that loses is the one where the rekey arrives first:
- * the record is still there, so the route copies it onto the session id, and a
- * sent message becomes an unsent draft on the session's own row.
- *
- * A key drops out the moment its own request answers, and only if it is still
- * the one being tracked — a second delete for the same key while the first is
- * running is the later one's to own.
- */
-const pendingDeletes = new Map<string, Promise<boolean>>();
-
 /** On send, and on an explicit clear. The key is marked spent BEFORE the
  *  request goes out — see `spent` for the remount that would otherwise read the
- *  draft back out from under the delete — and the request is remembered while
- *  it runs, for the rekey that must not pass it (see `pendingDeletes`). */
+ *  draft back out from under the delete. */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
   spent.add(key);
-  const done: Promise<boolean> = write("DELETE", chatUrl(key), undefined, opts).then((ok) => {
-    if (pendingDeletes.get(key) === done) pendingDeletes.delete(key);
-    return ok;
-  });
-  pendingDeletes.set(key, done);
-  return done;
+  return write("DELETE", chatUrl(key), undefined, opts);
 }
 
 /**
- * THE DRAFT MOVES WITH THE SESSION IT TURNED OUT TO BE (design.md, Round 2:
- * "Every draft has a TASK number").
+ * THE DRAFT'S KEY MOVES WITH THE SESSION IT TURNED OUT TO BE, AND NOT FROM HERE
+ * (design.md, Round 2: "Every draft has a TASK number").
  *
- * A chat with no session yet keys its draft `new:<file>` and is given a TASK
- * number under that key. The first send creates the session, and from the next
- * render the composer keys on the session id instead — so without this the
- * number, and the row wearing it, would be stranded on a key nothing reads
- * again. The server moves both (`tasks_store.rekey`, the same call that walks a
- * `pending:` number onto a session).
+ * There is no `rekeyChatDraft` and no `POST /api/drafts/chat/rekey`, and their
+ * absence is the fix. A chat with no session drafts under `new:<file>` and is
+ * numbered under that key; the first send creates the session, and the number
+ * has to follow it. Four rounds of bugbot went into asking the CLIENT which
+ * session its own send created, and every answer was an inference with a gap in
+ * it — a send that threw, a refusal that never left `idle`, a Back before the id
+ * landed — that left the move owed to whichever session id turned up next
+ * (Bugbot, PR #1118, 2026-09-12).
  *
- * FIRE AND FORGET, once, when the id of the session a session-less send created
- * is learned. WHICH SEND THAT WAS is not this module's business and never was:
- * `ClaudeChat` binds the move to the run it dispatched, because a chat merely
- * opened ON a session also spends its first renders with an empty id and a
- * module-level "a send is owed a rekey" note could be spent by the wrong one
- * (Bugbot, PR #1118, 2026-09-12). A refusal costs the
- * number's continuity and nothing the reader is doing — which is this module's
- * standing contract, and doubly right here: the thing being renamed is a draft
- * that the send is about to delete anyway (Akshil, 2026-09-11).
+ * What the client DOES know at the moment of the send is which draft it is
+ * spending, so that is what it says: a session-less start carries `draft_key`
+ * (`apps/claude/protocol/run-controller.ts`), `agent._start` writes it into the
+ * run's `meta.json`, and the server moves the number when that run's session id
+ * appears (`routers/tasks.py::_settle_new_chats`). It moves the NUMBER only and
+ * never the words — those are in the transcript by then — which is also why
+ * nothing here has to carry spent-ness onto a second key any more.
  *
- * IT WAITS FOR THE SEND'S DELETE, AND IT CARRIES SPENT-NESS ACROSS (Bugbot,
- * PR #1118, 2026-09-11). Going out first was never enough: `DELETE new:<file>`
- * and this POST are two requests with no order between them, and if the rekey
- * is served first the record is still sitting there — the route copies it onto
- * the session id, and the composer that just remounted seeds from the SESSION
- * key, which nothing had marked spent. The sentence the reader sent is back in
- * their box, one key to the right of where the fix was looking.
- *
- * So: await whatever DELETE for `from` is still running (`pendingDeletes` —
- * nothing to wait for in the ordinary case, where the chat simply learned its
- * id without a send), and mark `to` spent whenever `from` is, BEFORE either
- * request, because the window being covered is the one they are in. Spent on
- * the new key means the same as on the old one: the words were just sent, and
- * nothing is restored under it until somebody types again — a PUT with content
- * un-spends it exactly as before (`saveChatDraft`).
- *
- * The reader who typed ON after sending is still served: that PUT carried
- * content, so it had already un-spent `from`, and this copies no spent-ness
- * onto `to`. Those words belong to the conversation the send created, which is
- * the one case the route's copy exists for.
+ * What this module still owes a send is `deleteChatDraft(new:<file>)`, above.
  */
-export async function rekeyChatDraft(from: string, to: string): Promise<boolean> {
-  if (!from || !to || from === to) return false;
-  if (spent.has(from)) spent.add(to);
-  await pendingDeletes.get(from);
-  return write("POST", "/api/drafts/chat/rekey", { from, to });
-}
 
 /**
  * Upsert a task draft under the id the form minted.

@@ -1565,12 +1565,14 @@ export function splitDraft(draft?: string | null): {
  *     thread on the Claude pane, which is `explorerUrl`'s whole job. The folder
  *     is the draft's own `target`: the hop wrote the chat's `file` into it, and
  *     it is the only path this card kept;
- *   * `new:<file>` — there is no session and never was one, so the door is the
- *     one a never-sent chat's ROW uses (`schedule-lib.chatDraftHref`): that
- *     file's folder with the Claude pane on it and no `session_id` named at
- *     all. Built out of the key's own `<file>` rather than out of `target`, for
- *     `chatDraftHref`'s reason — the composer seeds from a key built on that
- *     exact string, and a chat mounted anywhere else reads a key nothing wrote.
+ *   * `new:<file>` — there is no session and never was one, so the door is that
+ *     file's folder with the Claude pane on it (`schedule-lib.chatPaneUrl`) and
+ *     no `session_id` named at all: an empty value claims the question was
+ *     asked and answered with nothing, and this conversation has not been asked
+ *     it. Built out of the key's own `<file>` rather than out of `target`,
+ *     because the composer seeds from a key built on that exact string
+ *     (platform/lib/drafts.chatDraftKey) and a chat mounted anywhere else reads
+ *     a key nothing wrote.
  *
  * `""` for a key that is neither, which is a card with nothing to go back to —
  * the caller gates on that before ever getting here.
@@ -3164,7 +3166,12 @@ export default function NewJobModal({
    * at all) nor a re-opened draft (whose words are already stored, under an id
    * this card was handed).
    */
-  const hopSeeded = !editing && !initialDraft && !!(initialMessage ?? "").trim();
+  // …and a hop can arrive as FILES with no words at all — a picture dropped into
+  // an empty composer is a chat draft (`drafts.put_chat`), so it is a task draft
+  // the moment it lands here, or the composer's copy would sit beside this card
+  // as a second row (Akshil, 2026-09-12).
+  const hopSeeded = !editing && !initialDraft
+    && (!!(initialMessage ?? "").trim() || !!initialAttachments?.length);
   /**
    * THE CHAT THIS CARD'S WORDS CAME OUT OF, whichever way the card was opened —
    * and the thing `POST /api/schedule` is told so it can drop that draft (Bugbot,
@@ -3183,7 +3190,32 @@ export default function NewJobModal({
    * same reason it exists at all.
    */
   const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");
+  /**
+   * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
+   * else (Akshil, 2026-09-12).
+   *
+   * The folder, the model, the effort, the permission mode, the time and the
+   * repeat rule are SETTINGS: they ride along with a draft, they are not what
+   * makes one. Gating the first write on `dirty` alone meant that opening the
+   * card and picking a folder — or opening the when-row and touching a time —
+   * minted a draft and put an "Untitled draft" row on the List for a form
+   * holding nothing anybody typed. An attachment counts only once it has a
+   * PATH: a chip whose upload has not answered names no file yet, which is the
+   * same rule the body's `attachments` uses two lines down.
+   */
+  const draftContent = !!title.trim() || !!message.trim()
+    || images.some((i) => i.path);
+  /**
+   * …AND ONCE A DRAFT EXISTS, EMPTYING IT IS A WRITE, not a silence. The body
+   * keeps being produced while `draftId` is set, so clearing the last words
+   * sends the empty form and the server turns that PUT into a delete
+   * (`drafts._empty_task`). Without it the card went quiet at exactly the
+   * moment it had something to say, and the reported shape of that was: clear
+   * the text and the row reads "Untitled draft", then remove the attachment and
+   * the row never goes away at all.
+   */
   const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)
+    && (draftContent || draftId !== null)
     ? {
       title,
       description: message,
@@ -3720,18 +3752,26 @@ export default function NewJobModal({
               nothing to discard, and a button offering to delete nothing is a
               button that makes the reader wonder what it knows.
 
-              It is not `.btn-danger-text` like the Edit card's Delete beside
-              it: that withdraws a real, running task, and this drops an
-              unfinished form nobody has scheduled. Same footer, two weights,
-              which is the difference between the two verbs. */}
+              ONE SEAT, ONE SKIN (Akshil, 2026-09-12). Delete and Discard can
+              never both be on a card — `del` is an Edit's and `draftId` is a
+              new task's — so they are not two controls sharing a footer, they
+              are the same control under the two names the card can be in. It
+              therefore takes Delete's exact class (`.new-task-delete` carries
+              the glyph spacing, `.btn-danger-text` the `margin-right:auto` that
+              anchors the far-left seat) and Delete's trash glyph. Two weights
+              for one position read as a footer that moves its buttons around
+              depending on what you opened. The LABEL still differs, because the
+              verbs do: one withdraws a running task, one drops an unfinished
+              form. No arming step here — there is nothing scheduled to undo. */}
           {draftId && (
             <button
               type="button"
-              className="btn btn-secondary new-task-discard"
+              className="btn btn-danger-text new-task-delete"
               disabled={busy}
               title="Discard this draft"
               onClick={discard}
             >
+              {ICON_TRASH}
               Discard
             </button>
           )}

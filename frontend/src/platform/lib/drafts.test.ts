@@ -31,7 +31,6 @@ import {
   deleteChatDraft,
   fetchChatDraft,
   newChatFile,
-  rekeyChatDraft,
   saveChatDraft,
   saveTaskDraft,
   useAutosave,
@@ -372,113 +371,46 @@ describe("saveTaskDraft's from_chat_key", () => {
   });
 });
 
-describe("rekeyChatDraft", () => {
-  test("moves the number from the `new:<file>` key onto the session", async () => {
-    const f = recordFetch();
-    await rekeyChatDraft(chatDraftKey(null, "/Users/me/news"), "sess-9");
-    expect(f.calls[0].url).toBe("/api/drafts/chat/rekey");
-    expect(f.calls[0].init.method).toBe("POST");
-    expect(JSON.parse(String(f.calls[0].init.body)))
-      .toEqual({ from: "new:/Users/me/news", to: "sess-9" });
-    f.restore();
-  });
-
-  test("says nothing at all when there is nothing to move", async () => {
-    // The server answers 400 on a bad shape or `from === to`; a request that
-    // can only be refused is one not worth making.
-    const f = recordFetch();
-    await rekeyChatDraft("", "sess-9");
-    await rekeyChatDraft("new:/x", "");
-    await rekeyChatDraft("sess-9", "sess-9");
-    expect(f.calls).toEqual([]);
-    f.restore();
-  });
-});
-
-// ---- the number follows the session the chat turns out to be -----------------
+// ---- the number follows the session, and NOT from here ----------------------
 // design.md, Round 2: "Every draft has a TASK number." A brand-new chat keys its
 // draft `new:<file>` and is given one under that key; the first send creates the
-// session, and the composer keys on the session id from the next render. Without
-// the rekey, the number — and the row wearing it — is stranded on a key nothing
-// reads again. Source reads: the whole claim is about WHEN this fires and how
-// many times, which a mounted chat cannot be asked without a whole run.
+// session, and the number has to follow it or the row the reader was watching is
+// stranded on a key nothing reads again.
+//
+// THE MOVE IS THE SERVER'S (Bugbot, PR #1118, 2026-09-12). Four rounds went into
+// asking this page which session its own send created, and every answer was an
+// inference with a gap in it — a send that threw, a refusal that never left
+// `idle`, a Back before the id landed — that left the move owed to whichever
+// session id turned up next, walking an unsent row onto a conversation the send
+// had nothing to do with. `routers/tasks.py::_settle_new_chats` reads it off the
+// run's own `meta.json` instead. These hold the client's side of that: it does
+// the delete and nothing else, and the machinery it used to need is gone.
 
-describe("the chat rekeys its draft when it learns its session", () => {
+describe("the chat does not rekey its own draft", () => {
   const chat = () =>
     readFileSync(join(import.meta.dir, "../../apps/claude/ClaudeChat.tsx"), "utf8");
   const composer = () =>
     readFileSync(join(import.meta.dir, "../../apps/claude/ui/Composer.tsx"), "utf8");
-  const effect = () => {
-    const s = chat();
-    const at = s.indexOf("const pending = pendingRekey.current;");
-    return s.slice(at, s.indexOf("}, [controller, file, state.sessionId, state.status]);", at));
-  };
+  const drafts = () => readFileSync(join(import.meta.dir, "drafts.ts"), "utf8");
 
-  test("posts the move once, from the `new:<file>` key onto the session", () => {
-    expect(effect()).toContain("void rekeyChatDraft(pending.key, id);");
-    // The same key the composer autosaves under — one function, so the two
-    // halves cannot spell the path differently.
-    expect(chat()).toContain('import { chatDraftKey, rekeyChatDraft } from "@platform/lib/drafts";');
-    expect(chat()).toContain("key: chatDraftKey(null, file)");
-  });
-
-  test("the note is written at the SEND, and only with no session under it", () => {
-    // Not inferred from an observed empty `state.sessionId`: that is the
-    // ordinary first pass for every chat, opened-on-a-session ones included,
-    // because the id only arrives when boot's `openSession` answers.
-    expect(chat()).toContain("if (!controller.getState().sessionId) {");
-    expect(chat()).toContain(
-      "pendingRekey.current = { controller, file, key: chatDraftKey(null, file), live: false };",
-    );
-    expect(chat()).not.toContain("startedWithoutSession");
-    expect(chat()).not.toContain("rekeyedFor");
-  });
-
-  test("the note carries the run, so nobody else can spend it", () => {
-    // Bugbot, PR #1118 (2026-09-12): a module-level "a send is owed a rekey"
-    // set said nothing about WHICH session was allowed to spend it, so
-    // switching conversations in the same folder before the first poll
-    // returned moved the unsent row and its TASK number onto the wrong one.
-    const e = effect();
-    expect(e).toContain("if (pending.controller !== controller || pending.file !== file) {");
-    // Dropped UNSPENT on that road — no rekey between the check and its return.
-    const other = e.slice(e.indexOf("pending.file !== file"), e.indexOf("const id ="));
-    expect(other).toContain("pendingRekey.current = null;");
-    expect(other).not.toContain("rekeyChatDraft(");
-    // And the module-level set it replaces is gone from both sides.
-    const drafts = readFileSync(join(import.meta.dir, "drafts.ts"), "utf8");
-    expect(drafts).not.toContain("SentWithoutSession");
+  test("no rekey call, no note, no route — on either side", () => {
+    const c = chat();
+    expect(c).not.toContain("rekeyChatDraft");
+    expect(c).not.toContain("pendingRekey");
+    // Nor any of the inferences the rounds before it tried.
+    expect(c).not.toContain("startedWithoutSession");
+    expect(c).not.toContain("rekeyedFor");
+    const d = drafts();
+    expect(d).not.toContain("export async function rekeyChatDraft");
+    // The URL as it would be WRITTEN, not as the module's own prose names it.
+    expect(d).not.toContain('"/api/drafts/chat/rekey"');
+    expect(d).not.toContain("SentWithoutSession");
     expect(composer()).not.toContain("SentWithoutSession");
   });
 
-  test("spent only when the run we sent yields the id, and only once", () => {
-    const e = effect();
-    const landed = e.slice(e.indexOf("if (id) {"), e.indexOf("if (state.status !== "));
-    expect(landed).toContain("pendingRekey.current = null;");
-    expect(landed).toContain("void rekeyChatDraft(pending.key, id);");
-  });
-
-  test("a run that ends without minting an id drops the note", () => {
-    // `RunStatus` is idle|starting|running|stopping — no separate "ended" — so
-    // an end is only an end once the run has been seen live; the idle a send is
-    // dispatched into is not one.
-    const e = effect();
-    expect(e).toContain('if (state.status !== "idle") pending.live = true;');
-    expect(e).toContain("else if (pending.live) pendingRekey.current = null;");
-    expect(chat()).toContain("}, [controller, file, state.sessionId, state.status]);");
-  });
-
-  test("fire and forget, like every other write in this module", () => {
-    // A refusal costs the number's continuity and nothing the reader is doing —
-    // and the draft it renames is one the send is about to delete anyway.
-    expect(effect()).toContain("void rekeyChatDraft(");
-    expect(effect()).not.toContain("await ");
-  });
-
-  test("the composer no longer needs to know — it just spends its own key", () => {
-    const c = composer();
-    expect(c).toContain("deleteChatDraft(draftKeyRef.current)");
-    expect(c).not.toContain("markSentWithoutSession");
+  test("the send still spends its own key, which is all it ever owed", () => {
+    expect(composer()).toContain("deleteChatDraft(draftKeyRef.current)");
+    expect(composer()).not.toContain("markSentWithoutSession");
   });
 });
 
@@ -503,9 +435,8 @@ describe("the two shapes of a chat key", () => {
 // the draft under `new:<file>` AND gives the landing a session, which remounts
 // the composer. The fresh mount seeds itself from `fetchChatDraft`, and that GET
 // can overtake the DELETE still in flight: the answer is the sentence that was
-// just sent, put back into the box the send had emptied — and the rekey that
-// follows walks it onto the session, so the message the reader sent is sitting
-// on their own task row as an unsent draft.
+// just sent, put back into the box the send had emptied — a message the reader
+// sent, sitting in their composer as an unsent draft.
 //
 // Nothing inside one mount can close that window (`reset`/`stop`/`settle` all
 // belong to the component being thrown away, and the seed runs in the NEXT one),
@@ -594,110 +525,6 @@ describe("a spent chat key reads back as empty", () => {
     expect(await fetchChatDraft(sent)).toBeNull();
     expect((await fetchChatDraft(other))?.text).toBe("still unsent");
     f.restore();
-  });
-});
-
-// ---- the rekey cannot pass the send's delete ---------------------------------
-//
-// THE BUG (Bugbot, PR #1118, 2026-09-11). `spent` covers `new:<file>` and only
-// that key. The first send fires `DELETE new:<file>` and, on learning the
-// session, `POST /api/drafts/chat/rekey` — two requests in no order at all. If
-// the rekey is served first the record is still there, so the route copies it
-// onto the session id, and the composer that just remounted seeds from the
-// SESSION key, which nothing had marked spent. Same resurrection, one key over.
-
-describe("the rekey cannot pass the send's delete", () => {
-  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
-
-  /** `fetch` that records every call and answers `GET /api/drafts` out of
-   *  `chat` — but holds every request until `release()`, which is how one is
-   *  kept "in flight" without a clock. After the release the gate is open:
-   *  later requests answer at once, so a test can order what it cares about
-   *  and then let the rest run. */
-  function gate(chat: Record<string, ChatDraft> = {}) {
-    const calls: string[] = [];
-    const waiting: (() => void)[] = [];
-    let holding = true;
-    const answer = () => ({ ok: true, json: () => Promise.resolve({ chat, task: {} }) }) as unknown as Response;
-    const real = globalThis.fetch;
-    globalThis.fetch = ((url: string, init?: RequestInit) => {
-      calls.push(`${init?.method ?? "GET"} ${url}`);
-      if (!holding) return Promise.resolve(answer());
-      return new Promise<Response>((resolve) => {
-        waiting.push(() => resolve(answer()));
-      });
-    }) as typeof fetch;
-    return {
-      calls,
-      release: () => {
-        holding = false;
-        for (const unblock of waiting.splice(0)) unblock();
-      },
-      restore: () => {
-        globalThis.fetch = real;
-      },
-    };
-  }
-
-  const posts = (calls: string[]) => calls.filter((c) => c.startsWith("POST /api/drafts/chat/rekey"));
-
-  test("it waits for a DELETE still in flight before posting the move", async () => {
-    const g = gate();
-    const from = "new:/Users/me/moving";
-    // The send. Not awaited — the DELETE being in the air is the whole race.
-    void deleteChatDraft(from);
-    const moved = rekeyChatDraft(from, "sess-moving");
-    await Promise.resolve();
-    await Promise.resolve();
-    // Nothing posted while the delete is unanswered: the route would have found
-    // the record and copied the sent words onto the session.
-    expect(posts(g.calls)).toEqual([]);
-
-    g.release();
-    await moved;
-    expect(posts(g.calls).length).toBe(1);
-    g.restore();
-  });
-
-  test("a spent `from` hands its spent-ness to `to`", async () => {
-    // Belt and braces for the copy that happens anyway (another tab, a server
-    // that already moved it): whatever is under the new key, it is not restored
-    // into the box the send just emptied.
-    const from = "new:/Users/me/handed";
-    const to = "sess-handed";
-    const g = gate({ [to]: held("ship the release notes") });
-    void deleteChatDraft(from);
-    const moved = rekeyChatDraft(from, to);
-    g.release();
-    await moved;
-    expect(await fetchChatDraft(to)).toBeNull();
-    g.restore();
-  });
-
-  test("…until the reader types under the new key, which brings it back", async () => {
-    const from = "new:/Users/me/typed-on-after";
-    const to = "sess-typed-on-after";
-    const g = gate({ [to]: held("a second thought") });
-    void deleteChatDraft(from);
-    const moved = rekeyChatDraft(from, to);
-    g.release();
-    await moved;
-    await saveChatDraft(to, "a second thought");
-    expect((await fetchChatDraft(to))?.text).toBe("a second thought");
-    g.restore();
-  });
-
-  test("a `from` nobody spent says nothing about `to`", async () => {
-    // The ordinary rekey: a chat that learned its session without a send. Its
-    // draft is a real unsent draft and must survive the move.
-    const from = "new:/Users/me/never-sent";
-    const to = "sess-never-sent";
-    const g = gate({ [to]: held("still unsent") });
-    const moved = rekeyChatDraft(from, to);
-    g.release();
-    await moved;
-    expect((await fetchChatDraft(to))?.text).toBe("still unsent");
-    g.restore();
   });
 });
 

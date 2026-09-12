@@ -71,9 +71,8 @@ import {
   parseAttachmentsParam,
   type SchedAttachment,
 } from "@apps/claude/ui/sched-draft";
-import { chatDraftKey } from "@platform/lib/drafts";
-import { navigateUrl } from "@platform/lib/router";
-import { chatDraftHref } from "./schedule-lib";
+import { chatDraftKey, fetchChatDraft } from "@platform/lib/drafts";
+import { chatPaneUrl } from "./schedule-lib";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -159,6 +158,37 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // rather than one because the when-field is minute-precision, and a value
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
+
+/**
+ * WHAT A DEEP LINK HANDED THIS ONE OPENING — the chat composer's Schedule
+ * button, and nothing else on the page.
+ *
+ * ONE OBJECT, SEEDED BY `openForm`, because the bug was that it used to be six
+ * loose `useState`s cleared one at a time in the modal's `onClose` — and
+ * `attachments` was never on that list (Akshil, 2026-09-12). A composer hop
+ * carrying an image therefore left the chips standing in page state, and the
+ * NEXT "+ New task" — and every one after it, for the life of the page — opened
+ * holding a picture from a chat the reader had walked away from. A
+ * clear-on-close is a list somebody has to keep in step with the fields; a
+ * seed-on-open cannot fall out of step, because there is no second place that
+ * says what a hop is made of.
+ */
+interface HopSeed {
+  target: string | null;
+  message: string | null;
+  session: string | null;
+  back: string | null;
+  attachments: SchedAttachment[];
+  /** Which chat draft this form supersedes — see the effect that reads it. */
+  chatKey: string | null;
+}
+
+/** The opening that came from nowhere: every way into the form but the hop.
+ *  A module constant so `openForm`'s default argument is one stable value. */
+const NO_HOP: HopSeed = {
+  target: null, message: null, session: null, back: null,
+  attachments: [], chatKey: null,
+};
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
@@ -254,13 +284,28 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // WHAT the openings differ in — it is that "this is a new opening" was never
   // stated at all, and any key built out of the form's inputs collides again the
   // moment two openings happen to share them.
+  // WHAT THE OPENING CARRIED IN FROM A DEEP LINK — see `HopSeed` above. Set by
+  // `openForm` and by nothing else, which is what keeps one chat's handoff from
+  // seeding the next card the reader opens.
+  const [hop, setHop] = useState<HopSeed>(NO_HOP);
   const [openSeq, setOpenSeq] = useState(0);
   // The single door into the form, so "clean slate" is one rule in one place: a
   // new opening is a new mount, and opening a NEW task drops whatever was being
   // edited (leaving it set kept the card in Edit mode under a "+ New task"
   // press).
-  const openForm = (at: Date | "blank" | null, entry: ScheduledMessage | null) => {
+  //
+  // …and it is where the deep link's values are SPENT: every opening states its
+  // own hop, and the ones that had none say so by saying nothing (`NO_HOP`, the
+  // default). That is the whole of fix for the attachments that used to follow
+  // the reader from one New task card to the next — see `HopSeed` (Akshil,
+  // 2026-09-12).
+  const openForm = (
+    at: Date | "blank" | null,
+    entry: ScheduledMessage | null,
+    seed: HopSeed = NO_HOP,
+  ) => {
     setOpenSeq((n) => n + 1);
+    setHop(seed);
     setEditing(entry);
     setDraftRow(null);
     setCreating(at);
@@ -271,36 +316,94 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // `/api/tasks` emits it — so the card can seed from it on the first paint with
   // no second fetch, exactly as an Edit seeds from its entry.
   const [draftRow, setDraftRow] = useState<Task | null>(null);
+  /**
+   * A NEVER-SENT CHAT'S ROW, OPENED AS A NEW TASK (Akshil, 2026-09-12: "a row
+   * without a session is a draft and always opens the New Task modal").
+   *
+   * It builds the very `HopSeed` the chat composer's Schedule button builds —
+   * the folder, the words, the tray's chips, the way back, and the chat draft
+   * this card supersedes — and spends it through `openForm` exactly as the
+   * `?new=1` effect below does. Same door, same seeding, same aftermath: the
+   * modal mints a task draft at once (`hopSeeded`), the first save names
+   * `from_chat_key` so the server deletes the `new:<file>` draft in the same
+   * request, and "Back to chat" (`backChatHref`) hands the words back to the
+   * composer they came from. Nothing here is a second implementation of that
+   * handoff; it is the same one, reached from a row instead of a button.
+   *
+   * IT HAS TO FETCH FIRST, and that is the one cost. The row carries only
+   * `draft.preview` — the first LINE — and the card's two prose fields are the
+   * whole message split across them (`splitDraft`), so opening on the preview
+   * would quietly drop every line after the first. The card seeds in `useState`
+   * initialisers, which run once at mount, so there is no patching it
+   * afterwards: the text has to be in hand BEFORE the modal opens. An
+   * unreadable answer falls back to the preview rather than refusing the press
+   * — a truncated draft is worth more than a dead row — and `fetchChatDraft`
+   * already answers null instead of throwing.
+   */
+  const openChatDraft = (task: Task) => {
+    // The chat's own `file` FIRST, for platform/lib/drafts.chatDraftKey's
+    // reason: the draft is keyed on that exact string, and the way back has to
+    // mount the pane on the same one or the composer seeds from a key nothing
+    // wrote. `target` is the fallback for a server that sends the row without
+    // it.
+    const at = task.file || task.target || "";
+    void fetchChatDraft(task.key).then((stored) => {
+      const seed: HopSeed = {
+        target: at || null,
+        message: stored?.text ?? task.draft?.preview ?? null,
+        // NO SESSION, and that is what this row IS: a conversation that has
+        // never been sent has no id to continue, which is the whole meaning of
+        // a `new:<file>` key.
+        session: null,
+        back: at ? chatPaneUrl(at) : null,
+        attachments: stored?.attachments ?? [],
+        // The row's key IS the chat draft's key (`new:<file>`), which is what
+        // lets the card's first save move the draft rather than duplicate it
+        // (design.md, Round 2: "A draft moves, never duplicates").
+        chatKey: task.key,
+      };
+      openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);
+    });
+  };
   const openDraft = (task: Task) => {
-    // A NEVER-SENT CHAT IS NOT A FORM, so its row's press is a navigation and
-    // not this modal (design.md, Round 2: "Click → opens the folder's chat,
-    // composer prefilled"). There is nothing to re-open here — the words live in
-    // a composer, and the composer seeds itself from the draft keyed on the
-    // folder this URL lands on (schedule-lib.chatDraftHref, whose note explains
-    // why it carries no `session_id`). Asked FIRST, because it is the row that
-    // has no `draft_id` to fall through to.
+    // A NEVER-SENT CHAT OPENS THIS MODAL TOO (Akshil, 2026-09-12). The rule is
+    // the ROW's, not the draft's kind: a row with no session is a draft and
+    // always opens the New task modal; a row with a session always opens the
+    // chat. The build before this one sent the two draft kinds to two different
+    // places and tried to warn about it in the chip's wording ("Draft reply"),
+    // which is a label apologising for a press — the press was the thing to fix.
+    //
+    // What it is seeded from is where the two kinds still differ, and that is
+    // the only thing `isChatDraftTask` decides now. A task draft has a stored
+    // form to re-open (`draftRow`, below); a chat draft has none, so its words
+    // travel as a HOP — the identical object the composer's own Schedule button
+    // builds, so this press and that button land on the same card, mint the
+    // same task draft, delete the same chat draft (`from_chat_key`) and offer
+    // the same way back. Asked FIRST, because it is the row that has no
+    // `draft_id` to fall through to.
     if (isChatDraftTask(task)) {
-      const href = chatDraftHref(task);
-      if (href) navigateUrl(href);
+      openChatDraft(task);
       return;
     }
     if (!task.draft_id) return;
     setOpenSeq((n) => n + 1);
+    // A reopened draft carries its own everything (the row's stored `form`), so
+    // whatever a deep link said earlier in this page's life is not about it.
+    setHop(NO_HOP);
     setEditing(null);
     setCreating(null);
     setDraftRow(task);
   };
-  // What a deep link named (see the effect below); all null for every other
-  // way of opening the form.
-  const [newTarget, setNewTarget] = useState<string | null>(null);
-  const [newMessage, setNewMessage] = useState<string | null>(null);
-  const [newSession, setNewSession] = useState<string | null>(null);
-  const [newBack, setNewBack] = useState<string | null>(null);
-  // The chips the chat's tray was holding, already copied into the task-shots
-  // dir by the composer's Schedule button — so what arrives here is exactly the
-  // shape a saved entry's `attachments` has, and the card seeds from it the same
-  // way an Edit does (owner E2E R1, F4 (2026-09-10)).
-  const [newAttachments, setNewAttachments] = useState<SchedAttachment[]>([]);
+  // `hop` (above) is what a deep link named — the folder, the composer's words,
+  // the session it was typed in, the way back, the tray's chips, and the chat
+  // draft this form supersedes. `NO_HOP` for every other way of opening the
+  // form, and it is the OPENING that says so, not a clear-up afterwards.
+  //
+  // The chips are the half worth naming twice: they were already copied into
+  // the task-shots dir by the composer's Schedule button, so what arrives here
+  // is exactly the shape a saved entry's `attachments` has, and the card seeds
+  // from them the same way an Edit does (owner E2E R1, F4 (2026-09-10)).
+  //
   // WHICH CHAT DRAFT THIS FORM SUPERSEDES (design.md, Round 2: "A draft moves,
   // never duplicates").
   //
@@ -316,7 +419,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // writes `link.file` into it), which is the whole reason no new param was
   // needed. platform/lib/drafts.chatDraftKey carries the rule that keeps the
   // four spellings of that path in step.
-  const [newChatKey, setNewChatKey] = useState<string | null>(null);
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
@@ -348,31 +450,31 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     const q = new URLSearchParams(location.search);
     if (q.get("new") !== "1") return;
     setEditId(q.get("edit"));
-    setNewTarget(q.get("target"));
-    // The chat's whole handoff: the typed draft fills the card's two prose
-    // fields — its first line names the task and the rest is the description
-    // (NewJobModal splitDraft) — the
-    // open conversation the session a ONE-OFF will continue, and the chat's URL
-    // the way back — the form's round trip.
-    setNewMessage(q.get("message"));
-    setNewSession(q.get("session_id"));
-    setNewBack(q.get("back"));
-    // Defensive by contract, not by suspicion: this is a URL a user can edit
-    // and a param an older build may not have written — `parseAttachmentsParam`
-    // answers [] for anything it cannot read, because a parse error here would
-    // cost the folder, the draft and the session as well as the files.
-    setNewAttachments(parseAttachmentsParam(q.get("attachments")));
-    // Only for a hop that came FROM a chat, which is what `message` says: the
-    // other `?new=1&target=…` links (the app page's "+ New task") carry no
-    // composer and have no draft of anybody's to supersede. `message` may be
-    // empty and still present — an empty composer stored no draft, so the key
-    // is simply one the server finds nothing under.
-    setNewChatKey(
-      q.get("message") === null
+    // The chat's whole handoff, read in one go and handed to the opening it is
+    // about: the typed draft fills the card's two prose fields — its first line
+    // names the task and the rest is the description (NewJobModal splitDraft) —
+    // the open conversation the session a ONE-OFF will continue, and the chat's
+    // URL the way back — the form's round trip.
+    const seed: HopSeed = {
+      target: q.get("target"),
+      message: q.get("message"),
+      session: q.get("session_id"),
+      back: q.get("back"),
+      // Defensive by contract, not by suspicion: this is a URL a user can edit
+      // and a param an older build may not have written — `parseAttachmentsParam`
+      // answers [] for anything it cannot read, because a parse error here would
+      // cost the folder, the draft and the session as well as the files.
+      attachments: parseAttachmentsParam(q.get("attachments")),
+      // Only for a hop that came FROM a chat, which is what `message` says: the
+      // other `?new=1&target=…` links (the app page's "+ New task") carry no
+      // composer and have no draft of anybody's to supersede. `message` may be
+      // empty and still present — an empty composer stored no draft, so the key
+      // is simply one the server finds nothing under.
+      chatKey: q.get("message") === null
         ? null
         : chatDraftKey(q.get("session_id"), q.get("target")),
-    );
-    openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
+    };
+    openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);
     q.delete("new");
     q.delete("target");
     q.delete("message");
@@ -894,21 +996,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Prefill only — the field shows exactly what will be saved, and
           // deleting the filename back to the folder is the user's to make. A
           // deep link's own target still wins: it named a path on purpose.
-          initialTarget={newTarget ?? scope?.entry ?? scope?.project ?? null}
-          initialMessage={newMessage}
-          initialAttachments={newAttachments}
+          initialTarget={hop.target ?? scope?.entry ?? scope?.project ?? null}
+          initialMessage={hop.message}
+          initialAttachments={hop.attachments}
           // The saved form, handed back whole. Null on every other opening.
           initialDraft={
             draftRow?.draft_id
               ? { id: draftRow.draft_id, form: draftRow.form ?? null }
               : null
           }
-          chatSessionId={newSession}
-          chatBack={newBack}
+          chatSessionId={hop.session}
+          chatBack={hop.back}
           // The chat draft this card's own first save supersedes — see
-          // `newChatKey` above. Null on every opening that did not come from a
+          // `HopSeed` above. Null on every opening that did not come from a
           // composer, which is every opening but the Schedule hop.
-          fromChatKey={newChatKey}
+          fromChatKey={hop.chatKey}
           editing={editing}
           // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
           // the calendar (where "when" is the question the view itself asks),
@@ -922,21 +1024,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Newest-first fallback recents: past entries arrive newest first,
           // and the modal dedupes against what localStorage already knows.
           recentTargets={entries.map((e) => e.target)}
-          // `newTarget` is cleared with the rest: it described the ONE form the
-          // deep link opened, and left standing it would prefill the next
-          // "+ New task" with a folder the user arrived from some time ago.
+          // NOTHING TO CLEAR HERE ANY MORE, and that is the fix rather than an
+          // omission (Akshil, 2026-09-12). The hop used to be six values undone
+          // one by one on close — with `attachments` missing from the list, so a
+          // composer handoff's picture rode into every New task card opened
+          // afterwards. The opening states its own hop now (`openForm`), so a
+          // close has nothing to forget and no list to keep in step.
           onClose={() => {
             setCreating(null);
             setEditing(null);
             // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
             // away, the row stays on the list, and the modal's own autosave has
-            // already flushed on unmount. Only the OPENING is forgotten here.
+            // already flushed on unmount.
             setDraftRow(null);
-            setNewTarget(null);
-            setNewMessage(null);
-            setNewSession(null);
-            setNewBack(null);
-            setNewChatKey(null);
           }}
           onCreated={reload}
         />

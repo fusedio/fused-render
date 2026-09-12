@@ -84,11 +84,16 @@ TASK = "task"
 #: first send deleted the draft, and that was the end of it. Round 2 reversed
 #: both halves. A `new:<file>` draft IS a row (the folder is its project, the
 #: first line its title, and it carries a TASK number like any other), and the
-#: first send therefore has somewhere to carry that number TO — which is what
-#: `POST /api/drafts/chat/rekey` is: `new:<file>` → the session id, by the same
-#: `tasks_store.rekey` that moves `pending:<entry-id>` forward. Nothing about
-#: the SHAPE changed; what changed is that the key is now worth keeping
-#: (design.md, "Round 2"; Akshil, 2026-09-11).
+#: first send therefore has somewhere to carry that number TO: `new:<file>` →
+#: the session id, by the same `tasks_store.rekey` that moves
+#: `pending:<entry-id>` forward. WHO makes that move is the SERVER, off the run
+#: the send TAGGED with this key (`draft_key` in its `meta.json`,
+#: `routers/tasks.py::_settle_new_chats`): a page cannot tell which session id
+#: its own send created, and four rounds of trying is how we know (Bugbot, PR
+#: #1118, 2026-09-12) — but it can name the draft it just spent. Nothing about
+#: the SHAPE changed; what
+#: changed is that the key is now worth keeping (design.md, "Round 2"; Akshil,
+#: 2026-09-11).
 NEW_CHAT_PREFIX = "new:"
 
 #: A client-minted uuid, in practice. Validated as a shape rather than parsed as
@@ -120,19 +125,34 @@ TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule"
                "model", "effort", "permission", "attachments",
                "new_task_each_run", "from_chat_key")
 
-#: The three fields that are plain text. The rest are pass-through (`when`,
-#: `repeat`, `custom_rule`), a tri-state flag (`new_task_each_run`), rows
-#: (`attachments`) or the chat key this draft was moved out of
-#: (`from_chat_key`, which is a chat key rather than free text and is validated
-#: as one).
+#: The fields that are plain text, normalised through `_text` on the way in. The
+#: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
+#: (`new_task_each_run`), rows (`attachments`) or the chat key this draft was
+#: moved out of (`from_chat_key`, which is a chat key rather than free text and
+#: is validated as one).
 #:
-#: `from_chat_key` is DELIBERATELY NOT IN HERE, and that is the whole of what
-#: keeps it from changing what a draft is: `_empty_task` asks "is there anything
-#: a person typed in this record", and a provenance key is not that. A form that
+#: THIS IS A LIST OF SHAPES, NOT A DEFINITION OF CONTENT — see `_TASK_CONTENT`
+#: below, which is the one that decides whether there is a draft here at all.
+#: `from_chat_key` is in neither, and for the same reason it was always out of
+#: the second: it is provenance, not something a person typed. A form that
 #: arrives blank is still a delete even when it names the chat it came from —
 #: which is exactly the bargain `an empty task put keeps the chat draft` rests
 #: on (Akshil, 2026-09-11).
 _TASK_TEXT = ("title", "description", "target", "model", "effort", "permission")
+
+#: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
+#: asks about separately because it is rows rather than text.
+#:
+#: Everything else the form holds — the folder, the model, the effort, the
+#: permission mode, the time, the repeat rule — is a SETTING that rides along
+#: with a draft, not a reason for one to exist. They used to count, and the
+#: consequence was a card that minted an "Untitled draft" row on the List the
+#: moment somebody changed the folder or opened the when-row and picked a time,
+#: for a form holding nothing anybody had typed. It also left the reported
+#: dead-end: clear the text and the row reads "Untitled draft"; remove the last
+#: attachment after that and the row still will not go, because `target` alone
+#: was keeping the record alive (Akshil, 2026-09-12).
+_TASK_CONTENT = ("title", "description")
 
 #: What an attachment's `kind` may be — the same two `schedule._ATTACH_KINDS`
 #: allows, and a third local copy of a list that is already spelled twice (see
@@ -187,22 +207,6 @@ def new_chat_file(key: str) -> str:
     if not is_new_chat_key(key):
         return ""
     return key[len(NEW_CHAT_PREFIX):]
-
-
-def session_key(value) -> str:
-    """One SESSION id, or `""` — `chat_key` minus the `new:` shape.
-
-    `POST /api/drafts/chat/rekey` is the one caller that needs the difference
-    spelled out: it moves a draft (and its TASK number) from the folder key a
-    chat had before its first send onto the session that send created, and a
-    `to` that was itself a `new:` key would move a number sideways into another
-    folder row rather than forward onto a conversation (Akshil, 2026-09-11)."""
-    if not isinstance(value, str):
-        return ""
-    key = value.strip()
-    if not key or key.startswith(NEW_CHAT_PREFIX):
-        return ""
-    return key if _SESSION_KEY.match(key) else ""
 
 
 def draft_id(value) -> str:
@@ -469,18 +473,16 @@ def _task_record(rec) -> dict | None:
 def _empty_task(record: dict) -> bool:
     """Is there nothing in this draft at all?
 
-    Every stored field, not a chosen few: the client mints a draft id on the
-    FIRST KEYSTROKE and never for an untouched modal (design.md, "New Task
-    modal"), so a draft that arrives with every field blank is a person having
-    cleared it out by hand, and the honest answer to that is to stop keeping
-    it."""
-    if any(record[field].strip() for field in _TASK_TEXT):
+    Words or files, and nothing else — see `_TASK_CONTENT`. A form whose title
+    and description are blank and whose tray is empty is not an unfinished task,
+    whatever folder or model or time it happens to be carrying: those are
+    settings, and settings are how a task would run if there were one. So a PUT
+    that arrives in that state is a DELETE, which is the same semantics this
+    store has always had for an empty draft — the change is only in what
+    "empty" counts as (Akshil, 2026-09-12)."""
+    if any(record[field].strip() for field in _TASK_CONTENT):
         return False
-    if record["attachments"]:
-        return False
-    return (record["when"] in (None, "") and record["repeat"] in (None, "")
-            and record["custom_rule"] in (None, "")
-            and record["new_task_each_run"] is None)
+    return not record["attachments"]
 
 
 def _project_task(section: dict) -> dict:

@@ -1868,10 +1868,15 @@ function TaskNode({
   // to open (a thread with no edit affordance is read-only), and then the press
   // falls through to the arms below.
   const edit = onEditEntry ? upcomingEditEntry(task, held) : null;
-  // A DRAFT ROW'S PRESS re-opens the New task form on the form it was saved
-  // from (design.md, "Reopen path": the draft rows in the list/board are the
-  // only way back to a draft). It outranks every other arm below because a
-  // draft has nothing else — no session to open, no entry to edit.
+  // A DRAFT ROW'S PRESS OPENS THE NEW TASK FORM — every draft row, both kinds
+  // (Akshil, 2026-09-12: "a row without a session is a draft and always opens
+  // the New Task modal; a row with a session always opens the chat"). It
+  // outranks every other arm below because a draft has nothing else — no
+  // session to open, no entry to edit — and the rule it states is the row's, so
+  // `isDraftTask` is the whole question here: WHICH kind it is decides only
+  // what the modal is seeded from, and that is Scheduled.openDraft's business,
+  // not this row's. A never-sent chat used to be routed past this arm into a
+  // navigation, which made one mark on the page promise two different presses.
   const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;
   // When this task runs next, or when it last ran — one time at the end of every
   // row, beside the folder. Which of the two is tasks-lib.taskWhen's decision (it
@@ -3739,6 +3744,8 @@ function TaskCard({
         onClick={() => {
           // The draft arm first, for the List row's reason: a draft has no
           // session and no folder to be missing from — the form IS its content.
+          // Both kinds of draft come through here, the never-sent chat included
+          // (Akshil, 2026-09-12).
           if (onOpenDraft && isDraftTask(task)) onOpenDraft(task);
           else if (folderMissing) onMissing();
           else if (open) onOpen(open);

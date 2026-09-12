@@ -1871,9 +1871,8 @@ describe("a draft moves with the reader, never duplicating", () => {
     // The ✕ guard's question ("has the user changed anything") and the draft's
     // ("are there words here that would be lost") are asked APART: the prefill
     // still moves the dirty baseline, so a close is still one click.
-    expect(s).toContain(
-      "const hopSeeded = !editing && !initialDraft && !!(initialMessage ?? \"\").trim();",
-    );
+    expect(s).toContain("const hopSeeded = !editing && !initialDraft");
+    expect(s).toContain("(!!(initialMessage ?? \"\").trim() || !!initialAttachments?.length)");
     expect(s).toContain("!editing && (dirty || hopSeeded)");
     // …and the hook is told the opening value counts as unwritten, which is what
     // makes the first debounce actually write it.
@@ -1966,9 +1965,11 @@ describe("a draft moves with the reader, never duplicating", () => {
     // A session id: the draft's own folder with that thread on the Claude pane.
     expect(backChatHref("sess-9", "/Users/me/proj"))
       .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=sess-9");
-    // `new:<file>`: the SAME door a never-sent chat's row uses — built out of
-    // the key's own file, and naming no session at all, or the composer that
-    // opens seeds from a key nothing wrote (schedule-lib.chatDraftHref).
+    // `new:<file>`: the folder's chat with no session named at all, built out
+    // of the key's own file (schedule-lib.chatPaneUrl) — or the composer that
+    // opens seeds from a key nothing wrote. It is the same door a never-sent
+    // chat's ROW sends its words back through, that row now opening this very
+    // card (Akshil, 2026-09-12).
     expect(backChatHref("new:/Users/me/news", "/Users/me/elsewhere"))
       .toBe("/explorer/view/Users/me/news?_side=claude");
     // Nothing to go back to.
@@ -1992,12 +1993,14 @@ describe("a draft moves with the reader, never duplicating", () => {
     // into it), which is why no new param was needed.
     const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
     expect(page).toContain('chatDraftKey(q.get("session_id"), q.get("target"))');
-    expect(page).toContain("fromChatKey={newChatKey}");
+    expect(page).toContain("fromChatKey={hop.chatKey}");
     // …and only for a hop that came FROM a chat: the app page's "+ New task"
     // deep link carries no composer and has no draft of anybody's to supersede.
     expect(page).toContain('q.get("message") === null');
-    // The opening is forgotten on close, like every other deep-link value.
-    expect(page).toContain("setNewChatKey(null);");
+    // The key rides the same one-object seed as the rest of the hop, so it
+    // cannot outlive the opening it was read for — see new-task-images.test.ts,
+    // "the hop is ONE value" (Akshil, 2026-09-12).
+    expect(page).toContain("chatKey: q.get(\"message\") === null");
   });
 });
 
@@ -2103,5 +2106,102 @@ describe("a Custom repeat survives being drafted", () => {
     // …and the card seeds its state back off it, which is the half that makes
     // storing it worth anything.
     expect(s).toContain('if (saved.repeat === "custom" && saved.customRule) return saved.customRule;');
+  });
+});
+
+// ---- a draft exists only when there are words or files -----------------------
+//
+// THE RULE (Akshil, 2026-09-12): a task draft is non-empty iff
+// `title.strip() or description.strip() or attachments`. The folder, the model,
+// the effort, the permission mode, the time and the repeat rule are SETTINGS —
+// how a task would run, not a task. They used to mint one, so opening the card
+// and changing the folder (or opening the when-row and picking a time) put an
+// "Untitled draft" row on the List for a form holding nothing anybody typed.
+//
+// Source reads, because what these pin is a `useState`-adjacent expression and
+// the ORDER of two conditions — a rendered form with a stubbed fetch would only
+// show that a write happened, not which change armed it.
+
+describe("only words or files make a draft", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the content predicate is the three things and nothing else", () => {
+    const s = src();
+    expect(s).toContain('const draftContent = !!title.trim() || !!message.trim()');
+    expect(s).toContain("|| images.some((i) => i.path);");
+    // A chip whose upload has not answered names no file yet — the same rule
+    // the body's own `attachments` uses.
+    expect(s).toContain('.filter((i) => i.path)');
+  });
+
+  test("the FIRST write waits for content — a settings-only change mints nothing", () => {
+    const s = src();
+    expect(s).toContain(
+      "const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)\n"
+      + "    && (draftContent || draftId !== null)",
+    );
+    // The gate is on the BODY, which is what the autosave watches: null is not
+    // a value it can write, so no id is minted and no PUT goes out.
+    expect(s).toContain("const autosave = useAutosave(draftBody,");
+    expect(s).toContain("if (!value) return;");
+  });
+
+  test("…and once a draft exists, emptying it is a write, not a silence", () => {
+    // `draftId !== null` is the second half deliberately: the body keeps being
+    // produced after the words are gone, so the PUT goes out and the server
+    // turns it into a delete. Without it the card fell silent at exactly the
+    // moment it had something to say — the reported "clear the text, then lose
+    // the attachment, and the draft never clears".
+    expect(src()).toContain("(draftContent || draftId !== null)");
+  });
+
+  test("a hop that is only files is already a draft when it lands", () => {
+    // A picture dropped into an empty composer IS a chat draft, so it has to
+    // become a task draft the moment it hops — or the composer's copy sits
+    // beside this card as a second row.
+    expect(src()).toContain('!!(initialMessage ?? "").trim() || !!initialAttachments?.length');
+  });
+});
+
+// ---- Delete and Discard are one seat, one skin -------------------------------
+//
+// They can never both be on a card — `del` belongs to an Edit and `draftId` to a
+// new task — so they are not two controls sharing a footer: they are the same
+// control under the two names the card can be in. Two weights for one position
+// read as a footer that moves its buttons around depending on what you opened
+// (Akshil, 2026-09-12).
+
+describe("Delete and Discard share one seat and one skin", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("Discard wears Delete's class, so it takes Delete's far-left seat", () => {
+    const s = src();
+    // `.btn-danger-text` is what carries `margin-right: auto`; `.new-task-delete`
+    // carries the glyph spacing. The old `btn-secondary new-task-discard` skin
+    // is gone, and its absence is the assertion that matters.
+    expect(s).toContain('className="btn btn-danger-text new-task-delete"');
+    expect(s).not.toContain("new-task-discard");
+    expect(s).not.toContain('className="btn btn-secondary new-task-discard"');
+  });
+
+  test("…and Delete's glyph, with the label and the tooltip that are its own", () => {
+    const s = src();
+    const discard = s.slice(s.indexOf("{draftId && ("));
+    const button = discard.slice(0, discard.indexOf("</button>"));
+    expect(button).toContain("{ICON_TRASH}");
+    expect(button).toContain('title="Discard this draft"');
+    expect(button).toContain("Discard");
+    // No arming step: there is nothing scheduled here to undo.
+    expect(button).not.toContain("is-armed");
+  });
+
+  test("only one is ever drawn, because only one condition can hold", () => {
+    const s = src();
+    // An Edit has no draft (`draftBody` is null on `editing`) and a new card has
+    // no entry to delete.
+    expect(s).toContain("const del = deleteActionFor(editing);");
+    expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
+    expect(s).toContain("{del && (");
+    expect(s).toContain("{draftId && (");
   });
 });
