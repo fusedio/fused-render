@@ -91,6 +91,10 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
+  FAST_LANE_BACKOFF_MAX_MS,
+  FAST_LANE_BACKOFF_MS,
+  FAST_LANE_MAX_STALLS,
+  FAST_LANE_MIN_LAP_MS,
   forgetListing,
   publishTasks,
   readListing,
@@ -448,6 +452,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         };
         document.addEventListener("visibilitychange", onChange);
       });
+    // The same hollow-lap guard the sidebar's lane carries (tasksPulse
+    // watchTaskChanges): an answer that neither moved the generation nor spent
+    // any time waiting is a server that cannot answer this endpoint — an older
+    // build, a proxy or login page returning 200 — and re-asking it at full
+    // speed is a request storm no `catch` will ever slow down. A 25 s lapse
+    // moves nothing either and is free, which is what the clock separates.
+    let stalls = 0;
+    let backoff = FAST_LANE_BACKOFF_MS;
     const run = async () => {
       while (!stopped) {
         if (document.visibilityState !== "visible") {
@@ -460,6 +472,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           continue;
         }
         controller = new AbortController();
+        let lap: "ok" | "hollow" | "failed";
+        const started = Date.now();
         try {
           const r = await getTaskChanges(generationRef.current, 25, controller.signal);
           if (stopped) return;
@@ -470,10 +484,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             // up, forever (bugbot #892).
             generationRef.current = -1;
             reload();
+            // Real news, whatever it cost to get: the hollow-lap count starts
+            // over. A `full` that REPEATS still pays the 1 s below.
+            stalls = 0;
+            backoff = FAST_LANE_BACKOFF_MS;
             await sleep(1000);
             continue;
           }
-          generationRef.current = r.generation;
+          // A generation that is not a number is not an answer: keep the one we
+          // have (asking with `undefined` is how this loop used to spin) and
+          // let the pacing below treat the lap as hollow.
+          const prev = generationRef.current;
+          const gen =
+            typeof r.generation === "number" && Number.isFinite(r.generation) ? r.generation : -1;
+          if (gen >= 0) generationRef.current = gen;
           const rows = r.rows ?? [];
           const gone = r.gone ?? [];
           if (rows.length || gone.length) {
@@ -496,10 +520,23 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             // the poll's older answer — is what a remount should seed from.
             rememberListing(merged);
           }
+          lap = gen > prev || Date.now() - started >= FAST_LANE_MIN_LAP_MS ? "ok" : "hollow";
         } catch {
           if (stopped) return;
-          await sleep(3000);
+          lap = "failed";
         }
+        if (lap === "ok") {
+          stalls = 0;
+          backoff = FAST_LANE_BACKOFF_MS;
+          continue;
+        }
+        // A run of hollow laps ends the lane: the 20 s full reload above is the
+        // floor, and it is the truth here anyway. A FAILED call never ends it —
+        // an unreachable server is one that can come back.
+        if (lap === "hollow" && ++stalls >= FAST_LANE_MAX_STALLS) return;
+        if (stopped) return;
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, FAST_LANE_BACKOFF_MAX_MS);
       }
     };
     void run();

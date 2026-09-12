@@ -756,6 +756,15 @@ def test_a_new_chats_second_message_is_not_queued_behind_its_own_teardown(
     assert _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "", "message": "hello"}
                  ).json() == {"run": True}
+    # The round trip that first message paid for: it was admitted, spawned,
+    # answered and read before the user typed again, so the reservation standing
+    # in the way is that old. A reservation younger than one round trip is the
+    # OTHER case — a second chat pressing Enter in the same breath — and it is
+    # what `project_queue.ANONYMOUS_CLAIM_AFTER` refuses.
+    key = project_queue.queue_key(alpha)
+    sid, expiry, run, taken = project_queue._reservations[key]
+    project_queue._reservations[key] = (
+        sid, expiry, run, taken - project_queue.ANONYMOUS_CLAIM_AFTER - 1)
     chat_run("run-1", alpha, pid=os.getpid())
     registry("sess-new", status="busy")
     project_queue.invalidate_holders()

@@ -115,6 +115,18 @@ SCAN_TTL = 1.0
 # covers only the window before even that exists.
 RESERVATION_TTL = 20.0
 
+# How old an anonymous reservation must be before a send that can name NOTHING
+# may claim it back (`_anonymous_self`). The case it separates is the one
+# nothing else can: two brand-new chats hitting Enter in one folder within the
+# same breath both admit anonymously, and the second sees a reservation a
+# fraction of a second old — while a real second message is answering a reply,
+# and the admission, the spawn, the turn and the reading of it cannot have
+# happened in under a couple of seconds. So anything younger than one
+# admit->spawn round trip reads as "somebody else is starting right now" and
+# queues. Seconds rather than milliseconds because the round trip includes a
+# process start; two is longer than any of those and shorter than any reply.
+ANONYMOUS_CLAIM_AFTER = 2.0
+
 # How long a live run that has not named a session counts as STARTING (see
 # `_starting`). Generous against a cold `claude` start and short against a
 # machine's lifetime: the number's only job is to stop a run dir whose pid was
@@ -137,10 +149,10 @@ _KEY_CACHE: dict[str, str] = {}
 _scan_memo: tuple | None = None
 _scan_lock = threading.Lock()
 
-# key -> (session id, monotonic expiry, run id). In memory and per process on
-# purpose: it describes a spawn THIS server just authorised, and a reservation
-# that outlived the process that made it would be a lease, which is the thing
-# this module exists not to have.
+# key -> (session id, monotonic expiry, run id, monotonic moment it was taken).
+# In memory and per process on purpose: it describes a spawn THIS server just
+# authorised, and a reservation that outlived the process that made it would be
+# a lease, which is the thing this module exists not to have.
 #
 # THE RUN ID IS THERE FOR THE CHAT THAT HAS NO SESSION YET. A new chat's first
 # message is admitted with `session_id: ""` — there is no session until Claude
@@ -149,7 +161,13 @@ _scan_lock = threading.Lock()
 # it started, and it sends that id on its next admission; recording it here is
 # what lets the second message be recognised as the same conversation and
 # RENAME the reservation rather than be refused by it.
-_reservations: dict[str, tuple[str, float, str]] = {}
+#
+# AND THE MOMENT IT WAS TAKEN, which is the only clock that separates a chat's
+# own earlier message from another chat that pressed Enter in the same breath:
+# both admissions are nameless, and the one thing that differs is that the
+# reservation a real second message claims back has had a whole round trip to
+# age in (`ANONYMOUS_CLAIM_AFTER`).
+_reservations: dict[str, tuple[str, float, str, float]] = {}
 _res_lock = threading.Lock()
 
 _AGENT_MOD = None
@@ -612,7 +630,7 @@ def reserve(key: str, session_id: str, ttl: float = RESERVATION_TTL,
     with _res_lock:
         _reservations[key] = (str(session_id or ""),
                               time.monotonic() + max(0.0, ttl),
-                              str(run_id or ""))
+                              str(run_id or ""), time.monotonic())
 
 
 def reserved(key: str) -> str:
@@ -624,7 +642,7 @@ def reserved(key: str) -> str:
         found = _reservations.get(key)
         if found is None:
             return ""
-        session_id, expiry, _run = found
+        session_id, expiry = found[0], found[1]
         if expiry <= time.monotonic():
             _reservations.pop(key, None)
             return ""
@@ -710,12 +728,15 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
         found = _reservations.get(key)
         reserved_by = found[0] if found is not None else None
         reserved_run_id = found[2] if found is not None else ""
+        # Read HERE, under the lock, and passed down: `_anonymous_self` must not
+        # take this lock from inside a caller that already holds it.
+        age = 0.0 if found is None else max(0.0, time.monotonic() - found[3])
         holder = derived.get(key)
         if holder is not None and holder["kind"] == "reserved":
             holder = None  # stale by construction; the table below is the truth
         if holder is None and reserved_by is not None:
             holder = {"session_id": reserved_by, "task_key": reserved_by,
-                      "run_id": reserved_run_id}
+                      "run_id": reserved_run_id, "kind": "reserved"}
         elif (holder is not None and reserved_by is not None
                 and holder["kind"] == "starting" and not holder["session_id"]):
             # The reservation names the run that has not named itself — the two
@@ -723,10 +744,16 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
             # same for the map `holders` hands out.
             holder = dict(holder, session_id=reserved_by, task_key=reserved_by)
         if (holder is not None and not _self_held(holder, sid, run)
-                and not _anonymous_self(key, holder, sid, run, now)):
+                and not _anonymous_self(key, holder, sid, run, now,
+                                        reservation_age=age)):
             return False
+        # The moment it was taken SURVIVES the rewrite. What a chat refreshing
+        # its own reservation holds is one claim, not a new one, and restamping
+        # it would make the next nameless message of that same conversation read
+        # as a stranger arriving in the same breath.
         _reservations[key] = (sid, time.monotonic() + RESERVATION_TTL,
-                              run or reserved_run_id)
+                              run or reserved_run_id,
+                              found[3] if found is not None else time.monotonic())
         return True
 
 
@@ -754,7 +781,8 @@ def _self_held(holder: dict, session_id: str, run_id: str) -> bool:
 
 
 def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
-                    now: float | None = None) -> bool:
+                    now: float | None = None,
+                    reservation_age: float | None = None) -> bool:
     """Is a request that can name NOTHING the chat that already owns this
     folder? Narrow on purpose, and every clause is one of the walls.
 
@@ -767,25 +795,41 @@ def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
     left behind was the thing standing in its way: a claim on the folder made by
     this very chat, refusing this very chat because neither end had a name yet.
 
-    Four walls, and the folder stays gated by all of them:
+    TWO NAMELESS ENDS AND THEN THREE CONDITIONS, ALL OF THEM (bugbot HIGH,
+    2026-09-12). "An unnamed holder plus any idle run in the folder" is true of
+    almost every new conversation in a folder with history, so a second
+    anonymous admission would steal the first chat's reservation and two
+    processes would start in one working tree — the single thing this module
+    exists to prevent.
 
-    1. **The request names nothing at all.** A send carrying a session or a run
-       has a real identity and is answered by `_self_held`; this is only for the
-       one case that cannot be.
-    2. **The holder names nothing either.** An anonymous reservation and nothing
-       else: a `run` or `starting` holder is a live process and outranks a
-       reservation in `holders()`, so reaching here at all means no process is
-       running in that folder. A reservation that HAS a session or a run belongs
-       to a conversation that can be named, and an anonymous request is not it.
-    3. **A run of this folder's own, and it is not running.** The presence of a
-       run dir keyed on this folder is the proof that a chat has already had a
-       turn here — which is the only way an anonymous admission can be a SECOND
-       message rather than a first. Two brand-new chats racing into one empty
-       folder fail this clause (neither has a run yet) and the second still
-       queues, which is the case the gate exists for.
-    4. **The newest run only** (`scan_runs` is newest-first). A folder chatted
-       in for weeks has a tail of dead run dirs, and the freshest one is the
-       conversation whose reservation is standing here.
+    The two ends first: the REQUEST names nothing (a send carrying a session or
+    a run has a real identity and is answered by `_self_held`; this is only for
+    the one case that cannot be), and the HOLDER names nothing either.
+
+    Then, of that nameless holder:
+
+    1. **It is a `reserved` holder and nothing else.** A `run`, a `starting` or
+       a `sending` holder is a process already editing that tree or one the tick
+       has just claimed it for, and no amount of namelessness makes a send into
+       it safe. Only a reservation — a claim, not a process — can be claimed
+       back, and only by the conversation that made it.
+    2. **The newest run keyed on this folder is QUIET and RECENT** — not
+       running, and written to within `STARTING_GRACE` of now
+       (`_recent_idle_run_in`). A run dir is the proof that a chat has already
+       had a turn here, which is the only way a nameless send can be a SECOND
+       message rather than a first; RECENT is what stops a folder's tail of dead
+       run dirs from making that proof out of a conversation from last week. Two
+       brand-new chats racing into a folder with history fail this clause, and
+       the second queues.
+    3. **The reservation has aged past one admit->spawn round trip**
+       (`ANONYMOUS_CLAIM_AFTER`). Two anonymous admissions fired back-to-back
+       both see a reservation a fraction of a second old; a real second message
+       is answering a reply that had to be spawned, written and read first. This
+       is the clause that tells apart the two cases the other two cannot.
+
+    `reservation_age` is the seconds since that reservation was taken, passed in
+    by a caller that holds `_res_lock` because this may not take it from under
+    them; None means "read it now", which is what the lockless callers do.
 
     Nothing here is a lease and nothing is stored: the reservation still expires
     on its own, and the moment either end learns a name the ordinary
@@ -793,19 +837,33 @@ def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
     """
     if session_id or run_id:
         return False
+    if str(holder.get("kind") or "") != "reserved":
+        return False
     if str(holder.get("session_id") or "") or str(holder.get("run_id") or ""):
         return False
-    return _idle_run_in(key, now)
+    age = _reservation_age(key) if reservation_age is None else reservation_age
+    if age < ANONYMOUS_CLAIM_AFTER:
+        return False
+    return _recent_idle_run_in(key, now)
 
 
-def _idle_run_in(key: str, now: float | None = None) -> bool:
-    """Does `key`'s folder hold a run of its own that is NOT running — an idle
-    session host, one in teardown, or a dead one?
+def _recent_idle_run_in(key: str, now: float | None = None) -> bool:
+    """Does `key`'s folder hold a run of its own that is QUIET AND RECENT — a
+    turn of this conversation's that ended moments ago, rather than a
+    conversation from last week?
 
-    The newest run filed under this folder decides; everything older is a
-    previous conversation. Best-effort like the rest of the module: no agent
-    module, no runs tree or no run in this folder all answer False, which is the
-    answer that keeps the gate closed."""
+    The newest run filed under this folder decides and nothing older is looked
+    at: everything behind it is a previous conversation. Two questions are asked
+    of it, and the second is what bugbot's HIGH was about — a folder chatted in
+    for weeks always has SOME idle run in it, so "idle" on its own proved
+    nothing and let a stranger's nameless admission claim a reservation it had
+    never made. The run dir's mtime is the clock, the same one `_starting`
+    bounds a spawn by: a directory nothing has written to in minutes is not the
+    other half of the message being admitted right now.
+
+    Best-effort like the rest of the module: no agent module, no runs tree or no
+    run in this folder all answer False, which is the answer that keeps the gate
+    closed."""
     agent = agent_module()
     if agent is None:
         return False
@@ -813,8 +871,22 @@ def _idle_run_in(key: str, now: float | None = None) -> bool:
     for run in scan_runs(agent):
         if run_key(run) != key:
             continue
-        return not _live_session(run["sessions"], now)
+        if _live_session(run["sessions"], now):
+            return False
+        return _starting(run["run_dir"], now)
     return False
+
+
+def _reservation_age(key: str) -> float:
+    """Seconds since `key`'s unexpired reservation was taken, or 0.0 when there
+    is none — which reads as brand new and therefore claims nothing."""
+    if not key:
+        return 0.0
+    with _res_lock:
+        found = _reservations.get(key)
+        if found is None or found[1] <= time.monotonic():
+            return 0.0
+        return max(0.0, time.monotonic() - found[3])
 
 
 def _prune_reservations() -> None:
@@ -1085,8 +1157,9 @@ def is_free(key: str, session_id: str, run_id: str = "",
     the caller knows it started — matches the holder's own run whatever either
     side calls the session. A chat that can name NEITHER is the folder's own
     only where nothing but an anonymous reservation stands in it and a run of
-    that folder's own has already gone quiet (`_anonymous_self`); short of that
-    it waits, which is what keeps two brand-new tasks out of one folder.
+    that folder's own has just gone quiet AND the reservation is old enough to
+    be a round trip rather than a race (`_anonymous_self`); short of that it
+    waits, which is what keeps two brand-new tasks out of one folder.
     """
     if not key:
         return True
@@ -1095,7 +1168,8 @@ def is_free(key: str, session_id: str, run_id: str = "",
         return True
     sid, run = str(session_id or ""), str(run_id or "")
     return (_self_held(holder, sid, run)
-            or _anonymous_self(key, holder, sid, run, now))
+            or _anonymous_self(key, holder, sid, run, now,
+                               reservation_age=_reservation_age(key)))
 
 
 # -------------------------------------------------------------------- the order

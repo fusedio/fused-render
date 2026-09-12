@@ -12,7 +12,12 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TaskChanges } from "@platform/lib/api";
-import { FAST_LANE_BACKOFF_MS, watchTaskChanges } from "./tasksPulse";
+import {
+  FAST_LANE_BACKOFF_MS,
+  FAST_LANE_MAX_STALLS,
+  FAST_LANE_MIN_LAP_MS,
+  watchTaskChanges,
+} from "./tasksPulse";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const STORE = readFileSync(join(HERE, "tasksPulse.ts"), "utf8");
@@ -164,6 +169,152 @@ describe("the pulse's fast lane", () => {
   });
 });
 
+/**
+ * A lane driven over a FAKE CLOCK, answering a rule rather than a script.
+ *
+ * A storm is a rate, not a shape, so the thing under test here is how many
+ * requests fit into how much time — `lapMs` is what the server spends before
+ * answering, and a `sleep` moves the same clock forward, so "45 seconds" is
+ * whatever the loop actually waited out. `stopAfter` is the safety net: a
+ * regression here is an infinite loop, and a test that hangs says less than one
+ * that fails.
+ */
+function driveClock(
+  answer: (since: number, lap: number) => TaskChanges | Error,
+  opts: { lapMs?: number; stopAfter?: number } = {},
+) {
+  const asked: number[] = [];
+  const slept: number[] = [];
+  const stopAfter = opts.stopAfter ?? 50;
+  let pokes = 0;
+  let clock = 1_000_000;
+  let stopped = false;
+  const out = {
+    asked,
+    slept,
+    get pokes() {
+      return pokes;
+    },
+    /** Where the fake clock ended up — how long all of this "took". */
+    get elapsed() {
+      return clock - 1_000_000;
+    },
+    done: Promise.resolve(),
+  };
+  out.done = watchTaskChanges({
+    changes: async (since) => {
+      asked.push(since);
+      if (asked.length >= stopAfter) stopped = true;
+      clock += opts.lapMs ?? 0;
+      const next = answer(since, asked.length);
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    onChange: () => {
+      pokes += 1;
+    },
+    visible: () => true,
+    untilVisible: () => Promise.resolve(),
+    sleep: async (ms) => {
+      slept.push(ms);
+      clock += ms;
+    },
+    stopped: () => stopped,
+    now: () => clock,
+  });
+  return out;
+}
+
+/** 3 s, 6 s, 12 s, 24 s — the four waits a lane spends before it gives up. */
+const GROWING_BACKOFF = Array.from(
+  { length: FAST_LANE_MAX_STALLS - 1 },
+  (_, i) => FAST_LANE_BACKOFF_MS * 2 ** i,
+);
+
+describe("a server that answers 200 but says nothing", () => {
+  it("backs off a body with no generation instead of storming it", async () => {
+    // THE HOLE THIS CLOSES: no numeric `generation` left `since` at -1, which
+    // the server answers instantly as a handshake, which leaves `since` at -1.
+    // Nothing threw, so nothing ever backed off — one window's sidebar could
+    // put thousands of requests a minute through the endpoint.
+    const d = driveClock(() => ({ rows: [], gone: [] }) as unknown as TaskChanges);
+    await d.done;
+    expect(d.asked.length).toBe(FAST_LANE_MAX_STALLS);
+    expect(d.slept).toEqual(GROWING_BACKOFF);
+    // Five requests across three quarters of a minute, and not one poke: an
+    // answer this loop cannot read is not news about the pulse.
+    expect(d.elapsed).toBeGreaterThan(40_000);
+    expect(d.pokes).toBe(0);
+    // …and it never invented a generation out of the rubbish it was handed.
+    expect(d.asked.every((since) => since === -1)).toBe(true);
+  });
+
+  it("stands the lane down after a run of answers that cannot advance", async () => {
+    // A generation that never moves, returned instantly — a shape change, or a
+    // watcher wired to something that is not counting. The handshake is real,
+    // so the count starts after it.
+    const d = driveClock(() => ({ generation: 7, rows: [], gone: [] }));
+    await d.done;
+    expect(d.asked.length).toBe(1 + FAST_LANE_MAX_STALLS);
+    expect(d.slept).toEqual(GROWING_BACKOFF);
+    expect(d.pokes).toBe(0);
+  });
+
+  it("gives up on a repeated `full` too — the reload loop that never ends", async () => {
+    // `full` is news the first time (the generation it names is new), and the
+    // same `full` over and over is a server answering nothing. Every poke is a
+    // `/api/tasks/pulse` of its own, so a hollow lap must not send one.
+    const d = driveClock((_since, lap) =>
+      lap === 1 ? { generation: 7 } : { generation: 2, full: true },
+    );
+    await d.done;
+    expect(d.pokes).toBe(1);
+    expect(d.asked.length).toBe(2 + FAST_LANE_MAX_STALLS);
+    expect(d.slept).toEqual(GROWING_BACKOFF);
+  });
+});
+
+describe("what the guard must NOT touch", () => {
+  it("leaves a real 25 s lapse alone — it moved nothing, but it waited", async () => {
+    // The watcher's normal answer on a quiet machine. It looks exactly like the
+    // storm above apart from the one thing that matters: it took 25 seconds.
+    const d = driveClock(() => ({ generation: 7, rows: [], gone: [] }), {
+      lapMs: 25_000,
+      stopAfter: 8,
+    });
+    await d.done;
+    expect(d.slept).toEqual([]);
+    expect(d.asked.length).toBe(8);
+    expect(d.pokes).toBe(0);
+    expect(FAST_LANE_MIN_LAP_MS).toBeLessThan(25_000);
+  });
+
+  it("never paces a lane that is being fed news, however fast it arrives", async () => {
+    // A busy machine rings the watcher constantly and every lap comes back at
+    // once — the case the storm guard most has to keep its hands off.
+    let gen = 6;
+    const d = driveClock(() => ({ generation: ++gen, rows: [], gone: [] }), { stopAfter: 10 });
+    await d.done;
+    expect(d.slept).toEqual([]);
+    // Every lap after the handshake is news — bar the last, which is the one
+    // the harness stops the lane on.
+    expect(d.pokes).toBe(8);
+  });
+
+  it("still retries a server that is simply down, for as long as it is down", async () => {
+    // A thrown call is paced but never counted: a connection refused is a
+    // server restarting, and it comes back.
+    const d = driveClock((_since, lap) => (lap > 8 ? { generation: 9 } : new Error("refused")), {
+      stopAfter: 12,
+    });
+    await d.done;
+    expect(d.asked.length).toBe(12);
+    expect(d.slept.length).toBeGreaterThan(FAST_LANE_MAX_STALLS);
+    // …and the backoff is capped rather than doubling to an hour.
+    expect(Math.max(...d.slept)).toBeLessThanOrEqual(30_000);
+  });
+});
+
 describe("how the lane coexists with the Tasks page", () => {
   it("runs only while this module is the poller", () => {
     // ONE POLLER. The Tasks page runs this very long-poll itself and publishes
@@ -176,6 +327,11 @@ describe("how the lane coexists with the Tasks page", () => {
       /const wanted =\s*\n?\s*listeners\.size \+ rowListeners\.size > 0 &&\s*\n?\s*feeders === 0/,
     );
     expect(STORE).toContain("lane?.stop();");
+    // …and a lane that GAVE UP on the server is not started again by the next
+    // publish — `schedule()` runs on every one of them, and five wasted laps
+    // per publish is the storm again, just spread out.
+    expect(STORE).toContain("!laneDown");
+    expect(STORE).toContain("if (!stopped) laneDown = true;");
     // The interval is untouched underneath: the lane makes the news EARLY, it
     // is not the only thing that brings it.
     expect(STORE).toContain("const ACTIVE_MS = 10_000;");

@@ -2129,11 +2129,23 @@ def _host_send(entry: dict) -> dict | None:
     cancel aimed at this entry must never tear it down (see `_send` and
     `_turn_tick`).
 
-    **A respawn is not a failure.** `agent._send` answers `{"respawn": True}`
-    when the live host cannot serve the message as it stands — an attachment
-    directory it was not granted, an effort fixed at spawn — and it has already
-    ended the session by the time it says so. None back, and the caller spawns:
-    the message is owed either way.
+    **AND IT IS ASKED WHETHER IT CAN SERVE THIS MESSAGE BEFORE IT IS HANDED
+    ONE** (`_host_serves`, reviewer 2026-09-12). `agent._send` answers
+    `{"respawn": True}` when the host cannot take the message as it stands — an
+    attachment directory it was not granted, an effort fixed at spawn — and by
+    the time it says so it has already TREE-KILLED the session to say it. That
+    is the right answer for a caller that owns the run; it is the wrong one for
+    a guest, because the run here is a chat the user may be sitting in front of,
+    and one scheduled message with an image or an explicit effort would end
+    their live session out from under them. So `host.json` is read first and the
+    inbox is used only when nothing about this entry would change the session:
+    otherwise None, and the message takes the ordinary spawn — which is what it
+    would have got anyway, minus the kill. (Nothing runs twice: the per-session
+    hold keeps a spawn out while the host is mid-turn.)
+
+    A `respawn` that still comes back — a host that changed under us between the
+    read and the send — is not a failure either: None, and the caller spawns.
+    The message is owed either way.
 
     Flag-gated and best-effort: with the project queue off this is not reached
     at all and the pass is the one that shipped, and any failure here is simply
@@ -2158,10 +2170,13 @@ def _host_send(entry: dict) -> dict | None:
         if not run_id:
             return None
         # The same per-message attachment grant `_start` gets, in the spelling
-        # `_send` takes it in (a JSON array, `agent._attach_dirs`). A host that
-        # was not already granted the directory answers `respawn`, which is the
-        # honest outcome: the grant is fixed at spawn.
+        # `_send` takes it in (a JSON array, `agent._attach_dirs`) — and it is
+        # checked against the host's own grant BEFORE the send, because a host
+        # that was not given the directory answers `respawn` by killing the
+        # chat's session (`_host_serves`).
         read_dirs = json.dumps([shots_dir()]) if _stored_attachments(entry) else ""
+        if not _host_serves(agent, run_id, entry, read_dirs):
+            return None
         # NO PERMISSION MODE AT ALL, WHICH MEANS "THE CHAT'S OWN" (bugbot,
         # 2026-09-12). `agent._send` turns any mode it is given that differs
         # from the host's into a `set_permission_mode` control request, and the
@@ -2189,6 +2204,53 @@ def _host_send(entry: dict) -> dict | None:
     if isinstance(res, dict) and res.get("sent"):
         return {"run_id": run_id}
     return None
+
+
+def _host_serves(agent, run_id: str, entry: dict, read_dirs: str) -> bool:
+    """Can this host take this entry's message AS IT STANDS — without the send
+    ending the chat's live session to make room for it?
+
+    The three facts `agent._send` compares against `host.json`, asked here
+    instead, because the two calls disagree about what a mismatch COSTS. To
+    `_send` a mismatch is a respawn it may pay for with a tree-kill of the run;
+    to this module the run is not ours at all — it is a session host the page
+    owns and the user may be typing into — so the same mismatch is simply "not
+    the inbox, then", and the entry goes down the spawn path it took before any
+    of this existed.
+
+    * **Read dirs.** `--allowed-tools` is fixed at spawn: a message naming a
+      directory the host was not granted cannot be honoured by sending. Asked in
+      the host's own spelling (`agent._attach_dirs`, the same normalisation
+      `_send` runs on the same string), so the answer here and the answer there
+      are the same answer.
+    * **Effort.** Also fixed at spawn — there is no control request for it — so
+      an entry naming one the host was not started with would force the respawn.
+      An entry naming NONE says nothing and is served by whatever the session
+      has, which is the guest rule this dispatch follows everywhere else.
+    * **Model**, for the reason the permission mode is left behind (see
+      `_host_send`): `set_model` is applied MID-SESSION and stays applied, so an
+      entry naming a different model would not respawn — it would quietly rewrite
+      the model of somebody's live chat for every turn after this one. Same
+      class of harm, same answer: spawn instead.
+
+    Best-effort: a `host.json` we cannot read or parse is not a host we can
+    reason about, and False sends the entry to the spawn, which is safe."""
+    try:
+        with open(os.path.join(agent.RUNS, run_id, "host.json"),
+                  encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(host, dict):
+        return False
+    effort = str(entry.get("effort") or "")
+    if effort and effort != str(host.get("effort") or ""):
+        return False
+    model = str(entry.get("model") or "")
+    if model and model != str(host.get("model") or ""):
+        return False
+    wanted = set(agent._attach_dirs(read_dirs))
+    return wanted <= set(host.get("read_dirs") or [])
 
 
 def _send(entry: dict) -> None:

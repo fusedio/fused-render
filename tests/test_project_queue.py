@@ -172,6 +172,18 @@ def transcript(sid, ago=1.0):
     return path
 
 
+def age_reservation(key, seconds=pq.ANONYMOUS_CLAIM_AFTER + 1):
+    """Push a reservation's taken-at stamp back, so it reads as a claim made a
+    round trip ago rather than in this same breath.
+
+    The stamp is monotonic and the window is seconds wide, so a test cannot wait
+    it out; what it stands for — "the first message was admitted, spawned,
+    answered and read before this one arrived" — is exactly what moving the
+    stamp says."""
+    sid, expiry, run, taken = pq._reservations[key]
+    pq._reservations[key] = (sid, expiry, run, taken - seconds)
+
+
 # ================================================================ queue_key
 
 
@@ -957,6 +969,7 @@ def test_an_anonymous_send_claims_back_the_folder_its_own_run_went_quiet_in(
     work = home / "work"
     work.mkdir()
     pq.reserve(folder_key(work), "")             # the first message's claim
+    age_reservation(folder_key(work))            # …a round trip ago
     stage_run(agent, "r-1", str(work / "page.html"), session_id="",
               pid=os.getpid())
     registry(SID, status="idle")                 # the turn ended
@@ -1006,6 +1019,74 @@ def test_an_anonymous_send_never_claims_a_reservation_that_has_a_name(home,
 
     assert pq.is_free(folder_key(work), "") is False
     assert pq.is_free(folder_key(work), SID) is True
+
+
+def test_two_brand_new_chats_in_a_folder_with_HISTORY_still_queue(home, agent):
+    """BUGBOT HIGH, 2026-09-12. "An unnamed holder plus any idle run in the
+    folder" is true of almost every new conversation in a folder anyone has ever
+    chatted in — so the second brand-new chat claimed the FIRST one's
+    reservation and two processes started in one working tree. The run dir has
+    to be RECENT to prove that the turn it belongs to is the one being answered:
+    a run from last week proves only that this folder has a history."""
+    work = home / "work"
+    work.mkdir()
+    run_dir = stage_run(agent, "r-old", str(work / "page.html"), session_id=SID,
+                        alive=False)
+    old = time.time() - pq.STARTING_GRACE - 60
+    os.utime(run_dir, (old, old))
+    pq.invalidate_holders()
+    pq.reserve(folder_key(work), "")             # the first new chat's claim
+    age_reservation(folder_key(work))
+
+    assert pq.holders()[folder_key(work)]["kind"] == "reserved"
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.reserve_if_free(folder_key(work), "") is False
+    # …and the reservation the loser could not take is still the winner's.
+    assert pq.reserved_run(folder_key(work)) == ""
+
+
+def test_a_reservation_taken_this_instant_is_never_claimed_anonymously(home,
+                                                                       agent):
+    """The two-admissions-in-one-breath race, which the run dir alone cannot
+    see: both sends are nameless, the folder has a quiet recent run of its own,
+    and the only thing that tells the cases apart is that the reservation in the
+    way was made a fraction of a second ago rather than a round trip ago."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="idle")
+    pq.reserve(folder_key(work), "")             # …and no `age_reservation`
+
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.reserve_if_free(folder_key(work), "") is False
+    # The same send, one round trip later, is the chat's own second message.
+    age_reservation(folder_key(work))
+    assert pq.is_free(folder_key(work), "") is True
+
+
+def test_an_anonymous_send_never_claims_a_folder_a_claim_is_holding(
+        home, agent, monkeypatch):
+    """Only a RESERVATION can be claimed back. A `sending` holder is a folder
+    the tick has already claimed for something else, a `starting` or a `run` one
+    is a process that is already in there — and a send that cannot name itself
+    is nobody's proof that it is any of them."""
+    from fused_render import schedule
+
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              pid=os.getpid())
+    registry(SID, status="idle")
+    pq.reserve(folder_key(work), "")
+    age_reservation(folder_key(work))
+    monkeypatch.setattr(schedule, "list_entries", lambda: [
+        {"id": "e1", "state": schedule.SENDING, "target": str(work / "page.html"),
+         "session_id": "", "claude_session_id": ""}])
+
+    assert pq.holders()[folder_key(work)]["kind"] == "sending"
+    assert pq.is_free(folder_key(work), "") is False
+    assert pq.reserve_if_free(folder_key(work), "") is False
 
 
 def test_the_reserved_sessions_are_the_sends_just_admitted(home, agent):

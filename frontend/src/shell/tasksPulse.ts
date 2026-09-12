@@ -164,6 +164,18 @@ const CHANGES_WAIT_S = 25;
 /** A failed call backs off rather than hammering a server that is restarting.
  *  The same 3 s the Tasks page's lane spends. */
 export const FAST_LANE_BACKOFF_MS = 3000;
+/** …and it DOUBLES while the same thing keeps happening, up to this. Three
+ *  seconds is the right first guess about a server mid-restart; it is the wrong
+ *  forever-cadence for a server that is never going to answer this endpoint
+ *  properly (an old build behind a new shell, a login page in front of it). */
+export const FAST_LANE_BACKOFF_MAX_MS = 30_000;
+/** How many hollow laps in a row end the lane for this page load. */
+export const FAST_LANE_MAX_STALLS = 5;
+/** A lapse — "25 s passed and nothing moved" — is the watcher's normal answer
+ *  and must stay free. What is NOT normal is the same non-answer returning
+ *  immediately: under this, a lap that did not move the generation cannot have
+ *  waited on anything, so it is a hot loop rather than a long poll. */
+export const FAST_LANE_MIN_LAP_MS = 1000;
 
 /** The loop's world, so a suite can drive it with a fake fetch and a fake clock
  *  instead of a real connection and a real 25 seconds. */
@@ -178,6 +190,10 @@ export interface FastLaneDeps {
   sleep(ms: number): Promise<void>;
   /** The lane has been stood down (last reader gone, or a feeder took over). */
   stopped(): boolean;
+  /** The clock, only ever read as a difference — how long one lap took, which
+   *  is what separates a 25 s lapse from a server answering instantly. Default
+   *  `Date.now`; a suite hands over a fake one. */
+  now?(): number;
 }
 
 /**
@@ -197,18 +213,45 @@ export interface FastLaneDeps {
  * lap a minute anyway, and a backgrounded window holding a connection open is
  * the one cost this must not add per window; `untilVisible` resumes it, and the
  * handshake on the way back in re-syncs the generation for free.
+ *
+ * A HOLLOW LAP IS PACED LIKE A FAILURE, and one that repeats ends the lane.
+ * Only a THROWN call used to back off, and the loop's whole pacing rested on an
+ * answer it never checked: a 200 with no numeric `generation` — an older server,
+ * a proxy or login page returning HTML with a 200, a shape that moved — left
+ * `since` at -1, which the server answers at once as a handshake, which leaves
+ * `since` at -1. That is a request storm with nothing in it that can ever slow
+ * it down, from every window with a sidebar open. So the lap, not the
+ * exception, is what is judged: one that did not move the generation AND came
+ * back faster than any real wait (`FAST_LANE_MIN_LAP_MS`) is hollow, and hollow
+ * laps back off — doubling to `FAST_LANE_BACKOFF_MAX_MS` — and, after
+ * `FAST_LANE_MAX_STALLS` of them in a row, stand the lane down for good. A
+ * genuine 25 s lapse moves nothing either and is NOT hollow: it already waited,
+ * which is the difference the clock is read for. Standing down costs the news
+ * its earliness, never the news: the 10/30 s intervals are still underneath,
+ * and `schedule()` keeps running them.
  */
 export async function watchTaskChanges(deps: FastLaneDeps): Promise<void> {
+  const now = deps.now ?? (() => Date.now());
   let since = -1;
+  /** Consecutive hollow laps. A thrown call is not one of these — an
+   *  unreachable server is a server that can come back, and the backoff alone
+   *  is the right answer to it. */
+  let stalls = 0;
+  let backoff = FAST_LANE_BACKOFF_MS;
   while (!deps.stopped()) {
     if (!deps.visible()) {
       await deps.untilVisible();
       continue;
     }
+    let lap: "ok" | "hollow" | "failed";
+    const started = now();
     try {
       const answer = await deps.changes(since);
       if (deps.stopped()) return;
-      const gen = typeof answer.generation === "number" ? answer.generation : -1;
+      const gen =
+        typeof answer.generation === "number" && Number.isFinite(answer.generation)
+          ? answer.generation
+          : -1;
       const handshake = since < 0;
       // `full: true` is "you are further behind than I remember" — a server that
       // restarted, or a store that slept through the ring. It is news by
@@ -219,22 +262,50 @@ export async function watchTaskChanges(deps: FastLaneDeps): Promise<void> {
           (gen >= 0 && gen > since) ||
           (answer.rows?.length ?? 0) > 0 ||
           (answer.gone?.length ?? 0) > 0);
+      // What the NEXT question will ask with. A `full` answer counts as
+      // progress even when it names a lower generation (the restart case) —
+      // because it changes the question — but only once: a server stuck
+      // repeating the same `full` is answering nothing, and says so by not
+      // moving this.
+      const advanced = gen >= 0 && (gen > since || (answer.full === true && gen !== since));
       if (gen >= 0) since = gen;
-      if (moved) deps.onChange();
+      lap = advanced || now() - started >= FAST_LANE_MIN_LAP_MS ? "ok" : "hollow";
+      // A HOLLOW LAP IS NOT NEWS, and the poke is where a storm would cost
+      // most: every one of them is a `/api/tasks/pulse` of its own. A server
+      // repeating `full: true` instantly would otherwise turn one unanswerable
+      // long-poll into two fetches a millisecond.
+      if (moved && lap === "ok") deps.onChange();
     } catch {
       if (deps.stopped()) return;
-      await deps.sleep(FAST_LANE_BACKOFF_MS);
+      lap = "failed";
     }
+    if (lap === "ok") {
+      stalls = 0;
+      backoff = FAST_LANE_BACKOFF_MS;
+      continue;
+    }
+    if (lap === "hollow" && ++stalls >= FAST_LANE_MAX_STALLS) return;
+    if (deps.stopped()) return;
+    await deps.sleep(backoff);
+    backoff = Math.min(backoff * 2, FAST_LANE_BACKOFF_MAX_MS);
   }
 }
 
 let lane: { stop(): void } | null = null;
+/** The lane gave up on this server (see watchTaskChanges' hollow laps) — do not
+ *  start it again for this page load. Without this the stand-down buys nothing:
+ *  `schedule()` runs on every publish, and every one of them would start a fresh
+ *  loop to burn its five laps against the same server. Module lifetime on
+ *  purpose: what the lane gave up on is the build being served, and that changes
+ *  with a reload. */
+let laneDown = false;
 
 function syncFastLane() {
   const wanted =
     listeners.size + rowListeners.size > 0 &&
     feeders === 0 &&
-    typeof document !== "undefined";
+    typeof document !== "undefined" &&
+    !laneDown;
   if (!wanted) {
     lane?.stop();
     lane = null;
@@ -289,6 +360,9 @@ function syncFastLane() {
     },
   }).finally(() => {
     if (lane === handle) lane = null;
+    // The loop returned while nobody had stood it down: it gave up on a server
+    // that cannot answer this endpoint. That verdict outlives this handle.
+    if (!stopped) laneDown = true;
   });
 }
 

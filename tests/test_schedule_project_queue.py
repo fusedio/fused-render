@@ -1452,21 +1452,49 @@ class _HostAgent:
         self.cancels.append(run_id)
         return {"ok": True}
 
+    def _attach_dirs(self, raw):
+        """The real one validates and normalises; what matters to the dispatch
+        is that the string it hands `_send` and the string it checks against
+        `host.json` go through the SAME function, which is this seam."""
+        return list(json.loads(raw)) if raw else []
+
 
 @pytest.fixture()
 def host(tmp_path, monkeypatch):
-    """The agent module `_host_send` loads, replaceable per case."""
+    """The agent module `_host_send` loads, replaceable per case — plus the
+    `host.json` the dispatch reads before it hands a message over.
+
+    That file is the host's record of what it was SPAWNED with, so the defaults
+    are what these cases send into it (`opus`, `high`, no extra read dirs) and a
+    case that wants a mismatch names its own. A run with no `host.json` at all
+    is a host we cannot reason about, which is the spawn (the case below)."""
     made = {}
     runs = tmp_path / "host-runs"
     runs.mkdir()
 
-    def use(run_id="", answer=None):
+    def use(run_id="", answer=None, read_dirs=(), model="opus", effort="high",
+            host_json=True):
         agent = _HostAgent(runs, run_id, answer)
+        if run_id and host_json:
+            run_dir = runs / run_id
+            run_dir.mkdir(exist_ok=True)
+            (run_dir / "host.json").write_text(json.dumps(
+                {"pid": os.getpid(), "read_dirs": list(read_dirs),
+                 "model": model, "effort": effort, "mode": "prompt"}))
         made["agent"] = agent
         monkeypatch.setattr(pq, "agent_module", lambda: agent)
         return agent
 
     return use
+
+
+def _shot(home, name="a1b2c3d4.png"):
+    """One real file where the upload endpoint would have put it."""
+    root = home / "task-shots"
+    root.mkdir(exist_ok=True)
+    path = root / name
+    path.write_bytes(b"\x89PNG")
+    return str(path)
 
 
 def test_a_message_for_a_live_host_goes_into_its_inbox_not_a_new_process(
@@ -1613,6 +1641,100 @@ def test_a_spawn_still_carries_the_entrys_mode(folders, home, spawned, host,
 
     schedule.tick()
     assert modes == ["plan"]
+
+
+def test_an_attachment_the_host_was_not_granted_spawns_instead_of_killing_it(
+        folders, home, spawned, host):
+    """REVIEWER, 2026-09-12. `agent._send` answers `respawn` when a message
+    names a Read directory the host was not granted — and it TREE-KILLS the
+    session to say so, because `--allowed-tools` is fixed at spawn. The run here
+    is not ours: it is the chat's own session host, so one scheduled message
+    with an image would have ended the live session of whoever was typing in it.
+    The grant is read off `host.json` first and the message takes the ordinary
+    spawn, which is what it would have got anyway — minus the kill."""
+    _on(home)
+    agent = host(run_id="run-live")                      # granted nothing
+    entry = schedule.create(str(folders["alpha"]), "look at this", _ago(1),
+                            session_id=SID, images=[_shot(home)])
+
+    schedule.tick()
+    assert agent.sends == [] and agent.cancels == []
+    assert [c["session_id"] for c in spawned] == [SID]
+    stored = _stored(entry["id"])
+    assert stored["state"] == schedule.SENT and "host_sent" not in stored
+
+
+def test_an_attachment_the_host_already_has_still_goes_into_the_inbox(
+        folders, home, spawned, host):
+    """…and not one step further: a host spawned WITH the task-shots directory
+    can serve the message as it stands, so it does."""
+    _on(home)
+    agent = host(run_id="run-live", read_dirs=[schedule.shots_dir()])
+    entry = schedule.create(str(folders["alpha"]), "look at this", _ago(1),
+                            session_id=SID, images=[_shot(home)])
+
+    schedule.tick()
+    assert spawned == []
+    assert agent.sends[0]["read_dirs"] == json.dumps([schedule.shots_dir()])
+    assert _stored(entry["id"])["host_sent"] is True
+
+
+def test_an_effort_the_host_was_not_started_with_spawns(folders, home, spawned,
+                                                        host):
+    """Effort is fixed at spawn too — there is no control request for it — so
+    `_send` would respawn, which for a guest means killing somebody's live chat
+    to run one scheduled message. The entry's effort is worth a process of its
+    own; it is not worth that."""
+    _on(home)
+    agent = host(run_id="run-live", effort="medium")
+    schedule.create(str(folders["alpha"]), "think harder", _ago(1),
+                    session_id=SID, effort="high")
+
+    schedule.tick()
+    assert agent.sends == [] and agent.cancels == []
+    assert [c["session_id"] for c in spawned] == [SID]
+
+
+def test_a_model_the_chat_is_not_on_spawns_rather_than_switching_it(
+        folders, home, spawned, host):
+    """`set_model` is applied MID-SESSION and kept — the same class as the
+    permission mode, and quieter than a respawn in the worst way: nothing is
+    killed, the chat is simply on another model for every turn after this
+    one."""
+    _on(home)
+    agent = host(run_id="run-live", model="sonnet")
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
+                    model="opus")
+
+    schedule.tick()
+    assert agent.sends == [] and agent.cancels == []
+    assert [c["session_id"] for c in spawned] == [SID]
+
+
+def test_a_host_that_matches_on_every_count_takes_the_message(folders, home,
+                                                              spawned, host):
+    """The control: nothing about this entry would change the session, so the
+    inbox is used exactly as it was before any of this was asked."""
+    _on(home)
+    agent = host(run_id="run-live", model="opus", effort="high")
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID,
+                    model="opus", effort="high")
+
+    schedule.tick()
+    assert spawned == []
+    assert agent.sends[0]["run_id"] == "run-live"
+
+
+def test_a_host_with_no_host_json_is_a_spawn(folders, home, spawned, host):
+    """Best-effort: a record we cannot read is not a host we can reason about,
+    and the spawn is the safe half of the answer."""
+    _on(home)
+    agent = host(run_id="run-live", host_json=False)
+    schedule.create(str(folders["alpha"]), "carry on", _ago(1), session_id=SID)
+
+    schedule.tick()
+    assert agent.sends == []
+    assert [c["session_id"] for c in spawned] == [SID]
 
 
 def _cancel_requested(monkeypatch):
