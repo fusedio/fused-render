@@ -1946,6 +1946,20 @@ describe("a draft moves with the reader, never duplicating", () => {
     }
   });
 
+  test("Back to chat flushes the debounce before it stops, so the last keystrokes reach the form", () => {
+    // The bound arm hands off to a composer that seeds from the FORM; `stop`
+    // alone would silence both the pending timer and the unmount flush, and the
+    // last 600 ms of typing would never land (Bugbot, PR #1126, 2026-09-12).
+    const s = src();
+    const back = s.slice(s.indexOf("const backToChat = async () => {"));
+    const flush = back.indexOf("autosaveRef.current.flush();");
+    const stop = back.indexOf("autosaveRef.current.stop();");
+    const settle = back.indexOf("await autosaveRef.current.settle();");
+    expect(flush).toBeGreaterThan(-1);
+    expect(flush).toBeLessThan(stop);
+    expect(stop).toBeLessThan(settle);
+  });
+
   test("Back to chat reverses the move — and orders the delete after the last write", () => {
     const s = src();
     const back = s.slice(
