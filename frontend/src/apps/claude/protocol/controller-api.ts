@@ -12,6 +12,7 @@ import type {
   Decision,
   DecisionScope,
   HistoryTurn,
+  InboxMessage,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -216,6 +217,18 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /**
+   * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
+   * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A
+   * RELOAD, which `queued` above cannot: that list is this document's memory of
+   * what it sent, and a replaced transcript or a refresh takes it with it while
+   * the CLI goes on holding the words.
+   *
+   * Drawn as ordinary user bubbles under the transcript, deduped against
+   * `queued` and against the turns (`protocol/inbox.inboxBubbles`), and empty
+   * between runs: a run that has ended has drained or died with its inbox.
+   */
+  inbox: InboxMessage[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first

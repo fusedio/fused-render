@@ -3231,6 +3231,76 @@ def _discard_inbox(run_dir: str) -> list:
     return discarded
 
 
+
+def _inbox_at(name: str) -> float:
+    """The epoch seconds inside an inbox entry's own name — `_write_inbox_row`
+    builds it as a zero-padded `time.time_ns()` — or 0.0 for a name that does
+    not carry one, the way every other absent time on this wire reads. Read off
+    the NAME and not a `stat`, because the name is the write time exactly and
+    is already in hand."""
+    try:
+        return int(name.split("-", 1)[0]) / 1_000_000_000
+    except ValueError:
+        return 0.0
+
+
+def _inbox_waiting(run_dir: str) -> list:
+    """Every user turn still sitting in `run_dir/inbox/` — typed, safely on
+    disk, and not yet handed to the CLI. `[{"id", "text", "at"}]`, oldest first.
+
+    A FOLLOW-UP TYPED INTO A RUNNING TURN IS NOWHERE ELSE (Akshil, 2026-09-12).
+    `_send` writes the message into the inbox and returns; the host ships it to
+    the CLI's stdin on its next drain tick, and the CLI echoes it into
+    `out.jsonl` only when it actually opens that turn — which, for a line typed
+    mid-reply, is after the reply in flight has finished. Between those two
+    moments the transcript has no row for the message at all, so a reload drew
+    a conversation with the user's own words missing while the run that will
+    answer them was still going. This is the one place that fact lives, and it
+    rides on `_poll` and on `_history_live` so a chat learns it on the same
+    answer it learns everything else about its run.
+
+    Oldest first, which is the order the host drains in and therefore the order
+    they will run: the names are zero-padded nanosecond stamps
+    (`_write_inbox_row`), so sorting the names IS sorting by write time.
+
+    DRAINED MEANS GONE FROM HERE, so nothing has to be marked and an entry the
+    CLI already has can never be listed twice: `session_host._drain_inbox`
+    `os.replace`s each name into `inbox/done/` once its bytes are on the wire,
+    so what is left in the directory is exactly the untaken ones. A `.tmp` name
+    is skipped for the same reason the drain skips it (a write still in flight
+    is not an entry yet), and a `control_request` row is skipped because it is
+    not words anybody typed — the same `type == "user"` filter `_discard_inbox`
+    applies to the same directory.
+
+    One `listdir`, and on the ordinary poll — an empty inbox — that is the
+    whole cost: nothing is opened.
+    """
+    inbox = _inbox_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except OSError:
+        return []      # no inbox yet, or the run dir is going away
+    waiting = []
+    for name in names:
+        try:
+            with open(os.path.join(inbox, name), encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue   # drained out from under us, or half a write: not ours
+        if not isinstance(row, dict) or row.get("type") != "user":
+            continue
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        texts = [str(b.get("text") or "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text"] \
+            if isinstance(content, list) else []
+        text = "\n\n".join(t for t in texts if t)
+        if not text:
+            continue
+        waiting.append({"id": name, "text": text, "at": _inbox_at(name)})
+    return waiting
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -4260,7 +4330,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0, "segments": []}
+                "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
     # (RUNS is one flat dir), and the `run` url param survives some hops the
@@ -4293,7 +4363,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
-                    "retry_total": 0, "retry_status": 0, "segments": []}
+                    "retry_total": 0, "retry_status": 0, "segments": [],
+                    "inbox": []}
 
     text_parts = []
     result_text = None
@@ -4809,6 +4880,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
+            # WHAT THE USER HAS TYPED THAT IS NOT IN THE TRANSCRIPT YET — the
+            # follow-ups still sitting in this run's inbox, oldest first, each
+            # `{"id", "text", "at"}`. NOT gated on `echo_pending` and not part
+            # of the window: these are messages the CLI has not taken yet, so
+            # no byte of them is in `out.jsonl` to be echoed or trimmed, and a
+            # reload mid-turn drew nothing at all for them before this existed
+            # (see `_inbox_waiting`). Empty on every poll of an idle chat.
+            "inbox": _inbox_waiting(run_dir),
             "segments": [] if echo_pending
             else _segments_from_rows(parsed, app_reads=app_reads),
             # The seams inside this payload where a mid-stream follow-up was
@@ -5640,7 +5719,7 @@ def _history_live(file: str, session_id: str) -> dict:
     the gate on it the way the first adopt lap always has."""
     run_id = str(_live_run(file, session_id).get("run_id") or "")
     if not run_id:
-        return {"live_run": "", "permissions": [], "mode": ""}
+        return {"live_run": "", "permissions": [], "mode": "", "inbox": []}
     run_dir = os.path.join(RUNS, run_id)
     try:
         with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
@@ -5651,7 +5730,15 @@ def _history_live(file: str, session_id: str) -> dict:
         meta = {}
     permissions = _permissions(run_dir)
     return {"live_run": run_id, "permissions": permissions,
-            "mode": _live_mode(meta, permissions)}
+            "mode": _live_mode(meta, permissions),
+            # …AND THE WORDS THAT ARE NOT IN THE TRANSCRIPT THIS ANSWER JUST
+            # CARRIED. A follow-up typed into a running turn is on disk in the
+            # run's inbox and nowhere else until the CLI takes it, so a reload
+            # that painted `turns` alone dropped the user's own last line until
+            # the run got round to answering it. Same rows `_poll` returns,
+            # through the same `_inbox_waiting`, so the first poll after this
+            # replays them identically (Akshil, 2026-09-12).
+            "inbox": _inbox_waiting(run_dir)}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True,

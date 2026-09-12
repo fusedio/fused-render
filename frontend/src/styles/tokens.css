@@ -262,22 +262,22 @@
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
 
-  /* WAITING — a FADED YELLOW, and derived rather than minted (2026-09-12).
-     `queued` gave up its own lane and is now drawn inside In Progress
-     (schedule-lib.laneOf): running cards in `--status-progress`'s amber, waiting
-     ones under a dashed rule in this. So the two have to read as the SAME STATE
-     AT TWO STRENGTHS — one moving, one about to — which a colour of its own
-     cannot promise and a mix of the running hue with the page's muted ink states
-     outright. Change the amber and this follows it, in both themes, by
-     construction.
-     It replaces `--activity`, the page's blue, which the queue wore for a day.
-     Blue is what this page already spends on "a thing you can make happen" (Run
-     now, the drag-to-run outline, the live ping), and a lane where the blue rows
-     sit under the yellow ones taught the reader that waiting and running are
-     unrelated kinds of thing. They are one kind of thing.
-     55% is the weakest mix that still reads as YELLOW rather than as tinted grey
-     at 14px, which is the size the rings and the chat's own line are drawn at. */
-  --status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));
+  /* WAITING — a CLEAR GOLD, and a colour of its own (Akshil, 2026-09-12).
+     `queued` is drawn inside In Progress (schedule-lib.laneOf): running cards in
+     `--status-progress`'s amber, waiting ones under a dashed rule in this. The
+     first spelling derived it — `color-mix(--status-progress 55%, --fg-muted)` —
+     on the reading that the two are one state at two strengths. On screen that
+     mix is a FADED YELLOW, and a faded yellow beside a live amber reads as the
+     amber at low opacity: not a different state, a dimmer one, and at 12-14px
+     (the rings, the chat's own line) it drifted towards tinted grey.
+     So the two stay in the same FAMILY and part on HUE rather than on strength:
+     gold is deeper and greener than the amber, full-strength in both themes, and
+     legible at ring size. It is deliberately NOT `--activity` — the page's blue,
+     which the queue wore for a day — because blue is what this page spends on "a
+     thing you can make happen", and blue rows under yellow ones read as two
+     unrelated kinds of work.
+     Dark: #e9c95a against #facc15. Light: #9a7b0d against #ca8a04 (see below). */
+  --status-queued: #e9c95a;
 
   /* The Playground sidebar's model-card fills. A step DARKER than the usual
      raised surface, which no single wash can do in both themes (--tint
@@ -493,11 +493,12 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
-  /* The same expression, restated because the light palette must redefine every
-     token (test_theme.py) — and deliberately the same expression rather than a
-     second hand-picked yellow: the mix is the DEFINITION of this colour, so both
-     themes reach it the same way from their own amber and their own muted ink. */
-  --status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));
+  /* The gold for white (see the dark block): deeper and greener than the amber
+     above it, dark enough to read as ink on this page's own surfaces. Restated
+     as its own literal because the light palette must redefine every token
+     (test_theme.py) — and a literal rather than a mix, because the two palettes'
+     golds are tuned for their own grounds and not derived from anything. */
+  --status-queued: #9a7b0d;
   --pg-card-bg: #eaebee;
   --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;

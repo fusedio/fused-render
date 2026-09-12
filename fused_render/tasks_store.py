@@ -132,6 +132,20 @@ def pending_key(entry_id: str) -> str:
     return PENDING_PREFIX + entry_id
 
 
+def pending_entry(key: str) -> str:
+    """`pending_key` read backwards: the entry id inside a `pending:<entry-id>`
+    task key, and "" for a key that is a session id.
+
+    The inverse exists because the entry id is the one name a queued task has
+    that NEVER MOVES — the key itself rekeys onto the session the moment the
+    leader's run mints one (§5) — so every client gesture aimed at a waiting
+    chat (open it, skip it, cancel it) has to be able to name the entry rather
+    than the row. Spelled here, beside the forward rule, so the prefix is
+    written once."""
+    key = str(key or "")
+    return key[len(PENDING_PREFIX):] if key.startswith(PENDING_PREFIX) else ""
+
+
 def format_task_id(n: int) -> str:
     return f"TASK-{n:0{_TASK_WIDTH}d}"
 

@@ -37,7 +37,13 @@
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
-import { queuePosition, runningWaitingLabel, waitingLabel } from "@platform/lib/queue";
+import {
+  chatUrl,
+  pendingEntryId,
+  queuePosition,
+  runningWaitingLabel,
+  waitingLabel,
+} from "@platform/lib/queue";
 import {
   addDays,
   BOARD_COLUMNS,
@@ -380,11 +386,15 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
  * state at all and must not be dressed as one, and the archive's own two words
  * (`cancelled` / `skipped`) for a message nothing will ever do again.
  *
- * QUEUED IS DERIVED FROM THE TASK, not from the message: a message is `pending`
- * whether its folder is busy or free, and only the task row carries the server's
- * verdict about the folder (`Task.status === "queued"`). The message's own half
- * of it — past due, still pending — is schedule-lib's `queueRole` fallback rule,
- * which that module already calls "not a guess"; both halves have to hold.
+ * QUEUED IS THE MESSAGE'S OWN TWO FACTS — past due, still pending — and nothing
+ * else (schedule-lib's `queueRole` fallback rule, which that module already calls
+ * "not a guess"). It asked the TASK as well until 2026-09-12, and that second
+ * half was wrong for the commonest shape this feature makes: a task whose first
+ * message is RUNNING reads `in_progress`, never `queued`, so its own second
+ * message — pending, overdue, and held behind the very turn in flight above it —
+ * printed `scheduled`, which says "its time has not come" about a message that is
+ * late and standing in a line (Bugbot PR #1124). The task's status is a fact
+ * about the TASK; this row is a sentence about one message.
  */
 export interface MessageState {
   /** The word the row prints. */
@@ -407,14 +417,9 @@ export function messageState(
   if (tone.column === "in_progress") {
     return { word: "running", column: "in_progress", failed: false, label: tone.label };
   }
-  // Past due, still pending, and the server says this task is waiting on its
-  // folder. Both halves, for the reason above.
-  if (
-    isQueued(task) &&
-    m.state === "pending" &&
-    m.at > 0 &&
-    m.at <= nowSec
-  ) {
+  // Past due and still pending — the two facts the word is about, for the reason
+  // above.
+  if (m.state === "pending" && m.at > 0 && m.at <= nowSec) {
     return { word: "queued", column: "queued", failed: false, label: "Queued" };
   }
   if (tone.failed) return { word: "failed", column: tone.column, failed: true, label: tone.label };
@@ -1286,10 +1291,36 @@ export function taskFile(task: Task): string {
  * the shell already runs. Widening the parameter is the alternative to a second
  * copy of this url that would rot separately. */
 export function taskHref(
-  task: Pick<Task, "session_id" | "target" | "project">,
+  task: Pick<Task, "session_id" | "target" | "project"> & {
+    key?: string;
+    status?: string;
+  },
 ): string | null {
-  if (!task.session_id) return null;
-  return explorerUrl(task.target || task.project, task.session_id);
+  if (task.session_id) return explorerUrl(task.target || task.project, task.session_id);
+  /**
+   * A QUEUED TASK IS NOT A DEAD END ANY MORE (2026-09-12).
+   *
+   * `pending:<entry id>` is the server's key for a task with no transcript yet,
+   * and `queued` is the one status that means "its words are waiting in a
+   * folder's line, behind somebody else's run". That row used to answer null —
+   * no session, no door — so a chat a reader had typed into minutes before could
+   * not be opened from anywhere, in exactly the minutes they want to read it
+   * back. The ENTRY is the name it has, and `chatUrl`'s `queued` param opens the
+   * pane on it (`platform/lib/queue.QUEUED_PARAM`): the chat draws its waiting
+   * rows, wears its TASK id, and adopts the real session when the leader runs.
+   *
+   * `queued` AND NOT EVERY `pending:` KEY, which was the first spelling and was
+   * too wide by one lane: an UPCOMING one-off is also keyed `pending:<entry>`,
+   * and its row press opens the EDIT FORM — the instruction that has not run yet
+   * is the content of that row, and `activate`'s thread arm runs before its edit
+   * arm. Widening this would have quietly taken the form away from every
+   * scheduled message on the page.
+   */
+  if (task.status !== "queued") return null;
+  const queued = pendingEntryId(task.key || "");
+  const where = task.target || task.project;
+  if (queued && where) return chatUrl(where, "", queued);
+  return null;
 }
 
 /** One message inside that thread. Falls back to the thread itself when the
@@ -1757,6 +1788,10 @@ export function isQueued(task: { status: string }): boolean {
  */
 export {
   canRunNext,
+  chatUrl,
+  pendingEntryId,
+  PENDING_KEY_PREFIX,
+  QUEUED_PARAM,
   queueAheadHref,
   queueBehind,
   queueCaption,
@@ -2323,11 +2358,15 @@ export interface OpenThreadIntent {
 }
 
 /**
- * What opening this task's thread does, or null when it does NOTHING — which is
- * the `pending:<entry>` case: a task that has never run has no session id (§5)
- * and therefore no conversation to open. That press was inert before this change
- * and stays inert, including the mark: marking a thread read on a press that
- * showed the reader nothing would clear a badge for messages they never saw.
+ * What opening this task's thread does, or null when it does NOTHING.
+ *
+ * THE `queued` CASE IS NO LONGER ONE OF THOSE (2026-09-12). A task that has
+ * never run has no session id (§5), and that used to be the end of it; a task
+ * WAITING IN A FOLDER'S LINE now opens by the entry it is waiting as (`taskHref`,
+ * `QUEUED_PARAM`), so the reader can read back what they typed and what it is
+ * behind. The mark rides along honestly: there is a conversation on screen after
+ * the press. Every other `pending:<entry>` row — an upcoming one-off, whose
+ * content is the instruction in its form — still answers null here.
  *
  * `unread` defaults to the server's count and may be passed as the DISPLAYED one
  * (taskUnread, so local marks count), which is what stops a second press on an

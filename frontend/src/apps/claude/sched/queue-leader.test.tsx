@@ -322,7 +322,12 @@ describe("the session the leader's run opened", () => {
     expect(effect).toContain("void controller.openSession(adoptSession);");
     // NO GUARD REF: `openSession` emits the id, the rule answers "" from then
     // on, and the effect's own dependency is what closes it.
-    expect(effect).toContain("}, [adoptSession, controller, cardPolicy]);");
+    expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params]);");
+    // …AND THE DOOR THE PANE CAME IN BY IS SHUT. A chat opened on `?queued=<id>`
+    // takes that entry as its leader on every render (see `queuedParam`), so
+    // leaving the param standing beside the session just adopted would keep
+    // re-remembering a leader the conversation has outgrown.
+    expect(effect).toContain('params.set({ [QUEUED_PARAM]: null }, { history: "replace" });');
     // …and Back takes the leader AND the waiting-row memories with it, so the
     // adoption can never reach across a conversation the reader has closed.
     // (The ROWS themselves are the server's and come back on the next poll for
@@ -332,5 +337,51 @@ describe("the session the leader's run opened", () => {
     expect(back).toContain("setWaitingSeeds([]);");
     expect(back).toContain("setAdmitAhead(null);");
     expect(back).toContain("leader.forget();");
+  });
+});
+
+describe("opening a waiting NEW chat from somewhere else", () => {
+  const TASKS_LIB = readFileSync(join(HERE, "../../../shell/tasks-lib.ts"), "utf8");
+  const STORE = readFileSync(join(HERE, "../params/store.ts"), "utf8");
+
+  it("is a URL param, because a chat that has never run has no session to name", () => {
+    // Nothing of it has run, so there is no transcript and no `session_id`. What
+    // it HAS is the entry its first message is, which is also what the server
+    // groups the whole conversation under (`pending:<leader id>`).
+    expect(STORE).toContain('"queued",');
+    const keys = STORE.slice(STORE.indexOf("export const CHAT_PARAM_KEYS = ["));
+    expect(keys.indexOf('"queued",')).toBeLessThan(keys.indexOf("] as const;"));
+  });
+
+  it("becomes this pane's queue LEADER, which is what draws everything else", () => {
+    // From there it is the road a chat that queued its own first message already
+    // walks: `waitingFor` finds its rows, the `pending:<id>` task row gives the
+    // header its number, and `adoptSession` swaps in the real transcript the
+    // moment the leader runs.
+    expect(CHAT).toContain('const queuedParam = params.get(QUEUED_PARAM) || "";');
+    expect(CHAT).toContain('leader.remember("", queuedParam);');
+    // REMEMBERED IN AN EFFECT, READ DIRECTLY FOR THE RENDER: `leader` is a ref,
+    // so a render that wrote it would answer differently depending on how many
+    // times React ran it — and the first paint needs the id before any effect.
+    expect(CHAT).toContain(
+      'const leaderId = leader.peek() || (state.sessionId ? "" : queuedParam);',
+    );
+    // …and it is a CONVERSATION, not the landing.
+    expect(CHAT).toContain("params.get(QUEUED_PARAM) ||");
+    // A SESSION OUTRANKS IT, always — the effect declines and the render agrees.
+    expect(CHAT).toContain("if (!queuedParam || state.sessionId) return;");
+  });
+
+  it("is where a queued task row POINTS — and only a queued one", () => {
+    // `taskHref` used to answer null for a task with no session, so a chat a
+    // reader had typed into minutes before could not be opened from anywhere.
+    expect(TASKS_LIB).toContain('if (task.status !== "queued") return null;');
+    expect(TASKS_LIB).toContain('const queued = pendingEntryId(task.key || "");');
+    expect(TASKS_LIB).toContain('if (queued && where) return chatUrl(where, "", queued);');
+    // NOT every `pending:` key: an UPCOMING one-off is keyed that way too, and
+    // its row press opens the EDIT FORM — `activate`'s thread arm runs first, so
+    // widening this would have taken the form away from every scheduled message.
+    const fn = TASKS_LIB.slice(TASKS_LIB.indexOf("export function taskHref("));
+    expect(fn.indexOf('task.status !== "queued"')).toBeLessThan(fn.indexOf("pendingEntryId("));
   });
 });

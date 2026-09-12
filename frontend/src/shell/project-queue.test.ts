@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { canRunNext, waitingCardText } from "@platform/lib/queue";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const API = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
@@ -194,6 +195,28 @@ describe("the List's waiting row", () => {
     expect(ROW).toContain("onQueued?.(await performSkip(task));");
   });
 
+  it("offers it only when ANOTHER WAITING TASK is ahead — one rule, three surfaces", () => {
+    // Every queued task has something in front of it; usually it is the run
+    // HOLDING the folder, which this press can never touch. So at position 1 the
+    // button's only possible outcome was the state the reader was already in
+    // (Akshil, 2026-09-12). `canRunNext` is `queue_position > 1`, and the List
+    // row, the Board card and the chat's own card all read that one function.
+    expect(canRunNext({ status: "queued", queue_position: 2, queue_ahead: "TASK-056" })).toBe(true);
+    expect(canRunNext({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
+    for (const src of [ROW, CARD]) {
+      expect(src).toContain("{queue && (canRunNext(task) || queue.runsNext) && (");
+    }
+    // …and `runsNext` still keeps the DISABLED draw, so a press that worked does
+    // not take its own control off the row.
+    expect(ROW).toContain("disabled={acting || queue.runsNext}");
+    expect(CARD).toContain("disabled={busy || queue.runsNext}");
+    // THE CAPTION IS NOT GATED ON IT. `1 message waiting · behind TASK-056` is
+    // true at the head of the line and stays printed; only the button goes.
+    expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
+      "1 message waiting · behind TASK-056",
+    );
+  });
+
   it("says what each MESSAGE in an expanded thread is doing, in a word", () => {
     // It used to live only in the ring's tooltip, which is to say nowhere a
     // person reading down a thread would find it — and with the queue on, a
@@ -237,20 +260,29 @@ describe("the queue's ink", () => {
     expect(css(CHAT_CSS)).toContain("var(--status-queued)");
   });
 
-  it("DERIVES that yellow from the running one rather than minting a hex", () => {
-    // The two have to read as the same state at two strengths — one moving, one
-    // about to — which a colour of its own cannot promise and a mix of the
-    // running hue with the page's muted ink states outright. Change the amber and
-    // this follows it, in both themes, by construction.
-    const rule = "--status-queued: color-mix(in srgb, var(--status-progress) 55%, var(--fg-muted));";
-    // Once per theme: test_theme.py requires every dark token to have a light
-    // value, and the mix is the DEFINITION rather than a second hand-picked
-    // yellow, so both palettes reach it the same way from their own amber.
-    expect(TOKENS_CSS.split(rule)).toHaveLength(3);
-    expect(css(TOKENS_CSS)).not.toMatch(/--status-queued:\s*#[0-9a-fA-F]{3,8}/);
-    // …and no surface mints one either.
+  it("is a CLEAR GOLD of its own, one literal per palette", () => {
+    // The first spelling DERIVED it — `color-mix(--status-progress 55%,
+    // --fg-muted)` — on the reading that waiting and running are one state at two
+    // strengths. On screen that mix is a faded yellow, which beside a live amber
+    // reads as the amber at low opacity rather than as a state of its own, and at
+    // ring size (12-14px) it drifts towards tinted grey (Akshil, 2026-09-12).
+    // So the two stay in one family and part on HUE: deeper, greener, full
+    // strength, and a hand-picked value per ground.
+    expect(TOKENS_CSS).toContain("--status-queued: #e9c95a;"); // dark
+    expect(TOKENS_CSS).toContain("--status-queued: #9a7b0d;"); // light
+    // ONCE PER THEME, and never twice in one: test_theme.py requires every dark
+    // token to have a light value, and two definitions in one palette is a token
+    // whose winner is source order.
+    expect(css(TOKENS_CSS).match(/--status-queued:/g)).toHaveLength(2);
+    // DISTINCT FROM THE RUNNING AMBER in both palettes — the whole point of
+    // spending a hue on it.
+    expect(TOKENS_CSS).not.toContain("--status-queued: #facc15;");
+    expect(TOKENS_CSS).not.toContain("--status-queued: #ca8a04;");
+    // …and no SURFACE mints one: every one of them still goes through the token,
+    // so the two palettes remain the only place this colour is decided.
     expect(css(SCHEDULE_CSS)).not.toMatch(/schedule-ring--queued[^}]*#[0-9a-f]{3,6}/);
     expect(css(CHAT_CSS)).not.toMatch(/c-waiting[^}]*#[0-9a-f]{3,6}/);
+    expect(css(TASKS_CSS)).not.toMatch(/tasks-row-queue[^}]*#[0-9a-f]{3,6}/);
   });
 
   it("gives the caption no width and no breakpoint — it measures, it does not guess", () => {

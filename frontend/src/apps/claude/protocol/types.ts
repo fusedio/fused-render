@@ -462,6 +462,37 @@ export interface PollResponse {
    * loop falls back to treating the payload as one turn.
    */
   turn_breaks?: TurnBreak[];
+  /**
+   * FOLLOW-UPS THE LIVE RUN HAS TAKEN AND THE MODEL HAS NOT ANSWERED YET —
+   * the CLI's undrained inbox, in the order they were typed (agent.py `_poll`).
+   *
+   * THE GAP IT CLOSES. A line typed into a running chat is absorbed by the live
+   * host: it goes into the CLI's queue and is answered when the current turn
+   * ends. Until then it exists in exactly two places — the CLI's stdin queue,
+   * and this page's own optimistic bubble — and the second of those is client
+   * memory. So a reload, or the standing watch's `refreshHistory`, replaced the
+   * transcript with the JSONL, which does not have the message either (nothing
+   * has consumed it), and the reader's own words simply vanished until the
+   * model got to them (Akshil, 2026-09-12).
+   *
+   * The run has the list, so the run reports it. Absent on an older agent.py,
+   * which is the same as an empty one: the optimistic bubbles are all there is.
+   */
+  inbox?: InboxMessage[];
+}
+
+/**
+ * One undrained follow-up (`PollResponse.inbox`).
+ *
+ * `id` is the send's own identity, stable across polls, so a bubble drawn for it
+ * is the SAME bubble on the next lap rather than a new one in the same place.
+ * `text` is what the reader typed. `at` is when the host took it — an ISO stamp
+ * or an epoch, whichever the server sends, and this page only ever ORDERS by it.
+ */
+export interface InboxMessage {
+  id: string;
+  text: string;
+  at?: string | number;
 }
 
 /** One seam in a poll payload — see `PollResponse.turn_breaks`. */
@@ -545,6 +576,23 @@ export interface SessionRow {
   /** File the pane was opened on, "" if none. */
   pane: string;
   running: boolean;
+  // ── the three below are NOT the agent's. ────────────────────────────────
+  //
+  // A chat whose first message was QUEUED has no transcript — nothing of it has
+  // run — so `sessions` cannot list it and the landing had no row for it at all
+  // (`sched/waiting-chats`). Its row is built from the `/api/tasks` listing and
+  // folded into this same list, because a waiting chat is not a different kind
+  // of thing from one that ran: it is the same conversation, earlier.
+  //
+  // Absent on every row the agent produced, which is what tells the two apart.
+  /** The leader entry this conversation is waiting AS — its only name until the
+   *  scheduler gives it a session (`platform/lib/queue.QUEUED_PARAM`). */
+  queuedEntry?: string;
+  /** Its number, for the row: the task exists the moment the entry does. */
+  taskId?: string;
+  /** Where the row opens — the queued chat URL, built once where the task's own
+   *  target is in hand rather than re-derived by the component drawing it. */
+  href?: string;
 }
 export interface SessionsResponse {
   sessions: SessionRow[];
@@ -590,6 +638,18 @@ export interface HistoryResponse {
   live_run?: string;
   permissions?: PermissionRow[];
   mode?: PermissionMode | "";
+  /**
+   * THE LIVE RUN'S UNDRAINED FOLLOW-UPS — the same list `PollResponse.inbox`
+   * carries, on the read a RELOADING chat makes first (agent.py `_history_live`).
+   *
+   * This is the half that actually fixes the reload. The poll's copy keeps the
+   * bubbles up while a page stays open; a page that comes BACK reads `history`
+   * before it has a run to poll, and without the list here the reader's held
+   * follow-ups would be missing for the whole of that window — which is exactly
+   * the moment they are looking for them. Only meaningful beside `live_run`:
+   * nothing is held when nothing is running.
+   */
+  inbox?: InboxMessage[];
 }
 
 /** agent.py:904 / 868,883. */

@@ -7,11 +7,15 @@
 // below is a test about that swap, its edges and its one honest exception (the
 // window before the first poll has seen a brand-new entry).
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   EMPTY_SEED_WATCH,
+  headerTaskId,
   pruneDropped,
   reconcileSeeds,
   waitingFacts,
+  waitingFor,
   waitingLine,
   waitingRows,
   waitingWhen,
@@ -235,10 +239,163 @@ describe("what is in front is ONE answer for the whole chat", () => {
     expect(facts.queue_priority).toBe(false);
   });
 
-  it("ignores a task row that carries no queue fields at all", () => {
-    // An older server, or this conversation's row read before the queue placed
-    // it: an empty row must not erase what the admission just answered.
+  it("lets the row win outright once there is one, empty fields and all", () => {
+    // It used to prefer the admission whenever the row carried no queue field,
+    // and that reads the one answer that matters backwards: a row with nothing in
+    // front of it is the server saying THE FOLDER IS FREE NOW. The fallback then
+    // left the card naming a task that had long since finished, under a Run next
+    // that could do nothing (Bugbot PR #1124).
     const facts = waitingFacts({ key: "k" } as never, { queue_ahead: "TASK-041" });
-    expect(facts.queue_ahead).toBe("TASK-041");
+    expect(facts.queue_ahead).toBe("");
+    expect(facts.queue_priority).toBe(false);
+  });
+
+  it("lets a fresh Run next outrank both — until the next row lands", () => {
+    // The press has been accepted by the server; the row in hand was read before
+    // it. Believing the row would take the reader's own press back off the screen.
+    const claimed = waitingFacts({ queue_ahead: "TASK-041" }, null, true);
+    expect(claimed.queue_priority).toBe(true);
+    // …and when the claim is spent, the row decides — including when it says the
+    // server refused after all.
+    const after = waitingFacts({ queue_ahead: "TASK-041", queue_priority: false }, null, false);
+    expect(after.queue_priority).toBe(false);
+    expect(after.queue_ahead).toBe("TASK-041");
+  });
+});
+
+// ── WHOSE MESSAGES ARE THESE ────────────────────────────────────────────────
+
+describe("the waiting messages of one conversation", () => {
+  const e = (id: string, over: Partial<SchedEntry> = {}): SchedEntry => ({
+    id,
+    state: "pending",
+    due: "2026-09-12T09:59:00Z",
+    message: "m" + id,
+    ...over,
+  });
+
+  it("takes the entries that name this session", () => {
+    const rows = waitingFor(
+      [e("a", { session_id: "s1" }), e("b", { session_id: "other" }), e("c", { claude_session_id: "s1" })],
+      "s1",
+      "",
+    );
+    expect(rows.map((r) => r.id)).toEqual(["a", "c"]);
+  });
+
+  it("takes the leader's followers while the chat has no session at all", () => {
+    // The first message queued, so nothing has run and there is nothing to name.
+    const rows = waitingFor(
+      [e("L"), e("f1", { follow_of: "L" }), e("f2", { follow_of: "L" }), e("x")],
+      "",
+      "L",
+    );
+    expect(rows.map((r) => r.id)).toEqual(["L", "f1", "f2"]);
+  });
+
+  it("KEEPS them the moment the chat adopts the session the leader's run opened", () => {
+    // THE BUG (Bugbot PR #1124). The leader ran, so it has a session and is no
+    // longer pending; the followers are pending and still say nothing about any
+    // session (the server fills that at claim time). Both old addresses missed
+    // them — the session filter because they name no session, the leader list
+    // because the leader id is a client memory the adoption itself clears.
+    const entries = [
+      e("L", { state: "sent", claude_session_id: "s9" }),
+      e("f1", { follow_of: "L", due: "2026-09-12T10:00:00Z" }),
+      e("f2", { follow_of: "L", due: "2026-09-12T10:01:00Z" }),
+    ];
+    expect(waitingFor(entries, "s9", "L").map((r) => r.id)).toEqual(["f1", "f2"]);
+    // …AND AFTER A RELOAD, where no seed and no leader memory survives: the group
+    // is read off the server's own rows, which is the whole point.
+    expect(waitingFor(entries, "s9", "").map((r) => r.id)).toEqual(["f1", "f2"]);
+  });
+
+  it("finds the siblings of a follower the server has already claimed", () => {
+    // A follower claimed mid-line is the only row naming the session; the leader
+    // that ties the rest to it is reached by walking `follow_of` upwards first.
+    const entries = [
+      e("L", { state: "sent" }),
+      e("f1", { follow_of: "L", state: "sending", claude_session_id: "s9" }),
+      e("f2", { follow_of: "L", due: "2026-09-12T10:02:00Z" }),
+    ];
+    expect(waitingFor(entries, "s9", "").map((r) => r.id)).toEqual(["f1", "f2"]);
+  });
+
+  it("draws a CLAIMED entry and drops everything that has been said", () => {
+    const entries = [
+      e("a", { session_id: "s1", state: "sending" }),
+      e("b", { session_id: "s1", state: "sent" }),
+      e("c", { session_id: "s1", state: "cancelled" }),
+    ];
+    expect(waitingFor(entries, "s1", "").map((r) => r.id)).toEqual(["a"]);
+  });
+
+  it("is soonest first, one row per id, and nothing at all with no address", () => {
+    const rows = waitingFor(
+      [
+        e("b", { session_id: "s1", due: "2026-09-12T11:00:00Z" }),
+        e("a", { session_id: "s1", due: "2026-09-12T10:00:00Z" }),
+      ],
+      "s1",
+      "",
+    );
+    expect(rows.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(waitingFor([e("a", { session_id: "s1" })], "", "")).toEqual([]);
+    expect(waitingFor(null, "s1", "")).toEqual([]);
+  });
+});
+
+describe("a claimed entry's word", () => {
+  it("is `starting`, whatever its due stamp says", () => {
+    // `sending` is past due by construction, so the clock rule would call it
+    // `queued` — and it is not in the line any more, it is being spawned.
+    const rows = waitingRows(
+      [{ id: "a", state: "sending", due: "2026-09-12T09:00:00Z", message: "go" }],
+      [],
+      NO_DROPPED,
+      AT,
+    );
+    expect(rows[0].word).toBe("starting");
+    expect(waitingLine(rows[0], "TASK-038")).toEqual(["starting"]);
+  });
+});
+
+describe("the number at the top of a chat", () => {
+  const HERE = new URL(".", import.meta.url).pathname;
+  const CHAT = readFileSync(join(HERE, "../ClaudeChat.tsx"), "utf8");
+
+  it("takes the three sources in FRESHNESS order", () => {
+    // 1. the listing keyed on this conversation (`useTaskId`) — the most recent
+    //    answer there is, and the one that survives a rekey;
+    // 2. the schedule hook's own row, which lands on its own cadence;
+    // 3. what the admission said, minted before either listing existed.
+    expect(headerTaskId("TASK-001", "TASK-002", "TASK-003")).toBe("TASK-001");
+    expect(headerTaskId("", "TASK-002", "TASK-003")).toBe("TASK-002");
+    expect(headerTaskId("", "", "TASK-003")).toBe("TASK-003");
+    expect(headerTaskId("", null, "")).toBe("");
+    expect(headerTaskId(undefined, undefined, undefined)).toBe("");
+    // A row's number may arrive as a number; the header spends a string.
+    expect(headerTaskId("", 57, "")).toBe("57");
+  });
+
+  it("means a queued new chat wears its number from the first second", () => {
+    // The entry IS the task, so the answer that queued the message can name it
+    // — and the header used to wait for a listing anyway, leaving a
+    // conversation numberless for up to a poll interval while the id a reader
+    // needs to find it again was already in hand (Akshil, 2026-09-12).
+    expect(CHAT).toContain("if (verdict.task_id) setAdmitTaskId(String(verdict.task_id));");
+    expect(CHAT).toContain(
+      "const taskId = headerTaskId(listedTaskId, sched.rec?.task_id, admitTaskId);",
+    );
+    // …and the LISTING is asked by the key this conversation actually has: a
+    // chat that has never run is keyed `pending:<leader>`, not by a session it
+    // does not have.
+    expect(CHAT).toContain(
+      'const taskKey = state.sessionId || (leaderId ? PENDING_KEY_PREFIX + leaderId : "");',
+    );
+    expect(CHAT).toContain("const listedTaskId = useTaskId(taskKey);");
+    // …and it belongs to the conversation that was on screen: Back and
+    // openSession both drop it.
+    expect(CHAT).toContain('setAdmitTaskId("");');
   });
 });

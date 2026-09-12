@@ -321,15 +321,22 @@ export function assignLanes<T extends { time: Date }>(
 //     separately — "1 running · 2 waiting").
 //
 // It is still a STATUS of its own for everything else — its own word on a row,
-// its own ring, its own rank, its own entry in the Status filter — for the reason
-// it was made one: "Upcoming" means a time has not come and the reader's move is
-// to wait; "Queued" means the time HAS come and something else is in the way, and
-// the reader's move is Run next.
+// its own ring, its own rank — for the reason it was made one: "Upcoming" means a
+// time has not come and the reader's move is to wait; "Queued" means the time HAS
+// come and something else is in the way, and the reader's move is Run next.
 //
-// THIS IS THE LIST'S VOCABULARY TOO, and a test holds the two arrays to the same
-// sequence apart from the two ranks the List hoists (tasks-lib.LIST_ORDER, whose
-// note carries the argument): a reader moving between the views carries ONE
-// mental picture of what a status IS, even where urgency reorders them.
+// IT IS NOT A TICK IN THE STATUS FILTER, and that follows from the lane rather
+// than being a second decision: the menu offers the LANES THE BOARD DRAWS, so
+// `queued` is clubbed under In Progress exactly as `needs_attention` is clubbed
+// under Blocked, and one In Progress tick brings the running cards and the
+// waiting ones together — which is the only reading that agrees with the board a
+// press takes the reader back to (project-queue.test.ts, "the Status filter").
+//
+// THE LIST SHARES THE VOCABULARY BUT NOT THE SEQUENCE. Its own order hoists the
+// two urgent ranks AND puts `queued` after `in_progress` rather than before it
+// (tasks-lib.LIST_ORDER, whose note carries the argument): the lane draws the
+// running cards first and the waiting ones under them, and a List that read that
+// lane upwards would be the two views telling one story in opposite directions.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "queued", label: "Queued" },

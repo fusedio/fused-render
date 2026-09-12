@@ -23,14 +23,15 @@
 // early from the admission's answer and replaced by the server's own on the next
 // poll — same id, so it is never two rows.
 //
-// TWO ADDRESSES, ONE PICTURE. A chat WITH a session reads the poll's
-// session-filtered list (`schedPendingHere` → `useSchedule.waitingHere`); a chat
-// with NO session yet — its first message was queued, so nothing has run and
-// there is no session to filter by — reads the unfiltered pending rows through
-// its leader entry (`schedFollowing`). Both are server facts, and that is what
-// makes the reload parity above true rather than aspirational.
+// ONE ADDRESS, ONE PICTURE. Which messages are this conversation's is asked of
+// the WHOLE listing, by session and by `follow_of` together (`waitingFor` →
+// `useSchedule.waitingHere`) — because a chat can be both at once: a new chat
+// whose first message queued has no session to filter by, and the instant its
+// leader runs it has one while its followers still name nothing. Two lists
+// swapped on that fact dropped every row in the swap; one rule does not.
 import { useEffect, useMemo, useState } from "react";
 import type { QueueFacts } from "@platform/lib/queue";
+import { schedIsRepeat, schedIsWaiting, schedStopTarget } from "./scheduled";
 import type { SchedEntry } from "./scheduled";
 
 /**
@@ -67,18 +68,37 @@ export interface WaitingRowData {
   text: string;
   /** ISO. The `scheduled` state word's second half is built from it. */
   due: string;
-  /** Its state word — `queued` once it is due, `scheduled` before. */
+  /** Its state word — `queued` once it is due, `scheduled` before, `starting`
+   *  for the second the scheduler has claimed it in. */
   word: WaitingWord;
+  /** A RECURRING occurrence. `delete` on one of these is not a delete: the
+   *  template arms the next run the moment this one is skipped, so the row says
+   *  `skip this run` and carries a second, armed action for the repeat itself. */
+  repeat: boolean;
+  /** What "stop repeating" posts — the TEMPLATE (`schedStopTarget`), never this
+   *  occurrence, which would move the repeat rather than stop it. "" for an
+   *  ordinary message. */
+  stopId: string;
   /** True while this row is the admission's own copy and no poll has listed the
    *  entry yet. Nothing is drawn differently for it; it is here so a test can
    *  assert the swap happened, and so the reconciliation can count laps. */
   optimistic: boolean;
 }
 
-export type WaitingWord = "queued" | "scheduled";
+export type WaitingWord = "queued" | "scheduled" | "starting";
 
 /** The words under a waiting bubble, in the order they are read. */
 export const WAITING_DELETE = "delete";
+/** …AND THE SAME PLACE'S VERB FOR A REPEAT'S OCCURRENCE, which is a different
+ *  act: the template arms the next run as this one is skipped, so calling it
+ *  `delete` promised the reader something it does not do (Bugbot PR #1124). */
+export const WAITING_SKIP = "skip this run";
+/** The other half of that row — the thing `delete` used to be mistaken for, and
+ *  the only way to stop a repeating message from inside the chat now that the
+ *  block draws nothing under the flag. ARMED, because it spends every future
+ *  run: the same two presses the banner's stop has always asked for. */
+export const WAITING_STOP = "stop repeating";
+export const WAITING_STOP_ARMED = "stop every future run";
 
 /**
  * THE STATE WORD: what is true of this message right now.
@@ -157,6 +177,9 @@ export function waitingLine(
   behind: string,
   now: Date = new Date(),
 ): string[] {
+  // CLAIMED: nothing is in front of it any more and its time is not a fact about
+  // the future, so the word is the whole line.
+  if (row.word === "starting") return ["starting"];
   if (row.word === "scheduled") {
     const when = waitingWhen(row.due, now);
     return when ? ["scheduled", when] : ["scheduled"];
@@ -174,8 +197,7 @@ export function waitingLine(
  * happens.
  *
  * ORDER IS THE SERVER'S, THEN THE SEEDS. The server's list is already sorted by
- * due (`schedPendingHere` / `schedFollowing`), which for a chat's own sends is
- * the order they were typed; a seed the server has not listed yet is by
+ * due (`waitingFor`), which for a chat's own sends is the order they were typed; a seed the server has not listed yet is by
  * construction the newest thing in the conversation, so it goes last.
  *
  * `dropped` is the ids a `delete` has taken back. They leave on the press rather
@@ -202,8 +224,13 @@ export function waitingRows(
       entryId: id,
       text: words.get(id) ?? String(entry.message || ""),
       due,
-      word: waitingWord(due, now),
+      // THE CLAIM OUTRANKS THE CLOCK. A `sending` entry is past its due stamp by
+      // construction, so the due-time rule would call it `queued` — and it is
+      // not in the line any more, it is being spawned.
+      word: entry.state === "sending" ? "starting" : waitingWord(due, now),
       optimistic: false,
+      repeat: schedIsRepeat(entry),
+      stopId: schedIsRepeat(entry) ? schedStopTarget(entry) : "",
     });
   }
   for (const seed of seeds) {
@@ -216,8 +243,90 @@ export function waitingRows(
       due: seed.due,
       word: waitingWord(seed.due, now),
       optimistic: true,
+      // A SEED IS ALWAYS A CHAT SEND — the admission minted it out of a composer
+      // — and nothing the composer sends repeats.
+      repeat: false,
+      stopId: "",
     });
   }
+  return out;
+}
+
+/**
+ * THE WAITING MESSAGES OF THIS CONVERSATION — one rule, both addresses, and the
+ * group that survives the adoption.
+ *
+ * THE BUG THIS REPLACES (Bugbot PR #1124). There were two lists and the chat
+ * swapped between them on one fact: with no session it read its leader's
+ * followers, with a session it read the session-filtered pending list
+ * (`schedPendingHere`). Adoption flips exactly that fact — the
+ * leader runs, the chat opens the session its run created — and in that instant
+ * BOTH lists miss the followers: the session filter because the server fills a
+ * follower's `session_id` only when it CLAIMS it, and the leader list because
+ * the leader id is a client memory that a reload (or the adoption's own clearing
+ * rule) drops. So the reader's queued messages disappeared from the transcript
+ * while sitting perfectly safely in the line — the exact failure the move to
+ * server-drawn rows was made to end.
+ *
+ * SO THE QUESTION IS ASKED OF THE GROUP, NOT OF ONE FIELD. An entry belongs to
+ * this conversation when it NAMES the session, or when it is connected — through
+ * `follow_of`, in either direction and as many hops as it takes — to an entry
+ * that does. The leader is the hinge: once it has run it is the only row in the
+ * schedule carrying both the session id and the id its followers name, and that
+ * is why this is asked of the WHOLE listing rather than the pending slice.
+ * `leaderId` is still taken, for the chat whose leader has not run yet and which
+ * therefore has no session for anything to name.
+ *
+ * ONLY WAITING ROWS COME BACK (`schedIsWaiting` — pending, or claimed), deduped
+ * by id and in due order, which for a chat's own sends is the order they were
+ * typed.
+ */
+export function waitingFor(
+  entries: readonly SchedEntry[] | null | undefined,
+  sessionId: string,
+  leaderId: string,
+): SchedEntry[] {
+  const rows = (entries || []).filter((e): e is SchedEntry => !!e);
+  const ours = new Set<string>();
+  if (leaderId) ours.add(leaderId);
+  if (sessionId) {
+    for (const e of rows) {
+      if (e.session_id === sessionId || e.claude_session_id === sessionId) {
+        ours.add(String(e.id || ""));
+      }
+    }
+  }
+  // GROWN UNTIL IT STOPS GROWING, and in BOTH directions along `follow_of`: from
+  // a leader down to its followers, and from a follower that has been claimed
+  // (the server filled its session) back up to the leader and out to its
+  // siblings. Bounded by the number of rows, because every lap that changes
+  // nothing ends it and every lap that changes something adds at least one id.
+  for (let lap = 0; lap <= rows.length; lap += 1) {
+    let grew = false;
+    for (const e of rows) {
+      const id = String(e.id || "");
+      const of = String(e.follow_of || "");
+      if (!of || !id) continue;
+      if (ours.has(id) && !ours.has(of)) {
+        ours.add(of);
+        grew = true;
+      } else if (ours.has(of) && !ours.has(id)) {
+        ours.add(id);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+  const out: SchedEntry[] = [];
+  const seen = new Set<string>();
+  for (const e of rows) {
+    const id = String(e.id || "");
+    if (!id || seen.has(id) || !ours.has(id) || !schedIsWaiting(e)) continue;
+    seen.add(id);
+    out.push(e);
+  }
+  // ISO stamps with one offset spelling, so a string sort is a time sort.
+  out.sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
   return out;
 }
 
@@ -394,15 +503,29 @@ export function pruneDropped(
  * one line. The answer comes from the `/api/tasks` row for this conversation
  * (`useSchedule.rec`), which is the server's own and therefore survives a reload;
  * the admission's answer is the fallback for the window before that row has been
- * read, and for a chat with no session, which has no row at all.
+ * read.
+ *
+ * THE ROW WINS OUTRIGHT ONCE THERE IS ONE, empty fields and all (Bugbot
+ * PR #1124). It used to win only when it carried a queue field, and that reads
+ * the one answer that matters backwards: a row with nothing in front of it is
+ * not a row that failed to say — it is the server saying THE FOLDER IS FREE NOW,
+ * and falling back to the admission's minutes-old "behind TASK-038" left the
+ * card naming a task that had long since finished, with a Run next button under
+ * it that could do nothing.
+ *
+ * `claimedNext` IS THE ONE THING THAT OUTRANKS BOTH, and only until the next row
+ * lands. Run next has just been accepted by the server; the row in hand was read
+ * before the press, so believing it would take the reader's own press back off
+ * the screen. It is a claim with a deadline, not a state: the caller drops it the
+ * moment a fresher row arrives, and that row then decides — including when it
+ * says `queue_priority: false` because the server refused after all.
  */
 export function waitingFacts(
   row: QueueFacts | null | undefined,
   fallback: QueueFacts | null | undefined,
+  claimedNext: boolean = false,
 ): QueueFacts {
-  const from = row && (row.queue_ahead || row.queue_position || row.queue_priority)
-    ? row
-    : (fallback ?? {});
+  const from = row ?? fallback ?? {};
   return {
     status: "queued",
     queue_position: from.queue_position ?? 0,
@@ -410,6 +533,41 @@ export function waitingFacts(
     queue_ahead_title: from.queue_ahead_title ?? "",
     queue_ahead_session: from.queue_ahead_session ?? "",
     queue_ahead_target: from.queue_ahead_target ?? "",
-    queue_priority: from.queue_priority === true,
+    queue_ahead_key: from.queue_ahead_key ?? "",
+    queue_priority: claimedNext || from.queue_priority === true,
   };
+}
+
+/**
+ * THE NUMBER AT THE TOP OF A CHAT — "TASK-057" — from the freshest of the three
+ * places that can know it.
+ *
+ * A QUEUED NEW CHAT HAS ONE FROM THE FIRST SECOND, and used to show none for up
+ * to a poll interval (Akshil, 2026-09-12). The entry IS the task: the admission
+ * that queued the message creates it and names it back in the same answer. But
+ * the header read `/api/tasks` and nothing else, so a reader watched their own
+ * conversation sit numberless while the id they would need to find it again on
+ * the Tasks page was already in hand.
+ *
+ * THE ORDER IS BY FRESHNESS, not by preference:
+ *
+ *   1. `fromTasks` — `ui/Kebab.useTaskId`, a listing read keyed on this
+ *      conversation (its session, or `pending:<leader>` before it has one). The
+ *      most recent answer there is, and the one that survives a rekey.
+ *   2. `fromRow` — the schedule hook's own row for this chat (`useSchedule.rec`),
+ *      which the pane is already paying for and which lands on its own cadence.
+ *   3. `fromAdmit` — what the admission said. Minted before either listing
+ *      existed and never stale in the way the others can be: a task id is
+ *      allocated once and never reused, so this can only be right or absent.
+ *
+ * "" when none of them has answered, which is the landing and every chat that is
+ * not a task.
+ */
+export function headerTaskId(
+  fromTasks: string | null | undefined,
+  fromRow: string | number | null | undefined,
+  fromAdmit: string | null | undefined,
+): string {
+  const row = fromRow === null || fromRow === undefined ? "" : String(fromRow);
+  return String(fromTasks || "") || row || String(fromAdmit || "");
 }

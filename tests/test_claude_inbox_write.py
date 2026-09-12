@@ -71,3 +71,118 @@ def test_a_write_in_progress_is_never_visible_as_a_json_entry(agent, tmp_path,
     assert row["message"]["content"][0]["text"] == "hi"
     # No stray .tmp left behind either.
     assert not [n for n in os.listdir(inbox) if n.endswith(".tmp")]
+
+
+# ============ what the chat can SEE of an undrained inbox (Akshil, 2026-09-12)
+#
+# A follow-up typed into a running turn is written into `run_dir/inbox/` and
+# nowhere else until `session_host._drain_inbox` hands it to the CLI — which,
+# for a line typed mid-reply, is after the reply in flight has finished. Between
+# those two moments the transcript has no row for it, so a reload drew a
+# conversation with the user's own last words missing while the run that will
+# answer them was still going. `_poll` and `_history_live` now carry them.
+
+
+def _run_dir(tmp_path):
+    d = tmp_path / "run"
+    (d / "perm").mkdir(parents=True)
+    (d / "appstate").mkdir(parents=True)
+    (d / "out.jsonl").write_text("", encoding="utf-8")
+    return d
+
+
+def _drain(run_dir, name):
+    """What the session host does when it takes an entry: the bytes go to the
+    CLI's stdin and the name is `os.replace`d into `inbox/done/`."""
+    done = run_dir / "inbox" / "done"
+    done.mkdir(exist_ok=True)
+    os.replace(run_dir / "inbox" / name, done / name)
+
+
+def test_the_poll_lists_every_undrained_follow_up_oldest_first(agent, tmp_path):
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "first follow-up")
+    agent._write_inbox_entry(str(run_dir), "second follow-up")
+
+    inbox = agent._poll("run")["inbox"]
+    assert [row["text"] for row in inbox] == ["first follow-up",
+                                              "second follow-up"]
+    # The entry's own file name is its id, and its write time is `at`.
+    names = sorted(n for n in os.listdir(run_dir / "inbox")
+                   if n.endswith(".json"))
+    assert [row["id"] for row in inbox] == names
+    assert inbox[0]["at"] > 0 and inbox[0]["at"] <= inbox[1]["at"]
+
+
+def test_a_drained_entry_leaves_the_poll(agent, tmp_path):
+    """DRAINED MEANS GONE FROM THE DIRECTORY, which is why nothing has to be
+    marked: the host moves each name into `inbox/done/` once its bytes are on
+    the wire, so the listing is exactly the untaken ones and the CLI's own echo
+    is what carries the message from there on."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "first follow-up")
+    agent._write_inbox_entry(str(run_dir), "second follow-up")
+    names = sorted(n for n in os.listdir(run_dir / "inbox")
+                   if n.endswith(".json"))
+
+    _drain(run_dir, names[0])
+    assert [row["text"] for row in agent._poll("run")["inbox"]] == \
+        ["second follow-up"]
+
+    _drain(run_dir, names[1])
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_an_idle_chat_lists_nothing_and_never_opens_a_file(agent, tmp_path,
+                                                           monkeypatch):
+    """The ordinary poll: no inbox directory at all, one `listdir` that fails,
+    nothing read."""
+    run_dir = _run_dir(tmp_path)
+    assert agent._poll("run")["inbox"] == []
+    assert not os.path.isdir(run_dir / "inbox")
+
+
+def test_a_control_request_is_not_a_message_and_a_tmp_is_not_an_entry(
+        agent, tmp_path):
+    """The same two exclusions `_discard_inbox` makes over the same directory:
+    an `interrupt`/`set_model` row is not words anybody typed, and a `.tmp` name
+    is a write still in flight."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_control_request(str(run_dir), "interrupt")
+    (run_dir / "inbox" / "99999999999999999999-ff.json.tmp").write_text(
+        json.dumps({"type": "user", "message": {
+            "role": "user", "content": [{"type": "text", "text": "half"}]}}),
+        encoding="utf-8")
+    agent._write_inbox_entry(str(run_dir), "the only real one")
+
+    assert [row["text"] for row in agent._poll("run")["inbox"]] == \
+        ["the only real one"]
+
+
+def test_a_reload_learns_the_inbox_on_the_same_answer_as_the_transcript(
+        agent, tmp_path, monkeypatch):
+    """`_history_live` carries the same rows, so a chat that has just reloaded
+    paints the waiting message in the frame it paints the transcript in — the
+    whole reason this rides on history rather than waiting for the first poll."""
+    run_dir = _run_dir(tmp_path)
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(tmp_path)}),
+                                       encoding="utf-8")
+    agent._write_inbox_entry(str(run_dir), "typed just before the reload")
+    monkeypatch.setattr(agent, "_live_run", lambda file, session_id="",
+                        **kw: {"run_id": "run"})
+
+    live = agent._history_live(str(tmp_path), "sess-1")
+    assert live["live_run"] == "run"
+    assert [row["text"] for row in live["inbox"]] == \
+        ["typed just before the reload"]
+
+    # …and nothing live means nothing to report, the way it always has.
+    monkeypatch.setattr(agent, "_live_run", lambda file, session_id="",
+                        **kw: {"run_id": ""})
+    assert agent._history_live(str(tmp_path), "sess-1")["inbox"] == []
+
+
+def test_an_unknown_run_still_answers_the_inbox_field(agent, tmp_path):
+    """Shape stability: the error answers a page's stale `run` param gets carry
+    every field the good one does, so the client never has to branch on it."""
+    assert agent._poll("no-such-run")["inbox"] == []

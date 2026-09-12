@@ -1233,7 +1233,10 @@ def test_run_now_maps_a_queued_hold_onto_a_200_that_names_who_is_ahead(
                         "ahead_title": "holding the folder",
                         # …and where "behind TASK-041" goes when it is clicked.
                         "ahead_session": "sess-holder",
-                        "ahead_target": alpha}
+                        "ahead_target": alpha,
+                        # …and what the row that just queued is CALLED, so the
+                        # dragged card can name itself without a listing.
+                        "task_id": tasks_store.task_number("sess-a")}
 
 
 def test_run_now_still_refuses_everything_it_used_to(
@@ -2057,3 +2060,154 @@ def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
     assert row["queue_waiting"] == 1
     assert row["queue_blocking"] is False
 
+
+
+# ============ the number a queued chat is given, and the entry that opens it
+#                                        (Akshil's findings B and C, 2026-09-12)
+
+
+def test_a_queued_new_chat_is_named_the_moment_it_queues(
+        client, projects_dir, folders, monkeypatch, flag):
+    """A brand-new chat whose first message queues has no session, so its row is
+    `pending:<entry>` — and until this it had no NUMBER either, because numbers
+    are minted by the listing and the listing had not run yet. The bubble said
+    "queued · behind TASK-001" about a task it could not call anything.
+
+    So admission mints it, and the proof is that the listing agrees: the same
+    key, the same number, no second allocation."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "brand new chat"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run"] is False
+    number = body["task_id"]
+    assert number.startswith("TASK-")
+    assert number != _rows(client)["sess-holder"]["task_id"]
+
+    key = tasks_store.pending_key(body["entry"]["id"])
+    assert body["key"] == key
+    rows = _rows(client)
+    assert rows[key]["task_id"] == number
+    assert rows[key]["status"] == "queued"
+    # …and the same key still answers the same number on every listing after
+    # that: allocation is once, keyed by the task key (`ensure_ids`).
+    assert _rows(client)[key]["task_id"] == number
+
+
+def test_a_followers_admission_answers_its_leaders_number(
+        client, projects_dir, folders, monkeypatch, flag):
+    """A second message typed into a chat whose first is still queued joins the
+    LEADER's task, so it must answer the leader's number rather than mint a
+    second one for a row that does not exist."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    lead = _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "message": "first thing"}).json()
+    follow = _post(client, "/api/tasks/queue/admit",
+                   {"project": alpha, "message": "second thing",
+                    "follow_of": lead["entry"]["id"]}).json()
+
+    assert follow["key"] == lead["key"]
+    assert follow["task_id"] == lead["task_id"]
+    # ONE record, for the one chat: minting is for the task that was admitted,
+    # not a listing in disguise — the holder is numbered when something lists it.
+    assert list(tasks_store.task_ids()) == [lead["key"]]
+
+
+def test_an_admitted_send_that_runs_answers_no_number_and_mints_none(
+        client, folders, flag):
+    """`run: true` is main's own answer and stores nothing — including no
+    number. A chat that is running is one the listing will name on its next
+    pass, which is the behaviour with the flag off too."""
+    flag()
+    alpha, _beta = folders
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-a",
+                  "message": "go"}).json() == {"run": True}
+    assert tasks_store.task_ids() == {}
+
+
+def test_a_pending_row_carries_the_entry_that_opens_it(
+        client, projects_dir, folders, monkeypatch, flag):
+    """`entry_id` on the row: the leader entry a waiting chat is re-entered by.
+
+    A `pending:<entry>` task has no session and no transcript, so the entry id
+    is the only handle a client has on it — and it is the one name that does not
+    move when the row rekeys onto the session its leader opens."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    schedule._write([
+        _entry("e-lead", "first thing", alpha),
+        _entry("e-follow", "second thing", alpha, follow_of="e-lead"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    rows = _rows(client)
+    key = tasks_store.pending_key("e-lead")
+    row = rows[key]
+    # The LEADER's id, not the follower's: both messages are one task.
+    assert row["entry_id"] == "e-lead"
+    assert row["status"] == "queued"
+    assert row["queue_position"] == 1
+    assert row["queue_waiting"] == 2
+    assert row["title"] == "first thing"
+    assert row["project"] == alpha
+    assert row["last_active"] > 0
+    # A task with a conversation behind it is opened by its session, so it has
+    # no entry to name.
+    assert rows["sess-holder"]["entry_id"] == ""
+    assert rows["sess-holder"]["entry_origin"] == ""
+
+
+def test_the_entry_on_a_pending_row_survives_the_flag_being_off(
+        client, folders):
+    """`entry_id` is a fact about the KEY and not about the queue, so it is not
+    one of the fields the flag guards: a pending row is opened the same way
+    whether or not anything is gating folders."""
+    alpha, _beta = folders
+    schedule._write([_entry("e-lead", "first thing", alpha)])
+
+    row = _rows(client)[tasks_store.pending_key("e-lead")]
+    assert row["entry_id"] == "e-lead"
+    assert row["status"] != "queued"
+    assert row["queue_position"] == 0
+
+
+def test_a_pending_row_says_whether_a_chat_or_a_calendar_asked_for_it(
+        client, projects_dir, folders, monkeypatch, flag):
+    """Two `pending:<entry>` rows, identical in shape and very different things.
+
+    One is a chat whose first line queued through admission — a conversation
+    waiting to start, which belongs in a list of chats. The other is a message
+    somebody scheduled from the calendar, which is a job with a date on it and
+    does not. `origin` is the only thing that tells them apart, and the row is
+    where a reader of rows has to find it."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    chat = _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "message": "a chat that queued"}).json()
+    schedule.create(target=alpha, message="a job somebody scheduled",
+                    due=_iso(-30))
+
+    rows = _rows(client)
+    assert rows[chat["key"]]["entry_origin"] == "chat"
+    scheduled = [row for key, row in rows.items()
+                 if key.startswith("pending:") and key != chat["key"]]
+    assert len(scheduled) == 1
+    assert scheduled[0]["entry_origin"] == ""
+    # …and the entry that opens each is its own leader either way.
+    assert rows[chat["key"]]["entry_id"] == chat["entry"]["id"]
+    assert scheduled[0]["entry_id"] == \
+        tasks_store.pending_entry(scheduled[0]["key"])

@@ -3131,6 +3131,28 @@ export interface Task {
   // id is then plain text rather than a link to nothing.
   queue_ahead_session?: string;
   queue_ahead_target?: string;
+  // …and the holder's own task KEY, which is a door of its own when the session
+  // is not one yet: a holder still starting is keyed `pending:<entry id>`, and
+  // that entry opens as a chat (platform/lib/queue.QUEUED_PARAM). Absent on an
+  // older server, and the id is then plain text for that window.
+  queue_ahead_key?: string;
+  // ── what this task's SCHEDULER ENTRY is, when it has one ──────────────────
+  //
+  // A task with no transcript is nothing but a line in a folder's queue, keyed
+  // `pending:<entry id>`. These two name that entry outright rather than leaving
+  // every reader to take the key apart, and — more importantly — say WHERE IT
+  // CAME FROM.
+  //
+  // The origin is the half that matters: `"chat"` is stamped by
+  // `POST /api/tasks/queue/admit` and by nothing else, so it means "somebody
+  // typed this into a chat composer". Its ABSENCE is a calendar message, a New
+  // task form, a repeat's occurrence — work that is not a conversation, and must
+  // not be listed as one (`sched/waiting-chats`: every future scheduled job
+  // would otherwise appear in Recent chats).
+  //
+  // Both "" on a task that has run, and on an older server.
+  entry_id?: string;
+  entry_origin?: string;
   // Skipped: this task's pending work jumped to the head of its folder's line
   // (`POST /api/tasks/queue/skip`, or a held answer, which is always priority).
   // It still never interrupts the run in flight.
@@ -3241,6 +3263,21 @@ export type QueueAdmission =
        *  one is still waiting: nothing is in front but the reader's own line. */
       ahead_session?: string;
       ahead_target?: string;
+      /** …and the holder's task key, which opens the holder's chat even while it
+       *  is still starting (`pending:<entry id>`, queue.queueAheadHref). */
+      ahead_key?: string;
+      /**
+       * THE NUMBER THIS CONVERSATION IS NOW CALLED — "TASK-057".
+       *
+       * A queued send CREATES the task (the entry is the task, keyed
+       * `pending:<leader id>`), so the server can name it in the very answer
+       * that queued it. The chat's header used to wait for a `/api/tasks` listing
+       * to say the same thing, which is up to a poll interval of a conversation
+       * with no number at the top — and the number is how a reader finds it again
+       * on the Tasks page. Absent on an older server, and the header then waits
+       * for the listing exactly as it did.
+       */
+      task_id?: string;
     };
 
 export function admitQueueSend(body: {
@@ -5133,6 +5170,11 @@ export interface RunNowResult {
   position?: number;
   ahead?: string;
   ahead_title?: string;
+  /** The number the task is called, on a `queued` answer — the same field the
+   *  admission carries, for the same reason: running something now can CREATE
+   *  the task (the entry is the task), and a row that has just appeared has no
+   *  listing to be read out of yet. Absent on an older server. */
+  task_id?: string;
 }
 
 // Ask again — the other half of Re-run, for the case run-now cannot serve.

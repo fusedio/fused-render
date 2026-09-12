@@ -3435,6 +3435,32 @@ describe("a row with no message at all", () => {
     expect(block(TASKS_CSS, ".tasks-row.is-inert:hover")).not.toContain("!important");
   });
 
+  it("OPENS a queued row by the entry it is waiting as", () => {
+    // A task waiting in a folder's line has no session — nothing of it has run —
+    // and this used to be the end of it, so a chat a reader had typed into
+    // minutes before could not be opened from anywhere (2026-09-12). The entry
+    // is the name it has, and `queued=` is the door.
+    const waiting = task({
+      key: "pending:e1",
+      session_id: "",
+      status: "queued",
+      message_count: 0,
+      messages: [],
+    }, 0);
+    expect(taskHref(waiting)).toBe(
+      "/explorer/view/Users/me/Desktop/fused?_side=claude&session_id=&queued=e1",
+    );
+    expect(openThreadIntent(waiting)).not.toBe(null);
+    // NOT EVERY `pending:` KEY. An upcoming one-off is keyed that way too and its
+    // row press opens the EDIT FORM — `activate` runs the thread arm first, so a
+    // wider rule would have taken the form away from every scheduled message.
+    expect(taskHref({ ...waiting, status: "upcoming" })).toBe(null);
+    // …and a task that HAS run is opened by its transcript, exactly as before.
+    expect(taskHref({ ...waiting, session_id: "sess-1" })).toBe(
+      "/explorer/view/Users/me/Desktop/fused?_side=claude&session_id=sess-1",
+    );
+  });
+
   it("leaves the other two shapes of row pressable, and pointed at the thread", () => {
     // EXACTLY ONE message: the thread arm answers for it like every other row
     // with a session. The MESSAGE row inside it is what still carries `msg=`.
@@ -8969,12 +8995,27 @@ describe("one message's own state inside an expanded row", () => {
   });
 
   it("does not dress a message whose TIME has not come as queued", () => {
-    // `pending` is `pending` whether the folder is busy or free. The queue word
-    // needs BOTH halves: the server's verdict about the folder (the task's own
-    // status) and the message being past due.
+    // `scheduled` means "its time has not come", and that is the ONE fact it is
+    // about: a message due in the future is scheduled whatever its task is doing.
     const queuedTask = task({ status: "queued" });
     expect(messageState(queuedTask, msg({ at: 5000 }), 900).word).toBe("scheduled");
-    expect(messageState(task({ status: "upcoming" }), msg({ at: 100 }), 900).word).toBe("scheduled");
+    expect(messageState(task({ status: "in_progress" }), msg({ at: 5000 }), 900).word)
+      .toBe("scheduled");
+  });
+
+  it("says `queued` for an overdue message of a RUNNING task, not `scheduled`", () => {
+    // THE FINDING (Bugbot PR #1124). The word used to require the TASK to read
+    // `queued` too — and the commonest shape this feature makes is a task whose
+    // first message is RUNNING (so the row reads `in_progress`) holding a second
+    // message that is pending, overdue, and waiting on the very turn above it.
+    // That message printed `scheduled`: "its time has not come", about a message
+    // that is late and standing in a line.
+    const running = task({ status: "in_progress" });
+    expect(messageState(running, msg({ at: 100 }), 900).word).toBe("queued");
+    expect(messageState(running, msg({ at: 100 }), 900).column).toBe("queued");
+    // …and the message that is actually in flight is still `running`, which is
+    // the branch above this one and the reason the two never collide.
+    expect(messageState(running, msg({ state: "sending" }), 900).word).toBe("running");
   });
 
   it("keeps the archive's own two words rather than collapsing them into done", () => {

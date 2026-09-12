@@ -95,6 +95,7 @@ import {
   laneCountLabel,
   laneSplitAt,
   LANE_SPLIT_LABEL,
+  canRunNext,
   messageState,
   queueCaption,
   QUEUE_PRIORITY_GLYPH,
@@ -2604,8 +2605,13 @@ function TaskNode({
 
             Drawn and DISABLED at the head of the line: dropping it on the press
             that worked would take the control away at the moment it is most
-            obvious what it did. */}
-        {queue && (
+            obvious what it did.
+
+            AND ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`, whose note
+            carries the why): behind nothing but the run holding the folder there
+            is nothing to get in front of, because this press never interrupts
+            anything. `runsNext` keeps the disabled draw described above. */}
+        {queue && (canRunNext(task) || queue.runsNext) && (
           <button
             type="button"
             className="tasks-act tasks-act--skip"
@@ -4065,8 +4071,12 @@ function TaskCard({
               empty, and a capability with no press is a capability the page does
               not really have. Already at the head (`runsNext`) it is drawn and
               DISABLED rather than dropped: the card would otherwise lose a
-              control on the very press that worked. */}
-          {queue && (
+              control on the very press that worked.
+
+              ONLY WITH ANOTHER WAITING TASK AHEAD (`canRunNext`) — the same rule
+              the List row and the chat's own card read, so one verb cannot be
+              offered on three surfaces under three conditions. */}
+          {queue && (canRunNext(task) || queue.runsNext) && (
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--skip"

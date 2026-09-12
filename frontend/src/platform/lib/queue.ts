@@ -56,6 +56,11 @@ export interface QueueFacts {
    *  id is plain text rather than a dead link. */
   queue_ahead_session?: string;
   queue_ahead_target?: string;
+  /** The holder's own TASK KEY, when the server could name one. A run that has
+   *  not published a session yet is keyed `pending:<entry id>` — which is a door
+   *  after all (`chatUrl`'s `queued` param opens that entry's chat), so the id
+   *  stays a link where it used to go plain. "" / absent on an older server. */
+  queue_ahead_key?: string;
   /** Skipped (or holding a held answer): this one goes out next, and has the
    *  claim on the spot to prove it. THE ONLY thing that reads as the head — see
    *  `queueRunsNext`. */
@@ -163,13 +168,48 @@ export function queueBehind(facts: QueueFacts): string {
 export function queueAheadHref(facts: QueueFacts): string | null {
   const session = (facts.queue_ahead_session || "").trim();
   const target = (facts.queue_ahead_target || "").trim();
-  if (!session || !target) return null;
-  return chatUrl(target, session);
+  if (!target) return null;
+  if (session) return chatUrl(target, session);
+  // A HOLDER THAT IS STILL STARTING is not a dead end any more. Its row is keyed
+  // `pending:<entry id>` until its run opens a session, and that entry IS a
+  // conversation the reader can open (`QUEUED_PARAM`) — so the id keeps its
+  // underline through the one window it used to lose it in.
+  const entry = pendingEntryId(facts.queue_ahead_key || "");
+  return entry ? chatUrl(target, "", entry) : null;
 }
 
+/** THE KEY PREFIX A TASK WEARS BEFORE IT HAS RUN — `pending:<entry id>`, the
+ *  server's own name for a task that is nothing but a line in a folder's queue
+ *  (routers/tasks.py). One spelling, because three surfaces take it apart. */
+export const PENDING_KEY_PREFIX = "pending:";
+
+/** The entry id inside a `pending:<id>` key, or "" for every other key. */
+export function pendingEntryId(key: string | null | undefined): string {
+  const k = (key || "").trim();
+  return k.startsWith(PENDING_KEY_PREFIX) ? k.slice(PENDING_KEY_PREFIX.length) : "";
+}
+
+/**
+ * THE URL PARAM THAT OPENS A CHAT WHICH HAS NEVER RUN — `queued=<entry id>`.
+ *
+ * A waiting NEW chat has no session: nothing of its has run, so there is no
+ * transcript, no `session_id` and nothing for `chatUrl`'s ordinary shape to
+ * name. What it DOES have is the entry its first message is, and the server
+ * groups the whole conversation under it (`pending:<leader id>`). So the leader
+ * id is the chat's name until the scheduler gives it a real one, and a pane that
+ * mounts with this param remembers it as its queue leader — which is what draws
+ * the waiting rows, reads the right `/api/tasks` row for the header, and adopts
+ * the session the moment the leader runs.
+ */
+export const QUEUED_PARAM = "queued";
+
 /** The codec itself, so `shell/schedule-lib.explorerUrl` has one to delegate to
- *  instead of keeping a second copy of the same three lines. */
-export function chatUrl(target: string, sessionId: string): string {
+ *  instead of keeping a second copy of the same three lines.
+ *
+ *  `queuedEntryId` is the third, optional half: a chat with no session yet is
+ *  opened by the entry it is waiting as. Never both — a session outranks it, and
+ *  a chat that has one has nothing left to open by entry. */
+export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): string {
   const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
   const encoded = norm
     .replace(/^\/+/, "")
@@ -177,7 +217,11 @@ export function chatUrl(target: string, sessionId: string): string {
     .filter(Boolean)
     .map(encodeURIComponent)
     .join("/");
-  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}`;
+  const queued =
+    !sessionId && queuedEntryId
+      ? `&${QUEUED_PARAM}=${encodeURIComponent(queuedEntryId)}`
+      : "";
+  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}${queued}`;
 }
 
 /**
@@ -249,11 +293,26 @@ export function waitingCardText(count: number, facts: QueueFacts): string {
   return `${waitingCount(count)} · ${behind || NEXT_IN_FOLDER}`;
 }
 
-/** Is there anything for Run next to DO — i.e. is another task actually in front
- *  and has this one not already claimed the spot? The button's whole condition,
- *  written once so the card, the row and the board cannot disagree. */
+/**
+ * Is there anything for Run next to DO? The button's whole condition, written
+ * once so the card, the row and the board cannot disagree.
+ *
+ * THE TEST IS THE POSITION, NOT "is something in front" (Akshil, 2026-09-12).
+ * Every queued task has something in front of it — that is what queued MEANS —
+ * and the thing in front is usually the RUN HOLDING THE FOLDER, which Run next
+ * cannot touch: it interrupts nothing, by design. So at position 1 the press had
+ * exactly one possible outcome, the state the reader was already in, while the
+ * caption went on naming a task the control could not get in front of.
+ *
+ * `queue_position > 1` is "another WAITING task is ahead of me", which is the
+ * only arrangement this verb can change. Position 0 — the server placed nothing
+ * — is not a claim that anything is ahead, so it offers no button either.
+ *
+ * THE CAPTION IS NOT GATED ON THIS. `1 message waiting · behind TASK-056` is
+ * true at position 1 and stays printed; only the button goes.
+ */
 export function canRunNext(facts: QueueFacts): boolean {
-  return !queueRunsNext(facts) && !!queueBehind(facts);
+  return !queueRunsNext(facts) && queuePosition(facts) > 1;
 }
 
 /**

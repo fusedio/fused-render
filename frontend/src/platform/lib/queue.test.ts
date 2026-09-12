@@ -9,6 +9,9 @@ import { describe, expect, it } from "bun:test";
 import {
   canRunNext,
   chatUrl,
+  PENDING_KEY_PREFIX,
+  pendingEntryId,
+  QUEUED_PARAM,
   NEXT_IN_FOLDER,
   QUEUE_PRIORITY_GLYPH,
   queueAheadHref,
@@ -115,6 +118,63 @@ describe("what is in front", () => {
     expect(chatUrl("/Users/me/my app", "s")).toContain("/explorer/view/Users/me/my%20app");
     expect(chatUrl("C:\\work\\app", "s")).toContain("/explorer/view/C%3A/work/app");
   });
+
+  it("still links a holder that is STARTING, by the entry it is keyed on", () => {
+    // A run that has not published its session yet is keyed `pending:<entry id>`,
+    // and that entry IS a conversation — `queued=` opens the pane on it. So the
+    // id keeps its underline through the one window it used to lose it in.
+    expect(
+      queueAheadHref({
+        queue_ahead: "TASK-038",
+        queue_ahead_target: "/Users/me/app",
+        queue_ahead_key: "pending:e7",
+      }),
+    ).toBe("/explorer/view/Users/me/app?_side=claude&session_id=&queued=e7");
+    // A SESSION OUTRANKS IT: a holder with both is opened by its transcript.
+    expect(
+      queueAheadHref({
+        queue_ahead_session: "sess-1",
+        queue_ahead_target: "/Users/me/app",
+        queue_ahead_key: "pending:e7",
+      }),
+    ).toBe(chatUrl("/Users/me/app", "sess-1"));
+    // And an ordinary key is not a door: `pending:` is the whole test.
+    expect(
+      queueAheadHref({ queue_ahead_target: "/Users/me/app", queue_ahead_key: "sess-9" }),
+    ).toBe(null);
+  });
+});
+
+describe("the queued chat URL", () => {
+  it("names a conversation that has never run, by its leader entry", () => {
+    expect(QUEUED_PARAM).toBe("queued");
+    expect(chatUrl("/Users/me/app", "", "e7")).toBe(
+      "/explorer/view/Users/me/app?_side=claude&session_id=&queued=e7",
+    );
+    // ROUND TRIP through the same parser the pane reads its params with.
+    const params = new URLSearchParams(chatUrl("/Users/me/app", "", "e 7").split("?")[1]);
+    expect(params.get(QUEUED_PARAM)).toBe("e 7");
+    expect(params.get("session_id")).toBe("");
+    expect(params.get("_side")).toBe("claude");
+  });
+
+  it("is never written beside a session — that is the name once there is one", () => {
+    expect(chatUrl("/Users/me/app", "sess-1", "e7")).toBe(
+      chatUrl("/Users/me/app", "sess-1"),
+    );
+    // …and an ordinary call is byte-for-byte what it always was.
+    expect(chatUrl("/Users/me/app", "")).toBe(
+      "/explorer/view/Users/me/app?_side=claude&session_id=",
+    );
+  });
+
+  it("takes a `pending:<id>` key apart, and leaves every other key alone", () => {
+    expect(PENDING_KEY_PREFIX).toBe("pending:");
+    expect(pendingEntryId("pending:e7")).toBe("e7");
+    expect(pendingEntryId("sess-1")).toBe("");
+    expect(pendingEntryId("")).toBe("");
+    expect(pendingEntryId(null)).toBe("");
+  });
 });
 
 describe("runs next", () => {
@@ -130,10 +190,30 @@ describe("runs next", () => {
   });
 
   it("is what the Run next press is offered for, and only that", () => {
-    // Something else in front AND the spot not already claimed. Either half
-    // missing and the press could only put the reader back where they are.
-    expect(canRunNext({ queue_ahead: "TASK-038" })).toBe(true);
-    expect(canRunNext({ queue_ahead: "TASK-038", queue_priority: true })).toBe(false);
+    // ANOTHER WAITING TASK AHEAD — `queue_position > 1` — and the spot not
+    // already claimed. Either half missing and the press could only put the
+    // reader back where they are.
+    expect(canRunNext({ queue_position: 2, queue_ahead: "TASK-038" })).toBe(true);
+    expect(canRunNext({ queue_position: 9, queue_ahead: "TASK-038" })).toBe(true);
+    expect(
+      canRunNext({ queue_position: 2, queue_ahead: "TASK-038", queue_priority: true }),
+    ).toBe(false);
+  });
+
+  it("is NOT offered at the head of the line, however loudly the caption names a holder", () => {
+    // Position 1 means the only thing in front is the RUN HOLDING THE FOLDER,
+    // and Run next never interrupts a run — so the press had exactly one
+    // possible outcome, the state the reader was already in (Akshil,
+    // 2026-09-12). `behind TASK-056` is still true and still printed; the
+    // BUTTON is what goes.
+    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
+    expect(waitingCardText(1, queued({ queue_position: 1, queue_ahead: "TASK-056" }))).toBe(
+      "1 message waiting · behind TASK-056",
+    );
+    // A server that placed nothing (0, or absent) is not CLAIMING anything is
+    // ahead, so it offers no button either — even when it named a holder.
+    expect(canRunNext({ queue_ahead: "TASK-038" })).toBe(false);
+    expect(canRunNext({ queue_position: 0, queue_ahead: "TASK-038" })).toBe(false);
     expect(canRunNext({ queue_ahead: "" })).toBe(false);
   });
 

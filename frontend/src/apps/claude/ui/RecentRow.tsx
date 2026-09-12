@@ -53,8 +53,21 @@ export function RecentRow({
 }: RecentRowProps) {
   const pane = rowPane(session, file);
   const label = pane ? paneSlashesBase(pane) : "";
+  /**
+   * A CHAT THAT HAS NEVER RUN (`sched/waiting-chats`). It has no session id, so
+   * none of the three doors above open it: it is opened by the ENTRY it is
+   * waiting as, through the url the row was built with
+   * (`platform/lib/queue.chatUrl`'s `queued` param). Always a navigation, even
+   * on this same target — there is no transcript to swap into place, and the
+   * pane has to mount knowing its leader.
+   */
+  const waiting = session.queuedEntry || "";
   const open = () => {
     if (disabled) return;
+    if (waiting) {
+      if (session.href) onNavigate?.(session.href);
+      return;
+    }
     if (pane) {
       onNavigate?.(paneChatUrl(pane, session.id));
       return;
@@ -63,7 +76,9 @@ export function RecentRow({
   };
   return (
     <div
-      className={`c-chat-row${session.running ? " is-running" : ""}${pane ? " has-pane" : ""}`}
+      className={`c-chat-row${session.running ? " is-running" : ""}${
+        waiting ? " is-waiting" : ""
+      }${pane ? " has-pane" : ""}`}
       role="button"
       tabIndex={0}
       onClick={open}
@@ -90,7 +105,12 @@ export function RecentRow({
           {label}
         </span>
         {session.running ? <span className="c-row-run">running</span> : null}
-        {session.running ? null : (
+        {/* ONE WORD, IN THE STATE'S OWN INK — `waiting` where a live row says
+            `running`. It replaces the time for the same reason `running` does:
+            the state is the more useful answer to "when", and the two side by
+            side spend the row's last inch saying one thing twice. */}
+        {waiting ? <span className="c-row-wait">waiting</span> : null}
+        {session.running || waiting ? null : (
           <span className="c-row-sub">
             {ago(session.last_used || session.created_at || 0)}
           </span>

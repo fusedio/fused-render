@@ -324,16 +324,26 @@
    ellipsising: this pane is 340px in a sidebar and 900px in a canvas, and the
    sentence's length is the data's. A second line of 12px text is a cheaper
    failure here than a truncated task id, which is the one token in it a reader
-   can act on. No width anywhere and no breakpoint. */
+   can act on. No width anywhere and no breakpoint.
+
+   AND IT SITS UNDER THE BUBBLE, WHICH IS ON THE RIGHT (Akshil, 2026-09-12). A
+   user turn is right-aligned in this column, so a line flush to the LEFT margin
+   was a note about a bubble two hundred pixels away — it read as a caption for
+   the assistant turn above it as readily as for the message it belongs to.
+   `justify-content: flex-end` puts the sentence under its own bubble and
+   `text-align: end` carries every wrapped line the same way, so a narrow pane
+   stacks the clauses against the right edge rather than fanning them out from
+   the left. */
 .c-waiting-line {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  justify-self: end;
+  text-align: end;
   align-items: baseline;
   gap: 4px;
   margin: 0;
-  /* Lines up under the bubble's own text, not under the bubble's edge: the
-     bubble is right-aligned in the user turn, so this sits at the log's left
-     margin and reads as a note about the row rather than as part of it. */
+  /* Lines up with the bubble's own edge rather than the column's. */
   padding: 0 2px;
   font-size: 12px;
   line-height: 1.4;
@@ -376,6 +386,13 @@ a.c-waiting-ahead:hover {
    the bubble directly above it. */
 .c-waiting-del {
   appearance: none;
+  /* NEVER THE THING THAT GIVES WAY. The line wraps, and what it may wrap is the
+     PROSE — the words in front of this one. `delete` is the only token here a
+     press lands on, so it neither shrinks nor breaks nor ellipsises: a verb cut
+     to `dele…` is a control a reader cannot be sure of. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-overflow: clip;
   border: 0;
   background: none;
   padding: 0;
@@ -398,6 +415,13 @@ a.c-waiting-ahead:hover {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
   border-radius: 3px;
+}
+/* ARMED — the second press spends every future run of a repeating message, so
+   the word that asks for it wears the colour of what it costs. Nothing moves and
+   nothing is added: the same verb in the same slot, saying more. */
+.c-waiting-stop[aria-pressed="true"] {
+  color: var(--c-error);
+  text-decoration-color: currentColor;
 }
 
 /* ── the card over the composer ──────────────────────────────────────────────
@@ -506,4 +530,32 @@ a.c-waitcard .wc-ahead:hover,
 .c-waitcard .wc-run:focus-visible {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
+}
+
+/* ── a follow-up the live run is still holding ───────────────────────────────
+   The reader typed into a chat whose turn was already running; the host absorbed
+   the line and the CLI is holding it until the model gets to it
+   (`PollResponse.inbox`, ui: ClaudeChat's `inboxRows`).
+
+   AN ORDINARY BUBBLE, AND THAT IS THE POINT. It is not queued, it is not behind
+   anything, and nothing about it is actionable — so it gets the transcript's own
+   user turn, at full strength, with no dashed edge, no caption and no controls.
+   The only reason it is drawn OUT HERE rather than inside the log is that it is
+   not a transcript row: nothing has consumed the message, so it is in no JSONL
+   file, and it is the last thing in the conversation by construction.
+
+   `.c-inbox` carries the log's 720px measure and 20px gutter, exactly as
+   `.c-waiting` does, so the bubble lands in the column the turns above it are
+   in. */
+.c-inbox {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 20px 6px;
+}
+/* The transcript's own turn spacing, kept: this reads as the next turn, because
+   it is one. */
+.c-inbox .turn.user.c-inbox-turn {
+  margin: 0;
 }

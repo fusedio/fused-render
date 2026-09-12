@@ -47,8 +47,9 @@ export interface SchedEntry {
   /** Skipped to the head of its folder's line. */
   priority?: boolean;
   /** The queued entry this one was typed behind, on a chat with no session yet
-   *  (`admitQueueSend`'s `follow_of`) — how a session-less chat finds its own
-   *  waiting messages in an unfiltered pending list (`schedFollowing`). */
+   *  (`admitQueueSend`'s `follow_of`) — the thread `waiting.waitingFor` walks to
+   *  decide which conversation a message belongs to when it names no session of
+   *  its own, which every follower does until the server claims it. */
   follow_of?: string;
 }
 
@@ -72,6 +73,17 @@ export interface SchedTask {
   queue_ahead_session?: string;
   queue_ahead_target?: string;
   queue_priority?: boolean;
+  /** HOW MANY OF THIS TASK'S MESSAGES ARE WAITING — the server's count, and the
+   *  only honest one: it is the side that can see every entry, and "waiting"
+   *  means DUE and held, which a client counting its own rows cannot tell from
+   *  "scheduled for next Tuesday". Counting rows said `1 message waiting` for
+   *  six days about a message nobody was waiting behind (design.md, UI). */
+  queue_waiting?: number;
+  /** MUST THE COMPOSER SHUT — the server's own verdict, true only for a message
+   *  somebody SCHEDULED into this conversation. `schedIsCalendar` is the same
+   *  rule read off the ENTRY, and it is the fallback for a chat with no row yet
+   *  rather than a second opinion (design.md, UI: one rule, server first). */
+  queue_blocking?: boolean;
 }
 
 /** T:16749. */
@@ -158,6 +170,50 @@ export function scheduledRunIsOurs(entry: SchedEntry, mine: string): boolean {
 }
 
 /**
+ * IS THIS ENTRY STILL A MESSAGE THAT HAS NOT BEEN SAID — pending, or CLAIMED and
+ * about to be.
+ *
+ * `sending` is the scheduler's own word for "I have taken this entry and I am
+ * spawning its run": the words have left the line and have not yet reached the
+ * transcript. Reading `pending` alone made that second a HOLE — the row came
+ * down on the poll that saw the claim and the turn arrived on the poll after it,
+ * so the reader's own message blinked out of the conversation for up to a lap
+ * (Bugbot PR #1124). It is drawn for that second with its own word (`starting`)
+ * and no delete, because there is nothing left to take back.
+ *
+ * THE BLOCK READS IT TOO, flag or no flag, and that is the same fix rather than
+ * a second one: a claimed entry aimed at this session is a run the scheduler is
+ * spawning INTO it, which is precisely the state the composer has always shut
+ * for — main simply never asked about the one second it is in.
+ */
+export function schedIsWaiting(entry: SchedEntry | null | undefined): boolean {
+  return !!entry && (entry.state === "pending" || entry.state === "sending");
+}
+
+/**
+ * THE NARROWER HALF — `pending` and nothing else, which is what MAIN asks.
+ *
+ * `schedIsWaiting` widened the question for the queue's ROWS, and the widening
+ * leaked: the same list feeds the flag-OFF block, where it shut a composer for
+ * the second a claimed entry spends in `sending` — a state main never drew and
+ * never blocked for (regression found 2026-09-12). Flag off has to be main byte
+ * for byte, so the flag-off road reads this one.
+ *
+ * The predicate lives beside its wider twin rather than inline at the call site
+ * because that is the whole point of the pair: two questions, one about a ROW
+ * ("is this message still unsaid") and one about the COMPOSER ("is the scheduler
+ * about to type into this session"), which parted on exactly one state.
+ */
+export function schedIsPending(entry: SchedEntry | null | undefined): boolean {
+  return !!entry && entry.state === "pending";
+}
+
+/** The pending-only half of a list of waiting entries — the flag-off filter. */
+export function schedPendingOnly(rows: readonly SchedEntry[]): SchedEntry[] {
+  return rows.filter((e) => schedIsPending(e));
+}
+
+/**
  * Which pending messages are aimed at THIS conversation, soonest first
  * (T:16892-16899). `session_id` is the input ("resume this one") and
  * `claude_session_id` is what a run reported it landed in; either naming the
@@ -174,8 +230,7 @@ export function schedPendingHere(
   if (!mine) return [];
   const ours = (entries || []).filter(
     (e) =>
-      !!e &&
-      e.state === "pending" &&
+      schedIsWaiting(e) &&
       (e.session_id === mine || e.claude_session_id === mine),
   );
   // ISO stamps with one offset spelling, so a string sort is a time sort.
@@ -208,34 +263,6 @@ export function schedIsCalendar(entry: SchedEntry | null | undefined): boolean {
  */
 export function schedCalendarHere(rows: readonly SchedEntry[]): SchedEntry[] {
   return rows.filter((e) => schedIsCalendar(e));
-}
-
-/**
- * THE WAITING MESSAGES OF A CHAT THAT HAS NO SESSION — its leader entry and
- * every follower of it, soonest first.
- *
- * `schedPendingHere` answers `[]` without a session, and correctly: nothing can
- * be pending IN a conversation that does not exist. But a chat whose first
- * message was queued is exactly that chat, and its messages are real pending
- * entries — grouped under the leader by `follow_of` rather than by a session
- * nobody has opened yet (`sched/queue-leader`). This is the second address, and
- * it is asked of the UNFILTERED pending list for that reason.
- */
-export function schedFollowing(
-  entries: readonly SchedEntry[] | null | undefined,
-  leader: string,
-): SchedEntry[] {
-  if (!leader) return [];
-  const ours = (entries || []).filter(
-    (e) =>
-      !!e &&
-      e.state === "pending" &&
-      (String(e.id) === leader || String(e.follow_of || "") === leader),
-  );
-  // ISO stamps with one offset spelling, so a string sort is a time sort — and
-  // the leader sorts first because it was created first.
-  ours.sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
-  return ours;
 }
 
 /**
@@ -444,13 +471,22 @@ export function schedFindTask(
   tasks: readonly SchedTask[] | null | undefined,
   entry: SchedEntry | null | undefined,
   mine: string,
+  leader: string = "",
 ): SchedTask | null {
   const id = String((entry && entry.id) || "");
   const pending = "pending:" + id;
+  // THE LEADER'S KEY, for the chat that has no session at all. Its task is named
+  // after the FIRST entry it queued (`pending:<leader>`) and every later message
+  // is a follower of that one — so the entry at the front of its line is usually
+  // NOT the entry the task is named after, and asking for `pending:<follower>`
+  // finds nothing. Without this the card and the rows of a queued new chat had
+  // no server row to read their queue facts off at all (Bugbot PR #1124).
+  const byLeader = leader ? "pending:" + leader : "";
   let byMessage: SchedTask | null = null;
   for (const task of tasks || []) {
     if (!task) continue;
     if ((mine && task.key === mine) || task.key === pending) return task;
+    if (byLeader && task.key === byLeader) return task;
     if (!byMessage && (task.messages || []).some((m) => m && m.entry_id === id)) {
       byMessage = task;
     }
@@ -590,15 +626,24 @@ export interface ScheduleWatcherDeps {
    */
   onPending?(ids: string[]): void;
   /**
-   * THE SAME PENDING SET, WHOLE (`onPending`'s rows).
+   * EVERY ENTRY THE TICK SAW, WHOLE — pending, claimed, and long since run.
    *
-   * A chat with no session has no `onBlockers` list — that filter is by session,
-   * and there is none — so the only address its waiting messages have is the
-   * leader entry they were admitted behind. Drawing them needs the entries
-   * themselves: their words, their due stamps and their origin. Published beside
-   * the ids, on the same successful tick, for the same reason `onSessions` is.
+   * A chat with no session has no `onBlockers` list (that filter is by session,
+   * and there is none), so the only address its waiting messages have is the
+   * leader entry they were admitted behind; drawing them needs the entries
+   * themselves — their words, their due stamps, their origin.
+   *
+   * AND THE ONES THAT ARE NO LONGER PENDING ARE THE OTHER HALF OF THE SAME
+   * QUESTION, which is why this is the whole listing rather than the pending
+   * slice it used to be. Once the leader RUNS, it is the only row in the schedule
+   * carrying the link between this conversation's session id and the entry its
+   * followers name in `follow_of` — and the followers themselves still say
+   * nothing about any session (the server resolves that at claim time). Publish
+   * only the pending rows and that link is gone, so the followers of a chat that
+   * has just adopted its session belong to nobody and their bubbles vanish
+   * (`waiting.waitingFor`, Bugbot PR #1124).
    */
-  onPendingRows?(rows: SchedEntry[]): void;
+  onAllRows?(rows: SchedEntry[]): void;
   /**
    * WHICH SESSION EACH RUN ENTRY OPENED (`schedRanSessions`) — the half of the
    * queue a chat with no session of its own depends on.
@@ -689,14 +734,19 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // …and the unfiltered pending set, for the queue chips (see `onPending`).
     // After `publish`, so a tick that reaches here has already done the job it
     // has always done — this is an addition to the pass, never a gate on it.
-    const pending = entries.filter((e) => e && e.state === "pending");
-    deps.onPending?.(pending.map((e) => String(e.id)));
-    // …and the ROWS behind those ids, for the one chat the session filter above
-    // cannot serve: a chat with no session draws its waiting messages by leader
-    // (`schedFollowing`), and an id alone has no words, no due time and no
-    // origin to draw. Same tick, same payload, so the two can never disagree
-    // about an entry that fired between two reads.
-    deps.onPendingRows?.(pending);
+    // A CLAIMED ENTRY IS STILL ONE OF THESE (`schedIsWaiting`): the ids are what
+    // keeps an optimistic row up until the server has listed its entry, and a
+    // row retired on the claim leaves a hole where the message was until the
+    // turn lands.
+    const waiting = entries.filter((e) => schedIsWaiting(e));
+    deps.onPending?.(waiting.map((e) => String(e.id)));
+    // …and EVERY row the tick saw, for the one chat the session filter above
+    // cannot serve: a chat with no session draws its waiting messages by leader,
+    // and an id alone has no words, no due time and no origin to draw. The rows
+    // that have already run are carried for the link only they hold — see
+    // `onAllRows`. Same tick, same payload, so the two can never disagree about
+    // an entry that fired between two reads.
+    deps.onAllRows?.(entries);
     // …and which conversation each entry's run opened, for a chat that is still
     // waiting to learn its own (see `onSessions`). Same tick, same payload: the
     // pair cannot disagree about an entry that fired between two reads.

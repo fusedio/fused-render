@@ -66,6 +66,7 @@ import type {
   DecisionScope,
   LandedDecision,
   HistoryResponse,
+  InboxMessage,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -203,6 +204,7 @@ function emptyState(file: string | null): ChatState {
     trouble: null,
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
+    inbox: [],
     historyLoading: false,
     adopting: false,
     transcript: null,
@@ -422,6 +424,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
     queued.length = 0;
     publishQueued();
   };
+  /**
+   * …AND THE SAME MESSAGES AS THE RUN SEES THEM (`PollResponse.inbox`).
+   *
+   * `queued` above is this DOCUMENT's memory of what it sent, and that is
+   * exactly what a reload — or the standing watch's `refreshHistory`, a full
+   * `turns` replace four times a minute — throws away, while the CLI goes on
+   * holding the words in its own stdin queue. Nothing has consumed the message,
+   * so the transcript does not have it either, and the reader's line vanished
+   * from the screen until the model got to it (Akshil, 2026-09-12).
+   *
+   * So the run reports its undrained inbox and this republishes it verbatim.
+   * The DEDUPE is not here: whether a row still needs a bubble depends on what
+   * the transcript and the optimistic list are drawing right now, which is a
+   * render-time question (`protocol/inbox.inboxBubbles`).
+   *
+   * IDENTITY IS THE LIST'S CONTENT, so an unchanged inbox emits nothing: this
+   * runs on every poll, and a fresh array each lap would re-render the chat four
+   * times a second for a list that had not moved.
+   */
+  let inboxSig = "";
+  const publishInbox = (rows: InboxMessage[]) => {
+    const sig = rows.map((r) => `${r.id}\u0000${r.text}`).join("\u0001");
+    if (sig === inboxSig) return;
+    inboxSig = sig;
+    emit({ inbox: rows });
+  };
+  /** Nothing is held once the run is over: the CLI has answered its inbox or
+   *  died with it, the same rule `clearQueued` states for the optimistic half. */
+  const clearInbox = () => publishInbox([]);
 
   // ---- params (the exact moments T writes them) ---------------------------
   //
@@ -1143,6 +1174,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
+        // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
+        // `publishInbox`. An older agent.py sends none, which reads as an empty
+        // inbox, which is what it was before this field existed.
+        publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
 
         const segs = Array.isArray(poll.segments) ? poll.segments : [];
         const fullText = poll.text || "";
@@ -1486,7 +1521,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // either been answered above or died with the process. Guarded on
       // ownership for the same reason the chrome is — an abandoned loop's late
       // finally must not wipe the hint the newer loop's follow-up just put up.
-      if (loopSeq === seat) clearQueued();
+      if (loopSeq === seat) {
+        clearQueued();
+        clearInbox();
+      }
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
@@ -2325,6 +2363,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         false,
       );
     }
+    // THE LIVE RUN'S UNDRAINED INBOX, ON THE READ A RELOADING CHAT MAKES FIRST.
+    //
+    // The poll's copy keeps these bubbles up while a page stays open; a page that
+    // comes BACK reads `history` before it has a run to poll, and that window is
+    // exactly when the reader is looking for the follow-up they typed. Asked only
+    // beside `live_run`, which is the field that says whether anything is running
+    // at all — and `live_run: ""` publishes the empty list, because nothing is
+    // held when nothing is running.
+    if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -2357,6 +2404,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
     clearQueued();
+    clearInbox();
     setParam({ session_id: sessionId });
     emit({
       sessionId,
@@ -3214,6 +3262,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // would keep its run unadoptable for the rest of the page.
     claimingRuns.clear();
     clearQueued();
+    clearInbox();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the
     // spelling for "none" (T:13031-13036). The DIFFERENCE between the two is in

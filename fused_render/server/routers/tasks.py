@@ -2076,6 +2076,39 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
         return {}
 
 
+def _task_number(task_key: str, tasks: dict[str, dict]) -> str:
+    """The number for ONE task, allocated now if it has none — the listing's own
+    `_numbers`, over a collection the caller already holds.
+
+    **A QUEUED SEND'S ANSWER HAS TO BE ABLE TO NAME ITS OWN TASK** (Akshil,
+    2026-09-12). A brand-new chat whose first message queues is a
+    `pending:<entry>` task that nothing has listed yet, so `POST
+    /api/tasks/queue/admit` used to answer with a position, a holder and no
+    number at all: the bubble said "queued · behind TASK-041" about a task it
+    could not call anything, and the name only appeared when the next full
+    listing came round. Minting HERE is what makes it the same number — not a
+    second one — that the row is built with a moment later:
+    `tasks_store.ensure_ids` is allocate-once and keyed by the task key, so the
+    listing finds the record already there and writes nothing.
+
+    `_place` first, because the allocation reads two facts a freshly collected
+    task does not have yet: the project (which counter the number comes out of)
+    and the order (the sequence backfilled numbers are handed out in). The same
+    two, computed the same way, as the listing — which is the whole reason this
+    goes through `_place`/`_numbers` rather than calling `ensure_ids` with a
+    project of its own guessing.
+
+    "" for a key the collection does not hold — the entry was cancelled from
+    another window between the write and this read — which is how every other
+    absent id on this wire reads, and for a state dir that cannot be written
+    (`_numbers` swallows that: no numbers is a cost the task list survives)."""
+    task = tasks.get(task_key)
+    if task is None:
+        return ""
+    _place(task)
+    return _numbers({task_key: task}).get(task_key, "")
+
+
 # ------------------------------------------------------------------ liveness
 
 
@@ -2338,6 +2371,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # is: they are about this task's own entries, and the row is where those
     # are. Flag off costs one branch and nothing else.
     waiting_count, blocking = _queue_summary(task, now) if queue_on else (0, False)
+    # THE LEADER ENTRY OF A ROW THAT HAS NO CONVERSATION YET, and who asked for
+    # it. Both read once here, off this task's own entries, and both "" for a
+    # task with a session — that row is a chat already, and has a transcript to
+    # be found by. See the two fields below.
+    entry_id = tasks_store.pending_entry(task["key"])
+    entry_origin = _leader_origin(task, entry_id) if entry_id else ''
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued),
                      reserved=reserved)
@@ -2345,6 +2384,26 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     return {
         "key": task["key"],
         "task_id": number,
+        # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
+        # for every task that has a session. A `pending:<entry>` row is a chat
+        # whose first message is still waiting: there is no transcript to open
+        # and no session id to open it with, so the entry id is the only handle
+        # a client has on it — it is what the chat is re-entered by, what Skip
+        # names (`api_queue_skip`'s `{entry_id}`), and what cancel writes
+        # against. Lifted out of the key rather than left for the client to
+        # slice, because the key REKEYS onto the session the moment the leader
+        # runs (§5) and a reader that parsed it would be parsing a shape that
+        # had moved.
+        "entry_id": entry_id,
+        # WHO ASKED FOR THE WORK BEHIND A ROW THAT HAS NOT RUN — `"chat"` for a
+        # message a composer queued through admission (`api_queue_admit` stamps
+        # it and nothing else does), `""` for one somebody SCHEDULED from the
+        # calendar or the New task form. The two are the same row shape and a
+        # very different thing to a reader: one is a conversation waiting to
+        # start and belongs in a list of chats, the other is a job with a date
+        # on it and does not. `""` for every task that has a session, which is
+        # already a chat and already listed as one.
+        "entry_origin": entry_origin,
         # Canonicalized on the way out, like every other fs path this server
         # hands the shell: the frontend's path helpers are forward-slash-only.
         "project": canonical_fs_path(task["project"]),
@@ -2428,6 +2487,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # has not spawned — and the client then prints the name unlinked.
         "queue_ahead_session": queued.get("ahead_session", ""),
         "queue_ahead_target": queued.get("ahead_target", ""),
+        # The holder's own TASK key — a `pending:<entry>` for a run that has not
+        # named its session yet — so "behind TASK-0xx" can still be a link to
+        # that chat while the pair above is still empty.
+        "queue_ahead_key": queued.get("ahead_key", ""),
         # Does this task's work go out the moment the folder frees? True for a
         # skipped task (`schedule.set_priority`, which Skip and Run-now write)
         # and for a held answer, which is always at the head.
@@ -2450,6 +2513,21 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
+
+
+def _leader_origin(task: dict, entry_id: str) -> str:
+    """`origin` off the entry a `pending:<entry>` row is keyed by — the LEADER,
+    not the newest message, because the leader is the one that decides what kind
+    of thing this row is: a chat whose first line queued (`"chat"`, stamped by
+    `api_queue_admit` and by nothing else), or a message somebody scheduled
+    (absent, which is main's field for field).
+
+    "" for a leader that is not among this task's entries, which can only happen
+    if it was cancelled out from under the row between collection and here."""
+    for entry in task["entries"]:
+        if str(entry.get("id") or "") == entry_id:
+            return str(entry.get("origin") or "")
+    return ""
 
 
 def _queue_summary(task: dict, now: float) -> tuple[int, bool]:
@@ -3724,8 +3802,22 @@ def api_queue_admit(body: dict = Body(...),
     # and nothing else has seen it yet.
     task_key = _entry_key(entry, dict(by_id, **{str(entry.get("id") or ""): entry}))
     tasks_watch.notify({task_key})
-    place = _queue_place(task_key)
+    # ONE COLLECTION FOR BOTH HALVES of the answer, the shape run-now's queued
+    # arm already uses: where this message landed in the line and what its task
+    # is CALLED are two questions about the same set of tasks, and collecting is
+    # a glob over every transcript on the machine.
+    tasks = _collect()
+    place = _queue_place(task_key, tasks)
+    # Placed after the line is derived, never before: `_task_number` fills in
+    # the task's project/target/order, and `_queue_lines` is a fact about
+    # entries and sessions that must be read the same way the listing reads it.
+    number = _task_number(task_key, tasks)
     return {"run": False, "entry": entry, "key": task_key,
+            # WHAT THIS CHAT IS NOW CALLED — minted here rather than waited for.
+            # See `_task_number`: the chip under a queued bubble names the task,
+            # and a brand-new chat's first queued message had no number until
+            # the next listing. "" only where the task itself has gone.
+            "task_id": number,
             "position": place["position"], "ahead": place["ahead"],
             "ahead_title": place["ahead_title"],
             # WHERE "behind TASK-041" GOES when the chip is clicked — the

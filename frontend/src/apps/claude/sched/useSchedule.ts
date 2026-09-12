@@ -11,6 +11,7 @@ import {
 } from "@platform/lib/api";
 import type { ChatController } from "../protocol/controller-api";
 import { useProjectQueueEnabled } from "../feature-flag";
+import { waitingFor } from "./waiting";
 import {
   BLOCKED_PLACEHOLDER,
   createScheduleWatcher,
@@ -19,6 +20,7 @@ import {
   schedCalendarHere,
   schedFindTask,
   schedIsRepeat,
+  schedPendingOnly,
   schedSameRow,
   schedStopTarget,
   SCHEDULE_URL,
@@ -32,6 +34,16 @@ export interface UseScheduleOptions {
   file: string | null;
   /** The session on screen, `""` on the landing page. */
   sessionId: string;
+  /**
+   * THE ENTRY A SESSION-LESS CHAT'S MESSAGES ARE GROUPED UNDER
+   * (`sched/queue-leader`), `""` for everything else.
+   *
+   * A chat whose first message was queued has no session for anything to name,
+   * so its waiting rows, its `/api/tasks` row (`pending:<leader>`) and the card
+   * over its composer all hang off this id instead. Held by the chat rather than
+   * here because it is written in the send window, one tick before any render.
+   */
+  leaderId?: string;
   /** False on the landing page: nothing can be pending in a conversation that
    *  does not exist yet, and there is nothing to render a turn into. */
   inChat: boolean;
@@ -117,11 +129,12 @@ export interface ScheduleState {
    * The SAME list the block used to take; the difference is who draws it.
    */
   waitingHere: SchedEntry[];
-  /** Every pending entry the last successful poll saw, whole — the second address
-   *  a chat with no session has to its own waiting messages (`schedFollowing`,
-   *  by leader entry). Null before any poll has answered, for `pendingIds`'
+  /** EVERY entry the last successful poll saw, whole — pending, claimed, and
+   *  already run. What `waitingFor` asks its question of: the rows that have run
+   *  carry the only link between this conversation's session id and the entry
+   *  its followers name. Null before any poll has answered, for `pendingIds`'
    *  reason: an empty list there would read as "they already went". */
-  pendingRows: SchedEntry[] | null;
+  allRows: SchedEntry[] | null;
   /** Is the box shut — the ONE answer the composer and the calendar button both
    *  read, so they can never disagree about what this chat is doing.
    *
@@ -139,6 +152,11 @@ export interface ScheduleState {
   /** The calendar button is off for the block OR for the mode's lock. */
   schedDisabled: boolean;
   rec: SchedTask | null;
+  /** HOW MANY ROWS HAVE BEEN READ, counting from mount — the clock an optimistic
+   *  claim is measured against. A caller that painted something the row in hand
+   *  cannot know yet (Run next) remembers this number and holds its claim until
+   *  it changes, which is exactly "until the server has answered again". */
+  recGen: number;
   armed: boolean;
   refused: boolean;
   stopping: boolean;
@@ -175,6 +193,8 @@ export interface ScheduleState {
 
 export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const { controller, file, sessionId, inChat, navLocked, followBottom, onNavigate } = opts;
+  /** "" for every chat that has a session, which is all of them but one. */
+  const leaderId = opts.leaderId ?? "";
   /** Read at CALL time: the poller and the row cache both outlive any one
    *  render, and neither may rebuild for a new callback identity. */
   const api = opts.api || PLATFORM_API;
@@ -195,9 +215,20 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    * that WAS blocking must not label the one that is, so the row is published
    * only while its id is still the id at the front of the queue.
    */
-  const [recRow, setRecRow] = useState<{ id: string; task: SchedTask | null }>({
+  const [recRow, setRecRow] = useState<{
+    id: string;
+    task: SchedTask | null;
+    /** The poll lap this row was read on (`lap`) — see the fetch's own note on
+     *  why one read per entry is not enough under the queue. */
+    at: number;
+    /** Bumped on every write, so a caller can tell "the same row again" from "a
+     *  fresh answer that happens to say the same thing". */
+    gen: number;
+  }>({
     id: "",
     task: null,
+    at: 0,
+    gen: 0,
   });
   /** Keyed by ID, not a class on the button, for the reason the refusal is: the
    *  15 s poll re-renders this card, and an armed button that quietly disarmed
@@ -224,8 +255,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Read by the poller, which outlives any one render.
-  const live = useRef({ sessionId, inChat });
-  live.current = { sessionId, inChat };
+  const live = useRef({ sessionId, inChat, leaderId });
+  live.current = { sessionId, inChat, leaderId };
 
   /**
    * SAME LIST, SAME OBJECT. The poll answers every 15 s and hands back a fresh
@@ -271,14 +302,23 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     setPendingIds(new Set(ids));
   }, []);
 
-  /** …AND THE ROWS BEHIND THOSE IDS (scheduled.ts `onPendingRows`). A chat with
-   *  no session has no session-filtered list — the filter needs a session — so
-   *  its waiting messages are found in here by leader entry. Deduped on the same
-   *  shape `absorb` compares, so an unchanged schedule does not re-render the
-   *  composer's column four times a minute. */
-  const [pendingRows, setPendingRows] = useState<SchedEntry[] | null>(null);
-  const absorbPendingRows = useCallback((rows: SchedEntry[]) => {
-    setPendingRows((prev) => {
+  /** …AND THE ROWS THEMSELVES, ALL OF THEM (scheduled.ts `onAllRows`). A chat
+   *  with no session has no session-filtered list — the filter needs a session —
+   *  so its waiting messages are found in here through the entry they follow,
+   *  and the entry that has already RUN is what ties that group to the session
+   *  the chat has just adopted. Deduped on the same shape `absorb` compares, so
+   *  an unchanged schedule does not re-render the composer's column four times a
+   *  minute. */
+  const [allRows, setAllRows] = useState<SchedEntry[] | null>(null);
+  /** HOW MANY TIMES THE SCHEDULE HAS ANSWERED, counting from mount — the lap the
+   *  row read is re-armed on. `tick` cannot do that job: it is only stamped when
+   *  a lap saw a row for THIS session, and a chat with no session (its first
+   *  message queued) has none by construction, so its row would be read once and
+   *  then never again. This counts ANSWERS, which is what "ask again" means. */
+  const [lap, setLap] = useState(0);
+  const absorbAllRows = useCallback((rows: SchedEntry[]) => {
+    setLap((n) => n + 1);
+    setAllRows((prev) => {
       const same =
         !!prev &&
         prev.length === rows.length &&
@@ -343,18 +383,40 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    *
    * FLAG OFF THE BLOCK IS MAIN'S, byte for byte.
    */
-  const blockers = useMemo(
-    () => (queueOn ? EMPTY_ROWS : allBlockers),
+  /**
+   * FLAG OFF, THE LIST IS PENDING-ONLY — main, byte for byte.
+   *
+   * The poller widened `schedPendingHere` to `schedIsWaiting` (pending OR
+   * `sending`) so the queue's ROWS would not blink out for the second between a
+   * claim and the turn appearing. The same list is what flag-off reads, so the
+   * widening reached a composer main never shut: an entry the scheduler had just
+   * claimed briefly blocked the box, with the banner naming a message that was
+   * already on its way (regression found 2026-09-12).
+   *
+   * So the flag-off road narrows it back at the seam rather than the poller
+   * narrowing it for everybody: `sending` is genuinely a row the queue draws.
+   * Every flag-off consumer below — the block, `waitingHere`, `next`, `hasCard`
+   * and therefore `blocked` — reads this one.
+   */
+  const pendingBlockers = useMemo(
+    () => (queueOn ? allBlockers : schedPendingOnly(allBlockers)),
     [allBlockers, queueOn],
+  );
+  const blockers = useMemo(
+    () => (queueOn ? EMPTY_ROWS : pendingBlockers),
+    [pendingBlockers, queueOn],
   );
   /** THE ROWS THE CHAT DRAWS — the poll's own answer, unfiltered by anything this
    *  module decides. Named apart from `blockers` because they are no longer the
    *  same question: one is "what is waiting", the other is "what is this card
    *  drawing". */
-  const waitingHere = allBlockers;
+  const waitingHere = useMemo(
+    () => (queueOn ? waitingFor(allRows, sessionId, leaderId) : pendingBlockers),
+    [queueOn, allRows, sessionId, leaderId, pendingBlockers],
+  );
   /** …and the half of it the READER scheduled, which is the only half that still
    *  shuts the box (see `blocked`). */
-  const calendarHere = useMemo(() => schedCalendarHere(allBlockers), [allBlockers]);
+  const calendarHere = useMemo(() => schedCalendarHere(pendingBlockers), [pendingBlockers]);
 
   /** THE ENTRY EVERYTHING DOWNSTREAM IS ABOUT — the soonest message waiting for
    *  this conversation, whether or not any card is drawing it. `rec` is fetched
@@ -379,31 +441,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    * inside a chat) not there to say why, for up to a poll interval (Bugbot
    * PR #1075).
    */
-  const hasCard = waitingHere.length > 0 && !!sessionId;
-  /**
-   * THE BOX IS SHUT FOR A MESSAGE THE READER SCHEDULED, AND FOR NOTHING ELSE.
-   *
-   * Flag off this is `hasCard`, unchanged: any pending entry aimed here is one
-   * the scheduler is about to send INTO this session, and a line typed over it is
-   * two messages racing into one run. The only defence the chat had was to shut
-   * the box until the entry went.
-   *
-   * UNDER THE QUEUE the admission took that job — a second send is admitted into
-   * this conversation's own line, in the order it was typed, and the row under it
-   * says so. But that is only true of messages the ADMISSION created. A calendar
-   * entry aimed at this session is still a turn about to start here out of the
-   * scheduler's own hand, so it still shuts the box, with the same reason it
-   * always gave. `origin` is the one field that tells the two apart, and its
-   * ABSENCE reads as the calendar — the cautious half, and what every entry
-   * stored before the field existed gets.
-   */
-  const blocked = queueOn ? calendarHere.length > 0 && !!sessionId : hasCard;
-  /** …and the entry the reason is written about. Flag off it is `next`; under the
-   *  queue it is the first CALENDAR entry, which may not be the first waiting one
-   *  at all — naming a chat send in a sentence about why the box is shut would be
-   *  a banner about the wrong message. */
-  const blockAbout = queueOn ? (calendarHere[0] ?? null) : next;
-
+  const hasCard = waitingHere.length > 0 && (!!sessionId || !!leaderId);
   // ── the poller ────────────────────────────────────────────────────────────
   //
   // Rebuilt only for a new TARGET: the session and the view are read through
@@ -419,7 +457,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         busy: () => hooks.current.controller.isBusy(),
         onBlockers: absorb,
         onPending: absorbPending,
-        onPendingRows: absorbPendingRows,
+        onAllRows: absorbAllRows,
         onSessions: absorbSessions,
         addNote: (text) => hooks.current.controller.addNote(text),
         setRunParam: (runId) => hooks.current.setRunParam(runId),
@@ -437,7 +475,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     // the two refs above, because a watcher rebuilt mid-life would re-baseline —
     // and the baseline is what stops a reload from re-rendering turns history
     // has already restored.
-    [file, absorb, absorbPending, absorbPendingRows, absorbSessions],
+    [file, absorb, absorbPending, absorbAllRows, absorbSessions],
   );
   useEffect(() => watcher.start(), [watcher]);
 
@@ -459,7 +497,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     setArmedId("");
     setRefusedId("");
     setStopping(false);
-    setRecRow({ id: "", task: null });
+    setRecRow((cur) => ({ id: "", task: null, at: 0, gen: cur.gen + 1 }));
     watcher.resetForNewTranscript();
   }, [watcher]);
 
@@ -510,8 +548,20 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     if (!hasCard || !nextId) return;
     // ONE READ PER BLOCKING MESSAGE (T:17006). The 15 s poll re-runs this
     // effect through `tick`; the id already fetched for is not fetched again.
-    if (rowBusy.current || recRow.id === nextId) return;
+    //
+    // UNDER THE QUEUE THAT CACHE IS WRONG, and it is wrong in the one direction
+    // that matters: the queue's fields (`queue_ahead`, `queue_position`,
+    // `queue_priority`, `queue_waiting`) change UNDER A FIXED ENTRY ID every time
+    // the folder moves — the task in front finishes, somebody else skips ahead,
+    // Run next is pressed — so a row read once said "behind TASK-038" for the
+    // life of the chat while the folder had long since freed (Bugbot PR #1124).
+    // So the row is re-read once per poll lap instead: the same cadence the rows
+    // themselves are drawn at, and one listing per fifteen seconds is what this
+    // pane already pays for the schedule.
+    const stale = queueOn && recRow.at !== lap;
+    if (rowBusy.current || (recRow.id === nextId && !stale)) return;
     const id = nextId;
+    const at = lap;
     rowBusy.current = true;
     void (async () => {
       try {
@@ -519,19 +569,58 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         // The entry may have been stopped while this was in flight. T's
         // `schedTaskRec` throws that answer away by comparing ids at READ time;
         // storing the id beside the row does the same job here.
-        setRecRow({
+        setRecRow((cur) => ({
           id,
-          task: schedFindTask(data.tasks, nextRef.current, live.current.sessionId),
-        });
+          task: schedFindTask(
+            data.tasks,
+            nextRef.current,
+            live.current.sessionId,
+            live.current.leaderId,
+          ),
+          at,
+          gen: cur.gen + 1,
+        }));
       } catch {
         // No id recorded, so the next poll tries again (T:17002-17004).
       } finally {
         rowBusy.current = false;
       }
     })();
-  }, [hasCard, nextId, tick, recRow.id]);
+  }, [hasCard, nextId, tick, lap, recRow.id, recRow.at, queueOn]);
   /** T:16997-16999 — the row is null the moment it stops being THIS entry's. */
   const rec = recRow.id && recRow.id === nextId ? recRow.task : null;
+
+  /**
+   * THE BOX IS SHUT FOR A MESSAGE THE READER SCHEDULED, AND FOR NOTHING ELSE.
+   *
+   * Flag off this is `hasCard`, unchanged: any pending entry aimed here is one
+   * the scheduler is about to send INTO this session, and a line typed over it is
+   * two messages racing into one run. The only defence the chat had was to shut
+   * the box until the entry went.
+   *
+   * UNDER THE QUEUE the admission took that job — a second send is admitted into
+   * this conversation's own line, in the order it was typed, and the row under it
+   * says so. But that is only true of messages the ADMISSION created. A calendar
+   * entry aimed at this session is still a turn about to start here out of the
+   * scheduler's own hand, so it still shuts the box.
+   *
+   * AND THE SERVER IS ASKED FIRST (`queue_blocking`, design.md UI: "one rule,
+   * server first"). It is the side that decides the line, so a client rule that
+   * disagreed with it would be a composer shut — or open — for a reason the rest
+   * of the app does not share. `schedIsCalendar` is that same rule read off the
+   * ENTRY and it stays as the FALLBACK, for the paint before the row lands and
+   * for a server too old to send the field: its `origin`-absent test falls the
+   * cautious way, which is the right direction to be briefly wrong in.
+   */
+  const rowBlocking = rec && typeof rec.queue_blocking === "boolean" ? rec.queue_blocking : null;
+  const blocked = queueOn
+    ? (rowBlocking === null ? calendarHere.length > 0 : rowBlocking) && !!sessionId
+    : hasCard;
+  /** …and the entry the reason is written about. Flag off it is `next`; under the
+   *  queue it is the first CALENDAR entry, which may not be the first waiting one
+   *  at all — naming a chat send in a sentence about why the box is shut would be
+   *  a banner about the wrong message. */
+  const blockAbout = queueOn ? (calendarHere[0] ?? null) : next;
 
   // ── the layout-shift correction (T:17198-17213) ───────────────────────────
   //
@@ -682,7 +771,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   return {
     blockers,
     waitingHere,
-    pendingRows,
+    allRows,
     blocked,
     pendingIds,
     ranSessions,
@@ -690,6 +779,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     placeholder: BLOCKED_PLACEHOLDER,
     schedDisabled: blocked || locked,
     rec,
+    recGen: recRow.gen,
     armed: !!nextId && armedId === nextId,
     refused: !!nextId && refusedId === nextId,
     stopping,

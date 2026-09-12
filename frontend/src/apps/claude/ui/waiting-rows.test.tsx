@@ -55,6 +55,8 @@ const row = (extra: Partial<WaitingRowData> = {}): WaitingRowData => ({
   due: "2026-09-12T09:59:00Z",
   word: "queued",
   optimistic: false,
+  repeat: false,
+  stopId: "",
   ...extra,
 });
 
@@ -198,12 +200,43 @@ describe("the one line under it", () => {
     expect(busy.root.findAllByType("button")[0].props.disabled).toBe(true);
     act(() => busy.unmount());
   });
+
+  it("sits UNDER ITS OWN BUBBLE, on the right, and wraps that way too", () => {
+    // A user turn is right-aligned in this column. The line was flush LEFT, two
+    // hundred pixels from the message it is about, so it read as a caption for
+    // the assistant turn above it as readily as for the reader's own (Akshil,
+    // 2026-09-12). `justify-content: flex-end` puts the sentence under its
+    // bubble; `text-align: end` carries every WRAPPED line the same way, so a
+    // narrow pane stacks the clauses against the right edge instead of fanning
+    // them out from the left.
+    const css = SCHED_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    const line = css.slice(css.indexOf(".c-waiting-line {"), css.indexOf("}", css.indexOf(".c-waiting-line {")));
+    expect(line).toContain("justify-content: flex-end");
+    expect(line).toContain("justify-self: end");
+    expect(line).toContain("text-align: end");
+    // STILL WRAPS AND STILL MEASURES NOTHING: the sentence's length is the
+    // data's, and no width or breakpoint decides it.
+    expect(line).toContain("flex-wrap: wrap");
+    expect(line).not.toMatch(/\bwidth:/);
+    expect(css).not.toContain("@media (max-width");
+    // …AND THE ELLIPSIS IS NEVER ON `delete`. It is the one token here a press
+    // lands on, so it neither shrinks nor breaks: a verb cut to `dele…` is a
+    // control a reader cannot be sure of. What may give way is the prose.
+    const del = css.slice(css.indexOf(".c-waiting-del {"), css.indexOf("}", css.indexOf(".c-waiting-del {")));
+    expect(del).toContain("flex: 0 0 auto");
+    expect(del).toContain("white-space: nowrap");
+    expect(del).not.toContain("text-overflow: ellipsis");
+  });
 });
 
 describe("the card over the composer", () => {
   it("counts the messages and names what is in front", () => {
     const r = render(
-      <WaitingCard count={2} facts={{ queue_ahead: "TASK-038" }} onRunNext={() => {}} />,
+      <WaitingCard
+        count={2}
+        facts={{ queue_position: 2, queue_ahead: "TASK-038" }}
+        onRunNext={() => {}}
+      />,
     );
     const out = textOf(r);
     expect(out).toContain("2 messages waiting");
@@ -223,13 +256,31 @@ describe("the card over the composer", () => {
     act(() => none.unmount());
   });
 
-  it("offers Run next ONLY while another task is actually in front", () => {
+  it("offers Run next ONLY while another WAITING task is in front", () => {
     // A control whose only possible outcome is the state you are already in
     // teaches the reader it does nothing.
     const free = render(<WaitingCard count={2} facts={{}} onRunNext={() => {}} />);
     expect(free.root.findAllByType("button")).toHaveLength(0);
     expect(textOf(free)).toContain("next in this folder");
     act(() => free.unmount());
+
+    // AT THE HEAD OF THE LINE the only thing in front is the run HOLDING the
+    // folder, and this press never interrupts a run — so there is no button, and
+    // the sentence still says what is in front, because that is true (Akshil,
+    // 2026-09-12).
+    const head = render(
+      <WaitingCard
+        count={1}
+        facts={{ queue_position: 1, queue_ahead: "TASK-056" }}
+        onRunNext={() => {}}
+      />,
+    );
+    expect(head.root.findAllByType("button")).toHaveLength(0);
+    expect(textOf(head)).toContain("1 message waiting");
+    expect(textOf(head)).toContain("behind ");
+    expect(textOf(head)).toContain("TASK-056");
+    expect(textOf(head)).not.toContain("next in this folder");
+    act(() => head.unmount());
   });
 
   it("reads 'next in this folder' after the press, and stops offering it", () => {
@@ -239,7 +290,7 @@ describe("the card over the composer", () => {
     const after = render(
       <WaitingCard
         count={2}
-        facts={{ queue_ahead: "TASK-038", queue_priority: true }}
+        facts={{ queue_position: 2, queue_ahead: "TASK-038", queue_priority: true }}
         onRunNext={() => {}}
       />,
     );
@@ -255,7 +306,7 @@ describe("the card over the composer", () => {
     const r = render(
       <WaitingCard
         count={1}
-        facts={{ queue_ahead: "TASK-038" }}
+        facts={{ queue_position: 3, queue_ahead: "TASK-038" }}
         onRunNext={() => { pressed += 1; }}
       />,
     );
@@ -263,7 +314,12 @@ describe("the card over the composer", () => {
     expect(pressed).toBe(1);
     act(() => r.unmount());
     const busy = render(
-      <WaitingCard count={1} facts={{ queue_ahead: "TASK-038" }} busy onRunNext={() => {}} />,
+      <WaitingCard
+        count={1}
+        facts={{ queue_position: 3, queue_ahead: "TASK-038" }}
+        busy
+        onRunNext={() => {}}
+      />,
     );
     expect(busy.root.findAllByType("button")[0].props.disabled).toBe(true);
     act(() => busy.unmount());
@@ -278,14 +334,14 @@ describe("the rows come from the server, which is what a reload reads", () => {
     // screen, which is the worse of the two possible failures.
     expect(CHAT).toContain("const waiting = useMemo(");
     expect(CHAT).toContain("waitingRows(serverWaiting, liveSeeds, droppedEntries)");
-    // TWO ADDRESSES. A chat WITH a session reads the session-filtered pending
-    // list; a chat with NO session — its first message queued, so nothing has run
-    // — has no such list and finds its messages by the leader entry they were
-    // admitted behind.
-    expect(CHAT).toContain("? sched.waitingHere");
-    expect(CHAT).toContain("schedFollowing(sched.pendingRows, leaderId)");
-    expect(WATCHER).toContain("export function schedFollowing(");
-    expect(WATCHER).toContain("deps.onPendingRows?.(pending);");
+    // ONE ADDRESS, not two. It was two — the session-filtered pending list with
+    // a session, the leader's followers without one — and adoption flips exactly
+    // the fact they were swapped on, so both missed the followers in the instant
+    // it did (Bugbot PR #1124). `waitingFor` asks the whole listing instead.
+    expect(CHAT).toContain("const serverWaiting = sched.waitingHere;");
+    expect(CHAT).not.toContain("schedFollowing(");
+    expect(USE_SCHEDULE).toContain("waitingFor(allRows, sessionId, leaderId)");
+    expect(WATCHER).toContain("deps.onAllRows?.(entries);");
   });
 
   it("is ONE answer about what is in front, and the server's when it has one", () => {
@@ -293,7 +349,7 @@ describe("the rows come from the server, which is what a reload reads", () => {
     // same thing. The authority is this conversation's `/api/tasks` row, which
     // survives a reload; the admission's answer is the fallback for the first
     // paint and for a chat that has no row at all.
-    expect(CHAT).toContain("waitingFacts(sched.rec, admitAhead)");
+    expect(CHAT).toContain("waitingFacts(sched.rec, admitAhead, claimedNext)");
     expect(WATCHER).toContain("queue_ahead_session?: string;");
     expect(USE_SCHEDULE).toContain("if (!hasCard || !nextId) return;");
   });
@@ -318,7 +374,7 @@ describe("the rows come from the server, which is what a reload reads", () => {
       CHAT.indexOf("const deleteWaiting = useCallback("),
       CHAT.indexOf("const adoptSession ="),
     );
-    expect(del).toContain("await cancelScheduledMessage(entryId);");
+    expect(del).toContain("await cancelScheduledMessage(stopId || entryId);");
     // Remembered BEFORE the seed is dropped, so no paint sits between the two —
     // and the memory keeps filtering the SERVER's list, which is up to a lap
     // older than the press.
@@ -360,8 +416,14 @@ describe("Run next, from the card", () => {
     expect(run).toContain('const key = sched.rec?.key || "";');
     expect(run).toContain("await skipQueue(key ? { key } : { entry_id: first });");
     // The claim is painted onto the card: this pane has no listing to correct it
-    // from, and the server's answer is the position it just set.
+    // from, and the server's answer is the position it just set. It goes on the
+    // FACTS as well as on the fallback, because the facts prefer the server's row
+    // whenever there is one and that row was read before the press.
     expect(run).toContain("queue_priority: true");
+    expect(run).toContain("setNextClaim(sched.recGen);");
+    expect(CHAT).toContain(
+      "const claimedNext = nextClaim !== null && nextClaim === sched.recGen;",
+    );
     // …and a refusal is said out loud, in the verb's own words.
     expect(run).toContain('"Run next did not go through: " + t.message');
   });
@@ -532,8 +594,14 @@ describe("what still shuts the composer", () => {
     // A chat-origin entry is the reader's own line, already admitted into this
     // conversation's own order — it never shuts anything. Driven for real, both
     // ways, in sched/useSchedule.test.tsx.
+    // THE SERVER IS ASKED FIRST (`queue_blocking`) and the entry rule is the
+    // fallback for the paint before the row lands — one rule, server first
+    // (design.md, UI), rather than a client opinion running beside the server's.
     expect(USE_SCHEDULE).toContain(
-      "const blocked = queueOn ? calendarHere.length > 0 && !!sessionId : hasCard;",
+      "const rowBlocking = rec && typeof rec.queue_blocking === \"boolean\" ? rec.queue_blocking : null;",
+    );
+    expect(USE_SCHEDULE).toContain(
+      "? (rowBlocking === null ? calendarHere.length > 0 : rowBlocking) && !!sessionId",
     );
     expect(WATCHER).toContain("export function schedIsCalendar(");
     expect(WATCHER).toContain("return !!entry && !entry.origin;");
@@ -541,9 +609,35 @@ describe("what still shuts the composer", () => {
     // drawn as messages, and one card over the composer summarises them. Two
     // shapes for one fact a few pixels apart is what browser QA sent back.
     expect(USE_SCHEDULE).toContain("const blockers = useMemo(");
-    expect(USE_SCHEDULE).toContain("(queueOn ? EMPTY_ROWS : allBlockers)");
+    expect(USE_SCHEDULE).toContain("(queueOn ? EMPTY_ROWS : pendingBlockers)");
     const block = readFileSync(join(HERE, "SchedBlock.tsx"), "utf8");
     expect(block).toContain("if (!next) return null;");
+  });
+
+  it("is PENDING-ONLY with the flag off — main, byte for byte", () => {
+    // `schedIsWaiting` was widened to `pending` OR `sending` so the queue's ROWS
+    // would not blink out for the second between a claim and the turn landing.
+    // The same list is what the flag-OFF block reads, so the widening reached a
+    // composer main never shut: a claimed entry briefly closed the box, with the
+    // banner naming a message that was already on its way (regression found
+    // 2026-09-12). Narrowed at the seam, not in the poller — `sending` is
+    // genuinely a row the queue draws.
+    expect(WATCHER).toContain("export function schedIsPending(");
+    expect(WATCHER).toContain('return !!entry && entry.state === "pending";');
+    expect(WATCHER).toContain("export function schedPendingOnly(");
+    expect(USE_SCHEDULE).toContain("const pendingBlockers = useMemo(");
+    expect(USE_SCHEDULE).toContain("(queueOn ? allBlockers : schedPendingOnly(allBlockers))");
+    // EVERY flag-off consumer reads the narrowed list, or the fix is one place
+    // wide: `waitingHere` (and therefore `next`, `hasCard` and `blocked`) and the
+    // calendar half both take it.
+    expect(USE_SCHEDULE).toContain(
+      "(queueOn ? waitingFor(allRows, sessionId, leaderId) : pendingBlockers)",
+    );
+    expect(USE_SCHEDULE).toContain("schedCalendarHere(pendingBlockers)");
+    // …and the ROWS keep the wide rule, which is the whole reason the two exist.
+    expect(readFileSync(join(HERE, "../sched/waiting.ts"), "utf8")).toContain(
+      "!schedIsWaiting(e)",
+    );
   });
 });
 
@@ -602,5 +696,158 @@ describe("the queue's ink in this pane", () => {
     expect(css).toContain("var(--status-queued)");
     // …and no hex was minted for it in this stylesheet either.
     expect(css).not.toMatch(/c-waiting[^}]*#[0-9a-f]{3,6}/);
+  });
+});
+
+describe("a claimed message is still on screen", () => {
+  it("says `starting` and offers nothing to take back", () => {
+    // The second between the scheduler taking the entry and the turn appearing
+    // above this row. Drawn only because `schedIsWaiting` keeps a `sending` entry
+    // in the list: reading `pending` alone took the row down on the poll that saw
+    // the claim and left a hole until the turn landed (Bugbot PR #1124).
+    const r = render(
+      <WaitingRow row={row({ word: "starting" })} facts={{ queue_ahead: "TASK-038" }} onDelete={() => {}} />,
+    );
+    const text = textOf(r);
+    expect(text).toContain("starting");
+    expect(text).not.toContain("delete");
+    // …and nothing about being behind anything: it is not in the line any more.
+    expect(r.root.findAllByType("button")).toHaveLength(0);
+    act(() => r.unmount());
+  });
+});
+
+describe("a repeating message's two verbs", () => {
+  const repeatRow = row({ repeat: true, stopId: "tpl-1" });
+
+  it("says `skip this run`, because that is what the press does", () => {
+    // `delete` promised something it does not do: the template arms the next
+    // occurrence the moment this one is skipped.
+    let skipped = 0;
+    const r = render(
+      <WaitingRow
+        row={repeatRow}
+        facts={{}}
+        onDelete={() => { skipped += 1; }}
+        onStopRepeat={() => {}}
+      />,
+    );
+    expect(textOf(r)).toContain("skip this run");
+    expect(textOf(r)).not.toContain(">delete<");
+    act(() => r.root.findAllByType("button")[0].props.onClick());
+    expect(skipped).toBe(1);
+    act(() => r.unmount());
+  });
+
+  it("keeps an ARMED stop for the repeat itself, two presses and no fewer", () => {
+    // The only way to stop a repeating message from inside the chat now that the
+    // block draws nothing under the flag — and it spends every future run, so the
+    // first press only arms and the label it arms into names the loss.
+    let stopped = 0;
+    const r = render(
+      <WaitingRow
+        row={repeatRow}
+        facts={{}}
+        onDelete={() => {}}
+        onStopRepeat={() => { stopped += 1; }}
+      />,
+    );
+    const stop = () => r.root.findAllByType("button")[1];
+    expect(stop().children.join("")).toBe("stop repeating");
+    act(() => stop().props.onClick());
+    expect(stopped).toBe(0);
+    expect(stop().children.join("")).toBe("stop every future run");
+    act(() => stop().props.onClick());
+    expect(stopped).toBe(1);
+    act(() => r.unmount());
+  });
+
+  it("offers no stop at all on an ordinary message", () => {
+    const r = render(<WaitingRow row={row()} facts={{}} onDelete={() => {}} />);
+    expect(textOf(r)).toContain("delete");
+    expect(textOf(r)).not.toContain("stop repeating");
+    expect(r.root.findAllByType("button")).toHaveLength(1);
+    act(() => r.unmount());
+  });
+
+  it("posts the TEMPLATE id, which is the only id that stops the repeat", () => {
+    // Cancelling the occurrence moves the repeat rather than lifting it
+    // (`schedStopTarget`), so the row carries the template and the chat spends it.
+    expect(CHAT).toContain("onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}");
+    expect(WATCHER).toContain("export function schedStopTarget(");
+    const waiting = readFileSync(join(HERE, "../sched/waiting.ts"), "utf8");
+    expect(waiting).toContain('stopId: schedIsRepeat(entry) ? schedStopTarget(entry) : "",');
+  });
+});
+
+describe("the card's count is the server's", () => {
+  it("reads `queue_waiting` and never the rows on screen", () => {
+    // The rows include a message scheduled for next Tuesday and a seed no poll
+    // has confirmed; neither is something anybody is waiting behind, and counting
+    // them said "1 message waiting" for six days (Bugbot PR #1124).
+    expect(CHAT).toContain("const said = sched.rec?.queue_waiting;");
+    // ZERO IS AN ANSWER, so the test is on the TYPE and not on the number: a row
+    // saying nothing is waiting takes the card down, and only a server too old to
+    // send the field at all falls through to the count below.
+    expect(CHAT).toContain('if (typeof said === "number") return said;');
+    // That fallback counts only the rows that really are in the line — the same
+    // sentence, said with what is in hand.
+    expect(CHAT).toContain('return waiting.filter((r) => r.word === "queued").length;');
+    expect(CHAT).toContain("{queueOn && waitCount > 0 ? (");
+    expect(CHAT).toContain("count={waitCount}");
+    expect(WATCHER).toContain("queue_waiting?: number;");
+  });
+});
+
+describe("a follow-up the live run is still holding", () => {
+  it("is drawn from the RUN, so a reload paints it back", () => {
+    // A line typed into a running chat is absorbed by the live host and sits in
+    // the CLI's own queue. Until the model gets to it the only copy on screen
+    // was this page's optimistic bubble — client memory — and the transcript
+    // cannot help, because nothing has consumed the message and it is in no
+    // JSONL row. So a reload, or the standing watch's four-a-minute
+    // `refreshHistory`, wiped the reader's own words (Akshil, 2026-09-12).
+    expect(CONTROLLER).toContain("const publishInbox = (rows: InboxMessage[]) => {");
+    expect(CONTROLLER).toContain("publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);");
+    // …AND FROM `history`, WHICH IS THE READ A RELOADING CHAT MAKES FIRST. The
+    // poll's copy only keeps these up while a page stays open; a page that comes
+    // BACK has no run to poll yet, and that window is exactly when the reader is
+    // looking for the follow-up they typed. Asked beside `live_run`, which is the
+    // field that says whether anything is running at all.
+    expect(CONTROLLER).toContain(
+      "if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);",
+    );
+    const land = CONTROLLER.slice(CONTROLLER.indexOf("function landHistory("));
+    expect(land.indexOf("publishInbox(")).toBeLessThan(land.indexOf("turns: historyToTurns(res),"));
+    // …and nothing is held once the run is over, the same rule `clearQueued`
+    // states for the optimistic half.
+    expect(CONTROLLER).toContain("const clearInbox = () => publishInbox([]);");
+    expect(CONTROLLER).toContain("clearInbox();");
+    // DEDUPED AT RENDER, because "does this still need a bubble" is a question
+    // about what is on screen — and both answers move without the inbox moving.
+    expect(CHAT).toContain("const inboxRows = useMemo(");
+    expect(CHAT).toContain("inboxBubbles(");
+    expect(CHAT).toContain("state.inbox,");
+    expect(CHAT).toContain("state.queued,");
+  });
+
+  it("is an ORDINARY bubble with no chrome of any kind", () => {
+    // It is not queued, it is not behind anything, and the host drains it in
+    // seconds: a line saying so would be this feature narrating the app's normal
+    // behaviour back at the reader (design.md, UI). So no `.c-waiting-line`, no
+    // dashed edge, no delete — the transcript's own user turn, full strength.
+    const at = CHAT.indexOf("{inboxRows.map((row) => (");
+    expect(at).toBeGreaterThan(-1);
+    const block = CHAT.slice(at, CHAT.indexOf("))}", at));
+    expect(block).toContain('<div className="c-inbox" key={row.id}>');
+    expect(block).toContain('<div className="bubble">{row.text}</div>');
+    expect(block).not.toContain("c-waiting-line");
+    expect(block).not.toContain("delete");
+    const css = SCHED_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    const inbox = css.slice(css.indexOf(".c-inbox {"), css.indexOf("}", css.indexOf(".c-inbox {")));
+    // The log's own column, so the bubble lands where the turns above it land.
+    expect(inbox).toContain("max-width: 720px");
+    expect(inbox).toContain("padding: 0 20px 6px");
+    expect(inbox).not.toContain("dashed");
   });
 });

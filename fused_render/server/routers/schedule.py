@@ -550,10 +550,16 @@ def api_schedule_run_now(body: dict = Body(...),
         # itself walked it twice for one reply (round-2 review, 2026-09-12).
         tasks = tasks_api._collect()
         ahead = tasks_api.queue_ahead_of(ahead_key, tasks)
-        place = tasks_api._queue_place(
-            schedule._task_key(result["entry"]), tasks)
+        task_key = schedule._task_key(result["entry"])
+        place = tasks_api._queue_place(task_key, tasks)
         return {"ok": False, "reason": "queued", "entry": result["entry"],
                 "position": place["position"] or int(result.get("position") or 1),
+                # WHAT THE ROW THAT JUST QUEUED IS CALLED — the same mint the
+                # chat's own admission answers with (`tasks_api._task_number`),
+                # off the collection this reply already holds, so a Run now on a
+                # message that has never run can say "TASK-047 runs next" instead
+                # of waiting for the listing to name it.
+                "task_id": tasks_api._task_number(task_key, tasks),
                 **ahead}
     if not result["ok"]:
         return _error(result["reason"],

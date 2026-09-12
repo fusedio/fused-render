@@ -66,8 +66,9 @@ afterEach(() => {
 
 interface Harness {
   state(): State;
-  /** Re-render with a different session on screen — no tick, no fetch. */
-  setSession(id: string): Promise<void>;
+  /** Re-render with a different session on screen — no tick, no fetch. The
+   *  leader moves with it when one is given (the adoption clears it). */
+  setSession(id: string, leaderId?: string): Promise<void>;
   /** Run the poll's interval callback and flush it. */
   poll(): Promise<void>;
   /** What `/api/schedule` answers next. */
@@ -97,6 +98,9 @@ async function mount(
    *  drove it by writing that global would be deciding the flag for every other
    *  file in the same bun run. */
   queueEnabled?: boolean,
+  /** The entry a session-less chat's messages are grouped under
+   *  (`sched/queue-leader`) — "" for every chat that has a session. */
+  leader = "",
 ): Promise<Harness> {
   let served = initial;
   let servedTasks: SchedTask[] = tasks;
@@ -133,11 +137,12 @@ async function mount(
   };
 
   let out: State | null = null;
-  function Probe(props: { sessionId: string }) {
+  function Probe(props: { sessionId: string; leaderId: string }) {
     out = useSchedule({
       controller,
       file: "/w/app",
       sessionId: props.sessionId,
+      leaderId: props.leaderId,
       inChat: !!props.sessionId,
       setRunParam: () => {},
       api,
@@ -149,8 +154,9 @@ async function mount(
 
   let renderer!: ReactTestRenderer;
   let session_ = session;
+  let leader_ = leader;
   await act(async () => {
-    renderer = create(createElement(Probe, { sessionId: session_ }));
+    renderer = create(createElement(Probe, { sessionId: session_, leaderId: leader_ }));
   });
   mounted.push(renderer);
 
@@ -159,10 +165,11 @@ async function mount(
       if (!out) throw new Error("not rendered");
       return out;
     },
-    async setSession(id: string) {
+    async setSession(id: string, leaderId?: string) {
       session_ = id;
+      if (leaderId !== undefined) leader_ = leaderId;
       await act(async () => {
-        renderer.update(createElement(Probe, { sessionId: session_ }));
+        renderer.update(createElement(Probe, { sessionId: session_, leaderId: leader_ }));
       });
     },
     async poll() {
@@ -313,23 +320,151 @@ test("a chat entry beside a calendar one still shuts the box, and names the cale
   expect(h.state().reason).not.toBe("");
 });
 
-test("the unfiltered pending rows are published, for a chat that has no session", async () => {
+test("every row the tick saw is published, for a chat that has no session", async () => {
   // A chat whose first message queued has NO session — nothing has run — so the
-  // session filter above answers `[]` for it by construction. Its waiting
-  // messages are found in THIS list, by the leader entry they were admitted
-  // behind (`schedFollowing`).
+  // session filter answers `[]` for it by construction. Its waiting messages are
+  // found in THIS list, through the leader entry they were admitted behind, and
+  // the rows that have already RUN are carried too: once the leader runs it is
+  // the only row tying that group to the session the chat is about to adopt.
   const h = await mount(
     [
       { ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "", origin: "chat" },
       { ...pending("b", "2026-09-09T15:00:00+00:00"), session_id: "", origin: "chat", follow_of: "a" },
+      { ...pending("z", "2026-09-09T13:00:00+00:00"), session_id: "", state: "sent" },
     ],
     "",
     [],
     true,
+    "a",
   );
   await h.poll();
-  expect(h.state().waitingHere).toEqual([]);
-  expect((h.state().pendingRows ?? []).map((e) => e.id)).toEqual(["a", "b"]);
+  expect((h.state().allRows ?? []).map((e) => e.id)).toEqual(["a", "b", "z"]);
+  // …and the chat draws its own two out of it, by leader.
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a", "b"]);
+});
+
+test("the rows survive the adoption, and a reload with no leader left", async () => {
+  // THE FINDING (Bugbot PR #1124). The leader ran, so it names the session and is
+  // no longer pending; the followers are pending and name nothing (the server
+  // fills a follower's session at claim time). The session filter missed them,
+  // and so did the leader list the moment the adoption cleared the leader id.
+  const entries: Entry[] = [
+    { id: "L", state: "sent", session_id: "", claude_session_id: "s9", due: "2026-09-09T13:00:00+00:00" },
+    { id: "f1", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T14:00:00+00:00", origin: "chat" },
+    { id: "f2", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T15:00:00+00:00", origin: "chat" },
+  ];
+  const h = await mount(entries, "", [], true, "L");
+  await h.poll();
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+  // The adoption: `openSession` gives the chat a session and the leader memory is
+  // dropped by `leaderAfterSession`. Nothing about the entries changed.
+  await h.setSession("s9", "");
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+  // …AND A RELOAD, which is the same state reached with nothing in client memory.
+  const fresh = await mount(entries, "s9", [], true, "");
+  await fresh.poll();
+  expect(fresh.state().waitingHere.map((e) => e.id)).toEqual(["f1", "f2"]);
+});
+
+test("a claimed entry stays in the list, and in the live ids behind the seeds", async () => {
+  // The second between the scheduler taking the entry and the turn appearing:
+  // dropping it there took the row down and pruned its seed, so the reader's own
+  // message blinked out of the conversation until the turn landed.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), state: "sending", origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  await h.poll();
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+  expect([...(h.state().pendingIds ?? [])]).toEqual(["a"]);
+});
+
+test("the row is re-read every lap under the queue, because its fields move", async () => {
+  // `queue_ahead`, `queue_position`, `queue_priority` and `queue_waiting` all
+  // change UNDER A FIXED ENTRY ID — the task in front finishes, somebody skips
+  // ahead — so a row read once said "behind TASK-038" for the life of the chat.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_ahead: "TASK-041" }],
+    true,
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_ahead).toBe("TASK-041");
+  const reads = h.tasksReads();
+  const gen = h.state().recGen;
+  h.serveTasks([{ key: "s1", queue_ahead: "", queue_priority: true }]);
+  await h.poll();
+  expect(h.tasksReads()).toBeGreaterThan(reads);
+  expect(h.state().rec?.queue_priority).toBe(true);
+  // …and the generation moves with it, which is what retires an optimistic claim.
+  expect(h.state().recGen).toBeGreaterThan(gen);
+});
+
+test("…and exactly once per entry with the flag off, as it always was", async () => {
+  const h = await mount(
+    [pending("a", "2026-09-09T14:00:00+00:00")],
+    "s1",
+    [{ key: "s1", task_id: "TASK-7" }],
+    false,
+  );
+  await h.poll();
+  const reads = h.tasksReads();
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads);
+});
+
+test("a chat with no session gets its card and its row, keyed on the leader", async () => {
+  // Its task is named after the FIRST entry it queued (`pending:<leader>`), never
+  // after the entry at the front of its line — so the row read had to be told the
+  // leader or it found nothing, and the card had no facts to draw.
+  const h = await mount(
+    [
+      { id: "L", state: "pending", session_id: "", due: "2026-09-09T13:00:00+00:00", origin: "chat" },
+      { id: "f1", state: "pending", session_id: "", follow_of: "L", due: "2026-09-09T14:00:00+00:00", origin: "chat" },
+    ],
+    "",
+    [{ key: "pending:L", queue_ahead: "TASK-041", queue_waiting: 2 }],
+    true,
+    "L",
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_ahead).toBe("TASK-041");
+  expect(h.state().rec?.queue_waiting).toBe(2);
+  // …and the box is still open: nothing here is a message the reader SCHEDULED.
+  expect(h.state().blocked).toBe(false);
+});
+
+test("the composer shuts on the server's own verdict when there is a row", async () => {
+  // One rule, server first (design.md, UI). The entry rule (`schedIsCalendar`) is
+  // the fallback for the paint before the row lands, not a second opinion.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_blocking: true }],
+    true,
+  );
+  await h.poll();
+  expect(h.state().rec?.queue_blocking).toBe(true);
+  expect(h.state().blocked).toBe(true);
+  expect(h.state().reason).not.toBe("");
+});
+
+test("…and stays open when the row says nothing is blocking, whatever the entry", async () => {
+  // No row to be had at first: the entry rule decides, and a calendar entry (no
+  // `origin`) shuts the box — the cautious half, and the right direction to be
+  // briefly wrong in.
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
+  expect(h.state().rec).toBe(null);
+  expect(h.state().blocked).toBe(true);
+  // Then the server's own answer lands and it outranks that reading.
+  h.serveTasks([{ key: "s1", queue_blocking: false }]);
+  await h.poll();
+  expect(h.state().rec?.queue_blocking).toBe(false);
+  expect(h.state().blocked).toBe(false);
 });
 
 test("those rows keep their identity when the schedule did not move", async () => {
@@ -339,9 +474,9 @@ test("those rows keep their identity when the schedule did not move", async () =
   // change.
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], true);
   await h.poll();
-  const first = h.state().pendingRows;
+  const first = h.state().allRows;
   await h.poll();
-  expect(h.state().pendingRows).toBe(first);
+  expect(h.state().allRows).toBe(first);
 });
 
 test("reset() empties the block for the transcript that replaced it", async () => {
