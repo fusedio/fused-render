@@ -405,8 +405,12 @@ test("hides Continue in terminal and Archive while the chat is queued", () => {
   expect(del.slice(0, del.indexOf("</DropdownMenuItem>"))).toContain("Delete this task");
   // And the chat hands the fact down from the row it already reads.
   const chat = readFileSync(join(import.meta.dir, "../ClaudeChat.tsx"), "utf8");
+  // A CHAT WITH NO SESSION, and nothing else (🟡 review, 2026-09-12). A real
+  // conversation whose FOLDER is held is filed `queued` too — it is waiting for
+  // its next message, not for its first — and reading that word on its own took
+  // Archive and Continue away from a chat with a transcript behind it.
   expect(chat).toContain(
-    '    inChat && (sched.rec?.status === "queued" || (!state.sessionId && !!leaderId));',
+    '    inChat && !state.sessionId && (sched.rec?.status === "queued" || !!leaderId);',
   );
   expect(chat.slice(chat.indexOf("<Kebab"))).toContain("queued={queuedChat}");
 });

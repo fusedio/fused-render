@@ -2023,6 +2023,58 @@ def test_a_usage_limit_with_a_comeback_scheduled_says_when_it_resumes(
     assert task["resumes_at"] == task["next_run"] > 0
 
 
+def test_resumes_at_is_the_comeback_entry_and_not_whatever_runs_next(
+        client, projects_dir, tmp_path):
+    """🟡 review, 2026-09-12. `resumes_at` was the task's next pending run of
+    ANY kind, so a nightly repeat due before the window reopened made this row
+    promise the plan resets at 6pm — a sentence about the plan's clock built out
+    of somebody's calendar. The comeback PR #1107 scheduled is the only entry
+    that answers it, and its title is the mark it carries."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(time.time() + 3600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", fresh,
+                   status=429)])
+    _seed_schedule([
+        # An unrelated message of this task's, due FIRST.
+        _entry("e0", "post the digest", soon, target=str(tmp_path),
+               session_id="sess-a", claude_session_id="sess-a",
+               title="Nightly digest"),
+        _entry("e1", "Your usage limit has reset. Continue.", later,
+               target=str(tmp_path), session_id="sess-a",
+               claude_session_id="sess-a",
+               title="Continue after usage limit"),
+    ])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    # The next run is the digest; the row does not say the plan resets then.
+    assert task["next_run_entry"] == "e0"
+    assert task["resumes_at"] > task["next_run"] > 0
+
+
+def test_resumes_at_is_0_when_the_comeback_is_gone(client, projects_dir,
+                                                    tmp_path):
+    """The comeback was cancelled, or the POST that made it failed. A pending
+    message that is not the comeback is not a reset time, so the row says
+    nothing rather than the wrong thing."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429)])
+    _seed_schedule([_entry("e0", "post the digest", soon, target=str(tmp_path),
+                           session_id="sess-a", claude_session_id="sess-a",
+                           title="Nightly digest")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == 0.0
+
+
 def test_an_ordinary_reply_after_the_limit_takes_the_row_back(client,
                                                               projects_dir):
     """The mark is on the LAST answer, not on any answer: the window reopened,

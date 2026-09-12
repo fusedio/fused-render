@@ -100,6 +100,20 @@ describe("the rows a held follow-up earns", () => {
     ).toEqual([]);
   });
 
+  it("retires a duplicated ID even when the row was already drawn elsewhere", () => {
+    // Bugbot PR #1124. The id dedupe skipped the entry whose words are already
+    // on screen, so a host listing the same entry twice in one payload spent the
+    // optimistic copy on the first and drew a bubble for the second — the
+    // duplicate this dedupe exists to stop, reached by the one path that did not
+    // mark the id as seen.
+    expect(inboxBubbles([msg("f1", "go on"), msg("f1", "go on")], ["go on"], []))
+      .toEqual([]);
+    // …and two DIFFERENT entries saying the same words are still two messages.
+    expect(
+      inboxBubbles([msg("f1", "go on"), msg("f2", "go on")], ["go on"], []).map((r) => r.id),
+    ).toEqual(["f2"]);
+  });
+
   it("draws no bubble for a wordless entry", () => {
     // Pictures alone have no typed line, and an empty bubble under the log says
     // nothing a reader can read.

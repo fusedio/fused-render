@@ -182,6 +182,60 @@ export function mergeWaitingChats(
  * Answers `[]` — never `null` — because the absence of waiting chats is not a
  * state worth a skeleton: the list it merges into owns that.
  */
+/**
+ * THE FLOOR BETWEEN TWO TASKS READS FOR THIS LIST (🟡 review, 2026-09-12).
+ *
+ * Two things ask for a re-read and neither knew about the other: the recent
+ * list's own tick (`/api/tasks/changes` waking) and the `tasks-changed`
+ * announcement — and a send rings BOTH within the same few milliseconds, so the
+ * landing globbed every transcript on the machine twice for one event. Five
+ * seconds is the same floor `useSchedule` puts under the chat's own row read,
+ * for the same reason and with the same shape.
+ */
+export const WAITING_REFRESH_MS = 5000;
+
+/**
+ * One reader, paced: a poke inside the floor is DEFERRED to the end of it rather
+ * than dropped, and a second poke while one is already promised is the same
+ * event said twice and does nothing.
+ *
+ * Deferred and not dropped, because the poke that matters most is the one that
+ * lands right after a read — the admission rings `tasks-changed` a beat before
+ * the entry it created is listable, and a dropped poke there is a waiting chat
+ * missing from the landing until something unrelated happens.
+ *
+ * Pure and out of the hook so the pacing can be tested without a clock, a
+ * renderer or a fetch.
+ */
+export function pacedReader(
+  read: () => void,
+  now: () => number = Date.now,
+  floorMs: number = WAITING_REFRESH_MS,
+): { poke: (immediate?: boolean) => void; stop: () => void } {
+  let last = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const fire = () => {
+    timer = null;
+    last = now();
+    read();
+  };
+  return {
+    poke: (immediate = false) => {
+      if (timer !== null) return;
+      const wait = immediate ? 0 : floorMs - (now() - last);
+      if (wait <= 0) {
+        fire();
+        return;
+      }
+      timer = setTimeout(fire, wait);
+    },
+    stop: () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
 export function useWaitingChats(
   file: string | null,
   enabled: boolean,
@@ -200,13 +254,14 @@ export function useWaitingChats(
   tick?: unknown,
 ): SessionRow[] {
   const [rows, setRows] = useState<SessionRow[]>([]);
-  /** The live reader, so the tick effect below can fire it without owning the
-   *  subscription's lifetime. */
-  const readRef = useRef<() => void>(() => {});
+  /** The live POKE, so the tick effect below can ask for a read without owning
+   *  the subscription's lifetime — and so both triggers go through one pacer
+   *  rather than two independent ones. */
+  const pokeRef = useRef<(immediate?: boolean) => void>(() => {});
   useEffect(() => {
     if (!enabled || !file) {
       setRows([]);
-      readRef.current = () => {};
+      pokeRef.current = () => {};
       return;
     }
     let live = true;
@@ -222,27 +277,33 @@ export function useWaitingChats(
           // failed sessions read.
         });
     };
-    readRef.current = read;
-    read();
-    const onPoke = () => read();
+    const pacer = pacedReader(read);
+    pokeRef.current = pacer.poke;
+    // The first read is the mount's and is never floored: there is nothing on
+    // screen yet to be stale.
+    pacer.poke(true);
+    const onPoke = () => pacer.poke();
     window.addEventListener(TASKS_CHANGED_EVENT, onPoke);
     window.addEventListener("focus", onPoke);
     return () => {
       live = false;
-      readRef.current = () => {};
+      pacer.stop();
+      pokeRef.current = () => {};
       window.removeEventListener(TASKS_CHANGED_EVENT, onPoke);
       window.removeEventListener("focus", onPoke);
     };
   }, [file, enabled]);
   // …and the tick. FIRST RUN SKIPPED: the effect above has just read, and two
-  // identical reads on mount is a doubled request for nothing.
+  // identical reads on mount is a doubled request for nothing. Every later one
+  // goes through the SAME pacer the announcement does, which is what stops the
+  // two of them doubling up on one event.
   const firstTick = useRef(true);
   useEffect(() => {
     if (firstTick.current) {
       firstTick.current = false;
       return;
     }
-    readRef.current();
+    pokeRef.current();
   }, [tick]);
   return rows;
 }

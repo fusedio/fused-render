@@ -46,9 +46,15 @@ describe("the three endpoints", () => {
     // SKIP TAKES EITHER NAME, and the body is the CALLER's — a Tasks row holds a
     // task (`{key}`), a chat's chip holds one entry (`{entry_id}`), and only the
     // second survives the rekey a first run performs on a `pending:<id>` task.
-    expect(API).toContain(
-      'postJson<{ ok: boolean; position: number }>("/api/tasks/queue/skip", what)',
-    );
+    expect(API).toContain('postJson<SkipResult>("/api/tasks/queue/skip", what)');
+    // …and Skip answers with the LINE IT JUST CHANGED as well, the same five
+    // `ahead_*` fields admit and run-now carry (🟡 review, 2026-09-12).
+    const skip = API.slice(API.indexOf("export interface SkipResult"));
+    const shape = skip.slice(0, skip.indexOf("}"));
+    for (const field of ["ahead_key?", "ahead?", "ahead_title?", "ahead_session?",
+                         "ahead_target?"]) {
+      expect(shape).toContain(field);
+    }
     expect(API).toContain("what: { key: string } | { entry_id: string },");
     // The Board and the List still name the TASK: the press there means every
     // pending entry that task has waiting.

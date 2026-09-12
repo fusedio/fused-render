@@ -426,6 +426,41 @@ test("the row is re-read on a CLOCK under the queue, because its fields move", a
   expect(h.state().recGen).toBeGreaterThan(gen);
 });
 
+test("a listing SLOWER than the floor does not put the row read in a loop", async () => {
+  // Bugbot PR #1124. `at` was stamped when the read STARTED, and the effect
+  // re-runs on `at` — so a listing that took longer than `REC_REFRESH_MS` landed
+  // already stale, the effect read `stale`, and fired again immediately. On a
+  // busy machine that is a tight loop of whole-`/api/tasks` listings. The floor
+  // is a floor BETWEEN reads, so it is measured from where one ended.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", queue_ahead: "TASK-041" }],
+    true,
+  );
+  await h.poll();
+  const reads = h.tasksReads();
+
+  // A read that takes longer than the floor: wedge it open and move the clock
+  // past `REC_REFRESH_MS` while it is in flight.
+  h.holdTasks();
+  h.advance(5000);
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 1);
+  h.advance(6000);
+  await h.releaseTasks();
+
+  // The answer landed stamped at the moment it LANDED, so the laps that follow
+  // are inside the floor again and buy nothing.
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 1);
+  // …and the floor still expires on its own.
+  h.advance(5000);
+  await h.poll();
+  expect(h.tasksReads()).toBe(reads + 2);
+});
+
 test("…and exactly once per entry with the flag off, as it always was", async () => {
   const h = await mount(
     [pending("a", "2026-09-09T14:00:00+00:00")],

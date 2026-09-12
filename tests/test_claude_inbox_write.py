@@ -178,6 +178,69 @@ def test_an_echoed_entry_leaves_the_poll_and_takes_the_ones_before_it(agent,
     assert agent._poll("run")["inbox"] == []
 
 
+def test_two_identical_follow_ups_with_one_echo_still_show_the_second(
+        agent, tmp_path):
+    """🔴 review, 2026-09-12. "go on" twice into a running turn, and the CLI
+    has opened only the first: every drained entry was compared against the
+    NEWEST echo, the second "go on" matched it, and BOTH bubbles went — the
+    reader's own words off the screen while the CLI still held one of them.
+
+    The count is a POSITION, not a text search: the echoed entries are a prefix
+    of the drained ones, so one echo means one landed, whatever it says."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "go on")
+    agent._write_inbox_entry(str(run_dir), "go on")
+    names = sorted(n for n in os.listdir(run_dir / "inbox")
+                   if n.endswith(".json"))
+    _drain(run_dir, names[0])
+    _drain(run_dir, names[1])
+
+    _echo(run_dir, "go on")
+    inbox = agent._poll("run")["inbox"]
+    assert [row["text"] for row in inbox] == ["go on"]
+    # …and it is the SECOND one — the entry that is still waiting, by id.
+    assert [row["id"] for row in inbox] == [names[1]]
+
+    _echo(run_dir, "go on")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_the_echo_window_is_read_once_while_the_transcript_is_unchanged(
+        agent, tmp_path, monkeypatch):
+    """🟡 review, 2026-09-12. `_poll` runs every 400 ms for the life of a
+    run and this decoded up to a megabyte of `out.jsonl` on every one of them,
+    for an answer that can only change when the file does. The memo is keyed on
+    what the file IS — its size and its mtime — so a second poll over an
+    unchanged transcript reads nothing at all."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "first follow-up")
+    agent._write_inbox_entry(str(run_dir), "second follow-up")
+    for name in sorted(n for n in os.listdir(run_dir / "inbox")
+                       if n.endswith(".json")):
+        _drain(run_dir, name)
+    _echo(run_dir, "first follow-up")
+
+    reads = []
+    real = agent._read_echo_texts
+    monkeypatch.setattr(agent, "_read_echo_texts",
+                        lambda run: (reads.append(run), real(run))[1])
+
+    first = agent._poll("run")["inbox"]
+    second = agent._poll("run")["inbox"]
+    assert [row["text"] for row in first] == ["second follow-up"]
+    assert [row["text"] for row in second] == ["second follow-up"]
+    assert len(reads) == 1
+
+    # …and a byte appended is what makes it read again.
+    _echo(run_dir, "second follow-up")
+    assert agent._poll("run")["inbox"] == []
+    assert len(reads) == 2
+    # …after which the newest drained entry is PROVEN echoed, and the walk is
+    # skipped whole: nothing reads the file again until the host drains more.
+    assert agent._poll("run")["inbox"] == []
+    assert len(reads) == 2
+
+
 def test_a_drained_control_request_is_not_a_message_on_this_side_either(
         agent, tmp_path):
     """`_write_control_request` rows go through the same directory and the same

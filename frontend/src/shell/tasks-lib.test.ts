@@ -6875,6 +6875,36 @@ describe("sortByLane", () => {
     ]);
   });
 
+  it("orders the waiting rank BY THE LINE, exactly as the Board's lane does", () => {
+    // 🟡 review, 2026-09-12 (Akshil's screenshot: the List read 2nd, 3rd, 4th,
+    // 1st). LIST_ORDER already put these rows under the running ones — that half
+    // was right — but inside the rank they were ordered by the time each row
+    // PRINTS, while the Board's In Progress lane orders its waiting half by
+    // `queue_position`. Two views, one folder's line, two different answers.
+    const waiting = (key: string, at: number, position: number) =>
+      task({
+        key,
+        status: "queued",
+        messages: [msg({ ran_at: at, at })],
+        message_count: 1,
+        last_active: at,
+        queue_position: position,
+      });
+    const rows = [
+      waiting("second", S("2026-08-16T11:00:00"), 2),
+      waiting("fourth", S("2026-08-16T08:00:00"), 4),
+      waiting("first", S("2026-08-16T09:00:00"), 1),
+      waiting("third", S("2026-08-16T10:00:00"), 3),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["first", "second", "third", "fourth"]);
+    // …and still UNDER the running rows, which is the half that was already
+    // right and the half a reader carries between the two views.
+    const mixed = [...rows, ran("run", S("2026-08-16T07:00:00"), { status: "in_progress" })];
+    expect(sortByLane(mixed, NOW).map((t) => t.key))
+      .toEqual(["run", "first", "second", "third", "fourth"]);
+  });
+
   it("never mutates the polled list React is still holding", () => {
     const rows = [
       task({ key: "b", status: "done" }),

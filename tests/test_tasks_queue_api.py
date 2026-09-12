@@ -1031,7 +1031,20 @@ def test_skip_promotes_the_due_work_of_a_queued_task(
 
     r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "position": 1}
+    body = r.json()
+    assert body["ok"] is True and body["position"] == 1
+    # …AND WHO IS IN FRONT NOW (🟡 review, 2026-09-12), the same five fields
+    # admit, decide and run-now answer with. The press has just changed this
+    # line, and without them the chat could paint the claim but went on saying
+    # "behind TASK-xxx" about whatever was ahead BEFORE it until the next
+    # listing landed.
+    assert body["ahead_key"] == "sess-holder"
+    assert body["ahead_session"] == "sess-holder"
+    assert body["ahead_target"] == alpha
+    # `ahead` and `ahead_title` ride along too. The number is "" here because no
+    # listing has minted one for the holder yet — exactly what `_queue_place`
+    # answers for admit as well — and the title is the holder's own.
+    assert body["ahead"] == "" and body["ahead_title"] == "go"
     # Only the DUE work in the folder it is waiting on: promoting next week's
     # message would be this verb silently rescheduling work nobody asked about.
     assert priorities == [(["e-due"], True)]
@@ -1081,7 +1094,10 @@ def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
 
     r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "position": 1}
+    # The same shape the ordinary road answers with, `ahead_*` and all — one
+    # caller reads one answer.
+    assert r.json()["ok"] is True and r.json()["position"] == 1
+    assert "ahead_key" in r.json()
     assert priorities == []
 
 
@@ -1402,8 +1418,9 @@ def test_skip_really_moves_the_entry_to_the_head_of_the_line(
     _holders(monkeypatch, {alpha: "sess-holder"})
     assert _rows(client)["sess-second"]["queue_position"] == 2
 
-    assert _post(client, "/api/tasks/queue/skip",
-                 {"key": "sess-second"}).json() == {"ok": True, "position": 1}
+    skipped = _post(client, "/api/tasks/queue/skip",
+                    {"key": "sess-second"}).json()
+    assert skipped["ok"] is True and skipped["position"] == 1
 
     stored = {e["id"]: e for e in schedule.list_entries()}
     assert stored["e-second"]["priority"] is True
@@ -1622,7 +1639,7 @@ def test_skip_promotes_a_leader_and_its_follower_together(
 
     r = _post(client, "/api/tasks/queue/skip",
               {"key": tasks_store.pending_key("e-lead")})
-    assert r.json() == {"ok": True, "position": 1}
+    assert r.json()["ok"] is True and r.json()["position"] == 1
 
     stored = {e["id"]: e for e in schedule.list_entries()}
     assert stored["e-lead"]["priority"] is True
@@ -1872,7 +1889,7 @@ def test_skip_names_the_entry_when_the_key_has_moved(
 
     r = _post(client, "/api/tasks/queue/skip", {"entry_id": "e-follow"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "position": 1}
+    assert r.json()["ok"] is True and r.json()["position"] == 1
     assert priorities == [(["e-follow"], True)]
 
 

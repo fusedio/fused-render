@@ -3355,10 +3355,24 @@ export function admitQueueSend(body: {
  *
  * Same answer either way: `{ ok, position }`.
  */
+/** What Skip answers with: the promise (`position: 1`) and the LINE IT JUST
+ *  CHANGED — who is in front now, the same five `ahead_*` fields admit, decide
+ *  and run-now answer with (`_queue_place`). Optional, because a server from
+ *  before PR #1124 sends the first two alone. */
+export interface SkipResult {
+  ok: boolean;
+  position: number;
+  ahead_key?: string;
+  ahead?: string;
+  ahead_title?: string;
+  ahead_session?: string;
+  ahead_target?: string;
+}
+
 export function skipQueue(
   what: { key: string } | { entry_id: string },
-): Promise<{ ok: boolean; position: number }> {
-  return postJson<{ ok: boolean; position: number }>("/api/tasks/queue/skip", what);
+): Promise<SkipResult> {
+  return postJson<SkipResult>("/api/tasks/queue/skip", what);
 }
 
 /** A card decision routed through the queue: the same body the agent's own

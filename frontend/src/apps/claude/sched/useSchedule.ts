@@ -241,8 +241,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const [recRow, setRecRow] = useState<{
     id: string;
     task: SchedTask | null;
-    /** WHEN this row was read, in ms (`Date.now()`) — a WALL CLOCK and not the
-     *  poll lap it used to be (🔴 review 2026-09-12). The lap tied the listing's
+    /** WHEN this row's read FINISHED, in ms (`Date.now()`) — a WALL CLOCK and
+     *  not the poll lap it used to be (🔴 review 2026-09-12). The lap tied the listing's
      *  cost to the schedule's rate, and that rate is 3 s while the composer is
      *  shut: a chat sitting behind a blocker asked `/api/tasks` twenty times a
      *  minute for fields that move when a FOLDER does. The clock caps it at one
@@ -598,7 +598,6 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     const stale = queueOn && nowRef.current() - recRow.at >= REC_REFRESH_MS;
     if (rowBusy.current || (recRow.id === nextId && !stale)) return;
     const id = nextId;
-    const at = nowRef.current();
     rowBusy.current = true;
     void (async () => {
       try {
@@ -614,7 +613,14 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
             live.current.sessionId,
             live.current.leaderId,
           ),
-          at,
+          // STAMPED WHERE THE READ ENDED, not where it began (Bugbot PR #1124).
+          // Taken at the start, a listing that took longer than `REC_REFRESH_MS`
+          // was already stale by the time it landed — the effect re-ran on the
+          // new `at`, read `stale`, and fired again immediately: a tight loop of
+          // whole-listing reads, and the slower the machine the tighter it got.
+          // The floor is a floor between two reads, so it is measured from the
+          // end of one.
+          at: nowRef.current(),
           gen: cur.gen + 1,
         }));
       } catch {

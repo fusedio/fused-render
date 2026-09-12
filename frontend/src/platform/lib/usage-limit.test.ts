@@ -23,6 +23,10 @@ const CARDS = readFileSync(join(HERE, "../../shell/TaskCards.tsx"), "utf8");
 const CARDS_CSS = readFileSync(join(HERE, "../../styles/task-cards.css"), "utf8");
 const TOPBAR = readFileSync(join(HERE, "../../apps/claude/ui/Topbar.tsx"), "utf8");
 const CHAT = readFileSync(join(HERE, "../../apps/claude/ClaudeChat.tsx"), "utf8");
+const LIMIT_HOOK = readFileSync(
+  join(HERE, "../../apps/claude/ui/useLimitWord.ts"),
+  "utf8",
+);
 const COMPOSER_CSS = readFileSync(
   join(HERE, "../../apps/claude/styles/composer.css"),
   "utf8",
@@ -41,17 +45,27 @@ const limited = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("which rows are paused rather than broken", () => {
-  it("needs BOTH halves — the lane and the reason", () => {
+  it("is the REASON, in whatever lane the row is in", () => {
     expect(USAGE_LIMIT_REASON).toBe("usage_limit");
     expect(isUsageLimited(limited())).toBe(true);
     // `blocked` alone is every kind of not-moving, and a run that BROKE is the
     // common one.
     expect(isUsageLimited({ status: "blocked", blocked_reason: "failed" })).toBe(false);
     expect(isUsageLimited({ status: "blocked" })).toBe(false);
-    // …and a reason left on a row that is running again is a leftover.
-    expect(isUsageLimited({ status: "in_progress", blocked_reason: "usage_limit" })).toBe(false);
     expect(isUsageLimited(null)).toBe(false);
     expect(isUsageLimited(undefined)).toBe(false);
+  });
+
+  it("still says so when the limited session's FOLDER is held", () => {
+    // Bugbot PR #1124. The status was half the test, and a limited session
+    // waiting on a busy folder is filed `queued` — so the chat's own header went
+    // silent about the one thing that had stopped it. The server clears
+    // `blocked_reason` the moment an ordinary answer lands, so the reason alone
+    // is the whole fact.
+    expect(isUsageLimited(limited({ status: "queued" }))).toBe(true);
+    expect(usageLimitStatusWord(limited({ status: "queued" }))).toBe(
+      "paused \u00b7 resumes 4:00 AM",
+    );
   });
 });
 
@@ -126,7 +140,13 @@ describe("the surfaces that say them", () => {
     // It REPLACES the live word rather than sitting beside it: they answer one
     // question, and a paused session is precisely one where nothing is running.
     expect(TOPBAR).toContain("      ) : running ? (");
-    expect(CHAT).toContain("const limitWord = usageLimitStatusWord(sched.rec);");
+    // OFF THIS CHAT'S OWN ROW, not off the scheduled-message card's (Bugbot
+    // PR #1124): that row is only fetched while a card is drawn, so a session
+    // that hit the limit with nothing waiting behind it had none at all.
+    expect(CHAT).toContain("const limitWord = useLimitWord(taskKey);");
+    expect(LIMIT_HOOK).toContain("usageLimitStatusWord(row)");
+    expect(LIMIT_HOOK).toContain("TASKS_CHANGED_EVENT");
+    expect(LIMIT_HOOK).toContain("export const LIMIT_REFRESH_MS = 5000;");
     expect(CHAT.slice(CHAT.indexOf("<Topbar"))).toContain("status={limitWord}");
     // No animation on the one word whose content is that nothing is moving —
     // and Blocked's own red, the colour its ring wears on the Tasks page.

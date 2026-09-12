@@ -124,6 +124,7 @@ import {
   useRecentSessions,
   useRepairScroll,
   useTaskId,
+  useLimitWord,
   type TranscriptTail,
   type Viewable,
 } from "./ui";
@@ -136,7 +137,6 @@ import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
 import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
-import { usageLimitStatusWord } from "@platform/lib/usage-limit";
 import {
   NO_DROPPED,
   pruneDropped,
@@ -3059,12 +3059,33 @@ function ChatBody(props: ChatBodyProps) {
     if (!key && !first) return;
     setRunningNext(true);
     try {
-      await skipQueue(key ? { key } : { entry_id: first });
+      const said = await skipQueue(key ? { key } : { entry_id: first });
       // The claim is painted straight onto the card — on the FACTS rather than on
       // the fallback, because the facts prefer the server's row whenever there is
       // one and the row in hand was read before this press. It is held only until
       // a fresher row lands, which is what `schedRefresh` goes and asks for.
-      setAdmitAhead((cur) => ({ ...(cur ?? {}), status: "queued", queue_priority: true }));
+      //
+      // …AND WHO IS IN FRONT NOW, off the same answer (🟡 review,
+      // 2026-09-12). The press changed the line and the server re-derived it;
+      // painting only the claim left "behind TASK-041" naming whatever was ahead
+      // BEFORE the press until the next listing landed, which is the one sentence
+      // on the card the press was supposed to change. A server too old to send
+      // them changes nothing: the fields fall away and the claim stands alone.
+      setAdmitAhead((cur) => ({
+        ...(cur ?? {}),
+        status: "queued",
+        queue_priority: true,
+        ...(said.ahead_key === undefined
+          ? {}
+          : {
+              queue_position: said.position,
+              queue_ahead: said.ahead ?? "",
+              queue_ahead_title: said.ahead_title ?? "",
+              queue_ahead_session: said.ahead_session ?? "",
+              queue_ahead_target: said.ahead_target ?? "",
+              queue_ahead_key: said.ahead_key ?? "",
+            }),
+      }));
       setNextClaim(sched.recGen);
       schedRefresh();
     } catch (err) {
@@ -3489,18 +3510,33 @@ function ChatBody(props: ChatBodyProps) {
   // a queued chat wears its number from the admission rather than waiting a poll
   // interval for a listing to repeat it.
   const taskId = headerTaskId(listedTaskId, sched.rec?.task_id, admitTaskId);
-  /** Is this conversation's work still IN ITS FOLDER'S LINE? The row's own word
-   *  when there is a row, and "this chat has a leader entry and no session yet"
-   *  before there is one — the two ways a chat can be waiting. What the kebab
-   *  drops its terminal and archive items on. `inChat` gates it because the
-   *  LANDING's one item is "New session in terminal", which is about no
-   *  conversation at all and must never be taken away. */
+  /** Has this conversation NEVER RUN, because its first message is still in its
+   *  folder's line? What the kebab drops its terminal and archive items on —
+   *  there is no transcript to continue in a terminal and nothing to archive.
+   *
+   *  `!state.sessionId` IS THE WHOLE QUESTION, and the row's `queued` only
+   *  narrows it (🟡 review, 2026-09-12). A chat WITH a session whose folder
+   *  happens to be held is filed `queued` too — it is waiting for its next
+   *  message, not for its first — and reading that word alone took Archive and
+   *  Continue away from a real conversation with a real transcript for as long
+   *  as somebody else held the folder.
+   *
+   *  `inChat` gates it because the LANDING's one item is "New session in
+   *  terminal", which is about no conversation at all and must never be taken
+   *  away. */
   const queuedChat =
-    inChat && (sched.rec?.status === "queued" || (!state.sessionId && !!leaderId));
+    inChat && !state.sessionId && (sched.rec?.status === "queued" || !!leaderId);
   /** …and the other thing this chat's row can say: the plan's usage limit
    *  stopped this session and it starts again at a known time — "paused ·
-   *  resumes 4:00 AM" at the top of the pane. "" on every ordinary chat. */
-  const limitWord = usageLimitStatusWord(sched.rec);
+   *  resumes 4:00 AM" at the top of the pane. "" on every ordinary chat.
+   *
+   *  READ FOR `taskKey`, NOT OFF `sched.rec` (Bugbot PR #1124). That row is
+   *  fetched only while the scheduled-message card is drawn, so a session that
+   *  hit the limit with nothing waiting behind it — the ordinary case — had no
+   *  row and the header said nothing at all. `useLimitWord` asks for this
+   *  conversation's own row, on mount and on `tasks-changed` (which the
+   *  comeback's own POST rings), floored at five seconds. */
+  const limitWord = useLimitWord(taskKey);
 
   return (
    <CardPolicyProvider value={cardPolicy}>

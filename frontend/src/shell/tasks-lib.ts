@@ -3291,7 +3291,19 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
     LIST_ORDER.map((key) => [key, [] as Task[]]),
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
-  return LIST_ORDER.flatMap((key) => sortRank(buckets.get(key) ?? [], key, now));
+  // THE WAITING RANK IS ORDERED BY THE LINE, exactly as the Board's In Progress
+  // lane is (🟡 review, 2026-09-12). LIST_ORDER already puts these rows under
+  // the running ones — that half was right — but inside the rank they were
+  // ordered by the time each row PRINTS, so a folder's line came out 2nd, 3rd,
+  // 4th, 1st while the Board beside it read 1, 2, 3, 4. A place in a queue is
+  // the only order a waiting row can honestly claim, and it is the one thing a
+  // reader wants from it, so the List borrows the lane sort that says so
+  // (LANE_SORTS.queued, keyed by BoardColumn exactly so this call can ask).
+  return LIST_ORDER.flatMap((key) =>
+    key === "queued"
+      ? sortLane(buckets.get(key) ?? [], "queued", now)
+      : sortRank(buckets.get(key) ?? [], key, now),
+  );
 }
 
 // ---- the Cards view's set ----------------------------------------------------

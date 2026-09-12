@@ -11,7 +11,9 @@ import { join } from "node:path";
 import {
   CHAT_ORIGIN,
   mergeWaitingChats,
+  pacedReader,
   waitingChatRows,
+  WAITING_REFRESH_MS,
   WAITING_TASK_STATUSES,
 } from "./waiting-chats";
 import type { WaitingTask } from "./waiting-chats";
@@ -189,7 +191,7 @@ describe("one conversation, one row, on either of its two names", () => {
     // transcript APPEARING is news only the sessions watch hears. Without this
     // the pair of lists disagreed until something unrelated poked them.
     expect(SRC).toContain("tick?: unknown,");
-    expect(SRC).toContain("readRef.current();");
+    expect(SRC).toContain("pokeRef.current();");
     expect(SRC).toContain("}, [tick]);");
     // …and the first tick is skipped, or a mount reads twice for nothing.
     expect(SRC).toContain("const firstTick = useRef(true);");
@@ -233,5 +235,55 @@ describe("what the row says and where it goes", () => {
     expect(CHAT).toContain("const waitingChats = useWaitingChats(");
     expect(CHAT).toContain("!inChat && queueOn ? file : null");
     expect(CHAT).toContain("mergeWaitingChats(recentSessions, waitingChats)");
+  });
+});
+
+describe("one read for one event, and a floor under all of them", () => {
+  // 🟡 review, 2026-09-12. Two things ask for a re-read and neither knew about
+  // the other — the recent list's own tick and the `tasks-changed` announcement
+  // — and one send rings BOTH within a few milliseconds. The landing globbed
+  // every transcript on the machine twice, for one event, with no floor at all.
+  it("is five seconds, the same floor the chat's own row read has", () => {
+    expect(WAITING_REFRESH_MS).toBe(5000);
+  });
+
+  it("reads on the mount, and folds two pokes in one window into one read", async () => {
+    let reads = 0;
+    let clock = 1_000_000;
+    const pacer = pacedReader(() => {
+      reads += 1;
+    }, () => clock, 20);
+
+    // The mount's own read is never floored: nothing is on screen to be stale.
+    pacer.poke(true);
+    expect(reads).toBe(1);
+
+    // The tick and the announcement, in the same breath. ONE read comes of it,
+    // and it is deferred to the end of the floor rather than dropped.
+    pacer.poke();
+    pacer.poke();
+    expect(reads).toBe(1);
+    clock += 20;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(reads).toBe(2);
+
+    // …and a poke past the floor goes straight through.
+    clock += 100;
+    pacer.poke();
+    expect(reads).toBe(3);
+    pacer.stop();
+  });
+
+  it("drops a deferred read when the subscription goes", async () => {
+    let reads = 0;
+    let clock = 1_000_000;
+    const pacer = pacedReader(() => {
+      reads += 1;
+    }, () => clock, 20);
+    pacer.poke(true);
+    pacer.poke();
+    pacer.stop();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(reads).toBe(1);
   });
 });

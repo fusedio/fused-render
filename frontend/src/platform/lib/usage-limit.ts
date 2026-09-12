@@ -32,12 +32,23 @@ export interface UsageLimitFacts {
   resumes_at?: number | null;
 }
 
-/** Is this row a session the plan's usage limit stopped? Both halves, because
- *  neither alone is the fact: `blocked` is every kind of not-moving, and a
- *  reason on a row that is running again is a leftover. */
+/**
+ * Is this row a session the plan's usage limit stopped?
+ *
+ * THE REASON, AND THE STATUS IS NOT ASKED (Bugbot PR #1124). `blocked` was half
+ * the test on the theory that a reason left on a moving row is a leftover — and
+ * the server does not leave one: `blocked_reason` is derived on every listing
+ * off the message the status is read from, and it is `""` the moment an
+ * ordinary answer lands (routers/tasks.py `_row`). What the extra half actually
+ * did was lose the fact in the one place the reader is standing: a limited
+ * session whose FOLDER is held is filed `queued`, not `blocked`, and the chat's
+ * header went back to saying nothing at all about a run that cannot move.
+ *
+ * One field, one meaning, every lane.
+ */
 export function isUsageLimited(facts: UsageLimitFacts | null | undefined): boolean {
   if (!facts) return false;
-  return facts.status === "blocked" && (facts.blocked_reason || "") === USAGE_LIMIT_REASON;
+  return (facts.blocked_reason || "") === USAGE_LIMIT_REASON;
 }
 
 /**

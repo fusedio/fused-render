@@ -1072,18 +1072,83 @@ def test_a_named_send_claims_back_the_nameless_reservation_its_dead_run_left(
     second send arrives WITH the session (the client read it off the URL) and
     still no run id — so `_self_held` has nothing to match and `_anonymous_self`
     refuses a request that CAN name itself. The chat queued behind its own dead
-    reservation."""
+    reservation.
+
+    THE RUN NAMES THAT SESSION, and it has to (bugbot HIGH, 2026-09-12): the
+    only way the client can put a session on the second send is to have read one
+    the first run published, and the run dir that published it carries it too.
+    "…or names nobody" was the arm that let ANY session take a standing
+    reservation, and it is gone."""
     work = home / "work"
     work.mkdir()
     pq.reserve(folder_key(work), "")             # the first admit's claim
-    # …and the run it spawned, killed by Stop before it ever named a session.
-    stage_run(agent, "r-1", str(work / "page.html"), session_id="", alive=False)
+    age_reservation(folder_key(work))            # …a round trip ago
+    # …and the run it spawned, killed by Stop before it ever became a holder.
+    stage_run(agent, "r-1", str(work / "page.html"), session_id=SID,
+              alive=False)
 
     assert pq.holders()[folder_key(work)]["kind"] == "reserved"
     assert pq.is_free(folder_key(work), SID) is True
     assert pq.reserve_if_free(folder_key(work), SID) is True
     # …and the reservation is now that chat's, by name.
     assert pq.reserved(folder_key(work)) == SID
+
+
+def test_a_named_send_never_takes_a_brand_new_chats_FRESH_reservation(home,
+                                                                      agent):
+    """BUGBOT HIGH, 2026-09-12. Chat X has a session and a quiet run in this
+    folder; chat Y is brand new and its admission has just reserved it. Without
+    the age guard X walked straight into Y's claim and two processes started in
+    one working tree — the single thing this module exists to prevent.
+
+    `ANONYMOUS_CLAIM_AFTER` is the clause that tells them apart, exactly as it
+    does for `_anonymous_self`: a claim a fraction of a second old is a spawn
+    still in flight, and the dead reservation this rule is for was made before a
+    reply that had to be written and read."""
+    work = home / "work"
+    work.mkdir()
+    stage_run(agent, "r-1", str(work / "page.html"), session_id=SID,
+              alive=False)
+    pq.reserve(folder_key(work), "")             # Y's claim, this instant
+
+    assert pq.is_free(folder_key(work), SID) is False
+    assert pq.reserve_if_free(folder_key(work), SID) is False
+    # …and Y's reservation is untouched.
+    assert pq.reserved(folder_key(work)) == ""
+
+
+def test_a_named_send_that_names_a_FOREIGN_run_never_claims_back(home, agent):
+    """A send that can name its run is answered by `_self_held`, which compares
+    it against the holder's own. Reaching this rule with a run id means the
+    holder's run is a DIFFERENT one, and "my run is not that one, so let me have
+    the folder" is the opposite of the question this answers. It queues."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    age_reservation(folder_key(work))
+    stage_run(agent, "r-1", str(work / "page.html"), session_id=SID,
+              alive=False)
+
+    assert pq.is_free(folder_key(work), SID, "r-somebody-elses") is False
+    assert pq.reserve_if_free(folder_key(work), SID,
+                              "r-somebody-elses") is False
+
+
+def test_a_named_send_never_claims_back_a_quiet_run_that_NAMES_NOBODY(home,
+                                                                      agent):
+    """The arm that is gone (bugbot HIGH, 2026-09-12). A nameless quiet run is
+    proof that SOME conversation had a turn here and proof of nothing about
+    WHICH — so "or names nobody" let any session at all take the reservation
+    standing in the folder."""
+    work = home / "work"
+    work.mkdir()
+    pq.reserve(folder_key(work), "")
+    age_reservation(folder_key(work))
+    stage_run(agent, "r-1", str(work / "page.html"), session_id="",
+              alive=False)
+
+    assert pq.is_free(folder_key(work), SID) is False
+    assert pq.reserve_if_free(folder_key(work), SID) is False
 
 
 def test_a_named_send_queues_behind_a_DIFFERENT_live_session_in_the_folder(
@@ -1110,6 +1175,7 @@ def test_a_named_send_never_claims_back_a_quiet_run_that_is_somebody_elses(
     work = home / "work"
     work.mkdir()
     pq.reserve(folder_key(work), "")
+    age_reservation(folder_key(work))
     stage_run(agent, "r-3", str(work / "page.html"), SID2, alive=False)
 
     assert pq.is_free(folder_key(work), SID) is False

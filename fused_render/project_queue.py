@@ -752,7 +752,8 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
         if (holder is not None and not _self_held(holder, sid, run)
                 and not _anonymous_self(key, holder, sid, run, now,
                                         reservation_age=age)
-                and not _claims_back(key, holder, sid, now)):
+                and not _claims_back(key, holder, sid, run, now,
+                                     reservation_age=age)):
             return False
         # The moment it was taken SURVIVES the rewrite. What a chat refreshing
         # its own reservation holds is one claim, not a new one, and restamping
@@ -854,8 +855,9 @@ def _anonymous_self(key: str, holder: dict, session_id: str, run_id: str,
     return _recent_idle_run_in(key, now)
 
 
-def _claims_back(key: str, holder: dict, session_id: str,
-                 now: float | None = None) -> bool:
+def _claims_back(key: str, holder: dict, session_id: str, run_id: str = "",
+                 now: float | None = None,
+                 reservation_age: float | None = None) -> bool:
     """May a send that CAN name its session take back a reservation that names
     nobody?
 
@@ -869,33 +871,52 @@ def _claims_back(key: str, holder: dict, session_id: str,
     not. So the chat queued behind its own dead reservation, and the row read
     "next in this folder" about a folder nothing was in.
 
-    The gate is the same wall `_anonymous_self` uses, read one clause tighter:
+    The gate is the same wall `_anonymous_self` uses, read one clause tighter —
+    and it is a WALL rather than a courtesy, because every clause of it is what
+    stops an established conversation walking into a brand-new chat's folder
+    (bugbot HIGH, 2026-09-12):
 
-    1. **A `reserved` holder naming nobody, and nothing else.** A `run`, a
+    1. **THE REQUEST NAMES NO RUN.** A send that can name its run is answered by
+       `_self_held`, which compares it against the holder's own; reaching this
+       rule with a run id means the holder's run is a DIFFERENT one, and "my run
+       is not that one, so let me have the folder" is the exact opposite of the
+       question this answers. It queues.
+    2. **A `reserved` holder naming nobody, and nothing else.** A `run`, a
        `starting` or a `sending` holder is a process in that tree or one the
        tick has claimed it for, and no session id makes a second send into it
        safe. A reservation that HAS a session is answered by `_self_held` or
        not at all.
-    2. **The newest run keyed on this folder is quiet and recent** — not
+    3. **The reservation has aged past one admit->spawn round trip**
+       (`ANONYMOUS_CLAIM_AFTER`, `_anonymous_self`'s own clause 3). A brand-new
+       chat's claim is a fraction of a second old when its spawn is still in
+       flight; the dead reservation this rule is for was made before a reply
+       that had to be written and read. Without it, an established chat sending
+       into a folder a new one had just claimed took that claim — two processes
+       in one working tree, the single thing this module prevents.
+    4. **The newest run keyed on this folder is quiet and recent** — not
        running (`_live_session`, which believes the registry and therefore a
        killed process), and written to within `STARTING_GRACE`. The run dir is
        the proof that this conversation has already been in this folder;
        recency is what stops last week's corpse from proving it.
-    3. **…and that run is this session's, or nobody's.** A quiet run naming a
-       DIFFERENT session is somebody else's conversation, and the anonymous
-       reservation standing in this folder is far more likely to be theirs. A
-       run that named no session at all is the killed one from the sequence
-       above — it never lived long enough to publish one — and that is the case
-       this exists for.
+    5. **…and that run NAMES THIS SESSION.** Not "or names nobody": a nameless
+       quiet run is proof that SOME conversation had a turn here and proof of
+       nothing about WHICH, so that arm let any session at all take the standing
+       reservation (bugbot HIGH, 2026-09-12). The Stop-then-send sequence still
+       passes it, because the only way the client can put a session on the
+       second send is to have read one the first run published — and the run dir
+       that published it carries it too.
 
     Nothing is stored and nothing is leased: the caller rewrites the
     reservation with the session it now knows, which is what stops the same
     question being asked twice."""
-    if not session_id:
+    if not session_id or run_id:
         return False
     if str(holder.get("kind") or "") != "reserved":
         return False
     if str(holder.get("session_id") or "") or str(holder.get("run_id") or ""):
+        return False
+    age = _reservation_age(key) if reservation_age is None else reservation_age
+    if age < ANONYMOUS_CLAIM_AFTER:
         return False
     run = _newest_run_in(key)
     if run is None:
@@ -905,8 +926,7 @@ def _claims_back(key: str, holder: dict, session_id: str,
         return False
     if not _starting(run["run_dir"], now):
         return False
-    names = {s for s in run["sessions"] if s}
-    return not names or session_id in names
+    return session_id in {s for s in run["sessions"] if s}
 
 
 def _newest_run_in(key: str, agent=None) -> dict | None:
@@ -1234,7 +1254,9 @@ def is_free(key: str, session_id: str, run_id: str = "",
     be a round trip rather than a race (`_anonymous_self`); short of that it
     waits, which is what keeps two brand-new tasks out of one folder. A chat
     that can name its SESSION but not its run claims back a nameless
-    reservation on the same wall (`_claims_back`) — the Stop-then-send case.
+    reservation on the same wall, aged the same way and only where the folder's
+    own quiet run carries that very session (`_claims_back`) — the
+    Stop-then-send case.
     """
     if not key:
         return True
@@ -1245,7 +1267,8 @@ def is_free(key: str, session_id: str, run_id: str = "",
     return (_self_held(holder, sid, run)
             or _anonymous_self(key, holder, sid, run, now,
                                reservation_age=_reservation_age(key))
-            or _claims_back(key, holder, sid, now))
+            or _claims_back(key, holder, sid, run, now,
+                            reservation_age=_reservation_age(key)))
 
 
 # -------------------------------------------------------------------- the order

@@ -479,7 +479,19 @@ describe("Run next, from the card", () => {
       CHAT.indexOf("const deleteWaiting = useCallback("),
     );
     expect(run).toContain('const key = sched.rec?.key || "";');
-    expect(run).toContain("await skipQueue(key ? { key } : { entry_id: first });");
+    expect(run).toContain("const said = await skipQueue(key ? { key } : { entry_id: first });");
+    // …AND THE LINE THE PRESS JUST CHANGED, off the same answer (🟡 review,
+    // 2026-09-12). Painting only the claim left "behind TASK-041" naming
+    // whatever was ahead BEFORE the press until the next listing landed — the
+    // one sentence on the card the press is supposed to change.
+    expect(run).toContain("said.ahead_key === undefined");
+    for (const field of ["queue_ahead: said.ahead", "queue_ahead_title: said.ahead_title",
+                         "queue_ahead_session: said.ahead_session",
+                         "queue_ahead_target: said.ahead_target",
+                         "queue_ahead_key: said.ahead_key",
+                         "queue_position: said.position"]) {
+      expect(run).toContain(field);
+    }
     // The claim is painted onto the card: this pane has no listing to correct it
     // from, and the server's answer is the position it just set. It goes on the
     // FACTS as well as on the fallback, because the facts prefer the server's row

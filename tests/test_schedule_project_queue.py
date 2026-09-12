@@ -327,6 +327,28 @@ def test_run_next_stamps_the_moment_and_the_newest_click_goes_first(folders):
             for e in (b, d, c)] == [1, 2, 3]
 
 
+def test_run_next_on_a_task_with_two_due_messages_keeps_them_in_order(folders):
+    """🔴 review, 2026-09-12. One press promotes EVERY due message the task
+    has waiting in that folder (`api_queue_skip`), and the stamp sorts newest
+    first — so a clock read inside the loop stamped the second message a few
+    microseconds after the first and put it in FRONT of it. One press is one
+    gesture and one instant: the entries tie, and a tie falls through to `due`,
+    which is the order they were typed in."""
+    first = schedule.create(str(folders["alpha"]), "one", _ago(300),
+                            session_id=SID)
+    second = schedule.create(str(folders["alpha"]), "two", _ago(200),
+                             session_id=SID)
+
+    schedule.set_priority([first["id"], second["id"]], True)
+
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert stored[first["id"]]["priority_at"] == stored[second["id"]]["priority_at"]
+    key = _key(folders["alpha"])
+    now = schedule._now()
+    assert [schedule._queue_position(stored[e["id"]], key, now)
+            for e in (first, second)] == [1, 2]
+
+
 # ============================================================== the folder hold
 
 

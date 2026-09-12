@@ -1721,7 +1721,9 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
 
     So True always WRITES, even on an entry that already carries the flag: the
     stamp is the gesture, and an idempotent no-op here would be the second
-    press doing nothing visible. False clears both fields together — an entry
+    press doing nothing visible. **ONE stamp for the whole call**, read before
+    the loop: the entries of a single press are one gesture, and stamping them
+    one at a time reversed a task's own two messages (see `now`, below). False clears both fields together — an entry
     with no `priority` has no promotion to be timed.
 
     **Only a PENDING entry can be skipped**, and every other state is refused
@@ -1747,6 +1749,15 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
     updated: list[str] = []
     refused: list[str] = []
     keys: set[str] = set()
+    # ONE CLOCK FOR THE WHOLE PRESS (🔴 review, 2026-09-12). One Run next can
+    # promote SEVERAL entries — every due message a task has waiting in the
+    # folder (`api_queue_skip`) — and the stamp sorts NEWEST FIRST. Read inside
+    # the loop, the second message of a conversation was stamped a few
+    # microseconds after the first and therefore sorted IN FRONT of it: one
+    # press, and the task's own two messages came out backwards. One instant
+    # stamped on all of them makes them tie, and a tie falls through to `due`,
+    # which is the order they were typed in.
+    now = time.time()
     with _lock:
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
@@ -1765,7 +1776,7 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
                 # press is what puts this entry back in front of the one that
                 # overtook it.
                 entry["priority"] = True
-                entry["priority_at"] = time.time()
+                entry["priority_at"] = now
                 changed = True
             elif _flag(entry.get("priority")) or entry.get("priority_at"):
                 entry["priority"] = False

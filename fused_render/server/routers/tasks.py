@@ -2307,6 +2307,42 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
     return best_at, best_id, best_repeats
 
 
+# THE TITLE PR #1107's COMEBACK FILES ITSELF UNDER — `protocol/quota.ts`
+# CONTINUE_TITLE, restated here because it is a wire fact between the chat that
+# schedules the continuation and the row that times it. The chat is the only
+# thing that writes it, and it writes it on that entry alone.
+COMEBACK_TITLE = "Continue after usage limit"
+
+
+def _comeback_at(entries: list[dict]) -> float:
+    """WHEN THE USAGE-LIMIT CONTINUATION RUNS — the soonest pending entry of this
+    task that is the comeback the chat scheduled, and 0.0 when there is none.
+
+    NOT `_next_run` (🟡 review, 2026-09-12). `resumes_at` is read as "this
+    stopped run picks itself back up then", and the next run of ANY kind is a
+    different fact: a task that hit the limit at noon and also has a nightly
+    repeat due at 6pm would have told the reader the window reopens at 6pm — a
+    sentence about the plan's clock built out of somebody's calendar.
+
+    The title is the whole test, because it is the only mark the comeback
+    carries: `scheduleComeback` posts one entry, on this session, with that
+    title and a fixed prompt. 0.0 when the comeback was cancelled or its POST
+    failed, which is how every other absent time on the row reads.
+    """
+    best = 0.0
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        if str(entry.get("title") or "").strip() != COMEBACK_TITLE:
+            continue
+        at = _entry_at(entry)
+        if not at:
+            continue
+        if not best or at < best:
+            best = at
+    return best
+
+
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          busy: set[str], revived: list[str], parked: dict | None = None,
          queue: dict | None = None, queue_on: bool | None = None,
@@ -2537,13 +2573,15 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
             # the continuation is already scheduled and `resumes_at` says when.
             else "usage_limit" if limited
             else ("failed" if failed or status == "blocked" else "")),
-        # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the task's own next pending
-        # run, which for a usage limit is the continuation the chat scheduled at
-        # the reset the CLI reported (PR #1107). 0.0 when nothing is scheduled
-        # (the comeback was cancelled, or the POST that made it failed) and 0.0
-        # for every task that is not waiting on a clock, which is how every
-        # other absent time on this row reads.
-        "resumes_at": next_run if limited else 0.0,
+        # WHEN A BLOCKED RUN PICKS ITSELF BACK UP — the CONTINUATION the chat
+        # scheduled at the reset the CLI reported (PR #1107), and that entry
+        # alone (`_comeback_at`). The task's next run of any kind was the wrong
+        # clock: an unrelated message due sooner made this row promise the plan's
+        # window reopened at a time that had nothing to do with the plan. 0.0
+        # when nothing is scheduled (the comeback was cancelled, or the POST that
+        # made it failed) and 0.0 for every task that is not waiting on a clock,
+        # which is how every other absent time on this row reads.
+        "resumes_at": _comeback_at(task["entries"]) if limited else 0.0,
         # The one line under the title on a needs-attention row: which tool, and
         # what it wants to do ("Bash · rm -rf build"). None whenever nothing is
         # waiting — the row draws the sub-line off this, so an empty object would
@@ -4094,7 +4132,11 @@ def api_queue_skip(body: dict = Body(...),
         # Already at the head, and written somewhere Skip cannot improve: the
         # answer is delivered the moment the folder frees. Answered rather than
         # refused — from the outside this is exactly what Skip asked for.
-        return {"ok": True, "position": 1}
+        # …with the same `ahead_*` the ordinary road answers with, so one caller
+        # reads one shape. `position` is this endpoint's own promise and is
+        # written after the place, never taken from it.
+        held_place = _queue_place(key, tasks)
+        return {**held_place, "ok": True, "position": 1}
 
     ids = [str(entry.get("id") or "") for entry in task["entries"]
            if str(entry.get("state") or "") == schedule.PENDING
@@ -4104,7 +4146,22 @@ def api_queue_skip(body: dict = Body(...),
     if ids:
         schedule.set_priority(ids, True)
     tasks_watch.notify({key})
-    return {"ok": True, "position": 1}
+    # WHO IS IN FRONT NOW, the way admit, decide and run-now all answer it
+    # (`_queue_place`). The press has just changed this line and the chat has to
+    # redraw it: without these the card could only paint the claim ("runs next")
+    # and kept saying "behind TASK-041" about whatever was ahead BEFORE the press
+    # until the next listing landed (🟡 review, 2026-09-12).
+    #
+    # RE-DERIVED FROM DISK, not from the `tasks` in hand: that collection was
+    # read before `set_priority` wrote, so placing against it would report the
+    # line this endpoint had just replaced. `position` stays the promise this
+    # endpoint makes (see the docstring) and is not taken from the derivation.
+    place = _queue_place(key)
+    return {"ok": True, "position": 1,
+            "ahead_key": place["ahead_key"], "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"],
+            "ahead_session": place["ahead_session"],
+            "ahead_target": place["ahead_target"]}
 
 
 def _already_decided(agent, run_dir: str, request_id: str) -> bool:

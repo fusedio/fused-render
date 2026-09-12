@@ -3255,8 +3255,55 @@ def _inbox_at(name: str) -> float:
 _ECHO_TAIL_BYTES = 1 << 20
 _DRAINED_WALK_MAX = 16
 
+# THE TWO MEMOS THAT KEEP THIS OFF THE DISK ON EVERY POLL (🟡 review,
+# 2026-09-12). `_poll` runs every 400 ms for the life of a run and both of these
+# answers are functions of files that mostly do not change between two of them:
+# the first keyed on what `out.jsonl` IS (its size and mtime), the second on the
+# newest name in `inbox/done/`. Capped and cleared wholesale rather than aged —
+# they are a cache of cheap facts about live runs, and a shell that visits a
+# great many of them must not grow one entry per run forever.
+_ECHO_CACHE_MAX = 64
+# run_dir -> ((size, mtime_ns), (texts, whole))
+_echo_cache: dict = {}
+# run_dir -> the newest `inbox/done/` name PROVEN fully echoed. Once that is the
+# newest name there is, nothing is waiting and nothing needs reading at all.
+_echoed_done: dict = {}
+
+
+def _remember_capped(cache: dict, key: str, value) -> None:
+    """Store, with a ceiling: a full cache is emptied rather than aged, because
+    the entry worth keeping is the run being polled right now and it is about to
+    be written again."""
+    if len(cache) >= _ECHO_CACHE_MAX and key not in cache:
+        cache.clear()
+    cache[key] = value
+
 
 def _echo_texts(run_dir: str) -> tuple:
+    """`_read_echo_texts`, memoized on the FILE — its size and its mtime.
+
+    Read on every `_poll` (400 ms) and every history refresh, this decoded and
+    scanned up to a megabyte of `out.jsonl` each time for an answer that can only
+    change when the file does. The stamp is the whole invalidation rule: a byte
+    appended moves both halves of it, and a file that has not been written to
+    hands back the list that was already built.
+
+    An unreadable file caches nothing and answers what the read answers."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [], False
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    hit = _echo_cache.get(run_dir)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = _read_echo_texts(run_dir)
+    _remember_capped(_echo_cache, run_dir, (stamp, value))
+    return value
+
+
+def _read_echo_texts(run_dir: str) -> tuple:
     """`(texts, whole)` — the trimmed text of every user turn `out.jsonl` has
     echoed back, in file order, over the tail of the file, and whether that
     tail was the WHOLE file.
@@ -3354,12 +3401,16 @@ def _drained_unechoed(run_dir: str) -> list:
     drained, so the newest done entry is the last to echo and everything behind
     the first echoed one has echoed too. The walk stops there.
 
-    Matched by position and not by membership, so a message sent twice is not
-    read as its own echo: the last echo answers the newest done entry, the one
-    before it the one before that. A TRUNCATED window holding no echo at all (a
-    reply longer than `_ECHO_TAIL_BYTES`) answers "all echoed", which is the
-    reading this had before the field existed; an empty WHOLE file means the
-    CLI has not opened a turn yet, and everything drained really is waiting."""
+    Matched by POSITION and not by membership, so a message sent twice is not
+    read as its own echo: the echoed entries are a PREFIX of the drained ones, so
+    the last `p` echoes in the file are the texts of the first `p` entries here,
+    and the largest `p` that holds is how many have landed. Everything after it
+    is waiting. (Comparing each entry against the newest echo instead read two
+    identical follow-ups with one echo as two answered messages and drew
+    neither.) A TRUNCATED window holding no echo at all (a reply longer than
+    `_ECHO_TAIL_BYTES`) answers "all echoed", which is the reading this had
+    before the field existed; an empty WHOLE file means the CLI has not opened a
+    turn yet, and everything drained really is waiting."""
     done = os.path.join(_inbox_dir(run_dir), "done")
     try:
         names = sorted(n for n in os.listdir(done) if n.endswith(".json"))
@@ -3367,19 +3418,42 @@ def _drained_unechoed(run_dir: str) -> list:
         return []          # nothing has ever been drained here
     if not names:
         return []
+    # NOTHING NEW SINCE THE LAST TIME EVERYTHING HAD ECHOED — the fast path off
+    # the whole walk, and the ordinary case for the life of a run: the newest
+    # drained entry was proven echoed on some earlier poll and the host has
+    # drained nothing since, so there is nothing to read and nothing to draw.
+    if _echoed_done.get(run_dir) == names[-1]:
+        return []
     echoes, whole = _echo_texts(run_dir)
     if not echoes and not whole:
         return []
-    waiting = []
-    index = len(echoes) - 1
-    for name in reversed(names[-_DRAINED_WALK_MAX:]):
+    recent = []
+    for name in names[-_DRAINED_WALK_MAX:]:
         entry = _inbox_entry(os.path.join(done, name), name)
         if entry is None:
             continue       # a control request: it is not a turn on either side
-        if index >= 0 and echoes[index] == entry["text"].strip():
-            break          # this one landed, and so did everything before it
-        waiting.append(entry)
-    waiting.reverse()
+        recent.append(entry)
+    texts = [entry["text"].strip() for entry in recent]
+    # HOW MANY OF THESE HAVE ECHOED — a POSITION, counted from the oldest, and
+    # not a search for the newest text that happens to match (🔴 review,
+    # 2026-09-12). Both sides are FIFO: the host drains in name order and the CLI
+    # echoes in the order it drained, so if the first `p` of these have been
+    # answered then the LAST `p` echoes in the file are exactly their texts, in
+    # that order. The largest `p` that holds is the count.
+    #
+    # Comparing the newest entry against the newest echo alone could not tell
+    # "answered" from "said twice": two "go on"s with one echo matched on the
+    # second one and dropped BOTH bubbles, which is the reader's own words going
+    # missing while the CLI still held them.
+    matched = 0
+    for size in range(min(len(texts), len(echoes)), 0, -1):
+        if echoes[len(echoes) - size:] == texts[:size]:
+            matched = size
+            break
+    waiting = recent[matched:]
+    if not waiting:
+        # Proven, so the walk above is skipped until the host drains again.
+        _remember_capped(_echoed_done, run_dir, names[-1])
     return waiting
 
 

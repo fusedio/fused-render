@@ -107,13 +107,18 @@ export function inboxBubbles(
     // same fact said twice; two entries saying the same words are two messages.
     const id = String(row.id || "");
     if (id && seen.has(id)) continue;
+    // MARKED BEFORE EITHER EXIT, not only on the one that draws (Bugbot
+    // PR #1124). An entry retired because its words are already on screen has
+    // still been SEEN, and leaving it out of the set meant a host listing the
+    // same id twice in one payload spent one copy on the retire and drew a
+    // bubble for the other — the duplicate this dedupe exists to stop.
+    if (id) seen.add(id);
     // …and a copy somebody else is drawing is spent here, once.
     const already = drawn.get(key) ?? 0;
     if (already > 0) {
       drawn.set(key, already - 1);
       continue;
     }
-    if (id) seen.add(id);
     // WITH NO ID NAMED, the words are the key — and a second entry saying the
     // same words takes a suffix, because React keys have to be unique and these
     // two rows are two messages. Stable while the list's order is.
