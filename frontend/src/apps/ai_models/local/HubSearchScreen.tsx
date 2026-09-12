@@ -14,7 +14,7 @@
 // device-code flow. What is NOT ported is family grouping
 // (`hubFamilies.ts`) and the dense `<table>` (`HubResultsTable.tsx`) — the
 // brief for this screen is one row per hit, the mockup's own `hit()`.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ClockIcon, DownloadIcon, HeartIcon } from "./HitStatIcons";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
@@ -653,13 +653,17 @@ export function HubSearchScreen({
   // Hub requests. Wrapped in try/catch: private-browsing/storage-disabled
   // must degrade to the safe default (assume not ready, keep the Hub
   // copy), never throw.
-  const [rememberedPoolReady] = useState(() => {
+  // Re-derived whenever `capabilityKey` changes, not just on mount — this
+  // screen can stay mounted across a capability switch, and a `useState`
+  // initializer only runs once, which would leave the FIRST search for the
+  // new capability reading the OLD capability's remembered pool state.
+  const rememberedPoolReady = useMemo(() => {
     try {
       return window.localStorage.getItem(`hubPoolState:${capabilityKey}`) === "ready";
     } catch {
       return false;
     }
-  });
+  }, [capabilityKey]);
 
   useEffect(() => {
     if (debounce.current) window.clearTimeout(debounce.current);
@@ -753,9 +757,17 @@ export function HubSearchScreen({
         setLoading(false);
         if (e.name === "AbortError") {
           // The Cancel link, below — return to a clean idle pane rather than
-          // surfacing the abort as an error.
+          // surfacing the abort as an error. `postJson`/`mutateJson` never
+          // catch or rewrap a fetch abort (frontend/src/platform/lib/api.ts,
+          // `mutateJson`) — it's the raw DOMException straight from `fetch`,
+          // so `e.name` really is "AbortError" here, not a plain Error that
+          // would slip past this check. Also clear any stale error/timer
+          // state left over from a PRIOR run so Cancel always lands on a
+          // genuinely clean idle pane.
           setWaitPhase("hidden");
           setModels(null);
+          setError(null);
+          requestStartRef.current = null;
           return;
         }
         setError(e.message);

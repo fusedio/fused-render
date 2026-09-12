@@ -118,3 +118,35 @@ describe("HubSearchScreen dead summary output (item 4)", () => {
     expect(SRC).not.toContain('style={{ display: "none" }}');
   });
 });
+
+// Code review: `rememberedPoolReady` must be re-derived whenever
+// `capabilityKey` changes — a `useState` initializer only ever runs on
+// mount, so if the screen stays mounted across a capability switch, the
+// first search for the NEW capability would read the OLD capability's
+// remembered pool state.
+describe("HubSearchScreen rememberedPoolReady tracks capabilityKey", () => {
+  it("is derived with useMemo keyed on capabilityKey, not a mount-only useState", () => {
+    expect(SRC).toContain("const rememberedPoolReady = useMemo(() => {");
+    const memoStart = SRC.indexOf("const rememberedPoolReady = useMemo(() => {");
+    const memoBody = SRC.slice(memoStart, SRC.indexOf("[capabilityKey]);", memoStart) + "[capabilityKey]);".length);
+    expect(memoBody).toContain("[capabilityKey]");
+    expect(SRC).not.toContain("const [rememberedPoolReady] = useState(() => {");
+  });
+});
+
+// Code review: the Cancel-link abort path must land on a genuinely clean
+// idle pane — clearing `error` and `requestStartRef` too, not just
+// `waitPhase`/`models`. `postJson`/`mutateJson` (platform/lib/api.ts) never
+// catch-and-rewrap a fetch abort, so `e.name === "AbortError"` really does
+// see the raw DOMException `fetch` throws.
+describe("HubSearchScreen cancel resets full idle state", () => {
+  it("clears error and requestStartRef alongside waitPhase/models on AbortError", () => {
+    const abortStart = SRC.indexOf('if (e.name === "AbortError") {');
+    expect(abortStart).toBeGreaterThan(-1);
+    const abortBody = SRC.slice(abortStart, SRC.indexOf("return;", abortStart));
+    expect(abortBody).toContain('setWaitPhase("hidden");');
+    expect(abortBody).toContain("setModels(null);");
+    expect(abortBody).toContain("setError(null);");
+    expect(abortBody).toContain("requestStartRef.current = null;");
+  });
+});
