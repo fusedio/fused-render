@@ -142,10 +142,10 @@ def _by_key(client):
 
 
 def _put(ident, fields) -> dict | None:
-    """`drafts.put_task`, minus the evicted-ids half most tests here have no
-    reason to look at — the tests that ARE about eviction (below, "one bound
+    """`drafts.put_task`, minus the canonical-id half most tests here have no
+    reason to look at — the tests that ARE about the binding (below, "one bound
     draft per session") call `drafts.put_task` directly to see both."""
-    record, _evicted = drafts.put_task(ident, fields)
+    record, _canonical = drafts.put_task(ident, fields)
     return record
 
 
@@ -1228,37 +1228,85 @@ def test_the_session_a_draft_is_going_into_round_trips(state_dir):
 # same session — a New task form opened twice out of one conversation's
 # Schedule button, say, once before a reload and once after. The session's row
 # can wear exactly one `✎ Draft` chip (`_bound_chips`), so binding a second
-# draft to it is not a second fact, it is a stale copy of the first one, and
-# the newest write is the one that is telling the truth (review, 2026-09-12).
+# draft to it is not a second fact, it is one fact written twice.
+#
+# IT IS A MERGE AND NOT AN EVICTION (Bugbot, PR #1126, 2026-09-12). The first
+# version of this rule deleted the loser, which is right only if the winner is
+# the better-informed of the two — and the write that collides is by
+# construction the one that knows LESS: `fetchDrafts` never rejects, so a lookup
+# that fails on the way into the hop reads as "no bound form", the card mints a
+# new id, and a form carrying one sentence used to destroy a draft holding a
+# time, a repeat rule, a model and a tray. The incoming write is folded into the
+# existing record instead, and the id it landed on comes back so the card can
+# follow it.
 
 
-def test_binding_a_second_draft_evicts_the_first_bound_to_the_same_session(
-        state_dir):
-    first, evicted = drafts.put_task(
-        "draft-0001", {"title": "one", "session_id": "sess-a"})
+def test_a_second_draft_bound_to_one_session_is_MERGED_into_the_first(state_dir):
+    """NOT evicted (Bugbot, PR #1126, 2026-09-12).
+
+    The write that collides is by construction the one that knows LESS. A
+    Schedule hop whose `GET /api/drafts` failed reads as "this session has no
+    form", mints a fresh id and saves a form carrying only the composer's
+    sentence — over a stored draft holding the time, the repeat rule, the model
+    and the tray somebody spent a minute choosing. The first version of this
+    rule deleted all of that over one failed request."""
+    first, canonical = drafts.put_task("draft-0001", {
+        "title": "one", "session_id": "sess-a", "when": "2026-09-12T09:00",
+        "repeat": "weekly", "model": "opus", "effort": "high",
+        "target": "/Users/me/proj",
+        "attachments": [{"path": "/shots/a.png", "name": "a", "kind": "image"}],
+    })
     assert first is not None
-    assert evicted == [], "nothing else was bound yet"
+    assert canonical == "draft-0001", "nothing else was bound yet"
 
-    second, evicted = drafts.put_task(
-        "draft-0002", {"title": "two", "session_id": "sess-a"})
-    assert second is not None
-    assert second["session_id"] == "sess-a"
-    # THE LISTING KEY (`draft:<id>`), same shape `unbind_session` answers in —
-    # the caller announces it and a page holding that row has to be told to
-    # drop it.
-    assert evicted == ["draft:draft-0001"]
-    assert drafts.get_task("draft-0001") is None, "the loser's words are gone"
-    assert drafts.get_task("draft-0002") is not None
+    second, canonical = drafts.put_task("draft-0002", {
+        "title": "two", "session_id": "sess-a", "when": None, "repeat": None,
+        "model": "", "effort": "", "target": "",
+        "attachments": [{"path": "/shots/b.png", "name": "b", "kind": "image"}],
+    })
+    # THE EXISTING ID COMES BACK, so the caller can tell the page which record
+    # its card is really writing into.
+    assert canonical == "draft-0001"
+    assert drafts.get_task("draft-0002") is None, "no second draft was created"
+    stored = drafts.get_task("draft-0001")
+    assert stored is not None
+    assert stored == second
+    # The incoming write's words land...
+    assert stored["title"] == "two"
+    # ...and everything it said nothing about survives it.
+    assert stored["when"] == "2026-09-12T09:00"
+    assert stored["repeat"] == "weekly"
+    assert stored["model"] == "opus"
+    assert stored["effort"] == "high"
+    assert stored["target"] == "/Users/me/proj"
+    # Files are a union keyed on `path`: neither side's tray is a statement that
+    # the other side's is gone.
+    assert [a["path"] for a in stored["attachments"]] == ["/shots/a.png", "/shots/b.png"]
+    assert stored["session_id"] == "sess-a"
+    assert stored["created_at"] == first["created_at"], "the row does not move"
 
 
-def test_a_put_for_the_same_id_updates_in_place_and_evicts_nobody(state_dir):
+def test_the_merge_takes_a_setting_the_incoming_write_did_name(state_dir):
+    """Non-empty is the whole test. A blank field is "this write has nothing to
+    say about it"; a filled one is an answer, and answers win."""
+    drafts.put_task("draft-0001", {"title": "one", "session_id": "sess-a",
+                                   "when": "2026-09-12T09:00", "model": "opus"})
+    record, canonical = drafts.put_task("draft-0002", {
+        "title": "two", "session_id": "sess-a",
+        "when": "2026-09-13T17:30", "model": "haiku"})
+    assert canonical == "draft-0001"
+    assert record["when"] == "2026-09-13T17:30"
+    assert record["model"] == "haiku"
+
+
+def test_a_put_for_the_same_id_updates_in_place_and_merges_with_nobody(state_dir):
     """The ordinary autosave — the SAME draft, saved again and again — must
     never read as a second draft colliding with itself."""
     drafts.put_task("draft-0001", {"title": "one", "session_id": "sess-a"})
-    record, evicted = drafts.put_task("draft-0001", {"title": "one, edited"})
+    record, canonical = drafts.put_task("draft-0001", {"title": "one, edited"})
     assert record["title"] == "one, edited"
     assert record["session_id"] == "sess-a", "unmentioned fields survive"
-    assert evicted == []
+    assert canonical == "draft-0001"
     assert drafts.get_task("draft-0001") is not None
 
 
@@ -1270,27 +1318,33 @@ def test_unbound_drafts_are_untouched_by_a_binding_elsewhere(state_dir):
     drafts.put_task(
         "draft-other", {"title": "a different thread", "session_id": "sess-b"})
 
-    _record, evicted = drafts.put_task(
+    _record, canonical = drafts.put_task(
         "draft-0001", {"title": "one", "session_id": "sess-a"})
-    assert evicted == []
+    assert canonical == "draft-0001"
     assert drafts.get_task("draft-unbound") is not None
     assert drafts.get_task("draft-other")["session_id"] == "sess-b"
 
 
-def test_the_router_announces_the_draft_a_binding_evicted(client, tmp_path):
-    """The eviction happens inside `put_task`'s own lock; a page holding the
-    loser's row would go on showing it until the next full listing without the
-    router telling the long-poll too (`routers/drafts.py`, the PUT handler)."""
+def test_the_router_answers_and_announces_the_id_the_write_landed_on(
+        client, tmp_path):
+    """The merge happens inside `put_task`'s own lock. The page has to be told
+    twice over: in the answer, because every later call the card makes names the
+    draft by id, and on the long-poll, because a page holding a row under the id
+    that was folded away would go on showing it until the next full listing
+    (`routers/drafts.py`, the PUT handler)."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
     before = client.get("/api/tasks").json()["generation"]
 
-    _bound_draft(client, "draft-0002", "sess-a", elsewhere)
-    assert drafts.get_task("draft-0001") is None
+    body = _bound_draft(client, "draft-0002", "sess-a", elsewhere,
+                        title="written by a card that could not look first")
+    assert body["draft_id"] == "draft-0001"
+    assert drafts.get_task("draft-0002") is None
+    assert drafts.get_task("draft-0001")["title"].startswith("written by a card")
 
-    body = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
-    assert "draft:draft-0001" in body["gone"]
+    changed = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
+    assert "draft:draft-0002" in changed["gone"]
 
 
 def test_a_session_bound_draft_is_not_a_row_and_the_session_wears_the_chip(
@@ -1350,6 +1404,33 @@ def test_the_conversations_own_composer_outranks_the_form(client, tmp_path,
     row = _by_key(client)["sess-a"]
     assert row["draft"]["preview"] == "half a thought"
     assert row["bound_draft"] == "draft-0001", "still the way back to the form"
+    assert row["draft"]["kind"] == "chat"
+
+
+def test_the_row_says_WHICH_kind_of_draft_its_preview_is(client, tmp_path,
+                                                         projects_dir):
+    """`draft.kind` — "chat" or "form" (Bugbot, PR #1126, 2026-09-12).
+
+    The thread's leading line quotes this preview, and pressing your own unsent
+    sentence has to land where it is. A `"chat"` preview is in this
+    conversation's composer, so the press opens the chat and there it is; a
+    `"form"` preview is a New task card bound to this session, of which the chat
+    holds nothing, so that press has to reopen the card instead. The page used
+    to go to the chat either way and showed the reader an empty composer under
+    the words it had just printed."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    # The bound form, with the composer empty.
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["kind"] == "form"
+    assert row["draft"]["preview"] == "Ship the changelog"
+
+    # …and the composer, which outranks it and says so.
+    client.put(_chat_url("sess-a"), json={"text": "half a thought"})
+    assert _by_key(client)["sess-a"]["draft"]["kind"] == "chat"
 
 
 def test_a_draft_with_no_session_is_numbered_exactly_as_before(client, tmp_path):

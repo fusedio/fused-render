@@ -150,7 +150,7 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     # debounced autosave, against a chip that would otherwise be stuck showing
     # stale words until the 20-second listing.
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
-    record, evicted = drafts.put_task(ident, body)
+    record, canonical = drafts.put_task(ident, body)
     bound = bound or str((record or {}).get("session_id") or "")
     # A DRAFT MOVES, IT NEVER DUPLICATES. The composer → New task hop mints the
     # task draft out of what was in the chat box, so for one instant the same
@@ -176,13 +176,18 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     from_chat = drafts.chat_key(body.get("from_chat_key")) if record else ""
     if from_chat:
         drafts.delete_chat(from_chat)
-    # ...and EVICTED, when this write bound a session that another draft had
-    # already claimed (`drafts.put_task`, review 2026-09-12: one bound draft
-    # per session). The loser's key is announced alongside the rest so a page
-    # holding that row drops it, rather than going on showing a chip whose form
-    # just vanished out from under it.
-    _announce(drafts.task_key(ident), from_chat, bound, *evicted)
-    return {"ok": True, "draft_id": ident, "draft": record,
+    # ...and THE ID THIS WRITE ACTUALLY LANDED ON, when it turned out to be
+    # about a session another draft already held and the store folded it into
+    # that one (`drafts.put_task`, Bugbot PR #1126: a merge, not an eviction).
+    # Both keys are announced — the requested id, so a page holding a row under
+    # it drops it, and the canonical one, so the row that grew these words
+    # repaints — and the canonical id is what goes back in the body, because
+    # every later call the card makes (the next autosave, Discard, Schedule)
+    # names the draft by id and would otherwise aim at a record that is not
+    # there.
+    _announce(drafts.task_key(ident), from_chat, bound,
+              drafts.task_key(canonical) if canonical and canonical != ident else "")
+    return {"ok": True, "draft_id": canonical or ident, "draft": record,
             "from_chat_key": from_chat}
 
 

@@ -3323,7 +3323,25 @@ export default function NewJobModal({
     // Returned (not `void`-discarded) so `autosave.settle()` — Discard and
     // Schedule both call it before their own delete — can tell when this
     // particular write actually lands (Akshil, 2026-09-11).
-    return saveTaskDraft(id, value, opts, moving || undefined);
+    //
+    // …AND THE ID COMES BACK, because the write may not have landed on the id
+    // it named (Bugbot, PR #1126, 2026-09-12). A card opened by the Schedule
+    // hop whose `GET /api/drafts` failed cannot see the form already bound to
+    // this conversation, so it mints a new id and saves under it; the server
+    // folds that write into the bound draft rather than evicting it, and
+    // answers the id it actually landed on. Adopting it here is what keeps the
+    // rest of this card pointing at the same record — the next autosave, the
+    // Discard, and the `draft_id` Schedule hands the server so it can drop the
+    // draft as the task is created. Keeping the minted id instead would leave
+    // every one of those three aimed at a record that does not exist. `""` is a
+    // write that failed and says nothing about anything.
+    return saveTaskDraft(id, value, opts, moving || undefined).then((landed) => {
+      if (landed && landed !== draftIdRef.current) {
+        draftIdRef.current = landed;
+        setDraftId(landed);
+      }
+      return !!landed;
+    });
   }, { writeInitial: hopSeeded });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;

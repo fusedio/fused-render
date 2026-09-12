@@ -339,7 +339,13 @@ def test_the_link_opens_the_form_immediately(page):
     # has to reopen THAT form rather than mint a second one bound to the same
     # thread. One small request, only for a hop that names a session, and a miss
     # opens exactly as it always did.
-    assert "boundDraftSeed(all.task, session, seed.message)" in effect
+    #
+    # A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (Bugbot, PR #1126): `fetchDrafts`
+    # answers null for a blip, and the hop still opens on it — the composer's
+    # words must not wait on a GET — but the seed is gated on that answer rather
+    # than read off an empty snapshot, and the tray travels with it.
+    assert "all && boundDraftSeed(all.task, session, seed.message," in effect
+    assert "seed.attachments)" in effect
 
 
 def test_the_prefilled_time_is_valid_the_moment_it_opens(page):

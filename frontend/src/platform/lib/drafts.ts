@@ -112,8 +112,6 @@ export interface DraftsSnapshot {
   task: Record<string, TaskDraft>;
 }
 
-const EMPTY: DraftsSnapshot = { chat: {}, task: {} };
-
 /**
  * WHICH KEY THIS COMPOSER'S DRAFT LIVES UNDER (design.md, "Chat draft key").
  * The session id when the chat has one; otherwise `new:<file>` — the same file
@@ -312,15 +310,39 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  * Sent on the FIRST write only (the caller latches it): the second PUT is an
  * ordinary keystroke save, and repeating a delete for a key that is already
  * gone is a request that can only ever be a no-op or a surprise.
+ *
+ * ANSWERS THE ID THE WRITE ACTUALLY LANDED ON — normally `id`, and somebody
+ * else's when the server folded this form into a draft that already held its
+ * session (fused_render/drafts.py `put_task`, Bugbot PR #1126). The caller has
+ * to adopt it: every later call names the draft by id, so a card that went on
+ * using the id it minted would autosave, Discard and Schedule against a record
+ * that is not there. `""` for a write that failed — the same silence every
+ * other write in this module keeps, and the caller simply keeps the id it had.
  */
-export function saveTaskDraft(
+export async function saveTaskDraft(
   id: string,
   form: TaskDraftForm,
   opts?: DraftWriteOptions,
   fromChatKey?: string,
-): Promise<boolean> {
+): Promise<string> {
   const body = fromChatKey ? { ...form, from_chat_key: fromChatKey } : form;
-  return write("PUT", taskUrl(id), body, opts);
+  try {
+    const res = await fetch(taskUrl(id), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify(body),
+      ...(opts?.keepalive ? { keepalive: true } : {}),
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as { draft_id?: unknown } | null;
+    return typeof data?.draft_id === "string" ? data.draft_id : "";
+  } catch {
+    // Offline, server restarting, the document unloading mid-flight — the same
+    // silence `write` keeps, and the same reason: a draft that failed to save
+    // costs a draft, and a draft that threw inside a keystroke handler costs a
+    // keystroke.
+    return "";
+  }
 }
 
 /** Discard. `POST /api/schedule` deletes the draft itself when it is handed a
@@ -330,19 +352,28 @@ export function deleteTaskDraft(id: string, opts?: DraftWriteOptions): Promise<b
 }
 
 /**
- * Every draft there is. An unreadable answer is an EMPTY SNAPSHOT rather than a
- * throw, for the reason `parseAttachmentsParam` gives: this is read inside the
- * effect that seeds a composer, and a parse error there would cost the mount.
+ * Every draft there is — or NULL, which means "could not find out" and never
+ * "there are none" (Bugbot, PR #1126, 2026-09-12).
+ *
+ * It still does not throw, for the reason `parseAttachmentsParam` gives: this is
+ * read inside the effect that seeds a composer, and a rejection there would cost
+ * the mount. But answering an empty snapshot made a failed lookup indistinguish-
+ * able from an empty store, and the one caller that asks a question of it — "is
+ * there already a form bound to this session?" — then read a network blip as
+ * "no", minted a second draft, and the server's one-per-session rule threw the
+ * first one away with its time, repeat rule, model and files in it. The two
+ * answers are different facts, so they are two different values; what a caller
+ * does with "unknown" is its own business, and none of them may treat it as no.
  */
-export async function fetchDrafts(): Promise<DraftsSnapshot> {
+export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
   try {
     const res = await fetch("/api/drafts");
-    if (!res.ok) return EMPTY;
+    if (!res.ok) return null;
     const data = (await res.json()) as Partial<DraftsSnapshot> | null;
-    if (!data || typeof data !== "object") return EMPTY;
+    if (!data || typeof data !== "object") return null;
     return { chat: data.chat ?? {}, task: data.task ?? {} };
   } catch {
-    return EMPTY;
+    return null;
   }
 }
 
@@ -365,7 +396,11 @@ export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
   if (spent.has(key)) return null;
   const all = await fetchDrafts();
   if (spent.has(key)) return null;
-  return all.chat[key] ?? null;
+  // A lookup that failed and a composer with nothing in it read the same here,
+  // and that is right for THIS caller: seeding a composer from nothing is the
+  // state it is already in, and there is nothing to lose by it. The caller that
+  // must tell the two apart is the bound-draft hop — see `fetchDrafts`.
+  return all?.chat[key] ?? null;
 }
 
 /** What `useAutosave` hands back: the things a caller ever needs to do to a

@@ -4553,7 +4553,7 @@ describe("an expanded thread leads with the draft it is carrying", () => {
   it("quotes the preview it was given and never fetches one", () => {
     // `draft.preview` is already the first line, cut at 120 characters, by the
     // server that joined it — the same string the chip captions with.
-    expect(THREAD).toContain("data-hint={task.draft.preview}");
+    expect(THREAD).toContain("draftIsForm ? \"Draft task — open to continue\" : task.draft.preview");
     expect(THREAD).toContain('{firstLine(task.draft.preview) || "(empty)"}');
     expect(THREAD).not.toContain("fetch(");
     // The time is the message rows' own cell and the message rows' own
@@ -4574,16 +4574,41 @@ describe("an expanded thread leads with the draft it is carrying", () => {
     expect(THREAD).toContain(': "Drafted"');
   });
 
-  it("is not a message link, and its press is the task's", () => {
+  it("is not a message link, and its press goes where the words are", () => {
     // Every other row here addresses a turn (`msg=`); this one addresses
     // nothing, so there is no anchor to ⌘-click into a tab and no `pressMessage`
-    // to run. What it does is what the row above it does.
+    // to run.
     expect(THREAD).not.toContain("tasks-rowlink");
     expect(THREAD).not.toContain("openMessageHref");
     expect(THREAD).not.toContain("pressMessage");
-    expect(THREAD).toContain("onClick={activate}");
+    expect(THREAD).toContain("onClick={pressDraftLine}");
     expect(THREAD).toContain('role="button"');
     expect(THREAD).toContain("tabIndex={0}");
+  });
+
+  it("sends a FORM draft to the card and a CHAT draft to the chat", () => {
+    // The line quotes the reader's own unsent sentence, and pressing your own
+    // sentence has to land where it is. Since the bound form arrived, those
+    // words are sometimes in a New task card and the chat holds nothing of them
+    // — the old press showed them on a row and then opened an empty composer
+    // (Bugbot, PR #1126). The server says which (`draft.kind`), and absent
+    // means "chat", which is what every joined draft was before.
+    expect(VIEWS).toContain('const draftIsForm = task.draft?.kind === "form";');
+    expect(VIEWS).toContain("if (draftIsForm && onOpenBoundDraft) onOpenBoundDraft(task);");
+    expect(VIEWS).toContain("else activate();");
+    // …and the tooltip says what the press will do, rather than repeating the
+    // line it is already printing.
+    expect(THREAD).toContain('"Draft task — open to continue"');
+    // The callback is threaded from the page exactly as `onOpenDraft` is: one
+    // handler, passed down, and a list that omits it keeps the old press.
+    expect(VIEWS).toContain("onOpenBoundDraft?: (task: Task) => void;");
+    expect(VIEWS).toContain("onOpenBoundDraft={onOpenBoundDraft}");
+    const page = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+    expect(page).toContain("onOpenBoundDraft={openBoundDraft}");
+    // …and the handler is the composer's own hop door, so there is one lookup
+    // and one seeding rule for the bound form, not two.
+    expect(page).toContain("const openBoundDraft = (task: Task) => {");
+    expect(page).toContain("boundDraftSeed(all.task, session, null)");
   });
 
   it("costs the thread's arithmetic nothing", () => {

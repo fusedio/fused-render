@@ -72,7 +72,7 @@ import {
   type SchedAttachment,
 } from "@apps/claude/ui/sched-draft";
 import { chatDraftKey, fetchChatDraft, fetchDrafts } from "@platform/lib/drafts";
-import type { TaskDraft } from "@platform/lib/drafts";
+import type { DraftAttachment, TaskDraft } from "@platform/lib/drafts";
 import { chatPaneUrl } from "./schedule-lib";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -214,13 +214,23 @@ const NO_HOP: HopSeed = {
  * newer than what the form was saved with and the reader typed it a second ago,
  * so it is split across title and description exactly as a fresh hop's would be
  * (`splitDraft`). Everything else the form remembers — the folder, the time, the
- * repeat rule, the model, the tray — is untouched, and so is the id: this is the
- * same draft, being written a bit further. An empty composer overrides nothing.
+ * repeat rule, the model — is untouched, and so is the id: this is the same
+ * draft, being written a bit further. An empty composer overrides nothing.
+ *
+ * THE TRAY IS THE ONE THING THAT MERGES RATHER THAN WINS (Bugbot, PR #1126,
+ * 2026-09-12). Words are a rewrite — the newer sentence replaces the older one —
+ * but a file is a thing, and a composer holding two pictures is not a statement
+ * that the three already in the form are gone. Dropping the hop's files lost
+ * what was just dragged in; taking only the hop's threw away what the form was
+ * built with. So both, deduped on `path` (the id every other attachment list in
+ * this feature keys on) with the HOP's copy last, because that is the newer
+ * description of a file both sides happen to name.
  */
 export function boundDraftSeed(
   stored: Record<string, TaskDraft>,
   session: string,
   message: string | null,
+  hopped: readonly DraftAttachment[] = [],
 ): DraftSeed | null {
   let id = "";
   let found: TaskDraft | null = null;
@@ -231,12 +241,17 @@ export function boundDraftSeed(
     found = draft;
   }
   if (!id || !found) return null;
+  const byPath = new Map<string, DraftAttachment>();
+  for (const file of [...(found.attachments ?? []), ...hopped]) {
+    if (file?.path) byPath.set(file.path, file);
+  }
+  const form = { ...found, attachments: [...byPath.values()] };
   const words = (message ?? "").trim();
-  if (!words) return { id, form: { ...found } };
+  if (!words) return { id, form };
   const split = splitDraft(words);
   return {
     id,
-    form: { ...found, title: split.title, description: split.description },
+    form: { ...form, title: split.title, description: split.description },
   };
 }
 
@@ -468,6 +483,52 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `NO_HOP`, through the same door every other opening takes.
     openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });
   };
+  /**
+   * THE BOUND FORM, OPENED FROM THE THREAD LINE THAT QUOTES IT (Bugbot, PR
+   * #1126, 2026-09-12).
+   *
+   * The leading line of an expanded thread prints `task.draft.preview`, which is
+   * this conversation's unsent words — and since the bound form arrived, those
+   * words are sometimes in a New task card instead of in the composer. Pressing
+   * it went to the chat either way, and after a hop the chat holds nothing: the
+   * reader pressed their own sentence and landed somewhere it was not. The
+   * server now says which (`draft.kind`), and this is the other press.
+   *
+   * IT IS THE HOP DOOR, not a second way in. A bound draft has no row and no
+   * `draft_id` on this row to open it by (`bound_draft` names the form but the
+   * card seeds from the stored form, which only `GET /api/drafts` carries), so
+   * this builds the same `{session, target}` hop the composer's Schedule button
+   * builds and lets `boundDraftSeed` find the form exactly as that door does —
+   * one lookup, one seeding rule, one card. No `message`: this press came off a
+   * row and not out of a composer, so there are no newer words to merge over
+   * the stored ones.
+   *
+   * Same generation guard as every other opening that fetches first, and the
+   * same fallthrough: a lookup that fails opens the card anyway rather than
+   * dying under the cursor, and the server's merge (drafts.py `put_task`) is
+   * what makes that harmless.
+   */
+  const openBoundDraft = (task: Task) => {
+    const session = (task.session_id ?? "").trim();
+    if (!session) return;
+    const seed: HopSeed = {
+      target: task.target || null,
+      message: null,
+      session,
+      back: null,
+      attachments: [],
+      chatKey: null,
+    };
+    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
+    const gen = ++chatDraftGen.current;
+    void fetchDrafts().then((all) => {
+      if (gen !== chatDraftGen.current) return;
+      openForm(at, null, seed, all && boundDraftSeed(all.task, session, null));
+    }, () => {
+      if (gen !== chatDraftGen.current) return;
+      openForm(at, null, seed);
+    });
+  };
   // `hop` (above) is what a deep link named — the folder, the composer's words,
   // the session it was typed in, the way back, the tray's chips, and the chat
   // draft this form supersedes. `NO_HOP` for every other way of opening the
@@ -567,13 +628,27 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // answer that is no longer current is dropped rather than painted over it.
     // A failed or empty lookup falls through to the ordinary opening — a hop
     // that cannot find its draft is a hop, not a dead button.
+    //
+    // A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (Bugbot, PR #1126, 2026-09-12).
+    // `fetchDrafts` answers null for a blip, and this hop still opens on it: the
+    // words in the composer are about to be deleted in favour of this card and
+    // they must not be made to wait on a GET. What it must NOT do is act on the
+    // guess — the card that opens with no seed mints a fresh id, and the write
+    // that follows used to EVICT the bound draft it could not see, taking the
+    // time, repeat rule, model and tray with it. The server no longer allows
+    // that: a write naming a session another draft holds is folded into that
+    // draft and the canonical id comes back in the answer (drafts.py
+    // `put_task`; NewJobModal adopts it). So "unknown" costs nothing but a card
+    // that opens a moment less informed than it would like.
     const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
     const session = (q.get("session_id") ?? "").trim();
     if (session) {
       const gen = ++chatDraftGen.current;
       void fetchDrafts().then((all) => {
         if (gen !== chatDraftGen.current) return;
-        openForm(at, null, seed, boundDraftSeed(all.task, session, seed.message));
+        openForm(at, null, seed,
+                 all && boundDraftSeed(all.task, session, seed.message,
+                                       seed.attachments));
       }, () => {
         if (gen !== chatDraftGen.current) return;
         openForm(at, null, seed);
@@ -1051,6 +1126,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // …and the draft row's press, which opens the same card on the
               // form the row is carrying rather than on a stored entry.
               onOpenDraft={openDraft}
+              // …and the thread's leading draft line, when the words it is
+              // quoting are in the form bound to that conversation rather than
+              // in its composer — the chat holds nothing of those, so that
+              // press has to reopen the card instead (Bugbot, PR #1126).
+              onOpenBoundDraft={openBoundDraft}
               // The folder chip as a TAG: pressing one narrows the page to that
               // project, pressing the pinned one again clears it. It REPLACES
               // the project selection rather than adding to it — the gesture

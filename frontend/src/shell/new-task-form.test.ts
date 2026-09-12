@@ -1893,7 +1893,21 @@ describe("a draft moves with the reader, never duplicating", () => {
     const s = src();
     expect(s).toContain("const moving = chatKeySpent.current ? \"\" : (fromChatKey ?? \"\");");
     expect(s).toContain("chatKeySpent.current = true;");
-    expect(s).toContain("return saveTaskDraft(id, value, opts, moving || undefined);");
+    expect(s).toContain(
+      "return saveTaskDraft(id, value, opts, moving || undefined).then((landed) => {");
+  });
+
+  test("the card adopts whatever id the write actually landed on", () => {
+    // A hop whose `GET /api/drafts` failed cannot see the form already bound to
+    // this conversation, so it mints a new id and saves under it; the server
+    // folds that write into the bound draft and answers the id it landed on
+    // (drafts.py `put_task`, Bugbot PR #1126). Keeping the minted id would aim
+    // the next autosave, the Discard and Schedule's `draft_id` at a record that
+    // does not exist.
+    const s = src();
+    expect(s).toContain("if (landed && landed !== draftIdRef.current) {");
+    expect(s).toContain("draftIdRef.current = landed;");
+    expect(s).toContain("setDraftId(landed);");
   });
 
   test("Back to chat reverses the move — and orders the delete after the last write", () => {
@@ -2358,6 +2372,32 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     expect((quiet?.form as Record<string, unknown>).title).toBe("Ship the changelog");
   });
 
+  test("the tray MERGES rather than one side winning", () => {
+    // Words are a rewrite; a file is a thing. A composer holding two pictures is
+    // not a statement that the three already in the form are gone, and the form
+    // is not a statement that the two just dragged in are (Bugbot, PR #1126).
+    const file = (path: string, name: string) =>
+      ({ path, name, kind: "file" as const });
+    const seed = boundDraftSeed(
+      { "draft-0001": stored({ attachments: [file("/a.png", "a"), file("/b.png", "b")] }) },
+      "sess-a", null,
+      [file("/b.png", "b — renamed in the composer"), file("/c.png", "c")],
+    );
+    const files = (seed?.form as Record<string, unknown>)
+      .attachments as { path: string; name: string }[];
+    expect(files.map((f) => f.path)).toEqual(["/a.png", "/b.png", "/c.png"]);
+    // Deduped on `path`, and the HOP's copy of a file both sides name is the
+    // newer description of it.
+    expect(files[1].name).toBe("b — renamed in the composer");
+  });
+
+  test("a hop with no files of its own leaves the form's tray alone", () => {
+    const file = { path: "/a.png", name: "a", kind: "file" as const };
+    const seed = boundDraftSeed(
+      { "draft-0001": stored({ attachments: [file] }) }, "sess-a", null);
+    expect((seed?.form as Record<string, unknown>).attachments).toEqual([file]);
+  });
+
   test("newest wins if a store somehow holds two", () => {
     // The same tie-break the server's chip takes, so the card that opens is the
     // draft the row is advertising.
@@ -2375,8 +2415,14 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     // painted over a newer press.
     expect(s).toContain("const session = (q.get(\"session_id\") ?? \"\").trim();");
     expect(s).toContain("const gen = ++chatDraftGen.current;");
-    expect(s).toContain(
-      "openForm(at, null, seed, boundDraftSeed(all.task, session, seed.message));");
+    expect(s).toContain("all && boundDraftSeed(all.task, session, seed.message,");
+    expect(s).toContain("seed.attachments));");
+    // A LOOKUP THAT FAILED IS NOT "THERE IS NONE" (Bugbot, PR #1126).
+    // `fetchDrafts` answers null for a blip and this hop still opens on it —
+    // the composer's words must not wait on a GET — but it must not act on the
+    // guess either, which is why the seed is gated on `all` rather than read
+    // off an empty snapshot. The server's merge is what makes the guess
+    // harmless (drafts.py `put_task`).
     // Every other door still opens synchronously, and a failed lookup falls
     // through to the ordinary opening: a hop that cannot find its draft is a
     // hop, not a dead button.

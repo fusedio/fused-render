@@ -1941,9 +1941,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # own to wear a chip — so this row wears it, everywhere, the Cards wall
         # included. One field, one question for every view: is there anything
         # unsent here.
+        # …and `kind` says WHICH of the two it is, because the two are two
+        # different presses (Bugbot, PR #1126, 2026-09-12). The thread's leading
+        # draft line quotes this preview, and a `"chat"` preview is words in
+        # this conversation's composer — pressing it opens the chat and there
+        # they are. A `"form"` preview is a New task card bound to this session,
+        # of which the chat holds nothing, so that press has to reopen the card
+        # instead. Spelled here rather than inferred from `bound_draft` by the
+        # page: one fact, one place, and no second rule to go stale the first
+        # time a row carries both kinds at once.
         "draft": (_chat_draft(task["session_id"], chat_drafts)
                   or ({"preview": bound["preview"],
-                       "updated_at": bound["updated_at"]} if bound else None)),
+                       "updated_at": bound["updated_at"],
+                       "kind": "form"} if bound else None)),
         # WHICH FORM IS BEING WRITTEN INTO THIS CONVERSATION — the bound task
         # draft's id, or "" for the overwhelmingly common row with none. It is
         # not drawn: it is what the composer's Schedule hop reopens, so pressing
@@ -1981,7 +1991,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
 def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
     """One row's `draft` field: the preview of the unsent text in its composer,
     or None. `None` and "an empty draft" are the same thing — the store never
-    keeps an empty one — so the client has exactly one question to ask."""
+    keeps an empty one — so the client has exactly one question to ask.
+
+    `kind: "chat"` says where these words are: in this conversation's composer,
+    which is what makes opening the chat the right press for them (see `_row`,
+    and the bound form's `"form"` beside it)."""
     if not session_id or not chat_drafts:
         return None
     record = chat_drafts.get(session_id)
@@ -1991,7 +2005,8 @@ def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
     rows = record.get("attachments") or []
     if not line and not rows:
         return None
-    return {"preview": line, "updated_at": float(record.get("updated_at") or 0.0)}
+    return {"preview": line, "kind": "chat",
+            "updated_at": float(record.get("updated_at") or 0.0)}
 
 
 # What a task draft's row calls itself where a real task names its lane. A
@@ -2210,7 +2225,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "live": False,
         # THIS row's chip is about itself. Every other row joins its draft off
         # the session id; this one IS the draft, so the join is the identity.
-        "draft": ({"preview": line, "updated_at": updated}
+        "draft": ({"preview": line, "updated_at": updated, "kind": "chat"}
                   if (line or rows) else None),
         "bound_draft": "",
         "unread": 0,

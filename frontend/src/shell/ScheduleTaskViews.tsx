@@ -1256,6 +1256,7 @@ export function TaskList({
   missing,
   onEditEntry,
   onOpenDraft,
+  onOpenBoundDraft,
   onReload,
   onPickProject,
   pinnedProjects = [],
@@ -1287,6 +1288,14 @@ export function TaskList({
    *  nothing; omitted ⇒ the row is inert, exactly as an unresolvable pending
    *  row is. */
   onOpenDraft?: (task: Task) => void;
+  /** Open the New task form BOUND TO THIS CONVERSATION — the thread's leading
+   *  draft line, when the words it is quoting are in a form rather than in the
+   *  composer (`task.draft.kind === "form"`; Bugbot, PR #1126). Mirrors
+   *  `onOpenDraft` in every way but which draft it is about: that one is a draft
+   *  ROW's press, this one is a session row's, and a bound draft has no row.
+   *  Omitted ⇒ the line falls back to opening the chat, which is what it always
+   *  did. */
+  onOpenBoundDraft?: (task: Task) => void;
   /** Re-read the list after a cancel lands (or fails) — the row has to correct
    * itself to whatever the server actually did, and a failed cancel is a race
    * the server won, not a no-op.
@@ -1700,6 +1709,7 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onOpenDraft={onOpenDraft}
+          onOpenBoundDraft={onOpenBoundDraft}
           onReload={onReload}
           onPickProject={onPickProject}
           pinned={pinnedProjects.includes(task.project)}
@@ -1734,6 +1744,7 @@ function TaskNode({
   error,
   onEditEntry,
   onOpenDraft,
+  onOpenBoundDraft,
   onReload,
   onPickProject,
   pinned,
@@ -1777,6 +1788,9 @@ function TaskNode({
   onEditEntry?: (entryId: string) => void;
   /** See TaskList's own prop: the draft row's press. */
   onOpenDraft?: (task: Task) => void;
+  /** See TaskList's own prop: the thread's draft line, when the words are in the
+   *  form bound to this conversation rather than in its composer. */
+  onOpenBoundDraft?: (task: Task) => void;
   onReload?: () => void;
   /** Filter the page to this row's folder — the List's handler, passed through
    * untouched. See TaskList's own `onPickProject`. */
@@ -2198,6 +2212,32 @@ function TaskNode({
     // the schedule form needs no folder (Bugbot, #1023) — so this is the row
     // with neither, and its press says why (a toast) rather than doing nothing.
     else if (folderMissing) toastMissingFolder();
+  };
+
+  /**
+   * ARE THE THREAD'S UNSENT WORDS IN A FORM RATHER THAN IN THE COMPOSER?
+   *
+   * The server says so (`draft.kind`, routers/tasks.py `_row`), and absent — an
+   * older server — means `"chat"`, which is what every draft joined onto a
+   * session row was before a New task form could be bound to one.
+   */
+  const draftIsForm = task.draft?.kind === "form";
+  /**
+   * THE DRAFT LINE'S PRESS, which is not always the row's (Bugbot, PR #1126,
+   * 2026-09-12).
+   *
+   * That line quotes `task.draft.preview` — the reader's own unsent sentence —
+   * and pressing your own sentence has to land where it is. For a composer draft
+   * that is the chat, which is what `activate` already opens. For a form bound
+   * to this conversation it is the New task card: the chat holds nothing of it,
+   * so the old press showed the words on a row and then took the reader to an
+   * empty composer. `onOpenBoundDraft` is the hop door back into the form
+   * (shell/Scheduled `openBoundDraft`); without it — a caller that passes no
+   * handler — the line does what it always did.
+   */
+  const pressDraftLine = () => {
+    if (draftIsForm && onOpenBoundDraft) onOpenBoundDraft(task);
+    else activate();
   };
 
   /**
@@ -2908,18 +2948,23 @@ function TaskNode({
               `isExpandable` is false and there is no thread to head — including
               the session-bound task draft, which has a session but still no
               messages of its own. The one row that draws this is an ordinary
-              conversation whose composer is holding something. */}
+              conversation whose composer is holding something — or a New task
+              form bound to it, which is the same question to the reader and a
+              different place to send them (`pressDraftLine`). */}
           {task.draft && (
             <div
               className="tasks-msg"
               role="button"
               tabIndex={0}
-              aria-label={`Draft — ${firstLine(task.draft.preview) || "(empty)"}`}
-              onClick={activate}
+              aria-label={
+                (draftIsForm ? "Draft task — " : "Draft — ")
+                + (firstLine(task.draft.preview) || "(empty)")
+              }
+              onClick={pressDraftLine}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  activate();
+                  pressDraftLine();
                 }
               }}
             >
@@ -2930,7 +2975,12 @@ function TaskNode({
                   (fused_render/drafts.py `preview`) — the same string the chip
                   captions with. No fetch: an expanded row must not go and get
                   what the listing already handed it. */}
-              <span className="tasks-msg-body" data-hint={task.draft.preview}>
+              <span
+                className="tasks-msg-body"
+                data-hint={
+                  draftIsForm ? "Draft task — open to continue" : task.draft.preview
+                }
+              >
                 {firstLine(task.draft.preview) || "(empty)"}
               </span>
               <span className="tasks-grow" />

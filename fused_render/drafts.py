@@ -555,7 +555,54 @@ def get_task(ident) -> dict | None:
     return list_task().get(key) if key else None
 
 
-def put_task(ident, fields) -> tuple[dict | None, list[str]]:
+def _fold_into_bound(existing: dict, incoming: dict) -> dict:
+    """The incoming write folded INTO the draft that already holds its session.
+
+    What survives is everything the incoming write did not actually say. The
+    caller that lands here is a card that could not read the binding before it
+    wrote — `fetchDrafts` answers "unknown" on a failed lookup and the modal
+    opens anyway, because words must not be lost waiting for a request — so the
+    form it is saving may be a fresh one carrying only the composer's sentence,
+    and the draft it is colliding with is the one holding the time, the repeat
+    rule, the model and the tray somebody spent a minute choosing. Overwriting
+    those with the blanks of a form that never asked about them is how the
+    reported loss happened; keeping them is this function.
+
+    NON-EMPTY IS THE WHOLE TEST, field by field. A blank title is not "clear the
+    title", it is "this write has nothing to say about the title" — a draft
+    store is the one place where that reading is always the safe one, since the
+    alternative destroys work and the cost of being wrong is one stale setting
+    the reader can see and change. Attachments are a UNION keyed on `path`, for
+    the same reason read as rows: neither side's files are a statement that the
+    other side's are gone.
+
+    `session_id` is the exception and takes the incoming value outright — it is
+    the very fact that brought these two records together, and it is the same on
+    both sides by construction."""
+    out = dict(existing)
+    for field in _TASK_TEXT:
+        if incoming[field].strip():
+            out[field] = incoming[field]
+    for field in ("when", "repeat", "custom_rule"):
+        if incoming[field] not in (None, "", [], {}):
+            out[field] = incoming[field]
+    if incoming["new_task_each_run"] is not None:
+        out["new_task_each_run"] = incoming["new_task_each_run"]
+    if incoming["from_chat_key"]:
+        out["from_chat_key"] = incoming["from_chat_key"]
+    out["session_id"] = incoming["session_id"]
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for row in list(existing["attachments"]) + list(incoming["attachments"]):
+        if row["path"] in seen:
+            continue
+        seen.add(row["path"])
+        rows.append(row)
+    out["attachments"] = rows
+    return out
+
+
+def put_task(ident, fields) -> tuple[dict | None, str]:
     """Upsert one task draft — and DELETE it when every field comes in empty.
 
     Fields the client did not send keep the value the stored draft had, so the
@@ -566,25 +613,35 @@ def put_task(ident, fields) -> tuple[dict | None, list[str]]:
     `created_at` is written once and then never moves — it is the row's `at` on
     the List and the Board, and a draft that jumped to the top of Upcoming on
     every keystroke would be a row that will not sit still. Answers
-    `(record, evicted_ids)`: the stored record (None when the write was a
-    delete) and the LISTING KEYS (`draft:<id>`) of any other task drafts this
-    write evicted — `[]` on the overwhelmingly common write that bound nobody.
+    `(record, canonical_id)`: the stored record (None when the write was a
+    delete) and the id it is actually stored under, which is `ident` on every
+    ordinary write and somebody else's id when this write was folded into a
+    draft that already held its session (below). The caller has to pass that id
+    back to the page, or the next autosave, the Discard and the Schedule all aim
+    at a record that is no longer there.
 
     ONE BOUND DRAFT PER SESSION, enforced here rather than trusted to the
     client (review, 2026-09-12). A session-bound draft stands in for its
     session's row (`_bound_chips` in routers/tasks.py) and that row wears
     exactly one `✎ Draft` chip, so two drafts naming the same session is not
-    two facts, it is one fact and a stale second copy of it — a New task modal
-    opened twice from the same conversation's Schedule button, say, once
-    before a reload and once after. The newest write wins and the loser's
-    words are gone: the same "a draft moves, never duplicates" rule the
-    composer → New task hop already keeps (`from_chat_key`, above), read the
-    other way round. Done inside THIS write's lock rather than as a second
-    request, so nothing can observe the moment two drafts both claim the same
+    two facts, it is one fact written twice.
+
+    IT IS A MERGE AND NOT AN EVICTION (Bugbot, PR #1126, 2026-09-12). The first
+    version of this rule deleted the loser, which is correct only if the winner
+    is the better-informed of the two — and the write that collides is by
+    construction the one that knows LESS. `fetchDrafts` never rejects: a lookup
+    that fails on the way into the hop reads as "this session has no form", so
+    the card mints a NEW id and saves a fresh form over a stored draft carrying
+    a time, a repeat rule, a model and a tray. Evicting there threw all of that
+    away over one failed GET. Folding the incoming write into the existing
+    record instead (`_fold_into_bound`) makes a failed lookup cost nothing: the
+    words land, the settings stay, the id the reader keeps is the one that was
+    already bound. Done inside THIS write's lock rather than as a second
+    request, so nothing can observe the moment two drafts both claim one
     session."""
     key = draft_id(ident)
     if not key:
-        return None, []
+        return None, ""
     patch = fields if isinstance(fields, dict) else {}
 
     def mutate(data: dict):
@@ -596,24 +653,36 @@ def put_task(ident, fields) -> tuple[dict | None, list[str]]:
         record = _task_record(merged)
         if record is None or _empty_task(record):
             if key not in data[TASK]:
-                return (None, []), False
+                return (None, key), False
             data[TASK].pop(key, None)
-            return (None, []), True
+            return (None, key), True
         now = time.time()
         record["created_at"] = stored.get("created_at") or now
         record["updated_at"] = now
-        evicted: list[str] = []
         session = record["session_id"]
+        bound_id, bound = "", None
         if session:
-            for other_id, other_rec in list(data[TASK].items()):
+            for other_id, other_rec in data[TASK].items():
                 if other_id == key:
                     continue
                 other = _task_record(other_rec)
-                if other is not None and other["session_id"] == session:
-                    data[TASK].pop(other_id, None)
-                    evicted.append(task_key(other_id))
+                if other is None or other["session_id"] != session:
+                    continue
+                # NEWEST WINS if a store somehow holds several — the same
+                # tie-break `_bound_chips` takes, so what this write folds into
+                # is the draft the session's row is advertising.
+                if bound is not None and bound["updated_at"] >= other["updated_at"]:
+                    continue
+                bound_id, bound = other_id, other
+        if bound is not None:
+            record = _fold_into_bound(bound, record)
+            record["created_at"] = bound["created_at"] or now
+            record["updated_at"] = now
+            data[TASK].pop(key, None)
+            data[TASK][bound_id] = record
+            return (record, bound_id), True
         data[TASK][key] = record
-        return (record, evicted), True
+        return (record, key), True
 
     return _update(mutate)
 
