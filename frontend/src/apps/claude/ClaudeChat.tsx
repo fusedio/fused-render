@@ -132,7 +132,7 @@ import { useChatRecapEnabled } from "./feature-flag";
 import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness } from "@platform/lib/api";
-import { chatDraftKey, rekeyChatDraft } from "@platform/lib/drafts";
+import { chatDraftKey, rekeyChatDraft, takeSentWithoutSession } from "@platform/lib/drafts";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -2460,42 +2460,35 @@ function ChatBody(props: ChatBodyProps) {
    * again. One POST moves both, the same way `pending:<entry>` is walked onto a
    * session when a scheduled run reports one.
    *
-   * ONCE, AND ONLY FOR A CHAT THAT STARTED WITHOUT ONE. `started` latches what
-   * the very first render saw: a chat opened ON a session (a recent row, a deep
-   * link, the Tasks page) never had a `new:<file>` key, and telling the server to
-   * rename one would at best be a no-op and at worst claim a key belonging to a
-   * different, still-unsent chat in the same folder.
+   * ONLY FOR THE SEND THAT MADE THIS SESSION, and the composer is what says so
+   * (Bugbot, PR #1118, 2026-09-12). This used to be inferred from what the
+   * effect itself saw: latch "started without a session" on the first pass with
+   * an empty `state.sessionId`, then rekey when an id turned up. But an empty id
+   * on the first pass is the ORDINARY case for every chat — the id arrives only
+   * when boot's `openSession` answers — so the latch caught chats that had been
+   * opened ON a session too, and opening one in a folder that already held a
+   * `new:<file>` draft silently moved that unsent row, words and TASK number,
+   * onto a conversation it had nothing to do with. `markSentWithoutSession` is
+   * written at the one moment the answer is certain — a Send from a composer
+   * with no session — and spent here.
+   *
+   * NO LATCHES LEFT TO GET WRONG. The fact is consumed on read and keyed on the
+   * file, so the move happens once however many times the effect re-runs, and a
+   * second session-less chat in the same `ChatBody` (which is not keyed on
+   * `file` — see the boot's `bootedFor`, Bugbot PR #1061) carries its own
+   * answer rather than inheriting the first one's.
    *
    * Fire and forget, like every other write in platform/lib/drafts: a refusal
    * costs the number's continuity and nothing the reader is doing — and the
    * draft this renames is one the send is about to delete anyway.
-   *
-   * BOTH LATCHES ARE PER CONTROLLER, not per mount — the same rule, and for the
-   * same reason, as the boot's `bootedFor` above (Bugbot, PR #1061). `ChatBody`
-   * is not keyed on `file`: switching to a target whose `agentDir` is already
-   * cached rebuilds the controller WITHOUT remounting this tree, so as bare
-   * per-mount refs these two carried chat A's answers into chat B. Chat A's
-   * first send sets `rekeyed`, and a later session-less chat B in the same
-   * `ChatBody` then never moved its `new:<fileB>` draft — and the TASK number
-   * and List row wearing that key — onto the session its own first send made.
    */
-  const rekeyedFor = useRef<object | null>(null);
-  const rekeyed = useRef(false);
-  const startedWithoutSession = useRef<boolean | null>(null);
   useEffect(() => {
-    // A NEW CONTROLLER IS A NEW CHAT, so both answers are asked again: whether
-    // THIS chat started without a session, and whether ITS draft has moved.
-    if (rekeyedFor.current !== controller) {
-      rekeyedFor.current = controller;
-      rekeyed.current = false;
-      startedWithoutSession.current = null;
-    }
     const id = state.sessionId ?? "";
-    if (startedWithoutSession.current === null) startedWithoutSession.current = !id;
-    if (!startedWithoutSession.current || rekeyed.current || !id) return;
-    rekeyed.current = true;
-    void rekeyChatDraft(chatDraftKey(null, file), id);
-  }, [controller, file, state.sessionId]);
+    if (!id) return;
+    if (takeSentWithoutSession(chatDraftKey(null, file))) {
+      void rekeyChatDraft(chatDraftKey(null, file), id);
+    }
+  }, [file, state.sessionId]);
 
   const card = useMemo(
     () => ({

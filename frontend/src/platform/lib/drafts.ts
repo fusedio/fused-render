@@ -278,6 +278,45 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
 }
 
 /**
+ * CHAT KEYS A SEND LEFT BEHIND — `new:<file>` keys whose composer had no session
+ * at the moment the user pressed Send, and which are therefore owed a rekey onto
+ * whatever session that send creates (Bugbot, PR #1118, 2026-09-12).
+ *
+ * WHY THE SEND SAYS SO RATHER THAN THE CHAT INFERRING IT. The rekey used to be
+ * decided by watching `state.sessionId`: the chat latched "I started without a
+ * session" on the first pass it saw an empty id, and moved the `new:<file>`
+ * draft the moment an id appeared. But an empty id on the first pass is the
+ * ORDINARY case for every chat, opened-on-a-session ones included — the id only
+ * lands when boot's `openSession` answers. So opening an existing session in a
+ * folder that already held a `new:<file>` draft fired the rekey and walked that
+ * unsent row — words and TASK number — onto a conversation it had nothing to do
+ * with.
+ *
+ * The event the move actually belongs to is a SEND from a composer with no
+ * session, which is a thing the composer knows for certain and nobody else can
+ * observe after the fact. So the composer records it here and the chat spends it.
+ *
+ * SPENT ON READ (`takeSentWithoutSession`), which is what makes "once" and "per
+ * file" fall out for free: the chat's effect may run many times as the id
+ * settles, and two chats in the same `ChatBody` hold different keys, so a
+ * per-key one-shot needs no latch, no controller identity, and no reset.
+ */
+const sentWithoutSession = new Set<string>();
+
+/** The composer's half: this send went out with no session under it, so the
+ *  draft key it was typed under is owed a move (see `sentWithoutSession`). */
+export function markSentWithoutSession(key: string): void {
+  if (key) sentWithoutSession.add(key);
+}
+
+/** The chat's half: was this key's send the one that had no session? Answers
+ *  true at most once per mark — the fact is CONSUMED, because the move it
+ *  authorises happens exactly once. */
+export function takeSentWithoutSession(key: string): boolean {
+  return sentWithoutSession.delete(key);
+}
+
+/**
  * THE DRAFT MOVES WITH THE SESSION IT TURNED OUT TO BE (design.md, Round 2:
  * "Every draft has a TASK number").
  *
@@ -288,7 +327,9 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  * again. The server moves both (`tasks_store.rekey`, the same call that walks a
  * `pending:` number onto a session).
  *
- * FIRE AND FORGET, once, at the moment the id is learned. A refusal costs the
+ * FIRE AND FORGET, once, when the id of the session a session-less send created
+ * is learned — `sentWithoutSession` above is what tells the two apart from a
+ * chat merely opened ON a session. A refusal costs the
  * number's continuity and nothing the reader is doing — which is this module's
  * standing contract, and doubly right here: the thing being renamed is a draft
  * that the send is about to delete anyway (Akshil, 2026-09-11).

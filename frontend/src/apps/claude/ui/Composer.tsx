@@ -17,6 +17,7 @@ import {
   chatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
+  markSentWithoutSession,
   saveChatDraft,
   useAutosave,
   type DraftAttachment,
@@ -586,6 +587,13 @@ export function ComposerCard({
     // whichever write is running, THEN the delete goes out; `submit` itself
     // does not wait on either (Akshil, 2026-09-11).
     autosaveRef.current.reset({ text: "", attachments: [] });
+    // AND IF THERE WAS NO SESSION UNDER IT, THIS IS THE SEND THAT CREATES ONE
+    // (Bugbot, PR #1118, 2026-09-12). The draft's TASK number and List row are
+    // sitting on `new:<file>` and have to follow that session, but only the
+    // composer can tell this send apart from the many renders in which a chat
+    // opened ON a session simply has not heard its id back yet. Recorded here,
+    // where the answer is certain; `ClaudeChat` spends it when the id lands.
+    if (!sessionId) markSentWithoutSession(draftKeyRef.current);
     void autosaveRef.current.settle().then(() => deleteChatDraft(draftKeyRef.current));
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
@@ -606,7 +614,7 @@ export function ComposerCard({
     // that also scrolls fights it.
     boxRef.current?.focus({ preventScroll: true });
     return true;
-  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls, boxRef]);
+  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls, boxRef, sessionId]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
