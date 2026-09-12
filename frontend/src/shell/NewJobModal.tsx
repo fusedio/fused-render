@@ -3352,10 +3352,21 @@ export default function NewJobModal({
   // (whichever is running) before the delete goes out — otherwise it can
   // land after the delete and resurrect the draft this button just asked to
   // throw away (Akshil, 2026-09-11).
+  //
+  // AND THE ID IS READ AFTER `settle`, NOT BEFORE IT (Bugbot, PR #1126,
+  // 2026-09-12). The write being waited out is also the write that can CHANGE
+  // the id: a card whose `GET /api/drafts` failed saves under a freshly minted
+  // one, the server folds that write into the draft already bound to this
+  // conversation, and the autosave adopts the id it answers with — inside the
+  // promise `settle` waits on (see the save above), so by the line below the
+  // adoption has happened. Reading the id first aimed the DELETE at the minted
+  // id the server had already dropped: the request succeeded against nothing
+  // and the bound draft lived on holding the very words this button was pressed
+  // to be rid of.
   const discard = async () => {
-    const id = draftIdRef.current;
     autosaveRef.current.stop();
     await autosaveRef.current.settle();
+    const id = draftIdRef.current;
     if (id) void deleteTaskDraft(id);
     onClose();
   };
@@ -3483,9 +3494,15 @@ export default function NewJobModal({
       backTimer.current = window.setTimeout(() => setBackConfirm(false), 2000);
       return;
     }
-    const id = draftIdRef.current;
     autosaveRef.current.stop();
     await autosaveRef.current.settle();
+    // AFTER `settle`, for Discard's reason (Bugbot, PR #1126, 2026-09-12): the
+    // write this just waited out is the one that can rename the draft, when the
+    // server folds it into a form already bound to this conversation. Read
+    // before, the DELETE below names an id the server has already dropped and
+    // the bound draft outlives the words being handed back to the composer —
+    // which is the duplicate the whole move exists to prevent.
+    const id = draftIdRef.current;
     if (backChatKey) {
       // The inverse of the split the hop made — `joinDraft` puts the title line
       // and the body back into the one block of prose the composer holds. The
@@ -3680,6 +3697,13 @@ export default function NewJobModal({
           // …and the draft this card was composed in, so the server can drop it
           // in the same request. Empty when the form was never dirty enough to
           // mint one, which is most one-line tasks.
+          //
+          // READ HERE, which is to say after the `settle` above — this payload
+          // is built once that await has returned, so the id is whatever the
+          // last write landed on rather than whatever was minted before it
+          // (Bugbot, PR #1126, 2026-09-12; the same ordering Discard and Back
+          // to chat now take). Naming the minted id instead left the bound
+          // draft standing beside the task it had just become.
           draftId: draftIdRef.current ?? "",
           // …and the chat draft this card was composed out of, for the case the
           // autosave never got to move it. See originChatKey.

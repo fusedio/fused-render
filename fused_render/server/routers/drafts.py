@@ -34,6 +34,13 @@ appeared, changed, or went. Nothing "swaps back" on a discard — the session's
 row was never touched, so there is nothing to reverse; it simply repaints
 without the chip.
 
+BOTH CHAT ROUTES ANNOUNCE THE SAME TWO KEYS when the session they name has a
+bound form, and for the same reason: the composer is a second door onto that one
+record ("one record, two doors", `drafts.chat_view`), so a write or a delete
+through this door is a write to the form the other door shows. Which form that
+is, is read before the write (`drafts.bound_chat_draft`) — emptying the box
+deletes it, and afterwards nothing can name it.
+
 `new:<file>` announces itself too, as of round 2. It used to be the one key
 that did not — no session meant no task row meant nothing for a listening page
 to repaint — but an unsent chat IS a row now, filed under the folder it was
@@ -95,7 +102,13 @@ def _announce(*keys: str) -> None:
 def api_drafts():
     """Everything, both kinds. The modal's "resume" affordance reads the task
     half; the composer reads its own key out of the chat half rather than
-    paying for a request per conversation."""
+    paying for a request per conversation.
+
+    The chat half carries the BOUND FORMS too, each under the session it is a
+    message to and marked `bound_draft` (`drafts.chat_view`, "one record, two
+    doors"). It is the same read the tasks listing makes, so what the composer
+    seeds from and what the row's chip says can never be two different
+    answers."""
     task, chat = drafts.list_all()  # one file, one read
     return {"chat": chat, "task": task}
 
@@ -105,10 +118,25 @@ def api_draft_chat_put(key: str, body: dict = Body(default={})):
     """Upsert one chat draft. An empty one is a DELETE, and the answer says so
     (`draft: null`) rather than making the caller infer it — the composer's
     autosave fires on every pause including the one after the send cleared the
-    box, and it must be allowed to keep sending what it now holds."""
+    box, and it must be allowed to keep sending what it now holds.
+
+    …AND IT MAY NOT BE A CHAT RECORD AT ALL. When this session's words live in
+    a New task form bound to it, the store writes THERE and makes no chat
+    record (`drafts.put_chat`, "one record, two doors"): the composer and the
+    card's two fields edit one draft, split and joined by the same rule the hop
+    uses. The answer is that form read as a chat draft, `bound_draft` naming
+    it, so this route has one shape whichever record it wrote."""
     chat = _chat_key(key)
+    # WHICH FORM'S ROW IS AT STAKE BESIDES THIS SESSION'S, read BEFORE the write
+    # for the reason the task PUT reads its binding first: a write that empties
+    # the box deletes the form, and afterwards there is nothing left to ask.
+    # The row under `draft:<id>` does not exist (a bound draft is never a row),
+    # so what the announcement does is tell a page holding a stale one to drop
+    # it — and tell the changes endpoint the session's chip moved.
+    bound = drafts.bound_chat_draft(chat)
     record = drafts.put_chat(chat, body.get("text"), body.get("attachments"))
-    _announce(chat)
+    bound = bound or str((record or {}).get("bound_draft") or "")
+    _announce(chat, drafts.task_key(bound) if bound else "")
     return {"ok": True, "key": chat, "draft": record}
 
 
@@ -117,10 +145,26 @@ def api_draft_chat_delete(key: str):
     """Drop one chat draft — on send, or on an explicit clear. Answers whether
     there was one, and is not a 404 when there was not: the composer clears
     after a send whether or not the debounce ever got round to a first save,
-    and a red line in the console over that would be noise about nothing."""
+    and a red line in the console over that would be noise about nothing.
+
+    THE BOUND FORM GOES WITH IT. This is the composer's send, and what it is
+    saying is that the words under this key have been spent — so when those
+    words were living in a task draft bound to the session ("one record, two
+    doors"), that draft is what the send spent and leaving it behind would put
+    the sentence back on the row as unsent the moment the listing repainted.
+    The whole form goes, the same way an emptied composer takes it
+    (`drafts.put_chat`): there is no half of a draft to keep once the message
+    it was is in the transcript (Akshil, 2026-09-12).
+
+    Only from HERE, and never from `drafts.delete_chat` itself: archive, delete
+    and erase all call that one, and erase in particular is documented to keep
+    a bound draft's words and cut only the binding (`drafts.unbind_session`)."""
     chat = _chat_key(key)
+    bound = drafts.bound_chat_draft(chat)
     removed = drafts.delete_chat(chat)
-    _announce(chat)
+    if bound:
+        removed = drafts.delete_task(bound) or removed
+    _announce(chat, drafts.task_key(bound) if bound else "")
     return {"ok": True, "key": chat, "removed": removed}
 
 

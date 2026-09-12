@@ -255,6 +255,37 @@ export function boundDraftSeed(
   };
 }
 
+/**
+ * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
+ * #1126, 2026-09-12).
+ *
+ * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
+ * has never been saved opens on now+2m because a deep link means "set this up",
+ * and a near-now time is the one to adjust from. A form that has been saved
+ * already answered that question, and the answer is in it — `when`, which the
+ * store keeps as null until somebody actually opens the when-row and picks one
+ * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
+ * task to plan.
+ *
+ * Handing the lead date to such a form overwrote that. `creating` being a Date
+ * is what makes the card `planning`, `planning` is what makes `timePicked` open
+ * true, and `timePicked` is what puts `when` in the next autosave — so merely
+ * reopening an immediate draft rewrote it as one scheduled for two minutes'
+ * time, and Schedule sent it that way. So: the stored time when there is one,
+ * and nothing at all when there is not. Only the opening with no stored form
+ * behind it keeps the lead (see both call sites).
+ *
+ * An unreadable `when` reads as none here. The card seeds its own field from
+ * the string verbatim (`seededDraftForm`), so nothing is lost by this one
+ * declining to guess a Date out of it.
+ */
+export function reopenTime(seed: DraftSeed | null): Date | null {
+  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
+  if (typeof when !== "string" || !when) return null;
+  const at = new Date(when);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
   // same rows (shell/tasksPulse) and would otherwise run a timer of its own
@@ -481,6 +512,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // A reopened draft carries its own everything (the row's stored `form`), so
     // whatever a deep link said earlier in this page's life is not about it —
     // `NO_HOP`, through the same door every other opening takes.
+    //
+    // …AND NO TIME, which is `reopenTime`'s rule stated the short way (Bugbot,
+    // PR #1126, 2026-09-12). This door never had the lead date to hand, so it
+    // never had the bug the bound-draft doors had; the card reads its own
+    // `when` out of the stored form and decides `timePicked` from that, and a
+    // form that stored none is an immediate task that must stay one.
     openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });
   };
   /**
@@ -523,7 +560,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     const gen = ++chatDraftGen.current;
     void fetchDrafts().then((all) => {
       if (gen !== chatDraftGen.current) return;
-      openForm(at, null, seed, all && boundDraftSeed(all.task, session, null));
+      // THE FOUND FORM'S OWN TIME, and no time at all when it had none — see
+      // `reopenTime`. This press is a REOPEN, so the lead date belongs only to
+      // the arm below, where the lookup found nothing and the card is being
+      // opened fresh.
+      const found = all && boundDraftSeed(all.task, session, null);
+      openForm(found ? reopenTime(found) : at, null, seed, found);
     }, () => {
       if (gen !== chatDraftGen.current) return;
       openForm(at, null, seed);
@@ -646,9 +688,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       const gen = ++chatDraftGen.current;
       void fetchDrafts().then((all) => {
         if (gen !== chatDraftGen.current) return;
-        openForm(at, null, seed,
-                 all && boundDraftSeed(all.task, session, seed.message,
-                                       seed.attachments));
+        // …AND A HOP THAT FINDS ITS FORM IS A REOPEN, so it opens on the time
+        // that form holds rather than on the lead date (`reopenTime`, Bugbot PR
+        // #1126, 2026-09-12). The words are newer than the stored ones and win;
+        // the TIME is not something the composer said anything about, and
+        // `now+2m` here turned every reopened immediate draft into a scheduled
+        // one. The lead survives where it means something: the arm below, and
+        // the `else` further down — a hop with no form behind it.
+        const found = all && boundDraftSeed(all.task, session, seed.message,
+                                            seed.attachments);
+        openForm(found ? reopenTime(found) : at, null, seed, found);
       }, () => {
         if (gen !== chatDraftGen.current) return;
         openForm(at, null, seed);

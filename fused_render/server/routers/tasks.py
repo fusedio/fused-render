@@ -1946,14 +1946,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # draft line quotes this preview, and a `"chat"` preview is words in
         # this conversation's composer — pressing it opens the chat and there
         # they are. A `"form"` preview is a New task card bound to this session,
-        # of which the chat holds nothing, so that press has to reopen the card
-        # instead. Spelled here rather than inferred from `bound_draft` by the
-        # page: one fact, one place, and no second rule to go stale the first
-        # time a row carries both kinds at once.
-        "draft": (_chat_draft(task["session_id"], chat_drafts)
-                  or ({"preview": bound["preview"],
-                       "updated_at": bound["updated_at"],
-                       "kind": "form"} if bound else None)),
+        # which holds the time, the repeat rule and the model as well as the
+        # words, so that press reopens the card instead. Spelled by the store
+        # rather than inferred from `bound_draft` by the page: one fact, one
+        # place, and no second rule to go stale the first time a row carries
+        # both kinds at once.
+        #
+        # ONE SOURCE, BOTH KINDS. A bound form reads as its session's chat draft
+        # now (`drafts.chat_view`, "one record, two doors") — the composer shows
+        # and edits the same words — so the join below answers for both and the
+        # old second branch here, which built a preview out of `bound` when the
+        # chat half had nothing, would be a second way of saying what the chat
+        # half already says. `bound` is still read, for `bound_draft` beneath.
+        "draft": _chat_draft(task["session_id"], chat_drafts),
         # WHICH FORM IS BEING WRITTEN INTO THIS CONVERSATION — the bound task
         # draft's id, or "" for the overwhelmingly common row with none. It is
         # not drawn: it is what the composer's Schedule hop reopens, so pressing
@@ -1993,9 +1998,16 @@ def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
     or None. `None` and "an empty draft" are the same thing — the store never
     keeps an empty one — so the client has exactly one question to ask.
 
-    `kind: "chat"` says where these words are: in this conversation's composer,
-    which is what makes opening the chat the right press for them (see `_row`,
-    and the bound form's `"form"` beside it)."""
+    `kind` says WHERE these words are, and both answers come out of this one
+    join now. `chat_drafts` is the chat half as a reader sees it
+    (`drafts.chat_view`), which carries a stored chat record for every composer
+    that is holding something AND a synthesized one for every session whose
+    words are in a New task form bound to it — the latter marked `bound_draft`,
+    which is the whole of the difference. So `"chat"` is text in this
+    conversation's composer and opening the chat is the press for it; `"form"`
+    is that card, which holds the time, the repeat rule and the model beside the
+    words, and the press reopens it (see `_row`). A session that has both keeps
+    them apart: the stored record wins, and `bound_draft` on it is `""`."""
     if not session_id or not chat_drafts:
         return None
     record = chat_drafts.get(session_id)
@@ -2005,7 +2017,8 @@ def _chat_draft(session_id: str, chat_drafts: dict | None) -> dict | None:
     rows = record.get("attachments") or []
     if not line and not rows:
         return None
-    return {"preview": line, "kind": "chat",
+    return {"preview": line,
+            "kind": "form" if record.get("bound_draft") else "chat",
             "updated_at": float(record.get("updated_at") or 0.0)}
 
 

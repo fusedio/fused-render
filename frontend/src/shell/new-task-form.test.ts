@@ -1910,6 +1910,42 @@ describe("a draft moves with the reader, never duplicating", () => {
     expect(s).toContain("setDraftId(landed);");
   });
 
+  test("…and every disposal reads that id AFTER settling, never before", () => {
+    // The write `settle` waits out is the same write that can RENAME the draft
+    // (the adoption above runs inside the promise it waits on). Read first, the
+    // id is the one this card minted — and on a fold the server has already
+    // dropped it, so the DELETE hits nothing, the bound draft survives holding
+    // the merged words, and Schedule tells the server to drop a draft that does
+    // not exist (Bugbot, PR #1126, 2026-09-12).
+    const s = src();
+    const discard = s.slice(s.indexOf("const discard = async () => {"),
+                            s.indexOf("const picked = useMemo("));
+    expect(discard.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(discard.indexOf("const id = draftIdRef.current;"));
+    expect(discard.indexOf("const id = draftIdRef.current;"))
+      .toBeLessThan(discard.indexOf("deleteTaskDraft(id)"));
+
+    const back = s.slice(
+      s.indexOf("const backToChat = async () => {"),
+      s.indexOf("// The replacement was created but the original could not be withdrawn"),
+    );
+    expect(back.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(back.indexOf("const id = draftIdRef.current;"));
+
+    // Schedule reads it inside the payload it builds, which is built after its
+    // own `await settle()` — so it is the same rule, kept by ordering rather
+    // than by a local.
+    const submit = s.slice(s.indexOf("// THE DRAFT STOPS HERE."));
+    expect(submit.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(submit.indexOf('draftId: draftIdRef.current ?? "",'));
+    // …and none of the three latches it on the way in, which is the shape the
+    // bug actually had: a read sitting above the await.
+    for (const body of [discard, back, submit.slice(0, submit.indexOf("await scheduleMessage("))]) {
+      expect(body.slice(0, body.indexOf("await autosaveRef.current.settle()")))
+        .not.toContain("draftIdRef.current");
+    }
+  });
+
   test("Back to chat reverses the move — and orders the delete after the last write", () => {
     const s = src();
     const back = s.slice(
@@ -2416,7 +2452,7 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     expect(s).toContain("const session = (q.get(\"session_id\") ?? \"\").trim();");
     expect(s).toContain("const gen = ++chatDraftGen.current;");
     expect(s).toContain("all && boundDraftSeed(all.task, session, seed.message,");
-    expect(s).toContain("seed.attachments));");
+    expect(s).toContain("seed.attachments);");
     // A LOOKUP THAT FAILED IS NOT "THERE IS NONE" (Bugbot, PR #1126).
     // `fetchDrafts` answers null for a blip and this hop still opens on it —
     // the composer's words must not wait on a GET — but it must not act on the
@@ -2427,5 +2463,81 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     // through to the ordinary opening: a hop that cannot find its draft is a
     // hop, not a dead button.
     expect(s).toContain("} else {\n      openForm(at, null, seed);\n    }");
+  });
+});
+
+// ---- reopening a form does not reschedule it ---------------------------------
+//
+// THE BUG (Bugbot, PR #1126, 2026-09-12). `NEW_LINK_LEAD_MS` — now+2m — is what
+// a FRESH deep link opens on, and the bound-draft doors were handing it to forms
+// that already existed. A Date in `creating` makes the card `planning`,
+// `planning` opens `timePicked` true, and `timePicked` is what puts `when` into
+// the next autosave — so merely reopening a draft that had been left IMMEDIATE
+// rewrote it as scheduled two minutes out, and Schedule sent it that way.
+
+describe("a reopened form opens on its own time, or on none", () => {
+  const page = () => readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+  let reopenTime: typeof import("./Scheduled").reopenTime;
+  beforeAll(async () => {
+    ({ reopenTime } = await import("./Scheduled"));
+  });
+
+  const seedWith = (when: unknown) =>
+    ({ id: "draft-0001", form: { when } }) as import("./NewJobModal").DraftSeed;
+
+  test("no stored time is no time at all — an immediate draft stays immediate", () => {
+    // The store keeps `when` null until somebody opens the when-row and picks
+    // one, so null here is the positive statement "run it now", not a gap.
+    expect(reopenTime(seedWith(null))).toBeNull();
+    expect(reopenTime(seedWith(""))).toBeNull();
+    expect(reopenTime({ id: "draft-0001", form: null })).toBeNull();
+    expect(reopenTime(null)).toBeNull();
+  });
+
+  test("a stored time comes back as the time it says", () => {
+    const at = reopenTime(seedWith("2026-09-20T08:30"));
+    expect(at).toBeInstanceOf(Date);
+    // The field's format is local, so it reads back as the local minute the
+    // reader picked rather than drifting by the zone offset.
+    expect(at?.getFullYear()).toBe(2026);
+    expect(at?.getMonth()).toBe(8);
+    expect(at?.getDate()).toBe(20);
+    expect(at?.getHours()).toBe(8);
+    expect(at?.getMinutes()).toBe(30);
+  });
+
+  test("an unreadable one reads as none, and never as an Invalid Date", () => {
+    // The card seeds its own field from the string verbatim, so nothing is lost
+    // by declining to guess — and an Invalid Date is still `instanceof Date`,
+    // which is exactly the thing that would flip `planning` back on.
+    expect(reopenTime(seedWith("whenever"))).toBeNull();
+    expect(reopenTime(seedWith(1758350000000))).toBeNull();
+  });
+
+  test("both bound-draft doors take it, and only a lookup that found nothing keeps the lead", () => {
+    const s = page();
+    // The thread line's press…
+    expect(s).toContain("const found = all && boundDraftSeed(all.task, session, null);");
+    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, seed, found);");
+    // …and the composer's own hop, which merges newer WORDS over the stored
+    // form but has nothing to say about its time.
+    expect(s).toContain("const found = all && boundDraftSeed(all.task, session, seed.message,");
+    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, seed, found);");
+    // The lead date survives exactly where it means something: a card with no
+    // stored form behind it.
+    expect(s).toContain("const at = new Date(Date.now() + NEW_LINK_LEAD_MS);");
+    expect(s).toContain("} else {\n      openForm(at, null, seed);\n    }");
+  });
+
+  test("the ordinary draft row never had the bug — it passes no time and still does", () => {
+    // `openDraft` opens on the stored form alone, so the card decides
+    // `timePicked` from the form's own `when` and an immediate draft is left
+    // immediate. Pinned so the lead date cannot drift into this door either.
+    const s = page();
+    const open = s.slice(s.indexOf("const openDraft = (task: Task) => {"),
+                         s.indexOf("const openBoundDraft = (task: Task) => {"));
+    expect(open).toContain(
+      "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
+    expect(open).not.toContain("NEW_LINK_LEAD_MS");
   });
 });

@@ -42,6 +42,20 @@ export interface ChatDraft {
   text: string;
   attachments: DraftAttachment[];
   updated_at: number;
+  /**
+   * THE FORM THESE WORDS ARE ACTUALLY IN, or `""` for the ordinary chat draft
+   * that is a record of its own (`fused_render/drafts.py`, "one record, two
+   * doors"; Akshil, 2026-09-12).
+   *
+   * A New task card bound to a session IS that conversation's unsent message,
+   * so the server serves it under the session key too — the same words, the
+   * card's title and description joined back into one box — and the composer
+   * seeds from it, edits it and deletes it through exactly the calls it already
+   * makes. The id is here so a client that wants to tell the two apart can;
+   * nothing in the composer has to. Absent on an older server, which is the
+   * same fact as `""`.
+   */
+  bound_draft?: string;
 }
 
 /**

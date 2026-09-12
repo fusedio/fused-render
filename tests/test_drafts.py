@@ -1394,12 +1394,18 @@ def test_the_conversations_own_composer_outranks_the_form(client, tmp_path,
     A session can have both — text left in its composer AND a New task form
     opened out of it — and `draft` is one field because the reader has one
     question. The composer's copy is literally sitting in that conversation; the
-    form is a message about to be scheduled into it."""
+    form is a message about to be scheduled into it.
+
+    THE COMPOSER HAS TO HAVE WRITTEN FIRST, which is the one order that produces
+    both records now ("one record, two doors"): once a form is bound and the
+    session has no chat record, the composer's own writes go INTO that form
+    rather than beside it (`drafts.put_chat`). A chat record that predates the
+    binding is a record of its own, and this is its precedence."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
     client.put(_chat_url("sess-a"), json={"text": "half a thought"})
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
 
     row = _by_key(client)["sess-a"]
     assert row["draft"]["preview"] == "half a thought"
@@ -1414,23 +1420,242 @@ def test_the_row_says_WHICH_kind_of_draft_its_preview_is(client, tmp_path,
     The thread's leading line quotes this preview, and pressing your own unsent
     sentence has to land where it is. A `"chat"` preview is in this
     conversation's composer, so the press opens the chat and there it is; a
-    `"form"` preview is a New task card bound to this session, of which the chat
-    holds nothing, so that press has to reopen the card instead. The page used
-    to go to the chat either way and showed the reader an empty composer under
-    the words it had just printed."""
+    `"form"` preview is a New task card bound to this session, which holds the
+    time, the repeat rule and the model beside the words, so that press reopens
+    the card instead. The page used to go to the chat either way and showed the
+    reader an empty composer under the words it had just printed — the composer
+    shows them now ("one record, two doors"), and `kind` is what still sends the
+    press to the record that holds ALL of what was written, not just the
+    sentence."""
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
-    # The bound form, with the composer empty.
+    # The bound form, with no chat record of its own: the words are the card's.
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
     row = _by_key(client)["sess-a"]
     assert row["draft"]["kind"] == "form"
     assert row["draft"]["preview"] == "Ship the changelog"
 
-    # …and the composer, which outranks it and says so.
+    # …and a conversation whose composer wrote FIRST keeps a record of its own,
+    # which outranks the form bound to it afterwards and says so.
+    _write_transcript(projects_dir, "sess-b", "/home/me/proj", [_user("two", T9)])
+    client.put(_chat_url("sess-b"), json={"text": "half a thought"})
+    _bound_draft(client, "draft-0002", "sess-b", elsewhere)
+    assert _by_key(client)["sess-b"]["draft"]["kind"] == "chat"
+
+
+# --------------------------------------------- round 3: one record, two doors
+#
+# THE BUG (Akshil, 2026-09-12). Finish a session, type into its composer, press
+# Schedule, then click outside the modal. The form is kept — that is the whole
+# point of a draft — and the hop deleted the chat draft it came from, so the
+# session's row wore the red `✎ Draft` chip over a composer with nothing in it.
+# The chip's press leads to the chat; the words were in a record that door could
+# not see.
+#
+# THE RULE: one record, two doors. A session with a bound task draft and no chat
+# draft of its own SHOWS and EDITS that draft's words from the composer too —
+# split and joined by the same rule the New task card's two fields use. Never a
+# copy: which door the reader comes back through does not change what is there.
+
+
+def _stored_chat_half() -> dict:
+    """The chat section as it is ON DISK — what `/api/drafts` synthesizes is a
+    view, and the tests below care that nothing was written into the store
+    beside the form."""
+    with open(os.path.join(drafts.STATE_DIR, drafts.DRAFTS_FILE),
+              encoding="utf-8") as fh:
+        return json.load(fh)["chat"]
+
+
+def test_the_composer_shows_a_bound_forms_words(client, tmp_path, projects_dir):
+    """The door the bug was about. `GET /api/drafts` answers the bound form
+    under the SESSION key, as the composer would have written it."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere,
+                 description="start with the path handling",
+                 attachments=[{"path": "/shots/a1b2.png", "name": "shot.png",
+                               "kind": "image"}])
+
+    chat = client.get("/api/drafts").json()["chat"]
+    # Title, blank line, description — `joinDraft` run in Python, which is the
+    # inverse of the split the hop made on the way in.
+    assert chat["sess-a"]["text"] == ("Ship the changelog\n\n"
+                                      "start with the path handling")
+    assert chat["sess-a"]["attachments"] == [
+        {"path": "/shots/a1b2.png", "name": "shot.png", "kind": "image"}]
+    assert chat["sess-a"]["updated_at"] > 0
+    # …and it says which record these words are really in, so a client that
+    # wants to tell the two apart can.
+    assert chat["sess-a"]["bound_draft"] == "draft-0001"
+    # The store itself is unchanged: this is a view, not a second copy.
+    assert _stored_chat_half() == {}
+
+
+def test_typing_in_the_composer_edits_the_bound_form(client, tmp_path,
+                                                     projects_dir):
+    """The other direction, and the one that keeps it ONE record: the composer's
+    autosave lands in the form, split across its two fields, and no chat record
+    is made."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere, when="2026-09-13T09:00",
+                 model="opus")
+
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "Roll up the PRs\n\ngroup them by repo",
+                         "attachments": [{"path": "/shots/x.png", "name": "x.png",
+                                          "kind": "image"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["bound_draft"] == "draft-0001"
+
+    form = drafts.get_task("draft-0001")
+    assert form["title"] == "Roll up the PRs"
+    assert form["description"] == "group them by repo"
+    assert form["attachments"] == [
+        {"path": "/shots/x.png", "name": "x.png", "kind": "image"}]
+    # Everything the card holds and the composer knows nothing about is
+    # untouched — this write was about the words.
+    assert form["when"] == "2026-09-13T09:00"
+    assert form["model"] == "opus"
+    assert form["session_id"] == "sess-a"
+    # No chat record anywhere: two records would be two chips and two versions
+    # of one sentence.
+    assert _stored_chat_half() == {}
+    assert client.get("/api/drafts").json()["chat"]["sess-a"]["text"] == (
+        "Roll up the PRs\n\ngroup them by repo")
+
+
+def test_a_one_line_composer_draft_is_all_title(client, tmp_path, projects_dir):
+    """The same split the card makes: one line names the task and there is no
+    description to write."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    client.put(_chat_url("sess-a"), json={"text": "  Update the changelog  "})
+    form = drafts.get_task("draft-0001")
+    assert form["title"] == "Update the changelog"
+    assert form["description"] == ""
+    assert client.get("/api/drafts").json()["chat"]["sess-a"]["text"] == (
+        "Update the changelog")
+
+
+def test_emptying_the_composer_deletes_the_bound_form(client, tmp_path,
+                                                      projects_dir):
+    """Clearing the box IS deleting the draft, whichever record the box is a
+    door onto — and there is no half of a form left behind to wear the chip."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    r = client.put(_chat_url("sess-a"), json={"text": "   ", "attachments": []})
+    assert r.json()["draft"] is None
+    assert drafts.get_task("draft-0001") is None
+    rows = _by_key(client)
+    assert "draft:draft-0001" not in rows
+    assert rows["sess-a"]["draft"] is None
+    assert rows["sess-a"]["bound_draft"] == ""
+    assert rows["sess-a"]["task_id"] == "TASK-001", "the row itself never moved"
+
+
+def test_the_send_takes_the_bound_form_with_it(client, tmp_path, projects_dir):
+    """`DELETE /api/drafts/chat/<session>` is the composer's send, and what it
+    spends is whatever record held those words."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    r = client.delete(_chat_url("sess-a"))
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] is True
+    assert drafts.get_task("draft-0001") is None
+    assert client.get("/api/drafts").json()["chat"] == {}
+    assert _by_key(client)["sess-a"]["draft"] is None
+
+
+def test_both_doors_announce_the_form_and_the_session(client, tmp_path,
+                                                      projects_dir):
+    """Two keys on every chat write that turned out to be about a form: the
+    session's row, whose chip just changed, and the form's own key, so a page
+    holding a stale row under it drops it (`routers/drafts._announce`)."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    _by_key(client)  # a first full listing, so the session is numbered
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    before = client.get("/api/tasks").json()["generation"]
+    client.put(_chat_url("sess-a"), json={"text": "Roll up the PRs"})
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % before).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["draft"]["preview"] == "Roll up the PRs"
+    assert rows["sess-a"]["bound_draft"] == "draft-0001"
+    assert "draft:draft-0001" in body["gone"]
+
+    gen = body["generation"]
+    client.delete(_chat_url("sess-a"))
+    body = client.get("/api/tasks/changes?since=%d&wait=0" % gen).json()
+    rows = {row["key"]: row for row in body["rows"]}
+    assert rows["sess-a"]["draft"] is None
+    assert "draft:draft-0001" in body["gone"]
+
+
+def test_a_session_with_both_keeps_them_apart(client, tmp_path, projects_dir):
+    """A chat record that PREDATES the binding is a record of its own, and the
+    two doors stop being one: the composer reads and writes its own words, and
+    the form is left exactly as it was."""
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
     client.put(_chat_url("sess-a"), json={"text": "half a thought"})
-    assert _by_key(client)["sess-a"]["draft"]["kind"] == "chat"
+    _bound_draft(client, "draft-0001", "sess-a", elsewhere)
+
+    chat = client.get("/api/drafts").json()["chat"]
+    assert chat["sess-a"]["text"] == "half a thought", "the chat record wins"
+    assert chat["sess-a"]["bound_draft"] == "", "and it is a record of its own"
+
+    client.put(_chat_url("sess-a"), json={"text": "the rest of the thought"})
+    assert drafts.get_chat("sess-a")["text"] == "the rest of the thought"
+    assert drafts.get_task("draft-0001")["title"] == "Ship the changelog"
+    # …and the row still knows about the form, which is still the way back to it.
+    row = _by_key(client)["sess-a"]
+    assert row["draft"]["preview"] == "the rest of the thought"
+    assert row["bound_draft"] == "draft-0001"
+
+
+def test_a_chat_key_with_no_session_never_looks_for_a_form(client, tmp_path):
+    """`new:<file>` is a folder somebody opened a chat on and no thread at all,
+    so nothing can be bound to it — its writes are ordinary chat writes."""
+    key = "new:" + str(tmp_path)
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Ship the changelog", "target": str(tmp_path)})
+    r = client.put(_chat_url(key), json={"text": "never sent"})
+    assert r.json()["draft"]["text"] == "never sent"
+    assert r.json()["draft"]["bound_draft"] == ""
+    assert drafts.get_task("draft-0001")["title"] == "Ship the changelog"
+
+
+def test_the_split_and_the_join_are_each_others_inverse(state_dir):
+    """The Python twins of `NewJobModal.splitDraft` / `joinDraft`, which is what
+    keeps one sentence the same shape through either door."""
+    assert drafts.split_draft("Port the parquet reader\nstart with the path") == (
+        "Port the parquet reader", "start with the path")
+    assert drafts.split_draft("Update the changelog") == ("Update the changelog", "")
+    assert drafts.split_draft("   \n\n  ") == ("", "")
+    assert drafts.split_draft(None) == ("", "")
+    one = "roll up the PRs\n\ngroup them by repo"
+    assert drafts.join_draft(*drafts.split_draft(one)) == one
+    assert drafts.join_draft("", "just a body") == "just a body"
+    assert drafts.join_draft("just a title", "") == "just a title"
+    assert drafts.join_draft(None, None) == ""
 
 
 def test_a_draft_with_no_session_is_numbered_exactly_as_before(client, tmp_path):
