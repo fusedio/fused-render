@@ -62,6 +62,28 @@ export interface TaskDraftForm {
   attachments: DraftAttachment[];
   new_task_each_run: boolean | null;
   /**
+   * THE CONVERSATION THIS TASK IS A MESSAGE TO, or "" when it is a message to
+   * nobody yet (Akshil, 2026-09-12).
+   *
+   * The composer's Schedule button can hop out of a chat that has ALREADY RUN,
+   * and then the task being written is the next turn of that thread — the server
+   * schedules it into the session and the number it keeps is the session's. The
+   * page knew that while it stayed open and the draft on disk did not, so
+   * exiting the card and reopening the draft scheduled it into a NEW session
+   * under a NEW number, and the task the reader had been watching was gone.
+   *
+   * Sent on EVERY save rather than only the first, unlike `from_chat_key`
+   * (which is a side effect — it tells the server to delete something — and so
+   * is spent once). This is plain state: restating it costs a short string and
+   * means a reopened card cannot lose the binding to a merge that went the
+   * wrong way.
+   *
+   * "" for every other opening — the "+ New task" button, a calendar slot, and
+   * a hop out of a chat that has never been sent, which has no session to bind
+   * to at all (its draft is keyed `new:<file>`).
+   */
+  session_id: string;
+  /**
    * THE RULE BEHIND A "CUSTOM" REPEAT, because the preset key alone is not an
    * answer (Bugbot, PR #1118).
    *

@@ -174,6 +174,8 @@ export function TaskCards({
   onReload,
   onPickProject,
   pinnedProjects = [],
+  onPickDraft,
+  draftOn = false,
   missing,
   emptyLabel = CARDS_EMPTY,
 }: {
@@ -195,6 +197,12 @@ export function TaskCards({
   /** Which projects the page is pinned to — the chip wears the ON state, and
    * survives the filter that makes every card agree (see `showProject`). */
   pinnedProjects?: string[];
+  /** The Draft chip's press and its pressed state, passed through untouched —
+   *  the List row's and the Board card's own props, and deliberately the same
+   *  ones (Akshil, 2026-09-12): the chip is one control in three views, so a
+   *  wall that drew it inert would be a fourth thing to learn. */
+  onPickDraft?: () => void;
+  draftOn?: boolean;
   /** Folders the disk no longer has — the SAME set the List and the Board read
    * (Scheduled → useMissingFolders), so the three views can never disagree
    * about one folder. A card in one says "Folder no longer exists" and its
@@ -372,6 +380,8 @@ export function TaskCards({
               ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
               : null
           }
+          onPickDraft={onPickDraft}
+          draftOn={draftOn}
         />
       ))}
       </div>
@@ -397,6 +407,8 @@ function TaskCard({
   onPeek,
   onReload,
   project,
+  onPickDraft,
+  draftOn = false,
 }: {
   task: Task;
   home: string;
@@ -413,6 +425,10 @@ function TaskCard({
   /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
    * apart); otherwise whether the page is pinned to it and the tag's handler. */
   project: { pinned: boolean; onPick?: (project: string) => void } | null;
+  /** The Draft chip's press and its pressed state — the wall's, from Scheduled,
+   *  unchanged on the way down (see TaskCards' own props). */
+  onPickDraft?: () => void;
+  draftOn?: boolean;
 }) {
   const when = taskWhen(task);
   const title = firstLine(task.title) || "(untitled)";
@@ -560,12 +576,19 @@ function TaskCard({
               the folder, as the List row and the Board card — design-principles
               §1: a mark that moved between views would be three marks to learn.
 
-              A LABEL HERE, not a tag. The draft filter is the List's and the
-              Board's (design.md, Round 2), and the wall draws no draft ROW at
-              all (CARD_LANES) — so a press here would turn on a filter that
-              removes most of the wall and leaves almost nothing wearing the
-              chip that would turn it off (Akshil, 2026-09-11). */}
-          {draft && <DraftChip draft={draft} />}
+              A TAG HERE TOO (Akshil, 2026-09-12), reversing the label this was
+              for a day. The argument for the label was that the wall draws no
+              draft ROW (CARD_LANES), so pressing it would empty the wall and
+              leave nothing wearing the chip that turns it back off. That reads
+              the wrong row: the chip a CARD carries is never a draft row's — a
+              card has a session by construction (cardsForTasks) — it is an
+              ordinary conversation whose composer is holding unsent words, and
+              those cards keep wearing it after the press. So the filter narrows
+              the wall to exactly the cards that can clear it, which is the
+              condition the label was protecting against, and the chip is now one
+              control with one gesture in all three views (design-principles §1).
+              tasks-lib.filtersForView stopped dropping the facet here to match. */}
+          {draft && <DraftChip draft={draft} onPick={onPickDraft} active={draftOn} />}
           {project && (
             <IdentityChip
               name={basename(task.project)}

@@ -250,6 +250,26 @@ def task_ids() -> dict:
     return out
 
 
+def erased(key: str = "") -> set[str]:
+    """Every key whose number is a RESERVATION rather than a live task — the
+    records `forget_session` stamped when the session behind them was erased.
+
+    Split out rather than carried on `task_ids()` because the two answers are
+    read for opposite reasons: `task_ids()` is "what number does this wear, and
+    in which project", and every caller of it wants a reserved number to keep
+    answering that (the number must never be reissued, whatever became of the
+    session). This is the other question — "is there still anything behind it" —
+    and exactly one caller asks it: the tasks listing, deciding whether a draft
+    bound to a session may go on wearing that session's number (routers/tasks.py
+    `_bound_places`, review 2026-09-12).
+
+    `key` narrows it to one lookup; the default answers for the whole store."""
+    store = load_state(TASK_IDS_FILE)
+    keys = [key] if key else list(store)
+    return {k for k in keys
+            if isinstance(store.get(k), dict) and store[k].get("erased")}
+
+
 def _next_numbers(store: dict) -> dict[str, int]:
     """project -> highest number allocated in it. "Max seen plus one" is the
     allocation rule precisely so a deleted task's number is never handed out
@@ -610,8 +630,10 @@ def forget_session(session_id: str) -> dict:
     and a number the user has quoted in a note or a message must keep meaning
     the same thing forever. So the mapping is left in place as a RESERVATION
     and only stamped `erased` — gaps over renumbering, exactly the trade the
-    module docstring makes for deletes. Nothing reads `erased`; it is there so
-    a human reading the store can tell a reserved number from a live one.
+    module docstring makes for deletes. `erased()` is the one reader of the
+    stamp — the listing asks it whether a draft still bound to this session may
+    go on wearing its number — and it is legible in the file besides, so a human
+    reading the store can tell a reserved number from a live one.
 
     Returns `{"read": bool, "number": bool}` — whether each store changed."""
     def forget_read(state: dict):

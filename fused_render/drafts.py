@@ -123,21 +123,23 @@ PREVIEW_MAX = 120
 #: page), and a field the client omits keeps whatever the stored draft had.
 TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
                "model", "effort", "permission", "attachments",
-               "new_task_each_run", "from_chat_key")
+               "new_task_each_run", "from_chat_key", "session_id")
 
 #: The fields that are plain text, normalised through `_text` on the way in. The
 #: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
-#: (`new_task_each_run`), rows (`attachments`) or the chat key this draft was
-#: moved out of (`from_chat_key`, which is a chat key rather than free text and
-#: is validated as one).
+#: (`new_task_each_run`), rows (`attachments`), the chat key this draft was
+#: moved out of (`from_chat_key`) or the session it is going into
+#: (`session_id`) — the last two being keys rather than free text, and each
+#: validated as the key it is.
 #:
 #: THIS IS A LIST OF SHAPES, NOT A DEFINITION OF CONTENT — see `_TASK_CONTENT`
 #: below, which is the one that decides whether there is a draft here at all.
-#: `from_chat_key` is in neither, and for the same reason it was always out of
-#: the second: it is provenance, not something a person typed. A form that
-#: arrives blank is still a delete even when it names the chat it came from —
-#: which is exactly the bargain `an empty task put keeps the chat draft` rests
-#: on (Akshil, 2026-09-11).
+#: `from_chat_key` and `session_id` are in neither, and for the same reason
+#: `from_chat_key` was always out of the second: they are provenance and
+#: destination, not something a person typed. A form that arrives blank is still
+#: a delete even when it names the chat it came from and the session it was
+#: going to — which is exactly the bargain `an empty task put keeps the chat
+#: draft` rests on (Akshil, 2026-09-11).
 _TASK_TEXT = ("title", "description", "target", "model", "effort", "permission")
 
 #: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
@@ -207,6 +209,23 @@ def new_chat_file(key: str) -> str:
     if not is_new_chat_key(key):
         return ""
     return key[len(NEW_CHAT_PREFIX):]
+
+
+def bound_session(value) -> str:
+    """The session a task draft BELONGS TO, or `""` for anything that is not a
+    session id.
+
+    The narrow twin of `chat_key`: that one takes both of a chat's two ages, and
+    this one takes only the older. A draft can be bound to a conversation that
+    EXISTS — the composer → Schedule hop out of a session that has already run —
+    and never to `new:<file>`, which names a folder somebody opened a chat on and
+    no thread at all. There is nothing for a `new:` draft to schedule INTO, and a
+    key of that shape in this field would make the listing hide a session row
+    that does not exist (Akshil, 2026-09-12)."""
+    if not isinstance(value, str):
+        return ""
+    key = value.strip()
+    return key if _SESSION_KEY.match(key) else ""
 
 
 def draft_id(value) -> str:
@@ -465,6 +484,21 @@ def _task_record(rec) -> dict | None:
     # is either a key the chat half can actually be written under or "" (Akshil,
     # 2026-09-11).
     out["from_chat_key"] = chat_key(rec.get("from_chat_key"))
+    # WHICH CONVERSATION THIS DRAFT IS A MESSAGE TO, when it came out of one
+    # that already exists (Akshil, 2026-09-12).
+    #
+    # `from_chat_key` above says where the WORDS were typed and is spent the
+    # moment the chat's own copy is deleted; this says where the TASK is going,
+    # and it has to outlive the modal being closed. Without it the hop worked
+    # only while the page still held the session in memory: press Schedule
+    # straight away and the message landed in the conversation, exit the modal
+    # and the draft on disk knew nothing about it — so reopening that draft and
+    # scheduling it started a NEW session under a NEW task number, and the task
+    # the reader had been watching was gone.
+    #
+    # Validated as a session id and never as `new:<file>` (`bound_session`):
+    # binding is to a thread, not to a folder.
+    out["session_id"] = bound_session(rec.get("session_id"))
     out["created_at"] = _epoch(rec.get("created_at"))
     out["updated_at"] = _epoch(rec.get("updated_at"))
     return out
@@ -555,6 +589,44 @@ def put_task(ident, fields) -> dict | None:
         record["updated_at"] = now
         data[TASK][key] = record
         return record, True
+
+    return _update(mutate)
+
+
+def unbind_session(session_id) -> int:
+    """Cut every task draft loose from one session; how many were cut.
+
+    The erase gesture's share of this store (`POST /api/tasks/erase`). The words
+    are NOT deleted — a draft is a task somebody is still writing, and the
+    conversation it was going to be sent into is only where it was going to go.
+    What goes is the binding, and with it everything the binding stood for: the
+    draft stops borrowing a number that is now a reservation nobody may reissue
+    (`tasks_store.forget_session` stamps the record `erased` and keeps it), stops
+    standing in for a row that no longer exists, and is numbered as the ordinary
+    `draft:<id>` it has become on the next listing.
+
+    Without this the draft showed the dead TASK-nnn for ever and could never be
+    allocated one of its own, because the binding was the very thing telling
+    `_draft_numbers` that its task already had a number (review, 2026-09-12).
+
+    One pass under one lock, and 0 — no write at all — for the overwhelmingly
+    common erase where nothing was bound to that session."""
+    target = bound_session(session_id)
+    if not target:
+        return 0
+
+    def mutate(data: dict):
+        cut = 0
+        for ident, rec in list(data[TASK].items()):
+            record = _task_record(rec)
+            if record is None or record["session_id"] != target:
+                continue
+            # `updated_at` is NOT touched: it is the clock the row prints
+            # ("drafted 5m ago") and sorts on, and nobody typed anything here.
+            record["session_id"] = ""
+            data[TASK][ident] = record
+            cut += 1
+        return cut, bool(cut)
 
     return _update(mutate)
 

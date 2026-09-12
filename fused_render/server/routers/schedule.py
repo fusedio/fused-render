@@ -373,10 +373,29 @@ def api_schedule_create(body: dict = Body(...),
             # actually matter to it — but a failure between the two must leave
             # the draft, which is recoverable, rather than a numberless task,
             # which is not.
-            tasks_store.rekey(drafts.task_key(draft),
-                              tasks_store.pending_key(str(entry.get("id") or "")))
+            #
+            # NOT FOR A DRAFT THAT BELONGS TO A SESSION (Akshil, 2026-09-12).
+            # Such a draft never had a number of its own — the listing skips it
+            # precisely because the session it is bound to holds the task's
+            # number already (`routers/tasks.py::_draft_numbers`) — and this
+            # message is landing IN that session, which is where the number
+            # stays. Moving anything onto `pending:<entry-id>` here would be
+            # inventing a second identity for a task that has one; the entry
+            # naming a session is the whole test, since that is the key the
+            # listing will file it under (`_collect`).
+            if not str(entry.get("session_id") or ""):
+                tasks_store.rekey(drafts.task_key(draft),
+                                  tasks_store.pending_key(str(entry.get("id") or "")))
             if drafts.delete_task(draft):
-                tasks_watch.notify({drafts.task_key(draft)})
+                # BOTH ROWS MOVE. The draft row goes, and for a session-bound
+                # draft the session's own row — held back while the draft stood
+                # in for it — comes back in its place. `session` below is the
+                # same key and is announced there anyway, but only when the
+                # composer left a chat draft behind; this is the announcement
+                # the swap itself owes.
+                tasks_watch.notify(
+                    {drafts.task_key(draft), str(entry.get("session_id") or "")}
+                    - {""})
         except OSError:
             pass
 

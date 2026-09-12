@@ -2062,6 +2062,86 @@ describe("the chat draft a Schedule leaves behind", () => {
   });
 });
 
+// ---- a draft remembers which conversation it is going into -------------------
+//
+// THE BUG (Akshil, 2026-09-12). The composer's Schedule button can hop out of a
+// chat that HAS ALREADY RUN, and the task being written is the next message of
+// that thread. Press Schedule straight away and it landed there — `session_id`
+// was still in page state. Exit the card and the draft on disk knew nothing
+// about it, so reopening the draft and scheduling it opened a SECOND session
+// with a SECOND task number, and the TASK-nnn the reader had been watching was
+// gone.
+//
+// `from_chat_key` could not stand in: that is where the words were TYPED and it
+// is spent the moment the chat's copy is deleted. This is where the task is
+// GOING, and it has to be stored.
+
+describe("a draft remembers the conversation it is a message to", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("both openings answer it, the same way the chat key is answered", () => {
+    const s = src();
+    // The FRESH hop is handed the id as a prop; a card REOPENED from its draft
+    // row has only what the server stored on the draft.
+    expect(s).toContain(
+      'const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");',
+    );
+    expect(s).toContain('sessionId: str("session_id"),');
+  });
+
+  test("the autosave body carries it, so the hop's first write stores it", () => {
+    const s = src();
+    // In the BODY rather than beside it: `from_chat_key` is a side effect (it
+    // makes the server delete something) and is spent once, where this is plain
+    // state and is restated on every save.
+    expect(s).toContain("      session_id: boundSessionId,");
+    const body = s.slice(
+      s.indexOf("const draftBody: TaskDraftForm | null ="),
+      s.indexOf("const chatKeySpent = useRef(false);"),
+    );
+    expect(body).toContain("session_id: boundSessionId,");
+  });
+
+  test("a reopened draft's Schedule payload carries it", () => {
+    // The whole bug in one line: without the stored id this read
+    // `|| chatSessionId || ""`, and a reopened card has no `chatSessionId` —
+    // the hop that made it is long over.
+    expect(src()).toContain(
+      "sessionId: (!learnedSession && editing?.session_id) || boundSessionId,",
+    );
+  });
+
+  test("…and the payload sends it as the session to continue", () => {
+    // Nothing new on the wire: `session_id` is the field a fresh hop already
+    // used, which is why the entry lands in the thread and keeps its number.
+    expect(buildSchedulePayload(form({ sessionId: "sess-9" })).session_id)
+      .toBe("sess-9");
+    // A draft that belongs to nobody leaves the key off entirely, as it always
+    // did — a chat with no session yet included.
+    expect("session_id" in buildSchedulePayload(form({ sessionId: "" }))).toBe(false);
+  });
+
+  test("a draft row still opens the form, session or no session", () => {
+    const views = readFileSync(join(import.meta.dir, "ScheduleTaskViews.tsx"), "utf8");
+    // The row's rule is the row's: a draft opens the New task modal, and the
+    // draft arm is asked before the chat arm.
+    expect(views).toContain("const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;");
+    expect(views).toMatch(
+      /const activate = \(\) => \{\s*if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);/,
+    );
+    // …and a bound draft is the first row that could ALSO have answered
+    // `taskHref`, so the chat arm is refused outright rather than merely
+    // out-ranked: otherwise the row draws a real <a href> at the conversation
+    // and ⌘-click, middle click and "Open in new tab" all go somewhere the
+    // plain click does not.
+    expect(views).toContain(
+      "const chat = folderMissing || isDraftTask(task)\n"
+      + "    ? null\n"
+      + "    : openThreadIntent(task, unread);",
+    );
+  });
+});
+
 // ---- a Custom repeat survives being drafted ----------------------------------
 //
 // THE BUG (Bugbot, PR #1118). The autosave stored `repeat` — the preset KEY —

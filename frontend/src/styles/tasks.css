@@ -1868,6 +1868,44 @@ button.tasks-draft-pill {
   transition: background-color 120ms ease;
 }
 
+/* …AND THE RED HAS TO BE SAID ON THE BUTTON (Akshil, 2026-09-12, screenshot of
+   the List: the chip came out in the page's plain foreground, not the error
+   colour). The declaration above is on `.tasks-draft-pill`, ONE CLASS — and every
+   view here is drawn inside `<section className="prefs-section">`
+   (Scheduled.tsx), where preferences.css ships
+
+       .prefs-section button { … color: var(--fg) … }
+
+   at (0,1,1). That outranks a lone class, so on the List and the Board — the two
+   views whose chip is a `<button>` — the page's foreground won and the red was
+   never drawn; the Cards wall's inert `<span>`, which that rule cannot reach, was
+   the only chip that was ever red. Nothing in this file's own draft rules could
+   settle it either: `button.tasks-draft-pill` above is (0,1,1) as well and wins
+   its padding, border and background on source order alone, but it never named a
+   colour, so there was nothing there to win with.
+
+   The cure is this page's own, twice over — `.prefs-section button.tasks-caret`
+   and `.schedule-tv-filter-x` both name the opponent by hand rather than lean on
+   load order. (0,2,1) beats it outright and leaves no tie for source order to
+   decide.
+
+   ONE SELECTOR, and its `.deploy-body` twin is gone (review, 2026-09-12). Those
+   neighbouring rules list the modal shell because their controls are drawn in
+   one; this chip is not. Every renderer of it — ScheduleTaskViews' List row and
+   Board card foot, TaskCards' wall card, the List's filter toolbar — is inside
+   `Scheduled`'s `.prefs-section`, which is a PAGE (App.tsx's Tasks route and
+   AppPage's Tasks tab) and never a modal body. A selector that can match nothing
+   is a claim about where a component is drawn, and a wrong one is worse than no
+   claim: the day the chip does go in a modal, the red will be missing and this
+   rule will read as though somebody had already thought about it.
+
+   ONE declaration covers every state, which is why there is no hover or `.is-on`
+   twin of it: neither the wash below nor the ON pill touches `color`, so rest,
+   hover, focus and the filter being on all read this. */
+.prefs-section button.tasks-draft-pill {
+  color: var(--error);
+}
+
 button.tasks-draft-pill:hover,
 button.tasks-draft-pill:focus-visible {
   background: var(--ctl-quiet-bg-hover);

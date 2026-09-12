@@ -943,6 +943,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // (Akshil, 2026-09-05): same handler, same pinned state.
               onPickProject={pickProject}
               pinnedProjects={filters.projects}
+              // …and the Draft chip is a TAG here too (Akshil, 2026-09-12), the
+              // same handler and the same shared `TaskFilters` the List and the
+              // Board press: three views, one filter, one gesture to set it and
+              // one to let it go.
+              onPickDraft={pickDraft}
+              draftOn={filters.draft}
               missing={missing}
             />
           ) : (

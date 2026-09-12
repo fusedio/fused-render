@@ -1849,6 +1849,11 @@ const SCHEDULED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
 const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
+/** The settings page's stylesheet, read for ONE rule: `.prefs-section button`,
+ *  which skins every unarmoured button on this page too (Scheduled draws the
+ *  whole view inside a `.prefs-section`) and is the opponent several rules in
+ *  tasks.css exist to outrank. */
+const PREFS_CSS = readFileSync(join(SHELL, "../styles/preferences.css"), "utf8");
 /** The server's own shape of a task — read for the one claim that is about the
  *  MODEL surviving a change to how it is drawn. */
 const API_TYPES = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
@@ -3271,7 +3276,11 @@ describe("the one-message row's missing chevron", () => {
     // DRAWN — see "the hidden row actions" — not about what it is.)
     expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
     expect(ROW).toContain("openChat(chat)");
-    expect(VIEWS).toContain("const chat = folderMissing ? null : openThreadIntent(task, unread);");
+    expect(VIEWS).toContain(
+      "const chat = folderMissing || isDraftTask(task)\n"
+      + "    ? null\n"
+      + "    : openThreadIntent(task, unread);",
+    );
     expect(VIEWS).toMatch(/const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/);
     // Its own presence is decided by openThreadIntent — a session, not a message
     // count — so shortening the thread cannot take the button away.
@@ -3359,7 +3368,11 @@ describe("a row with no message at all", () => {
     expect(ACTIVATE).toContain("if (chat) openChat(chat);");
     // Not a second url and not a second performer: `chat` is the row's existing
     // openThreadIntent value and openChat is the row's existing performOpen call.
-    expect(VIEWS).toContain("const chat = folderMissing ? null : openThreadIntent(task, unread);");
+    expect(VIEWS).toContain(
+      "const chat = folderMissing || isDraftTask(task)\n"
+      + "    ? null\n"
+      + "    : openThreadIntent(task, unread);",
+    );
     expect(VIEWS).toMatch(
       /const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/,
     );
@@ -4345,14 +4358,23 @@ describe("the Draft chip", () => {
     expect(head).not.toContain("<DraftChip");
   });
 
-  it("is a control on the List and the Board, and a label on the Cards wall", () => {
-    // The filter is List + Board (design.md, Round 2). The wall draws no draft
-    // ROW at all, so a press there would turn on a filter that removes most of
-    // the wall and leaves almost nothing wearing the chip that turns it off.
+  it("is the SAME control in all three views that draw it", () => {
+    // The wall was the exception for a day — a plain label, on the reading that
+    // it draws no draft ROW so a press would empty it (CARD_LANES). Reversed
+    // (Akshil, 2026-09-12): a card's chip is never a draft row's (a card has a
+    // session by construction), it is an ordinary conversation holding unsent
+    // words, and those cards keep wearing the chip after the press. So one chip,
+    // one gesture, three views.
     expect(ROW).toContain("onPick={onPickDraft}");
     expect(CARD).toContain("<DraftChip draft={draft} onPick={onPickDraft} active={draftOn} />");
-    expect(CARDS).toContain("{draft && <DraftChip draft={draft} />}");
-    expect(CARDS).not.toContain("onPickDraft");
+    expect(CARDS).toContain("{draft && <DraftChip draft={draft} onPick={onPickDraft} active={draftOn} />}");
+    // …and the wall is handed them by the page, the way the other two are.
+    expect(SCHEDULED.slice(SCHEDULED.indexOf("<TaskCards"))).toContain("onPickDraft={pickDraft}");
+    // On the Cards wall the chip sits immediately BEFORE the folder chip, which
+    // is the seat it has on a List row and on a Board card's foot.
+    const cardsHead = CARDS.slice(CARDS.indexOf('className="task-card-head-row"'));
+    expect(cardsHead.indexOf("<DraftChip")).toBeGreaterThan(-1);
+    expect(cardsHead.indexOf("<DraftChip")).toBeLessThan(cardsHead.indexOf("<IdentityChip"));
   });
 
   it("wears the ON pill the folder chip wears, in the accent, at rest", () => {
@@ -4398,6 +4420,32 @@ describe("the Draft chip", () => {
     // palette's problem and not this chip's (tokens.css: #c62828 on light,
     // #ff6b6b on dark).
     expect(TOKENS_CSS.match(/--error: #[0-9a-f]{6};/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("and the red actually WINS, on the two views whose chip is a button", () => {
+    // The bug the rule above could not fix on its own (Akshil, 2026-09-12,
+    // screenshot of the List: a grey chip). Every view here is drawn inside
+    // `<section className="prefs-section">`, and preferences.css skins EVERY
+    // button on such a page — `color: var(--fg)` at (0,1,1) — which outranks the
+    // lone class above. The Cards wall's chip was a `<span>` and was the only one
+    // that was ever red; now that it is a button too, all three need this.
+    expect(SCHEDULED).toContain('className="prefs-section schedule-main"');
+    expect(block(PREFS_CSS, ".prefs-section button")).toContain("color: var(--fg);");
+    // The cure is the page's own idiom — name the opponent, do not lean on load
+    // order: (0,2,1) beats it outright.
+    const won = block(TASKS_CSS, ".prefs-section button.tasks-draft-pill");
+    expect(won).toContain("color: var(--error);");
+    // ...and ONE selector doing it (review, 2026-09-12). The neighbouring rules
+    // carry a `.deploy-body` twin because their controls are drawn in the modal
+    // shell too; every renderer of THIS chip is inside `Scheduled`'s
+    // `.prefs-section`, which is a page and never a modal body, so the twin
+    // matched nothing and claimed otherwise.
+    expect(TASKS_CSS).not.toContain(".deploy-body button.tasks-draft-pill");
+    // ONE declaration for every state, which is the whole reason there is no
+    // hover or `.is-on` twin of it: neither of those rules names a colour, so
+    // rest, hover, focus and the filter being on all read this one.
+    expect(block(TASKS_CSS, "button.tasks-draft-pill.is-on")).not.toContain("color:");
+    expect(block(TASKS_CSS, "button.tasks-draft-pill:hover")).not.toContain("color:");
   });
 });
 
@@ -5170,6 +5218,80 @@ describe("the time a task row prints", () => {
     expect(soon.text).toBe("in 4d");
   });
 
+  it("says `drafted 3h ago` on a draft row, in the column's own vocabulary", () => {
+    // Akshil, 2026-09-12. The cell used to print the literal word "Draft", which
+    // the red chip on the same row already says — so the row's last column was
+    // repeating a mark and the one fact it could not state was how stale the
+    // words are. Both kinds of draft ROW, because both are the same fact to a
+    // reader: an unfinished New task form, and a never-sent chat.
+    const at = T("2026-08-16T09:00:00");
+    const form = task({
+      key: "draft:d1", kind: "draft", draft_kind: "task", state: "draft",
+      status: "upcoming", form: { description: "half a thought", updated_at: at },
+      last_active: 0,
+    });
+    const chat = task({
+      key: "new:/Users/me/news", kind: "draft", draft_kind: "chat", state: "draft",
+      status: "upcoming", file: "/Users/me/news",
+      draft: { preview: "unsent", updated_at: at }, last_active: 0,
+    });
+    for (const row of [form, chat]) {
+      const when = taskWhen(row, NOW);
+      expect(when.kind).toBe("draft");
+      // TIED TO THE COLUMN'S FORMATTER, not to a second one that happens to
+      // agree today: the cell beside it on every other row is `relativeWhen`.
+      expect(when.text).toBe(`drafted ${relativeWhen(at, NOW)}`);
+      expect(when.text).toBe("drafted 3h ago");
+      expect(when.title).toBe(`Drafted ${messageStamp(at)}`);
+      // …and the instant it printed is the one the draft rank sorts by, so the
+      // order of these rows and the times on them come off ONE number.
+      expect(when.at).toBe(draftUpdatedAt(row));
+    }
+    // A SESSION ROW CARRYING A COMPOSER DRAFT IS UNTOUCHED: it has run, its own
+    // time is a real answer, and the chip is what says there are unsent words.
+    const carrying = task({
+      status: "done", draft: { preview: "one more thing", updated_at: at },
+      messages: [msg({ at: T("2026-08-16T11:00:00"), ran_at: T("2026-08-16T11:00:00") })],
+    });
+    expect(taskWhen(carrying, NOW)).toMatchObject({ kind: "last", text: "1h ago" });
+  });
+
+  it("never says a draft was written in the FUTURE, whatever the clock says", () => {
+    // Review, 2026-09-12. A draft is written in the past by definition — there is
+    // no such thing as one typed in two minutes — but the stamp comes off the
+    // machine's clock, and a clock nudged backwards (an NTP correction, a laptop
+    // waking in another timezone) put "drafted in 2m" on the row.
+    const ahead = T("2026-08-16T12:02:00"); // two minutes past NOW
+    const row = task({
+      key: "draft:d2", kind: "draft", draft_kind: "task", state: "draft",
+      status: "upcoming", form: { description: "half a thought", updated_at: ahead },
+      last_active: 0,
+    });
+    const when = taskWhen(row, NOW);
+    expect(when.text).toBe("drafted just now");
+    expect(when.text).not.toContain(" in ");
+    // The STAMP itself is untouched: `at` is what the row sorts on and what the
+    // tooltip prints, and rewriting a stored fact to fix a sentence would be the
+    // second vocabulary this column exists to avoid.
+    expect(when.at).toBe(ahead);
+    expect(when.title).toBe(`Drafted ${messageStamp(ahead)}`);
+  });
+
+  it("keeps the bare word for a draft with no clock at all", () => {
+    // Every source zero (`draftUpdatedAt` → 0). 0 through a formatter is 1970,
+    // which is the confident wrong answer the `none` arm exists to avoid, so
+    // this one keeps the old cell and says why in words.
+    const bare = task({
+      key: "draft:d0", kind: "draft", draft_kind: "task", state: "draft",
+      status: "upcoming", form: undefined, last_active: 0,
+    });
+    expect(draftUpdatedAt(bare)).toBe(0);
+    const when = taskWhen(bare, NOW);
+    expect(when).toMatchObject({ at: 0, kind: "draft", text: "Draft" });
+    expect(when.title).toBe("Not scheduled yet — an unfinished task");
+    expect(when.title).not.toContain("1970");
+  });
+
   it("says `ago` about an OVERDUE next run, because that is what it is", () => {
     // Scheduling into the past is allowed on this branch and catch-up is unbounded,
     // so an Upcoming task's next run can already have gone by. The direction comes
@@ -5529,16 +5651,19 @@ describe("the Draft filter keeps only what is unsent", () => {
     expect(hasActiveFilters({ ...EMPTY_FILTERS, draft: true })).toBe(true);
   });
 
-  it("is dropped on the two views that have no chip to turn it off", () => {
+  it("is dropped on the ONE view that has no chip to turn it off", () => {
     // Same rule as the calendar's Archive facet, and the same argument: a
     // facet with no control on the view it is acting on is a page a reader
-    // cannot explain. Neither the calendar nor the Cards wall draws a draft
-    // row (CARD_LANES), and neither offers the chip.
+    // cannot explain. The calendar draws chips for scheduled runs and no draft
+    // anywhere, so it is the one.
     const f = { ...EMPTY_FILTERS, draft: true };
     expect(filtersForView(f, "calendar").draft).toBe(false);
-    expect(filtersForView(f, "cards").draft).toBe(false);
     expect(filtersForView(f, "list")).toBe(f);
     expect(filtersForView(f, "board")).toBe(f);
+    // The Cards wall was the second until 2026-09-12: its head row now draws the
+    // same pressable chip, so the facet has a control there and passes through
+    // untouched — the same object, not a copy, like the other two.
+    expect(filtersForView(f, "cards")).toBe(f);
   });
 
   it("is IGNORED on those views, never cleared — the chip is still on when you come back", () => {
@@ -5704,6 +5829,30 @@ describe("groupByColumn", () => {
     ];
     expect(groupByColumn(rows, (at + 100) * 1000).get("blocked")!.map((t) => t.key))
       .toEqual(["parked-draft", "parked", "broke-draft", "broke-new"]);
+  });
+
+  it("orders the drafts at the head of Upcoming by their own clock, as the List does", () => {
+    // Drafts draw inside Upcoming (laneOf — no seventh lane), and the partition
+    // that puts them at its head left them in whatever order the lane's sort had
+    // settled on: for rows it scores as "no time", the server's. So the List
+    // ranked two drafts newest-words-first and the Board, drawing the same two,
+    // did not (Akshil, 2026-09-12). Both now read `byDraftClock`, off the very
+    // number the List row prints beside them ("drafted 3h ago").
+    const at = 1_700_000_000;
+    const draftAt = (key: string, updated: number) =>
+      task({ key, kind: "draft", draft_kind: "task", state: "draft", status: "upcoming",
+             form: { description: "half a thought", updated_at: updated }, last_active: 0 });
+    const rows = [
+      task({ key: "soon", status: "upcoming", next_run: at + 60,
+             messages: [msg({ state: "pending", ran_at: 0, at: at + 60 })] }),
+      draftAt("older", at - 900),
+      draftAt("newer", at - 10),
+    ];
+    const lane = groupByColumn(rows, at * 1000).get("upcoming")!;
+    expect(lane.map((t) => t.key)).toEqual(["newer", "older", "soon"]);
+    // …and it is the List's own answer again, not a second opinion about it:
+    // the draft rank comes first in LIST_ORDER, so the two sequences coincide.
+    expect(lane.map((t) => t.key)).toEqual(sortForList(rows, at * 1000).map((t) => t.key));
   });
 });
 
@@ -8081,7 +8230,11 @@ describe("the Cards view's frame", () => {
     // ONE detection path for three views: Cards read the page's `missing` set
     // (review, #1023) and keep no folder-gone state of their own.
     expect(CARDS).not.toContain("chatFolderMissing");
-    expect(SCHEDULED).toContain("pinnedProjects={filters.projects}\n              missing={missing}");
+    // …and the wall reads it too. Sliced to the `<TaskCards>` element rather
+    // than matched as an adjacent pair of lines, which is what this was until
+    // the two Draft-chip props moved in between them (2026-09-12).
+    const wall = SCHEDULED.slice(SCHEDULED.indexOf("<TaskCards"));
+    expect(wall.slice(0, wall.indexOf("/>"))).toContain("missing={missing}");
     expect(CARDS.split("folderMissing={missing?.has(taskFolder(peekLive)) ?? false}").length).toBe(2);
     expect(CARDS.split("folderMissing={missing?.has(taskFolder(task)) ?? false}").length).toBe(2);
     expect(HOOK).toContain(

@@ -1851,7 +1851,19 @@ function TaskNode({
   // No chat arm for a folder that is gone: the thread's URL is the Explorer at
   // that folder with the Claude pane, and the Explorer would answer with a raw
   // stat error and no pane. The row's press says so instead (see `activate`).
-  const chat = folderMissing ? null : openThreadIntent(task, unread);
+  //
+  // …AND NONE FOR A DRAFT, WHATEVER IT NAMES (Akshil, 2026-09-12). A draft row
+  // opens the New task form and nothing else (`openDraft` below), and a draft
+  // bound to a conversation is the first one that could ALSO have answered
+  // `taskHref` — it carries the session it is a message to. That would have
+  // made the row draw a real `<a href>` at its chat: the plain click would still
+  // open the form (the arm order decides it), but ⌘-click, middle click and
+  // "Open in new tab" would go somewhere else entirely, which is the one mark
+  // promising two presses this page keeps refusing. Asked here rather than in
+  // `taskHref`, because it is this ROW's rule about its own press.
+  const chat = folderMissing || isDraftTask(task)
+    ? null
+    : openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question

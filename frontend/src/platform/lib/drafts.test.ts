@@ -337,7 +337,7 @@ describe("useAutosave({ writeInitial })", () => {
 const FORM: TaskDraftForm = {
   title: "", description: "half a thought", target: "~/news",
   when: null, repeat: null, custom_rule: null, model: "", effort: "",
-  permission: "", attachments: [], new_task_each_run: null,
+  permission: "", attachments: [], new_task_each_run: null, session_id: "",
 };
 
 /** Swap `fetch` for a recorder, and put the real one back afterwards. */

@@ -2346,6 +2346,22 @@ export interface SeededDraftForm {
    */
   fromChatKey: string | null;
   /**
+   * THE CONVERSATION THIS DRAFT IS A MESSAGE TO (Akshil, 2026-09-12).
+   *
+   * `fromChatKey` above is where the words were TYPED and is spent the moment
+   * the chat's own copy is deleted; this is where the task is GOING, and it has
+   * to survive the card being closed. A hop out of a session that has already
+   * run schedules into that session — same thread, same TASK number — and the
+   * page knew that only while it stayed open: exit the card, reopen the draft
+   * from its row and press Schedule, and the message started a new conversation
+   * under a new number instead.
+   *
+   * It is what `sessionId` on the Schedule payload falls back to, and it is
+   * what the server's listing reads to give this draft the session's own row
+   * identity rather than minting a second one.
+   */
+  sessionId: string | null;
+  /**
    * THE RULE `repeat: "custom"` POINTS AT (Bugbot, PR #1118). The preset key
    * alone is not an answer for Custom — see `TaskDraftForm.custom_rule` — so a
    * reopened draft needs this to seed `customRule` with, not just `repeat`.
@@ -2408,6 +2424,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
     fromChatKey: str("from_chat_key"),
+    sessionId: str("session_id"),
     customRule: parseCustomRule(f.custom_rule),
   };
 }
@@ -3191,6 +3208,29 @@ export default function NewJobModal({
    */
   const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");
   /**
+   * THE CONVERSATION THIS CARD'S TASK IS A MESSAGE TO — the destination, where
+   * `originChatKey` is the provenance (Akshil, 2026-09-12).
+   *
+   * A hop out of a chat that HAS ALREADY RUN is a message into that thread:
+   * `POST /api/schedule` is given the session, the entry is filed under it, and
+   * the task keeps the number the conversation already has. Press Schedule
+   * straight away and that worked, because the page still held the id. Exit the
+   * card and the draft on disk knew nothing about it, so reopening it and
+   * pressing Schedule opened a SECOND session with a SECOND task number and the
+   * TASK-nnn the reader had been watching was gone.
+   *
+   * Two sources, same answer, and the same shape as `originChatKey` one line
+   * up: the fresh hop is handed the id as a prop, and a card reopened from its
+   * draft row has only what the server stored on the draft. It rides the
+   * autosave body (below) and the Schedule payload (`sessionId`), so the
+   * binding is written down the first time the card saves and read back every
+   * time it opens.
+   *
+   * "" for a hop out of a chat with no session yet: there is no thread to
+   * continue, and that draft is keyed `new:<file>` precisely because of it.
+   */
+  const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");
+  /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).
    *
@@ -3231,6 +3271,11 @@ export default function NewJobModal({
         .filter((i) => i.path)
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
+      // WHERE THIS TASK IS GOING, restated on every save — see
+      // `boundSessionId`. Unlike `from_chat_key` (spent once, because it makes
+      // the server delete something) this is plain state, and a card that
+      // restates it cannot lose the binding to a merge.
+      session_id: boundSessionId,
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
       // with nothing behind it (Bugbot, PR #1118; see `TaskDraftForm.custom_rule`).
@@ -3596,7 +3641,10 @@ export default function NewJobModal({
           // survives a repeat, a CHAT's does not. A one-off entry's stored id
           // travels in the chat slot — see learnedSessionOf — and still
           // outranks the deep link's, as it always did.
-          sessionId: (!learnedSession && editing?.session_id) || chatSessionId || "",
+          // …and a REOPENED draft's stored binding is the third source, for the
+          // card that has no `chatSessionId` because the hop that made it is
+          // long over. See `boundSessionId`.
+          sessionId: (!learnedSession && editing?.session_id) || boundSessionId,
           learnedSessionId: learnedSession,
           newTaskEachRun,
           // The task's NUMBER has to survive the re-create an edit is; see

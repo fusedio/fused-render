@@ -2408,16 +2408,19 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 // facet was ignored, never cleared.
 //
 // THE DRAFT FACET IS SCOPED THE SAME WAY, and for the identical argument
-// (Akshil, 2026-09-11). Its only control is the chip on a List row or a Board
-// card, so it can only ever be turned ON from those two views — and neither the
-// Calendar nor the Cards wall draws a draft row at all (CARD_LANES; the
-// calendar's own note), so on those two it is a facet with no control and
-// almost nothing to keep. Ignored there rather than cleared, exactly like
-// Archive: a reader who filters the List to drafts, glances at the calendar and
-// comes back finds the chip still on.
+// (Akshil, 2026-09-11). Its control is the chip on a row or a card, so the
+// question is only ever "does THIS view draw one?" — and the calendar draws
+// chips for scheduled runs and no draft anywhere, so there it is a facet with
+// no control: ignored, exactly like Archive, rather than cleared.
+//
+// THE CARDS WALL IS NO LONGER ONE OF THEM (Akshil, 2026-09-12). It was, on the
+// reading that the wall draws no draft ROW (CARD_LANES) — true, and beside the
+// point: a card's head carries the chip whenever the task's composer is holding
+// unsent words, and that chip is now the same pressable tag the List and the
+// Board draw (TaskCards → DraftChip). So the wall has a control, the facet has
+// something to keep, and the one view left dropping it is the calendar.
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
-  const drops = view === "calendar" || view === "cards";
-  const draft = drops && f.draft;
+  const draft = view === "calendar" && f.draft;
   const archived = view === "calendar" && f.statuses.includes("archived");
   if (!draft && !archived) return f;
   return {
@@ -2714,8 +2717,9 @@ export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft";
 export const NO_TIME = "—";
 
 export interface TaskWhen {
-  /** The instant, epoch seconds. 0 on `none`, which is the one kind that names no
-   * instant at all — and is why nothing may format this without checking. */
+  /** The instant, epoch seconds. 0 on `none` — and on the one `draft` that has no
+   * clock of any kind either — which is why nothing may format this without
+   * checking: 0 through a formatter is 1970. */
   at: number;
   /** Which time it is — the row prints it, the tooltip says which. */
   kind: TaskWhenKind;
@@ -2776,18 +2780,57 @@ export interface TaskWhen {
  * zero to a formatter, which is why `none` is a KIND rather than a stamp.
  */
 export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
-  // A DRAFT PRINTS THE WORD "Draft" IN THE TIME COLUMN (design.md: "the 'when'
-  // column reads Draft"). Every other answer this function can give is a
-  // timestamp, and a draft has none of the three — no run ahead, no run behind,
-  // no session activity — so the honest cell is the one fact it does have: this
-  // is not scheduled yet. `at` stays 0 and the kind says so, for `none`'s
-  // reason: 0 formats as 1970, so nothing may hand this to a formatter.
+  // A DRAFT PRINTS WHEN IT WAS LAST TYPED IN (Akshil, 2026-09-12: "drafted 3h
+  // ago"). It used to print the literal word "Draft", on the argument that a
+  // draft has none of the three times this function knows — no run ahead, no run
+  // behind, no session activity — and the honest cell was the one fact it did
+  // have. That was a true sentence in the wrong column: the chip on the same row
+  // ALREADY says "Draft", in red, with a pencil, so the time column was spending
+  // the row's last cell repeating it, and the one thing the row could not say was
+  // how stale the words are. A draft nobody has touched in a week and one typed a
+  // minute ago read identically.
+  //
+  // The clock is `draftUpdatedAt` — the same three sources, most specific first,
+  // that the draft rank sorts by (`byDraftClock`), so the order of these rows and
+  // the times printed on them come off one number rather than two.
+  //
+  // AND THE COLUMN'S OWN FORMATTER, `relativeWhen`, not a second one: the cell
+  // beside it on every other row reads "5h ago", and a draft that spoke a
+  // different dialect of the same fact would be two vocabularies in one column.
+  // The word "drafted" is the only thing added, and it is what stops the unit
+  // being read as a run — this row has never run.
+  //
+  // A draft with NO clock at all (every source zero — `draftUpdatedAt` returns 0)
+  // keeps the old cell. Not a fallback so much as the same care `none` takes: 0
+  // formats as 1970, so nothing may hand this to a formatter, and `at` stays 0
+  // with the kind saying why.
   if (isDraftTask(task)) {
+    const at = draftUpdatedAt(task);
+    if (!at) {
+      return {
+        at: 0,
+        kind: "draft",
+        text: "Draft",
+        title: "Not scheduled yet — an unfinished task",
+      };
+    }
     return {
-      at: 0,
+      at,
       kind: "draft",
-      text: "Draft",
-      title: "Not scheduled yet — an unfinished task",
+      // CLAMPED TO NOW for the phrasing only (review, 2026-09-12). A draft is
+      // written in the past by definition — there is no such thing as one typed
+      // in two minutes — but the stamp comes off the machine's clock and
+      // `relativeWhen` reads a future number as "in 2m", so a clock nudged
+      // backwards (an NTP correction, a laptop waking in another timezone) put
+      // "drafted in 2m" on the row. Pinning the argument at `now` degrades that
+      // to "drafted just now", which is both true and unremarkable. `at` itself
+      // is NOT clamped: it is what the row sorts on and what the tooltip prints,
+      // and rewriting the stored fact to fix a sentence would be a second
+      // vocabulary again. `now / 1000` because this function's `now` is in
+      // MILLISECONDS (it is `Date.now()`) and every stamp it handles is in
+      // seconds — `relativeWhen` does the same division on the way in.
+      text: `drafted ${relativeWhen(Math.min(at, now / 1000), now)}`,
+      title: `Drafted ${messageStamp(at)}`,
     };
   }
   const nextFirst = LANE_SORTS[taskColumn(task)].key === "next-run";
@@ -2954,10 +2997,20 @@ export function groupByColumn(
   // run and a draft has no run to be ordered by, so without this it would land
   // wherever "no time" happens to sort. An unfinished task is the most upcoming
   // thing there is (design.md, Decisions, Akshil 2026-09-11).
+  //
+  // …AND AMONG THEMSELVES BY THEIR OWN CLOCK (Akshil, 2026-09-12), which is
+  // `byDraftClock` — the very call the List's draft rank makes (`sortForList`).
+  // The partition alone left them in whatever order `sortLane` had settled on,
+  // and for rows it scores as "no time" that is the server's order: so the List
+  // ranked two drafts newest-words-first and the Board, drawing the same two,
+  // did not. Neither view shows a draft's clock as ink on a card, but both now
+  // print it on the List row beside them (`taskWhen`: "drafted 3h ago"), and one
+  // order for one number is the whole of why this reads the same function rather
+  // than sorting here.
   const upcoming = map.get("upcoming");
   if (upcoming && upcoming.length > 1) {
     map.set("upcoming", [
-      ...upcoming.filter((t) => isDraftTask(t)),
+      ...byDraftClock(upcoming.filter((t) => isDraftTask(t))),
       ...upcoming.filter((t) => !isDraftTask(t)),
     ]);
   }
