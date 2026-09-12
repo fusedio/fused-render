@@ -71,6 +71,9 @@ import {
   parseAttachmentsParam,
   type SchedAttachment,
 } from "@apps/claude/ui/sched-draft";
+import { chatDraftKey } from "@platform/lib/drafts";
+import { navigateUrl } from "@platform/lib/router";
+import { chatDraftHref } from "./schedule-lib";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -101,6 +104,7 @@ import {
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
+  isChatDraftTask,
   mergeTaskChanges,
   provisionalTasks,
   viewFromSearch,
@@ -258,7 +262,33 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const openForm = (at: Date | "blank" | null, entry: ScheduledMessage | null) => {
     setOpenSeq((n) => n + 1);
     setEditing(entry);
+    setDraftRow(null);
     setCreating(at);
+  };
+  // An unfinished New task form, re-opened from its own row (design.md, "Reopen
+  // path": editing a draft row is the only way back to it). It travels as the
+  // ROW rather than as its id, because the row already carries the saved form —
+  // `/api/tasks` emits it — so the card can seed from it on the first paint with
+  // no second fetch, exactly as an Edit seeds from its entry.
+  const [draftRow, setDraftRow] = useState<Task | null>(null);
+  const openDraft = (task: Task) => {
+    // A NEVER-SENT CHAT IS NOT A FORM, so its row's press is a navigation and
+    // not this modal (design.md, Round 2: "Click → opens the folder's chat,
+    // composer prefilled"). There is nothing to re-open here — the words live in
+    // a composer, and the composer seeds itself from the draft keyed on the
+    // folder this URL lands on (schedule-lib.chatDraftHref, whose note explains
+    // why it carries no `session_id`). Asked FIRST, because it is the row that
+    // has no `draft_id` to fall through to.
+    if (isChatDraftTask(task)) {
+      const href = chatDraftHref(task);
+      if (href) navigateUrl(href);
+      return;
+    }
+    if (!task.draft_id) return;
+    setOpenSeq((n) => n + 1);
+    setEditing(null);
+    setCreating(null);
+    setDraftRow(task);
   };
   // What a deep link named (see the effect below); all null for every other
   // way of opening the form.
@@ -271,6 +301,22 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // shape a saved entry's `attachments` has, and the card seeds from it the same
   // way an Edit does (owner E2E R1, F4 (2026-09-10)).
   const [newAttachments, setNewAttachments] = useState<SchedAttachment[]>([]);
+  // WHICH CHAT DRAFT THIS FORM SUPERSEDES (design.md, Round 2: "A draft moves,
+  // never duplicates").
+  //
+  // The Schedule hop carries a composer's words here, and the composer's own
+  // autosave has already stored them as a chat draft. The task draft this card
+  // is about to mint is THE SAME WORDS, so the first save names the key they
+  // came from and the server deletes that one in the same request — one draft,
+  // one row, one TASK number, with no window where the List shows the sentence
+  // twice.
+  //
+  // The key is the hop's own: its `session_id` when the chat had one, else
+  // `new:<target>` — and `target` IS the chat's `file` (sched-draft.schedulerUrl
+  // writes `link.file` into it), which is the whole reason no new param was
+  // needed. platform/lib/drafts.chatDraftKey carries the rule that keeps the
+  // four spellings of that path in step.
+  const [newChatKey, setNewChatKey] = useState<string | null>(null);
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
@@ -316,6 +362,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // answers [] for anything it cannot read, because a parse error here would
     // cost the folder, the draft and the session as well as the files.
     setNewAttachments(parseAttachmentsParam(q.get("attachments")));
+    // Only for a hop that came FROM a chat, which is what `message` says: the
+    // other `?new=1&target=…` links (the app page's "+ New task") carry no
+    // composer and have no draft of anybody's to supersede. `message` may be
+    // empty and still present — an empty composer stored no draft, so the key
+    // is simply one the server finds nothing under.
+    setNewChatKey(
+      q.get("message") === null
+        ? null
+        : chatDraftKey(q.get("session_id"), q.get("target")),
+    );
     openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
     q.delete("new");
     q.delete("target");
@@ -489,6 +545,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       ...f,
       projects: f.projects.length === 1 && f.projects[0] === project ? [] : [project],
     }));
+
+  // The Draft chip pressed on a row or a card: keep only the rows carrying
+  // unsent words, and press it again to let them all back (design.md, Round 2).
+  // A plain toggle of one boolean, unlike the folder's replace-not-widen rule,
+  // because there is only one of it — and everything else about the filters is
+  // left alone for the same reason: a search or a project already on stays on,
+  // and this narrows what they left. ONE handler for the List and the Board,
+  // exactly like `pickProject`, so the two views cannot drift.
+  const pickDraft = () => setFilters((f) => ({ ...f, draft: !f.draft }));
 
   const pickView = (v: TaskView) => {
     setView(v);
@@ -730,6 +795,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              // A draft card's press re-opens the form it was saved from —
+              // the same gesture, and the same callback, as the List row's.
+              onOpenDraft={openDraft}
+              // …and the Draft chip as a TAG here too: the filter is the List's
+              // and the Board's, on the one shared `TaskFilters`, so switching
+              // view keeps it and keeps the chip that turns it off.
+              onPickDraft={pickDraft}
+              draftOn={filters.draft}
               missing={missing}
               emptyLabel={emptyLabel}
             />
@@ -761,6 +834,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // a reason to hold onto it. See `stale` in TaskList.
               stale={tasksFailed}
               onEditEntry={editEntry}
+              // …and the draft row's press, which opens the same card on the
+              // form the row is carrying rather than on a stored entry.
+              onOpenDraft={openDraft}
               // The folder chip as a TAG: pressing one narrows the page to that
               // project, pressing the pinned one again clears it. It REPLACES
               // the project selection rather than adding to it — the gesture
@@ -772,6 +848,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // Which project the page is pinned to — so the chip survives the
               // filter that makes every row agree, and shows that it is on.
               pinnedProjects={filters.projects}
+              // The Draft chip, the same way: pressing one keeps only the rows
+              // carrying unsent words, pressing it again lets them all back.
+              onPickDraft={pickDraft}
+              draftOn={filters.draft}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
@@ -782,7 +862,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         </section>
       )}
 
-      {(creating !== null || editing) && state && (
+      {(creating !== null || editing || draftRow) && state && (
         <NewJobModal
           // Keyed on WHICH OPENING this is, and on what is being edited, because
           // the form reads `editing` in `useState` initialisers — they run once,
@@ -800,7 +880,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // the card came up wearing the last form's answers — a Repeat rule the
           // user never chose, one Save away from a real repeating task. See
           // `openSeq` above.
-          key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
+          // …and a DRAFT is a third identity, for the same reason: its fields are
+          // read in `useState` initialisers, so re-opening one over a card that
+          // was showing another must be a fresh mount.
+          key={`${
+            draftRow ? `draft:${draftRow.draft_id}` : editing ? `edit:${editing.id}` : "new"
+          }#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
           // Scoped, a new task is a task FOR THIS APP: the entry page is
           // prefilled so the modal opens ready to type, because a task made
@@ -812,8 +897,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           initialTarget={newTarget ?? scope?.entry ?? scope?.project ?? null}
           initialMessage={newMessage}
           initialAttachments={newAttachments}
+          // The saved form, handed back whole. Null on every other opening.
+          initialDraft={
+            draftRow?.draft_id
+              ? { id: draftRow.draft_id, form: draftRow.form ?? null }
+              : null
+          }
           chatSessionId={newSession}
           chatBack={newBack}
+          // The chat draft this card's own first save supersedes — see
+          // `newChatKey` above. Null on every opening that did not come from a
+          // composer, which is every opening but the Schedule hop.
+          fromChatKey={newChatKey}
           editing={editing}
           // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
           // the calendar (where "when" is the question the view itself asks),
@@ -833,10 +928,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           onClose={() => {
             setCreating(null);
             setEditing(null);
+            // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
+            // away, the row stays on the list, and the modal's own autosave has
+            // already flushed on unmount. Only the OPENING is forgotten here.
+            setDraftRow(null);
             setNewTarget(null);
             setNewMessage(null);
             setNewSession(null);
             setNewBack(null);
+            setNewChatKey(null);
           }}
           onCreated={reload}
         />

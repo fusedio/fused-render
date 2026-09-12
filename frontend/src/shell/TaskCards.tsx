@@ -41,6 +41,7 @@ import {
   ICON_ARCHIVE,
   ICON_TRASH,
   ICON_UNARCHIVE,
+  DraftChip,
   IdentityChip,
   StatusIcon,
 } from "./ScheduleTaskViews";
@@ -50,6 +51,7 @@ import {
   basename,
   cardKey,
   cardsForTasks,
+  draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   emptyPaneText,
@@ -414,6 +416,10 @@ function TaskCard({
 }) {
   const when = taskWhen(task);
   const title = firstLine(task.title) || "(untitled)";
+  // Words nobody has sent, in this conversation's composer — the List row's and
+  // the Board card's own chip, from the same function, so the three views
+  // cannot describe one draft differently (tasks-lib.draftTag).
+  const draft = draftTag(task);
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
@@ -548,6 +554,18 @@ function TaskCard({
               (Akshil, 2026-09-05: "when we click on them they filter?"): the
               chip stops its own press (IdentityChip's shield), so pressing the
               folder filters the page and does not also open the popup. */}
+          {/* …and, before it, the one thing a card can carry that the head
+              otherwise cannot say: unsent words in this conversation's composer
+              (tasks-lib.draftTag). The same chip, in the same seat relative to
+              the folder, as the List row and the Board card — design-principles
+              §1: a mark that moved between views would be three marks to learn.
+
+              A LABEL HERE, not a tag. The draft filter is the List's and the
+              Board's (design.md, Round 2), and the wall draws no draft ROW at
+              all (CARD_LANES) — so a press here would turn on a filter that
+              removes most of the wall and leaves almost nothing wearing the
+              chip that would turn it off (Akshil, 2026-09-11). */}
+          {draft && <DraftChip draft={draft} />}
           {project && (
             <IdentityChip
               name={basename(task.project)}

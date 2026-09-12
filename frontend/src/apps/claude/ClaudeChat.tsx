@@ -132,6 +132,7 @@ import { useChatRecapEnabled } from "./feature-flag";
 import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness } from "@platform/lib/api";
+import { chatDraftKey, rekeyChatDraft } from "@platform/lib/drafts";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -1959,6 +1960,29 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   /**
+   * THE SEND THAT IS OWED A REKEY — set when a Send goes out of a chat that has
+   * no session yet, because that send is the one about to create one and the
+   * `new:<file>` draft's TASK number has to follow it (the rekey effect below
+   * spends this).
+   *
+   * BOUND TO THE RUN, not left lying in the module (Bugbot, PR #1118,
+   * 2026-09-12). `controller` and `file` together are the only thing that says
+   * which conversation a later `state.sessionId` belongs to: `ChatBody` is not
+   * keyed on `file`, so switching targets can swap the file, the controller, or
+   * both under this same tree. A note kept outside the component could be spent
+   * by whichever conversation happened to report an id next — another chat in
+   * the same folder, or a session opened rather than sent — and would walk the
+   * unsent row and its number onto it. `live` is how the run's END is told from
+   * its start: `RunStatus` spells both `idle`.
+   */
+  const pendingRekey = useRef<{
+    controller: ReturnType<typeof createChatController>;
+    file: string | null;
+    key: string;
+    live: boolean;
+  } | null>(null);
+
+  /**
    * THE SEND WINDOW, SERIALIZED — one road, both kinds of send.
    *
    * `beginSend` is AWAITED (a round of notes has its pane photographed before
@@ -1995,6 +2019,13 @@ function ChatBody(props: ChatBodyProps) {
       setSendLocked(true);
       const sendId = `s${++sendSeq.current}`;
       sendHolder.current = sendId;
+      // NO SESSION UNDER THIS SEND MEANS THIS SEND MAKES ONE, which is the one
+      // moment the answer is certain — read off the controller rather than off
+      // a render, so a poll that has not landed yet cannot make an opened
+      // session look like a new one (`pendingRekey` above).
+      if (!controller.getState().sessionId) {
+        pendingRekey.current = { controller, file, key: chatDraftKey(null, file), live: false };
+      }
       // A WORDLESS send (notes or pictures alone) posts no optimistic row: its
       // bubble is the markers `stripBlocks` builds out of the composed wire,
       // and only the controller can write those.
@@ -2041,7 +2072,7 @@ function ChatBody(props: ChatBodyProps) {
         }
       })();
     },
-    [controller, beginSend, releaseSend],
+    [controller, file, beginSend, releaseSend],
   );
 
   const onSend = useCallback(
@@ -2447,6 +2478,66 @@ function ChatBody(props: ChatBodyProps) {
     });
     return watch.start();
   }, [controller, inChat, state.sessionId]);
+
+  /**
+   * THE DRAFT'S TASK NUMBER FOLLOWS THE SESSION THE CHAT TURNS OUT TO BE
+   * (design.md, Round 2: "Every draft has a TASK number").
+   *
+   * A brand-new conversation has no session id, so its composer autosaves under
+   * `new:<file>` and the server gives THAT key a TASK-NNN and a row on the List.
+   * The first send creates the session; from the next render the composer keys
+   * on the session id instead (Composer's `draftKey`), and without this the
+   * number — and the row wearing it — would be stranded on a key nothing reads
+   * again. One POST moves both, the same way `pending:<entry>` is walked onto a
+   * session when a scheduled run reports one.
+   *
+   * ONLY FOR THE SEND THAT MADE THIS SESSION. This used to be inferred from
+   * what the effect itself saw: latch "started without a session" on the first
+   * pass with an empty `state.sessionId`, then rekey when an id turned up. But
+   * an empty id on the first pass is the ORDINARY case for every chat — the id
+   * arrives only when boot's `openSession` answers — so the latch caught chats
+   * that had been opened ON a session too, and opening one in a folder that
+   * already held a `new:<file>` draft silently moved that unsent row, words and
+   * TASK number, onto a conversation it had nothing to do with. Its first
+   * replacement moved the answer into a module-level set the composer wrote at
+   * the send; that fixed the inference but not the OWNERSHIP — nothing said
+   * which session was allowed to spend the note, so switching conversations in
+   * the same folder before the first poll returned spent it on the wrong one
+   * (Bugbot, PR #1118, 2026-09-12).
+   *
+   * SO THE NOTE CARRIES ITS RUN. `pendingRekey` is written where the send is
+   * dispatched and remembers the controller and file it was dispatched for; the
+   * three things that can happen to it are all answered here, in order:
+   *
+   *   * THIS IS NOT THAT CONVERSATION any more (a different controller, or the
+   *     same one now pointed at another file) — drop the note unspent, because
+   *     the id this chat is about to report was not made by our send;
+   *   * THE ID LANDED for the run we sent — move the draft, once, and drop it;
+   *   * THE RUN ENDED WITHOUT ONE — drop it. `RunStatus` has no separate
+   *     "ended", so an end is only an end after the run has been seen live;
+   *     a send refused before it ever ran leaves the note to the ownership
+   *     check, which is the next thing that touches it.
+   *
+   * Fire and forget, like every other write in platform/lib/drafts: a refusal
+   * costs the number's continuity and nothing the reader is doing — and the
+   * draft this renames is one the send is about to delete anyway.
+   */
+  useEffect(() => {
+    const pending = pendingRekey.current;
+    if (!pending) return;
+    if (pending.controller !== controller || pending.file !== file) {
+      pendingRekey.current = null;
+      return;
+    }
+    const id = state.sessionId ?? "";
+    if (id) {
+      pendingRekey.current = null;
+      void rekeyChatDraft(pending.key, id);
+      return;
+    }
+    if (state.status !== "idle") pending.live = true;
+    else if (pending.live) pendingRekey.current = null;
+  }, [controller, file, state.sessionId, state.status]);
 
   const card = useMemo(
     () => ({

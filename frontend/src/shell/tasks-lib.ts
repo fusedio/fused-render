@@ -379,7 +379,13 @@ export function threadRunning(messages: TaskMessage[]): boolean {
  * Done. Read as a plain string on purpose: the union this file was compiled
  * against is a snapshot of what the server said LAST time.
  */
-export function taskColumn(task: Pick<Task, "status">): BoardColumn {
+export function taskColumn(task: Pick<Task, "status" | "kind">): BoardColumn {
+  // A DRAFT IS NOT A STATUS THE SERVER SENDS. A draft row arrives with
+  // `status: "upcoming"` on purpose — so every lane switch on this page keeps
+  // working on it without being taught a seventh word — and `kind: "draft"` is
+  // the fact that tells the two apart. Asked here, once, so the List's rank, the
+  // Board's lane, the drag matrix and the time column all read one answer.
+  if (isDraftTask(task)) return "draft";
   return statusColumn(task.status);
 }
 
@@ -396,6 +402,133 @@ export function statusColumn(status: string): BoardColumn {
   const known = BOARD_COLUMNS.find((c) => c.key === status);
   return known ? known.key : "done";
 }
+
+/**
+ * IS THIS ROW AN UNFINISHED NEW-TASK FORM rather than a task?
+ *
+ * One predicate for every view that has to leave drafts out (the Cards wall, the
+ * calendar) or treat them apart (the List's time column, the Board's hoist), so
+ * "what is a draft" is decided once.
+ *
+ * It asks `kind` and NOT `status`, which is the one thing to know about this
+ * row: the server sends a draft as `status: "upcoming"` so that every existing
+ * lane reading keeps working on it untaught, and says `kind: "draft"` beside it.
+ * A predicate written against `status` would therefore be quietly false on every
+ * draft there is.
+ */
+export function isDraftTask(task: Pick<Task, "kind">): boolean {
+  return task.kind === "draft";
+}
+
+/**
+ * …AND WHICH OF THE TWO KINDS IT IS (design.md, Round 2: "New-chat drafts are
+ * rows").
+ *
+ * A chat draft row is a conversation with words in it that nobody has sent, in
+ * a folder whose chat has no session yet — so unlike a task draft it has no
+ * form to re-open and no `draft_id`, and its press is a NAVIGATION rather than
+ * a modal (schedule-lib.chatDraftHref).
+ *
+ * Read as "is it explicitly the chat kind", so a server that predates the
+ * second kind — every draft row there is a task draft — answers no and the old
+ * press survives untouched (Akshil, 2026-09-11).
+ */
+export function isChatDraftTask(task: Pick<Task, "kind" | "draft_kind">): boolean {
+  return isDraftTask(task) && task.draft_kind === "chat";
+}
+
+/**
+ * DOES THIS ROW CARRY UNSENT WORDS OF ANY SORT — the question the Draft chip,
+ * the Draft filter and the List's hoist all ask, spelled once.
+ *
+ * Three rows answer yes and they are genuinely three different things: an
+ * unfinished New task form (`kind: "draft"`, the task kind), a never-sent chat
+ * (`kind: "draft"`, the chat kind), and an ORDINARY TASK whose composer is
+ * holding something (`draft` joined onto its session). To a reader scanning the
+ * page they are one fact — there are words here nobody has sent — which is
+ * exactly why one predicate answers for all three (design.md, Round 2: the
+ * filter "keeps only rows carrying any draft").
+ */
+export function hasDraft(task: Pick<Task, "kind" | "draft">): boolean {
+  return isDraftTask(task) || !!task.draft;
+}
+
+/**
+ * WHEN THOSE WORDS WERE LAST TOUCHED, for the List's own order among drafts
+ * (design.md, Round 2: "Drafts among themselves by recency").
+ *
+ * Epoch seconds, the API's unit throughout, and 0 for "the row does not say" —
+ * which sorts last among drafts rather than being formatted as 1970, the same
+ * care `taskWhen` takes with a zero.
+ *
+ * THREE SOURCES, most specific first, because the server states the fact in
+ * different places for the three kinds of draft row and the client is not the
+ * authority on which:
+ *
+ *   1. `draft.updated_at` — the joined chat draft, and the new-chat row's own;
+ *   2. `form.updated_at` — the stored task-draft body, which is emitted
+ *      verbatim (api.Task.form is deliberately loose, so this is read as an
+ *      unknown and only believed when it is a number);
+ *   3. `last_active` — every task row has one, and on a draft row it is the
+ *      closest thing to "when this was last worked on" the listing carries.
+ */
+export function draftUpdatedAt(task: Pick<Task, "draft" | "form" | "last_active">): number {
+  const joined = task.draft?.updated_at;
+  if (typeof joined === "number" && joined > 0) return joined;
+  const stored = task.form?.updated_at;
+  if (typeof stored === "number" && stored > 0) return stored;
+  return task.last_active || 0;
+}
+
+/** The chip's word, spelled once. The mark beside it is a pencil — Slack's own
+ *  draft mark, which is the reference UI this whole feature is built against
+ *  (design.md) — but it is a lucide `PencilLine` drawn by the view now rather
+ *  than a pencil character in this string (design.md, Round 2). One glyph family
+ *  for the whole page: every other mark on these rows is an inline lucide path
+ *  at the same stroke, and a text pencil was the one that rendered at the
+ *  font's mercy. */
+export const DRAFT_CHIP = "Draft";
+
+/**
+ * THE `Draft` CHIP, for both the chat draft and the task draft (design.md,
+ * Decisions: "`Draft` chip + tooltip first line").
+ *
+ * ONE mark for the two kinds, which is the point: a reader scanning the list is
+ * being told the same thing either way — there are words here nobody has sent.
+ * What differs is only whose words they are, and that is what the tooltip says.
+ * Null when the row has neither, which is almost every row.
+ *
+ * It is an `OutcomeTag` so it is drawn by the pill the row already has
+ * (ScheduleTaskViews.DraftChip wraps `.tasks-outcome-pill` — muted, currentColor
+ * border, sized to the id beside it). No new CSS primitive: a second chip shape
+ * for a second kind of note is how a row grows marks nobody can tell apart.
+ */
+export function draftTag(task: Task): OutcomeTag | null {
+  // Both tooltips show the WORDS, not a description of the chip: the row's
+  // title already says it is a draft, and what a reader hovering wants is a
+  // glimpse of what they were writing (Akshil, 2026-09-11 — same rule the chat
+  // draft's badge follows). A task draft's words are its description first
+  // (the title is already on the row), else its title, else nothing to add.
+  if (isDraftTask(task)) {
+    // A NEW-CHAT row's words are the composer's, and the server sends them in
+    // the same `draft.preview` an ordinary session row carries — asked first,
+    // so the two chat drafts (one with a session, one without) caption
+    // identically. It falls through to the form/title pair below on a task
+    // draft, and on a chat row from a server that sent no preview.
+    const preview = task.draft?.preview?.trim();
+    if (preview) return { text: DRAFT_CHIP, title: preview };
+    const description = task.form?.description;
+    const words =
+      (typeof description === "string" ? firstLine(description) : "") ||
+      task.title?.trim() ||
+      "";
+    return { text: DRAFT_CHIP, title: words || "Draft" };
+  }
+  const preview = task.draft?.preview?.trim();
+  if (!preview) return null;
+  return { text: DRAFT_CHIP, title: preview };
+}
+
 
 /**
  * Is this column a run that is genuinely happening — the one question every
@@ -1445,6 +1578,10 @@ export function messageEditEntry(m: TaskMessage): string | null {
  * is not one (schedule-lib.BOARD_LANES).
  */
 const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
+  // NOWHERE. A draft is not a task yet — there is no entry to run, nothing to
+  // archive and no session to triage — so it does not lift at all (isDraggable
+  // reads this). The one thing to do with it is open it and finish it.
+  draft: [],
   // Run it early, or call it off.
   upcoming: ["in_progress", "archived"],
   // Locked: a run in flight is Claude's output, and it leaves this lane when it
@@ -2201,12 +2338,36 @@ export interface TaskFilters {
   statuses: BoardColumn[];
   /** Project FOLDERS, full paths — the value `Task.project` carries. */
   projects: string[];
+  /**
+   * ONLY THE ROWS WITH UNSENT WORDS IN THEM (design.md, Round 2: the Draft chip
+   * "is a filter tag").
+   *
+   * A BOOLEAN and not a list, unlike the two facets above, because there is one
+   * of it: "draft" is not a value a row has one of several of, it is a thing a
+   * row either carries or does not (`hasDraft`). And deliberately NOT a member
+   * of `statuses` — the Status menu offers the Board's lanes, and a draft is
+   * drawn INSIDE Upcoming rather than being a lane (schedule-lib's note on
+   * `BoardColumn`), so a "Draft" entry there would advertise a seventh column
+   * that does not exist.
+   *
+   * Its only control is the chip on the rows themselves, which is why it is not
+   * offered in the toolbar's popovers at all: the filter and the mark that sets
+   * it are one object, the way the project chip already is.
+   */
+  draft: boolean;
 }
 
-export const EMPTY_FILTERS: TaskFilters = { search: "", statuses: [], projects: [] };
+export const EMPTY_FILTERS: TaskFilters = {
+  search: "",
+  statuses: [],
+  projects: [],
+  draft: false,
+};
 
 export function hasActiveFilters(f: TaskFilters): boolean {
-  return f.statuses.length > 0 || f.projects.length > 0 || f.search.trim() !== "";
+  return (
+    f.statuses.length > 0 || f.projects.length > 0 || f.draft || f.search.trim() !== ""
+  );
 }
 
 // THE ARCHIVE FACET, SCOPED TO THE VIEW (Akshil, 2026-08-20). The calendar
@@ -2230,9 +2391,25 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 // person who ticks Archive on Calendar and then switches to List sees Archive
 // still ticked and the archived tasks it was always going to show — the
 // facet was ignored, never cleared.
+//
+// THE DRAFT FACET IS SCOPED THE SAME WAY, and for the identical argument
+// (Akshil, 2026-09-11). Its only control is the chip on a List row or a Board
+// card, so it can only ever be turned ON from those two views — and neither the
+// Calendar nor the Cards wall draws a draft row at all (CARD_LANES; the
+// calendar's own note), so on those two it is a facet with no control and
+// almost nothing to keep. Ignored there rather than cleared, exactly like
+// Archive: a reader who filters the List to drafts, glances at the calendar and
+// comes back finds the chip still on.
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
-  if (view !== "calendar" || !f.statuses.includes("archived")) return f;
-  return { ...f, statuses: f.statuses.filter((s) => s !== "archived") };
+  const drops = view === "calendar" || view === "cards";
+  const draft = drops && f.draft;
+  const archived = view === "calendar" && f.statuses.includes("archived");
+  if (!draft && !archived) return f;
+  return {
+    ...f,
+    ...(draft ? { draft: false } : {}),
+    ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
+  };
 }
 
 /**
@@ -2295,6 +2472,10 @@ export function taskMatches(task: Task, filters: TaskFilters): boolean {
     if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
   }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
+  // The Draft tag, and it is the same shape as the two facets above: OFF says
+  // nothing at all about a row, ON keeps only the rows carrying unsent words of
+  // any of the three sorts (`hasDraft`; design.md, Round 2).
+  if (filters.draft && !hasDraft(task)) return false;
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
   return (
@@ -2480,6 +2661,11 @@ export interface LaneSort {
  *                move is to leave the server's own order alone.
  */
 export const LANE_SORTS: Record<BoardColumn, LaneSort> = {
+  // A draft has no run to be ordered by — no next, no last — so the order it
+  // arrives in is the only honest one, exactly as for Archive. It is also what
+  // keeps `taskWhen` from claiming a time for a row that has none: the map is
+  // where that question is asked.
+  draft: { key: "server", dir: "asc" },
   upcoming: { key: "next-run", dir: "asc", overdueFirst: true },
   in_progress: { key: "last-run", dir: "desc" },
   needs_attention: { key: "last-run", dir: "desc" },
@@ -2504,7 +2690,7 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last" | "active" | "none";
+export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft";
 
 /** What a row prints when the task has no timestamp of any kind. An em dash and
  * not a blank: the time is the last cell of every row, so an empty one reads as a
@@ -2575,6 +2761,20 @@ export interface TaskWhen {
  * zero to a formatter, which is why `none` is a KIND rather than a stamp.
  */
 export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
+  // A DRAFT PRINTS THE WORD "Draft" IN THE TIME COLUMN (design.md: "the 'when'
+  // column reads Draft"). Every other answer this function can give is a
+  // timestamp, and a draft has none of the three — no run ahead, no run behind,
+  // no session activity — so the honest cell is the one fact it does have: this
+  // is not scheduled yet. `at` stays 0 and the kind says so, for `none`'s
+  // reason: 0 formats as 1970, so nothing may hand this to a formatter.
+  if (isDraftTask(task)) {
+    return {
+      at: 0,
+      kind: "draft",
+      text: "Draft",
+      title: "Not scheduled yet — an unfinished task",
+    };
+  }
   const nextFirst = LANE_SORTS[taskColumn(task)].key === "next-run";
   const next = nextRunAt(task);
   const last = lastRunAt(task);
@@ -2592,6 +2792,10 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     last: "Last run",
     active: "Active",
     none: "",
+    // Unreachable — the draft arm returns above, with its own sentence — but the
+    // map is exhaustive by type and an omission here would be a compile error
+    // rather than a missing word.
+    draft: "",
   };
   for (const [kind, at] of order) {
     if (at === null) continue;
@@ -2709,6 +2913,18 @@ export function groupByColumn(
     map.set("blocked", [
       ...blocked.filter((t) => needsAttention(t)),
       ...blocked.filter((t) => !needsAttention(t)),
+    ]);
+  }
+  // DRAFTS FIRST, inside the other lane that holds two statuses, and by the same
+  // stable partition for the same kind of reason: the lane's order is by next
+  // run and a draft has no run to be ordered by, so without this it would land
+  // wherever "no time" happens to sort. An unfinished task is the most upcoming
+  // thing there is (design.md, Decisions, Akshil 2026-09-11).
+  const upcoming = map.get("upcoming");
+  if (upcoming && upcoming.length > 1) {
+    map.set("upcoming", [
+      ...upcoming.filter((t) => isDraftTask(t)),
+      ...upcoming.filter((t) => !isDraftTask(t)),
     ]);
   }
   return map;
@@ -2888,10 +3104,20 @@ export function laneRolledUp(
 // the same second must not trade places between polls).
 
 /** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
- * holds it to that, so a seventh status cannot be silently unsortable. */
+ * holds it to that, so a seventh status cannot be silently unsortable.
+ *
+ * DRAFTS SIT DIRECTLY ABOVE UPCOMING, which is the List's reading of the same
+ * ruling that hoists them to the head of the Board's Upcoming lane: an
+ * unfinished thing is the most upcoming thing (design.md, Decisions, Akshil
+ * 2026-09-11). Not hoisted above Needs attention and Blocked — those two want a
+ * person's hands NOW, and a draft wants only their attention when they next have
+ * some. A rank of its own rather than an in-rank partition because the List
+ * spends this array as its whole order, and the Board's hoist is already the
+ * one place that distinction is drawn inside a lane. */
 export const LIST_ORDER: BoardColumn[] = [
   "needs_attention",
   "blocked",
+  "draft",
   "upcoming",
   "in_progress",
   "done",
@@ -2906,7 +3132,10 @@ function sortRank(tasks: Task[], rank: BoardColumn, now: number): Task[] {
   const asc = rank === "upcoming";
   const rows = tasks.map((task, index) => {
     const when = taskWhen(task, now);
-    return { task, index, at: when.kind === "none" ? null : when.at };
+    // `draft` joins `none` as a row that prints no instant: both carry `at: 0`,
+    // which is 1970 and must never be sorted as a time.
+    const timeless = when.kind === "none" || when.kind === "draft";
+    return { task, index, at: timeless ? null : when.at };
   });
   rows.sort((a, b) => {
     if (a.at === null || b.at === null) {
@@ -2934,6 +3163,55 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
   return LIST_ORDER.flatMap((key) => sortRank(buckets.get(key) ?? [], key, now));
+}
+
+/**
+ * THE LIST'S OWN ORDER: filter → status → has-draft first → recency (design.md,
+ * Round 2, "List sort"; Akshil, 2026-09-11: "1st layer of sort is status …
+ * inside status we sort by drafts tasks on top and non drafts below them. in
+ * both drafts and non drafts we sort them by recency, most recent on top").
+ *
+ * `sortByLane` above is the page's shared rank order and stays exactly as it
+ * was — the Board reads it through `groupByColumn`, the Cards wall reads it
+ * directly. This is the one extra pass the LIST makes INSIDE each lane, and it
+ * is a stable PARTITION of what `sortRank` already ordered: the rows carrying
+ * unsent words (`hasDraft` — a task draft, a never-sent chat, or an ordinary
+ * task whose composer is holding something) come first, the rest after, and
+ * BOTH halves keep the lane's own recency — the time the row prints. So an In
+ * Progress task with a half-typed follow-up is still in In Progress, first
+ * among its lane, and two such tasks are ordered by which ran most recently,
+ * not by which draft was touched last; the draft's own clock is not a time the
+ * row shows, and ordering by a clock the reader cannot see reads as random.
+ *
+ * The draft rank itself (`LIST_ORDER` "draft", the rows that ARE drafts and
+ * have no run at all) is the one lane where the draft's clock is the only
+ * clock, so there — and only there — it is the order: newest words first.
+ */
+export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
+  const buckets = new Map<BoardColumn, Task[]>(
+    LIST_ORDER.map((key) => [key, [] as Task[]]),
+  );
+  for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
+  return LIST_ORDER.flatMap((key) => {
+    const lane = sortRank(buckets.get(key) ?? [], key, now);
+    return key === "draft" ? byDraftClock(lane) : hoistDrafts(lane);
+  });
+}
+
+/** One lane, drafts first, everything in the order `sortRank` gave it. */
+function hoistDrafts(lane: Task[]): Task[] {
+  const drafts: Task[] = [];
+  const rest: Task[] = [];
+  for (const task of lane) (hasDraft(task) ? drafts : rest).push(task);
+  return drafts.length ? [...drafts, ...rest] : lane;
+}
+
+/** The draft rank: newest words first, the server's order breaking ties. */
+function byDraftClock(lane: Task[]): Task[] {
+  return lane
+    .map((task, index) => ({ task, index, at: draftUpdatedAt(task) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((r) => r.task);
 }
 
 // ---- the Cards view's set ----------------------------------------------------
@@ -2964,7 +3242,12 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 /** The lanes a Cards view draws, top rank first — LIST_ORDER, whole. Kept as
  * its own name so the view's membership test reads as a decision, not a
  * coincidence of the List's table. */
-export const CARD_LANES: BoardColumn[] = LIST_ORDER;
+/** …minus drafts, which the wall does not draw at all (design.md, Decisions:
+ *  List and Board only). Derived from LIST_ORDER rather than written out again,
+ *  so the wall still cannot fall out of step with the List's rank order — the
+ *  one thing it deliberately does not share is the one row that has no
+ *  conversation to show. */
+export const CARD_LANES: BoardColumn[] = LIST_ORDER.filter((k) => k !== "draft");
 
 /**
  * HOW MANY LIVE CHATS PER PAGE. Each card is an iframe running the chat template,
@@ -3204,7 +3487,11 @@ export function cardsForTasks(
     // task has no chat to show, so its tile was a sentence in a frame — the
     // Calendar and the List are where a future run is read. The wall shows
     // work that has happened or is happening.
-    if (task.status === "upcoming") continue;
+    // …and that already excludes DRAFTS, which the server sends as `upcoming`.
+    // Said again anyway, by name: the wall's membership must not depend on a
+    // coincidence between two fields (design.md, Decisions: List and Board
+    // only, never Cards or Calendar).
+    if (task.status === "upcoming" || isDraftTask(task)) continue;
     const id = cardKey(task);
     if (seen.has(id)) continue;
     seen.add(id);

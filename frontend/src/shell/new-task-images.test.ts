@@ -381,8 +381,14 @@ describe("the chat handoff's attachments", () => {
     // Pinned to the source because it is a branch in a `useState` initialiser,
     // which runs once and cannot be observed from a pure call.
     expect(MODAL).toContain("editing\n      ? restoredAttachments(editing)");
+    // The seed is now one const (`initialAttachmentRows`) because the dirty
+    // BASELINE has to read the identical list — a re-opened draft's chips must
+    // not make an untouched card read as dirty — but the precedence is
+    // unchanged: an Edit's own attachments, else a draft's, else the handoff's.
     expect(MODAL).toContain(
-      'restoredAttachments({ images: [], attachments: initialAttachments ?? [] })');
+      "restoredAttachments({ images: [], attachments: initialAttachmentRows })");
+    expect(MODAL).toContain(
+      "const initialAttachmentRows = saved.attachments ?? initialAttachments ?? [];");
   });
 
   it("Save sends them, in the field the backend reads names off", () => {

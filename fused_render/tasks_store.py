@@ -26,6 +26,21 @@ deleted. A number the user has seen, quoted in a note, or typed into a message
 must keep meaning the same thing, and a compacting scheme buys tidiness by
 breaking that. Gaps are the price and they are the correct price.
 
+**A draft is the one row whose project can still change**, and it is the one
+exception this rule needs. The New task modal numbers what you are typing at the
+first keystroke, in whatever folder the form is pointed at THEN — and then the
+person changes the folder. Allocate-once let the number ride along, so a project
+counting TASK-001…015 showed a TASK-202 borrowed from the project the draft was
+started in (Akshil, 2026-09-11). Nothing had been promised: a draft is not a
+task yet, nobody has quoted its number in a note, and the number it shows is a
+claim about which project it belongs to. So `ensure_ids(…, reproject=True)`
+drops the mapping of a draft whose project has moved and allocates afresh in the
+project it NOW points at. The old number is SPENT, never released (`_spend`) —
+a gap in the old project, which is the same price every delete above pays. The
+moment the draft becomes a real task (`rekey` onto `pending:<entry-id>`) the
+number is fixed like every other, because from there on it is one the user has
+been shown as booked.
+
 A task that exists before its session does (§5: a message scheduled for
 tomorrow has nothing to run in yet) is keyed `pending:<entry-id>` and gets its
 number then. `rekey` moves that number onto the session id at the first run, so
@@ -120,6 +135,11 @@ READ_FILE = "read.json"
 # What a task with no session yet is keyed by (§5). The entry id is already
 # unique and already sorts by due time, so nothing is minted for this.
 PENDING_PREFIX = "pending:"
+
+# What a number nobody holds any more is parked under (`_spend`). Not a task
+# key and never read as one: a `(project, n)` pair is allocated exactly once, so
+# this can collide with no session id, no `pending:` key and no draft key.
+SPENT_PREFIX = "spent:"
 
 # Zero-padded to three, and no further: TASK-1000 is simply four digits wide.
 # Padding is for a column of numbers to line up, not a limit.
@@ -244,7 +264,21 @@ def _next_numbers(store: dict) -> dict[str, int]:
     return high
 
 
-def ensure_ids(items, rekeys=()) -> dict[str, str]:
+def _spend(store: dict, rec: dict) -> None:
+    """Park a number nobody holds any more where nothing will hand it out again.
+
+    Releasing a number is the one thing allocate-once forbids, and a record
+    simply DELETED would release it: `_next_numbers` reads the high-water mark
+    straight off this store, so dropping the highest record in a project hands
+    that number to the next task there — the exact renumber `rekey` refuses to
+    cause and `forget_session` keeps a reservation to avoid. The reservation
+    here is the same idea under a key that is not a task's: the mark stands, the
+    number becomes a gap, and nothing joins a row onto it (Akshil, 2026-09-11).
+    """
+    store[SPENT_PREFIX + "%s#%d" % (rec["project"], rec["n"])] = dict(rec)
+
+
+def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     """Numbers for `items`, allocating any that are missing.
 
     `items` is an iterable of `(key, project, order)`: the task key (a session
@@ -256,9 +290,17 @@ def ensure_ids(items, rekeys=()) -> dict[str, str]:
     a session that has just minted its id keeps the number its pending row was
     already showing rather than being renumbered by the allocation below it.
 
-    Idempotent: an item that already has a number is left exactly as it is, so
-    calling this on every listing costs one read and no write once the store has
-    caught up.
+    `reproject` is the DRAFT rule (see the module docstring): with it on, an
+    item whose stored record names a different project than the one passed has
+    that record spent and a new number allocated in the project it now names.
+    Only the draft listing passes it — `routers/tasks.py::_draft_numbers` — and
+    a `pending:` key is skipped even there, because a booked task's number is
+    one the user has already been shown as final. Off by default, so every other
+    caller keeps the plain allocate-once behaviour.
+
+    Idempotent: an item that already has a number in the project it is passed
+    under is left exactly as it is, so calling this on every listing costs one
+    read and no write once the store has caught up.
     """
     items = [
         (str(key), str(project or ""), order)
@@ -286,6 +328,27 @@ def ensure_ids(items, rekeys=()) -> dict[str, str]:
             store.pop(old, None)
             store[new] = rec
             changed = True
+
+        if reproject:
+            for key, project, _order in items:
+                # Never a booked row: `pending:<entry-id>` is a scheduled task
+                # whose number the user has been watching, and moving THAT is
+                # the renumber schedule.py's `replaces` rekey exists to prevent.
+                if key.startswith(PENDING_PREFIX):
+                    continue
+                # A draft whose target has been CLEARED names no project, and
+                # "somewhere else" is not somewhere: it keeps the number it has
+                # until it points at a folder again, which costs nothing and
+                # saves a number every time a half-typed path resolves to a
+                # different parent on its way to the real one.
+                if not project:
+                    continue
+                rec = _record(store, key)
+                if rec is None or rec["project"] == project:
+                    continue
+                _spend(store, rec)
+                store.pop(key, None)
+                changed = True
 
         high = _next_numbers(store)
         missing = [it for it in items if _record(store, it[0]) is None]

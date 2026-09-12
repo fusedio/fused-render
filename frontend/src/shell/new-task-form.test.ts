@@ -41,6 +41,8 @@ let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
 let splitDraft: typeof import("./NewJobModal").splitDraft;
+let joinDraft: typeof import("./NewJobModal").joinDraft;
+let backChatHref: typeof import("./NewJobModal").backChatHref;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
@@ -50,6 +52,7 @@ let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
 let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
+let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -74,6 +77,8 @@ beforeAll(async () => {
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
   splitDraft = mod.splitDraft;
+  joinDraft = mod.joinDraft;
+  backChatHref = mod.backChatHref;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
@@ -83,6 +88,7 @@ beforeAll(async () => {
   PATH_MISSING = mod.PATH_MISSING;
   twoLevelsMissing = mod.twoLevelsMissing;
   saveActionLabel = mod.saveActionLabel;
+  seededDraftForm = mod.seededDraftForm;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1828,7 +1834,11 @@ describe("where the when-row lives", () => {
     expect(s.indexOf("Google's when-row")).toBeGreaterThan(more);
     // Openness is React state, not a bare `open` attribute: a half-controlled
     // <details> would slam shut on the next re-render, under the user's hand.
-    expect(s).toContain("const [moreOpen, setMoreOpen] = useState(planning);");
+    // …and for a re-opened DRAFT that carries a time, which is the one other
+    // card whose when-row holds an answer the reader already gave.
+    expect(s).toContain(
+      "const [moreOpen, setMoreOpen] = useState(planning || saved.when !== null);",
+    );
     expect(s).toContain("onToggle={(e) => setMoreOpen(e.currentTarget.open)}");
   });
 
@@ -1840,6 +1850,258 @@ describe("where the when-row lives", () => {
     expect(s).toContain("if (on) setTimePicked(true);");
     // And the opening value: an edit inherits what the entry was stored as, a
     // new card is planned exactly when the caller says it is planning.
-    expect(s).toContain("(editing ? !editing.immediate : planning)");
+    // …and a re-opened draft that stored a time is planned by definition: the
+    // draft only carries `when` once somebody opened the row and picked one.
+    expect(s).toContain("(saved.when !== null ? true : editing ? !editing.immediate : planning)");
+  });
+});
+
+// ---- the draft MOVES with the reader (design.md, Round 2) --------------------
+// "A draft moves, never duplicates." The composer's Schedule button carries the
+// sentence here; until it is scheduled there must be exactly one copy of it, and
+// exactly one row on the List wearing exactly one TASK number. Source reads,
+// because what these pin down is the ORDER of three calls — and a rendered form
+// with a stubbed fetch would only show that they all happened.
+
+describe("a draft moves with the reader, never duplicating", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the hop's words are a draft the moment they land, without a keystroke", () => {
+    const s = src();
+    // The ✕ guard's question ("has the user changed anything") and the draft's
+    // ("are there words here that would be lost") are asked APART: the prefill
+    // still moves the dirty baseline, so a close is still one click.
+    expect(s).toContain(
+      "const hopSeeded = !editing && !initialDraft && !!(initialMessage ?? \"\").trim();",
+    );
+    expect(s).toContain("!editing && (dirty || hopSeeded)");
+    // …and the hook is told the opening value counts as unwritten, which is what
+    // makes the first debounce actually write it.
+    expect(s).toContain("{ writeInitial: hopSeeded }");
+  });
+
+  test("an ordinary new card still mints nothing until something changes", () => {
+    const s = src();
+    // `hopSeeded` is false without a chat handoff, so the body is null and the
+    // hook keeps its own default: the mount value is already written.
+    expect(s).toContain("!initialDraft");
+    // An Edit writes nothing here at all, whatever else is true.
+    expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
+  });
+
+  test("the first save names the chat draft it supersedes, and only the first", () => {
+    const s = src();
+    expect(s).toContain("const moving = chatKeySpent.current ? \"\" : (fromChatKey ?? \"\");");
+    expect(s).toContain("chatKeySpent.current = true;");
+    expect(s).toContain("return saveTaskDraft(id, value, opts, moving || undefined);");
+  });
+
+  test("Back to chat reverses the move — and orders the delete after the last write", () => {
+    const s = src();
+    const back = s.slice(
+      s.indexOf("const backToChat = async () => {"),
+      s.indexOf("// The replacement was created but the original could not be withdrawn"),
+    );
+    // The two-step dirty guard still comes first: one click must not silently
+    // abandon an adjusted form (Bugbot, PR #548).
+    expect(back.indexOf("if (dirty && !backConfirm)"))
+      .toBeLessThan(back.indexOf("autosaveRef.current.stop()"));
+    // `stop` disarms the next write, `settle` waits out one already sent, and
+    // only then is the draft deleted — otherwise a PUT lands after the DELETE
+    // and puts the row back.
+    expect(back.indexOf("autosaveRef.current.stop()"))
+      .toBeLessThan(back.indexOf("await autosaveRef.current.settle()"));
+    expect(back.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(back.indexOf("deleteTaskDraft(id)"));
+    expect(back.indexOf("deleteTaskDraft(id)"))
+      .toBeLessThan(back.indexOf("navigateUrl(chatBack || backChatHref("));
+  });
+
+  test("a REOPENED draft can go back too — the key is stored, not in the URL", () => {
+    const s = src();
+    // The bug: the hop's instance had `?back=` and a sessionStorage stash, and a
+    // draft opened from its row on the List has neither — so the way back
+    // vanished the moment the modal was closed. `form.from_chat_key` is what
+    // the server now stores, and it is what this card aims at.
+    expect(s).toContain('const backChatKey = chatBack ? "" : (saved.fromChatKey ?? "");');
+    expect(s).toContain("const canGoBack = !!chatBack || !!backChatKey;");
+    expect(s).toContain('fromChatKey: str("from_chat_key"),');
+    // …and the button is shown on BOTH, not only the hop's instance.
+    expect(s).toContain("{canGoBack && (");
+    expect(s).not.toContain("{chatBack && (");
+  });
+
+  test("that card re-seeds the composer by hand, then deletes the task draft", () => {
+    const s = src();
+    const back = s.slice(
+      s.indexOf("const backToChat = async () => {"),
+      s.indexOf("// The replacement was created but the original could not be withdrawn"),
+    );
+    // No stash exists any more, so the chat draft is written explicitly — and
+    // BEFORE the task draft is deleted, so the sentence is never in no store at
+    // all. Both still come after `settle`, or a late PUT resurrects the row.
+    expect(back.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(back.indexOf("await saveChatDraft(backChatKey"));
+    expect(back.indexOf("await saveChatDraft(backChatKey"))
+      .toBeLessThan(back.indexOf("deleteTaskDraft(id)"));
+    // The two fields go back as the one block of prose they were split from.
+    expect(back).toContain("joinDraft(title, message)");
+  });
+
+  test("joinDraft is splitDraft run backwards, blank line and all", () => {
+    expect(joinDraft("roll up the PRs", "group them by repo"))
+      .toBe("roll up the PRs\n\ngroup them by repo");
+    // A round trip through both is the identity on anything the split produced.
+    const one = "roll up the PRs\n\ngroup them by repo";
+    const parts = splitDraft(one);
+    expect(joinDraft(parts.title, parts.description)).toBe(one);
+    // Either half alone is just that half — no separator for the missing one.
+    expect(joinDraft("", "just a body")).toBe("just a body");
+    expect(joinDraft("just a title", "")).toBe("just a title");
+    expect(joinDraft("", "")).toBe("");
+    expect(joinDraft(null, null)).toBe("");
+  });
+
+  test("where Back to chat lands, by the shape of the key", () => {
+    // A session id: the draft's own folder with that thread on the Claude pane.
+    expect(backChatHref("sess-9", "/Users/me/proj"))
+      .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=sess-9");
+    // `new:<file>`: the SAME door a never-sent chat's row uses — built out of
+    // the key's own file, and naming no session at all, or the composer that
+    // opens seeds from a key nothing wrote (schedule-lib.chatDraftHref).
+    expect(backChatHref("new:/Users/me/news", "/Users/me/elsewhere"))
+      .toBe("/explorer/view/Users/me/news?_side=claude");
+    // Nothing to go back to.
+    expect(backChatHref("", "/Users/me/proj")).toBe("");
+    expect(backChatHref("sess-9", "")).toBe("");
+    expect(backChatHref("new:", "/Users/me/proj")).toBe("");
+  });
+
+  test("Schedule leaves the delete to the server, as it always did", () => {
+    // `POST /api/schedule` is handed `draft_id` and drops the draft itself, so
+    // this path only has to make sure nothing queued can write it back.
+    const s = src();
+    const submit = s.slice(s.indexOf("// THE DRAFT STOPS HERE."));
+    expect(submit.indexOf("autosaveRef.current.stop();"))
+      .toBeLessThan(submit.indexOf("await scheduleMessage("));
+    expect(submit).not.toContain("deleteTaskDraft");
+  });
+
+  test("the page hands the modal the key the hop came from", () => {
+    // `target` IS the chat's `file` (sched-draft.schedulerUrl writes `link.file`
+    // into it), which is why no new param was needed.
+    const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+    expect(page).toContain('chatDraftKey(q.get("session_id"), q.get("target"))');
+    expect(page).toContain("fromChatKey={newChatKey}");
+    // …and only for a hop that came FROM a chat: the app page's "+ New task"
+    // deep link carries no composer and has no draft of anybody's to supersede.
+    expect(page).toContain('q.get("message") === null');
+    // The opening is forgotten on close, like every other deep-link value.
+    expect(page).toContain("setNewChatKey(null);");
+  });
+});
+
+// ---- the hop's chat draft does not outlive the task it became ----------------
+//
+// THE BUG (Bugbot, PR #1118). The composer's Schedule button carries what is in
+// the box into this card, and the card's FIRST autosave is what tells the server
+// to drop the chat's copy (`from_chat_key` on the task-draft PUT). Press
+// Schedule inside the 600 ms debounce — which is the ordinary way to use a hop,
+// since the card opens already filled in — and that write never happens: no
+// draft id is minted, none goes on the wire, and the chat draft survives beside
+// the task, row and TASK number and all. `session_id` does not cover it: a chat
+// that has never sent anything HAS no session, and its draft is keyed
+// `new:<file>`.
+
+describe("the chat draft a Schedule leaves behind", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the payload names the chat the words came out of", () => {
+    const body = buildSchedulePayload(form({ fromChatKey: "new:/Users/me/news" }));
+    expect(body.from_chat_key).toBe("new:/Users/me/news");
+    // A session-keyed chat rides the same field — the server validates both
+    // shapes — and the two are independent of each other.
+    expect(buildSchedulePayload(form({ fromChatKey: "sess-9" })).from_chat_key)
+      .toBe("sess-9");
+  });
+
+  test("and leaves the key off the wire when there is no chat behind the card", () => {
+    // "+ New task" from the app page, the `?new=1` hop, every client that
+    // predates drafts. Omitted rather than sent as "", like every other
+    // optional here.
+    expect("from_chat_key" in buildSchedulePayload(form())).toBe(false);
+    expect("from_chat_key" in buildSchedulePayload(form({ fromChatKey: "" }))).toBe(false);
+  });
+
+  test("both openings answer the same question: which chat was this typed in", () => {
+    const s = src();
+    // The FRESH hop is handed the key as a prop; a card REOPENED from its draft
+    // row has only what the server stored on the draft — the same fact
+    // `backToChat` aims at.
+    expect(s).toContain(
+      'const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");',
+    );
+    expect(s).toContain("fromChatKey: originChatKey,");
+  });
+
+  test("submit flushes before it stops, so the hop's own write still goes out", () => {
+    // `writeInitial` only ARMS the debounce. A Schedule inside that window would
+    // otherwise reach `stop()` before any write left at all — no id, no
+    // `from_chat_key`, no draft. The flush is what makes the id exist; the
+    // payload's own key is what covers it when even that is too late.
+    const submit = src().slice(src().indexOf("// THE DRAFT STOPS HERE."));
+    expect(submit.indexOf("autosaveRef.current.flush();"))
+      .toBeLessThan(submit.indexOf("autosaveRef.current.stop();"));
+    expect(submit.indexOf("autosaveRef.current.stop();"))
+      .toBeLessThan(submit.indexOf("await autosaveRef.current.settle()"));
+    expect(submit.indexOf("await autosaveRef.current.settle()"))
+      .toBeLessThan(submit.indexOf("await scheduleMessage("));
+  });
+});
+
+// ---- a Custom repeat survives being drafted ----------------------------------
+//
+// THE BUG (Bugbot, PR #1118). The autosave stored `repeat` — the preset KEY —
+// and nothing else. Every other key is its own whole answer ("every day" needs
+// no second field); "custom" is a pointer at a rule the recurrence dialog built.
+// So a Custom draft reopened saying Custom, holding no rule, with Save refused
+// (`saveEnabled`) and nothing on the card explaining the dead button.
+
+describe("a Custom repeat survives being drafted", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("the rule comes back off the stored draft", () => {
+    const rule: RecurrenceRule = { freq: "week", interval: 2, byday: [1, 3] };
+    const seeded = seededDraftForm({
+      id: "d1",
+      form: { repeat: "custom", custom_rule: rule },
+    });
+    expect(seeded.repeat).toBe("custom");
+    expect(seeded.customRule).toEqual(rule);
+  });
+
+  test("and a draft with no rule in it still opens, saying nothing", () => {
+    expect(seededDraftForm({ id: "d1", form: {} }).customRule).toBeNull();
+    expect(seededDraftForm(null).customRule).toBeNull();
+  });
+
+  test("a shape this build cannot read costs the rule and never the card", () => {
+    // A draft is loose JSON that may have been written by another build, and
+    // this runs inside a `useState` initialiser: a throw here is a card that
+    // will not open at all.
+    for (const bad of [null, "every week", 7, [], {}, { freq: "fortnight" }]) {
+      expect(seededDraftForm({ id: "d1", form: { custom_rule: bad } }).customRule)
+        .toBeNull();
+    }
+  });
+
+  test("the form stores the rule only while the choice points at one", () => {
+    const s = src();
+    // Null the same moment `repeat` itself goes null, so a draft can never say
+    // "custom" with nothing behind it.
+    expect(s).toContain('custom_rule: repeatOn && repeat === "custom" ? customRule : null,');
+    // …and the card seeds its state back off it, which is the half that makes
+    // storing it worth anything.
+    expect(s).toContain('if (saved.repeat === "custom" && saved.customRule) return saved.customRule;');
   });
 });

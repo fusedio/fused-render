@@ -59,6 +59,7 @@ import {
   basename,
   cancelIntent,
   carryMarkToHeld,
+  draftTag,
   dropAction,
   dropLanes,
   filingIntent,
@@ -67,6 +68,7 @@ import {
   firstLine,
   groupByColumn,
   heldMessages,
+  isDraftTask,
   isDraggable,
   isExpandable,
   isFailedTask,
@@ -74,7 +76,7 @@ import {
   needsAttention,
   laneRolledUp,
   laneUnread,
-  sortByLane,
+  sortForList,
   showsRowActions,
   statusColumn,
   markAllRead,
@@ -248,6 +250,27 @@ const ICON_OPEN = icon(
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 13);
 const ICON_PENCIL = icon(
   <><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></>, 13);
+/** THE DRAFT MARK — lucide `pencil-line`, the pencil with the ruled line under
+ *  it (design.md, Round 2: a lucide `PencilLine`, not the pencil character).
+ *
+ *  It is NOT `ICON_PENCIL` above, which is Edit — a verb, on a button, in the
+ *  row's action strip. This one is a noun on a chip: the pencil WITH its line is
+ *  Slack's own draft mark and the whole reference this feature is built against,
+ *  and drawing the two the same would make an inert badge read as a control.
+ *  11px, a step under the row's other marks, because it sits inside a pill that
+ *  already carries a word — the glyph is the mark's tone, the word is its
+ *  content (Akshil, 2026-09-11).
+ *
+ *  The path data is lucide-react's own `pencil-line`, copied verbatim out of
+ *  `node_modules/lucide-react/dist/esm/icons/pencil-line.mjs` rather than drawn
+ *  by hand. What was here before was a hand-edited `ICON_PENCIL` with a stub
+ *  stroke bolted on — it read as a broken Edit glyph at 11px, because it was
+ *  one (Akshil, 2026-09-11). */
+const ICON_PENCIL_LINE = icon(
+  <><path d="M13 21h8" />
+    <path d="m15 5 4 4" />
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /></>,
+  11);
 // The two halves of Cancel, drawn apart because they MEAN different things
 // (tasks-lib.cancelIntent): a one-off is stopped for good (lucide `ban`), an
 // occurrence of a repeat is stepped over and the rule runs on (`skip-forward`).
@@ -326,9 +349,15 @@ export const ICON_TRASH = icon(
 
 // ---- leaf components ---------------------------------------------------------
 
-const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
-  BOARD_COLUMNS.map((c) => [c.key, c.label]),
-) as Record<BoardColumn, string>;
+const STATUS_LABELS: Record<BoardColumn, string> = {
+  ...(Object.fromEntries(
+    BOARD_COLUMNS.map((c) => [c.key, c.label]),
+  ) as Record<BoardColumn, string>),
+  // …and the one status that is not a column. Spelled here because the array is
+  // the board's lanes and a draft has none (schedule-lib's note on BoardColumn),
+  // but the ring on a draft row still has to have a word to announce.
+  draft: "Draft",
+};
 
 /**
  * The bordered ring — the ONE mark a unit of work wears, on all three views.
@@ -567,6 +596,11 @@ export function IdentityChip({ name, title, onPick, active = false }: {
  * never renumbered — so unlike a session uuid they are meant to be read, said
  * out loud and searched for. Monospaced, because a column of them is scanned. */
 function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
+  // NOTHING AT ALL FOR AN EMPTY ID. A draft row carries no TASK-NNN — the
+  // number is allocated when it becomes a scheduled task, exactly as for a
+  // `pending:` entry — and an empty chip is a 20px box of border saying nothing
+  // where every other row says its name.
+  if (!id) return null;
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
 }
 
@@ -591,6 +625,92 @@ function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
   return (
     <span className="tasks-outcome-pill" title={outcome.title}>
       {outcome.text}
+    </span>
+  );
+}
+
+/**
+ * THE ONE MARK FOR WORDS NOBODY HAS SENT — a pencil and the word `Draft` — and,
+ * on the List and the Board, the control that filters the page down to them
+ * (design.md, Round 2: "It is a filter tag").
+ *
+ * WHY IT IS ITS OWN COMPONENT and no longer just an `OutcomePill`. It is still
+ * the same pill shape — that was never in question, and `.tasks-outcome-pill`
+ * is what it is built out of — but it now does two things the outcome pill
+ * cannot. It carries a GLYPH, because the pencil is the mark a reader learns
+ * this feature by (Slack's own, the reference UI); and it is PRESSABLE, because
+ * the chip that says "there are drafts here" is the natural place to ask for
+ * only those.
+ *
+ * WHERE IT SITS: at the right end of the row, immediately before the project
+ * chip (Akshil, 2026-09-11). It moved there from beside the id, and the move is
+ * the point — the right end is where this page keeps its TAGS (the folder chip
+ * is already one, and presses the same way), while the id end is where the row
+ * says what it IS. Two clickable chips side by side read as one group of
+ * controls; the same chip four hundred pixels from the other read as two
+ * unrelated marks.
+ *
+ * `onPick` is what makes it a control, exactly as on `IdentityChip`: without one
+ * it is the plain badge the Cards wall wants, with one it is a real button
+ * inside the same shield — so a near-miss in the row's padding does nothing
+ * rather than opening the task. `active` is the ON pill, in the accent, for the
+ * reason the folder chip's is: while a filter is on, the thing that set it has
+ * to say so on the rows it is acting on.
+ */
+export function DraftChip({ draft, onPick, active = false }: {
+  draft: OutcomeTag;
+  /** Is the page filtered to drafts right now? Only meaningful with `onPick`. */
+  active?: boolean;
+  /** Makes the chip a TAG. Omitted where the view has no draft filter (the
+   *  Cards wall), where it stays the label it started as. */
+  onPick?: () => void;
+}) {
+  // The words themselves are the tooltip — the first line of what was typed —
+  // for the reason tasks-lib.draftTag gives: the chip already says "draft", and
+  // what a reader hovering it wants is a glimpse of the sentence.
+  const body = (
+    <>
+      <span className="tasks-draft-pill-icon" aria-hidden>{ICON_PENCIL_LINE}</span>
+      {draft.text}
+    </>
+  );
+  if (!onPick) {
+    return (
+      <span className="tasks-outcome-pill tasks-draft-pill" title={draft.title}>
+        {body}
+      </span>
+    );
+  }
+  // The shield, and every word of `IdentityChip`'s note about it applies here
+  // unchanged: the row is one stretched link, so the band around a small pill
+  // belongs to the row unless something stands over it doing nothing.
+  return (
+    <span
+      className="schedule-tv-id-shield"
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className={"tasks-outcome-pill tasks-draft-pill" + (active ? " is-on" : "")}
+        // What the press DOES, on top of the words it already showed — and the
+        // opposite sentence once it is on, because that is what the press now
+        // does. `data-hint` rather than `title` for the page's own reason: the
+        // native tooltip arrives a second late, which for a chip is not at all.
+        data-hint={
+          active
+            ? `Showing only drafts — press to clear\n${draft.title}`
+            : `${draft.title}\nShow only drafts`
+        }
+        aria-label={active ? "Showing only drafts, press to clear" : "Show only drafts"}
+        aria-pressed={active}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPick();
+        }}
+      >
+        {body}
+      </button>
     </span>
   );
 }
@@ -1133,9 +1253,12 @@ export function TaskList({
   stale = false,
   missing,
   onEditEntry,
+  onOpenDraft,
   onReload,
   onPickProject,
   pinnedProjects = [],
+  onPickDraft,
+  draftOn = false,
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -1156,6 +1279,12 @@ export function TaskList({
    * no edit affordance; the thread is then read-only, which is all a thread of
    * already-sent messages could ever be anyway. */
   onEditEntry?: (entryId: string) => void;
+  /** Re-open an unfinished New task form (a `state: "draft"` row — design.md,
+   *  "Reopen path"). Editing a draft row is the ONLY way back to it, so a list
+   *  that draws draft rows without this would draw rows whose press does
+   *  nothing; omitted ⇒ the row is inert, exactly as an unresolvable pending
+   *  row is. */
+  onOpenDraft?: (task: Task) => void;
   /** Re-read the list after a cancel lands (or fails) — the row has to correct
    * itself to whatever the server actually did, and a failed cancel is a race
    * the server won, not a no-op.
@@ -1183,6 +1312,16 @@ export function TaskList({
    * am I looking at"), and it is what a chip reads to know it is the one that
    * is ON. */
   pinnedProjects?: string[];
+  /** THE DRAFT TAG'S PRESS, the exact counterpart of `onPickProject` above
+   *  (design.md, Round 2): it toggles one boolean on the same shared
+   *  `TaskFilters` the toolbar owns, so the chip and the filter are one thing.
+   *  Optional — without it the chip is a plain badge, which is what every view
+   *  that has no draft filter wants. */
+  onPickDraft?: () => void;
+  /** Is that filter on right now? The chip's pressed state, and the only
+   *  row-level trace this filter has — it is set from the rows and there is no
+   *  popover carrying a count for it. */
+  draftOn?: boolean;
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -1244,7 +1383,9 @@ export function TaskList({
     [tasks, pinnedKey],
   );
 
-  // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
+  // The list's rows: unsent words first, then rank order and printed time
+  // (tasks-lib.sortForList, whose note carries the argument — it is the one
+  // extra pass this view makes over the page's shared `sortByLane`).
   // Memoised for the same reason `showProject` is: this runs on every keystroke of
   // the search box and the answer only moves when the rows do.
   //
@@ -1254,7 +1395,7 @@ export function TaskList({
   // makes the order stale is the same poll that re-runs this memo with a fresh
   // clock. A ticking `now` in the deps would re-sort the list every second to
   // produce the identical order.
-  const rows = useMemo(() => sortByLane(tasks), [tasks]);
+  const rows = useMemo(() => sortForList(tasks), [tasks]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -1556,9 +1697,12 @@ export function TaskList({
           loading={!!loading[task.key]}
           error={errors[task.key]}
           onEditEntry={onEditEntry}
+          onOpenDraft={onOpenDraft}
           onReload={onReload}
           onPickProject={onPickProject}
           pinned={pinnedProjects.includes(task.project)}
+          onPickDraft={onPickDraft}
+          draftOn={draftOn}
           onPageNote={setPageNote}
           read={read}
           onRead={clear}
@@ -1587,9 +1731,12 @@ function TaskNode({
   onRetry,
   error,
   onEditEntry,
+  onOpenDraft,
   onReload,
   onPickProject,
   pinned,
+  onPickDraft,
+  draftOn,
   onPageNote,
   read,
   onRead,
@@ -1626,6 +1773,8 @@ function TaskNode({
   onRetry: () => void;
   error?: string;
   onEditEntry?: (entryId: string) => void;
+  /** See TaskList's own prop: the draft row's press. */
+  onOpenDraft?: (task: Task) => void;
   onReload?: () => void;
   /** Filter the page to this row's folder — the List's handler, passed through
    * untouched. See TaskList's own `onPickProject`. */
@@ -1633,6 +1782,11 @@ function TaskNode({
   /** Is the page filtered to THIS row's folder? The chip wears it, so the
    * control that narrowed the list is visibly the one that is on. */
   pinned?: boolean;
+  /** Filter the page to the rows carrying unsent words — see TaskList's own
+   *  `onPickDraft`. Passed through untouched, like the folder's. */
+  onPickDraft?: () => void;
+  /** Is that filter on? The chip wears it, for the folder chip's reason. */
+  draftOn?: boolean;
   /** The List's page-level note — the only holder that survives this row being
    * filtered out by the very move it announces (see TaskList's render). */
   onPageNote: (s: string) => void;
@@ -1714,6 +1868,11 @@ function TaskNode({
   // to open (a thread with no edit affordance is read-only), and then the press
   // falls through to the arms below.
   const edit = onEditEntry ? upcomingEditEntry(task, held) : null;
+  // A DRAFT ROW'S PRESS re-opens the New task form on the form it was saved
+  // from (design.md, "Reopen path": the draft rows in the list/board are the
+  // only way back to a draft). It outranks every other arm below because a
+  // draft has nothing else — no session to open, no entry to edit.
+  const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;
   // When this task runs next, or when it last ran — one time at the end of every
   // row, beside the folder. Which of the two is tasks-lib.taskWhen's decision (it
   // reads LANE_SORTS, the same map the Board's lanes are ordered by), and null when
@@ -1726,6 +1885,9 @@ function TaskNode({
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
+  // The `Draft` chip — this task's unsent composer text, or the row's own
+  // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
+  const draft = draftTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -2010,7 +2172,8 @@ function TaskNode({
    * openThreadIntent's decision, not this function's.
    */
   const activate = () => {
-    if (chat) openChat(chat);
+    if (openDraft) openDraft(task);
+    else if (chat) openChat(chat);
     else if (edit) onEditEntry?.(edit);
     // A folder that is gone: the chat arm is off (above), the EDIT arm is not —
     // the schedule form needs no folder (Bugbot, #1023) — so this is the row
@@ -2045,7 +2208,7 @@ function TaskNode({
    * with its own tab stop — the row itself stays inert, and pointing at it would
    * be a promise the row's own press no longer keeps.
    */
-  const pressable = href !== null || edit !== null || folderMissing;
+  const pressable = href !== null || edit !== null || openDraft !== null || folderMissing;
 
   const cancel = async (m: TaskMessage, entryId: string) => {
     setCancelling(m.message_id);
@@ -2266,6 +2429,12 @@ function TaskNode({
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
         {outcome && <OutcomePill outcome={outcome} />}
+        {/* THE DRAFT CHIP IS NOT HERE ANY MORE (Akshil, 2026-09-11). It sat
+            beside the id for a round, on the outcome pill's own argument: the id
+            line is where marks ABOUT the task live. That was right while it was
+            only a mark. It is a filter TAG now, and this page keeps its tags at
+            the other end of the row — see the chip's new seat, immediately
+            before the folder, and DraftChip's note for the whole argument. */}
         {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
             a list is mostly history, and the rows that have not happened yet are
             the ones a reader is not being asked to read. The TITLE only — the id,
@@ -2535,6 +2704,23 @@ function TaskNode({
           >
             Folder missing
           </span>
+        )}
+        {/* UNSENT WORDS, immediately before the folder (design.md, Round 2).
+            The row's right end is its tag strip — this chip and the folder
+            beside it are both filters, both pressed the same way, both wearing
+            the same ON pill when they are on. The draft comes first because it
+            is the rarer fact: a reader sweeping this column for the folder they
+            know finds it in the same place on every row, and the chip that is
+            usually absent sits outside that column rather than shunting it.
+            DraftChip owns the glyph, the press and the shield. */}
+        {draft && (
+          <DraftChip
+            draft={draft}
+            // A TAG on the List, a label everywhere the view has no filter —
+            // the same split `IdentityChip` draws one line below.
+            onPick={onPickDraft}
+            active={draftOn}
+          />
         )}
         {showProject && (
           <IdentityChip
@@ -2928,6 +3114,9 @@ export function TaskBoard({
   tasks,
   home = "",
   onReload,
+  onOpenDraft,
+  onPickDraft,
+  draftOn = false,
   missing,
   emptyLabel = "Nothing to show here.",
 }: {
@@ -2942,6 +3131,16 @@ export function TaskBoard({
   home?: string;
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
+  /** Re-open an unfinished New task form — the press on a `state: "draft"` card
+   *  (design.md, "Reopen path"). Same callback and same gesture as the List's. */
+  onOpenDraft?: (task: Task) => void;
+  /** Filter the board to the cards carrying unsent words — the Draft chip's
+   *  press (design.md, Round 2: the filter is List + Board). One boolean on the
+   *  same shared `TaskFilters` the List's chip writes, so switching view keeps
+   *  the filter and the chip that shows it. */
+  onPickDraft?: () => void;
+  /** Is that filter on? The chip's pressed state. */
+  draftOn?: boolean;
   /** Folders the disk no longer has (Scheduled → useMissingFolders): a card in
    * one says so, and its click raises a toast instead of leaving for an
    * Explorer error. */
@@ -3320,6 +3519,8 @@ export function TaskBoard({
                     task={task}
                     home={home}
                     showProject={showProject}
+                    onPickDraft={onPickDraft}
+                    draftOn={draftOn}
                     folderMissing={missing?.has(taskFolder(task)) ?? false}
                     onMissing={toastMissingFolder}
                     // The DISPLAYED count, so a card cleared by its own click
@@ -3336,6 +3537,7 @@ export function TaskBoard({
                     onRun={runNow}
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
+                    {...(onOpenDraft ? { onOpenDraft } : {})}
                   />
                 ))}
                 {hidden > 0 && (
@@ -3370,6 +3572,8 @@ function TaskCard({
   task,
   home,
   showProject,
+  onPickDraft,
+  draftOn,
   folderMissing,
   onMissing,
   unread,
@@ -3379,6 +3583,7 @@ function TaskCard({
   onFile,
   onRun,
   onOpen,
+  onOpenDraft,
   onErased,
 }: {
   task: Task;
@@ -3389,6 +3594,10 @@ function TaskCard({
   /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
    * reason the List row takes it as a prop (spansProjects). */
   showProject: boolean;
+  /** The Draft chip's press and its pressed state, passed through untouched —
+   *  see TaskBoard's own props. */
+  onPickDraft?: () => void;
+  draftOn?: boolean;
   /** The task's folder is gone (useMissingFolders): the card says so, and its
    * click goes to `onMissing` — a toast — rather than `onOpen`. */
   folderMissing: boolean;
@@ -3410,6 +3619,9 @@ function TaskCard({
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
   onOpen: (intent: OpenThreadIntent) => void;
+  /** …and the ONE card whose press is not that: an unfinished New task form,
+   *  which re-opens the modal rather than navigating anywhere (design.md). */
+  onOpenDraft?: (task: Task) => void;
 }) {
   // Whether this card lifts at all, and it is not one question: a task with no
   // session (§5 — Claude Code mints the id on the first run) has nothing to
@@ -3454,6 +3666,9 @@ function TaskCard({
   // function the List row asks, so the two views cannot describe one run
   // differently.
   const outcome = outcomeTag(task);
+  // …and the `Draft` chip: a chat draft joined onto this task's session, or
+  // — on a draft row — the unfinished form itself (tasks-lib.draftTag).
+  const draft = draftTag(task);
   // The lane this card is IN — the COLUMN it is drawn under, which is why it is
   // `laneOf` and not the status alone: a waiting card sits in Blocked, and the
   // header above it says Blocked. Not passed down either way: `groupByColumn`
@@ -3522,7 +3737,10 @@ function TaskCard({
         }}
         onDragEnd={onDragEnd}
         onClick={() => {
-          if (folderMissing) onMissing();
+          // The draft arm first, for the List row's reason: a draft has no
+          // session and no folder to be missing from — the form IS its content.
+          if (onOpenDraft && isDraftTask(task)) onOpenDraft(task);
+          else if (folderMissing) onMissing();
           else if (open) onOpen(open);
         }}
       >
@@ -3582,6 +3800,11 @@ function TaskCard({
             : failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
           {outcome && <OutcomePill outcome={outcome} />}
+          {/* The draft chip left this head with the List row's (Akshil,
+              2026-09-11) and for the same reason — it is a tag now, and the
+              tags sit together at the card's other end. It is in the foot,
+              before the folder, which is the card's own reading of "immediately
+              before the project tag": the foot IS this card's right-hand end. */}
         </span>
         {/* Nothing trails the title any more (2026-08-18). Three arrangements of
             an unread mark lived in this slot and each one was a fix for the last:
@@ -3647,7 +3870,7 @@ function TaskCard({
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
             goes rather than leaving an empty row of padding. */}
-        {(showProject || folderMissing) && (
+        {(showProject || folderMissing || draft) && (
           <span className="schedule-tv-card-foot">
             {/* The List row's own mark, same words, same colour (see the row). */}
             {folderMissing && (
@@ -3657,6 +3880,21 @@ function TaskCard({
               >
                 Folder missing
               </span>
+            )}
+            {/* Unsent words, immediately before the folder — the List row's
+                order exactly (see DraftChip).
+
+                A TAG HERE TOO, unlike the folder chip beside it, and the
+                difference is deliberate (design.md, Round 2: the filter is
+                "List + Board"). The folder stays a label on a card because a
+                card is a drag target first; this chip is the only control the
+                draft filter has, so leaving it inert on the Board would mean
+                the Board could show the filter's ON state and never turn it
+                off. The cost is bounded in a way the folder's was not: the
+                cards that carry it are mostly drafts, and a draft card does not
+                lift at all (tasks-lib.LANE_EXITS.draft is empty). */}
+            {draft && (
+              <DraftChip draft={draft} onPick={onPickDraft} active={draftOn} />
             )}
             {showProject && (
               <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />

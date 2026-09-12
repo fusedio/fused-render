@@ -2996,7 +2996,10 @@ export interface Task {
   // merely SCHEDULED at the session (`entry`). The last two are named apart
   // because only `entry` can be the message a form is composing right now; see
   // sessionTitleOf and tasks.py `_title`.
-  title_source: "user" | "ai" | "message" | "entry";
+  // …plus `"draft"` on a draft row, whose name is the form's own Title field
+  // (or the first line of its description, or "Untitled draft") — there is no
+  // session or entry behind it to take one from.
+  title_source: "user" | "ai" | "message" | "entry" | "draft";
   description: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
@@ -3018,6 +3021,71 @@ export interface Task {
   // actually ran can fail.
   status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
     | "archived";
+  /**
+   * WHICH KIND OF ROW THIS IS — and the one field that says a row is not a task
+   * at all.
+   *
+   * Absent (or "task") on every ordinary row. `"draft"` is an unfinished New
+   * task form the server is holding (fused_render/drafts.py), emitted as a row
+   * so the List and the Board can offer it back: no number, no session, no run,
+   * and no verb — run, archive, erase, drag — applies to it.
+   *
+   * A draft's `status` is `"upcoming"`, deliberately, so every existing lane
+   * switch on this page keeps working on it; `kind` is what tells the two apart
+   * where it matters (tasks-lib.isDraftTask, which taskColumn asks). It draws
+   * inside the Upcoming lane rather than in a lane of its own — an unfinished
+   * thing is the most upcoming thing, and six columns is already the width
+   * budget (design.md, Decisions, Akshil 2026-09-11).
+   */
+  kind?: "task" | "draft";
+  /** The same fact the server spells a second way on a draft row. Read `kind`;
+   *  this is here so the shape is describable, not so it is asked twice. */
+  state?: "draft";
+  /**
+   * WHICH KIND OF DRAFT (design.md, Round 2: "New-chat drafts are rows").
+   *
+   * Only on a `kind: "draft"` row, and only two answers. `"task"` is the
+   * unfinished New task form — it carries `draft_id` and `form`, and its row
+   * re-opens that card. `"chat"` is a conversation NOBODY HAS SENT YET: a
+   * composer holding words in a folder whose chat has no session, keyed
+   * `new:<file>` — it carries `file` and `draft`, no form, and its row opens
+   * that folder's chat with the composer already prefilled.
+   *
+   * The two are one mark to the reader (both wear the Draft chip, both sort to
+   * the top of the List) and two entirely different presses, which is the whole
+   * reason the server spells the difference out rather than leaving it to be
+   * inferred from which of `draft_id` / `file` happens to be set.
+   *
+   * Absent on a server that predates the second kind, where every draft row is
+   * a task draft — tasks-lib reads it that way round deliberately.
+   */
+  draft_kind?: "task" | "chat";
+  /**
+   * The chat's own `file` — the path its Claude pane is mounted on, and the
+   * `<file>` half of a `new:<file>` draft key (platform/lib/drafts.chatDraftKey
+   * carries the rule that keeps the four spellings of it in step).
+   *
+   * Only on a `draft_kind: "chat"` row. It is what the row's press turns into a
+   * URL, and it is deliberately NOT the same field as `target`: `target` is
+   * where a TASK's work happens, which a draft chat does not have yet.
+   */
+  file?: string;
+  // The client-minted uuid a task draft lives under (`PUT /api/drafts/task/…`).
+  // Present only on a `kind: "draft"` row; it is what the New task form reopens
+  // on, and what `POST /api/schedule` is handed so the server can delete the
+  // draft as the task is created.
+  draft_id?: string;
+  // The saved form itself, verbatim — what the modal re-opens on. Only on a
+  // draft row. Typed loosely on purpose: the authority on this shape is the
+  // form (shell/NewJobModal), and a second copy of its field list here would go
+  // stale the first time the card grows a control.
+  form?: Record<string, unknown>;
+  // THE CHAT DRAFT JOINED ONTO A SESSION ROW (design.md, "List / Board / Cards
+  // rows"): unsent words sitting in this task's composer, so the row can wear a
+  // `Draft` chip and say what they start with. Joined server-side by
+  // `session_id`, the same place the unread numbers are joined; null — or
+  // absent, on a server that predates drafts — means there is nothing unsent.
+  draft?: { preview: string; updated_at: number } | null;
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose
@@ -4883,6 +4951,23 @@ export function scheduleMessage(body: {
   // of which a minted path can supply. Sent alongside `images`, never instead
   // of it, so an entry keeps the shape every existing reader expects.
   attachments?: TaskAttachment[];
+  // THE DRAFT THIS TASK WAS COMPOSED IN, when it was composed in one: the New
+  // task form's own uuid (`PUT /api/drafts/task/<id>`). The server deletes that
+  // draft as part of creating the task, so the two can never both exist — a
+  // delete the client made separately could be the half that failed, leaving a
+  // draft row beside the task it had already become.
+  draft_id?: string;
+  // THE CHAT DRAFT THIS TASK WAS TYPED IN, when the card was opened from the
+  // composer's Schedule button (`new:<file>` for a chat with no session yet, a
+  // session id otherwise). The server deletes it as part of creating the task.
+  //
+  // NOT THE SAME THING AS `draft_id`, and not covered by `session_id` either:
+  // the hop's first autosave normally moves the chat draft onto the task draft,
+  // but Schedule pressed inside that 600 ms debounce mints no task draft at all
+  // — and a brand-new chat has no session id to travel in the other field. So
+  // the origin key rides here, and the composer's copy goes wherever this task
+  // came from (Bugbot, PR #1118).
+  from_chat_key?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
