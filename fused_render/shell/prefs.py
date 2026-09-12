@@ -204,6 +204,27 @@ def _chat_forced_by() -> str | None:
     return raw if raw in ("0", "1") else None
 
 
+def project_queue_enabled() -> bool:
+    """Whether one folder runs one task at a time — everything else queues
+    (default off — opt-in while the queue is in beta).
+
+    Same idiom as `canvases_enabled` and `native_chat_enabled`: only a stored
+    `true` is on, any other value (missing/legacy/junk) reads as off. Off, every
+    path behaves exactly as it did before the queue existed — chat sends spawn,
+    run-now runs, the scheduler holds per SESSION and not per folder, and the
+    `queued` status never appears on a row.
+
+    NO ENV OVERRIDE, deliberately, and the difference from `native_chat_enabled`
+    is the one `chat_recap_enabled` states below: `FUSED_RENDER_NATIVE_CHAT`
+    exists because it decides which of two whole implementations a chat runs on,
+    and a dev server has to be able to pick a side without touching prefs.json.
+    This is a gate in front of work that already runs; a second env var nobody
+    remembers setting is how a machine ends up serialising its tasks for a
+    reason its owner cannot find.
+    """
+    return read_prefs().get("project_queue_enabled") is True
+
+
 def chat_recap_enabled() -> bool:
     """Whether the native chat offers the "While you were away" session recap
     (default ON — unlike `native_chat_enabled`, which is an opt-in beta).
@@ -518,6 +539,13 @@ def _prefs_response() -> dict:
             # reads `p.chat?.recap !== false` for exactly that reason.
             "recap": chat_recap_enabled(),
         },
+        # Whether one folder runs one task at a time (opt-in beta). Its own key
+        # rather than a third field under `chat`: the gate governs the
+        # scheduler and the Tasks board as much as it does a chat send, and
+        # filing it under the chat would say it was the composer's setting.
+        # No `forced_by` twin — there is no env override to report; see
+        # `project_queue_enabled`.
+        "queue": {"enabled": project_queue_enabled()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -689,6 +717,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"}, status_code=400)
         prefs["chat_recap_enabled"] = value
         changed = True
+    if "project_queue_enabled" in body:
+        value = body.get("project_queue_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'project_queue_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["project_queue_enabled"] = value
+        changed = True
     if "lan_enabled" in body:
         value = body.get("lan_enabled")
         if not isinstance(value, bool):
@@ -791,7 +826,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
-                      "'chat_recap_enabled', "
+                      "'chat_recap_enabled', 'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "

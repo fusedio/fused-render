@@ -690,6 +690,16 @@
 .chat-root .perm .perm-status.expired {
   color: var(--c-dim);
 }
+/* HELD BY THE PROJECT QUEUE — decided, not yet delivered. The shell's
+   `--activity` blue, the very token the Tasks board's Queued ring and the List
+   chip wear: one state, one colour, on every surface that names it. NOT the
+   chat's own accent (salmon) — browser QA read that as a third colour for
+   "queued" — and deliberately NOT the green an Allow wears: nothing has been
+   allowed yet, and a reader scanning back through a thread must not read a
+   queued answer as a landed one. */
+.chat-root .perm .perm-status.queued {
+  color: var(--activity);
+}
 /* An answer is not an approval: the label recedes and the choice carries the
    contrast, because the choice is the fact worth re-reading later. */
 .chat-root .perm .perm-status.chose {

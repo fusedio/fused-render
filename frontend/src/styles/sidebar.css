@@ -1284,6 +1284,26 @@ a.bookmark-name::after {
   margin-left: 6px;
 }
 
+/* "· 2 queued" — tasks under this folder waiting on the run in it (the project
+   queue). WORDS, not a third dot: the row already spends its one dot slot on
+   running-or-unread, and what a reader wants from a queue is the number, which a
+   dot cannot say. It SHRINKS before the name does not — the name is the row's
+   identity and this is its state — so the count ellipsises in a narrow sidebar
+   rather than pushing the name out. No width and no breakpoint: the rail has one
+   width and the expanded sidebar is resizable, and the only honest rule is
+   "give way when there is no room". */
+.current-app-queued {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .current-app-archive:disabled {
   opacity: 0.5;
   cursor: default;

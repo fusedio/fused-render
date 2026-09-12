@@ -236,6 +236,140 @@ describe("resumeRun reconciles against what is already on screen", () => {
     expect(assistants(controller).map((t) => t.text)).toEqual(["4 rows"]);
   });
 
+  /** The JSONL as `_history` reads it: the leader's turn, and — once the
+   *  follow-up's rows have been flushed — the follow-up's own prompt and reply
+   *  after it. `n` is the call number, so call 0 is the restore and every later
+   *  call is a refresh. */
+  const movedWindowHistory =
+    (flushed: boolean) =>
+    (_f: Record<string, unknown>, n: number) => ({
+      turns:
+        n === 0 || !flushed
+          ? [
+              { role: "user", text: "count the rows", uuid: "u1" },
+              { role: "assistant", text: "SECOND", uuid: "a1" },
+            ]
+          : [
+              { role: "user", text: "count the rows", uuid: "u1" },
+              { role: "assistant", text: "SECOND", uuid: "a1" },
+              { role: "user", text: "and the columns?", uuid: "u2" },
+              { role: "assistant", text: "THIRD", uuid: "a2" },
+            ],
+      transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+    });
+
+  test("A MOVED WINDOW REFRESHES: the follow-up lands with its own line, not as an orphan reply", async () => {
+    // THE BUG (browser QA round 2, then round-3 review, 2026-09-12). A chat
+    // adopted by `openSession` after its leader ran shows the leader's line and
+    // the leader's reply. A queued FOLLOWER is then dispatched into the same
+    // host — same run, same `out.jsonl` — and the probe still reports `message`
+    // as the run's ORIGINAL first message, because that is what `message` means.
+    // So `matches` is true while the payload above the moved cursor is the
+    // FOLLOW-UP'S reply.
+    //
+    // Round 2 stopped the strip, which saved "SECOND" and left the other half
+    // standing: "THIRD" was appended under the prompt that produced "SECOND",
+    // an orphan whose own user line was nowhere on screen. `poll.window` above
+    // zero says the payload cannot speak for the line that matched at all — so
+    // neither half of the repair fires, and the transcript that holds BOTH rows
+    // is asked instead.
+    const rig = makeController({
+      history: movedWindowHistory(true),
+      live_run: () => ({ run_id: "" }),
+      poll: () =>
+        poll({ done: true, message: "count the rows", window: 4096, segments: [text("THIRD")] }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    // The refresh happened, and it is what put the rows on screen.
+    expect(rig.agent.of("history").length).toBe(2);
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "and the columns?",
+    ]);
+    expect(assistants(rig.controller).map((t) => t.text)).toEqual(["SECOND", "THIRD"]);
+    // In the file's order: every reply sits under the prompt it answers.
+    expect(rig.controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+  });
+
+  test("A MOVED WINDOW REFRESHES: the same on the LIVE road, and polling carries on", async () => {
+    // The turn was still running when the chat attached, so the probe hands off
+    // to `pollLoop` — which renders the window it is given and has no way to put
+    // back a row the strip took, nor a user line the payload never carried. The
+    // refresh supplies that line first; the partial beneath it goes, because
+    // that is precisely what the loop re-renders; then the loop streams.
+    const rig = makeController({
+      history: movedWindowHistory(true),
+      live_run: () => ({ run_id: "" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ message: "count the rows", window: 4096, text: "and the" })
+          : poll({
+              done: true,
+              message: "count the rows",
+              window: 4096,
+              segments: [text("THIRD")],
+            }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    expect(rig.agent.of("history").length).toBe(2);
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "and the columns?",
+    ]);
+    // "THIRD" once — the refresh's copy stripped, the loop's copy streamed —
+    // and "SECOND" still there, which is the row round 2 was about.
+    expect(assistants(rig.controller).map((t) => t.text)).toEqual(["SECOND", "THIRD"]);
+    // And the loop really ran: it polled past the probe.
+    expect(rig.agent.of("poll").length).toBeGreaterThan(1);
+  });
+
+  test("A MOVED WINDOW NEVER STRIPS ON A GUESS: an unflushed follow-up row costs no reply", async () => {
+    // The refusal that keeps the round-2 fix intact. If the follow-up's user row
+    // has not reached the JSONL yet, the refreshed transcript still ends at the
+    // leader's line — and stripping beneath THAT line would delete "SECOND"
+    // exactly as the original bug did. So the strip is anchored on a line that
+    // is demonstrably not the one that matched, and here there is none: the
+    // reply before is kept, and the new one is appended rather than lost.
+    const rig = makeController({
+      history: movedWindowHistory(false),
+      live_run: () => ({ run_id: "" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ message: "count the rows", window: 4096, text: "and the" })
+          : poll({
+              done: true,
+              message: "count the rows",
+              window: 4096,
+              segments: [text("THIRD")],
+            }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    expect(users(rig.controller).map((t) => t.text)).toEqual(["count the rows"]);
+    expect(assistants(rig.controller).map((t) => t.text)).toEqual(["SECOND", "THIRD"]);
+  });
+
+  test("AN UNMOVED WINDOW STILL STRIPS: the guard is the cursor, not the match", async () => {
+    // The other side of it, and the behaviour the strip exists for: window 0 —
+    // or an older agent.py that sends none at all — is a payload that really
+    // does still hold the whole turn under that user line, so the restored
+    // partial goes and `pollLoop` re-renders it. The MATCHES test above is this
+    // with no `window` field; this one pins the explicit zero.
+    const { controller } = await withHistory({
+      poll: () =>
+        poll({ done: true, message: "count the rows", window: 0, segments: [text("4 rows")] }),
+    });
+    await controller.resumeRun("r1");
+    expect(assistants(controller).map((t) => t.text)).toEqual(["4 rows"]);
+  });
+
   test("NEVERSHOWN: identical text never REPAIRS a turn, and never appends one", async () => {
     // Two rules meet here. The same prompt sent twice is a COINCIDENCE, so it
     // cannot identify this run's own line: no `matches`, and the restored

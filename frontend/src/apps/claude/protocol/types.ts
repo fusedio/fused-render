@@ -295,6 +295,43 @@ export interface PermissionRow {
    *  live run, and the same click would then land on a process that never asked
    *  the question. */
   runId?: string;
+  /**
+   * THE ANSWER IS HELD, not delivered (the project queue, `/api/tasks/queue/
+   * decide`). The reader decided; the folder was busy with another task, so the
+   * server stored the decision and will write it the moment the folder frees —
+   * at the head of the line, ahead of every message, because an answer somebody
+   * is already waiting on outranks new work.
+   *
+   * The value is the holder's task id ("TASK-041"), or "" when the server could
+   * not name it. Present at all is what makes the card say so; the card is
+   * `resolved` either way, because from the reader's side the decision is MADE —
+   * it is latched, first-writer-wins, and a second click is ignored exactly as
+   * it is on a delivered one.
+   *
+   * CLIENT-ONLY, like every annotation above it: agent.py has never heard of it,
+   * and the poll that eventually reports the delivered decision simply replaces
+   * the row.
+   */
+  queuedAhead?: string;
+  /**
+   * THE SAME FACT, FROM THE SERVER — and a second field rather than the one
+   * above for what the one above cannot do: `queuedAhead` is stamped by the
+   * click that made the decision, so it lives exactly as long as this document
+   * does. Reload, or open the conversation in another tab, and the card came
+   * back UNANSWERED with live buttons over a decision that is already stored and
+   * waiting its turn — buttons a second reader would then press.
+   *
+   * `held` rides on the poll's own permission row (the server writes it for a
+   * request that has an entry in `held_answers.json`), so it survives the
+   * reload the annotation cannot. True means to the card exactly what
+   * `queuedAhead` means: latched, no buttons, "◷ Answer queued".
+   *
+   * IT CARRIES NO NAME. The store is keyed by folder, not by whatever happens to
+   * be holding it when a page is rebuilt, so a restored card says which folder
+   * it is waiting on rather than which task — and `queuedAhead` is what names
+   * the holder for as long as the page that clicked is still open.
+   */
+  held?: boolean;
 }
 
 /** An UNANSWERED app-state request (agent.py:1970-1996). */

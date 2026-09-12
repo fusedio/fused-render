@@ -46,6 +46,7 @@ import {
   hfLogout,
   putCanvasesEnabled,
   putNativeChatEnabled,
+  putProjectQueueEnabled,
   putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
@@ -61,6 +62,7 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import {
   publishChatRecapEnabled,
   publishNativeChatEnabled,
+  publishProjectQueueEnabled,
 } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
@@ -309,6 +311,69 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
         <span>
           <b>Session recap</b> — after you have been away a minute, one line at the
           bottom of the chat saying where the conversation stands.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// The project queue: one task in progress per folder. Off by default, and this
+// is the only place it turns on. Same one-checkbox section shape as the two
+// above.
+//
+// ITS OWN SECTION, DIRECTLY UNDER NATIVE CHAT, rather than a third box inside
+// it. The two are neighbours because the queue's most visible half IS the chat —
+// a send into a busy folder gets a Queued chip instead of a run — but the switch
+// is not a chat setting: it also governs Run now, the scheduler's own dispatch
+// and the Tasks board's Queued lane, all of which work with the native chat off.
+// A control filed under a feature it is not part of is a control nobody finds
+// again when they go looking for the thing it actually does.
+function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `=== true`: OPT-IN, so a server that predates the field is a server with no
+  // queue — the opposite polarity from the recap switch above, which defaults on.
+  const enabled = prefs.queue?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putProjectQueueEnabled(!enabled);
+      onChange(next);
+      // The same publish the native flag makes, for the same reason: the chat's
+      // send path reads this flag from a module cache that is otherwise only
+      // refreshed by a mount, and a composer already on screen would keep
+      // admitting (or not admitting) by the old answer until a navigation.
+      publishProjectQueueEnabled(next.queue?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Project queue</h2>
+      <p className="deploy-muted">
+        Keep one task running per folder. Anything else asked for in that folder —
+        a chat message, Run now, a scheduled message coming due — waits its turn
+        and starts the moment the folder frees, instead of running alongside. A
+        waiting task reads <b>Queued</b> on the Tasks page, and you can send it to
+        the front of the line without interrupting anything.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy}
+          onChange={toggle}
+        />
+        <span>
+          <b>Project queue</b> (one task at a time per folder).
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1000,6 +1065,7 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <NativeChatSection prefs={prefs} onChange={setPrefs} />
+                <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

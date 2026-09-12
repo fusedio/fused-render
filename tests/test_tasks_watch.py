@@ -240,7 +240,7 @@ def test_changes_names_the_pending_key_a_run_message_left_behind(claude_home, mo
              "created": "2026-08-27T09:00:00Z", "due": "2026-08-27T09:00:00Z",
              "target": "/proj", "message": "hi"}
     monkeypatch.setattr(schedule, "list_entries", lambda: [entry])
-    monkeypatch.setattr(tasks_mod, "_entry_session", lambda e: SID)
+    monkeypatch.setattr(tasks_mod, "_entry_session", lambda e, by_id=None: SID)
     _transcript(claude_home, SID)
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]

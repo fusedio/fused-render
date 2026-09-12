@@ -1040,6 +1040,63 @@ button.tasks-caret,
   border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
+/* Skip the queue. Same group, same size, same silence at rest — and NEUTRAL
+   under the pointer, deliberately NOT Run now's `--activity` blue. That hue is
+   the page's "this STARTS something", and skipping starts nothing: the run
+   holding the folder keeps running, and all this does is move a card to the
+   front of a line. Borrowing the blue would promise the one thing this button
+   must never be read as offering. */
+.tasks-act--skip,
+.prefs-section .tasks-act--skip {
+  /* The glyph is a CHARACTER, not an inline svg like every sibling here, so it
+     needs the size and weight the svg's own geometry gave those. Line-height 1
+     so the 16px box does not grow around it. */
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* …AND ON A LIST ROW IT GIVES WAY BEFORE THE TITLE DOES, like the caption it
+   belongs to (browser QA round 2, 2026-09-12).
+
+   `.tasks-act` reserves its box at rest (`flex: 0 0 22px`) so a row does not
+   reflow under the pointer, and that is right for the actions it was written
+   for: SHOW_ROW_ACTIONS is down, so those exist on no row at all. This one is
+   drawn on every queued row, always — so the queue was charging 22px plus a
+   10px gap of PERMANENT chrome to a row that, measured at a 400px pane, has
+   about 40px left for its title in the first place. With it the title read
+   2.8px: a queued row could not say what it was about, while every row above
+   and below it truncated normally.
+
+   So it shrinks, hard, and the caption and this button are both gone before the
+   title gives a pixel. A ratio and an overflow, not a width and not a
+   breakpoint — the browser measures the real row. The capability is not lost
+   with it: the Board's drag and the chat's own chip both still skip, and at the
+   width this happens at there is no room to draw a control anyway.
+
+   THE LIST ROW'S ONLY, which is where the shortfall is: a Board card's act
+   strip has one or two glyphs and all the room it needs, and a control that
+   shrank there would be answering a question nobody asked. */
+.tasks-row .tasks-act--skip {
+  flex-shrink: 100;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* …EXCEPT WHEN SOMEBODY REACHES FOR IT. A keyboard reaches this button whatever
+   its width, and a focus ring around nothing is the dead click design-principles
+   §0 forbids — so focus takes the box back and the title gives way for exactly
+   as long as the control is the thing being used. */
+.tasks-row .tasks-act--skip:focus-visible {
+  flex-shrink: 0;
+}
+.tasks-act--skip:hover:not(:disabled),
+.prefs-section .tasks-act--skip:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
 /* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
    pointer, rather than `--activity`. That hue is the one Run now takes on hover,
    and Run now sits directly beside this button on every row that offers both: two
@@ -1729,6 +1786,108 @@ button.tasks-caret,
   margin-left: 6px;
   color: var(--fg-muted);
   opacity: 0.75;
+}
+
+/* ---- where a task stands in its folder's line -------------------------------
+   The project queue's one sentence — "#2 in line · behind TASK-041" — worn by a
+   List row (`.tasks-row-queue`, in the flow after the title's marks) and by a
+   Board card (`.tasks-card-queue`, its own line under the title). One builder
+   writes the words (tasks-lib.queueLine); these two only place them.
+
+   NOT A PILL and not a chip. The outcome tag below is the page's only bordered
+   object and it earned that by having to INTERRUPT — this is the opposite kind
+   of fact: it is the state the reader came to a Queued lane to read, so it sits
+   in the muted register every other caption on this page uses and lets the
+   status ring and the lane header carry the emphasis.
+
+   NO WIDTH ANYWHERE, AND NO BREAKPOINT. The sentence's length is entirely the
+   data's — an id can be TASK-7 or TASK-1041, and a folder can hold a dozen
+   waiting tasks — so each surface is told how to give way instead of being told
+   a size: the row SHRINKS and ellipsises inside itself, the card WRAPS and gets
+   taller. Both are the browser measuring the real text; neither asks how wide
+   the viewport is, because the row does not know and must not guess. */
+.tasks-row-queue {
+  /* SHRINKABLE, unlike the title marks beside it (`flex: 0 0 auto`): this is the
+     one caption on the row that may be cut, because its front — "#2 in line" —
+     is the part that matters and reads fine on its own. `min-width: 0` is what
+     actually lets a flex item go below its content width.
+
+     AND IT GIVES WAY FIRST, WHICH IS WHAT THE SHRINK FACTOR IS FOR (browser QA
+     round 2, 2026-09-12). It shipped `0 1 auto` beside a title that is also
+     `shrink: 1`, and flexbox distributes a shortfall in proportion to each
+     item's BASE size — so at a 400px pane the 150px caption and the 72px title
+     took roughly two thirds and one third of a 180px deficit and BOTH landed at
+     ~1px: the row's two pieces of writing, invisible together, with the id, the
+     folder and the time beside them at full size. Measured: title 40.8px →
+     0.9px, caption → 1.9px.
+
+     A large factor makes the order explicit instead of proportional: the
+     caption absorbs the whole shortfall and freezes at zero before the title
+     gives a pixel, which is the priority this row has always had (`.tasks-title`
+     is the element that ellipsises, and it must be the LAST one to). Not a
+     width and not a breakpoint — a ratio, applied to whatever the browser
+     measures. */
+  flex: 0 100 auto;
+  min-width: 0;
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: calc(var(--tasks-row-gap) * -1 + 6px);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* THE WORDS, IN A BOX THAT CAN ACTUALLY ELLIPSISE THEM.
+   `text-overflow` applies to a block container's inline content, and the
+   caption above is an `inline-flex` box — its text is an anonymous FLEX ITEM,
+   which no ellipsis ever reaches. So the sentence shipped clipped mid-glyph
+   instead of trailing off, which reads as a rendering fault rather than as a
+   sentence with more to it (browser QA round 2). One span around the words
+   restores the ordinary block-with-inline-content the property needs, and
+   leaves the ⤒ beside it un-shrinkable and whole. */
+.tasks-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-card-queue {
+  /* A LINE OF ITS OWN on the card — the card is a column flex box, so this is a
+     row rather than something trailing the title. Wraps freely for the reason
+     the title does: a long sentence makes a taller card, which is accepted here
+     and is not on a List row. */
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* AT THE HEAD OF THE LINE the caption stops being muted, on both surfaces. It
+   is the one card in the lane whose work goes out next, and a reader sweeping a
+   column of identical grey sentences has nothing to find it by otherwise. The
+   page's `--activity` blue, which is what it already spends on "a thing that is
+   about to happen or can be made to". */
+.tasks-row-queue.is-next,
+.tasks-card-queue.is-next {
+  color: var(--activity);
+}
+
+/* The ⤒ that leads a priority caption (tasks-lib.QUEUE_PRIORITY_GLYPH). Its own
+   rule only to stop a text glyph riding high against 11px words. */
+.tasks-queue-glyph {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+  transform: translateY(1px);
 }
 
 /* ---- "and that one was stopped" --------------------------------------------

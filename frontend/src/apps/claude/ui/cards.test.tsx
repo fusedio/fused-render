@@ -266,6 +266,32 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
   }
 });
 
+test("a held answer latches the card, from the click AND from the server", () => {
+  // THE PROJECT QUEUE. The reader decided; the folder was busy with another
+  // task, so the answer is stored and goes in the moment that run ends. From the
+  // reader's side the decision is MADE — buttons gone, first-writer-wins — but
+  // there is no verdict yet, so "✓ Allowed" would be a claim about something the
+  // tool has not seen.
+  const clicked = mount(
+    <PermCard row={row({ decision: "allow", queuedAhead: "TASK-041" })} onDecide={noop} />,
+  );
+  expect(labels(clicked)).toEqual([]);
+  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next after TASK-041",
+  );
+
+  // AND AFTER A RELOAD, which is the case the click's own annotation cannot
+  // cover: the rebuilt card has no `decision` of its own and came back with LIVE
+  // BUTTONS over an answer already stored — buttons a second reader would press.
+  // `held` rides on the poll's row, so the server is what says so here.
+  const restored = mount(<PermCard row={row({ held: true })} onDecide={noop} />);
+  expect(labels(restored)).toEqual([]);
+  expect(textOf(withClass(restored, "perm-head")[0])).toBe("Claude wanted to use Edit");
+  expect(textOf(withClass(restored, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next in this folder",
+  );
+});
+
 // ── QuestionCard ──────────────────────────────────────────────────────────
 const ASK = "AskUserQuestion";
 const oneQ = {
@@ -530,6 +556,121 @@ test("a payload nothing can answer offers Dismiss and shows what arrived", () =>
   expect(textOf(all(r, "pre")[0])).toBe(JSON.stringify(input, null, 2));
   press(r, "Dismiss");
   expect(dismissed).toEqual(["req-1"]);
+});
+
+test("a held QUESTION latches the card too, from the click AND from the server", () => {
+  // THE SAME DOOR, THE SAME SENTENCE. `answerQuestion` goes through the
+  // controller's one `decide`, so under the flag a question answered while the
+  // folder is busy is HELD exactly as an approval is — and this card read
+  // `row.decision` alone, so it printed the ordinary "✓ Answered" over a choice
+  // the model has not been told (browser QA round 2, 2026-09-12).
+  const clicked = mount(
+    <QuestionCard
+      row={row({
+        tool: ASK,
+        input: oneQ,
+        decision: "allow",
+        answers: { "Which one?": "Second" },
+        queuedAhead: "TASK-041",
+      })}
+      onAnswer={noop}
+      onDismiss={() => {}}
+    />,
+  );
+  expect(labels(clicked)).toEqual([]);
+  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next after TASK-041",
+  );
+  // The choice this reader made is still shown under its question: the answer
+  // exists, it is simply not delivered.
+  expect(textOf(withClass(clicked, "qanswer")[0])).toBe("✓Second");
+
+  // AND AFTER A RELOAD — the case QA hit: the rebuilt card has no `decision`, so
+  // it came back ASKING, with every option clickable, over an answer already
+  // stored in `held_answers.json`. `held` rides on the poll's row.
+  const restored = mount(
+    <QuestionCard row={row({ tool: ASK, input: oneQ, held: true })} onAnswer={noop} onDismiss={() => {}} />,
+  );
+  expect(labels(restored)).toEqual([]);
+  expect(textOf(withClass(restored, "perm-head")[0])).toBe("Claude asked you");
+  expect(textOf(withClass(restored, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next in this folder",
+  );
+  // …and it does NOT print "◦ Skipped" under the question: a server-latched card
+  // knows an answer was made and not what it was (`answers` rides on the click),
+  // and "skipped" is a different answer.
+  expect(withClass(restored, "qanswer")).toEqual([]);
+});
+
+test("a held PLAN says so rather than claiming the work has started", () => {
+  // `decidePlan` goes through the same `decide`, so the same latch: "✓ Plan
+  // approved" over a decision the CLI has not seen would say the work began.
+  const clicked = mount(
+    <PlanCard row={row({ tool: "ExitPlanMode", input: { plan: "do it" }, decision: "allow", queuedAhead: "TASK-041" })} onDecide={noop} />,
+  );
+  expect(labels(clicked)).toEqual([]);
+  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next after TASK-041",
+  );
+  const restored = mount(
+    <PlanCard row={row({ tool: "ExitPlanMode", input: { plan: "do it" }, held: true })} onDecide={noop} />,
+  );
+  expect(labels(restored)).toEqual([]);
+  expect(textOf(withClass(restored, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next in this folder",
+  );
+});
+
+test("a DELIVERED verdict outranks a stale `held` marker, on all three cards", () => {
+  // ROUND-3 REVIEW. `held` rides on the poll's row and is written for any
+  // request that still has an entry in `held_answers.json` — a store the queue
+  // clears on its own clock. So the poll that finally carries the decision the
+  // tool ACTED ON can carry `held: true` beside it, and the shared latch, asked
+  // first by all three cards, then printed "◷ Answer queued" over an answer
+  // that has already run. The verdict is the newer fact and wins.
+  const allowed = mount(
+    <PermCard row={row({ decision: "allow", held: true })} onDecide={noop} />,
+  );
+  expect(labels(allowed)).toEqual([]);
+  expect(textOf(withClass(allowed, "perm-status")[0])).toBe("✓ Allowed");
+
+  const denied = mount(<PermCard row={row({ decision: "deny", held: true })} onDecide={noop} />);
+  expect(textOf(withClass(denied, "perm-status")[0])).toBe("✗ Denied");
+
+  const answered = mount(
+    <QuestionCard
+      row={row({
+        tool: ASK,
+        input: oneQ,
+        decision: "allow",
+        answers: { "Which one?": "Second" },
+        held: true,
+      })}
+      onAnswer={noop}
+      onDismiss={() => {}}
+    />,
+  );
+  expect(textOf(withClass(answered, "perm-status")[0])).toBe("✓ Answered");
+  // …with the choice under the question it answers, as any delivered answer is.
+  expect(withClass(answered, "qanswer").map((a) => textOf(a))).toEqual(["✓Second"]);
+
+  const approved = mount(
+    <PlanCard
+      row={row({ tool: "ExitPlanMode", input: { plan: "do it" }, decision: "allow", held: true })}
+      onDecide={noop}
+    />,
+  );
+  expect(textOf(withClass(approved, "perm-status")[0])).toBe("✓ Plan approved");
+
+  // AND THE CLICK'S OWN ANNOTATION IS NOT THAT FACT. `queuedAhead` is stamped
+  // by the same write as the decision beside it (`resolveLocally`), so that
+  // decision is the READER'S, not the tool's — the card must still say queued.
+  const clicked = mount(
+    <PermCard row={row({ decision: "allow", queuedAhead: "TASK-041" })} onDecide={noop} />,
+  );
+  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+    "◷ Answer queued — runs next after TASK-041",
+  );
 });
 
 test("a resolved question shows the choice under the question it answers (R2-6)", () => {

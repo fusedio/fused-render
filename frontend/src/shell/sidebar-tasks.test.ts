@@ -10,7 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Task } from "@platform/lib/api";
+import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -18,7 +18,10 @@ import {
   isUnseenCompletion,
   parseTasksSeen,
   attentionLabel,
+  inFlight,
   pulseTitle,
+  queuedLabel,
+  statusColumn,
   runningLabel,
   sameSeen,
   samePulse,
@@ -74,7 +77,7 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "e", status: "archived", unread: 3 }),
     ];
     expect(tasksPulse(tasks, {}))
-      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
@@ -85,7 +88,7 @@ describe("the sidebar's tasks pulse", () => {
     // the ring the row itself draws (design-principles §1).
     const broke = [task({ key: "f", status: "blocked", unread: 1 })];
     expect(tasksPulse(broke, {}))
-      .toEqual({ running: 0, attention: 0, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 0, attention: 0, queued: 0, doneUnread: 0, unseen: 0 });
   });
 
   it("counts a WAITING task as running, and again as waiting", () => {
@@ -98,7 +101,7 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "a", status: "in_progress" }),
     ];
     expect(tasksPulse(parked, {}))
-      .toEqual({ running: 2, attention: 1, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 2, attention: 1, queued: 0, doneUnread: 0, unseen: 0 });
     // And it is what the tooltip leads with: the one line in it that asks the
     // reader for something goes first. Singular at one, because one is the
     // common case and "1 tasks" reads as a broken string.
@@ -142,7 +145,7 @@ describe("the sidebar's tasks pulse", () => {
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
     const before = [task({ key: "a", status: "in_progress" }), finished];
     expect(tasksPulse(before, {}))
-      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
 
     const seen = seenAfterVisit(before);
     const after = tasksPulse(before, seen);
@@ -225,15 +228,15 @@ describe("the sidebar's tasks pulse", () => {
     // mark-seen effect runs on every published pulse — value equality is what
     // keeps that from looping. `unseen` is in the comparison: it is the field the
     // dismissal moves, and a publish that skipped it would leave the dot up.
-    const p = { running: 1, attention: 0, doneUnread: 1, unseen: 1 };
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 1 })).toBe(true);
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 0 })).toBe(false);
-    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 2, unseen: 1 })).toBe(false);
-    expect(samePulse(p, { running: 0, attention: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    const p = { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     // ...and `attention` is in the comparison too: it is the field that decides
     // which dot the rail draws, so a publish that skipped it would leave a
     // waiting task wearing the plain running mark until something else moved.
-    expect(samePulse(p, { running: 1, attention: 1, doneUnread: 1, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 1, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -244,9 +247,9 @@ describe("the sidebar's tasks pulse", () => {
     // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
     // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, attention: 0, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
       .toBe("2 running \u00b7 1 finished, not read");
-    expect(pulseTitle({ running: 0, attention: 0, doneUnread: 3, unseen: 1 }))
+    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 3, unseen: 1 }))
       .toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
@@ -664,5 +667,43 @@ describe("pokeTasks", () => {
     // A changed value every time, or the second of two same-millisecond turn
     // ends fires no event at all.
     expect(CHAT_TEMPLATE).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
+  });
+});
+
+describe("the sidebar's queued count", () => {
+  const pulseRow = (over: Partial<TaskPulseTask>): TaskPulseTask => ({
+    key: "k", status: "queued", unread: 0, last_active: 0, project: "/p",
+    task_id: "TASK-1", title: "t", target: "/p", session_id: "s", ...over,
+  });
+
+  it("is NOT running, and is counted apart", () => {
+    // A queued task has no turn in flight, no process and nothing to watch —
+    // the rail's yellow would be a lie about it (tasksPulse / inFlight).
+    const p = tasksPulse(
+      [
+        pulseRow({ key: "a", status: "queued" }),
+        pulseRow({ key: "b", status: "queued" }),
+        pulseRow({ key: "c", status: "in_progress" }),
+      ],
+      {},
+    );
+    expect(p).toMatchObject({ running: 1, queued: 2, attention: 0 });
+    expect(inFlight(statusColumn("queued"))).toBe(false);
+  });
+
+  it("says so in the tooltip, after the running count", () => {
+    // The order is the order the two happen in: the queued work is what runs
+    // when the running work stops.
+    expect(queuedLabel(2)).toBe("2 queued");
+    expect(pulseTitle({ running: 2, attention: 0, queued: 1, doneUnread: 0, unseen: 0 }))
+      .toBe("2 running · 1 queued");
+    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
+      .not.toContain("queued");
+  });
+
+  it("is part of what makes two pulses the same", () => {
+    const p = { running: 1, attention: 0, queued: 1, doneUnread: 0, unseen: 0 };
+    expect(samePulse(p, { ...p })).toBe(true);
+    expect(samePulse(p, { ...p, queued: 2 })).toBe(false);
   });
 });

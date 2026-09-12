@@ -160,6 +160,43 @@ export function schedPendingHere(
 }
 
 /**
+ * WHICH CONVERSATION EACH ENTRY'S RUN LANDED IN — entry id → `claude_session_id`,
+ * for every entry that has reported one.
+ *
+ * THE ONE FACT A QUEUED NEW CHAT CANNOT GET ANY OTHER WAY. A chat whose first
+ * message was queued has NO session: nothing of its has run, so `sessionId` is
+ * "" and every later send is admitted as a follower of that first entry
+ * (`sched/queue-leader`). The scheduler eventually runs the leader, the run
+ * opens a Claude session, and the entry records it here — and until this page
+ * reads it off the entry, the chat goes on being a chat with no session:
+ * followers for ever, a composer that never returns to the ordinary send path,
+ * and a transcript that shows none of what the run actually said.
+ *
+ * THE ATTACH PATH BELOW IS NOT AN ANSWER TO IT, which is why this exists. That
+ * path needs a LIVE run — a `run_id` the agent will still answer a poll about —
+ * so a leader that ran and finished while this tab was in the background leaves
+ * nothing to attach to, and `scheduledRunIsOurs` writes off the FOLLOWER's run
+ * outright (a follower's `session_id` is resolved at claim time, and a
+ * session-less screen only adopts entries that name no session). The entry
+ * record outlives all of that.
+ *
+ * ENTRIES THAT REPORT NOTHING ARE LEFT OUT rather than mapped to "": the map is
+ * asked "has this one run yet?", and an empty string is not an answer to open a
+ * conversation with.
+ */
+export function schedRanSessions(
+  entries: readonly SchedEntry[] | null | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of entries || []) {
+    if (!e) continue;
+    const sid = String(e.claude_session_id || "");
+    if (sid) out.set(String(e.id), sid);
+  }
+  return out;
+}
+
+/**
  * IS THE SOONEST OF THESE BLOCKERS ABOUT TO FIRE — the question the poll's rate
  * is allowed to ask, and the only one (M1).
  *
@@ -457,6 +494,31 @@ export interface ScheduleWatcherDeps {
   /** The pending messages aimed at this conversation, soonest first. Called on
    *  EVERY tick, including the failing ones (with `[]`). */
   onBlockers(blockers: SchedEntry[]): void;
+  /**
+   * EVERY pending entry's id, this conversation's or not — the queue chip's
+   * liveness, and the one thing `onBlockers` cannot answer for it.
+   *
+   * A chip says "this message is waiting in its folder's line", and it has to
+   * come down the moment the message goes. `onBlockers` is filtered by SESSION,
+   * and the chat that most needs the chip is the one that has no session yet
+   * (a brand-new task queues as `pending:<id>`), so the filtered list answers
+   * `[]` for it and would take the chip down the instant it went up.
+   *
+   * NOT called on a failing tick, unlike `onBlockers` — and that asymmetry is
+   * the point. Failing open is right for a BLOCK (a schedule nobody can read
+   * blocks nothing); it is wrong for this, where "I could not ask" would read
+   * as "your message went" and silently drop the chip.
+   */
+  onPending?(ids: string[]): void;
+  /**
+   * WHICH SESSION EACH RUN ENTRY OPENED (`schedRanSessions`) — the half of the
+   * queue a chat with no session of its own depends on.
+   *
+   * Called beside `onPending`, on successful ticks only and for the same
+   * reason: "I could not ask" must never be spelled the same way as "it has not
+   * run", or a chat would adopt nothing on a blip and then never look again.
+   */
+  onSessions?(sessions: Map<string, string>): void;
   /** A ◷ row in the transcript. */
   addNote(text: string): void;
   /** `params.set("run", id, {history:"replace"})` — a reload, or a mode switch
@@ -535,6 +597,16 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // rendered — so it is applied before the home-view return and before the
     // baseline (T:17391-17394).
     publish(schedPendingHere(entries, deps.sessionId()));
+    // …and the unfiltered pending set, for the queue chips (see `onPending`).
+    // After `publish`, so a tick that reaches here has already done the job it
+    // has always done — this is an addition to the pass, never a gate on it.
+    deps.onPending?.(
+      entries.filter((e) => e && e.state === "pending").map((e) => String(e.id)),
+    );
+    // …and which conversation each entry's run opened, for a chat that is still
+    // waiting to learn its own (see `onSessions`). Same tick, same payload: the
+    // pair cannot disagree about an entry that fired between two reads.
+    deps.onSessions?.(schedRanSessions(entries));
     if (!deps.inChat()) return;
     const fired = entries.filter((e) => e && e.target === deps.file && e.run_id);
     // The FIRST pass is a silent baseline: every run already recorded happened

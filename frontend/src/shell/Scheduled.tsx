@@ -49,7 +49,7 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getConfig,
   getSchedule,
@@ -101,12 +101,16 @@ import {
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
+  applyQueueOverrides,
+  expireQueueOverrides,
   mergeTaskChanges,
+  NO_QUEUE_OVERRIDES,
   provisionalTasks,
   viewFromSearch,
   viewUrl,
+  withQueueOverride,
 } from "./tasks-lib";
-import type { TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
@@ -202,6 +206,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+  // THE CLAIMS A QUEUE VERB MAKES, until the server speaks about the same key
+  // (tasks-lib.applyQueueOverrides). They live on the PAGE and not in the view
+  // that raised them for one reason: a claim exists to outrun the poll, and a
+  // view is remounted by every navigation — a store inside one would be undone
+  // by the answer it was written to beat. `queueRef` is the changes loop's read,
+  // for the same reason `tasksRef` is: one long-lived effect, newest value, no
+  // re-subscribe per poll.
+  const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  const queueRef = useRef<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  useEffect(() => {
+    queueRef.current = queueOverrides;
+  }, [queueOverrides]);
+  const noteQueued = useCallback((override: QueueOverride) => {
+    setQueueOverrides((cur) => withQueueOverride(cur, override));
+  }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -353,6 +372,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // generation with them (bugbot #892). The next poll catches up.
         if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
+        // THE SERVER HAS SPOKEN about every key in a full listing, so every
+        // claim about one of them is over — right or wrong. A claim that
+        // survived the answer contradicting it would survive the next one too,
+        // and the row would be stuck at whatever a click asserted.
+        setQueueOverrides((cur) => expireQueueOverrides(cur, (r.tasks ?? []).map((t) => t.key)));
         setTasksFailed(false);
         setTasksLoaded(true);
         if (typeof r.generation === "number") generationRef.current = r.generation;
@@ -456,6 +480,17 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             const merged = mergeTaskChanges(tasksRef.current, rows, gone);
             tasksRef.current = merged;
             setTasks(merged);
+            // …and the delta is an answer about exactly the keys it names, which
+            // is the fast half of the same rule: every queue verb rings the
+            // watcher, so this usually lands within milliseconds of the press
+            // and the claim it retires is the one the press made.
+            const spoken = [...rows.map((t) => t.key), ...gone];
+            const before = queueRef.current;
+            const after = expireQueueOverrides(before, spoken);
+            if (after !== before) {
+              queueRef.current = after;
+              setQueueOverrides(after);
+            }
             publishTasks(merged);
             // The merge is now the freshest full listing there is, so it — not
             // the poll's older answer — is what a remount should seed from.
@@ -517,9 +552,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The app page's scope, applied FIRST: `tasks` above stays the whole machine
   // (it is what publishTasks hands the sidebar), and everything the page shows
   // or offers to filter is derived from this narrowed set instead.
+  // The server's rows with the standing queue claims painted over them. FIRST,
+  // ahead of the scope and the filters, so a row a claim moves into Queued is
+  // filtered and counted as queued by everything downstream — the Status facet
+  // included. `publishTasks` above deliberately hands the sidebar the UNPAINTED
+  // rows: a claim is this page's optimism about a press made on this page, and
+  // the rail is not the place to carry it.
+  const painted = useMemo(
+    () => applyQueueOverrides(tasks, queueOverrides),
+    [tasks, queueOverrides],
+  );
   const inScope = useMemo(
-    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
-    [tasks, scope],
+    () => (scope ? painted.filter((t) => isUnderDir(t.project, scope.project)) : painted),
+    [painted, scope],
   );
   const projects = useMemo(() => projectOptions(inScope), [inScope]);
   // The Archive facet does not apply on the Calendar (see
@@ -730,6 +775,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              onQueued={noteQueued}
               missing={missing}
               emptyLabel={emptyLabel}
             />
@@ -776,6 +822,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
+              // A Skip pressed on a row paints the row before the poll agrees —
+              // the same claim the Board's drag makes, held by the page so it
+              // survives the view the press was made in (see `queueOverrides`).
+              onQueued={noteQueued}
               emptyLabel={emptyLabel}
             />
           )}

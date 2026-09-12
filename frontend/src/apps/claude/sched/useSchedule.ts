@@ -10,6 +10,7 @@ import {
   getTasks,
 } from "@platform/lib/api";
 import type { ChatController } from "../protocol/controller-api";
+import { useProjectQueueEnabled } from "../feature-flag";
 import {
   BLOCKED_PLACEHOLDER,
   createScheduleWatcher,
@@ -48,6 +49,13 @@ export interface UseScheduleOptions {
    *  run off as predating it (T:17437). */
   setRunParam(runId: string): void;
   /**
+   * THE PROJECT QUEUE'S SWITCH (prefs `queue.enabled`), injectable so a suite
+   * can drive both sides of it without touching a process-global. Omitted, it
+   * is the same subscribed pref every chat embed already pays one `/api/prefs`
+   * GET for (`feature-flag`), so asking here costs nothing.
+   */
+  queueEnabled?: boolean;
+  /**
    * The three endpoint calls, injectable — and injectable rather than
    * module-mocked for a reason worth recording: `bun test` runs every suite in
    * ONE process, so a `mock.module("@platform/lib/api", …)` replaces that
@@ -82,8 +90,11 @@ const PLATFORM_API: ScheduleApi = {
 
 export interface ScheduleState {
   blockers: SchedEntry[];
-  /** `blockers.length > 0` — the ONE answer the composer and the calendar button
-   *  both read, so they can never disagree about what this chat is doing. */
+  /** Is the box shut — the ONE answer the composer and the calendar button both
+   *  read, so they can never disagree about what this chat is doing. A pending
+   *  message aimed HERE with the project queue off; never under the queue, where
+   *  a second send is admitted into this conversation's own line instead of
+   *  racing the first (see the derivation). */
   blocked: boolean;
   /** Why, in one sentence, for the banner AND for the disabled button's tooltip
    *  and spoken name. `""` when nothing is off. */
@@ -99,6 +110,15 @@ export interface ScheduleState {
    *  is computed against the current clock rather than the one the entry last
    *  changed on. 0 before any such poll — nothing is drawn then. */
   tick: number;
+  /** Every pending entry id the last successful poll saw, whatever conversation
+   *  it belongs to, or null before any has answered — the queue chips' liveness.
+   *  See the state of the same name for why null is not an empty set. */
+  pendingIds: ReadonlySet<string> | null;
+  /** Entry id → the Claude session its run opened, for every entry that has
+   *  reported one (`scheduled.schedRanSessions`). Null before any successful
+   *  poll. THE ONE ROAD a chat whose first message was queued has to its own
+   *  session id — see the state of the same name. */
+  ranSessions: ReadonlyMap<string, string> | null;
   onStop(): void;
   onRow(): void;
   cardRef: React.MutableRefObject<HTMLDivElement | null>;
@@ -187,18 +207,100 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     });
   }, []);
 
+  /**
+   * EVERY pending entry id the last successful tick saw (scheduled.ts
+   * `onPending`) — the queue chips' liveness, and the one thing `blockers`
+   * cannot answer for them: that list is filtered by SESSION, and the chat that
+   * most needs a chip is the brand-new one that has no session yet.
+   *
+   * NULL until the first such tick, which is what keeps a chip up across the
+   * window between "the send queued" and "the poller has looked". An empty set
+   * there would read as "it already went" and take the chip straight back down.
+   */
+  const [pendingIds, setPendingIds] = useState<ReadonlySet<string> | null>(null);
+  const absorbPending = useCallback((ids: string[]) => {
+    setPendingIds(new Set(ids));
+  }, []);
+
+  /**
+   * WHICH SESSION EACH RUN ENTRY OPENED — and the only way a chat whose first
+   * message was queued ever learns its own.
+   *
+   * That chat has no session: nothing of its has run, so every later send joins
+   * the first entry as a follower (`sched/queue-leader`). When the scheduler
+   * finally runs the leader, the run opens a session and the entry records it;
+   * without reading it back off the entry the chat stays session-less for ever
+   * — followers behind a leader that has already gone, and a transcript that
+   * shows none of what it said. `ClaudeChat` adopts it through the same
+   * `openSession` every other "open that conversation" gesture spends.
+   *
+   * DEDUPED ON CONTENT, unlike `pendingIds`. Its reader is an EFFECT that opens
+   * a conversation, not a filter: a fresh Map four times a minute would re-run
+   * that effect for a fact that did not change, and the entry that matters here
+   * stops changing the moment it has run.
+   */
+  const [ranSessions, setRanSessions] = useState<ReadonlyMap<string, string> | null>(null);
+  const absorbSessions = useCallback((next: Map<string, string>) => {
+    setRanSessions((cur) => {
+      if (cur && cur.size === next.size) {
+        let same = true;
+        for (const [id, sid] of next) {
+          if (cur.get(id) !== sid) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return cur;
+      }
+      return next;
+    });
+  }, []);
+
   const next = blockers[0] ?? null;
   const nextId = next ? String(next.id) : "";
+  /** SUBSCRIBED, not read once: the one `/api/prefs` answer may still be in
+   *  flight when this mounts, and a composer that learned the flag only on its
+   *  next navigation would sit shut for a whole conversation over a message the
+   *  queue would have taken. An injected value wins, for the suites. */
+  const queuePref = useProjectQueueEnabled();
+  const queueOn = opts.queueEnabled ?? queuePref;
   /**
-   * THE LANDING PAGE IS NEVER BLOCKED, and asserted HERE rather than trusted
-   * from the poller. `schedPendingHere` already answers `[]` with no session,
-   * but that answer only arrives on a TICK — so leaving a blocked chat by Back
-   * left the home composer shut, with the banner (which only ever draws inside
-   * a chat) not there to say why, for up to a poll interval. The session id is
-   * a render-time fact, so the block reads it directly and the home composer is
-   * open on the same paint that leaves the conversation (Bugbot PR #1075).
+   * …AND THE PROJECT QUEUE REOPENS IT (prefs `queue.enabled`).
+   *
+   * WHY THE BLOCK EXISTS AT ALL, flag off: a pending entry aimed at THIS
+   * conversation is one the scheduler is about to claim and send into this very
+   * session, and a line typed over it is two messages racing into one run. The
+   * only defence the chat had was to shut the box until the entry went.
+   *
+   * THE FLAG TAKES THAT JOB AWAY FROM THE COMPOSER AND GIVES IT TO THE
+   * SCHEDULER, which is the only place it was ever answerable. Under the queue
+   * a send is ADMITTED before it spawns, and admission queues any message aimed
+   * at a session that has due pending entries of its own — the `behind_own`
+   * answer. So the second line is no longer a race: it becomes the next entry
+   * in this conversation's own line, in the order it was typed, and the chip
+   * under its bubble says so. Shutting the box would refuse a message the
+   * server is perfectly willing to take, and refuse it with a banner about
+   * waiting for a run that is not even in this folder's way.
+   *
+   * FLAG OFF IS UNCHANGED, byte for byte: no admission asks, nothing orders
+   * those two sends, and the closed box is still the only thing standing
+   * between them.
+   *
+   * THE LANDING PAGE IS NEVER BLOCKED EITHER WAY, and that is asserted HERE
+   * rather than trusted from the poller: `schedPendingHere` already answers `[]`
+   * with no session, but that answer only arrives on a TICK — so leaving a
+   * blocked chat by Back left the home composer shut, with the banner (which
+   * only ever draws inside a chat) not there to say why, for up to a poll
+   * interval (Bugbot PR #1075).
    */
-  const blocked = blockers.length > 0 && !!sessionId;
+  /** THE CARD, which is no longer the same fact as the block. It draws whenever
+   *  a message of this conversation's is waiting (`SchedBlock` renders on
+   *  `blockers[0]`) and it says so — "a message of yours is waiting", never
+   *  "the box is shut" — so the queue takes the BOX and leaves the card, along
+   *  with everything downstream of it: the row's TASK-nnn and the scroll
+   *  correction its height costs. */
+  const hasCard = blockers.length > 0 && !!sessionId;
+  const blocked = !queueOn && hasCard;
 
   // ── the poller ────────────────────────────────────────────────────────────
   //
@@ -214,6 +316,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         inChat: () => live.current.inChat,
         busy: () => hooks.current.controller.isBusy(),
         onBlockers: absorb,
+        onPending: absorbPending,
+        onSessions: absorbSessions,
         addNote: (text) => hooks.current.controller.addNote(text),
         setRunParam: (runId) => hooks.current.setRunParam(runId),
         resumeRun: (runId) =>
@@ -286,12 +390,14 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     setRefusedId("");
   }, [nextId]);
   useEffect(() => {
-    // NEVER BEFORE THE BLOCK (T:17258). What shuts the composer is the
-    // schedule; the listing only decorates the row, so it is read AFTER the
-    // card is on screen and not at all when there is no card — which is what
-    // leaving a blocked chat by Back is: `blocked` goes false on that paint
-    // while the blockers are still in hand, and T spends nothing there.
-    if (!blocked || !nextId) return;
+    // NEVER BEFORE THE CARD (T:17258). The listing only DECORATES the row, so
+    // it is read after the card is on screen and not at all when there is no
+    // card — which is what leaving the chat by Back is: `hasCard` goes false on
+    // that paint while the blockers are still in hand, and T spends nothing
+    // there. Asked of the card and not of the block, because under the project
+    // queue the card is drawn with the box wide open and a row that never
+    // learned its number would read as a task the server had lost.
+    if (!hasCard || !nextId) return;
     // ONE READ PER BLOCKING MESSAGE (T:17006). The 15 s poll re-runs this
     // effect through `tick`; the id already fetched for is not fetched again.
     if (rowBusy.current || recRow.id === nextId) return;
@@ -313,7 +419,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         rowBusy.current = false;
       }
     })();
-  }, [blocked, nextId, tick, recRow.id]);
+  }, [hasCard, nextId, tick, recRow.id]);
   /** T:16997-16999 — the row is null the moment it stops being THIS entry's. */
   const rec = recRow.id && recRow.id === nextId ? recRow.task : null;
 
@@ -328,9 +434,9 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   // is nothing to correct.
   const wasBlocked = useRef(false);
   useEffect(() => {
-    if (blocked && !wasBlocked.current) followBottom?.();
-    wasBlocked.current = blocked;
-  }, [blocked, followBottom]);
+    if (hasCard && !wasBlocked.current) followBottom?.();
+    wasBlocked.current = hasCard;
+  }, [hasCard, followBottom]);
 
   // ── the way back out of an armed stop (T:17353-17377) ─────────────────────
   //
@@ -466,6 +572,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   return {
     blockers,
     blocked,
+    pendingIds,
+    ranSessions,
     reason,
     placeholder: BLOCKED_PLACEHOLDER,
     schedDisabled: blocked || locked,

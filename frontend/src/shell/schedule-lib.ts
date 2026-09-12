@@ -284,9 +284,25 @@ export function assignLanes<T extends { time: Date }>(
 // the ring red and `Task.blocked_reason` names it in a word, so the button can
 // still be Retry for one and Open for the other.
 //
-// SIX KEYS, FIVE LANES. `needs_attention` is a STATUS — its own word, its own
+// SEVEN KEYS SINCE 2026-09-12, and the new one is QUEUED — a task whose work is
+// due and whose FOLDER is busy with somebody else's run (the project queue,
+// prefs `queue.enabled`). It sits BETWEEN Upcoming and In Progress because that
+// is where it sits in time: the work has been asked for and has not started.
+//
+// It is a status of its own rather than a flavour of Upcoming for the same
+// reason Blocked is not a flavour of Done. "Upcoming" means a time has not come
+// yet, and the reader's move is to wait or to run it now; "Queued" means the
+// time HAS come and something else is in the way, and the reader's move is to
+// skip the line or to leave it alone. Folding the two would put a lane's worth
+// of work that is ready to go behind a word that says it is not.
+//
+// It never appears at all while the flag is off — the server simply never sends
+// it — so a board on a machine that has not turned the queue on is the six-key
+// board it has always been, and this lane is empty and therefore rolled up.
+//
+// SEVEN KEYS, SIX LANES. `needs_attention` is a STATUS — its own word, its own
 // hue, its own rank at the top of the List — and it draws in the Blocked lane
-// rather than a sixth column of its own (see BOARD_LANES). A board is read by
+// rather than a column of its own (see BOARD_LANES). A board is read by
 // sweeping across it, and a lane that is empty except during the minutes
 // somebody is being waited on is a lane that teaches the reader to skip it.
 //
@@ -296,6 +312,7 @@ export function assignLanes<T extends { time: Date }>(
 // mental picture of what a status IS, even where urgency reorders them.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
+  { key: "queued", label: "Queued" },
   { key: "in_progress", label: "In Progress" },
   { key: "needs_attention", label: "Needs attention" },
   { key: "blocked", label: "Blocked" },
@@ -322,7 +339,7 @@ export const BOARD_LANES = BOARD_COLUMNS.filter(
 ) as readonly { key: BoardLane; label: string }[];
 
 /**
- * Which lane a status is DRAWN in. Identity for five of the six.
+ * Which lane a status is DRAWN in. Identity for six of the seven.
  *
  * The one mapping is the whole of "needs attention lives in Blocked", written
  * once here rather than as an `=== "needs_attention"` in each of the board's

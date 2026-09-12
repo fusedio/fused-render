@@ -425,6 +425,18 @@ export interface ChatController {
    *  scheduled-run poller can say what it just attached to. */
   addNote(text: string, glyph?: NoteTurn["glyph"]): void;
 
+  /**
+   * Put a failure in the chat's own error slot — `ChatState.trouble`, the card
+   * a failed send already lands on (`sendMessage`'s catch).
+   *
+   * ADDED for the one failure that happens OUTSIDE this controller: the project
+   * queue's admission is asked by the composer, ahead of `start`/`send`, so a
+   * send it refuses never reaches the code that would have reported it. Saying
+   * so anywhere else would be a second error affordance in this pane for a
+   * failure the reader cannot tell apart from the first.
+   */
+  reportTrouble(trouble: Trouble): void;
+
   /** `activeRun || sending` — the one question both PR4 watchers ask before
    *  touching the transcript (T:17429, 17604). Read live, never memoised: it is
    *  checked adjacent to the call it guards. */

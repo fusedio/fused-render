@@ -2583,6 +2583,17 @@ input.schedule-when-field {
    costs no hue at all, so the list is back to naming the one mark that has a
    lane. */
 .schedule-ring--upcoming { color: var(--status-upcoming); }
+/* QUEUED IS THE PAGE'S OWN BLUE (`--activity`), and it is not a sixth status
+   token. The blue stopped being a status hue on 2026-08-17 when Upcoming went
+   grey, and what it has meant ever since is "a thing that is about to happen, or
+   that you can make happen" — the Run now affordance, the drag-to-run outline.
+   A queued task is exactly that: work that has been asked for, is ready, and is
+   waiting on the folder rather than on anybody's decision. So the lane borrows
+   the meaning that is already there instead of minting a colour.
+   It also has to be told apart from its two neighbours at a glance, which the
+   blue does in both themes: Upcoming's grey is `--fg-muted` and In Progress's is
+   yellow, and blue sits nowhere near either. */
+.schedule-ring--queued { color: var(--activity); }
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
 .schedule-ring--archived { color: var(--status-archived); }

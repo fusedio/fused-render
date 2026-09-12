@@ -87,7 +87,6 @@ wider object) — the same weight of change as `POST /api/claude-sessions/triage
 next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
-import glob
 import json
 import logging
 import os
@@ -96,12 +95,21 @@ import shutil
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import current_apps, schedule, tasks_store, tasks_watch
+from fused_render import (
+    current_apps,
+    project_queue,
+    schedule,
+    session_liveness,
+    tasks_store,
+    tasks_watch,
+)
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import claude_sessions as sessions
+from fused_render.server.routers import schedule as schedule_api
 
 router = APIRouter()
 
@@ -132,8 +140,22 @@ logger = logging.getLogger(__name__)
 # status rather than a flag for the same reason `blocked` is — a view that has
 # to remember to read a flag is a view that will one day not, and this is the
 # fact the whole feature exists to carry.
-STATUSES = ("upcoming", "in_progress", "needs_attention", "blocked", "done",
-            "archived")
+#
+# `queued` is a STATUS and not a flag beside `upcoming`, for the reason `blocked`
+# gives and one more of its own. The reason it shares: a lane the reader has to
+# assemble from a boolean is a lane some view will one day forget to assemble,
+# and this one has three surfaces (List chip, Board lane, chat bubble) that must
+# agree about one task. The reason that is its own: a queued task is NOT upcoming
+# — its message is due, it would be running this second, and the only thing
+# between it and a process is another task holding the same folder
+# (`project_queue`). "Upcoming" is a promise about the clock; this is a fact
+# about the machine, and merging them would put work that is late into a lane
+# the reader scans for work that is early. It sits between `upcoming` and
+# `in_progress` because that is where it sits in time: asked for, not yet
+# running. It only ever appears with the project queue flag on
+# (`project_queue.enabled`); with the flag off nothing derives it.
+STATUSES = ("upcoming", "queued", "in_progress", "needs_attention", "blocked",
+            "done", "archived")
 
 # What `blocked_reason` may say. "" is the answer for every task that is neither
 # blocked nor waiting on anybody — most of them.
@@ -472,6 +494,31 @@ def _entry_at(entry: dict) -> float:
     """
     return (tasks_store.epoch(entry.get("due"))
             or tasks_store.epoch(entry.get("fired")) or 0.0)
+
+
+def _queue_at(entry: dict) -> float:
+    """**When the message joined the LINE** — its due time, or the moment Run
+    now was pressed on it if that came first.
+
+    The counterpart of `_entry_at`, and split from it for the reason that
+    function exists at all: the two questions are different facts about one
+    entry. `_entry_at` is what was ASKED FOR — it places the chip on the
+    calendar and must never move, which is why `run_now` does not rewrite `due`.
+    This is what is WAITING TO GO, and Run now on a message due next Tuesday, in
+    a folder somebody else is holding, really is waiting to go (browser QA,
+    2026-09-12: the row fell back to `upcoming` the moment the optimistic paint
+    cleared, and the scheduler would not have sent it until Tuesday).
+
+    Everything that reads "due ≤ now" for a QUEUE purpose reads this;
+    everything that draws a time reads `_entry_at`. `schedule._queue_due` is the
+    same rule on the scheduler's side, and a line listed here in one order and
+    sent there in another is worse than no line at all.
+    """
+    due = _entry_at(entry)
+    asked = tasks_store.epoch(entry.get("run_now_at"))
+    if not asked:
+        return due
+    return min(due, asked) if due else asked
 
 
 def _entry_ran_at(entry: dict) -> float:
@@ -898,19 +945,20 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
 # record) — this window absorbs that ordering jitter and clock skew, while a
 # session genuinely still working appends records well past it.
 #
-# WIDENED FROM 5s (2026-08-21). Five seconds only covered the watcher's own
-# ordering jitter, and the CLI's teardown is slower than that on a busy
-# machine: one late record dated 6-20s after `turn_at` put the board back on In
-# Progress for the rest of the 45-second liveness window while the dock, which
-# reads the store, had said finished — the same two-surface disagreement from
-# the other side. 15s is the largest value that still lets a session which is
-# GENUINELY still working keep its vote: sustained work appends records
-# continuously, so its tail runs past any fixed window (TASK-001's pin is 27s
-# past the verdict and must stay In Progress), while an echo is a handful of
-# rows and stops. The cost of a fixed window is bounded and one-directional —
-# real follow-up work that goes quiet for a moment is announced up to 15s
-# late, never announced wrongly.
-_VERDICT_ECHO_SEC = 15.0
+# WIDENED FROM 5s (2026-08-21), then MOVED to `session_liveness` (2026-09-12).
+# Five seconds only covered the watcher's own ordering jitter, and the CLI's
+# teardown is slower than that on a busy machine: one late record dated 6-20s
+# after `turn_at` put the board back on In Progress for the rest of the
+# 45-second liveness window while the dock, which reads the store, had said
+# finished — the same two-surface disagreement from the other side. 15s is the
+# largest value that still lets a session which is GENUINELY still working keep
+# its vote (TASK-001's pin is 27s past the verdict and must stay In Progress).
+#
+# The move is what the scheduler needed: `schedule._verdict_echo` weighs the
+# same tail against the same stamp to stop the per-session hold holding a
+# message against a turn that has already ended, and it may not import this
+# router. One constant, two readers — see `session_liveness.VERDICT_ECHO_SEC`.
+_VERDICT_ECHO_SEC = session_liveness.VERDICT_ECHO_SEC
 
 
 def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
@@ -995,68 +1043,44 @@ def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
 # the chat's job, and a listing that could deny one would be a poll with a
 # verdict in it.
 
-# How many run dirs (newest first) one scan reads. Nothing prunes RUNS, so on a
-# machine that has been chatting for weeks the tail is months of dead runs; the
-# thing being looked for is by definition ALIVE, and a live run buried under 200
-# newer ones does not exist. Deliberately the same order of magnitude as
-# agent.py's own `_LIVE_SCAN_LIMIT`.
-_PARKED_SCAN_LIMIT = 120
-
-_AGENT_MOD = None
-_AGENT_MOD_TRIED = False
-_AGENT_MOD_LOCK = threading.Lock()
-
+# How many run dirs one scan reads, and the walk itself, are both
+# `project_queue.scan_runs` — ONE bounded pass over the tree, shared with the
+# holder derivation. There used to be two of them, and a listing paid for both:
+# the same 120 directories opened twice for one /api/tasks, which is exactly the
+# cost the bound was there to avoid. See `project_queue.RUN_SCAN_LIMIT` (why the
+# tail is cut at all) and `project_queue.SCAN_TTL` (why one walk answers both).
 
 def _agent_module():
     """The claude template's agent.py, loaded once, or None if it will not load.
 
-    Cached — and the FAILURE is cached too — because `load_agent` execs the whole
-    module on every call and this is on the listing's path: a module that cannot
-    load now will not load on the next poll either, and retrying it three times a
-    minute would turn one broken import into a busy loop. The listing degrades to
-    "nothing is parked", which is the same answer it gave before this existed.
-    """
-    global _AGENT_MOD, _AGENT_MOD_TRIED
-    with _AGENT_MOD_LOCK:
-        if not _AGENT_MOD_TRIED:
-            _AGENT_MOD_TRIED = True
-            try:
-                from fused_render import claude_spawn
+    `project_queue.agent_module()` does the loading and the caching — of the
+    FAILURE as well as the success, because `load_agent` execs the whole module
+    on every call and this is on the listing's path. Kept as a name HERE rather
+    than called through at each use because two things depend on it being one:
+    the listing degrades to "nothing is parked" when it answers None, and the
+    router's own suite replaces exactly this name with a stand-in (agent.py is a
+    TEMPLATE outside the import graph, SPEC PY-15).
 
-                _AGENT_MOD = claude_spawn.load_agent()
-            except Exception:  # noqa: BLE001 — no agent module is an answer
-                logger.warning("could not load the claude agent module; the "
-                               "task listing cannot tell whether a run is "
-                               "parked on a card", exc_info=True)
-                _AGENT_MOD = None
-        return _AGENT_MOD
+    ONE COPY, not two. This function and the queue's were the same twenty lines
+    with different log lines, and two caches over one exec meant a machine whose
+    agent.py will not load paid for the discovery twice and could answer
+    differently on the two paths — the listing saying nothing is parked while the
+    queue said every folder is free.
+    """
+    return project_queue.agent_module()
 
 
 def _run_sessions(agent, run_dir: str, meta: dict) -> set:
-    """Every session id this run answers to.
+    """Every session id this run answers to — `project_queue.run_sessions`.
 
-    BOTH SPELLINGS, for the reason `agent._live_run` spells out: a run knows the
-    session it RESUMED (`resumed_from` in meta.json) and the one the CLI minted
-    for it (the `session` file, or the head of out.jsonl before the first poll
-    has written one), and either can be the id a task row carries. Matching on
-    one of them is how a parked run goes unnoticed for exactly the sessions that
-    were forked or freshly started — which is most scheduled runs.
+    BOTH SPELLINGS, for the reason `agent._live_run` spells out and that module
+    documents at length: a run knows the session it RESUMED and the one the CLI
+    minted for it, and either can be the id a task row carries. The parked scan
+    below and the holder derivation next door have to agree about which sessions
+    a run answers to, or a run could be parked for one of them and holding a
+    folder for the other.
     """
-    out = {str(meta.get("resumed_from") or "")}
-    own = ""
-    try:
-        with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-            own = fh.read().strip()
-    except OSError:
-        pass
-    if not own:
-        try:
-            own = agent._session_from_out(run_dir)
-        except Exception:  # noqa: BLE001 — a head we cannot read is not an id
-            own = ""
-    out.add(own)
-    out.discard("")
-    return out
+    return project_queue.run_sessions(agent, run_dir, meta)
 
 
 def _attention_of(agent, perm: dict) -> dict:
@@ -1108,36 +1132,47 @@ def _parked_runs() -> dict:
       actually blocked on. A later card can exist (a sub-agent's), and reporting
       it would describe a question the user is not being asked yet.
 
+    AND A FOURTH, ONLY WITH THE PROJECT QUEUE ON: **nobody is being waited on if
+    the user has already answered.** A card answered while the folder was busy
+    leaves no `.res.json` in the run dir — the decision is held
+    (`project_queue.held_answers`) and written when the folder frees — so the
+    request still reads as unanswered here. Reporting it would make the row
+    `needs_attention`, which sits above `queued` in `_status` and would put
+    "Answer queued — runs next" permanently out of reach: the one row the whole
+    held-answer path exists to paint could never be painted. The user has
+    answered; what the task is waiting on is the folder, which is what `queued`
+    says.
+
+    One walk of the runs tree, shared with the holder derivation
+    (`project_queue.scan_runs`) — the `meta.json` and the session ids come back
+    already read, and only the pid is touched here.
+
+    AND ONE `_permissions` PER RUN, shared with it too. Both readers ask the
+    same run the same question on the same listing — this one what it is parked
+    ON, `holders()` whether it is parked at all — and the answer is a directory
+    listing plus a file per card. `project_queue.run_permissions` reads it once
+    onto the scanned record, which lives exactly as long as the walk does
+    (round-2 review, 2026-09-12).
+
     Best-effort throughout: a run dir that will not read costs that run's news,
     never the listing.
     """
     agent = _agent_module()
     if agent is None:
         return {}
-    try:
-        names = sorted(os.listdir(agent.RUNS), reverse=True)[:_PARKED_SCAN_LIMIT]
-    except OSError:
-        return {}  # no runs tree yet: nothing has ever chatted on this machine
+    held = _held_requests()
     out: dict = {}
-    for name in names:
-        run_dir = os.path.join(agent.RUNS, name)
-        try:
-            perms = agent._permissions(run_dir)
-        except Exception:  # noqa: BLE001 — one unreadable run, not a dead listing
-            continue
-        waiting = [p for p in perms if not p.get("decision")]
+    for run in project_queue.scan_runs(agent):
+        run_dir = run["run_dir"]
+        perms = project_queue.run_permissions(agent, run)
+        waiting = [p for p in perms
+                   if not p.get("decision")
+                   and (run["run_id"], str(p.get("id") or "")) not in held]
         if not waiting:
             continue
         # Liveness LAST: it is the only check that touches a pid, and the one
         # above has already thrown out every run that is not waiting on anybody.
-        try:
-            if not agent._alive(run_dir):
-                continue
-            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-                meta = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(meta, dict):
+        if not project_queue.run_alive(agent, run_dir):
             continue
         perm = waiting[0]
         news = _attention_of(agent, perm)
@@ -1145,17 +1180,275 @@ def _parked_runs() -> dict:
                   if perm.get("tool") == getattr(agent, "ANSWERABLE_TOOL",
                                                  "AskUserQuestion")
                   else "permission")
-        for session_id in _run_sessions(agent, run_dir, meta):
-            # NEWEST RUN WINS: `names` is reverse-sorted and run ids lead with a
-            # timestamp, so the first answer for a session is its most recent
-            # run. A resumed conversation can have several runs in the tree and
-            # only the newest is the one on screen.
+        for session_id in run["sessions"]:
+            # NEWEST RUN WINS: `scan_runs` answers newest-first and run ids lead
+            # with a timestamp, so the first answer for a session is its most
+            # recent run. A resumed conversation can have several runs in the
+            # tree and only the newest is the one on screen.
             out.setdefault(session_id, dict(news, reason=reason))
     return out
 
 
+def _held_requests() -> set:
+    """`{(run id, request id)}` the user has already answered — decisions parked
+    until the folder frees (`project_queue.held_answers`).
+
+    Empty with the flag off, and empty on the ordinary machine where nothing has
+    been held, which is one dict read. See `_parked_runs`'s fourth condition for
+    why an answered-but-undelivered card must not read as waiting on anybody."""
+    if not project_queue.enabled():
+        return set()
+    try:
+        return {(a["run_id"], a["request_id"])
+                for a in project_queue.held_answers()}
+    except Exception:  # noqa: BLE001 — an unreadable store holds nothing
+        return set()
+
+
+# ------------------------------------------------------------------ the queue
+# ONE TASK IN PROGRESS PER FOLDER (`project_queue`, flag `project_queue_enabled`).
+# A task whose work is due into a working tree another task is holding does not
+# run and does not fail — it WAITS, and `queued` is the word for that. Everything
+# under this heading is the listing's half of that rule: who is waiting, where
+# they stand in the line, and who is in front of them. Nothing here decides who
+# HOLDS a folder — that is `project_queue.holders()`, derived from live
+# processes, and the one copy of it.
+#
+# Derived once per listing and handed to `_row`, exactly like `busy` and
+# `parked` beside it: it is a fact about every other task on the machine (one
+# runs-tree scan and one pass over the scheduler's store), and asking it per row
+# would pay that per task.
+
+
+def _due_pending(task: dict, now: float, by_id: dict) -> list[tuple[str, tuple]]:
+    """This task's entries that are WAITING TO GO RIGHT NOW, each as
+    `(queue_key of its target, order_key)`.
+
+    Three conditions and all three are the line's definition. **Pending**: a sent
+    or cancelled message is not in any line. **Due**: a message scheduled for
+    next Tuesday is not waiting on a folder, it is waiting on the clock, and
+    calling it queued would move next week's work into a lane that reads as
+    "about to run" — unless the user pressed Run now on it, which is the one way
+    next Tuesday's message becomes this minute's (`_queue_at`). **A folder to wait on**: `queue_key` answers "" for a target
+    it will not gate (no path, `$HOME`, the filesystem root), and a message with
+    no folder queues behind nothing.
+
+    `by_id` IS THE WHOLE STORE, and it is not optional (round-2 review,
+    2026-09-12): without it `order_key` cannot see a follower's leader, so a
+    second message typed a minute before its leader's own due time ranks ahead
+    of it here and the task takes the line's earlier slot — while
+    `schedule._queue_order`, which has the map, sends them the other way round.
+    A line listed in one order and run in another is worse than no line at all,
+    which is exactly why the scheduler builds the same map for the same sort.
+    """
+    out = []
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        key = project_queue.queue_key(str(entry.get("target") or ""))
+        if key:
+            out.append((key, project_queue.order_key(entry, by_id)))
+    return out
+
+
+def _queue_lines(tasks: dict[str, dict], now: float,
+                 by_id: dict | None = None) -> dict[str, dict]:
+    """`task key -> {"key", "position", "ahead_key", "ahead", "priority"}` for
+    every task WAITING on a folder somebody else is holding. Empty with the flag
+    off, and empty on a machine where nothing is holding anything — which is the
+    ordinary case and the cheap one.
+
+    The line, per folder, in the order it moves:
+
+    * **held answers first**, oldest first. A card decision the user made while
+      the folder was busy is already an answer to a run that is parked IN that
+      folder — delivering it is what lets that run finish, so anything else going
+      first would be a message opening a second turn on the tree the parked run
+      still owns. They are also the one thing here that is not a scheduler entry,
+      which is why `project_queue.order_key` cannot rank them.
+    * **then one slot per waiting task**, at its best entry (`min` by
+      `order_key` — priority first, then the older `due`, then the entry id).
+      ONE SLOT PER TASK and not one per entry, because the line the UI prints is
+      a line of tasks ("#2 in line · behind TASK-041") and a task with three
+      queued messages is one thing waiting, not three.
+
+    The HOLDER is not in its own line: it is not waiting, it is running. That is
+    `project_queue.is_free`'s rule read the other way round, and it is what keeps
+    the inbox-absorb case (a second message typed into a conversation that is
+    already running) out of the queue entirely.
+
+    `ahead_key` is the holder's TASK key — a session id, or `pending:<entry>` for
+    a claimed message that has not minted one yet. `ahead` is the number a reader
+    sees and is filled in by `_name_ahead`, which needs the listing's own
+    allocation pass and therefore cannot happen here.
+
+    `by_id` is the scheduler's store keyed by entry id — the map `order_key`
+    needs to keep a follower behind the message it was typed behind. A caller
+    that already holds the entries passes its own; anything else has it read,
+    and only once the flag is on.
+    """
+    if not project_queue.enabled():
+        return {}
+    if by_id is None:
+        by_id = _by_entry_id()
+    holders = project_queue.holders(now)
+    held = project_queue.held_answers()
+    if not holders:
+        # Nothing is running anywhere, so nothing is waiting — and a held answer
+        # with no holder is one the scheduler is about to deliver, not a task to
+        # paint as queued. One dict lookup saves the whole pass below.
+        return {}
+
+    # folder -> [(rank, tiebreak, task key)]. Rank 0 is a held answer, rank 1 a
+    # scheduled message; the tiebreak is the answer's age or the entry's
+    # `order_key`, which are not comparable to each other and never compared.
+    lines: dict[str, list[tuple]] = {}
+    best: dict[str, tuple[str, tuple]] = {}  # task key -> (folder, order_key)
+    for answer in held:
+        key = answer["queue_key"]
+        holder = holders.get(key)
+        if holder is None:
+            continue
+        task_key = answer["session_id"]
+        if not task_key or task_key in best:
+            continue
+        best[task_key] = (key, ())
+        lines.setdefault(key, []).append((0, answer["at"], task_key))
+    for task_key, task in tasks.items():
+        if task_key in best:
+            continue  # its held answer already stands at the head of the line
+        waiting = None
+        for key, order in _due_pending(task, now, by_id):
+            holder = holders.get(key)
+            if holder is None:
+                continue
+            if task_key in (holder["session_id"], holder["task_key"]):
+                continue  # this task IS the holder — running, not waiting
+            if waiting is None or order < waiting[1]:
+                waiting = (key, order)
+        if waiting is None:
+            continue
+        best[task_key] = waiting
+        lines.setdefault(waiting[0], []).append((1, waiting[1], task_key))
+
+    out: dict[str, dict] = {}
+    for key, line in lines.items():
+        line.sort(key=lambda item: (item[0], item[1], item[2]))
+        holder = holders[key]
+        for position, (_rank, _tie, task_key) in enumerate(line, start=1):
+            task = tasks.get(task_key)
+            out[task_key] = {
+                "key": key,
+                "position": position,
+                "ahead_key": holder["task_key"],
+                "ahead": "",
+                "ahead_title": "",
+                # THE HEAD OF THE LINE IS RUNS-NEXT WHETHER OR NOT ANYBODY
+                # SKIPPED. `priority` here says only what the store says — Skip
+                # set it, or a held answer is always one — and the client is
+                # what merges the two sentences (`queueRunsNext`).
+                "priority": _rank == 0 or _has_priority(task),
+            }
+    return out
+
+
+def _has_priority(task: dict | None) -> bool:
+    """Has any of this task's pending work been skipped to the head of its
+    line? The stored flag and nothing derived: `schedule.set_priority` is the
+    only thing that writes it."""
+    return any(bool(entry.get("priority")) for entry in (task or {}).get("entries", ())
+               if str(entry.get("state") or "") == schedule.PENDING)
+
+
+def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
+                tasks: dict[str, dict]) -> None:
+    """Fill each queued task's `ahead` and `ahead_title` — the number and the
+    name of the task in front, which is the only way a reader ever refers to one
+    ("behind TASK-041 · Nightly deploy").
+
+    `numbers` is the listing's own allocation pass where there is one, because
+    that is the map that has just MINTED a number for a task seeing its first
+    listing. The stored table answers for everybody else — the holder of a folder
+    is very often outside a narrowed `/api/tasks/changes` answer, and a chip that
+    said "behind " with nothing after it would be worse than saying nothing.
+    Read once, and only when something is actually missing.
+
+    A holder the collection does not contain (a terminal `claude` the app never
+    started, a session erased between the scan and here) leaves both fields "",
+    and the client says "behind a run in this folder". Naming half of it would be
+    worse than naming none: a number with no title reads as a row the user can
+    click through to, and there would be nothing there.
+    """
+    wanted = {q["ahead_key"] for q in queue.values() if q["ahead_key"]}
+    if not wanted:
+        return
+    stored = tasks_store.task_ids() if wanted - set(numbers) else {}
+    titles = {key: _title_of(tasks, key) for key in wanted}
+    for q in queue.values():
+        key = q["ahead_key"]
+        if not key:
+            continue
+        number = numbers.get(key) or ""
+        if not number:
+            record = stored.get(key) or {}
+            if record.get("n"):
+                number = tasks_store.format_task_id(record["n"])
+        q["ahead"] = number
+        q["ahead_title"] = titles.get(key, "")
+
+
+def _title_of(tasks: dict[str, dict], key: str) -> str:
+    """One task's title, for a caller that has the collection but not the rows.
+
+    The queue's surfaces print WHO is ahead ("behind TASK-041 · Nightly deploy"),
+    and the task ahead is by definition another row — often one a narrowed answer
+    was never asked about. Built from the same three-source precedence the
+    listing uses (`_title`), off the same cached transcript head, so the two
+    cannot name one task differently. "" for a task that is not collected, which
+    is the honest answer and what every caller prints as nothing at all."""
+    task = tasks.get(key)
+    if task is None:
+        return ""
+    try:
+        _place(task)
+        record = _scan(task["path"]) if task["path"] else None
+        title, _source = _title(task, record, task["first_prompt"])
+        return title
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def _ahead_name(tasks: dict[str, dict], key: str) -> tuple[str, str]:
+    """`(TASK-nnn, title)` for the task holding a folder — the pair every queue
+    answer carries, resolved in one place so the three endpoints and the row
+    cannot disagree about who is in front."""
+    if not key:
+        return "", ""
+    queue = {"": {"ahead_key": key, "ahead": "", "ahead_title": ""}}
+    _name_ahead(queue, {}, tasks)
+    return queue[""]["ahead"], queue[""]["ahead_title"]
+
+
+def queue_ahead_of(key: str, tasks: dict[str, dict] | None = None) -> tuple[str, str]:
+    """`(TASK-nnn, title)` for one task key, collecting for itself.
+
+    The seam the schedule router reads: `POST /api/schedule/run-now` can be
+    answered "queued", and the sentence it owes the user names the task in front
+    — which is a Tasks-page fact (the numbering, the title precedence) and lives
+    here, not beside the scheduler's store.
+
+    `tasks` is that collection where the caller already holds one. Run-now needs
+    both halves of the queue answer — who is ahead and where this row stands —
+    and collecting once for each meant two globs over every transcript on the
+    machine for one reply (round-2 review, 2026-09-12)."""
+    return _ahead_name(_collect() if tasks is None else tasks, key)
+
+
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
-            busy: set[str], parked: bool = False) -> str:
+            busy: set[str], parked: bool = False, queued: bool = False) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the MESSAGES, in this order, and the order is the whole model:
@@ -1200,6 +1493,27 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        live message in a thread archives the task, without anybody having to say
        so twice). Step 1 is above this on purpose: a run in flight when the task
        was filed keeps running and the card reads In Progress until it stops.
+    2.5 **Waiting on a busy folder ⇒ Queued.** One task in progress per folder
+       (`project_queue`): this task has work that is DUE and cannot start
+       because another task is holding the working tree it edits, or it has a
+       card decision held for delivery when that tree frees. The caller decides
+       it (`_queue_lines`, one derivation per listing, the way `busy` and
+       `parked` are) and hands the answer in, because it is a fact about every
+       OTHER task on the machine and a function that sees one task's messages
+       cannot reach it.
+
+       BELOW ARCHIVED, not above it. Archiving cancels the pending work, so a
+       filed task has nothing left in any line; the one shape that could read
+       both is a filing the thread has already overtaken, and by the time this
+       is asked `filed` is False for exactly that case (see `_revived`). Above
+       the speaker, because the speaker is the last thing that HAPPENED and this
+       is the thing that is about to: a task that ran yesterday and has a
+       message due into a busy folder today is waiting, not done.
+
+       ONLY WITH THE FLAG ON. `_queue_lines` answers empty when
+       `project_queue.enabled()` is false, so nothing here derives `queued` and
+       the status is the one main computes.
+
     3. **Otherwise the newest message that has something to say speaks** —
        `blocked` for a run that broke, `done` for one that ended. See `_speaker`.
     4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
@@ -1234,6 +1548,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
         return "archived"
     if messages and all(_message_archived(m, filed) for m in messages):
         return "archived"
+    if queued:
+        return "queued"
     speaker = _speaker(messages, filed)
     if speaker is not None:
         return _message_verdict(speaker) or "done"
@@ -1337,7 +1653,7 @@ def _new_task(key: str, session_id: str, path: str | None) -> dict:
     return {"key": key, "session_id": session_id, "path": path, "entries": []}
 
 
-def _entry_session(entry: dict) -> str:
+def _entry_session(entry: dict, by_id: dict | None = None) -> str:
     """Which session a scheduled entry belongs to: **the answer where the run
     has given one, else the input it named**, and "" for neither.
 
@@ -1363,9 +1679,57 @@ def _entry_session(entry: dict) -> str:
     session, so it must keep falling through to its own `pending:` key —
     grouping on "" would collapse every unrelated fresh-session message in the
     store into a single row.
+
+    **A FOLLOWER READS ITS LEADER'S ANSWER.** `follow_of` names the message
+    this one was typed behind, and it exists for the one shape that has no id of
+    its own to give: a second message typed into a brand-new chat whose first
+    message is still queued. Grouping it anywhere but with the leader forks a
+    second `pending:<id>` row beside the very chat it was typed into, which is
+    the bug this field was added for (browser QA, 2026-09-12). So the leader's
+    own answer is this entry's answer — and "" here is not a failure, it means
+    "the leader has not run either", which `_entry_key` finishes by filing both
+    under the LEADER's pending key.
+
+    `by_id` is the store keyed by entry id; a caller mid-pass over the entries
+    passes its own map, and one holding a single entry passes nothing and has
+    the store read for it — but only for an entry that actually follows one.
     """
-    return (str(entry.get("claude_session_id") or "")
-            or str(entry.get("session_id") or ""))
+    session = (str(entry.get("claude_session_id") or "")
+               or str(entry.get("session_id") or ""))
+    if session or not str(entry.get("follow_of") or ""):
+        return session
+    leader = schedule.leader_of(
+        entry, _by_entry_id() if by_id is None else by_id)
+    if leader is None:
+        return ""
+    return (str(leader.get("claude_session_id") or "")
+            or str(leader.get("session_id") or ""))
+
+
+def _by_entry_id(entries: list[dict] | None = None) -> dict:
+    """The scheduler's store keyed by entry id — what `leader_of` walks. An
+    INDEX and never the list itself: a caller with entries to visit visits its
+    own list, so an entry with no id at all costs a lookup and not a row."""
+    if entries is None:
+        entries = schedule.list_entries()
+    return {str(entry.get("id") or ""): entry for entry in entries}
+
+
+def _entry_key(entry: dict, by_id: dict | None = None) -> str:
+    """The TASK key one scheduled entry is filed under: the session
+    `_entry_session` resolved, else `pending:<entry-id>` — the LEADER's id for a
+    message typed behind another, its own for everything else.
+
+    `_collect`'s filing rule in one place, because four callers need it and a
+    fifth spelling of it would be a row nobody could ring."""
+    if by_id is None and str(entry.get("follow_of") or ""):
+        by_id = _by_entry_id()
+    session = _entry_session(entry, by_id)
+    if session:
+        return session
+    leader = schedule.leader_of(entry, by_id)
+    owner = entry if leader is None else leader
+    return tasks_store.pending_key(str(owner.get("id") or ""))
 
 
 # States that mean a scheduled message will never run and never did. In
@@ -1431,19 +1795,23 @@ def _collect() -> dict[str, dict]:
     for path in tasks_store.transcripts():
         session_id = os.path.splitext(os.path.basename(path))[0]
         tasks[session_id] = _new_task(session_id, session_id, path)
-    for entry in schedule.list_entries():
+    # Indexed once for the whole pass: a follower is filed under the entry it
+    # was typed behind, and `leader_of` walks this map rather than the store.
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    for entry in entries:
         if entry.get("state") == schedule.RECURRING:
             # A template never fires and is not a message; its materialised
             # occurrences are, and they are ordinary entries in this list.
             continue
-        session_id = _entry_session(entry)
+        session_id = _entry_session(entry, by_id)
         if session_id:
             task = tasks.get(session_id)
             if task is None:
                 task = tasks[session_id] = _new_task(session_id, session_id, None)
             task["entries"].append(entry)
         else:
-            key = tasks_store.pending_key(str(entry.get("id") or ""))
+            key = _entry_key(entry, by_id)
             task = tasks.setdefault(key, _new_task(key, "", None))
             task["entries"].append(entry)
     for task in tasks.values():
@@ -1456,6 +1824,34 @@ def _collect() -> dict[str, dict]:
     deleted = tasks_store.deleted_state()
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)}
+
+
+def _entries_for(keys) -> dict[str, list[dict]]:
+    """`task key -> its scheduled entries`, for the named keys only.
+
+    `_collect`'s entry pass and nothing else: the same filing rule (`_entry_key`
+    — the session an entry resolves to, else the leader's pending key, else its
+    own) and the same
+    exclusion of recurring TEMPLATES, which never fire and are not messages. What
+    it does NOT do is the expensive half — the glob over every transcript on the
+    machine, the deleted store, the `_is_task` decision — because a caller that
+    already holds a set of keys it has just listed has had all three answered.
+
+    For a caller that has not (a key the listing dropped), this answers with an
+    empty list rather than a verdict; it is a narrowing of a collection, never a
+    second way to decide what a task is."""
+    out: dict[str, list[dict]] = {key: [] for key in keys}
+    if not out:
+        return out
+    entries = schedule.list_entries()
+    by_id = _by_entry_id(entries)
+    for entry in entries:
+        if entry.get("state") == schedule.RECURRING:
+            continue
+        key = _entry_key(entry, by_id)
+        if key in out:
+            out[key].append(entry)
+    return out
 
 
 def _deleted(task: dict, deleted: dict) -> bool:
@@ -1715,7 +2111,8 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str], revived: list[str], parked: dict | None = None) -> dict:
+         busy: set[str], revived: list[str], parked: dict | None = None,
+         queue: dict | None = None, queue_on: bool | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -1729,6 +2126,21 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     own entries because a resume that forked is filed under the session it RAN
     in (`_entry_session` reads the answer first) while it still holds the
     session it NAMED busy, and that one is another row.
+
+    `queue` is `_queue_lines()` — every task waiting on a busy folder, with its
+    place in the line — computed once by the caller for the third time on this
+    list of parameters and for the same reason: it is one scan of the runs tree
+    and one pass over the scheduler's store, and it answers about tasks other
+    than this one. None means nobody asked (the single-row callers below) or the
+    project-queue flag is off, and the row then carries no queue fields at all.
+
+    `queue_on` is the flag, read once by the caller. FLAG OFF IS MAIN, FIELD FOR
+    FIELD: `queue_key` is a folder derivation only this feature has a use for,
+    and resolving one per row — walking a task's ancestors looking for a `.git`
+    — is work main never did. So it is `""` with the flag off, like every other
+    queue field on this row, and the folder appears the moment the feature is
+    turned on. None means "ask", for the single-row callers that have no listing
+    to have read it in.
 
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
@@ -1834,8 +2246,15 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # has no run to be parked, which is what the empty key would otherwise
     # accidentally match.
     waiting = (parked or {}).get(task["session_id"]) if task["session_id"] else None
+    # WHERE IN THE LINE, asked once here for the same reason `waiting` is: the
+    # status, the position and the name of the task in front have to describe one
+    # state of one folder. `{}` for a task nobody said was queued, which is every
+    # task with the flag off.
+    queued = (queue or {}).get(task["key"]) or {}
+    if queue_on is None:
+        queue_on = project_queue.enabled()
     status = _status(merged, filed, task["session_id"], live, busy,
-                     parked=waiting is not None)
+                     parked=waiting is not None, queued=bool(queued))
     failed = _failed(speaker)
     return {
         "key": task["key"],
@@ -1895,6 +2314,31 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # ...and whether that run is an occurrence of a repeating template —
         # the chip's repeat glyph. False when nothing is pending.
         "next_run_repeats": next_run_repeats,
+        # THE FOLDER THIS TASK EDITS (`project_queue.queue_key`) — what the
+        # client groups by. "" for a task whose project is nothing the queue will
+        # gate (no path at all, the user's home, the filesystem root) and ""
+        # WITH THE FLAG OFF, which is the point: resolving it walks a task's
+        # ancestors looking for a `.git`, once per row, and main never did that.
+        # Two tasks on two files in one repo share it; a worktree keys on itself
+        # and not on the repo it was cut from.
+        "queue_key": project_queue.queue_key(task["project"]) if queue_on else "",
+        # WHERE IN THE LINE, 1-based — and 0 for every task that is not queued,
+        # which is how every other absent number on this row reads. Only ever
+        # non-zero alongside `status == "queued"`; the client prints it only
+        # after reading the status, so the two cannot contradict each other.
+        "queue_position": queued.get("position", 0),
+        # WHO IS IN FRONT: the number of the task holding this folder
+        # ("TASK-041"), and its title when we can name it. Both "" when the
+        # holder is something the listing cannot name — a run started outside
+        # this app, a task whose number has not been allocated — and the client
+        # falls back to "behind a run in this folder" rather than printing a
+        # blank.
+        "queue_ahead": queued.get("ahead", ""),
+        "queue_ahead_title": queued.get("ahead_title", ""),
+        # Does this task's work go out the moment the folder frees? True for a
+        # skipped task (`schedule.set_priority`, which Skip and Run-now write)
+        # and for a held answer, which is always at the head.
+        "queue_priority": bool(queued.get("priority")),
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
@@ -2032,26 +2476,48 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    # ONE READ OF THE FLAG for the whole listing, handed to every row: it is a
+    # small JSON read (`prefs.project_queue_enabled`) and asking it per row would
+    # pay for it once per task on the machine.
+    queue_on = project_queue.enabled()
+    # THE LINE IS DERIVED OVER EVERYTHING, BEFORE THE NARROWING. Where a task
+    # stands is a fact about every other task waiting on the same folder, so a
+    # changes answer that asked about one row would otherwise report it at #1
+    # with three tasks in front of it. `only` narrows what is BUILT, never what
+    # the queue is read from — the same reason collection itself still runs over
+    # the whole store.
+    # ONE READ OF THE SCHEDULER'S STORE for the whole listing: the line's index
+    # (`order_key` walks it to keep a follower behind its leader) and the busy
+    # pass below both want the same entries, and reading them twice would be two
+    # answers about one file a write could land between.
+    entries = schedule.list_entries()
+    queue = _queue_lines(tasks, now, _by_entry_id(entries))
+    listed = tasks
     if only is not None:
-        tasks = {key: task for key, task in tasks.items() if key in only}
+        listed = {key: task for key, task in tasks.items() if key in only}
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
-    busy = schedule.busy_sessions(schedule.list_entries())
+    busy = schedule.busy_sessions(entries)
     # One scan of the runs tree for every row: which conversations are parked on
     # a card nobody has answered. See `_parked_runs`.
     parked = _parked_runs()
-    for task in tasks.values():
+    for task in listed.values():
         _place(task)
-    numbers = _numbers(tasks)
+    numbers = _numbers(listed)
+    # The number and the name of whoever is in front, once the listing's own
+    # allocation has run: a task seeing its first listing gets its number HERE,
+    # and a holder outside a narrowed answer is named from the stored table.
+    # See `_name_ahead`.
+    _name_ahead(queue, numbers, tasks)
     rows = []
     # Sessions whose archive record the thread has outlived — see `_revived`.
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
-    for task in tasks.values():
+    for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived, parked)
+                       busy, revived, parked, queue, queue_on)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -2125,10 +2591,19 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     # (§5): the watcher names the session, the session is listed, and the
     # `pending:<entry>` row the client still shows is nobody's key. Name it
     # gone, or two rows stand for one task until the full poll (bugbot #892).
-    tasks = _collect()
+    #
+    # SCOPED, and this is the fast lane's whole cost profile. This used to be a
+    # second full `_collect()` — a glob over every project dir on the machine and
+    # a re-read of the deleted store — paid on every long-poll answer, to look up
+    # the entries of the handful of keys the answer already names. `_entries_for`
+    # is `_collect`'s entry pass alone, over the scheduler's store, for exactly
+    # those keys: the same grouping rule (`_entry_session`, else the pending
+    # key), so the `gone` set is identical, without the transcript walk. The
+    # keys it is asked about have already survived collection — they were listed
+    # a few lines above — so nothing `_collect` would have dropped can enter here.
+    entries = _entries_for(listed)
     for key in listed:
-        task = tasks.get(key)
-        for entry in (task or {}).get("entries", ()):
+        for entry in entries.get(key, ()):
             pending = tasks_store.pending_key(str(entry.get("id") or ""))
             if pending != key:
                 gone.add(pending)
@@ -2169,6 +2644,17 @@ _PULSE_FIELDS = (
     "next_run",
     "next_run_entry",
     "next_run_repeats",
+    # ...and where the row stands in its folder's line, for the same surface and
+    # the same reason: the sidebar's Current apps section says "n running, n
+    # queued", and a queued row that could not say whether it runs next would
+    # make the count the only thing it could print. Three short fields — a
+    # number, a task id and a flag — on rows that are already being built.
+    # `queue_key` and `queue_ahead_title` are deliberately NOT here: the folder
+    # is what the Tasks page groups by and the title is a whole string per row,
+    # and the sidebar draws neither.
+    "queue_position",
+    "queue_ahead",
+    "queue_priority",
 )
 
 
@@ -2361,6 +2847,12 @@ def api_task_read(patch: ReadPatch):
             detail=f"message_id: expected MSG-nnn, got {patch.message_id!r}")
 
     tasks_store.mark_read(key, patch.message_id)
+    # RING THE LONG-POLL. The unread count is on the row and on the pulse, so a
+    # mark read in one window is a change every other window has to see — and
+    # waiting up to 20 seconds for the full listing to notice was the one
+    # remaining place a badge could be stale in a second tab. The watcher cannot
+    # see this on its own: nothing in ~/.claude moved, only our own store.
+    tasks_watch.notify({key})
 
     # Recounted from the thread rather than decremented, so the badge the page
     # paints is the truth on disk and not an optimistic guess that drifts.
@@ -2397,6 +2889,10 @@ def _read_whole_task(key: str) -> dict:
     if unread_ids:
         tasks_store.mark_read_many(key, unread_ids)
         _mark_unread(messages, key, tasks_store.read_state())
+        # Only when something actually changed — see the per-message branch for
+        # why the ring is here at all. A whole-task mark over a thread that was
+        # already read is not news and must not wake every long-poll on the box.
+        tasks_watch.notify({key})
     return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}
 
 
@@ -2862,3 +3358,423 @@ def _rules_behind(entries: list[dict]) -> list[str]:
         if template_id and template_id not in rules:
             rules.append(template_id)
     return rules
+
+
+# --------------------------------------------------------------- the queue verbs
+# ONE TASK IN PROGRESS PER FOLDER, from the client's side. Three POSTs, and they
+# exist because the client cannot derive any of them: who holds a folder is a
+# fact about live processes (`project_queue.holders`), and a page guessing it is
+# how two views end up disagreeing about one task.
+#
+# ALL THREE CARRY THE D3 X-FUSED HEADER, unlike every other write in this file.
+# The reads here are unguarded and so is `POST /api/tasks/read` — it moves a
+# badge, it does not run code — but these START WORK: admit spawns a turn or
+# stores a message that will spawn one, skip moves a message to the head of the
+# line it is about to go out of, and decide releases a parked agent. That is the
+# exact pair (schedule / unschedule) the header guard covers next door in
+# routers/schedule.py, and a blind cross-origin POST must not reach any of them.
+#
+# THE BODIES ARE PLAIN DICTS, not pydantic models like the archiving verbs above,
+# and for the reason `api_schedule_shot` documents: a required model field is
+# validated by FastAPI BEFORE any of our code runs, so a malformed body would be
+# answered with an unguarded 422 rather than with the guard's 403. A guarded
+# endpoint reads its own body.
+
+
+@router.post("/api/tasks/queue/admit")
+def api_queue_admit(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """May this chat send start a run right now — and if not, queue it.
+
+    ASKED BEFORE THE SEND, NEVER AFTER. A composer that spawned first and queued
+    second would have two runs in one folder for as long as the round trip takes,
+    which is the single thing this feature exists to prevent. So the client asks,
+    and gets one of two answers:
+
+    * `{"run": true}` — go, exactly as before. The folder is free, or the thing
+      holding it IS this session (a second message typed into a conversation
+      that is already running is the inbox-absorb case the chat has always had,
+      and gating it would be this feature refusing a send that touches nothing
+      new). A short reservation is taken on the way out: between this answer and
+      the CLI registering a session there is nothing on disk saying the folder is
+      taken, and a second send landing in that window would be admitted into it.
+    * `{"run": false, ...}` — the words are SAFE and nothing spawned. The message
+      is stored as an ordinary pending entry due now, in the same store the
+      calendar, the queue popover and cancel already work against, so there is no
+      second kind of waiting message to keep in step with. The answer says where
+      in the line it landed and who is in front, which is what the bubble's chip
+      prints.
+
+    **The flag off answers `{"run": true}` and stores nothing**, which is what
+    lets the client ask unconditionally and still behave exactly as main does.
+
+    The entry is created through the schedule router's own `create_entry`, so a
+    queued send carries the model, the effort, the permission mode and the
+    attachments the user actually chose. A queued message that differed from the
+    one that would have gone had the folder been free would make this a feature
+    that changes work rather than one that delays it.
+
+    **A CHAT NEVER OVERTAKES ITSELF.** A session that already has due work
+    waiting in the scheduler — an earlier message of its own that queued — is
+    answered `run: false` and this message queues behind it, EVEN IF THE FOLDER
+    IS FREE. Two reasons, and the second is the load-bearing one: message order
+    in a conversation is the conversation, so the second thing typed must not be
+    the first thing sent; and a client that spawned a turn into a session the
+    scheduler is about to claim for the earlier message would put two `--resume`
+    processes on one transcript. So the order flows through one place, and the
+    answer carries `behind_own: true` — the folder may be perfectly free and
+    there may be nobody ahead to name, and "after your previous message" is what
+    the chip says then.
+
+    A `follow_of` body (a second message typed into a chat whose first is still
+    queued) is the same rule read through the leader, and an id that names no
+    entry is a 400 rather than a silent fresh task — the client is looking at a
+    queue that has moved on, and the honest answer is what makes it refetch.
+
+    **A WORDLESS SEND IS REFUSED ONLY WHERE IT WOULD HAVE TO BE STORED.** The
+    composer lets a user send pictures with no words, and into a free folder
+    that is an ordinary send this must not stand in the way of — so the message
+    is not looked at until the answer is "queue it". At that point it has to
+    become a scheduled entry, and `schedule.create` refuses one with no message
+    whatever it is carrying ("message: cannot be empty" — pictures are not words
+    and the row would have nothing to say). Mirrored here rather than routed
+    around: answering `run: true` to dodge the store would put a second turn in
+    a folder another task is holding, which is the one thing this endpoint
+    exists to prevent. So it is a 400 with the store's own sentence, and the
+    client keeps the words in the composer.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    message = body.get("message")
+    message = message if isinstance(message, str) else ""
+    session_id = str(body.get("session_id") or "")
+    if not project_queue.enabled():
+        # Nothing is read, nothing is resolved and nothing is stored: with the
+        # flag off this endpoint is a constant, and the client's send path is
+        # main's byte for byte.
+        return {"run": True}
+
+    resolved, refusal = schedule_api.resolve_target(body.get("project"),
+                                                    "project")
+    if refusal is not None:
+        return refusal
+    key = project_queue.queue_key(resolved)
+    # The store, read once, and ONLY where this send has something to be behind:
+    # a brand-new chat's first message names neither a session nor a leader and
+    # pays nothing for either question.
+    follow_of = str(body.get("follow_of") or "")
+    by_id = _by_entry_id() if (session_id or follow_of) else {}
+    if follow_of and by_id.get(follow_of) is None:
+        return _error(f"follow_of: no scheduled message with id {follow_of!r}",
+                      status=400)
+    behind_own = _behind_own(session_id, follow_of, by_id)
+    # ONE DECISION, NOT A LOOK AND THEN A WRITE. Two sends into one free folder
+    # arriving on two request threads both used to hear "free" and both reserve;
+    # `reserve_if_free` decides and takes the reservation under one lock, so the
+    # second is told to queue. See `project_queue.reserve_if_free`.
+    #
+    # Asked at all only once this chat has nothing of its own in the line: a
+    # reservation taken here would be a folder held for a send that is about to
+    # be queued anyway.
+    if not behind_own and project_queue.reserve_if_free(key, session_id):
+        return {"run": True}
+
+    if not message.strip():
+        return _error("message: cannot be empty — this folder is busy, and a "
+                      "send with no words has nothing to queue", status=400)
+
+    try:
+        # `schedule._now()` and not this module's clock: the entry's due time is
+        # compared against the scheduler's own `now` on every tick, and two
+        # clocks over one comparison is how a message due "now" lands a second in
+        # the future and waits a whole tick for nothing.
+        entry = schedule_api.create_entry(resolved, dict(body, message=message),
+                                          schedule._now())
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+
+    # The row this message landed on, read the same way the listing files it:
+    # the session it named, else the LEADER's key for a follower, else its own
+    # pending key. The entry is added to the index because it is a second old
+    # and nothing else has seen it yet.
+    task_key = _entry_key(entry, dict(by_id, **{str(entry.get("id") or ""): entry}))
+    tasks_watch.notify({task_key})
+    place = _queue_place(task_key)
+    return {"run": False, "entry": entry, "key": task_key,
+            "position": place["position"], "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"],
+            # WHY it queued, where the line alone cannot say: the folder can be
+            # free and the position 0 with nobody ahead, and this is still a
+            # message waiting on an earlier one of its own.
+            "behind_own": behind_own}
+
+
+def _behind_own(session_id: str, follow_of: str, by_id: dict) -> bool:
+    """Has this chat already got a message of its own waiting to be claimed?
+
+    The same task key on both sides and nothing cleverer: the incoming send's
+    key (its session, else the key its leader is filed under) against the key of
+    every PENDING entry that is already due. Due, because a message scheduled
+    for next Tuesday is not in front of anything — it is waiting on the clock,
+    and queueing behind it would park this send until Tuesday.
+
+    A send with neither a session nor a leader is the first message of a brand
+    new chat and can be behind nothing."""
+    mine = session_id
+    if not mine and follow_of:
+        leader = by_id.get(follow_of)
+        if leader is None:
+            return False
+        mine = _entry_key(leader, by_id)
+    if not mine:
+        return False
+    now = time.time()
+    for entry in by_id.values():
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        due = _queue_at(entry)
+        if not due or due > now:
+            continue
+        if _entry_key(entry, by_id) == mine:
+            return True
+    return False
+
+
+def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
+    """Where one task stands right now — `{"position", "ahead", "ahead_title"}`,
+    re-derived from scratch, or from a collection the caller already holds.
+
+    The three endpoints below all answer with a place in a line, and all three
+    have just CHANGED that line (stored an entry, set a priority, held an
+    answer). Re-deriving is the only honest way to report it: the line is the
+    scheduler's pending list plus the held answers, both of which another window
+    may have moved in the same second, and a number computed before the write
+    would be a promise about a queue that no longer exists.
+
+    Position 0 with no name is the answer for a task the derivation does not
+    place — the folder freed between the write and this read, most often — and
+    the client prints "runs next" for it rather than "#0 in line".
+
+    Passing `tasks` is for the ONE caller that needs a second Tasks fact in the
+    same reply (run-now, which also names who is ahead): the collection is a
+    glob over every transcript on the machine, and it is the same collection
+    both answers are about."""
+    if tasks is None:
+        tasks = _collect()
+    queue = _queue_lines(tasks, time.time())
+    _name_ahead(queue, {}, tasks)
+    place = queue.get(task_key) or {}
+    return {"position": place.get("position", 0),
+            "ahead": place.get("ahead", ""),
+            "ahead_title": place.get("ahead_title", "")}
+
+
+@router.post("/api/tasks/queue/skip")
+def api_queue_skip(body: dict = Body(...),
+                   x_fused: str | None = Header(default=None)):
+    """Move one queued task's due work to the head of its folder's line.
+
+    **IT NEVER INTERRUPTS THE RUN IN FLIGHT** (Akshil, 2026-09-12). Skip is a
+    statement about the ORDER of what is waiting, not about what is happening:
+    the holder keeps the folder until its turn ends, and this task goes first
+    when it frees. So the answer is always position 1 and never "running now" —
+    there is no gesture in this app that takes a folder off a live process.
+
+    `priority` on the entries is the whole mechanism (`schedule.set_priority`),
+    which is why this is idempotent and why it survives a restart: the flag is
+    stored beside the message, and `project_queue.order_key` reads it wherever
+    the line is computed. Only the task's DUE work in the folder it is waiting on
+    is promoted — a message the same task has scheduled for next Tuesday is not
+    in this line and jumping it to the head of one would be this verb silently
+    rescheduling work nobody asked about.
+
+    REFUSED (400) WHEN THE TASK IS NOT QUEUED, rather than quietly setting a flag
+    that does nothing: "skip the queue" on a task that is not in one is a client
+    that is looking at a stale row, and the honest answer is what makes it
+    refetch. A task holding a HELD ANSWER is already at the head by definition
+    (an answer outranks every message in its folder), so it is answered `ok` and
+    nothing is written.
+
+    **`{entry_id}` IS AN ALTERNATIVE TO `{key}`, and the chip in the chat sends
+    it** (round-2 review, 2026-09-12). A task key is not a constant: a queued
+    new chat is `pending:<leader entry>` until its leader's run mints a session,
+    and then the whole row REKEYS onto that session. A Skip button holding the
+    key it was painted with would, a second after the leader fired, name a row
+    that no longer exists — a 404 on the one gesture the user is watching the
+    line for. The entry id never moves, so the entry is what the chip names and
+    the key is resolved here through the listing's own filing rule
+    (`_entry_key`), which is the same answer the row was built under. The
+    response is unchanged either way.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    key = str(body.get("key") or "").strip()
+    entry_id = str(body.get("entry_id") or "").strip()
+    if not key and not entry_id:
+        return _error("key or entry_id: required", status=400)
+    if not project_queue.enabled():
+        return _error("project queue is off", status=409)
+    if not key:
+        by_id = _by_entry_id()
+        entry = by_id.get(entry_id)
+        if entry is None:
+            return _error(
+                f"entry_id: no scheduled message with id {entry_id!r}",
+                status=404)
+        key = _entry_key(entry, by_id)
+
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+    now = time.time()
+    queue = _queue_lines(tasks, now)
+    place = queue.get(key)
+    if place is None:
+        return _error("not queued", status=400)
+
+    if any(answer["session_id"] == key for answer in project_queue.held_answers()):
+        # Already at the head, and written somewhere Skip cannot improve: the
+        # answer is delivered the moment the folder frees. Answered rather than
+        # refused — from the outside this is exactly what Skip asked for.
+        return {"ok": True, "position": 1}
+
+    ids = [str(entry.get("id") or "") for entry in task["entries"]
+           if str(entry.get("state") or "") == schedule.PENDING
+           and _queue_at(entry) and _queue_at(entry) <= now
+           and project_queue.queue_key(str(entry.get("target") or "")) == place["key"]]
+    ids = [entry_id for entry_id in ids if entry_id]
+    if ids:
+        schedule.set_priority(ids, True)
+    tasks_watch.notify({key})
+    return {"ok": True, "position": 1}
+
+
+def _already_decided(agent, run_dir: str, request_id: str) -> bool:
+    """Is this card's answer already on disk?
+
+    THE SECOND TAB (round-3 review, 2026-09-12). `_write_decision` is a
+    first-writer-wins latch and `hold_answer` is another one, but they latch in
+    different places: a card answered in one window and then answered again in a
+    stale second window would have its second answer HELD — parked against a
+    question that has a verdict, to be replayed into a run that has already
+    moved on, and reported to that tab as "Answer queued" when the truth is
+    "somebody already answered this". Passing it through instead costs nothing
+    and reports the truth: `agent._decide` reads the existing decision and hands
+    back the verdict that won, which is what the card should be showing.
+
+    Best-effort by construction — a perm dir that cannot be read answers False,
+    which is the ordinary road and where every rule about the run is applied
+    anyway."""
+    try:
+        path = os.path.join(agent._perm_dir(run_dir), request_id + ".res.json")
+        return os.path.exists(path)
+    except Exception:  # noqa: BLE001 — an unreadable run is the ordinary road
+        return False
+
+
+@router.post("/api/tasks/queue/decide")
+def api_queue_decide(body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
+    """Answer a parked run's card — through the queue.
+
+    The same body the chat's own `decide` action takes, plus the `session_id` and
+    `project` this needs to find the line. Two answers:
+
+    * `{"held": false, ...}` — the decision went STRAIGHT THROUGH to
+      `agent._decide` and the rest of the object is its ordinary result. This is
+      what happens with the flag off, when the folder is free (or held by this
+      very session), and when the run is already dead — a dead run's answer is
+      recorded as `expired` by `_decide` itself, and holding it would park a
+      decision for a process that can never read it.
+    * `{"held": true, ...}` — the folder is busy with ANOTHER task, so the answer
+      is stored (`project_queue.hold_answer`) and delivered when the folder
+      frees. Nothing is written to the run's perm directory yet, which is the
+      point: a parked run given its answer now would wake up and start editing a
+      working tree another task owns — the exact collision the feature exists to
+      prevent, arriving through the one door that is not a message.
+
+    **WHAT IS HELD IS THE ARGUMENTS, NOT A DECISION PAYLOAD** (deviation from the
+    design doc, 2026-09-12, and noted there for the deliverer). The obvious store
+    is the dict `_decide` would have written, and it is wrong: building it means
+    re-implementing every rule in `_decide` — the narrow-never-widen scope
+    downgrade, the mode switch, the keep-planning message, the answer validation
+    against the parked request's own questions — in a second place, where they
+    would drift. Worse, those rules read the LIVE run (`_alive`, the request
+    file), and the answer is being made now and applied later: a scope computed
+    against today's card and written after the run moved on would be a grant
+    nobody checked. So `payload` is `{"raw": {...the decide arguments...}}` and
+    the deliverer calls `agent._decide(**raw)` at delivery time, when every one of
+    those rules is evaluated against the run as it then is. The first-writer-wins
+    latch is unchanged: `hold_answer` latches on `(run_id, request_id)` here, and
+    `_write_decision` latches on disk there.
+
+    Position is always 1 — a held answer outranks every message in its folder,
+    because delivering it is what lets the parked run finish and free the tree.
+
+    **THE TWO IDS ARE CHECKED BEFORE ANYTHING IS STORED** (round-2 review,
+    2026-09-12). Both become a path, and not here: the run id is joined onto
+    `agent.RUNS` and the request id is joined with `.res.json` under the perm
+    directory — by the scheduler tick that delivers the answer, or by
+    `validate_held_answers` on the next launch, minutes later and with nothing
+    left to say where the string came from. `agent._decide` has always refused
+    them (`_bad_id`), so the straight-through arm was covered; the HELD arm
+    wrote them to a file first and let the rule be applied by whoever read it
+    back. So the rule is applied here, to both arms, and `hold_answer` applies
+    it again for itself.
+
+    **A CARD THAT ALREADY HAS A VERDICT IS DELIVERED, NEVER HELD.** See
+    `_already_decided`: holding a second answer to a question that is already
+    answered parks a decision nothing will ever act on and tells the tab that
+    sent it that it is next in line.
+
+    **A RUN WITH NO SESSION IS DELIVERED, NEVER HELD.** A held record is keyed
+    by `session_id` — it is how the delivery finds the row, how the chip finds
+    the position and how Skip recognises the head of the line — so an empty one
+    parks a decision no view can reach and rings `notify(None)`, which wakes
+    every poller about nothing. A run with no session cannot be queued behind
+    anything anyway, and delivering it now is the honest fallback: the decision
+    goes where the user meant it to go.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    run_id = str(body.get("run_id") or "")
+    request_id = str(body.get("request_id") or "")
+    if project_queue.bad_id(run_id) or project_queue.bad_id(request_id):
+        return _error("run_id and request_id: required, and neither may be a "
+                      "path — no leading dot, no separator", status=400)
+    raw = {"run_id": run_id, "request_id": request_id,
+           "decision": str(body.get("decision") or ""),
+           "scope": str(body.get("scope") or ""),
+           "mode": str(body.get("mode") or ""),
+           "answers": str(body.get("answers") or ""),
+           "note": str(body.get("note") or ""),
+           "custom": str(body.get("custom") or "")}
+
+    agent = project_queue.agent_module()
+    if agent is None:
+        # No agent module, no cards and no runs: there is nothing this could
+        # decide and nothing it could hold. The chat's own error, not a 500.
+        return _error("the claude agent is not available", status=503)
+
+    session_id = str(body.get("session_id") or "")
+    key = project_queue.queue_key(str(body.get("project") or ""))
+    run_dir = os.path.join(str(getattr(agent, "RUNS", "")), run_id)
+    if (not project_queue.enabled()
+            or not session_id
+            or project_queue.is_free(key, session_id)
+            or not project_queue.run_alive(agent, run_dir)
+            or _already_decided(agent, run_dir, request_id)):
+        return {"held": False, **agent._decide(**raw)}
+
+    project_queue.hold_answer(key, session_id, run_id, request_id, {"raw": raw})
+    tasks_watch.notify({session_id})
+    place = _queue_place(session_id)
+    return {"held": True, "position": 1, "ahead": place["ahead"],
+            "ahead_title": place["ahead_title"]}

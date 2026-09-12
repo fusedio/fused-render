@@ -92,6 +92,11 @@ async function mount(
   initial: Entry[],
   session = "s1",
   tasks: SchedTask[] = [],
+  /** The project queue's switch, INJECTED rather than left to the pref: the
+   *  hook subscribes to a process-global `/api/prefs` answer, and a suite that
+   *  drove it by writing that global would be deciding the flag for every other
+   *  file in the same bun run. */
+  queueEnabled?: boolean,
 ): Promise<Harness> {
   let served = initial;
   let servedTasks: SchedTask[] = tasks;
@@ -137,6 +142,7 @@ async function mount(
       setRunParam: () => {},
       api,
       timers,
+      ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
     return null;
   }
@@ -214,6 +220,51 @@ test("Back to the landing page opens the composer on the same paint", async () =
   await h.setSession("s1");
   expect(h.state().blocked).toBe(true);
 });
+
+// ── who owns the ORDER of two sends into one conversation ────────────────────
+//
+// This test was written the other way round, and pinned it: "a this-session
+// blocker keeps the block, flag or no flag". That was true while the composer
+// was the ONLY thing standing between two messages racing into one run — a
+// pending entry aimed here is one the scheduler is about to claim and send into
+// this very session, and a line typed over it would arrive in the middle of it.
+//
+// The project queue moves that job to the scheduler, which is the only place it
+// was ever answerable: under the flag a send is ADMITTED before it spawns, and
+// admission queues any message aimed at a session with due pending entries of
+// its own (`behind_own`) rather than letting it start. So the second line is no
+// longer a race — it is the next entry in this conversation's own line, in the
+// order it was typed, with a chip under its bubble saying so. Keeping the box
+// shut would refuse a message the server is perfectly willing to take.
+//
+// Hence: parametrised on the flag, because BOTH sentences are true — one about a
+// build where nothing orders those two sends, one about a build where something
+// does.
+for (const queueOn of [false, true]) {
+  test(
+    `a message aimed HERE ${queueOn ? "queues behind itself (flag on)" : "shuts the box (flag off)"}`,
+    async () => {
+      const mine = pending("a", "2026-09-09T14:00:00+00:00");
+      const theirs = pending("b", "2026-09-09T14:00:00+00:00", { session_id: "s2" });
+      const h = await mount([mine, theirs], "s1", [], queueOn);
+      // The BLOCKERS are the same list either way — this conversation's own
+      // pending work, which is what the card above the composer draws. Only
+      // whether the box is shut over it changes.
+      expect(h.state().blockers.map((e) => e.id)).toEqual(["a"]);
+      expect(h.state().blocked).toBe(!queueOn);
+      expect(h.state().schedDisabled).toBe(!queueOn);
+      expect(h.state().reason === "").toBe(queueOn);
+
+      // And a folder-mate aimed at a DIFFERENT session never reached `blockers`
+      // in the first place, so it never shut this box under either flag — the
+      // half of "the composer stays open" that was always true.
+      h.serve([theirs]);
+      await h.poll();
+      expect(h.state().blockers).toEqual([]);
+      expect(h.state().blocked).toBe(false);
+    },
+  );
+}
 
 test("reset() empties the block for the transcript that replaced it", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);

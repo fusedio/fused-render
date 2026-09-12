@@ -274,3 +274,57 @@
 .c-artstrip .art-chip:hover .art-chip-go {
   color: var(--c-accent);
 }
+
+/* ── the queue chip ──────────────────────────────────────────────────────────
+   The same block, one row instead of a column (ui/QueuedChip.tsx). A queued
+   message shuts nothing — the composer stays open and the next line queues
+   behind this one — so there is no reason line to explain and no lid to draw:
+   the card is a ring, the words and Skip, on one line that wraps when the pane
+   is narrow.
+
+   NO WIDTH AND NO BREAKPOINT ANYWHERE IN IT. This pane is 340px in a sidebar and
+   900px in a canvas, and "#12 in line · behind TASK-1041" is as long as the data
+   makes it — so the row WRAPS (flex-wrap) and the caption is the part allowed to
+   give way, rather than any cell being told a size. */
+.c-schedblock.c-queuechip {
+  padding-bottom: 8px;
+}
+.c-schedblock .sb-card--chip {
+  flex-direction: row;
+  align-items: center;
+  /* The one concession to a narrow pane: the words drop under the ring rather
+     than the Skip button being pushed off the card. */
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 11px;
+}
+/* QUEUED IS THE PAGE'S BLUE — `--activity`, the same token the Tasks board's
+   Queued ring and the List chip wear. Not the chat's accent: that is salmon, and
+   browser QA read it as a third colour for one state. One state, one colour, on
+   every surface that names it. */
+.c-schedblock .sb-ring--queued {
+  color: var(--activity);
+}
+.c-schedblock .sb-queued-word {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--c-fg);
+}
+.c-schedblock .sb-queued-line {
+  /* The cell that gives way: it shrinks and ellipsises inside itself, so a
+     narrow pane loses the end of "behind TASK-041" rather than the button. */
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--c-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.c-schedblock .sb-queued-glyph {
+  flex: 0 0 auto;
+  color: var(--c-accent-text);
+}

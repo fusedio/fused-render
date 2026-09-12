@@ -8,8 +8,13 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { useNativeChatFlag, nativeChatEnabledNow, resetNativeChatFlagForTests } =
-  await import("./feature-flag");
+const {
+  useNativeChatFlag,
+  nativeChatEnabledNow,
+  resetNativeChatFlagForTests,
+  queueEnabled,
+  publishProjectQueueEnabled,
+} = await import("./feature-flag");
 
 let calls = 0;
 let answer: () => Promise<unknown> = async () => ({ chat: { native: false } });
@@ -100,4 +105,53 @@ test("after a failed read a later mount can still ask again", async () => {
   const seen = await probe();
   expect(seen[seen.length - 1]).toBe(true);
   expect(calls).toBe(3);
+});
+
+// ---- the project queue rides the same one prefs read -------------------------
+// `prefs.queue.enabled` (shell/prefs.py `project_queue_enabled`). A reader of
+// its own would double the /api/prefs GET every chat embed already makes — six
+// mounts on the tasks wall is six needless round trips for one boolean.
+
+test("the queue switch comes off the same GET, and is OPT-IN", () => {
+  // Before any read has landed: OFF. Unlike the native flag's tri-state this is
+  // an honest answer rather than an absence — off is the pref's own default, and
+  // it is exactly what every send did before the feature existed.
+  expect(queueEnabled()).toBe(false);
+});
+
+test("a server that has never heard of the field reads as off", async () => {
+  // `=== true`, the opposite polarity from the recap switch on the same payload:
+  // that one defaults ON and is read `!== false`. Getting this one backwards
+  // would turn the queue on for every server that predates it.
+  answer = async () => ({ chat: { native: true } });
+  await probe();
+  expect(queueEnabled()).toBe(false);
+  expect(calls).toBe(1);
+});
+
+test("the one read answers it — no second request", async () => {
+  answer = async () => ({ chat: { native: false }, queue: { enabled: true } });
+  await probe();
+  expect(queueEnabled()).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("a Preferences PUT publishes without taking the native flag's answer away", async () => {
+  // The publish deliberately does NOT bump the generation: a click about the
+  // queue must not put every mounted chat embed back on a skeleton.
+  answer = async () => ({ chat: { native: true }, queue: { enabled: false } });
+  const seen = await probe();
+  expect(seen[seen.length - 1]).toBe(true);
+  publishProjectQueueEnabled(true);
+  expect(queueEnabled()).toBe(true);
+  expect(nativeChatEnabledNow()).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("the test reset forgets it too, so a suite starts from 'off'", async () => {
+  answer = async () => ({ queue: { enabled: true } });
+  await probe();
+  expect(queueEnabled()).toBe(true);
+  resetNativeChatFlagForTests();
+  expect(queueEnabled()).toBe(false);
 });

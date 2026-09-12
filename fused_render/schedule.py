@@ -325,6 +325,236 @@ def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> boo
     return False
 
 
+def wake() -> None:
+    """Ring the loop's doorbell unconditionally — "look again, now".
+
+    A HINT, exactly like `_ring`, and never a mechanism: every rule about what
+    fires stays in `tick`, so a ring that lands at the wrong moment costs one
+    early pass that finds nothing. `_ring` asks the store whether anything is
+    due before ringing; this is for callers that already know something changed
+    OUTSIDE the store and cannot answer that question — the watcher seeing a
+    holder's process exit, a turn ending in this process. Their news is "a
+    folder just freed", which no entry's due time records.
+    """
+    _wake.set()
+
+
+# ------------------------------------------------------------- the second ring
+#
+# `_turn_ended` rings the loop the moment a verdict lands, which is what makes
+# "the next task starts in about a second" true for every hold that ends on an
+# EVENT. Two of them do not: a transcript that reads live until its 45-second
+# window runs out, and a folder holder that is `starting` or `reserved` — a
+# grace period with a clock on it. Nothing rings when those lapse, so a tick
+# that held something for one of them would wait out the whole 30-second poll.
+#
+# THE TIMER IS SET FOR WHEN THE CLOCK ACTUALLY RUNS OUT (round-3 review,
+# 2026-09-12). It used to ring two seconds later and then — keyed on the set of
+# entries held, which does not change while the hold stands — never again, so
+# for the 20-second reservation, the two-minute starting grace and the
+# 45-second transcript window it exists for it rang once, far too early, and
+# left the 30-second poll to do the work anyway. The pass that holds knows how
+# long each hold has left (`project_queue.holder_expires_in`, `_live_expires_in`),
+# and the earliest of those is the moment worth waking for.
+_REARM_FLOOR_S = 0.5     # never ring busier than this
+_rearm_lock = threading.Lock()
+_rearm_timer: threading.Timer | None = None
+
+
+def _cancel_rearm() -> None:
+    """Drop any pending re-ring. One timer at a time is the whole invariant —
+    `_rearm` calls this before arming, and a shutdown (or a test) calls it to
+    leave nothing behind. The timer is a daemon, so nothing here keeps the
+    process alive either way."""
+    global _rearm_timer
+    with _rearm_lock:
+        timer, _rearm_timer = _rearm_timer, None
+    if timer is not None:
+        timer.cancel()
+
+
+def _rearm(delays: list[float]) -> None:
+    """Ring the loop again when the earliest hold this pass made expires.
+
+    `delays` is seconds-from-now, one per hold that ends on a clock rather than
+    on an event; an empty list means every hold this pass made has a bell of its
+    own and no timer is needed. Bounded on both ends: never sooner than
+    `_REARM_FLOOR_S` (a hold whose clock has already run out re-ticks once, it
+    does not spin) and never later than `POLL_INTERVAL_S`, which is the floor
+    under all of this and the reason a missed ring costs latency and nothing
+    else.
+
+    **Idempotent per pass, not per episode.** Called on every tick, and every
+    call replaces the one timer this module owns — a hold that stands for ten
+    minutes therefore costs one timer at a time, re-armed to the remaining time
+    as the clock runs down, rather than one timer per tick piling up or (the bug
+    this replaces) one timer for the whole episode fired two seconds in.
+
+    A hint like `wake` itself: the timer only sets an Event, every rule about
+    what fires stays in `tick`, and a ring that lands on a state that has not
+    moved costs one early pass that finds nothing. Best-effort — a timer that
+    cannot start leaves the ordinary poll interval doing what it always has."""
+    global _rearm_timer
+    _cancel_rearm()
+    if not delays:
+        return
+    delay = min(max(min(delays), _REARM_FLOOR_S), float(POLL_INTERVAL_S))
+    try:
+        timer = threading.Timer(delay, wake)
+        timer.daemon = True
+        timer.start()
+    except Exception:  # noqa: BLE001 — the 30s poll is the floor under this
+        logger.debug("could not re-arm the schedule loop", exc_info=True)
+        return
+    with _rearm_lock:
+        _rearm_timer = timer
+
+
+def _live_expires_in(session_id: str, now: datetime) -> float:
+    """Seconds until the per-session transcript hold on `session_id` lapses by
+    itself — 0.0 when nothing can be read, which asks for no timer at all.
+
+    `_session_live` is true while the tail's last real activity is inside
+    `RUNNING_WINDOW_SEC`, so that moment is when this hold ends if nothing else
+    ends it first. The echo window (`VERDICT_ECHO_SEC`) is not a second
+    candidate: it can only ever silence a hold that the 45-second window is
+    already holding, so the window is always the later of the two and always
+    the one that actually frees the entry."""
+    try:
+        from fused_render import session_liveness
+
+        active = session_liveness.session_activity(session_id, now.timestamp())
+    except Exception:  # noqa: BLE001 — an unreadable tail asks for no bell
+        logger.debug("could not read the tail for %s", session_id, exc_info=True)
+        return 0.0
+    if not active:
+        return 0.0
+    return max(0.0, active + session_liveness.RUNNING_WINDOW_SEC - now.timestamp())
+
+
+def _pq():
+    """`project_queue`, imported on use.
+
+    That module reads this one back (`_sending_entries` asks for the claimed
+    entries), so a module-level import here would close the cycle — which is
+    why it imports this one inside a function too. Everything below is gated on
+    `project_queue.enabled()`, and with the flag off the only cost is this
+    lookup."""
+    from fused_render import project_queue
+
+    return project_queue
+
+
+# How far a `follow_of` chain is walked before the walk simply stops. The shape
+# the client makes is two deep — a message typed into a chat whose first message
+# is still queued, and a second typed behind that — and the bound is a little
+# more so that a hand-edited store (a chain of twenty, or one that points at
+# itself) cannot spin a tick. Stopping early costs a follower its leader's key,
+# which is the same answer an erased leader already gives.
+FOLLOW_HOPS = 4
+
+
+def leader_of(entry: dict, by_id: dict | None) -> dict | None:
+    """The entry at the head of `entry`'s follow chain, or None if it follows
+    nothing.
+
+    `follow_of` is the one-off twin of `template_id` + `_chain_session`: a
+    message typed into a brand-new chat whose FIRST message is still queued has
+    no session to name, so it names the entry it was typed behind instead, and
+    everything that groups, orders or dispatches that work reads the leader's
+    answer through here. `by_id` is the store the caller already holds, keyed by
+    entry id — it is not read from disk here, because every caller is either
+    mid-pass over the entries or inside the lock that owns them.
+
+    **The LAST entry that exists, not the id that was written.** A leader the
+    user erased does not orphan the chain behind it: the walk stops at whatever
+    it reached, so a follower of an erased leader stands alone (exactly as it
+    did before this field existed) and a follower of THAT follower groups under
+    it. Bounded by `FOLLOW_HOPS`, and a chain that points back at something
+    already seen ends there — this walks a store a human can edit, and a cycle
+    must cost nothing.
+
+    **A CHAIN LONGER THAN `FOLLOW_HOPS` HAS NO LEADER AT ALL — None, not the
+    middle entry the walk happened to stop on** (round-2 review, 2026-09-12).
+    Answering with a middle entry files the follower under a key that is itself
+    a follower: `_task_key` would put it under `pending:<middle>` while the
+    middle entry's own row is `pending:<head>`, so one message would appear
+    under two keys and the ring would reach neither row reliably. Standing alone
+    is the answer an erased leader already gives, it is a shape only a
+    hand-edited store can make, and it costs that entry its place in its chat
+    rather than the listing its consistency.
+    """
+    if not by_id:
+        return None
+    seen = {str(entry.get("id") or "")}
+    leader: dict | None = None
+    current = entry
+    for _ in range(FOLLOW_HOPS):
+        nxt = str(current.get("follow_of") or "")
+        if not nxt or nxt in seen:
+            break
+        found = by_id.get(nxt)
+        if found is None:
+            break
+        seen.add(nxt)
+        leader = current = found
+    else:
+        # Every hop spent and the chain still goes somewhere real: too long to
+        # file, so this entry stands alone.
+        nxt = str(current.get("follow_of") or "")
+        if nxt and nxt not in seen and by_id.get(nxt) is not None:
+            return None
+    return leader
+
+
+def _by_id() -> dict:
+    """The store keyed by entry id, for a caller that holds no copy of its own.
+    Under the lock, like every other read here."""
+    with _lock:
+        return {str(e.get("id") or ""): e for e in _read()}
+
+
+def _task_key(entry: dict, by_id: dict | None = None) -> str:
+    """The Tasks page's key for one entry — the session it ran in, else the one
+    it named, else its LEADER's key, else `pending:<id>`.
+
+    The SAME rule as the tasks router's `_entry_session` plus its fallback, and
+    it has to be: `tasks_watch.notify` keys are matched against the rows that
+    listing built, so a key spelled differently here would ring a row nobody is
+    watching. Which is also why the follower case belongs here: a message typed
+    into a queued chat is filed under the LEADER's row, so ringing its own
+    `pending:<id>` would ring nothing at all.
+
+    `by_id` is the caller's own copy of the store; the disk is read only for an
+    entry that actually follows one, which is the only case that needs it."""
+    session = str(entry.get("claude_session_id") or entry.get("session_id") or "")
+    if session:
+        return session
+    from fused_render import tasks_store
+
+    if str(entry.get("follow_of") or ""):
+        leader = leader_of(entry, _by_id() if by_id is None else by_id)
+        if leader is not None:
+            session = str(leader.get("claude_session_id")
+                          or leader.get("session_id") or "")
+            return session or tasks_store.pending_key(str(leader.get("id") or ""))
+    return tasks_store.pending_key(str(entry.get("id") or ""))
+
+
+def _notify(keys: set[str]) -> None:
+    """Tell the Tasks long-poll which rows moved. Best-effort: a watcher that
+    cannot be rung costs one poll interval, never the write that got here."""
+    keys = {k for k in keys if k}
+    if not keys:
+        return
+    try:
+        from fused_render import tasks_watch
+
+        tasks_watch.notify(keys)
+    except Exception:  # noqa: BLE001 — a missed ring is latency, not an error
+        logger.debug("could not notify the tasks watcher", exc_info=True)
+
+
 def store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
 
@@ -840,7 +1070,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
            new_task_each_run=None, session_learned=None,
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
-           model: str = "", effort: str = "") -> dict:
+           model: str = "", effort: str = "", priority=None,
+           follow_of: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -876,6 +1107,13 @@ def create(target: str, message: str, due=None, session_id: str = "",
     re-stating a learned id can say which kind it is, because the alternative
     was the form INFERRING it from whether the entry repeated, and that could
     not survive a task being demoted to a one-off and promoted back.
+
+    `follow_of` is the same link one step down: the entry this message was
+    typed BEHIND, for the one case where a chat has no session to name because
+    its own first message is still queued. It must name an entry that exists
+    (400 otherwise), and everything downstream — the Tasks row it is filed
+    under, its place in the line, the session it resumes when it finally goes —
+    reads the leader's answer through `leader_of`.
 
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
@@ -1006,6 +1244,22 @@ def create(target: str, message: str, due=None, session_id: str = "",
     if mode not in PERMISSION_MODES:
         raise ValueError(f"permission_mode: expected one of {PERMISSION_MODES}")
 
+    # THE MESSAGE THIS ONE WAS TYPED BEHIND, and it has to name a real one. A
+    # follower borrows its leader's task key and its leader's session, so an id
+    # that names nothing would be a message filed under a row that does not
+    # exist — refused here, with the field named, exactly like every other thing
+    # a caller can get wrong. The check is a moment old by the time the entry is
+    # stored (the leader can be cancelled in between) and that is fine: an
+    # erased leader is a case every reader already handles by leaving the
+    # follower to stand alone.
+    follow_of = str(follow_of or "").strip()
+    if follow_of:
+        with _lock:
+            known = any(str(e.get("id") or "") == follow_of for e in _read())
+        if not known:
+            raise ValueError(
+                f"follow_of: no scheduled message with id {follow_of!r}")
+
     entry = {
         # Due-time-ordered id: the store is a list a human may well read, and an
         # id that sorts the way the schedule does is worth more here than an
@@ -1073,6 +1327,57 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # Only ever true on a one-off: touching the repeat tick IS choosing a
         # time, so the form never sends it alongside a rule.
         "immediate": _flag(immediate) and not (repeats or spec is not None),
+        # SKIP THE QUEUE — the only field the project queue adds to an entry,
+        # and the only part of that feature that cannot be derived from the
+        # disk (project_queue.py's docstring says why everything else is).
+        # False for every entry anybody creates: priority is a thing the user
+        # asks for on work that is already waiting, never a property a new
+        # message is born with. `set_priority` is what turns it on.
+        #
+        # Stored flag-agnostically, like every other field here. The flag
+        # decides whether the ORDER reads it (`_queue_order`, `_claim_due`);
+        # storing it either way means flipping the pref does not have to
+        # migrate a store, and an entry skipped with the flag on keeps its
+        # place in line if it is flipped off and back.
+        "priority": _flag(priority),
+        # WHEN RUN NOW WAS PRESSED ON THIS MESSAGE — "" until it is, and never
+        # set by anybody creating one.
+        #
+        # `due` is a fact about the ASK and never moves (`run_now`'s docstring
+        # says why: a message that ran early is a message that ran early, and
+        # the calendar draws the chip on the day the user picked). But Run now
+        # on a message due TOMORROW, in a folder somebody else is holding, has
+        # to leave something behind that says the user asked for it now —
+        # otherwise the entry is skipped to the head of a line it is not even
+        # in, every reader still sees `upcoming`, and the scheduler waits for
+        # tomorrow (browser QA, 2026-09-12).
+        #
+        # So: a second stamp beside `due`, never instead of it. Everything that
+        # asks "is this waiting to go RIGHT NOW" reads the earlier of the two
+        # (`_queue_due`, `project_queue.order_key`, `tasks._queue_at`);
+        # everything that asks "when was this scheduled for" — the calendar,
+        # `_next_run`, the row's own time — reads `due` and is untouched.
+        #
+        # Only ever WRITTEN under the flag (run-now's queued arm is the only
+        # thing that produces one), stored flag-agnostically like `priority`
+        # above, and NEVER inherited: a restore clears it and a materialized
+        # occurrence is born without one.
+        "run_now_at": "",
+        # THE ENTRY THIS MESSAGE WAS TYPED BEHIND — "" for all but one shape.
+        # A chat with no session yet whose first message was queued IS a task
+        # (`pending:<entry-id>`), and the second message typed into it has
+        # nothing else to name: no session exists to continue, and a fresh entry
+        # of its own would fork a second row beside the very chat it was typed
+        # into (browser QA, 2026-09-12). Naming the leader is what keeps the two
+        # messages one task — the one-off twin of `template_id` +
+        # `_chain_session`, which is how a repeat's runs 2..N find their thread.
+        #
+        # Stored flag-agnostically like `priority` above, and only ever WRITTEN
+        # under the flag: the client passes it from the admission answer, and
+        # admission is the only thing that produces a queued first message. So
+        # with the flag off the field is absent from everything in the store and
+        # every reader of it is a no-op.
+        "follow_of": follow_of,
         "state": RECURRING if (repeats or spec is not None) else PENDING,
         # "" on a one-shot; the cron line on a template. An OCCURRENCE never
         # carries it — the link runs the other way, through `template_id`.
@@ -1221,6 +1526,11 @@ def restore(entry_id: str) -> dict | None:
                 return None
             entry["state"] = PENDING
             entry["error"] = ""
+            # NEVER INHERITED, same rule as `priority` on a materialized
+            # occurrence: "run it now" was said about the run that was then
+            # skipped, and a restored occurrence that came back already at the
+            # head of its folder's line is not what anybody asked for.
+            entry["run_now_at"] = ""
             _write(entries)
             restored = entry
             break
@@ -1242,7 +1552,11 @@ def _queue_order(entries: list[dict], now: datetime) -> list[tuple[datetime, str
     """Past-due pending entries, in the order `_claim_due` will send them.
 
     Deliberately the same key — due time, id breaking ties — because a queue
-    listed in one order and run in another is worse than no queue at all.
+    listed in one order and run in another is worse than no queue at all. That
+    is also why the project-queue flag is read HERE and not only in the sweep:
+    with it on both sort by `project_queue.order_key`, so a skipped entry shows
+    at the head of the list it will actually be sent from.
+
     Entries past an explicit bound are left out: they are not waiting to run,
     they are waiting to be swept to `missed`."""
     queued: list[tuple[datetime, str, dict]] = []
@@ -1253,13 +1567,23 @@ def _queue_order(entries: list[dict], now: datetime) -> list[tuple[datetime, str
             when = parse_due(entry.get("due"))
         except ValueError:
             continue
+        when = _queue_due(entry, when)
         if when > now:
             continue
         bound = _entry_bound(entry)
         if bound is not None and when < now - timedelta(seconds=bound):
             continue
         queued.append((when, str(entry.get("id") or ""), entry))
-    queued.sort(key=lambda item: (item[0], item[1]))
+    if _pq().enabled():
+        # The whole store, keyed by id, so `order_key` can put a follower behind
+        # the message it was typed behind. Built once per call rather than
+        # looked up per entry: a follower's leader need not be past due (it can
+        # be the one already claimed), so the map has to be wider than the list
+        # being sorted.
+        by_id = {str(e.get("id") or ""): e for e in entries}
+        queued.sort(key=lambda item: _pq().order_key(item[2], by_id))
+    else:
+        queued.sort(key=lambda item: (item[0], item[1]))
     return queued
 
 
@@ -1351,6 +1675,56 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
     return {"cancelled": cancelled, "refused": refused, "reasons": reasons}
 
 
+def set_priority(entry_ids: list[str], value: bool) -> dict:
+    """Skip the queue (or un-skip it): `{"updated": [id...], "refused": [id...]}`.
+
+    **Only a PENDING entry can be skipped**, and every other state is refused
+    rather than silently ignored. That is the same line `cancel_queued` draws
+    and for the same reason: an entry the tick has already claimed is away, and
+    moving it up the line it has left would be a promise about a message that
+    is not in the line any more. A `sent`, `cancelled` or `missed` entry has no
+    line to be at the head of at all.
+
+    The write is flag-agnostic — the field is stored either way (see `create`)
+    — and so is the ring, which is why this is safe to call with the project
+    queue off: an entry marked priority that nothing reads is an entry in the
+    order it was already in.
+
+    **Rings both bells.** `wake()` because the head of a folder's line may have
+    just changed and the loop is otherwise up to 30 seconds away from noticing;
+    `tasks_watch.notify` because the Tasks page draws the position and a skip
+    that takes a poll interval to appear reads as a button that did nothing.
+    Both after the lock, never inside it.
+    """
+    wanted = [str(i) for i in (entry_ids or []) if isinstance(i, str) and i]
+    value = value is True
+    updated: list[str] = []
+    refused: list[str] = []
+    keys: set[str] = set()
+    with _lock:
+        entries = _read()
+        by_id = {str(e.get("id") or ""): e for e in entries}
+        changed = False
+        for entry_id in wanted:
+            entry = by_id.get(entry_id)
+            if entry is None or entry.get("state") != PENDING:
+                refused.append(entry_id)
+                continue
+            updated.append(entry_id)
+            # `by_id` rather than a second read: a follower is filed under the
+            # row its leader owns, and this is the map that answers that.
+            keys.add(_task_key(entry, by_id))
+            if _flag(entry.get("priority")) != value:
+                entry["priority"] = value
+                changed = True
+        if changed:
+            _write(entries)
+    if updated:
+        wake()
+        _notify(keys)
+    return {"updated": updated, "refused": refused}
+
+
 def _update(entry_id: str, **fields) -> None:
     """Merge `fields` into one entry, re-reading under the lock so a concurrent
     cancel or create is not clobbered by a stale copy."""
@@ -1368,6 +1742,29 @@ def _update(entry_id: str, **fields) -> None:
 
 
 # --------------------------------------------------------------- the firing
+
+
+def _queue_due(entry: dict, when: datetime) -> datetime:
+    """When this entry joined the LINE — `when` (its due time), or the moment
+    Run now was pressed on it if that came first.
+
+    THE ONE PLACE the two stamps are reconciled, so "due for queue purposes"
+    cannot drift from "due" by accident. `due` itself is never rewritten (see
+    `run_now`), so a message the user asked for now while its folder was busy
+    would otherwise be invisible to every reader of the line — `_claim_due`
+    would not consider it, `_queue_order` would not list it, and the row would
+    read `upcoming` while the answer to the gesture said `queued`.
+
+    An unreadable stamp is no stamp: the entry keeps its own due time, which is
+    the same direction every other defensive read here takes."""
+    stamp = str(entry.get("run_now_at") or "")
+    if not stamp:
+        return when
+    try:
+        asked = parse_due(stamp)
+    except ValueError:
+        return when
+    return min(when, asked)
 
 
 def _claim_due(now: datetime) -> list[dict]:
@@ -1389,7 +1786,7 @@ def _claim_due(now: datetime) -> list[dict]:
 
     The events this pass decides on are collected and emitted AFTER the lock
     (`_emit` takes its own), so the two locks are never nested."""
-    due: list[tuple[datetime, str]] = []
+    due: list[tuple[datetime, str, dict]] = []
     announce: list[tuple[str, dict, str]] = []
     with _lock:
         entries = _read()
@@ -1447,6 +1844,7 @@ def _claim_due(now: datetime) -> list[dict]:
                 announce.append((EVENT_FAILED, dict(entry), entry["error"]))
                 changed = True
                 continue
+            when = _queue_due(entry, when)
             if when > now:
                 continue
             # The bound is per-entry and USUALLY None — nothing expires, missed
@@ -1468,7 +1866,10 @@ def _claim_due(now: datetime) -> list[dict]:
                 announce.append((EVENT_MISSED, dict(entry), entry["error"]))
                 continue
             # Due and sendable. Left PENDING — `_claim` takes it, one at a time.
-            due.append((when, str(entry["id"])))
+            # The entry travels with its sort keys because the project queue's
+            # order reads a field off it; `entries` is this call's own copy and
+            # nothing writes to it after the lock, so carrying it out is safe.
+            due.append((when, str(entry["id"]), entry))
         if changed:
             _write(entries)
     for kind, entry, detail in announce:
@@ -1482,18 +1883,38 @@ def _claim_due(now: datetime) -> list[dict]:
     # hold in `tick` turns "which goes first" into "which conversation turn happens
     # first", but a batch firing in the order the user asked for is the right
     # behaviour for all of them. Ties break on the id, itself due-time-derived.
-    due.sort(key=lambda pair: (pair[0], pair[1]))
-    return [entry_id for _, entry_id in due]
+    #
+    # With the project queue on, `order_key` puts a skipped entry in front of
+    # that — the one thing a user can say about the order, and the only reason
+    # this sort is not simply the tuple above.
+    if _pq().enabled():
+        # …and `order_key` reads a follower's LEADER off this map, so a message
+        # typed into a queued chat can never be sent before the message it was
+        # typed behind. `entries` is this call's own copy, as above.
+        by_id = {str(e.get("id") or ""): e for e in entries}
+        due.sort(key=lambda item: _pq().order_key(item[2], by_id))
+    else:
+        due.sort(key=lambda item: (item[0], item[1]))
+    return [entry_id for _, entry_id, _ in due]
 
 
-def _claim(entry_id: str, now: datetime) -> dict | None:
+def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
     """Take ONE entry for sending: `pending` -> `sending`, written before the
     caller spawns anything. Returns the claimed copy, or None if it is no longer
     pending (cancelled between the sweep and here, or already taken).
 
     The re-read under the lock is what makes that None real rather than
     theoretical: the sweep's verdict is a moment old by the time we get here, and
-    a cancel landing in that window must win."""
+    a cancel landing in that window must win.
+
+    `session_id` is the conversation a FOLLOWER resolved from its leader at
+    dispatch (`_follow_session`), written onto the entry in the same breath as
+    the claim and only where the entry has none of its own. The same move
+    `_chain_session` makes for a template's next run, and written rather than
+    passed straight to the spawn for the same reason: `session_id` is the INPUT
+    ("resume this one"), and a row that resumed a conversation without recording
+    which one would read afterwards as a fresh send. `session_learned` goes with
+    it, because the system worked this id out from a run — nobody chose it."""
     with _lock:
         entries = _read()
         for entry in entries:
@@ -1503,6 +1924,9 @@ def _claim(entry_id: str, now: datetime) -> dict | None:
                 return None
             entry["state"] = SENDING
             entry["fired"] = now.isoformat()
+            if session_id and not str(entry.get("session_id") or ""):
+                entry["session_id"] = session_id
+                entry["session_learned"] = True
             _write(entries)
             claimed = dict(entry)
             break
@@ -1732,6 +2156,22 @@ def _send(entry: dict) -> None:
         _close_unwatched(entry, "could not start the watcher for this turn")
 
 
+def _turn_ended(entry: dict) -> None:
+    """A turn just finished: ring the loop and the Tasks watchers.
+
+    The 30-second poll is the right interval for "did anything come due", and
+    the wrong one for "the thing that was in the way has stopped". Whatever was
+    waiting on this conversation — or, with the project queue on, on the folder
+    it was editing — should go in about a second, not on the next timer.
+
+    Flag-agnostic and deliberately so. With the queue off the ring costs one
+    early pass that finds the same nothing it would have found later, and the
+    notify is simply true: this row changed, and the page drawing it has been
+    long-polling for exactly that news."""
+    wake()
+    _notify({_task_key(entry)})
+
+
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     """One observation of a live turn. False stops the watch.
 
@@ -1782,6 +2222,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             # pressed it.
             _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
             _report(entry_id, state="cancelled")
+            _turn_ended(entry)
             return False
         if reason:
             _update(entry_id, turn="failed", error=reason,
@@ -1797,6 +2238,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             _update(entry_id, turn="ok", turn_at=_now().isoformat())
             _report(entry_id, state="done", detail="finished")
             _emit(EVENT_DONE, entry)
+        _turn_ended(entry)
         return False
 
     # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
@@ -1957,6 +2399,11 @@ def _close_unwatched(entry: dict, reason: str) -> None:
             turn_at=_now().isoformat())
     _report(entry_id, state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
+    # A turn nobody could follow to the end still ENDED — whatever was waiting
+    # on this conversation has been waiting on a watch, not on work. Keyed off
+    # the stored copy, which knows the session the run reported; the copy this
+    # thread has held since the send may predate it.
+    _turn_ended(stored)
 
 
 def _busy_sessions(entries: list[dict]) -> set[str]:
@@ -2039,6 +2486,123 @@ def _session_live(session_id: str, now: datetime, seen: dict | None = None) -> b
     if seen is not None:
         seen[session_id] = live
     return live
+
+
+# THE VERDICTS THAT MEAN THE WATCHER SAW THE TURN END — the only two a
+# live-looking transcript may be measured against (`_verdict_echo`).
+#
+# `turn` is truthy for four words and the other two are not evidence that
+# anything is over. `unknown` is the dangerous one: `_claim_due`'s sweep stamps
+# it on every SENT entry whose turn was still open when the app stopped, so on
+# the first tick after a restart it lands on runs whose detached `claude` is
+# still writing — reading that as a verdict would call a live transcript's own
+# pulse an echo and put a second `claude --resume` on it, which is the one
+# outcome this whole gate exists to prevent. `cancelled` is quieter and just as
+# wrong: `_turn_tick`'s ✕ arm calls `agent._cancel` and stamps the word in the
+# next line, and `_cancel`'s gentler road is an `interrupt` control request —
+# the CLI has been TOLD to abort and writes the interrupted turn's own closing
+# rows afterwards, so the process is alive at the moment the verdict is
+# recorded. Only `ok` and `failed` are written off a `_poll` that reported
+# `done` (round-3 review, 2026-09-12).
+_WATCHED_VERDICTS = frozenset({"ok", "failed"})
+
+
+def _verdict_at(session_id: str, entries: list[dict]) -> float:
+    """The newest turn verdict THIS MODULE WATCHED LAND for `session_id`, as a
+    unix timestamp — 0.0 when it has none.
+
+    Both id fields, exactly as `_busy_sessions` reads them and for the same
+    reason: a fresh send occupies the session it GOT, and that id lives on
+    `claude_session_id` while the input stays "". An entry whose `turn` a
+    pre-stamp store wrote has no `turn_at` and is skipped rather than guessed
+    at — with no moment to measure the tail against, the old rule is the honest
+    one; and a `turn` that is not one of `_WATCHED_VERDICTS` is skipped because
+    nothing watched that turn finish."""
+    newest = 0.0
+    for entry in entries:
+        if str(entry.get("turn") or "") not in _WATCHED_VERDICTS:
+            continue
+        if session_id not in (str(entry.get("session_id") or ""),
+                              str(entry.get("claude_session_id") or "")):
+            continue
+        try:
+            when = parse_due(entry.get("turn_at")).timestamp()
+        except ValueError:
+            continue
+        newest = max(newest, when)
+    return newest
+
+
+def _verdict_echo(session_id: str, entries: list[dict], now: datetime,
+                  seen: dict | None = None) -> bool:
+    """Is this session's transcript liveness only the ECHO of a turn this module
+    has already filed a verdict for?
+
+    THE 45-SECOND WINDOW LIES IN EXACTLY ONE DIRECTION, and the scheduler was
+    the surface paying for it (browser QA, 2026-09-12). A leader finished its
+    turn at T — `turn_at` stamped, `_turn_ended` rang the loop — and the message
+    typed behind it did not go until T+60, three whole ticks later. Nothing was
+    busy and the folder was free: `_session_live` was reading the finished
+    turn's OWN closing rows as a live turn, because a non-interactive run writes
+    no `turn_duration` record for `tail_activity` to find and the window has
+    nothing else to go on. The hold was holding a message against the very turn
+    it was waiting for.
+
+    So the same reasoning the Tasks router already applies to the same lie
+    (`tasks._verdict_outvotes_live`): when the newest verdict we WATCHED land
+    for this conversation is stamped, and the tail after it is that turn's own
+    closing rows, the tail is an obituary and not a pulse.
+
+    **THE TAIL'S SHAPE DECIDES, AND THE CLOCK IS ONLY A CEILING** (round-3
+    review, 2026-09-12). Measuring by the stamp alone silenced a HUMAN turn
+    that genuinely began inside the window — the user typing three seconds
+    after the leader finished is activity "younger than verdict + 15s" and was
+    read as the leader's echo, which is two processes on one transcript
+    arriving through the very rule that was meant to stop them. A transcript
+    says which it is: `session_liveness.session_turn_open` walks back to the
+    last MESSAGE, and a `user` row (or an assistant row mid-tool-call) is a
+    turn somebody has open right now — never an echo, whatever the clock says.
+    Only once the file's last word is a finished assistant reply does
+    `VERDICT_ECHO_SEC` get asked, and there it does the job it was widened for:
+    activity still appending 15 seconds past the verdict is sustained work
+    keeping its vote, not a handful of closing rows.
+
+    **Re-read only where it can change the answer.** The verdict is looked up
+    first (in memory, off entries this pass already holds), so the transcript is
+    re-read only for a session that both reads live AND has a watched, stamped
+    verdict; the shape read settles most of those on its own and the freshness
+    read happens only behind it. `seen` memoizes the whole answer within one
+    pass, like `_session_live`'s own.
+
+    **Flag-gated** (`project_queue.enabled()`). It is a correctness fix for the
+    pre-existing per-session hold too, and the blast radius is what decides it:
+    with the queue off the schedule behaves byte-for-byte as it shipped, and the
+    30-second poll that covers the same case there is exactly what the queue's
+    "next task starts in about a second" promise cannot live with.
+
+    Never raises: a read that fails answers False, which leaves the hold exactly
+    as strict as it was."""
+    if not session_id or not _pq().enabled():
+        return False
+    if seen is not None and session_id in seen:
+        return seen[session_id]
+    echo = False
+    verdict = _verdict_at(session_id, entries)
+    if verdict > 0.0:
+        try:
+            from fused_render import session_liveness
+
+            stamp = now.timestamp()
+            if not session_liveness.session_turn_open(session_id, stamp):
+                active = session_liveness.session_activity(session_id, stamp)
+                echo = active <= verdict + session_liveness.VERDICT_ECHO_SEC
+        except Exception:  # noqa: BLE001 — a failed read holds nothing back
+            logger.debug("could not read the tail for %s", session_id,
+                         exc_info=True)
+            echo = False
+    if seen is not None:
+        seen[session_id] = echo
+    return echo
 
 
 def _made(entry: dict) -> int:
@@ -2459,6 +3023,16 @@ def _materialize(now: datetime) -> None:
                 # entry. It is the TEMPLATE's answer that decided the session id
                 # above; copying it keeps the record of which way that went.
                 "new_task_each_run": _flag(entry.get("new_task_each_run")),
+                # NEVER INHERITED, and spelled out rather than left to default.
+                # A skip is a decision about ONE waiting run — "this one, next"
+                # — and a template that had one of its occurrences skipped
+                # would otherwise mint every future run at the head of its
+                # folder's line for ever, which nobody asked for and nobody
+                # could see they had asked for.
+                "priority": False,
+                # …and neither is the moment somebody pressed Run now on an
+                # earlier occurrence, for exactly the same reason.
+                "run_now_at": "",
                 "state": PENDING,
                 "repeats": "",
                 "template_id": str(entry["id"]),
@@ -2604,6 +3178,205 @@ def upcoming(entry: dict, horizon_days: int = 14, limit: int = 500) -> list[str]
     return times
 
 
+# ------------------------------------------------------- the folder, one at a time
+#
+# The per-SESSION hold below (`_busy_sessions`, `_session_live`) stops two
+# processes appending to one transcript. It says nothing about two DIFFERENT
+# conversations editing one working tree at the same second, which is the thing
+# the project queue exists to stop. Both rules apply with the flag on and the
+# session rules are untouched by it: this is a second gate in front of the same
+# dispatch, never a replacement for the first.
+
+
+def _folder_free(holder: dict | None, session: str) -> bool:
+    """May an entry whose conversation is `session` run in a folder whose
+    holder is `holder`?
+
+    Mirrors `project_queue.is_free` deliberately — same rule, applied to a
+    holder map computed ONCE for the whole pass instead of re-derived per entry
+    (that derivation scans the runs tree). Keep the two in step.
+
+    A free folder is free. A folder this very session is already holding is
+    free too: a second message into a conversation that is running is the
+    inbox-absorb case the chat has always had, and it is the session rules
+    below — not this one — that decide what to do with it. An entry with NO
+    session id can never be the holder, so it always waits; that is what stops
+    two brand-new tasks claiming one folder in a single pass."""
+    if holder is None:
+        return True
+    session = str(session or "")
+    return bool(session) and session in (holder.get("session_id"),
+                                         holder.get("task_key"))
+
+
+def _follow_session(entry: dict, by_id: dict) -> tuple[str, bool]:
+    """`(the conversation this entry should resume, may it go yet)` — the
+    dispatch half of `follow_of`.
+
+    A message typed into a chat whose FIRST message is still queued names that
+    first message instead of a session, because there is no session yet. Three
+    answers, and each is the leader's state read plainly:
+
+    * **the leader has RUN** (`claude_session_id`) — go, resuming it. That id is
+      written onto this entry as it is claimed (`_claim`), which is the one-off
+      twin of `_chain_session` feeding a template's next run: the answer of one
+      run becomes the input of the next, across two entries.
+    * **the leader has not run yet** — pending, claimed for sending, or sent
+      with its turn still open — HOLD. Left `pending` and untouched like every
+      other hold here. The folder rule mostly does this already (the leader is
+      usually the holder), but it is stated here because the two messages are
+      ONE task: a folder freed by something else must not let the second message
+      of a conversation open the conversation.
+    * **the leader ended without a session** — cancelled, missed, or a send that
+      broke before Claude Code minted one — run FRESH. The message is still
+      owed, and there is no thread to continue; an orphan that waited for ever
+      would be this feature losing the user's words.
+
+    The IMMEDIATE leader, not the head of the chain: a follower of a follower is
+    held by its own leader, which is in turn held by its own, so the order falls
+    out one link at a time. An erased leader means the entry stands alone —
+    exactly what it did before the field existed, and so does a chain too long
+    to file (`leader_of` answers None past `FOLLOW_HOPS`) — dispatch must agree
+    with the filing, or a message would wait on a leader whose row it is not
+    even on."""
+    leader_id = str(entry.get("follow_of") or "")
+    if not leader_id:
+        return "", True
+    leader = by_id.get(leader_id)
+    if leader is None or leader_of(entry, by_id) is None:
+        return "", True
+    ran = str(leader.get("claude_session_id") or "")
+    if ran:
+        return ran, True
+    state = str(leader.get("state") or "")
+    if state in (PENDING, SENDING) or (state == SENT and not leader.get("turn")):
+        return "", False
+    return "", True
+
+
+def _claimed_holder(session: str, entry_id: str) -> dict:
+    """The holder record this pass's own claim installs, so the entries after
+    it in the same pass see the folder as taken.
+
+    The same move as `busy.add(session)` one line below, and needed for the
+    same reason: the claim is on disk as `sending` but `holders` was derived
+    before it, and re-deriving per entry would cost a runs-tree scan each time."""
+    from fused_render import tasks_store
+
+    return {"session_id": session, "run_id": "",
+            "task_key": session or tasks_store.pending_key(entry_id),
+            "kind": "claimed"}
+
+
+def _rehold(pq, answer: dict, why: str) -> None:
+    """Put one popped answer back where it was — `at` and all.
+
+    Its own `at` is passed rather than left to default, which is the whole
+    point: `at` is the place in the line, and a record re-held with a fresh
+    stamp goes to the back of a line it was at the front of (round-3 review,
+    2026-09-12)."""
+    try:
+        pq.hold_answer(answer["queue_key"], answer["session_id"],
+                       answer["run_id"], answer["request_id"],
+                       answer["payload"], at=answer["at"])
+    except Exception:  # noqa: BLE001 — a re-hold that fails is one lost answer
+        logger.debug("could not re-hold answer %s/%s (%s)", answer["run_id"],
+                     answer["request_id"], why, exc_info=True)
+
+
+def _deliver_held_answers(holders: dict) -> None:
+    """Hand every card decision that was parked on a busy folder to its run,
+    now that the folder is free — and hold the folder for the rest of the pass.
+
+    **Before any message is dispatched**, which is the whole ordering: a held
+    answer is at the head of its folder's line by definition (project_queue's
+    docstring: the run is already open, the user already decided, and the work
+    it is mid-way through is older than anything queued behind it). Delivering
+    after a message had claimed the folder would leave the answer waiting on a
+    turn that started after the user answered it.
+
+    `agent._decide` does the delivery, NOT a decision file written from here.
+    `_decide` owns the validation this module has no business restating —
+    narrowing a session grant to the tools its card offered, the question-card
+    answers, the "keep planning" sentence on a plan deny, and the dead-run
+    verdict — and a second copy of that would drift the first time one of them
+    changed.
+
+    **One conversation per folder per pass.** Every answer popped for a folder
+    belongs to the run the user was answering, and a run may have several cards
+    open at once — so they all go. Answers held for a DIFFERENT session in the
+    same folder are put straight back: resuming two parked runs into one
+    working tree is precisely what this feature exists to prevent, and the next
+    pass (or the next free moment) delivers them.
+
+    Every delivery is wrapped: one answer whose run has gone strange must not
+    cost the tick the messages it was about to send — and an answer whose
+    `_decide` raised is put back with the `at` it had (`_rehold`), because the
+    pop that keeps two ticks from delivering one answer twice happens before
+    the call and would otherwise be where the user's decision went."""
+    pq = _pq()
+    agent = pq.agent_module()
+    if agent is None:
+        return
+    try:
+        # Cheap, and the store is about to be trusted: an answer whose run died
+        # while the folder was busy is written out as `expired` here rather than
+        # delivered to a corpse.
+        pq.validate_held_answers(agent)
+    except Exception:  # noqa: BLE001 — a failed sweep is not a failed tick
+        logger.debug("could not validate the held answers", exc_info=True)
+    try:
+        waiting = pq.held_answers()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the held answers", exc_info=True)
+        return
+    for key in sorted({a["queue_key"] for a in waiting if a["queue_key"]}):
+        if holders.get(key) is not None:
+            continue
+        try:
+            taken = pq.pop_held_answers(key)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not take the held answers for %s", key,
+                         exc_info=True)
+            continue
+        if not taken:
+            continue
+        # Oldest first by `at`, so the session that has been waiting longest is
+        # the one that resumes; the rest of the folder's answers go back with
+        # the `at` they came out with, keeping the place they had in the line.
+        session = taken[0]["session_id"]
+        for answer in taken:
+            if answer["session_id"] != session:
+                _rehold(pq, answer, "another session holds this folder's turn")
+                continue
+            try:
+                # The ORIGINAL decide arguments, replayed. See the docstring:
+                # `_decide` is the validation, not a formality in front of it.
+                agent._decide(**(answer["payload"] or {}).get("raw", {}))
+            except Exception:  # noqa: BLE001 — one bad answer, not one bad tick
+                logger.debug("could not deliver held answer %s/%s",
+                             answer["run_id"], answer["request_id"],
+                             exc_info=True)
+                # PUT BACK, NOT DROPPED (round-3 review, 2026-09-12). The pop
+                # is the latch that stops two ticks delivering one answer, so
+                # it has to happen before the call — which means a `_decide`
+                # that raises (a store mid-write, a run dir that vanished under
+                # it) used to take the user's decision with it and leave the
+                # card asking for ever. The folder is held for the rest of this
+                # pass either way, so the next pass simply tries again; a
+                # failure that repeats repeats a log line and nothing worse,
+                # and `_decide` itself is what writes `expired` once the run is
+                # properly gone.
+                _rehold(pq, answer, "it could not be delivered")
+        # Held for the rest of the pass whether or not the write landed: the
+        # answers are out of the store and that run is the folder's business
+        # now. A message dispatched in behind it would be the second process in
+        # the tree this whole gate exists to prevent.
+        holders[key] = {"session_id": session, "run_id": taken[0]["run_id"],
+                        "task_key": session, "kind": "resumed"}
+        _notify({session})
+
+
 def tick(now: datetime | None = None) -> list[dict]:
     """One pass: sweep, then claim-and-send each due message ONE AT A TIME.
 
@@ -2625,14 +3398,43 @@ def tick(now: datetime | None = None) -> list[dict]:
     * **a live turn**, read from the transcript (`_session_live`). That covers
       the user typing in the explorer's chat, which the store cannot see and
       which used to be a stated known gap here. The transcript records the turn
-      without recording who started it, which is exactly the property needed.
+      without recording who started it, which is exactly the property needed —
+      and the one thing it cannot tell apart on its own is a turn that just
+      ENDED from one still going, which is what `_verdict_echo` settles with
+      this module's own record of the verdict.
 
-    **Deferred, never dropped.** An entry targeting a busy session is left
-    `pending` and untouched — no state is written for it at all — so a later tick
-    sends it once the turn ends. Catch-up is unbounded by default, so waiting
+    **One send at a time per FOLDER, with the project queue on.** A second gate
+    in front of the same dispatch, not a replacement for the first: two
+    different conversations editing one working tree is not parallelism, and
+    the session rules above cannot see it because the two have no session in
+    common. The holder map is derived once per pass (`project_queue.holders`)
+    and moved forward by this pass's own claims, and held card answers are
+    delivered before any message so a run already open in a folder resumes
+    ahead of work that has not started. With the flag off none of it runs and
+    the pass is byte-for-byte the one that shipped.
+
+    **A follower waits for the chat it was typed into.** With the flag on, an
+    entry carrying `follow_of` and no session of its own resolves the
+    conversation it joins from its leader at the moment it is claimed
+    (`_follow_session`, written by `_claim`): the leader's session if it has
+    opened one, a hold if it has not, a fresh session if it ended without one.
+    Two messages typed into one chat are one task and one conversation, in the
+    order they were typed.
+
+    **Deferred, never dropped.** An entry targeting a busy session (or a busy
+    folder) is left `pending` and untouched — no state is written for it at all
+    — so a later tick sends it once the turn ends. Catch-up is unbounded by default, so waiting
     costs it nothing; only an install that set `FUSED_RENDER_SCHEDULE_MAX_LATE`
     can eventually see one swept to `missed`, which is that operator's bound
     doing what they asked and is the same answer the hold has always given.
+
+    **A hold that ends on a clock asks to be woken.** Most holds end on an event
+    that already rings the loop (`_turn_ended`, the watcher seeing a holder's
+    process go). Two do not — a transcript that reads live until its window
+    lapses, and a `starting` or `reserved` folder holder — so a pass that held
+    for one of those arms one timer for the moment the earliest of those clocks
+    actually runs out (`_rearm`) rather than leaving the work to the 30-second
+    poll.
 
     Returns the entries actually claimed and attempted, which is the seam the
     tests drive directly instead of waiting on the loop."""
@@ -2652,35 +3454,112 @@ def tick(now: datetime | None = None) -> list[dict]:
     _coalesce(now)
     _materialize(now)
     due = _claim_due(now)
+    # ONE derivation for the whole pass. `holders` scans the runs tree, the live
+    # registry and this store; asking it per due entry would pay that per
+    # message, and both the answers and this pass's own claims then move it
+    # forward by hand exactly the way `busy` is moved forward.
+    #
+    # Computed BEFORE the early return, because a held answer is work too: a
+    # user who answered a card while the folder was busy is owed that delivery
+    # whether or not any message happens to be due in the same pass.
+    folders = _pq().holders(now.timestamp()) if _pq().enabled() else None
+    if folders is not None:
+        _deliver_held_answers(folders)
     if not due:
         return sent
     with _lock:
         entries = _read()
     busy = _busy_sessions(entries)
     live_seen: dict[str, bool] = {}
+    echo_seen: dict[str, bool] = {}
+    # How long each hold made for a reason that expires on ITS OWN CLOCK —
+    # rather than on an event anything rings — has left to run. The earliest is
+    # what this pass asks to be woken for; see `_rearm`.
+    held_soon: list[float] = []
     sessions = {str(e["id"]): str(e.get("session_id") or "") for e in entries}
+    targets = {str(e["id"]): str(e.get("target") or "") for e in entries}
+    by_id = {str(e.get("id") or ""): e for e in entries}
     for entry_id in due:
         session = sessions.get(entry_id, "")
+        # The conversation to WRITE onto a follower as it is claimed, "" for
+        # everything else. Resolved before either gate below, because both of
+        # them are about a session and a follower does not know its own until
+        # its leader has one.
+        resolved = ""
+        if folders is not None and not session:
+            resolved, ready = _follow_session(by_id.get(entry_id) or {}, by_id)
+            if not ready:
+                # The message this one was typed behind has not opened the
+                # conversation yet. A wait, never a verdict — same as every
+                # other hold in this loop.
+                logger.debug("holding %s: the message it follows has not run "
+                             "yet", entry_id)
+                continue
+            session = resolved
+        key = ""
+        if folders is not None:
+            key = _pq().queue_key(targets.get(entry_id, ""))
+            # `""` is "no folder" — a target this module will not gate ($HOME,
+            # `/`, a relative path). Never held, always free, exactly as
+            # `project_queue.is_free` answers for it: a task the app cannot
+            # place must run rather than queue behind something it cannot name.
+            holder = folders.get(key) if key else None
+            if not _folder_free(holder, session):
+                # Another conversation is editing this working tree. Left
+                # PENDING and untouched, like every other hold here: a wait,
+                # never a verdict.
+                logger.debug("holding %s: folder %s busy with %s", entry_id,
+                             key, (holder or {}).get("task_key", ""))
+                if (holder or {}).get("kind") in ("starting", "reserved"):
+                    # Both are grace periods with a clock on them (a spawn that
+                    # has not named itself, an admission whose process has not
+                    # appeared): nothing rings when they lapse, so this pass
+                    # asks to be woken when they do. See `_rearm`.
+                    left = _pq().holder_expires_in(key, holder, now.timestamp())
+                    if left:
+                        held_soon.append(left)
+                continue
         if session and session in busy:
             logger.debug("holding %s: session %s already has a send in flight",
                          entry_id, session)
             continue
-        if session and _session_live(session, now, live_seen):
+        if (session and _session_live(session, now, live_seen)
+                and not _verdict_echo(session, entries, now, echo_seen)):
             # A turn is open in that conversation and it is not one of ours —
             # the user is typing. Left PENDING, so this is a wait and not a
             # verdict; the next tick after the turn ends sends it.
+            #
+            # …unless what the transcript is showing is the closing rows of a
+            # turn we have ALREADY filed a verdict for, which is the one case
+            # where the 45-second window holds a message against the very turn
+            # it is waiting for (`_verdict_echo`).
             logger.debug("holding %s: session %s has a live turn", entry_id,
                          session)
+            left = _live_expires_in(session, now)
+            if left:
+                held_soon.append(left)
             continue
-        entry = _claim(entry_id, now)
+        entry = _claim(entry_id, now, resolved)
         if entry is None:
             continue  # cancelled in the window between the sweep and the claim
         if session:
             # This tick's own sends count too, or two entries due in the same pass
             # would both pass the check above.
             busy.add(session)
+        if folders is not None and key:
+            # …and so does the folder it went into, for the same reason one
+            # line up: two entries into one working tree in one pass is the
+            # case the whole gate is for.
+            folders[key] = _claimed_holder(session, entry_id)
         sent.append(entry)
         _send(entry)
+    _rearm(held_soon)
+    if folders is not None and sent:
+        # The runs tree has just gained a process this pass authorised, and the
+        # walk behind `holders` is memoized for a second (project_queue.SCAN_TTL).
+        # Dropping it here means the next reader — the listing a notify is about
+        # to wake — sees the folder as busy rather than as free for a beat.
+        _pq().invalidate_holders()
     return sent
 
 
@@ -2708,6 +3587,110 @@ def _run_now_refusal(entry: dict) -> str:
     return f"not pending (it is {state or 'in an unknown state'})"
 
 
+def _queue_position(entry: dict, key: str, now: datetime) -> int:
+    """Where `entry` stands in its folder's line, 1-based.
+
+    Counted in the order the line actually moves (`project_queue.order_key`)
+    over the same set the tick will consider — past-due pending entries whose
+    target resolves to this folder — plus the answers held for it, which are
+    ahead of every message by definition (see `_deliver_held_answers`).
+
+    A number, not a promise: it is true as of this read, and the entry the user
+    just skipped can be overtaken by another skip a second later. That is why
+    the Tasks page re-reads it on every poll rather than counting down."""
+    pq = _pq()
+    try:
+        ahead = len([a for a in pq.held_answers() if a["queue_key"] == key])
+    except Exception:  # noqa: BLE001 — an unreadable store holds nothing
+        ahead = 0
+    entry_id = str(entry.get("id") or "")
+    with _lock:
+        entries = _read()
+    # The same index every other reader of the line builds, so a follower is
+    # ranked behind the message it was typed behind here too.
+    by_id = {str(e.get("id") or ""): e for e in entries}
+    mine = pq.order_key(entry, by_id)
+    for other in entries:
+        if other.get("state") != PENDING or str(other.get("id") or "") == entry_id:
+            continue
+        try:
+            if _queue_due(other, parse_due(other.get("due"))) > now:
+                continue
+        except ValueError:
+            continue
+        if pq.queue_key(str(other.get("target") or "")) != key:
+            continue
+        if pq.order_key(other, by_id) < mine:
+            ahead += 1
+    return ahead + 1
+
+
+def _asked_now(entry: dict, now: datetime) -> dict:
+    """Stamp `run_now_at` on one entry and hand back the stored copy.
+
+    The whole of what a deferred Run now leaves behind. Both arms that defer
+    write it — a busy FOLDER (a skip, `_run_now_queued`) and a busy SESSION (a
+    refusal that promises the ordinary tick will send it) — because both make
+    the same promise about a message whose `due` may be days away, and only one
+    of them used to be able to keep it.
+
+    Written under the flag only, like every other queue field the client can
+    produce: with the queue off the busy-session arm's promise is the one it has
+    always made, and the 30-second poll that keeps it is unchanged.
+
+    Idempotent in the way that matters: pressing Run now twice re-stamps a
+    moment that is already in the past, and the line's order reads the earlier
+    of `due` and this, so nothing moves."""
+    if not _pq().enabled():
+        return entry
+    entry_id = str(entry.get("id") or "")
+    stamp = now.isoformat()
+    _update(entry_id, run_now_at=stamp)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == entry_id), None)
+    return stored or dict(entry, run_now_at=stamp)
+
+
+def _run_now_queued(entry: dict, session: str, now: datetime) -> dict | None:
+    """Run-now's answer when another task holds this entry's folder, or None
+    when the folder is this entry's to run in (or the flag is off).
+
+    Everything here is `run_now`'s docstring in code: nothing is claimed, the
+    entry is SKIPPED to the head of its folder's line, and the caller is told
+    who is in front so the row can say "behind TASK-041" rather than "behind
+    something".
+
+    `ahead_task_key` is the holder's TASK key — a session id, or `pending:<id>`
+    for a claimed message that has not minted one yet — and it is the one the
+    caller should name the holder by: a `sending` holder has no session at all,
+    and asking the Tasks page for the number of `""` would print "behind "
+    with nothing after it on exactly the rows that most need it.
+    `ahead_session` stays beside it, unchanged, for a caller that wants the
+    conversation rather than the task.
+
+    `position` is this MODULE'S count — entries in front, plus the answers held
+    for the folder — and the Tasks page counts the same line in tasks (one slot
+    per task, however many messages it has queued). The two disagree by design
+    and the router prefers the page's, because the page's is the number the user
+    is reading everywhere else. See `server/routers/schedule.py`."""
+    pq = _pq()
+    if not pq.enabled():
+        return None
+    key = pq.queue_key(str(entry.get("target") or ""))
+    holder = pq.holder_for(key, now.timestamp())
+    if _folder_free(holder, session):
+        return None
+    entry_id = str(entry.get("id") or "")
+    set_priority([entry_id], True)
+    stored = _asked_now(dict(entry, priority=True), now)
+    return {"ok": False, "found": True, "entry": stored, "reason": "queued",
+            "queued": True, "position": _queue_position(stored, key, now),
+            "ahead_task_key": str(holder.get("task_key") or ""),
+            "ahead_session": str(holder.get("session_id") or ""),
+            "ahead_run": str(holder.get("run_id") or "")}
+
+
 def run_now(entry_id: str, now: datetime | None = None) -> dict:
     """Send one PENDING message immediately: `{"ok", "entry", "reason", "found"}`.
 
@@ -2721,6 +3704,17 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     `due` in the future and `fired` now, which is exactly what happened — and it
     is the same split `_entry_at` / `_entry_ran_at` draws on the Tasks side, so
     the calendar still draws the chip on the day the user picked.
+
+    **What a DEFERRED run-now leaves behind is `run_now_at`, not a moved `due`.**
+    The rule above held right up until this could answer "queued" instead of
+    "sent": a message due tomorrow, skipped to the head of a busy folder's line,
+    was in a line nothing could see it in — every reader asks "due ≤ now" and
+    tomorrow is not, so the row read `upcoming` again the moment the optimistic
+    paint cleared and the scheduler would have waited until tomorrow (browser
+    QA, 2026-09-12). A second stamp is the answer: `due` stays the ask, and
+    everything that asks "is this waiting to go right now" reads the earlier of
+    the two (`_queue_due`, `project_queue.order_key`, `tasks._queue_at`). Both
+    deferring arms write it — see `_asked_now`.
 
     **The claim is reused, not reimplemented.** `_claim` is the single
     `pending -> sending` transition in this module and it re-reads under the
@@ -2740,8 +3734,21 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     conversation this message resumes — one of ours, or the user's own typing —
     sending would put two processes on one transcript, which is the hazard
     `_session_live` exists for and is not one a drag gesture can consent to. The
-    entry stays pending, the reason says so, and the ordinary tick sends it when
-    the conversation goes quiet.
+    entry stays pending, stamped `run_now_at` so "the ordinary tick sends it
+    when the conversation goes quiet" is true whatever its `due` says, and the
+    reason says so. A turn this module has already filed a verdict for is not
+    open, however fresh the transcript looks — `_verdict_echo`.
+
+    **A busy FOLDER is a skip, not a refusal** (project queue on). Another task
+    is editing this working tree, so this one cannot go now — but the gesture
+    still means something exact, and it is not "nothing happened": Run now on a
+    queued task is the Skip verb. The entry is marked `priority`, which puts it
+    at the head of its folder's line, and stamped `run_now_at`, which is what
+    puts it in that line at all when its `due` is still ahead; it comes back
+    `ok: false` with
+    `reason: "queued"`, `queued: true` and the position it now holds, so the
+    row can read `#1 in line · behind TASK-041` instead of an error. It really
+    does run next, within a second or two of that folder freeing (`wake`).
 
     `found` distinguishes "no such id" (a 404) from "cannot run this one"
     (a 409); the router is what turns them into status codes."""
@@ -2758,8 +3765,17 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
                     "reason": _run_now_refusal(entry)}
         session = str(entry.get("session_id") or "")
         busy = _busy_sessions(entries)
-    if session and (session in busy or _session_live(session, now)):
-        return {"ok": False, "found": True, "entry": entry,
+    queued = _run_now_queued(entry, session, now)
+    if queued is not None:
+        return queued
+    if session and (session in busy
+                    or (_session_live(session, now)
+                        and not _verdict_echo(session, entries, now))):
+        # "It will go on its own as soon as that turn ends" is a promise, and
+        # for a message due next Tuesday it was not true: nothing would look at
+        # it again until Tuesday. `_asked_now` is what makes it true — the
+        # entry joins the line NOW while its `due` stays what was asked for.
+        return {"ok": False, "found": True, "entry": _asked_now(entry, now),
                 "reason": ("the conversation this message continues has a turn "
                            "running right now — it will go on its own as soon "
                            "as that turn ends")}

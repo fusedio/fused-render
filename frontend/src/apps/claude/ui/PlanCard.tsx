@@ -29,6 +29,12 @@ import {
 } from "../protocol/summaries";
 import type { PermissionRow, SwitchableMode } from "../protocol/types";
 import { MarkdownView } from "./MarkdownView";
+/** THE QUEUE'S LATCH, shared with the approval card (see PermCard). `decidePlan`
+ *  goes through the controller's one `decide`, so under the flag this answer can
+ *  be HELD exactly as an approval's can — and a card that reported "✓ Plan
+ *  approved" over a decision the CLI has not seen would be claiming the work had
+ *  started. */
+import { answerHeld, queuedAnswerText } from "./PermCard";
 
 export interface PlanCardProps {
   row: PermissionRow;
@@ -54,7 +60,8 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     row.input,
     plan ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS] : PLAN_HIDDEN_INPUT_KEYS,
   );
-  const resolved = !!row.decision;
+  const held = answerHeld(row);
+  const resolved = !!row.decision || held;
   const landing = (): "" | SwitchableMode =>
     pickerMode && SWITCHABLE_MODES.has(pickerMode) ? (pickerMode as SwitchableMode) : "";
 
@@ -76,7 +83,11 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     }
   }
 
-  const status = resolved
+  const status = held
+    ? // FIRST, ahead of the three verdicts — the folder was busy, so the
+      // decision is stored and goes in the moment that run ends. See PermCard.
+      { cls: "queued", text: queuedAnswerText(row.queuedAhead || "") }
+    : resolved
     ? row.decision === "allow"
       ? { cls: "allow", text: "✓ Plan approved" }
       : row.decision === "expired"

@@ -1350,3 +1350,43 @@ def test_put_rejects_bad_native_chat_enabled(tmp_path, monkeypatch):
         == 400
     )
     assert not (home / "prefs.json").exists()
+
+
+# -- project queue (beta) flag -------------------------------------------------
+
+
+def test_project_queue_defaults_off_and_toggles(tmp_path, monkeypatch):
+    """Off is what makes the whole feature a no-op: with this unset a chat send
+    spawns, run-now runs, and the scheduler holds per session exactly as it did
+    before the queue existed."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["queue"]["enabled"] is False
+    body = client.put("/api/prefs", json={"project_queue_enabled": True},
+                      headers=FUSED).json()
+    assert body["queue"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["project_queue_enabled"] is True
+    assert client.put("/api/prefs", json={"project_queue_enabled": False},
+                      headers=FUSED).json()["queue"]["enabled"] is False
+
+
+def test_project_queue_junk_value_reads_as_off(tmp_path, monkeypatch):
+    """Same opt-in idiom as `canvases_enabled`: only a stored `true` is on, so a
+    hand-edited or legacy prefs.json cannot quietly start serialising tasks.
+    There is no env override to beat it either — see `project_queue_enabled`."""
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": "yes"}),
+                                     encoding="utf-8")
+    assert client.get("/api/prefs").json()["queue"]["enabled"] is False
+    assert prefs_mod.project_queue_enabled() is False
+
+
+def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"project_queue_enabled": "yes"},
+                   headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()

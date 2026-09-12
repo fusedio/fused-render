@@ -380,6 +380,10 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         "key", "status", "unread", "last_active", "project",
         "task_id", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
+        # ...and where the row stands in its folder's line (2026-09-12): the
+        # sidebar's Current apps section prints "n queued" beside "n running",
+        # and a queued row has to be able to say whether it runs next.
+        "queue_position", "queue_ahead", "queue_priority",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}

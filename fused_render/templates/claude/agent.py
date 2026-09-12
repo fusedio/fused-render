@@ -1400,16 +1400,88 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     return path
 
 
+# The project queue's held-answers store — a card the user answered while
+# another task was holding this folder's working tree. The decision is NOT in
+# the run dir yet (it is delivered when the folder frees), so without this a
+# reloaded page would draw the card as unanswered and invite a second click.
+#
+# THE PATH IS SPELLED HERE RATHER THAN IMPORTED, and that is deliberate twice
+# over: this file is a TEMPLATE outside the package's import graph (SPEC PY-15)
+# and also a runPython target, so `import fused_render` is not available to it —
+# the same reason CLAUDE_DIR above is re-derived from the environment instead of
+# read off `tasks_store`. `fused_render/project_queue.py` carries the matching
+# note beside its own copy; move one and move both.
+HELD_ANSWERS = ("claude-sessions", "held_answers.json")
+
+# The store's shape version — `project_queue.STORE_VERSION`, spelled again here
+# beside the path it belongs to and for the same reason. A file that does not
+# carry THIS number reads as empty: a future layout is not something this code
+# can half-understand, and guessing at it would badge a card off fields it
+# invented. Move it there and move it here.
+HELD_ANSWERS_VERSION = 1
+
+
+def _held_answers(run_id: str) -> set:
+    """Every request id of `run_id` whose answer is held, or an empty set.
+
+    Best-effort: every failure reads as nothing held. A store that will not
+    parse must cost a card its "held" badge, never the card list — the page's
+    whole transcript is drawn off that list.
+
+    AND CHEAP ON THE MACHINE THAT HAS NEVER HELD ANYTHING, which is every
+    machine with the project queue switched off. `_permissions` is on the poll
+    path, so this used to open a JSON file per call for a feature nobody had
+    turned on; a `stat` of a file that is not there is the whole cost now, and
+    the caller does not even pay that unless some card is still unanswered
+    (round-2 review, 2026-09-12)."""
+    if not run_id:
+        return set()
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+        "~/.fused-render")
+    path = os.path.join(home, *HELD_ANSWERS)
+    try:
+        os.stat(path)
+    except OSError:
+        return set()   # nothing has ever been held here: no read, no parse
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        if state.get("version") != HELD_ANSWERS_VERSION:
+            return set()
+        answers = state.get("answers")
+        return {str(a.get("request_id") or "") for a in answers
+                if isinstance(a, dict) and str(a.get("run_id") or "") == run_id}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
     ones: a frame that re-attaches mid-turn (mode switch, reload) has to be
-    able to rebuild the cards it never saw."""
+    able to rebuild the cards it never saw.
+
+    `held` is that same promise for the one answer that is not on disk: a
+    decision the user made while another task held this folder is parked by the
+    project queue and written when the folder frees (see `_held_answers`). It
+    reads as no `decision` here — correctly, nothing has been written — so
+    without the flag a reload would show the card asking again.
+
+    IT IS A FIELD WHATEVER THE FLAG SAYS, and the store is consulted only where
+    it could say yes: a run every one of whose cards has a decision on disk has
+    nothing left to hold, so the answers file is not even looked for. On a
+    machine with the queue off that is every run, and the cost of the field is
+    then nothing at all — a card still open costs one `stat` (see
+    `_held_answers`). A page must not have to know which way a server-side flag
+    is set to read its own transcript, which is why the field is not itself
+    gated."""
     perm_dir = _perm_dir(run_dir)
     try:
         names = sorted(n for n in os.listdir(perm_dir) if n.endswith(".req.json"))
     except OSError:
         return []
+    if not names:
+        return []   # nothing was ever asked here: no store read, no loop
     out = []
     for name in names:
         try:
@@ -1436,6 +1508,12 @@ def _permissions(run_dir: str) -> list:
             "input": req.get("input") if isinstance(req.get("input"), dict) else {},
             "created_at": req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
+            # ANSWERED, NOT YET DELIVERED — the project queue is holding this
+            # decision until the folder frees. Never true alongside a
+            # `decision`: delivery writes the one and drops the other, which is
+            # why the store below is read only for a run that still has one
+            # unanswered card.
+            "held": False,
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
             # Only a question card has these, and it is the same reason the whole
@@ -1443,6 +1521,16 @@ def _permissions(run_dir: str) -> list:
             # rebuild a card it never saw, including what was chosen on it.
             "answers": answers if isinstance(answers, dict) else {},
         })
+    if any(not row["decision"] for row in out):
+        held = _held_answers(os.path.basename(os.path.normpath(run_dir)))
+        for row in out:
+            # A DECIDED ROW IS NEVER HELD, whatever the store still says. The
+            # two are answers to the same card from opposite ends and delivery
+            # writes the decision before dropping the record, so a poll landing
+            # in between (or a store a crash left a stale record in) would put
+            # `held` on a card that has its answer on disk — and the page draws
+            # "Answer queued" over a card that is already allowed.
+            row["held"] = not row["decision"] and row["id"] in held
     return out
 
 

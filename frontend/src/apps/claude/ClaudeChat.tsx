@@ -128,10 +128,17 @@ import {
   type Viewable,
 } from "./ui";
 import { recapAnchor } from "./protocol/recap";
-import { useChatRecapEnabled } from "./feature-flag";
+import { queueEnabled, useChatRecapEnabled, useProjectQueueEnabled } from "./feature-flag";
+import { QueuedChip } from "./ui/QueuedChip";
+import type { QueuedSend } from "./ui/QueuedChip";
+import { copyToTaskShots } from "./ui/SchedButton";
+import type { SchedAttachment } from "./ui/sched-draft";
+import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
+import { useQueuedLiveness } from "./sched/queued-sends";
+import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
 import { createLiveWatch } from "./live/watch";
-import { getClaudeSessionLiveness } from "@platform/lib/api";
+import { admitQueueSend, getClaudeSessionLiveness, skipQueue } from "@platform/lib/api";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -793,6 +800,31 @@ function ChatBody(props: ChatBodyProps) {
   const liveWait = useRef("");
   /** The same fact as state, for the send button's `disabled`. */
   const [sendLocked, setSendLocked] = useState(false);
+  /**
+   * Sends this folder was too busy to take (the project queue). The bubble went
+   * up and nothing spawned; each of these is the chip under the transcript that
+   * says where in the line the words landed.
+   *
+   * A LIST, not one: the composer stays open under the queue, so a reader may
+   * put three messages into a busy folder and every one of them is owed its own
+   * place. Keyed by the scheduler entry the admission created, which is also how
+   * each comes DOWN — see the `pendingIds` filter below.
+   *
+   * `queueOn` is subscribed rather than read once (`useProjectQueueEnabled`)
+   * because the prefs GET may still be in flight when this mounts, and a chat
+   * that learned the flag only on its next navigation would be a chat that
+   * spawns a second run in a folder somebody has just protected.
+   */
+  const [queuedSends, setQueuedSends] = useState<QueuedSend[]>([]);
+  const [skipping, setSkipping] = useState<ReadonlySet<string>>(() => new Set());
+  // SUBSCRIBED FOR THE READ, NOT FOR THE VALUE. Nothing this view draws depends
+  // on the flag — the admission is asked on the keystroke, from
+  // `queueEnabled()`, which is a plain synchronous read of the same one
+  // `/api/prefs` answer. What this call buys is that the answer is ON ITS WAY
+  // from mount rather than from whenever some other hook happens to ask, so the
+  // first send of a freshly opened chat is admitted rather than spawning into a
+  // folder somebody has just protected.
+  useProjectQueueEnabled();
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
@@ -1959,6 +1991,91 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   /**
+   * THE TRAY, COPIED WHERE A QUEUED RUN CAN READ IT (the project queue).
+   *
+   * A send the folder is too busy to take becomes a pending scheduler entry, and
+   * that entry fires minutes later with whatever is written ON IT. A chat
+   * attachment lives in the claude template's own shots dir on a 12 h TTL and
+   * the backend refuses any `attachments` path outside `schedule.shots_dir()` —
+   * so the path cannot travel and the BYTES have to, exactly as they do for
+   * "Schedule this as a task" (`copyToTaskShots`, the same endpoint the task
+   * form's own drop uses). Without this the message queued and fired without its
+   * pictures while the tray went on showing them.
+   *
+   * BEFORE THE ADMISSION, which means a send into a FREE folder pays for copies
+   * nobody reads: the answer decides whether they are needed and the answer
+   * arrives too late to upload after it. That costs a few unused task-shots (the
+   * ordinary send goes out on its ORIGINAL receipts — the bytes the bubble
+   * shows) against the alternative of a queued message with no pictures, which
+   * is a message that means something else when it finally runs.
+   *
+   * ONE FAILURE COSTS ONE ATTACHMENT and never the send: `copyToTaskShots` is
+   * `allSettled` inside, and a wholesale failure answers `[]`.
+   */
+  const carryForQueue = useCallback(async (): Promise<SchedAttachment[]> => {
+    const tray = attach.items;
+    // Pending chips have no bytes yet, and an empty carry must not buy a round
+    // trip in front of every send.
+    if (!tray.some((a: Attachment) => !a.pending && !!a.view)) return [];
+    return copyToTaskShots(tray).catch(() => []);
+  }, [attach]);
+
+  /**
+   * THE TRAY IS SPENT ON A QUEUED SEND, exactly as it is on one that ran.
+   *
+   * The server has the pictures now (`carryForQueue` put copies where the
+   * scheduled run will read them) and the words are its entry. Leaving the chips
+   * in the composer would mean the next message silently carried them a second
+   * time — the same double-send `take()` exists to prevent — so the tray is
+   * emptied by the same call, and the handles are released through the
+   * commit-later queue because nothing on screen is drawing them any more.
+   */
+  const spendTrayForQueue = useCallback(() => {
+    const mine = takeAttachments();
+    if (!mine.items.length) return;
+    spentAlive.current = spentAlive.current.concat(mine.items);
+    setSpentTick((n) => n + 1);
+  }, [takeAttachments]);
+
+  /**
+   * WHICH QUEUED MESSAGE A FOLLOW-UP JOINS, while this chat has no session.
+   *
+   * A new chat whose first message was queued is a task called
+   * `pending:<entry id>` and NOTHING has run in it, so `sessionId` is still "".
+   * A second line typed into the same composer would therefore be admitted as
+   * another session-less send — which is what "open a brand-new task" means
+   * everywhere else in this app — and the folder would gain a second task while
+   * the reader watched one conversation. Naming the first entry (`follow_of`)
+   * joins it instead; the rule and both its edges are in `sched/queue-leader`.
+   */
+  const leader = useQueuedLeader(state.sessionId ?? "");
+
+  /**
+   * THE ADMISSION SAID NEITHER YES NOR NO — and nothing is sent.
+   *
+   * Falling through to a spawn was this path's first shape, on the argument that
+   * a new endpoint failing is no reason to swallow a message. But the failure
+   * that actually happens is the server REFUSING this send (a wordless one it
+   * will not queue, a 400 of any kind), and "the queue would not take it" is the
+   * one answer that must not end in a run: the whole feature exists to stop a
+   * second process starting in a folder somebody else is working in.
+   *
+   * So: no spawn, the words go back in the BOX they were typed in (`strand` —
+   * the composer cleared it on the keystroke), the tray is untouched because
+   * `beginSend` was never reached, and the reason lands in the chat's own error
+   * slot — the same card a failed `start` writes, because from the reader's side
+   * this is the same event: the message did not go.
+   */
+  const refuseQueuedSend = useCallback(
+    (text: string, err: unknown) => {
+      strand(text);
+      const t = troubleFromError(err);
+      controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
+    },
+    [controller, strand],
+  );
+
+  /**
    * THE SEND WINDOW, SERIALIZED — one road, both kinds of send.
    *
    * `beginSend` is AWAITED (a round of notes has its pane photographed before
@@ -2002,6 +2119,117 @@ function ChatBody(props: ChatBodyProps) {
       void (async () => {
         let taken = false;
         try {
+          // ---- ADMISSION, AHEAD OF EVERYTHING ELSE (the project queue) ------
+          //
+          // BEFORE `beginSend`, not after, and that ordering is the whole
+          // reason this is safe to add here: `beginSend` PHOTOGRAPHS the pane,
+          // empties the attachment tray and stamps the round of notes as sent.
+          // A message that turns out to be queued never took any of it — the
+          // server stored the words as a pending entry and a picture of a pane
+          // taken now would be a picture of a pane from before the run that
+          // eventually answers it. So the ask happens while nothing has been
+          // spent, and a queued send simply never calls it.
+          //
+          // …and BEFORE `start`/`send`, which is the point of the feature: the
+          // one thing the queue exists to prevent is two runs in one folder,
+          // and spawning first would open exactly that window for the length of
+          // a round trip.
+          //
+          // AND THE PICTURES GO WITH THE WORDS. A queued send fires minutes
+          // later out of the scheduler, so whatever is not ON the entry is not
+          // in the message that eventually runs — see `carryForQueue`.
+          //
+          // A FAILED ADMISSION SENDS NOTHING. This used to fall through to a
+          // spawn, on the argument that a new endpoint failing is no reason to
+          // swallow a typed message — but the failure that actually happens is
+          // the server REFUSING this send (a 400 on a wordless one, a flag the
+          // server does not have), and falling through turns every such refusal
+          // into the exact second run in a busy folder the queue exists to
+          // prevent. So only a clean `run: true` sends; anything else is
+          // `refuseQueuedSend` — words back in the box, reason on the card.
+          if (queueEnabled()) {
+            // READ ONCE, and read HERE: the session can arrive while the copies
+            // below are uploading, and a body whose `session_id` and
+            // `follow_of` were asked a round trip apart could carry both — a
+            // message addressed to a conversation AND filed under the task it
+            // predates.
+            const sid = controller.getState().sessionId ?? "";
+            const follow = leader.followOf(sid);
+            const carried = await carryForQueue();
+            let verdict: Awaited<ReturnType<typeof admitQueueSend>> | null = null;
+            try {
+              verdict = await admitQueueSend({
+                project: file || "",
+                session_id: sid,
+                // EMPTY IS SENT, not withheld. A wordless send (pictures or
+                // notes alone) is a send like any other and has to be admitted
+                // like one; whether an empty message with attachments may be
+                // queued is the server's call, and a refusal is an answer this
+                // road already knows how to show.
+                message: text,
+                ...(opts.model ? { model: opts.model } : {}),
+                ...(opts.effort ? { effort: opts.effort } : {}),
+                ...(opts.permission ? { permission_mode: opts.permission } : {}),
+                ...(carried.length
+                  ? { images: carried.map((a) => a.path), attachments: carried }
+                  : {}),
+                // THE LEADER, and only while there is no session to name
+                // instead — `followOf` is asked with the very id that went into
+                // `session_id` above, so the two halves of the body can never
+                // disagree about what this message is addressed to.
+                ...(follow ? { follow_of: follow } : {}),
+              });
+            } catch (err) {
+              refuseQueuedSend(text, err);
+              return;
+            }
+            // A shape this build does not understand is not a yes. Read off the
+            // wire rather than off the type: the type is what the server is
+            // MEANT to answer.
+            const run = (verdict as { run?: unknown } | null)?.run;
+            if (run !== true && run !== false) {
+              refuseQueuedSend(text, new Error("the queue gave no answer."));
+              return;
+            }
+            if (verdict && verdict.run === false) {
+              // THE BUBBLE STAYS. The words are safe — the server has them as a
+              // pending entry — and a bubble that vanished on Enter would read
+              // as a message that was lost, which is the one thing this must
+              // never look like. `taken` is what says so to the `finally`.
+              taken = true;
+              // …and the tray is spent, because the entry now carries its own
+              // copies of those pictures (`spendTrayForQueue`).
+              spendTrayForQueue();
+              const entryId = String(verdict.entry?.id ?? "");
+              // …and if this chat still has no session, THIS is the entry every
+              // later message in it joins (`sched/queue-leader`, which ignores
+              // the call when a leader is already remembered or a session has
+              // arrived).
+              leader.remember(sid, entryId);
+              setQueuedSends((cur) => [
+                ...cur,
+                {
+                  // THE ENTRY ID AND NOTHING ELSE FOR IDENTITY. The answer also
+                  // carries a task `key`, and this used to keep it for Skip to
+                  // spend: `pending:<leader id>` on a chat with no session, and
+                  // stale the moment the store rekeys that task onto the session
+                  // the leader's run opens (`api.skipQueue`).
+                  entryId,
+                  queue_position: verdict.position,
+                  queue_ahead: verdict.ahead,
+                  queue_ahead_title: verdict.ahead_title,
+                  // Behind the reader's OWN earlier message rather than behind
+                  // a stranger's run — the caption is a different sentence, and
+                  // only the server can tell the two apart (`queue.ts`).
+                  ...(verdict.behind_own ? { behind_own: true } : {}),
+                },
+              ]);
+              return;
+            }
+            // `run: true` — the ordinary road, on the ORIGINAL receipts: the
+            // copies made above are task-shots nobody will read, which is the
+            // price of asking before spending (see `carryForQueue`).
+          }
           const { merged, done } = await beginSend(opts);
           const wire: SendOptions = {
             ...merged,
@@ -2041,7 +2269,15 @@ function ChatBody(props: ChatBodyProps) {
         }
       })();
     },
-    [controller, beginSend, releaseSend],
+    [
+      controller,
+      beginSend,
+      releaseSend,
+      carryForQueue,
+      refuseQueuedSend,
+      spendTrayForQueue,
+      leader,
+    ],
   );
 
   const onSend = useCallback(
@@ -2120,14 +2356,25 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
-  }, [controller, cardPolicy]);
+    // …AND SO DO THE QUEUED CHIPS AND THE LEADER THEY NAME. Both are memories of
+    // the messages that were ON SCREEN: the chips sit under a transcript that is
+    // being emptied, and the leader would file the next chat's first line under
+    // a task it has nothing to do with. The leader especially, now that a chat
+    // ADOPTS the session its leader's run opens — left standing it would pull
+    // the reader back into the conversation they just left, on the next poll.
+    // The entries themselves are untouched; the Tasks page is where they live.
+    setQueuedSends([]);
+    leader.forget();
+  }, [controller, cardPolicy, leader]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
       resetCardPolicy(cardPolicy);
       setEntered(true);
       // Same rule as Back: a hand-back belongs to the conversation it was typed
-      // in, and this is a different one.
+      // in, and this is a different one — and so do the queued chips, which sit
+      // under a transcript that is about to be replaced.
       setStranded(null);
+      setQueuedSends([]);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
@@ -2383,6 +2630,120 @@ function ChatBody(props: ChatBodyProps) {
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
   });
+  /**
+   * A CHIP COMES DOWN WHEN ITS ENTRY GOES — and not one poll sooner.
+   *
+   * "The entry fired" is exactly "it is no longer pending", and it is also what a
+   * cancel from the Tasks page looks like: either way the words are no longer
+   * waiting, so the chip has nothing left to say. `pendingIds` is the schedule
+   * poll's UNFILTERED pending set (useSchedule) rather than `blockers`, because
+   * the chat that most needs a chip is a brand-new one with no session yet, and
+   * `blockers` is filtered by session and would answer `[]` for it.
+   *
+   * NOT A PLAIN FILTER, and that was the bug. A non-null `pendingIds` is a
+   * photograph taken up to a poll interval before this send existed, so the
+   * entry the admission has just created is legitimately missing from it — and
+   * filtering against it dropped the chip in the same breath as it went up. The
+   * rule (sched/queued-sends) is that an id is UNSEEN until a poll has once
+   * listed it, and only from then on does its absence mean the words have gone.
+   */
+  const liveQueued = useQueuedLiveness(queuedSends, sched.pendingIds);
+
+  /**
+   * Skip from the chip: this message to the front of its folder's line. The same
+   * endpoint the Tasks row and the Board's drag spend, so one verb cannot mean
+   * two things in two places — and it interrupts nothing, which is why the chip
+   * latches to "runs next" rather than to "running".
+   *
+   * BY ENTRY ID, NEVER BY TASK KEY, and that was round two's finding. The
+   * admission also answers a `key`, and this used to post it: for a chat with no
+   * session that key is `pending:<leader entry id>`, and the store REKEYS the
+   * task onto the Claude session id the moment the leader's run opens one. So
+   * every chip in a new chat carried a key that goes stale on the first run, the
+   * skip 404'd, and the catch below swallowed it — Skip on a follower chip
+   * silently did nothing at all. An entry id is minted once and never rekeyed
+   * (`api.skipQueue`, `QueuedSend.entryId`).
+   *
+   * The claim is painted straight onto the chip. This pane has no listing to
+   * correct it from, and the server's answer is the position it just set.
+   */
+  const skipQueued = useCallback(
+    async (send: QueuedSend) => {
+      setSkipping((cur) => new Set(cur).add(send.entryId));
+      try {
+        const res = await skipQueue({ entry_id: send.entryId });
+        setQueuedSends((cur) =>
+          cur.map((q) =>
+            q.entryId === send.entryId
+              ? { ...q, queue_position: res.position || 1, queue_priority: true }
+              : q,
+          ),
+        );
+      } catch (err) {
+        // AND A REFUSAL IS SAID OUT LOUD. This was a bare swallow, on the
+        // reading that a 400 only ever means "the folder freed while the pointer
+        // was travelling" and the next poll takes the chip down anyway. Two
+        // things are wrong with that: the press has a visible control behind it,
+        // so silence is a button that did nothing, and the failure that actually
+        // happened in review was a 404 on a stale key — a real bug, invisible for
+        // exactly as long as nobody was reading the network tab. The server's own
+        // sentence goes in the chat's trouble slot, the same one a failed send
+        // writes, because from the reader's side this is the same kind of event:
+        // something they asked for did not happen.
+        const t = troubleFromError(err);
+        controller.reportTrouble({ ...t, message: "Skip did not go through: " + t.message });
+      } finally {
+        setSkipping((cur) => {
+          const next = new Set(cur);
+          next.delete(send.entryId);
+          return next;
+        });
+      }
+    },
+    [controller],
+  );
+
+  /**
+   * THE LEADER RAN, SO THIS CHAT HAS A SESSION NOW — adopt it.
+   *
+   * The gap this closes: a new chat whose first message was queued has no
+   * session, so every later send joins that entry as a follower
+   * (`sched/queue-leader`). The SCHEDULER runs the leader, not this page — and
+   * none of the chat's roads to a session id begin anywhere but here. The
+   * schedule watcher's attach is the nearest thing and it is not enough: it
+   * needs a live `run_id` to probe, so a leader that ran and finished while this
+   * tab was in the background leaves nothing to attach to, and a FOLLOWER's run
+   * is written off outright (`scheduledRunIsOurs` adopts only entries naming no
+   * session on a session-less screen). Without this the chat stays a chat with
+   * no session for ever: new followers behind a leader that is long gone, and a
+   * transcript showing none of what it said.
+   *
+   * THE ENTRY IS THE RECORD — `claude_session_id`, read off the poll this pane
+   * already pays for (`sched.ranSessions`) — and the adoption is `openSession`,
+   * which is what every other "open that conversation" gesture in this file
+   * spends (`onOpenSession`, the sessions list, Peek). It brings the real
+   * transcript with it, which is the point: the optimistic bubbles are replaced
+   * by what the run actually said.
+   *
+   * THE CHIPS STAY. A follower's entry is still pending — its words really are
+   * still waiting in this folder's line — so its chip is as true after the
+   * adoption as before it, and it comes down on its own when the entry goes
+   * (`sched/queued-sends`). Only Back and an explicit session switch drop them,
+   * because those replace the conversation the chips belong to.
+   *
+   * NO GUARD REF. `openSession` emits the id, `state.sessionId` stops being ""
+   * and `leaderSession` answers "" from then on — the effect's own dependency is
+   * what closes it. `setEntered` is for the landing case: this chat may never
+   * have been anywhere else.
+   */
+  const adoptSession = leaderSession(sched.ranSessions, leader.peek(), state.sessionId ?? "");
+  useEffect(() => {
+    if (!adoptSession) return;
+    resetCardPolicy(cardPolicy);
+    setEntered(true);
+    void controller.openSession(adoptSession);
+  }, [adoptSession, controller, cardPolicy]);
+
   /**
    * T:16776/18000 — the block and both attach sets belong to the conversation
    * that WAS on screen, so a REPLACED transcript takes them with it.
@@ -2934,6 +3295,24 @@ function ChatBody(props: ChatBodyProps) {
                 ) : null
               }
             />
+            {/* UNDER THE BUBBLE, WHICH IS UNDER THE TRANSCRIPT. A queued send's
+                bubble is the last row in the transcript by construction (it was
+                just posted), so a chip pinned immediately below the transcript
+                IS a chip under that bubble — without threading a per-turn slot
+                through the transcript for a row that belongs to the send rather
+                than to the conversation.
+
+                ABOVE the schedule banner, because it is the nearer fact: this
+                one is about the message the reader just typed, that one is about
+                the schedule this chat is under. */}
+            {liveQueued.map((q) => (
+              <QueuedChip
+                key={q.entryId}
+                send={q}
+                busy={skipping.has(q.entryId)}
+                onSkip={() => void skipQueued(q)}
+              />
+            ))}
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
                 T's own arrangement: `body.chat-compact` and `body.chat-peek`
                 take the topbar, the strip, the box and the footnote and leave

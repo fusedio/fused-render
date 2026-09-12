@@ -30,8 +30,63 @@ export interface PermCardProps {
   onDecide: ChatController["decidePermission"];
 }
 
+/**
+ * The sentence for a decision the PROJECT QUEUE is holding — read ahead of every
+ * verdict below, because there is no verdict yet: the folder was busy with
+ * another task, so the answer is stored and goes in the moment that run ends.
+ *
+ * "runs next" and not "will run": the held answer is at the HEAD of its folder's
+ * line by construction (it outranks every queued message there — somebody is
+ * already waiting on it), so the next thing that happens in this folder is this.
+ *
+ * The holder is named when the page that clicked is still open; "" is a real
+ * answer twice over — a folder held by a run with no task row, and every card
+ * restored after a reload, which reads `held` off the poll and has no name to
+ * read — and the sentence stops short rather than trailing off after "after".
+ */
+export function queuedAnswerText(ahead: string): string {
+  return ahead
+    ? `◷ Answer queued — runs next after ${ahead}`
+    : "◷ Answer queued — runs next in this folder";
+}
+
+/**
+ * Is this card's decision made but not delivered? Either the click that made it
+ * said so (`queuedAhead`, this document only) or the server does (`held`, which
+ * is how a card knows after a reload).
+ *
+ * A LANDED VERDICT OUTRANKS THE SERVER'S MARKER (round-3 review, 2026-09-12).
+ * `held` rides on the poll's own row and is written for any request with an
+ * entry in `held_answers.json` — a store the queue clears on its own clock, not
+ * the card's. So the poll that finally carries the DELIVERED decision can carry
+ * `held: true` beside it, and this rule, asked first by all three cards, then
+ * printed "◷ Answer queued" over an answer the tool already has and already
+ * acted on. `held` therefore speaks only while there is no verdict to speak
+ * over.
+ *
+ * `queuedAhead` is exempt, and that is not an inconsistency: it is stamped BY
+ * the click that made the decision, in the same write (`resolveLocally`), so the
+ * `decision` beside it is the READER'S own and not the tool's — the annotation
+ * is the only thing that tells those two apart. It cannot go stale the way
+ * `held` does either: `syncPermissions` rebuilds the row from the server's the
+ * moment a real verdict lands, and client-only annotations do not survive that.
+ */
+export function answerHeld(row: PermissionRow): boolean {
+  if (row.queuedAhead !== undefined) return true;
+  return row.held === true && !row.decision;
+}
+
 /** T:13957-13975 — the verdict, in the words the transcript keeps. */
 function statusFor(row: PermissionRow, label: string): { cls: string; text: string } {
+  // FIRST, ahead of the three verdicts. A held answer has a `decision` — the one
+  // the reader made, which is what latches the card — but the tool has not seen
+  // it, so "✓ Allowed" would be a claim about something that has not happened.
+  // A card rebuilt by a reload has no `decision` of its own and still lands here
+  // (`held`), which is the whole point of asking the server.
+  //
+  // First is not unconditional: `answerHeld` itself steps aside for a DELIVERED
+  // verdict, so a row carrying both reads as the verdict it carries (see there).
+  if (answerHeld(row)) return { cls: "queued", text: queuedAnswerText(row.queuedAhead || "") };
   if (row.decision === "allow") {
     if (row.mode)
       return {
@@ -57,7 +112,12 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
   const { sub, body, covered } = summarizePermission(row);
   const extra = leftoverInput(row.input, covered);
   const choices = permChoices(row, liveMode);
-  const resolved = !!row.decision;
+  // LATCHED BY THE HELD FLAG TOO, not only by a landed verdict. The server has
+  // the answer and will write it the moment the folder frees, so a reloaded card
+  // that came back with live buttons would be offering to answer a question that
+  // is already answered — and the second answer is the one that would be thrown
+  // away, silently, by first-writer-wins down in agent.py.
+  const resolved = !!row.decision || answerHeld(row);
 
   // WHY THE ROW AND NOT LOCAL STATE. `decidePermission` does not reject — the
   // controller catches the failure and writes `row.sendError`, which the poll
