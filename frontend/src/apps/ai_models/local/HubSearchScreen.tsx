@@ -630,6 +630,21 @@ export function HubSearchScreen({
   // render reads it) sidesteps that with no extra effect dependency.
   const settledRef = useRef(settled);
   settledRef.current = settled;
+  // D1273: the last poolState this capability's Hub responses reported,
+  // remembered per-capability so a FIRST search (before any response of
+  // its own has landed) can still tell the honest "hub" stage copy from the
+  // dishonest one — a pool that was "ready" last time almost certainly
+  // still is, and the search this component is about to run will hit zero
+  // Hub requests. Wrapped in try/catch: private-browsing/storage-disabled
+  // must degrade to the safe default (assume not ready, keep the Hub
+  // copy), never throw.
+  const [rememberedPoolReady] = useState(() => {
+    try {
+      return window.localStorage.getItem(`hubPoolState:${capabilityKey}`) === "ready";
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (debounce.current) window.clearTimeout(debounce.current);
@@ -701,6 +716,15 @@ export function HubSearchScreen({
         setFacets(data.facets ?? null);
         setPoolState(data.poolState);
         setPoolPagesDone(data.poolPagesDone ?? null);
+        // D1273: persist the freshest known state so the NEXT time this
+        // capability's search screen mounts, a first search can trust
+        // `rememberedPoolReady` instead of defaulting to the Hub copy.
+        try {
+          window.localStorage.setItem(`hubPoolState:${capabilityKey}`, data.poolState ?? "");
+        } catch {
+          // Storage disabled/unavailable — the honest copy just falls back
+          // to the Hub-request wording for this capability's next mount.
+        }
         if (isFirstSearch) {
           const elapsed = performance.now() - (requestStartRef.current ?? 0);
           // A response inside 400ms must never have flashed the block at
@@ -835,7 +859,13 @@ export function HubSearchScreen({
   }, [models, settled.sort]);
 
   const host = (endpoint || "https://huggingface.co").replace(/^https?:\/\//, "");
-  const waitText = waitPhase !== "hidden" ? hubWaitStageText(waitPhase, host) : null;
+  // D1273: `poolState` itself is only known once a response for THIS mount
+  // has landed — before that (including the very first search) fall back
+  // to the remembered state from a previous mount. "building"/"blocked"
+  // both correctly fall through to `false` here (the live-fallback path
+  // really does hit the Hub).
+  const poolReady = poolState === undefined ? rememberedPoolReady : poolState === "ready";
+  const waitText = waitPhase !== "hidden" ? hubWaitStageText(waitPhase, host, poolReady) : null;
   const shown =
     models && sortsOnPage(settled.sort) && sizes
       ? bySizeAscending(models, (m) => hubSizeBytes(m, sizes.get(m.id)))
@@ -939,22 +969,19 @@ export function HubSearchScreen({
        *  hidden, and skip it entirely for a response inside 400ms. */}
       {!error && waitPhase !== "hidden" && waitText && (
         <div className="hub-wait" role="status" aria-live="polite">
-          <p className="hub-wait-line anim">
-            {waitText.line}
-            <span className="hub-wait-dots" />
-          </p>
+          <p className="hub-wait-line anim">{waitText.line}</p>
           <p className="hub-wait-sub">{waitText.sub}</p>
           <div className="hub-wait-track" aria-hidden="true">
             <i className="hub-wait-sweep anim" />
           </div>
           <div className="hub-wait-steps">
-            <span className={waitPhase !== "hub" ? "done" : "now"}>Hub</span>
+            <span className={waitPhase !== "hub" ? "done" : "now"}>{poolReady ? "Catalog" : "Hub"}</span>
             <span className={waitPhase === "rank" ? "done" : waitPhase === "size" ? "now" : ""}>Size</span>
             <span className={waitPhase === "rank" ? "now" : ""}>Rank</span>
           </div>
           {slowSeconds != null && (
             <p className="hub-wait-slow">
-              {hubWaitSlowLabel(slowSeconds)}{" "}
+              {hubWaitSlowLabel(slowSeconds, poolReady)}{" "}
               <a
                 href="#"
                 onClick={(e) => {
