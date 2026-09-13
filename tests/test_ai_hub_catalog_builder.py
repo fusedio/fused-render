@@ -7,6 +7,7 @@ import-time state from `hub_models.py`/`registry.py` (an active token, a
 different active runner on CI) can change what these tests exercise.
 """
 import json
+import threading
 import time
 
 import httpx
@@ -25,6 +26,39 @@ def _isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(builder, "_hub_endpoint", lambda: "https://hub.test")
     monkeypatch.setattr(builder, "_token", lambda: None)
     builder._building.clear()
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_leaked_build_threads():
+    """Guard against the exact hazard that starved the Windows CI runner:
+    a test that calls `ensure_build_started` (a REAL `threading.Thread`, not
+    a fake) without joining it before returning. A leaked thread here is not
+    just untidy — it keeps running after THIS test's own `monkeypatch`
+    fixture tears down and restores the real `httpx.get`, so the leaked
+    thread's next request becomes a genuine network call racing whatever
+    home dir/mocks the NEXT test in the session has set up, while also
+    burning a real OS thread and file handles for the rest of the run.
+
+    Every existing test that starts a background build already joins it
+    (`thread.join(timeout=5)`, see `test_ensure_build_started_builds_in_
+    background` and its siblings) — this fixture makes that a hard
+    requirement instead of a convention, for this file and any test added
+    to it later. Checked immediately on teardown (no grace sleep): a thread
+    that is still alive the instant the test function returns was never
+    joined inside the test."""
+    before = {t.ident for t in threading.enumerate()}
+    yield
+    leaked = [t for t in threading.enumerate()
+              if t.ident not in before and t.name.startswith("hub-catalog-build-")]
+    still_alive = [t.name for t in leaked if t.is_alive()]
+    # Clean up regardless of the assertion below, so a real leak cannot also
+    # cascade into whichever test runs next in this session.
+    for t in leaked:
+        t.join(timeout=5)
+    assert not still_alive, (
+        f"background build thread(s) still running when the test returned: "
+        f"{still_alive} -- join them (thread.join(timeout=...)) before the "
+        f"test ends")
 
 
 def _hit(repo_id, **extra):
@@ -94,6 +128,14 @@ def test_429_partway_through_never_writes_a_partial_pool(monkeypatch):
         if len(calls) == 1:
             return _resp([_hit("org/first")],
                          headers={"Link": '<https://hub.test/api/models?cursor=2>; rel="next"'})
+        if len(calls) == 3:
+            # The re-triggered background build below (`ensure_build_started`)
+            # makes this call from its own thread. A small delay here makes
+            # the leak this test used to have (no `thread.join()`) fail
+            # `_fail_on_leaked_build_threads` deterministically instead of by
+            # race — the thread must still be "in flight" past the point the
+            # test function would otherwise have returned.
+            time.sleep(0.2)
         return _resp([], status=429, headers={"RateLimit": "limit=100, remaining=0, reset=120"})
 
     monkeypatch.setattr(httpx, "get", fake_get)
@@ -116,6 +158,13 @@ def test_429_partway_through_never_writes_a_partial_pool(monkeypatch):
     # old bug: `ensure_build_started` sees `pool_exists() == True` forever).
     monkeypatch.setattr(hub_catalog, "is_blocked", lambda *a, **k: False)
     assert builder.ensure_build_started("automatic-speech-recognition", cfg=cfg) is True
+    # Join before returning: this call starts a REAL background thread, and
+    # leaving it running past this test's own teardown means its next
+    # `httpx.get` fires after `monkeypatch` has already restored the real
+    # implementation — a genuine, unbounded-timing network call racing
+    # whatever the next test in the session sets up (see
+    # `_fail_on_leaked_build_threads`, which now catches exactly this).
+    builder._building["automatic-speech-recognition"].join(timeout=5)
 
 
 def test_429_with_no_rows_yet_leaves_no_pool_but_sets_the_block(monkeypatch):
