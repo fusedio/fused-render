@@ -3312,6 +3312,49 @@ def test_admission_never_drops_a_row_ordering_stays_unchanged(client, hub_cache,
     assert by_id["org/allowed"]["loadable"] is True
 
 
+def test_architecture_resolution_never_moves_score_rank_or_facets(client, hub_cache, monkeypatch):
+    """D1287/D1288: `hub_architecture.resolve` is a brand-new fact exposed on
+    every row (`architecture`/`engine`), computed purely from `raw` — it must
+    never feed ranking. Two rows, identical in every field the scorer/sorter/
+    facet-builder read (`downloads`, `likes`, `pipeline_tag`, `library_name`,
+    `safetensors`), differing ONLY in a `config` shape that makes one of them
+    resolve a Diffusers architecture and the other resolve nothing at all.
+    `matchScore`, sort order and the publisher facet counts must come out
+    identical regardless."""
+    shared = dict(library_name="diffusers", downloads=100, likes=10,
+                  safetensors={"total": 4_000_000_000})
+    arch_config = {"architectures": ["MiniMaxH3Pipeline"]}
+
+    def _run(order):
+        hub._cache.clear()
+        rows = [_hit("org/a", config=arch_config if order == "a" else None, **shared),
+                _hit("org/b", config=arch_config if order == "b" else None, **shared)]
+        rows = [{k: v for k, v in row.items() if v is not None} for row in rows]
+        monkeypatch.setattr(httpx, "get", _reply(rows))
+        return _search(client, {"sort": "downloads"}).json()
+
+    body_a = _run("a")  # org/a carries the architecture-revealing config
+    body_b = _run("b")  # org/b carries it instead — everything else identical
+
+    by_id_a = {m["id"]: m for m in body_a["models"]}
+    by_id_b = {m["id"]: m for m in body_b["models"]}
+
+    # The new fact differs exactly as expected...
+    assert by_id_a["org/a"]["architecture"] == "MiniMaxH3Pipeline"
+    assert by_id_a["org/b"]["architecture"] == "diffusers"  # library_name-alone fallback
+    assert by_id_b["org/a"]["architecture"] == "diffusers"
+    assert by_id_b["org/b"]["architecture"] == "MiniMaxH3Pipeline"
+
+    # ...but nothing ranking-related does: identical downloads/likes/format
+    # inputs produce identical scores regardless of which row carries the
+    # architecture-revealing config, and the resulting ORDER (a tiebreak
+    # among tied scores) is exactly the same in both runs — proving the
+    # tiebreak reads nothing architecture-shaped.
+    assert by_id_a["org/a"]["matchScore"] == by_id_a["org/b"]["matchScore"]
+    assert [m["id"] for m in body_a["models"]] == [m["id"] for m in body_b["models"]]
+    assert body_a["facets"]["publishers"] == body_b["facets"]["publishers"]
+
+
 # -- item 3: fileFormat off `siblings` --------------------------------------
 
 
