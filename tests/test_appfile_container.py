@@ -84,7 +84,7 @@ def test_index_is_capped_before_inflate(tmp_path):
         c.read_index(str(f), **CAPS)
 
 
-@pytest.mark.parametrize("path", ["../escape.txt", "/etc/x", "a\\..\\b", "a/./b", "a\x00b"])
+@pytest.mark.parametrize("path", ["../escape.txt", "/etc/x", "a\\..\\b", "a/./b", "a\x00b", "C:x", "a:b"])
 def test_index_rejects_traversal_paths(tmp_path, path):
     comp, meta = blob(b"x")
     f = tmp_path / "a.fused"
@@ -143,3 +143,49 @@ def test_read_member_is_bounded(tmp_path):
     idx = c.read_index(str(out), **CAPS)
     got = c.read_member(str(out), idx, "index.html", 10)
     assert len(got) == 11  # one past the cap, never the declared 1000
+
+
+def test_bombs_never_inflate_past_the_declared_size(tmp_path, monkeypatch):
+    # A body that inflates to 64 MiB behind an index declaring 5 bytes: the
+    # reader must reject it while never asking zlib for more than one
+    # bounded chunk of output at a time — checked by spying on decompress.
+    big = zlib.compress(b"\0" * (64 * 1024 * 1024), 9)
+    assert len(big) < 100_000
+    f = tmp_path / "a.fused"
+    f.write_bytes(raw_container({"fused_app_file": 2, "files": [
+        {"path": "p.png", "offset": 0, "size": 5, "csize": len(big), "sha256": "0" * 64}]}, big))
+    idx = c.read_index(str(f), **CAPS)
+
+    biggest = 0
+    real = zlib.decompressobj
+
+    def spy():
+        d = real()
+
+        class Spy:
+            def decompress(self, data, max_length=0):
+                nonlocal biggest
+                out = d.decompress(data, max_length)
+                biggest = max(biggest, len(out))
+                return out
+
+            def flush(self, length=None):
+                nonlocal biggest
+                out = d.flush(length) if length is not None else d.flush()
+                biggest = max(biggest, len(out))
+                return out
+
+            @property
+            def unconsumed_tail(self):
+                return d.unconsumed_tail
+
+        return Spy()
+
+    monkeypatch.setattr(zlib, "decompressobj", spy)
+    with pytest.raises(c.ContainerError, match="declared size"):
+        c.extract(str(f), idx, str(tmp_path / "dest"))
+    assert biggest <= 6
+    # The single-member read is bounded on both sides: it reads only enough
+    # compressed bytes for cap+1 output and yields at most cap+1.
+    got = c.read_member(str(f), idx, "p.png", 10)
+    assert len(got) == 11 and biggest <= 11

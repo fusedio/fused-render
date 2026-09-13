@@ -64,8 +64,9 @@ from fused_render.zip_import import (
     sweep_stale_staging,
 )
 
-# The payload dir inside the zip, mirroring the app folder — the same
-# single-payload-dir shape as bundle v2's `files/` (docs/bundle-v2-design.md).
+# The payload dir a v1 zip carries, and the staging subdir both formats
+# extract into — the same single-payload-dir shape as bundle v2's `files/`
+# (docs/bundle-v2-design.md).
 PAYLOAD_DIR = "files"
 MANIFEST_NAME = "manifest.json"
 

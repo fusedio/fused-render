@@ -94,8 +94,11 @@ def path_problem(rel: object) -> str | None:
     """
     if not isinstance(rel, str) or not rel:
         return "empty path"
-    if "\\" in rel or "\x00" in rel:
-        return f"path carries a backslash or NUL: {rel!r}"
+    if "\\" in rel or "\x00" in rel or ":" in rel:
+        # ':' covers a Windows drive-relative segment (`C:foo`, which isabs()
+        # does not catch) and NTFS alternate data streams (`a:b`); nothing
+        # legitimate in an app folder needs one.
+        return f"path carries a backslash, colon or NUL: {rel!r}"
     if rel.startswith("/") or os.path.isabs(rel):
         return f"absolute path not allowed: {rel!r}"
     if any(seg in ("", ".", "..") for seg in rel.split("/")):
@@ -283,10 +286,15 @@ def read_member(path: str, index: dict, rel: str, cap: int) -> bytes | None:
     entry = find(index, rel)
     if entry is None:
         return None
+    # `csize` is attacker-controlled up to the file size, and this runs on a
+    # hub-card thumbnail: bound the COMPRESSED read too. Deflate cannot
+    # inflate by more than a few bytes per block, so this many compressed
+    # bytes always suffice to yield `cap + 1` output when there is that much.
+    want = min(entry["csize"], cap + cap // 8192 + 64)
     try:
         with open(path, "rb") as f:
             f.seek(index["_data_start"] + entry["offset"])
-            raw = f.read(entry["csize"])
+            raw = f.read(want)
     except OSError as exc:
         raise ContainerError(f"not a readable .fused file: {exc}")
     return _inflate_bounded(raw, cap)
@@ -299,17 +307,28 @@ def extract(path: str, index: dict, dest: str) -> int:
     that disagrees with its index rejects the whole extract and ``dest`` is
     removed. Returns bytes written."""
     os.makedirs(dest, exist_ok=True)
+    root = os.path.normpath(dest)
     written = 0
     try:
         with open(path, "rb") as src:
             for entry in index["files"]:
-                target = os.path.join(dest, *entry["path"].split("/"))
+                target = os.path.normpath(os.path.join(dest, *entry["path"].split("/")))
+                # Redundant with path_problem on purpose (zip_import keeps the
+                # same belt-and-braces): normalization catches shapes a
+                # per-segment scan does not on some platform.
+                if not target.startswith(root + os.sep):
+                    raise ContainerError(
+                        f"rejected .fused: entry {entry['path']!r} escapes the extract dir")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 src.seek(index["_data_start"] + entry["offset"])
                 remaining = entry["csize"]
                 d = zlib.decompressobj()
                 h = hashlib.sha256()
                 got = 0
+                declared = entry["size"]
+                over = ContainerError(
+                    f"rejected .fused: entry {entry['path']!r} inflates past its declared size")
+
                 with open(target, "wb") as out:
                     while remaining > 0:
                         chunk = src.read(min(_COPY_CHUNK, remaining))
@@ -317,15 +336,21 @@ def extract(path: str, index: dict, dest: str) -> int:
                             raise ContainerError(
                                 f"rejected .fused: entry {entry['path']!r} is truncated")
                         remaining -= len(chunk)
-                        piece = d.decompress(chunk)
-                        got += len(piece)
-                        if got > entry["size"]:
-                            raise ContainerError(
-                                f"rejected .fused: entry {entry['path']!r} inflates past its declared size")
-                        h.update(piece)
-                        out.write(piece)
-                    tail = d.flush()
+                        # Bounded inflate: a 1 MiB compressed chunk can yield
+                        # ~1 GiB, so never let one call produce more than the
+                        # entry has left to declare (+1 to detect overrun).
+                        while chunk:
+                            piece = d.decompress(chunk, max_length=min(_COPY_CHUNK, declared - got + 1))
+                            got += len(piece)
+                            if got > declared:
+                                raise over
+                            h.update(piece)
+                            out.write(piece)
+                            chunk = d.unconsumed_tail
+                    tail = d.flush(min(_COPY_CHUNK, declared - got + 1))
                     got += len(tail)
+                    if got > declared:
+                        raise over
                     h.update(tail)
                     out.write(tail)
                 if got != entry["size"] or h.hexdigest() != entry["sha256"]:
