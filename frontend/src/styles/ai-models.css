@@ -3332,6 +3332,17 @@ button.am-bench-model:focus-visible {
 .tp .chip.warn-chip {
   border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
   color: var(--warning);
+  /* D1288: the "Won't run here" reason clause now often names an engine and
+     architecture ("needs Diffusers (MiniMaxH3Pipeline)", "needs Sentence
+     Transformers — not supported yet") — noticeably longer than the old
+     bespoke sentences this chip was sized for. `.chip`'s own `white-space:
+     nowrap` with no width cap would let one of these push the row's layout
+     wide instead of wrapping; capped and ellipsised here instead, with the
+     full text still available via the chip's own `title` attribute. */
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 /* D814 (item Q): a fit chip on every row that carries a verdict, mirroring

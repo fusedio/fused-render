@@ -236,6 +236,22 @@ function HitDrawer({
         <dd>{model.id}</dd>
         <dt>Task</dt>
         <dd className="plain">{model.task ?? <span className="unknown">not recorded</span>}</dd>
+        {/* D1287, "always list the architecture in the info card": present
+         *  on EVERY row, not only unloadable ones — `architecture` names
+         *  the repo's own pipeline/model class, `engine` the runner family
+         *  it maps to (independent of whether that engine is shipped or
+         *  available right now; see the "Won't run here" chip for that). */}
+        <dt>Architecture</dt>
+        <dd className="plain">
+          {model.architecture ? (
+            <>
+              {model.architecture}
+              {model.engine ? ` · ${model.engine}` : ""}
+            </>
+          ) : (
+            <span className="unknown">not recorded</span>
+          )}
+        </dd>
         <dt>Parameters</dt>
         <dd className="plain">{paramsLabel(model.params)}</dd>
         <dt>Quantization</dt>

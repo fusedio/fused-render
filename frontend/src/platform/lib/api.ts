@@ -3797,17 +3797,35 @@ export interface HubModel {
    *  response that predates this field. `formatToken()` combines this with
    *  `library`. */
   fileFormat?: "safetensors" | "gguf" | "npz" | "onnx" | "bin" | null;
-  /** Item 2: whether the runner ACTIVE for `capability` right now will
-   *  actually be able to open this repo once downloaded — never a reason to
-   *  drop the row, only to flag it (a runner-narrower repo still ranks,
-   *  still downloads if the person insists). `true`/undefined on a response
-   *  that predates this field, so an older server's rows read exactly as
-   *  they always have: nothing is flagged. */
+  /** Item 2 / item 3 (D1287/D1288): whether ANY runner AVAILABLE for
+   *  `capability` right now will actually be able to open this repo once
+   *  downloaded — never a reason to drop the row, only to flag it (a row
+   *  only a non-active but still-available runner can open is NOT flagged).
+   *  `true`/undefined on a response that predates this field, so an older
+   *  server's rows read exactly as they always have: nothing is flagged. */
   loadable?: boolean;
-  /** The short clause the frontend's chip appends after "Won't run here · "
-   *  (e.g. "no engine here loads this" or "switch to Diffusers to run
-   *  this", per D1278) — null/absent whenever `loadable` is not `false`. */
+  /** The short clause the frontend's chip appends after "Won't run here · ".
+   *  Since D1288 this usually NAMES what would load it — "needs Diffusers
+   *  (MiniMaxH3Pipeline)", "needs Diffusers", "needs Sentence Transformers
+   *  — not supported yet", "no engine loads <name> yet" — falling back to
+   *  "no engine here loads this", or (unchanged) to mlx-vlm's own
+   *  "<model_type> not supported by mlx-vlm". Null/absent whenever
+   *  `loadable` is not `false`. */
   loadableReason?: string | null;
+  /** D1287: the repo's own architecture name, resolved purely from its Hub
+   *  metadata (`diffusers:<PipelineClass>` tag, `config.diffusers.
+   *  _class_name`, `config.architectures[0]`, `config.model_type`, or bare
+   *  `library_name`, in that priority order) — present on EVERY row
+   *  (loadable or not), so the info drawer can always show it. Null when
+   *  nothing in the row's metadata resolved a name, or on a response that
+   *  predates this field. */
+  architecture?: string | null;
+  /** D1287: the engine this architecture maps to (e.g. "Diffusers",
+   *  "llama.cpp", "MLX", "ltx-2-mlx", "ONNX Runtime", "Sentence
+   *  Transformers"), independent of whether that engine is actually shipped
+   *  in this app or available right now — see `loadableReason` for that.
+   *  Null when `architecture` itself is null, or no engine mapping matched. */
+  engine?: string | null;
 }
 
 /** One line of `HubModel.matchBreakdown` — see that field's own doc.

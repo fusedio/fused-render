@@ -1,13 +1,18 @@
 import type { HubModel } from "@platform/lib/api";
 
-/** Item 2 (scope-corrected): the chip text for a row the runner ACTIVE for
- *  its capability cannot open — "Won't run here · <reason>", where `reason`
- *  is the server's own short clause (`HubModel.loadableReason`, e.g. "no
- *  engine here loads this" or "switch to Diffusers to run this", per
- *  D1278). Split into its own testable function rather
- *  than inlined JSX so the exact wording has one place to check, the same
- *  reason `formatToken`/`downloadedVariantLabel` live in this `lib/`
- *  directory rather than the screen component.
+/** Item 2 (scope-corrected) / item 3 (D1287/D1288): the chip text for a row
+ *  that NO runner available for its capability can open — "Won't run here ·
+ *  <reason>", where `reason` is the server's own short clause
+ *  (`HubModel.loadableReason`). Since D1288 the reason usually NAMES the
+ *  architecture that would load it — "needs Diffusers (MiniMaxH3Pipeline)",
+ *  "needs Diffusers", "needs Sentence Transformers — not supported yet",
+ *  "no engine loads <name> yet" — falling back to "no engine here loads
+ *  this" when nothing about the repo was recognised at all, or (unchanged)
+ *  to mlx-vlm's own "<model_type> not supported by mlx-vlm" when that is the
+ *  sole available runner and the one refusing. Split into its own testable
+ *  function rather than inlined JSX so the exact wording has one place to
+ *  check, the same reason `formatToken`/`downloadedVariantLabel` live in
+ *  this `lib/` directory rather than the screen component.
  *
  *  Null whenever there is no chip to show — `loadable` is anything but
  *  `false` (`true`, or absent on an older server's response, both read as
