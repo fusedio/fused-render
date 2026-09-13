@@ -1858,6 +1858,11 @@ const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
 /** The page that owns the poll and hands the three views their tasks — read for
  *  the claims that are about what it PASSES DOWN, which no view can check alone. */
 const SCHEDULED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+const BOUNDARY = readFileSync(
+  join(SHELL, "../platform/lib/param-boundary.ts"),
+  "utf8",
+);
+
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
 const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
@@ -3910,7 +3915,11 @@ describe("the archive action", () => {
     // out on 2026-08-18 — see "the hidden row actions" — so the strip is drawn
     // whenever EITHER survives its own guard, and its one-pin arrangement is
     // what the flag has to come back to.
-    expect(card).toContain("{(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (");
+    // …and the quick door out, which is on every card that HAS a page — the
+    // fourth member of the strip since 2026-09-13.
+    expect(card).toContain(
+      "{((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (",
+    );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*display: flex/);
@@ -4201,7 +4210,9 @@ describe("the delete affordance", () => {
     expect(strip.slice(0, at)).toContain("{folderMissing && (");
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
-    expect(VIEWS_SRC).toContain("{(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (");
+    expect(VIEWS_SRC).toContain(
+      "{((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (",
+    );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
       VIEWS_SRC.indexOf('<span className="schedule-tv-card-foot">'),
@@ -5229,7 +5240,12 @@ describe("the Project filter's glyph", () => {
     expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
     // A prop with the ring as its default, so the Status menu is untouched — there
     // the ring IS the vocabulary a status is stated in.
-    expect(VIEWS).toContain("{glyph ?? ICON_CIRCLE_DOT} {label}");
+    // The word rides a `.schedule-fit-lbl` span so the toolbar can fold it to
+    // an icon when the row runs out of width (shell/row-fit.ts) — the glyph and
+    // the label are still one control and still in this order.
+    expect(VIEWS).toContain(
+      '{glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>',
+    );
     const status = VIEWS.slice(VIEWS.indexOf('label="Status"'));
     expect(status.slice(0, status.indexOf("onClear"))).not.toContain("icon=");
   });
@@ -7186,9 +7202,12 @@ describe("what the List remembers between visits", () => {
     expect(LIST).toContain("new Set(memory.current.expanded)");
     // The list's own scroller, not the window's — which is also why this cannot
     // fight the chat's msg-anchor scroll on the other page.
-    expect(LIST).toContain(
-      '<div className="tasks-list" ref={listRef} onScroll={onScroll}>',
-    );
+    // `data-fit` rides a conditional spread — it exists only while the side
+    // peek's flag is on (shell/task-peek-flag.ts), so an opted-out page renders
+    // the scroller exactly as it always did.
+    expect(LIST).toContain('<div\n        className="tasks-list"\n        ref={listRef}');
+    expect(LIST).toContain('{...(peekOn ? { "data-fit": fit } : {})}');
+    expect(LIST).toContain("onScroll={onScroll}");
     expect(LIST).toContain("el.scrollTop = top;");
     // A row restored from memory was never toggled, so nothing fetched the rest
     // of its thread; the restore makes that trip itself, once.
@@ -7353,7 +7372,11 @@ describe("the tasks toolbar", () => {
       ["ICON_VIEW_BOARD", "Board"],
       ["ICON_VIEW_CALENDAR", "Calendar"],
     ]) {
-      expect(PAGE).toMatch(new RegExp(`\\{${icon}\\}\\s*\\n\\s*${label}\\n`));
+      // The word is in a `.schedule-fit-lbl` span so a narrow toolbar can fold
+      // it to the glyph alone (shell/row-fit.ts); the pairing is unchanged.
+      expect(PAGE).toMatch(
+        new RegExp(`\\{${icon}\\}\\s*\\n\\s*<span className="schedule-fit-lbl">${label}</span>`),
+      );
     }
     // Drawn by the same helper as every other glyph on the page, so the switcher
     // cannot drift to a second icon size — they are exported from the file that
@@ -8102,8 +8125,13 @@ describe("the Cards view's frame", () => {
     // twelve documents share one `session_id` (static/runtime.js findTarget).
     // Set on mount and REMOVED on unmount — the flag is a fact about a window
     // that is currently hosting param-owning frames, not about the app.
-    expect(CARDS).toContain("window._fusedParamBoundary = true;");
-    expect(CARDS).toContain("delete window._fusedParamBoundary;");
+    // Through the shared HOLD rather than a bare set/delete here (2026-09-13):
+    // the side peek frames a chat on this same page, and two surfaces each
+    // deleting the flag on unmount took the boundary away from whichever was
+    // still up. `platform/lib/param-boundary` counts the holders.
+    expect(CARDS).toContain("useParamBoundary(nativeChatState === false)");
+    expect(BOUNDARY).toContain("window._fusedParamBoundary = true;");
+    expect(BOUNDARY).toContain("delete window._fusedParamBoundary;");
   });
 
   it("keys a card on the task's IDENTITY, so a poll is a re-render and not a reload", () => {
@@ -8505,7 +8533,12 @@ describe("the Cards view's frame", () => {
     expect(head).toContain("onPeek(task);");
     // THE WHOLE CARD IS THE DOOR: the body is a picture of the chat — no
     // pointer events, no scroll — and any press on the card opens the popup.
-    expect(CARDS).toContain('className="task-card task-card--door"');
+    // …plus the side peek's halo, which is the ONE thing that may ride this
+    // class list (.claude-design/task-side-peek/design.md: the open item is
+    // marked in all four views).
+    expect(CARDS).toContain(
+      'className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")}',
+    );
     expect(CARDS).toContain("onClick={() => onPeek(task)}");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");

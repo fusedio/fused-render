@@ -46,6 +46,7 @@ import {
   hfLogout,
   putCanvasesEnabled,
   putNativeChatEnabled,
+  putTaskPeekEnabled,
   putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
@@ -65,6 +66,7 @@ import {
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { publishTaskPeekEnabled } from "./task-peek-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
@@ -309,6 +311,52 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
         <span>
           <b>Session recap</b> — after you have been away a minute, one line at the
           bottom of the chat saying where the conversation stands.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// The task side peek (experimental): a click on a task opens it in a panel
+// beside the list instead of navigating to the Explorer. Same one-checkbox
+// section shape as Native chat above — and no `forced_by`, because this switch
+// has no env override to be beaten by (prefs.py `task_peek_enabled` says why).
+function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `?? false`: a server that predates the switch sends nothing, which is off —
+  // both the pref's own default and the behaviour the page has always had.
+  const enabled = prefs.task_peek?.enabled ?? false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putTaskPeekEnabled(!enabled);
+      onChange(next);
+      // Published so the Tasks page picks it up on its next paint rather than
+      // on a reload — the same hand-over the native chat's switch makes.
+      publishTaskPeekEnabled(next.task_peek?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Task side panel (experimental)</h2>
+      <p className="deploy-muted">
+        Open tasks in a side panel instead of leaving the page. Experimental.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Open a task beside the list</b> — the List, Board, Cards and Calendar stay on
+          screen and shrink to make room.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1000,6 +1048,7 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <NativeChatSection prefs={prefs} onChange={setPrefs} />
+                <TaskPeekSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

@@ -2231,3 +2231,41 @@ button.tasks-draft-pill.is-on:focus-visible {
   margin: 2px 0;
   border-radius: 6px;
 }
+
+/* -- The row's meta, dropped right to left when it does not fit -------------
+   `data-fit` is written by shell/row-fit.ts — how many of ROW_DROPS have had to
+   go for the rows to fit the width the list actually has. MEASURED, never a
+   breakpoint; that file states the rule and the reason at length.
+
+   CUMULATIVE: level 2 is level 1 with one more mark gone. The title is never in
+   the ladder — it ellipsises throughout, because it is the row.
+
+   `display: none` and not `visibility`: the point is to give the width back. */
+.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row-time {
+  display: none;
+}
+
+.tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row-msgs {
+  display: none;
+}
+
+.tasks-list:is([data-fit="3"], [data-fit="4"])
+  .tasks-row
+  .schedule-tv-id-shield:has(.schedule-tv-id) {
+  display: none;
+}
+
+.tasks-list[data-fit="4"] .tasks-row .schedule-tv-id-shield:has(.tasks-draft-pill),
+.tasks-list[data-fit="4"] .tasks-row > .tasks-draft-pill {
+  display: none;
+}
+
+/* THE QUICK DOOR OUT of a row (.claude-design/task-side-peek/design.md, Round
+   3): the row's own press opens the side peek beside the list, and this goes to
+   the whole page. It is a `.tasks-act` like every other row action — silent at
+   rest, revealed on hover, above the stretched link so its press is its own —
+   and it is NEVER in the fit ladder above: a control that disappears because a
+   folder name got longer is a control nobody can rely on. */
+.tasks-act--page {
+  text-decoration: none;
+}

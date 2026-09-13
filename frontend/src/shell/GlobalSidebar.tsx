@@ -30,6 +30,7 @@ import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
@@ -449,6 +450,8 @@ function PreferencesPopover({
 const AI_MODELS_HOME = tabHref("playground", "");
 
 export default function GlobalSidebar({ config }: { config: Config }) {
+  // See `tuckOnCollapse` below.
+  const taskPeekOn = useTaskPeekEnabled();
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
   // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
@@ -852,7 +855,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   return (
     <>
-      <SidebarFrame title="Render" homeHref="/home" rail={rail}>
+      {/* `tuckOnCollapse` is the task side peek's motion (it collapses this
+          panel on the reader's behalf), so it rides that feature's flag —
+          shell/task-peek-flag.ts. Off, the collapse is the one this sidebar has
+          always had. */}
+      <SidebarFrame
+        title="Render"
+        homeHref="/home"
+        rail={rail}
+        tuckOnCollapse={taskPeekOn}
+      >
         <div className="sidebar-section sidebar-group">
           <NavItem
             href="/home"

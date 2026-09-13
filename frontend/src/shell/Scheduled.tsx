@@ -115,6 +115,10 @@ import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
+import { useToolbarFit } from "./row-fit";
+import { useTaskPeekEnabled } from "./task-peek-flag";
+import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
+import { closePeek, frameClickCloses } from "./task-peek-store";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -932,6 +936,23 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // folder, so a row can say "Folder missing" instead of opening an Explorer
   // that can only answer with a stat error (useMissingFolders).
   const missing = useMissingFolders(shown);
+  // THE SIDE PEEK, and it belongs to THIS page only: `useTaskPeekHost` is what
+  // arms `openPeek` for the four views, adopts a `?peek=` deep link and follows
+  // Back. Scoped (the app page's Tasks tab) it stays disarmed, so every press
+  // there navigates exactly as it did — the same rule that leaves the sidebar's
+  // task list and the notifications alone
+  // (.claude-design/task-side-peek/design.md).
+  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): experimental, default
+  // off, and off means this page is the page it has always been — no panel, no
+  // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
+  // so there is one answer for the whole page.
+  const peekOn = useTaskPeekEnabled();
+  // The toolbar folds its words before it clips them (shell/row-fit.ts) — and
+  // only while the feature is on, since the ladder arrived with it.
+  const [toolbar, toolbarRef] = useToolbarFit(peekOn);
+  const peekable = !scope && peekOn;
+  useTaskPeekHost(peekable);
+  const peek = useTaskPeekLayout();
   // ONE sentence for "there is nothing here", handed to all four views, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -982,7 +1003,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     setEditId(null);
   }, [editId, state]);
 
-  return (
+  // THE FRAME, and only a name for it while the peek is off: the page is
+  // exactly what it was, and the flex row below is added only on `/tasks`.
+  const page = (
     // `schedule-page` is not decoration: it is what lets the card sections opt
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
     // inside them stays at that measure. See styles/schedule.css.
@@ -1004,7 +1027,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
 
       {state && (
         <section className="prefs-section schedule-main">
-          <div className="schedule-toolbar">
+          {/* `data-fit` — how many of the toolbar's labels have had to fold for
+              the row to fit the width it has. Measured, never a breakpoint
+              (shell/row-fit.ts). */}
+          <div
+            className="schedule-toolbar"
+            ref={toolbarRef}
+            {...(peekOn ? { "data-fit": toolbar.level } : {})}
+            data-wrap={toolbar.wrap ? "1" : undefined}
+          >
             {/* The view toggle leads, at the far left of every view — it is the
                 one control that must never change address, and anchoring it to
                 the start of the row is what guarantees that regardless of what
@@ -1027,19 +1058,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
               <button type="button"
                       data-view="list"
+                      title="List"
                       className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
                 {ICON_VIEW_LIST}
-                List
+                <span className="schedule-fit-lbl">List</span>
               </button>
               <button type="button"
                       data-view="board"
+                      title="Board"
                       className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
                 {ICON_VIEW_BOARD}
-                Board
+                <span className="schedule-fit-lbl">Board</span>
               </button>
               {/* Before the calendar (Akshil, 2026-09-03): the first three
                   answer "what is there" and "what is happening right now",
@@ -1047,19 +1080,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                   the same argument that made List the default. */}
               <button type="button"
                       data-view="cards"
+                      title="Cards"
                       className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
                       aria-pressed={view === "cards"}
                       onClick={() => pickView("cards")}>
                 {ICON_VIEW_CARDS}
-                Cards
+                <span className="schedule-fit-lbl">Cards</span>
               </button>
               <button type="button"
                       data-view="calendar"
+                      title="Calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
                 {ICON_VIEW_CALENDAR}
-                Calendar
+                <span className="schedule-fit-lbl">Calendar</span>
               </button>
             </div>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
@@ -1082,10 +1117,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
+              // The toolbar's last rung: one trigger instead of two, same rows
+              // inside it (shell/row-fit.ts TOOLBAR_DROPS).
+              merged={toolbar.level >= 4}
             />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
-              + New task
+              +<span className="schedule-fit-lbl"> New task</span>
             </button>
           </div>
 
@@ -1279,6 +1317,50 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           onCreated={reload}
         />
       )}
+    </div>
+  );
+
+  if (!peekable) return page;
+
+  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
+  // peek as DOM siblings, the peek lifted out of flow over the row's right edge
+  // so its slide never reflows the frame under it. ONE number drives both
+  // halves of the 200ms — the frame's width is `100% − <what the peek takes>`,
+  // and the peek's own transform runs off the same value.
+  //
+  // In COVER mode the frame takes nothing off its width (rule 4): there is no
+  // usable frame left at that size, so the panel is laid over it whole rather
+  // than squeezing the view to a sliver.
+  const taken = peek.open && !peek.cover ? peek.width : 0;
+  return (
+    <div className="tasks-peek-host">
+      <div
+        className={"tasks-frame" + (peek.instant ? " is-instant" : "")}
+        style={{ width: `calc(100% - ${taken}px)` }}
+        // CLICKING BLANK FRAME CLOSES (design.md, Close triggers — and Akshil's
+        // decision to keep Notion's behaviour). Everything that is a control or
+        // an item does its own thing: rows and cards carry the walk's own
+        // attribute, the toolbar's chips are buttons, and a menu or a dialog
+        // portalled over the page is neither. What is left is page background.
+        onClick={(e) => {
+          if (!peek.open) return;
+          if (frameClickCloses(e.target as Element | null)) closePeek();
+        }}
+      >
+        {page}
+      </div>
+      {/* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
+          statement about which conversation may be open, and narrowing the list
+          under an open panel must not close it (or, worse, make its task look
+          deleted to `settlePeek`). `loaded` is what turns "no such task" from a
+          wait into an answer. */}
+      <TaskPeek
+        tasks={inScope}
+        loaded={tasksLoaded}
+        home={home}
+        missing={missing}
+        onReload={reload}
+      />
     </div>
   );
 }

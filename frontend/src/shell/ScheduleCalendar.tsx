@@ -177,6 +177,13 @@ import type { TaskRunIntent } from "./tasks-lib";
 // one glyph too, so a Done row in the popover is the same mark as a Done card on
 // the board — red on Blocked, and dashed (below) when it is only projected.
 import { StatusIcon } from "./ScheduleTaskViews";
+import {
+  PEEK_ITEM_ATTR,
+  PEEK_OPEN_CLASS,
+  openPeek,
+  usePeekHost,
+  usePeekedKey,
+} from "./task-peek-store";
 
 // One hour of grid, in px. 44 puts a full day at ~1050px — tall enough that two
 // runs half an hour apart do not collide, short enough that the 8am–6pm band a
@@ -443,6 +450,17 @@ function ChipPopover({
     const to = openMessageHref(task, m);
     if (!to) return;
     if (m.unread) markTaskMessageRead(task.key, m.message_id).then(onReload, () => {});
+    // THE CALENDAR'S WAY INTO THE SIDE PEEK (.claude-design/task-side-peek).
+    // The chip itself keeps its popover — a chip click is the calendar's own
+    // gesture and design.md leaves it alone — so the row in that popover is
+    // where "open this conversation" lives here, exactly as the List row's
+    // press is on the List. The peek holds the THREAD and not one turn of it:
+    // there is no `msg=` anchor to hand a panel, and the turn this row names is
+    // where a chat opens by itself anyway.
+    if (openPeek(task.key)) {
+      onClose();
+      return;
+    }
     navigateUrl(to);
     onClose();
   };
@@ -1096,6 +1114,12 @@ export default function ScheduleCalendar({
 
   const cols = { ["--cal-days" as string]: days.length } as React.CSSProperties;
 
+  // Which task's conversation is open in the side peek right now — the chip
+  // wears the same halo the List's row and the Board's card do, so switching
+  // view keeps the open item findable (styles/task-peek.css).
+  const peekOn = usePeekHost();
+  const peekedKey = peekOn ? usePeekedKey() : null;
+
   // The grid below unmounts while the set is empty, and with it the scroll box
   // the placement effect aims. Forget the aim with it, or the effect on remount
   // sees the same range and the same "had chips" answer, skips, and the grid
@@ -1246,7 +1270,8 @@ export default function ScheduleCalendar({
                         // both the title and the clock — the title collapsed to
                         // two characters (audit 2026-08-16). The CSS drops the
                         // time; the hour ruler already carries it.
-                        (chip.lanes >= 3 ? " is-narrow" : "")
+                        (chip.lanes >= 3 ? " is-narrow" : "") +
+                        (peekedKey === chip.task.key ? ` ${PEEK_OPEN_CLASS}` : "")
                       }
                       style={{
                         top: (minutesOfDay(chip.time) / 60) * HOUR_H,
@@ -1262,6 +1287,12 @@ export default function ScheduleCalendar({
                       } as React.CSSProperties}
                       title={name}
                       aria-label={name}
+                      // The side peek's halo selector and the walk's place. The
+                      // grid paints day column by day column and each chip at
+                      // its own time, so DOM order here IS chronological, which
+                      // is the walk design.md asks the calendar for
+                      // (shell/task-peek-store.ts).
+                      {...(peekOn ? { [PEEK_ITEM_ATTR]: chip.task.key } : {})}
                       onClick={(e) => {
                         e.stopPropagation();
                         setOpenChip({ chip, x: e.clientX, y: e.clientY });
