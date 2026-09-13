@@ -2086,15 +2086,21 @@ def _footprint_fingerprint(store: dict | None) -> tuple:
     must compare unequal so the cache re-scores rather than serving a fit
     verdict computed before that measurement landed. `observedAt` alone is
     enough to detect an add/update/evict — the store's own bound
-    (`footprints.MAX_MODELS`) keeps this frozenset small regardless."""
+    (`footprints.MAX_MODELS`) keeps this tuple small regardless."""
     if not isinstance(store, dict):
         return (None,)
     models = store.get("models")
     if not isinstance(models, dict):
         return (None,)
-    return frozenset(
+    # Sorted, not a bare tuple(models.items()): dict iteration order is not
+    # guaranteed stable across two calls describing the same store, and this
+    # value has to compare equal when that's all that differs. Sorting by
+    # `key` alone is enough to make the order deterministic — `models` is a
+    # dict, so keys are already unique and the second element never has to
+    # break a tie.
+    return tuple(sorted(
         (key, entry.get("observedAt") if isinstance(entry, dict) else None)
-        for key, entry in models.items())
+        for key, entry in models.items()))
 
 
 def _scored_pool_cache_key(cfg, capability: str, hardware, dirs: dict[str, str],
@@ -2148,8 +2154,10 @@ def _refresh_row_local_state(row: dict, cache_dir: str, dirs: dict[str, str]) ->
     assignments, outside this function's lock) land on a dict private to
     this one request/response, never on the shared object another
     concurrent request's cache hit just returned a reference to."""
+    row_id = row.get("id")
+    dirname = dirs.get(row_id) if isinstance(row_id, str) else None
     new_row = dict(row)
-    new_row["local"] = _local_state(cache_dir, dirs.get(row.get("id")))
+    new_row["local"] = _local_state(cache_dir, dirname)
     return new_row
 
 
