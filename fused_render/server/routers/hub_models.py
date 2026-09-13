@@ -2042,6 +2042,15 @@ def _catalog_ilike_escape(value: str) -> str:
 #: rebuild, a hardware change, a newly downloaded model, a runner swap)
 #: re-scores. Bounded to one entry per capability by construction: writing a
 #: new `(key, rows)` for a capability simply replaces whatever was there.
+#: Finding 6: a request only reaches `_scored_pool` after its `capability`
+#: has already cleared `ai_tasks.tags_for_capability` (else a 400, before
+#: any pool lookup) and `hub_catalog.pool_exists` — both gates limit
+#: `capability` to the small, fixed set of capability strings the registry
+#: declares (`TEXT_GENERATION`, `IMAGE_GENERATION`, etc.,
+#: `fused_render/ai/registry.py`), never arbitrary caller-supplied text. So
+#: this dict's TOTAL size is bounded by that same small, fixed count, not
+#: by request volume or pool size; no separate eviction policy is needed on
+#: top of the one-entry-per-capability replacement above.
 _SCORED_POOL_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
 _SCORED_POOL_LOCK = threading.Lock()
 
@@ -2069,22 +2078,79 @@ def _hardware_fingerprint(hardware) -> tuple:
             getattr(hardware, "bandwidth_gb_s", None), gpus_fp)
 
 
-def _scored_pool_cache_key(cfg, capability: str, hardware, dirs: dict[str, str]) -> tuple:
+def _footprint_fingerprint(store: dict | None) -> tuple:
+    """A value fingerprint of `footprints.load_store()`'s reading (findings
+    2): two calls describing the same recorded footprints must compare
+    equal, and a benchmark or a load that records/updates a peak-usage
+    entry (changing what `fit.py`'s measured verdict would be for some row)
+    must compare unequal so the cache re-scores rather than serving a fit
+    verdict computed before that measurement landed. `observedAt` alone is
+    enough to detect an add/update/evict — the store's own bound
+    (`footprints.MAX_MODELS`) keeps this frozenset small regardless."""
+    if not isinstance(store, dict):
+        return (None,)
+    models = store.get("models")
+    if not isinstance(models, dict):
+        return (None,)
+    return frozenset(
+        (key, entry.get("observedAt") if isinstance(entry, dict) else None)
+        for key, entry in models.items())
+
+
+def _scored_pool_cache_key(cfg, capability: str, hardware, dirs: dict[str, str],
+                            footprint_store: dict | None) -> tuple:
     """Every fact that can change what `_model_row` would output for this
-    capability's pool: which pool GENERATION and ROW SCHEMA VERSION it is
-    (`hub_catalog.pool_entry`, one small JSON read — a rebuild or the daily
-    delta bumps `generation`, a schema-version bump forces a rebuild anyway),
-    which runner is ACTIVE for this capability right now (`admission()`'s
-    verdict depends on it), this machine's HARDWARE reading (fit verdicts),
-    and which repos are ALREADY ON DISK (`_local_state`'s onDisk bonus) —
-    plus `cfg.dir` itself, since two catalogs living in different homes
-    (two dev servers, or two test fixtures in the same process) must never
-    be mistaken for the same cache slot even if every other fact matches."""
+    capability's pool: which pool GENERATION, ROW SCHEMA VERSION, BUILD TIME
+    and ROW COUNT it is (`hub_catalog.pool_entry`, one small JSON read — a
+    rebuild or the daily delta bumps `generation`, a schema-version bump
+    forces a rebuild anyway; `updated`/`rows` catch a delete-and-rebuild
+    that lands on the SAME generation number, finding 4 — `delete_catalog`
+    removes the manifest entirely, so the next `write_pool` starts counting
+    generations from 1 again, and a stale in-memory cache entry left over
+    from before the delete could otherwise read as still-valid if that
+    earlier generation happened to be 1 too), which runner is
+    ACTIVE for this capability right now AND the full set of runners
+    `available_runners` would fall back to (finding 3 — installing a
+    second runner for this capability changes the GGUF-picker fallback
+    `_model_row` computes even while the active runner is unchanged), this
+    machine's HARDWARE reading (fit verdicts), the FOOTPRINT STORE's own
+    reading (finding 2 — a benchmark/load can change a measured fit verdict
+    with no other fact here moving), and which repos are ALREADY ON DISK
+    (`_local_state`'s onDisk bonus) — plus `cfg.dir` itself, since two
+    catalogs living in different homes (two dev servers, or two test
+    fixtures in the same process) must never be mistaken for the same
+    cache slot even if every other fact matches."""
     entry = hub_catalog.pool_entry(cfg, capability) or {}
     runner = for_capability(capability)
     runner_code = runner.code if runner is not None else None
+    runner_codes = tuple(r.code for r in available_runners(capability))
     return (cfg.dir, capability, entry.get("generation"), entry.get("schemaVersion"),
-            runner_code, _hardware_fingerprint(hardware), frozenset(dirs.items()))
+            entry.get("updated"), entry.get("rows"), runner_code, runner_codes,
+            _hardware_fingerprint(hardware), _footprint_fingerprint(footprint_store),
+            frozenset(dirs.items()))
+
+
+def _refresh_row_local_state(row: dict, cache_dir: str, dirs: dict[str, str]) -> dict:
+    """A SHALLOW COPY of `row` with `local` recomputed from the CURRENT
+    `dirs`/on-disk contents (finding 1), never the cached copy sitting under
+    it. `_local_state` is a no-op-cheap dict build for a repo not on disk at
+    all (`dirname is None`, `_cached_dirs()`'s own docstring: "no stat, no
+    walk"), so re-running it for every row on every call — cache hit or
+    miss — is affordable and closes the gap `_scored_pool_cache_key`'s
+    `frozenset(dirs.items())` leaves open: that key only changes when a
+    repo's cache DIRECTORY appears/disappears, never when a fetch already
+    in progress for a directory that already exists finishes (`partial` ->
+    `downloaded`), so without this refresh a warm cache could keep serving
+    a stale `local.state` across that whole transition.
+
+    Returning a COPY (finding 5) also means the caller's later in-place
+    writes (`_catalog_search`'s own `row["matchScore"]`/`matchBreakdown`
+    assignments, outside this function's lock) land on a dict private to
+    this one request/response, never on the shared object another
+    concurrent request's cache hit just returned a reference to."""
+    new_row = dict(row)
+    new_row["local"] = _local_state(cache_dir, dirs.get(row.get("id")))
+    return new_row
 
 
 def _scored_pool(cfg, capability_filter: str, cache_dir: str, dirs: dict[str, str],
@@ -2093,16 +2159,16 @@ def _scored_pool(cfg, capability_filter: str, cache_dir: str, dirs: dict[str, st
     every row of `capability_filter`'s pool run through `_model_row` and the
     D851 capability guard — cached in-process, keyed by
     `_scored_pool_cache_key`, so a warm cache costs one dict lookup instead of
-    however many thousand `_model_row` calls the pool holds. Callers get back
-    a fresh LIST each time (the cached rows themselves are shared, mutating
-    `matchScore`/`matchBreakdown` on them is idempotent) so sorting/slicing
-    one request's result can never reorder another concurrent request's view
-    of the same cache entry."""
-    key = _scored_pool_cache_key(cfg, capability_filter, hardware, dirs)
+    however many thousand `_model_row` calls the pool holds. Every row
+    returned — cache hit or miss — is refreshed and copied by
+    `_refresh_row_local_state` (findings 1+5): callers never see a stale
+    on-disk state, and never share a mutable dict with another concurrent
+    request or with what is sitting in `_SCORED_POOL_CACHE` itself."""
+    key = _scored_pool_cache_key(cfg, capability_filter, hardware, dirs, footprint_store)
     with _SCORED_POOL_LOCK:
         hit = _SCORED_POOL_CACHE.get(capability_filter)
         if hit is not None and hit[0] == key:
-            return list(hit[1])
+            return [_refresh_row_local_state(row, cache_dir, dirs) for row in hit[1]]
 
     raw_rows = hub_catalog.query_pool(cfg, capability_filter)
     models = [row
@@ -2116,7 +2182,7 @@ def _scored_pool(cfg, capability_filter: str, cache_dir: str, dirs: dict[str, st
 
     with _SCORED_POOL_LOCK:
         _SCORED_POOL_CACHE[capability_filter] = (key, models)
-    return list(models)
+    return [_refresh_row_local_state(row, cache_dir, dirs) for row in models]
 
 
 def _catalog_search(capability_filter: str, query: str, publisher: str | None,

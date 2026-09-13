@@ -644,3 +644,144 @@ def test_a_new_on_disk_dir_re_scores(client, hub_cache, monkeypatch, tmp_path):
     resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
     assert resp.status_code == 200
     assert len(calls) == 1  # a fresh dirs snapshot re-scores the whole pool
+
+
+# -- review findings on the cache: stale disk state, key gaps, mutation -----
+
+
+def test_partial_to_downloaded_transition_reflects_on_a_warm_cache(client, hub_cache, monkeypatch):
+    """Finding 1: a repo already on disk when the cache first warms, but
+    still mid-fetch, must not keep reading as `"partial"` forever once the
+    fetch finishes — `_cached_dirs()`'s own frozenset only changes when a
+    cache DIRECTORY appears/disappears, never when a fetch already in
+    progress for an existing directory completes, so the fix has to live
+    outside the cache key entirely (`_scored_pool`'s per-row refresh)."""
+    _build_big_pool(n_publishers=1, per_publisher=1)
+
+    dirname = "models--pub0--model-0"
+    repo_dir = hub_cache / dirname
+    (repo_dir / "snapshots" / "c1").mkdir(parents=True)
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("c1")
+    (repo_dir / "blobs").mkdir()
+    partial_marker = repo_dir / "blobs" / "b1.fusedpart"
+    partial_marker.write_bytes(b"x")
+
+    first = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert first.status_code == 200
+    assert first.json()["models"][0]["local"]["state"] == "partial"
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    # The fetch finishes: the part-file residue goes away, the directory
+    # itself (and therefore `_cached_dirs()`'s frozenset) is unchanged.
+    partial_marker.unlink()
+    second = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert second.status_code == 200
+    assert calls == []  # still a warm-cache hit — no re-score
+    assert second.json()["models"][0]["local"]["state"] == "downloaded"
+
+
+def test_a_footprint_store_change_re_scores(client, hub_cache, monkeypatch):
+    """Finding 2: a benchmark/load that records or updates a measured peak
+    footprint changes what `fit.py` would verdict for that row, even though
+    nothing else the cache key already tracked (pool generation, runner,
+    hardware, on-disk dirs) moved."""
+    _build_big_pool(n_publishers=1, per_publisher=1)
+    monkeypatch.setattr(hub.footprints, "load_store", lambda: None)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    monkeypatch.setattr(hub.footprints, "load_store", lambda: {
+        "machine": {}, "models": {"text-generation/pub0/model-0": {"observedAt": 123, "peakBytes": 999}}})
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+def test_a_new_available_runner_re_scores(client, hub_cache, monkeypatch):
+    """Finding 3: installing a second runner for this capability changes
+    `_model_row`'s GGUF-picker fallback (D779's `available_runners`
+    tuple) without the ACTIVE runner (`for_capability`) ever changing —
+    the cache key must track the whole fallback set, not just the one
+    active runner code."""
+    _build_big_pool(n_publishers=1, per_publisher=1)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    second_runner = types.SimpleNamespace(hub_filter_tags=(), code="second-runner")
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (second_runner,))
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+def test_delete_and_rebuild_landing_on_the_same_generation_re_scores(client, hub_cache, monkeypatch):
+    """Finding 4: `delete_catalog` removes the manifest entirely, so the
+    next `write_pool` starts counting `generation` from 1 again — a stale
+    cache entry from before the delete could read as still-valid if it
+    also happened to be at generation 1, since `generation`/`schemaVersion`
+    alone would then match. `updated` (a fresh wall-clock write timestamp
+    every `write_pool` call) and `rows` catch what `generation` alone
+    cannot."""
+    cfg, _rows = _build_big_pool(n_publishers=1, per_publisher=1)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    hub_catalog.delete_catalog(cfg)
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION,
+                            [_pool_row("pub0/model-0", downloads=1)])
+    entry = hub_catalog.pool_entry(cfg, registry.TEXT_GENERATION)
+    assert entry["generation"] == 1  # landed back on the same generation number
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1  # re-scored despite the repeated generation number
+
+
+def test_returned_rows_are_never_the_cached_dict_objects(hub_cache, client):
+    """Finding 5: `_catalog_search` mutates `matchScore`/`matchBreakdown`
+    onto each returned row outside `_SCORED_POOL_LOCK` — if that were the
+    SAME dict object sitting in `_SCORED_POOL_CACHE`, one request's write
+    could leak into another concurrent request's view of the warm cache.
+    Calls `_catalog_search` directly (rather than through the HTTP client)
+    so the returned dicts are the real Python objects, not a JSON round
+    trip's fresh copies, which would pass this assertion either way."""
+    _build_big_pool(n_publishers=1, per_publisher=1)
+    result = hub._catalog_search(registry.TEXT_GENERATION, "", None, 24,
+                                  "downloads", "any", "", "any", "")
+    key = list(hub._SCORED_POOL_CACHE)[0]
+    cached_row = hub._SCORED_POOL_CACHE[key][1][0]
+    returned_row = result["models"][0]
+    assert returned_row is not cached_row
+    # The cached row was never given a `matchScore` — the search route's
+    # scoring write must have landed on a private copy, not this object.
+    assert "matchScore" not in cached_row
+    assert "matchScore" in returned_row
