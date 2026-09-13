@@ -179,6 +179,34 @@ def test_resolve_a_missing_named_folder_widens_instead_of_failing(_home):
     assert out == {"base": _home, "pattern": "nope/x.csv", "mode": "substring"}
 
 
+def test_resolve_never_stats_a_path_under_a_blocked_mount(_home, monkeypatch, tmp_path):
+    """A wedged rclone/NFS mount parks `os.path.isdir` forever
+    (SPEC-index-search-wedge.md item 1) — a `guard` handed to `resolve_query`
+    must refuse a candidate under a blocked tree BEFORE the walk ever calls
+    `os.path.isdir` on it, not merely fail to expand it. Monkeypatched the
+    same way `test_app_listing.py`'s `test_nothing_under_a_mount_is_even_stat_ed`
+    proves the ordering: the stand-in fails the test outright if the guarded
+    path is ever stat'ed."""
+    from fused_render.index.ignore import MountGuard
+
+    guard = MountGuard(mounts_dir=str(tmp_path / "mounts"), home_dirs=[_home])
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(
+        os.path, "isdir",
+        lambda p, _r=real_isdir: (
+            pytest.fail(f"os.path.isdir on a guarded path: {p}")
+            if _home in str(p) else _r(p)))
+    out = resolve_query("/box", "~/a/b/*.c", guard=guard)
+    assert out == {"base": _home, "pattern": "a/b/*.c", "mode": "glob"}
+
+
+def test_resolve_with_no_guard_behaves_exactly_as_before(_home):
+    """The default (`guard=None`) must preserve today's behaviour exactly —
+    every existing caller of `resolve_query` omits it."""
+    out = resolve_query("/box", "~/a/b/*.c")
+    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+
+
 def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
     etc = tmp_path / "etc"
     etc.mkdir()

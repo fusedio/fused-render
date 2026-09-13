@@ -18,7 +18,12 @@ import re
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
+from fused_render.index.ignore import (
+    MountGuard,
+    is_inside_leaf_dir,
+    is_leaf_dir,
+    norm,
+)
 from fused_render.index.store import (
     depth_expr,
     like_literal,
@@ -462,7 +467,7 @@ _DEPTH_PENALTY = 4
 _SHALLOW_FREE = 3
 
 
-def _walk_from(start: str, rest: str) -> tuple:
+def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tuple:
     """Consume `rest`'s "/"-joined segments onto `start`, one directory at a
     time, stopping at the first segment that contains a `*` or the first one
     that does not exist as a directory. Returns `(base, pattern, advanced)`:
@@ -474,7 +479,18 @@ def _walk_from(start: str, rest: str) -> tuple:
     A folder that hasn't been created yet therefore widens the search instead
     of failing it: the walk simply stops one segment early and folds the
     missing name into the pattern, which the caller matches at whatever base
-    it did reach."""
+    it did reach.
+
+    `guard`, when given, is consulted BEFORE `os.path.isdir` on every
+    candidate (SPEC-index-search-wedge.md item 1): this walk runs directly
+    against the user's raw typed string, segment by segment, and a candidate
+    that lands under a wedged NFS/rclone mount would otherwise park this
+    thread on `os.path.isdir` forever — the exact failure this repo already
+    knows that class of mount can cause (`MountGuard`'s own docstring). A
+    blocked candidate is treated exactly like one that failed `isdir` (the
+    same `break`), never raised: the walk just stops one segment early, the
+    same as a folder that doesn't exist yet. `guard=None` (every existing
+    caller) preserves today's behaviour unchanged."""
     base = norm(start).rstrip("/") or "/"
     if not rest:
         return base, "", False
@@ -482,6 +498,8 @@ def _walk_from(start: str, rest: str) -> tuple:
     i = 0
     while i < len(segs) and "*" not in segs[i]:
         candidate = base + "/" + segs[i] if base != "/" else "/" + segs[i]
+        if guard is not None and guard.blocks_root(candidate):
+            break
         if not os.path.isdir(candidate):
             break
         base = candidate
@@ -489,11 +507,16 @@ def _walk_from(start: str, rest: str) -> tuple:
     return base, "/".join(segs[i:]), i > 0
 
 
-def resolve_query(root: str, raw: str) -> dict:
+def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dict:
     """The one place a search box's typed string becomes a `(base, pattern,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
     unstripped of anything meaningful.
+
+    `guard`, when given, is threaded straight through to every `_walk_from`
+    call below — see its docstring. `guard=None` (the default; every test in
+    this module) preserves today's unguarded behaviour; the server caller
+    (`routers/index.py`'s `_rank_body`) passes a real `MountGuard`.
 
     `mode` is "glob" the moment `raw` contains a `*` anywhere, else
     "substring" — `?` and `[`/`]` are left as literal characters on purpose
@@ -540,11 +563,11 @@ def resolve_query(root: str, raw: str) -> dict:
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))
         rest = raw[2:] if raw.startswith("~/") else ""
-        base, pattern, _ = _walk_from(home, rest)
+        base, pattern, _ = _walk_from(home, rest, guard=guard)
     elif _DRIVE_ABS.match(raw):
         drive_root = raw[:2] + "/"
         rest = raw[3:].replace("\\", "/")
-        base, pattern, _ = _walk_from(drive_root, rest)
+        base, pattern, _ = _walk_from(drive_root, rest, guard=guard)
         # A bare drive letter with nothing after it (`rest == ""`) leaves
         # `_walk_from` at its own bare-root collapse, `"C:"` — the same
         # bare spelling `_root_or_bare` exists to restore to `"C:/"`
@@ -554,7 +577,7 @@ def resolve_query(root: str, raw: str) -> dict:
         base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
-        abs_base, abs_pattern, advanced = _walk_from("/", rest)
+        abs_base, abs_pattern, advanced = _walk_from("/", rest, guard=guard)
         if advanced:
             base, pattern = abs_base, abs_pattern
         else:
@@ -571,7 +594,7 @@ def resolve_query(root: str, raw: str) -> dict:
         # is also what keeps a run of `..` past the filesystem root pinned
         # at that root instead of growing an ever-longer trail of ".." that
         # still, harmlessly, means the same directory.
-        walked_base, pattern, _ = _walk_from(root, raw)
+        walked_base, pattern, _ = _walk_from(root, raw, guard=guard)
         base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
         base, pattern = root, raw
