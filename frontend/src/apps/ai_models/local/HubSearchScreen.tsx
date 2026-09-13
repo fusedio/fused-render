@@ -526,14 +526,17 @@ function HitRow({
           )}
         </div>
         <span className="row-facts pop">
-          <span title="Downloads in the last month">
-            <DownloadIcon aria-label="downloads" /> {popLabel(model.downloads)}
+          <span className="fact" title="Downloads in the last month">
+            <DownloadIcon aria-label="downloads" />
+            <span className="fact-value">{popLabel(model.downloads)}</span>
           </span>
-          <span title="Likes on the Hub">
-            <HeartIcon aria-label="likes" /> {popLabel(model.likes)}
+          <span className="fact" title="Likes on the Hub">
+            <HeartIcon aria-label="likes" />
+            <span className="fact-value">{popLabel(model.likes)}</span>
           </span>
-          <span title="Last updated">
-            <ClockIcon aria-label="updated" /> {ageLabel(model.updated ?? model.created)}
+          <span className="fact" title="Last updated">
+            <ClockIcon aria-label="updated" />
+            <span className="fact-value">{ageLabel(model.updated ?? model.created)}</span>
           </span>
         </span>
         <span className="row-act">

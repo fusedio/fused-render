@@ -4343,16 +4343,41 @@ button.am-bench-model:focus-visible {
    one line via a `.counts` inline wrapper, with only the date on its own
    line underneath. Downloads, likes and updated are now three direct
    children, each its own line (73px row min-height comfortably fits three
-   11px lines), so the `.counts` wrapper is gone. */
+   11px lines), so the `.counts` wrapper is gone.
+   Fix round 7 (bug report): the flex-column-of-right-aligned-lines above
+   right-aligns each line's TEXT, but each line's icon sits immediately to
+   the left of that line's own value — so a shorter value (e.g. "2w" vs
+   "1.2M") pulls its icon further right than the other lines' icons, and the
+   three icons land at a different x-position per line (a ragged left edge
+   for the icon column). Switched to a 2-column grid — icon column, value
+   column — so all three icons share one edge regardless of value width; the
+   cell's own position within the row (still right-aligned as a whole via
+   `justify-content: end`) is unchanged. Each `.fact` line is `display:
+   contents` so its icon and value become direct grid items instead of
+   nesting a second flex/inline layout inside a grid cell. */
 .tp .row-facts.pop {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: end;
+  align-content: center;
+  column-gap: 5px;
+  row-gap: 2px;
   text-align: right;
   font-size: 11px;
   color: var(--fg-muted);
   white-space: nowrap;
+}
+
+.tp .row-facts.pop .fact {
+  display: contents;
+}
+
+.tp .row-facts.pop .fact svg {
+  justify-self: end;
+}
+
+.tp .row-facts.pop .fact-value {
+  justify-self: start;
 }
 
 .tp .row.unfit {
