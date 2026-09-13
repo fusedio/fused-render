@@ -185,7 +185,35 @@ def _cached_src_cols(con, src: str, cache_key: tuple) -> set:
     generation invalidates itself automatically — no explicit eviction on
     compaction is needed. Bounded to `_SRC_COLS_CACHE_MAX` entries, oldest
     inserted evicted first, so a long-lived process juggling many index
-    stores/generations cannot grow this without limit."""
+    stores/generations cannot grow this without limit.
+
+    Two caveats review finding I raised, both real but neither worth more
+    machinery than this (D878 has the fuller reasoning):
+
+    - `dirs.parquet` (the `"dirs"` half of `cache_key`) is a single file
+      overwritten in place by every compaction (`store.py`'s COPY to
+      `dirs_parquet + ".new"` then `os.replace`), unlike `files/*.parquet`
+      which are named per generation and never overwritten. The swap lands
+      before the manifest naming the new generation is written, so a reader
+      that already loaded the OLD manifest and asks for that generation's
+      dirs schema for the first time during the swap's race window could, in
+      principle, DESCRIBE the new generation's bytes under the old
+      generation's cache key. This is harmless for what this cache actually
+      answers (a column SET) because compaction never changes dirs.parquet's
+      schema between generations — only its rows — so every generation's
+      "dirs" entry holds the same value regardless of which generation's
+      bytes were actually behind the read. It would stop being harmless only
+      if a future change made the dirs schema itself vary by generation, at
+      which point this cache key stops being sound and would need to key on
+      something that actually is generation-stable content, not merely a
+      generation number.
+    - `delete_store` (`store.py`) removes the manifest along with the rest of
+      the store, so the next compaction's `generation` starts back at 1 —
+      the same key a PRE-delete generation 1 could have used earlier in this
+      same process's life. `delete_store` calls `forget_src_cols_for(cfg.dir)`
+      below to evict every cache entry for that store before returning, so a
+      rebuilt store's first real generation-1 lookup can never be shadowed
+      by a stale pre-delete entry."""
     cached = _src_cols_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -194,6 +222,21 @@ def _cached_src_cols(con, src: str, cache_key: tuple) -> set:
     if len(_src_cols_cache) > _SRC_COLS_CACHE_MAX:
         _src_cols_cache.pop(next(iter(_src_cols_cache)))
     return cols
+
+
+def forget_src_cols_for(cfg_dir: str) -> None:
+    """Evict every `_cached_src_cols` entry for `cfg_dir` (an `IndexConfig.dir`).
+
+    Review finding I: `store.py`'s `delete_store` removes the manifest, so
+    the NEXT compaction's `generation` starts back at 1 — the same
+    `(cfg_dir, 1, "files"|"dirs")` key a pre-delete generation 1 could
+    already have populated earlier in this same process's life, which would
+    otherwise shadow the rebuilt store's real schema. `delete_store` calls
+    this before returning so a store's cache entries never outlive the store
+    itself. Cheap and rare (an interactive delete, not a per-query path):
+    a linear scan of a cache bounded to `_SRC_COLS_CACHE_MAX` entries."""
+    for key in [k for k in _src_cols_cache if k[0] == cfg_dir]:
+        _src_cols_cache.pop(key, None)
 
 
 def _name_col(cols: set) -> str:

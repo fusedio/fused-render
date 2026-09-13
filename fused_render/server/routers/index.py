@@ -161,11 +161,23 @@ _INDEX_READ_POOL_SIZE = 6
 _INDEX_READ_POOL = ThreadPoolExecutor(
     max_workers=_INDEX_READ_POOL_SIZE, thread_name_prefix="index-read")
 
-# How long `api_index_rank` (item 2) waits for its worker before giving up on
-# it. Chosen well above any real query's expected latency (single-digit ms
-# to low hundreds) so it only ever fires against a genuinely wedged read, not
-# a merely slow one.
-ABANDON_S = 5.0
+# How long `_bounded_index_read` (item 2; review finding D extended it to
+# stats/search too) waits for its worker before giving up on it. A WARM read
+# answers in single-digit ms to low hundreds, but a genuinely cold one does
+# not: `run_startup_warm`'s own docstring measures ~2.2s for the first search
+# of a fresh process against a 164k-entry home (duckdb isn't even imported
+# yet), and a larger corpus or a slower disk push that higher still. Review
+# finding H: the previous value here, 5.0, left under 2.3x headroom over that
+# measured cold cost — close enough that a merely slow-but-correct read on a
+# bigger corpus than the one that was benchmarked could realistically trip
+# it, not just a truly wedged one. 15.0 gives close to 7x headroom over the
+# measured cold cost while still being far below "someone left a wedged mount
+# parked," which does not resolve on its own at any timeout. Raising this
+# does NOT slow down recovery for anyone else waiting on the lane or pool —
+# the lane permit and the request's own await both release the moment this
+# fires, regardless of value; it only changes how long a single legitimately
+# slow caller is kept waiting before its own request gets the 503.
+ABANDON_S = 15.0
 
 # Futures abandoned by a timed-out index read (item 2), kept referenced so
 # (a) they are not garbage-collected while their thread is still running — an
