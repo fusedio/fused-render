@@ -18,13 +18,16 @@ X-Fused-guarded despite being reads: they execute a caller-shaped statement, so
 neither should be reachable from a crafted link.
 """
 import asyncio
+import functools
 import gzip
 import json
 import logging
 import os
 import re
 import threading
+import time
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -136,6 +139,155 @@ def _interactive_read_concurrency() -> asyncio.Semaphore:
 def _query_read_concurrency() -> asyncio.Semaphore:
     """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
     return _lane(_query_lane_loops, 1)
+
+
+# --- Dedicated thread pool for index reads (SPEC-index-search-wedge.md item 3) ---
+#
+# `asyncio.to_thread` dispatches onto the process-wide DEFAULT executor, which
+# every other `asyncio.to_thread` caller in the app shares. `asyncio.to_thread`
+# cannot kill the thread it starts — nothing in Python can — so a worker that
+# parks on an uninterruptible filesystem syscall (a wedged NFS/rclone mount,
+# this repo's known failure class) is abandoned, not stopped, the moment its
+# caller stops waiting (item 2 below). An abandoned thread sitting in the
+# DEFAULT executor would tie up a slot every unrelated `asyncio.to_thread`
+# caller in the app depends on. Routing index reads through their OWN pool
+# instead keeps that damage contained to index reads.
+#
+# Sized wider than the interactive lane (2, above) ON PURPOSE: pool 6 >
+# lane 2, so a couple of abandoned threads still leave the lane's own two
+# concurrent requests somewhere to run. Widening/narrowing one of these two
+# numbers should always prompt reconsidering the other.
+_INDEX_READ_POOL_SIZE = 6
+_INDEX_READ_POOL = ThreadPoolExecutor(
+    max_workers=_INDEX_READ_POOL_SIZE, thread_name_prefix="index-read")
+
+# How long `_bounded_index_read` (item 2; review finding D extended it to
+# stats/search too) waits for its worker before giving up on it. A WARM read
+# answers in single-digit ms to low hundreds, but a genuinely cold one does
+# not: `run_startup_warm`'s own docstring measures ~2.2s for the first search
+# of a fresh process against a 164k-entry home (duckdb isn't even imported
+# yet), and a larger corpus or a slower disk push that higher still. Review
+# finding H: the previous value here, 5.0, left under 2.3x headroom over that
+# measured cold cost — close enough that a merely slow-but-correct read on a
+# bigger corpus than the one that was benchmarked could realistically trip
+# it, not just a truly wedged one. 15.0 gives close to 7x headroom over the
+# measured cold cost while still being far below "someone left a wedged mount
+# parked," which does not resolve on its own at any timeout. Raising this
+# does NOT slow down recovery for anyone else waiting on the lane or pool —
+# the lane permit and the request's own await both release the moment this
+# fires, regardless of value; it only changes how long a single legitimately
+# slow caller is kept waiting before its own request gets the 503.
+ABANDON_S = 15.0
+
+# Futures abandoned by a timed-out index read (item 2), kept referenced so
+# (a) they are not garbage-collected while their thread is still running — an
+# unreferenced Future whose thread later raises would print an "exception was
+# never retrieved" warning with nothing to attribute it to — and (b) their
+# count tells `_index_pool_exhausted` how many of the pool's threads are
+# currently tied up by abandoned work. A future removes itself the moment its
+# thread actually finishes, whenever that turns out to be.
+_abandoned_reads: "set" = set()
+
+
+def _index_pool_exhausted() -> bool:
+    """True once every `_INDEX_READ_POOL` thread is tied up by abandoned work.
+
+    Checked BEFORE submitting a new index read. Past that point the
+    executor's own unbounded work queue would happily accept the submission
+    and let it wait, unboundedly, for a thread to free up — exactly the
+    failure mode items 2/3 exist to turn into an explicit, immediate error
+    instead."""
+    return len(_abandoned_reads) >= _INDEX_READ_POOL_SIZE
+
+
+def _submit_index_read(fn, *a, **kw):
+    """Submit `fn(*a, **kw)` to the dedicated index-read pool and return the
+    resulting `asyncio.Future`. Callers that want the fast-503-on-exhaustion
+    behaviour must call `_index_pool_exhausted()` themselves first — this
+    function always submits."""
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(_INDEX_READ_POOL, functools.partial(fn, *a, **kw))
+
+
+def _pool_exhausted_response(op: str, q: str, root: str) -> JSONResponse:
+    """The fast, explicit 503 `_index_pool_exhausted()` exists to produce
+    (review finding D). One shared body/log line for all three
+    `/api/index/{stats,search,rank}` routes, so a reader sees the same shape
+    for the same condition regardless of which route hit it."""
+    logger.error(
+        "index %s: read pool exhausted (%d/%d abandoned reads); refusing "
+        "%r under %s", op, len(_abandoned_reads), _INDEX_READ_POOL_SIZE, q, root)
+    return JSONResponse(status_code=503, content={"error": "index read pool exhausted"})
+
+
+def _reap_abandoned(fut) -> None:
+    """Done-callback for a future abandoned by `_bounded_index_read`'s
+    timeout path (item 2).
+
+    Review finding E: the comment this replaces claimed holding a reference
+    to `fut` (via `_abandoned_reads.add`) prevents asyncio's "exception was
+    never retrieved" error log — it does not, it only DELAYS it until the
+    future is finally garbage-collected, which is exactly what the bare
+    `_abandoned_reads.discard` done-callback this replaces did nothing to
+    stop: `token.cancel()` (called right before abandonment) reaches the
+    worker via `con.interrupt()`, the abandoned worker most likely raises
+    `Cancelled`, and nothing ever calls `.exception()` on `fut` to retrieve
+    it. Retrieving it here (`fut.exception()`, guarded against a future that
+    somehow ended up cancelled outright rather than merely abandoned) is
+    what actually silences that log — the reference itself was only ever
+    needed to survive until this callback runs."""
+    if not fut.cancelled():
+        fut.exception()
+    _abandoned_reads.discard(fut)
+
+
+async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
+                              log_root: str, worker_t0: float, fn, *args, **kwargs):
+    """Submit `fn(*args, **kwargs)` to the dedicated index-read pool and wait
+    at most `ABANDON_S` (item 2) for it, abandoning — never cancel-awaiting —
+    it on timeout, exactly as `api_index_rank` originally did on its own.
+
+    Review finding D: `api_index_rank` was the only one of the three
+    `/api/index/*` read routes with this bounded-wait/abandon treatment even
+    though `api_index_stats` and `api_index_search` submit to the very same
+    `_INDEX_READ_POOL` and share the very same width-2 interactive lane —
+    one wedged `stats` or `search` request could still permanently consume a
+    pool thread forever (nothing bounded its wait), and since the lane is
+    shared, two such wedges exhaust it for the life of the process with no
+    rank request ever involved. This is the one bounded-wait implementation
+    all three routes now share, so a fix here (or a future change to the
+    timeout/abandon behaviour) cannot drift between them the way three
+    separate copies could.
+
+    Returns `(out, None)` on success, or `(None, response)` on timeout/
+    cancellation where `response` is the `Response`/`JSONResponse` the
+    caller should return immediately without touching `out`."""
+    fut = _submit_index_read(fn, *args, **kwargs)
+    try:
+        # `shield` is required: on timeout `fut` must be ABANDONED, never
+        # cancel-awaited — `run_in_executor` cannot kill the underlying OS
+        # thread, so awaiting a cancelled wrapper would just block again on
+        # the very same un-killable thread.
+        out = await asyncio.wait_for(asyncio.shield(fut), ABANDON_S)
+    except asyncio.TimeoutError:
+        # Cooperative: reaches a running duckdb statement via
+        # `con.interrupt()` (CancelToken.cancel), so the abandoned thread has
+        # a chance to actually stop even though nothing here can force it to.
+        cancel_token.cancel()
+        elapsed_ms = (time.monotonic() - worker_t0) * 1000
+        logger.warning(
+            "index %s: %r under %s timed out after %.1fms waiting for the "
+            "worker; abandoning it", op, log_q, log_root, elapsed_ms)
+        _abandoned_reads.add(fut)
+        fut.add_done_callback(_reap_abandoned)
+        return None, JSONResponse(status_code=503,
+                                  content={"error": "index read timed out"})
+    except Cancelled:
+        logger.debug("index %s: %r under %s abandoned by the client after %.1fms",
+                    op, log_q, log_root, (time.monotonic() - worker_t0) * 1000)
+        return None, Response(status_code=499)
+    return out, None
+
 
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
@@ -350,13 +502,71 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     default True, so the startup warm call and every caller that doesn't
     pass it keeps the scored behavior. `ranked` has no effect once `mode` is
     "glob": glob hits are never scored (see `search_ranked`'s own
-    docstring)."""
-    resolved = resolve_query(root, q)
+    docstring).
+
+    A `MountGuard` (SPEC-index-search-wedge.md item 1) is built here and
+    handed to `resolve_query`, so its filesystem walk refuses a candidate
+    path under a blocked mount BEFORE `os.path.isdir` would otherwise stat
+    it — the guard is built fresh each call. That construction is the only
+    part with a real (once-per-call) syscall cost, and it is paid regardless
+    of what `root`/`q` turn out to be (`MountGuard.__init__` realpaths the
+    mounts dir and the configured home dirs once, to build its roots list);
+    the walk itself, against those already-resolved roots, is pure string
+    comparison for every candidate — a MATCH is the free branch and costs
+    nothing further, a MISS falls through to `os.path.isdir` (see
+    `_walk_from`'s own docstring for why it is `guard.blocks()`, never
+    `guard.blocks_root()`, that runs on that hot path). The guard is built
+    fresh rather than threaded in as a parameter, so this function's call
+    signature stays exactly what it was for its two existing callers
+    (`api_index_rank`'s `_rank_worker`, `run_startup_warm`) and for the tests
+    that replace this whole function with a fake (`tests/test_index_search.py`).
+
+    `resolve_query` may stop its walk one segment short of a blocked mount
+    (SPEC-index-search-wedge.md item C): `base` then lands on the last
+    UNBLOCKED ancestor, never on the mount itself, so a caller checking `base`
+    alone for mount-backing would miss it and silently answer as if the
+    corpus simply doesn't cover that folder. The blocked candidate — a plain
+    string, `resolve_query`'s `blocked_out` side channel, no extra syscall —
+    is carried out on `out["blocked_query_path"]` so `_rank_reason` can still
+    answer `"mount"` for a typed path into a mount even though the walk never
+    reached it."""
+    guard = MountGuard(mounts_dir=runner._mounts_dir())
+    blocked_out: list = []
+    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out)
     base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
     out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
                      ranked=ranked, glob=(mode == "glob"))
     out["base"] = base
     out["mode"] = mode
+    if blocked_out:
+        out["blocked_query_path"] = blocked_out[-1]
+    return out
+
+
+def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
+                  token: CancelToken | None, ranked: bool) -> dict:
+    """Everything `api_index_rank` needs from OFF the event loop, submitted
+    as one unit to the dedicated index-read pool (item 3): `_rank_body`
+    (whose own docstring covers its `MountGuard`-guarded filesystem walk,
+    item 1) followed by `_rank_reason` (item 4).
+
+    `_rank_reason` used to run directly on the event loop, in
+    `api_index_rank`, AFTER the worker thread had already finished and the
+    lane semaphore had already been released — so its own `MountGuard(...)
+    .blocks_root(root)` call, whose docstring already warns that a stat
+    under a wedged rclone mount blocks the thread indefinitely, could stall
+    the WHOLE server (every request sharing the loop), not merely this one.
+    Folding it in here costs no extra thread hop — this function already
+    runs on a worker thread — and keeps the exact reason values/precedence
+    `_rank_reason` already computed.
+
+    `out.pop("blocked_query_path", ...)` below removes `_rank_body`'s
+    internal side channel (SPEC-index-search-wedge.md item C) once
+    `_rank_reason` has had a chance to read it — it exists only to let this
+    function answer "mount" correctly and must never reach the wire."""
+    out = _rank_body(cfg, root, q, limit, token, ranked)
+    out["reason"] = _rank_reason(cfg, out["base"], out)
+    out.pop("blocked_query_path", None)
     return out
 
 
@@ -448,8 +658,25 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
         of them are on the way.
 
     The mount check is paid only on a miss — it realpaths — and a covered root
-    cannot be mount-backed anyway, since nothing ever indexed one."""
+    cannot be mount-backed anyway, since nothing ever indexed one. Both calls
+    below run on this function's own worker thread (folded into
+    `_rank_worker`, off the event loop), so a wedge either one hits is caught
+    by item 2's bounded-wait/abandon machinery in `api_index_rank`, not left
+    to block the server — the realpath one of them pays is never free of a
+    syscall, only ever backstopped by that timeout.
+
+    `out.get("blocked_query_path")` (SPEC-index-search-wedge.md item C) is
+    checked FIRST and is free — a plain string `_rank_body`'s walk already
+    refused, no syscall at all — and it is what keeps this answer "mount" for
+    a typed path that never made it into `base`: the walk stops one segment
+    short of a blocked mount, so `base` itself lands on the last unblocked
+    ancestor and would not, by itself, look mount-backed. Only when that
+    isn't set does this fall back to `MountGuard.blocks_root(root)`, which
+    covers `root` (here, `base`) actually landing ON or under a mount — the
+    case a resolved, already-covered-looking base can still be in."""
     if not out.get("covered"):
+        if out.get("blocked_query_path"):
+            return "mount"
         # BEFORE any kernel syscall of ours on the caller's path: blocks_root
         # is string work against the mount records plus one realpath, where a
         # stat under a wedged rclone mount blocks this thread indefinitely.
@@ -1466,13 +1693,23 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
         async with lane:
             if token.cancelled:
                 return Response(status_code=499)
-            try:
-                out = await asyncio.to_thread(
-                    index_stats, cfg, root=root, breakdown=breakdown, token=token)
-            except Cancelled:
-                logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
-                            root, breakdown)
-                return Response(status_code=499)
+            # Item 3 pool-exhaustion check (review finding D) — same
+            # treatment `api_index_rank` already had, extended here since
+            # this route submits to the very same `_INDEX_READ_POOL`.
+            if _index_pool_exhausted():
+                return _pool_exhausted_response("stats", "", root)
+            worker_t0 = time.monotonic()
+            # Item 3 (SPEC-index-search-wedge.md): the dedicated index-read
+            # pool, not the process-wide default executor `asyncio.to_thread`
+            # would otherwise use. Bounded/abandoned the same way rank is
+            # (review finding D): `breakdown=true`'s unbounded GROUP BY is
+            # exactly the kind of read that can run long, or wedge, on a
+            # partition under a bad mount.
+            out, err = await _bounded_index_read(
+                "stats", token, f"breakdown={breakdown}", root, worker_t0,
+                index_stats, cfg, root=root, breakdown=breakdown, token=token)
+            if err is not None:
+                return err
     return {"ok": True, **out}
 
 
@@ -1511,12 +1748,20 @@ async def api_index_search(request: Request, root: str = Query(default=""),
         async with _interactive_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
-            try:
-                out = await asyncio.to_thread(
-                    index_search, cfg, root, q=q, limit=limit, token=token)
-            except Cancelled:
-                logger.debug("index search: %r under %s abandoned by the client", q, root)
-                return Response(status_code=499)
+            # Item 3 pool-exhaustion check (review finding D), same as rank.
+            if _index_pool_exhausted():
+                return _pool_exhausted_response("search", q, root)
+            worker_t0 = time.monotonic()
+            # Item 3: same dedicated pool as stats/rank, bounded/abandoned
+            # the same way rank is (review finding D) — this route submits
+            # to the identical pool and shares the identical lane, so an
+            # unbounded wait here was just as capable of permanently
+            # consuming a pool thread and, eventually, the whole lane.
+            out, err = await _bounded_index_read(
+                "search", token, q, root, worker_t0,
+                index_search, cfg, root, q=q, limit=limit, token=token)
+            if err is not None:
+                return err
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
@@ -1606,39 +1851,55 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     """
     if not root.strip():
         return _error("'root' is required")
-    import time
     t0 = time.monotonic()
     cfg = load_config()
     async with cancellable(request) as token:
+        # Review finding G: `lane_wait_t0` is taken HERE, immediately before
+        # lane acquisition is attempted — not at `t0` above. `t0` (used only
+        # for `total_ms` below) is taken before `load_config()` and before
+        # `cancellable(request)` is even entered, so measuring lane wait from
+        # it silently folded config-load and disconnect-watcher setup into
+        # what the log calls "lane_wait", overstating lane contention on
+        # every request whether or not the lane was actually contended.
+        lane_wait_t0 = time.monotonic()
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
         async with _interactive_read_concurrency():
+            # Item 6: split the timing log into lane-wait and worker time,
+            # so a wedged/serialised lane (all wait, ~0 worker) is
+            # distinguishable in the logs from a genuinely slow query (the
+            # reverse) instead of one number covering both.
+            lane_wait_ms = (time.monotonic() - lane_wait_t0) * 1000
             if token.cancelled:
                 return Response(status_code=499)
-            try:
-                out = await asyncio.to_thread(
-                    _rank_body, cfg, root, q, limit, token, ranked)
-            except Cancelled:
-                logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                            q, root, (time.monotonic() - t0) * 1000)
-                return Response(status_code=499)
+            # Item 3: a pool-exhaustion check BEFORE submitting. Past this
+            # point `_submit_index_read` would hand the work to the
+            # executor's own unbounded queue and wait, unboundedly, for a
+            # thread — the exact failure this loud, immediate error replaces.
+            if _index_pool_exhausted():
+                return _pool_exhausted_response("rank", q, root)
+            worker_t0 = time.monotonic()
+            out, err = await _bounded_index_read(
+                "rank", token, q, root, worker_t0,
+                _rank_worker, cfg, root, q, limit, token, ranked)
+            if err is not None:
+                return err
+            worker_ms = (time.monotonic() - worker_t0) * 1000
     _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
     out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
-    # `out["base"]` — not the box's own `root` — is what coverage is actually
-    # decided against: a `~`/`/`-escaping query resolves to a base that can
-    # be far outside `root` (see `_rank_body`), and mount/ignore/scanning all
-    # have to be asked about the place the search actually ran, not the box
-    # it was typed into.
-    out["reason"] = _rank_reason(cfg, out["base"], out)
-    # DEBUG: the request total, to set against the per-phase DEBUG lines
-    # logged underneath (stage A per pass) — this fires on every keystroke of
-    # the home search, so it stays DEBUG (see query.py's pass_over for the
-    # same reasoning at length).
-    # Without this, a slow report has nothing server-side to diagnose it with
-    # beyond guessing which phase was the ~4s.
-    logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
-                q, root, (time.monotonic() - t0) * 1000, out["reason"])
+    # `out["reason"]` is already set — `_rank_worker` folds `_rank_reason` in
+    # (item 4), off the event loop, alongside `_rank_body`.
+    total_ms = (time.monotonic() - t0) * 1000
+    # DEBUG normally; WARNING past ~750ms (item 6) so a wedge (lane_wait_ms
+    # large, worker_ms tiny) is self-identifying in the logs rather than
+    # indistinguishable from a genuinely slow query (the reverse shape) —
+    # this fires on every keystroke of the home search, so it stays DEBUG
+    # otherwise (see query.py's pass_over for the same reasoning at length).
+    log = logger.warning if total_ms > 750 else logger.debug
+    log("index rank: %r under %s answered in %.1fms (lane_wait=%.1fms "
+        "worker=%.1fms reason=%r)", q, root, total_ms, lane_wait_ms, worker_ms,
+        out["reason"])
     return {"ok": True, **out}
 
 
