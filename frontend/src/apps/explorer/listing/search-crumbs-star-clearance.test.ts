@@ -56,10 +56,10 @@ test("--pin-right is set on the crumb-slot's own box (not read from nowhere) at 
   expect(boxRules.some((r) => /--pin-right:\s*40px/.test(r))).toBe(true);
 });
 
-test("the base, unscoped crumbs rule is untouched — the reservation is additive, scoped only to the host with a star", () => {
+test("the base crumbs rule reads --pin-right (with the old 10px kept only as the no-button fallback) — the omnibox overlap fix (explorer.css, the shortcut-hint reservation rules) reuses this same slot for the shortcut button, so this is no longer a bare literal", () => {
   const base = rulesFor(".listing-search-crumbs");
   expect(base.length).toBe(1);
-  expect(base[0]).toMatch(/right:\s*10px/);
+  expect(base[0]).toMatch(/right:\s*var\(--pin-right,\s*10px\)/);
 });
 
 test("the reservation is scoped to the crumb-slot host — the inline/pane copy of the box has no star inside it, so it must not get dead space", () => {
