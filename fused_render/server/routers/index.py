@@ -414,20 +414,39 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     A `MountGuard` (SPEC-index-search-wedge.md item 1) is built here and
     handed to `resolve_query`, so its filesystem walk refuses a candidate
     path under a blocked mount BEFORE `os.path.isdir` would otherwise stat
-    it — the guard is built fresh each call (cheap: no syscall unless a
-    candidate's prefix actually matches a mount record, and even then the
-    realpath it pays only fires on that miss) rather than threaded in as a
-    parameter, so this function's call signature stays exactly what it was
-    for its two existing callers (`api_index_rank`'s `_rank_worker`,
-    `run_startup_warm`) and for the tests that replace this whole function
-    with a fake (`tests/test_index_search.py`)."""
+    it — the guard is built fresh each call. That construction is the only
+    part with a real (once-per-call) syscall cost, and it is paid regardless
+    of what `root`/`q` turn out to be (`MountGuard.__init__` realpaths the
+    mounts dir and the configured home dirs once, to build its roots list);
+    the walk itself, against those already-resolved roots, is pure string
+    comparison for every candidate — a MATCH is the free branch and costs
+    nothing further, a MISS falls through to `os.path.isdir` (see
+    `_walk_from`'s own docstring for why it is `guard.blocks()`, never
+    `guard.blocks_root()`, that runs on that hot path). The guard is built
+    fresh rather than threaded in as a parameter, so this function's call
+    signature stays exactly what it was for its two existing callers
+    (`api_index_rank`'s `_rank_worker`, `run_startup_warm`) and for the tests
+    that replace this whole function with a fake (`tests/test_index_search.py`).
+
+    `resolve_query` may stop its walk one segment short of a blocked mount
+    (SPEC-index-search-wedge.md item C): `base` then lands on the last
+    UNBLOCKED ancestor, never on the mount itself, so a caller checking `base`
+    alone for mount-backing would miss it and silently answer as if the
+    corpus simply doesn't cover that folder. The blocked candidate — a plain
+    string, `resolve_query`'s `blocked_out` side channel, no extra syscall —
+    is carried out on `out["blocked_query_path"]` so `_rank_reason` can still
+    answer `"mount"` for a typed path into a mount even though the walk never
+    reached it."""
     guard = MountGuard(mounts_dir=runner._mounts_dir())
-    resolved = resolve_query(root, q, guard=guard)
+    blocked_out: list = []
+    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out)
     base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
     out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
                      ranked=ranked, glob=(mode == "glob"))
     out["base"] = base
     out["mode"] = mode
+    if blocked_out:
+        out["blocked_query_path"] = blocked_out[-1]
     return out
 
 
@@ -446,9 +465,15 @@ def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
     the WHOLE server (every request sharing the loop), not merely this one.
     Folding it in here costs no extra thread hop — this function already
     runs on a worker thread — and keeps the exact reason values/precedence
-    `_rank_reason` already computed."""
+    `_rank_reason` already computed.
+
+    `out.pop("blocked_query_path", ...)` below removes `_rank_body`'s
+    internal side channel (SPEC-index-search-wedge.md item C) once
+    `_rank_reason` has had a chance to read it — it exists only to let this
+    function answer "mount" correctly and must never reach the wire."""
     out = _rank_body(cfg, root, q, limit, token, ranked)
     out["reason"] = _rank_reason(cfg, out["base"], out)
+    out.pop("blocked_query_path", None)
     return out
 
 
@@ -540,8 +565,25 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
         of them are on the way.
 
     The mount check is paid only on a miss — it realpaths — and a covered root
-    cannot be mount-backed anyway, since nothing ever indexed one."""
+    cannot be mount-backed anyway, since nothing ever indexed one. Both calls
+    below run on this function's own worker thread (folded into
+    `_rank_worker`, off the event loop), so a wedge either one hits is caught
+    by item 2's bounded-wait/abandon machinery in `api_index_rank`, not left
+    to block the server — the realpath one of them pays is never free of a
+    syscall, only ever backstopped by that timeout.
+
+    `out.get("blocked_query_path")` (SPEC-index-search-wedge.md item C) is
+    checked FIRST and is free — a plain string `_rank_body`'s walk already
+    refused, no syscall at all — and it is what keeps this answer "mount" for
+    a typed path that never made it into `base`: the walk stops one segment
+    short of a blocked mount, so `base` itself lands on the last unblocked
+    ancestor and would not, by itself, look mount-backed. Only when that
+    isn't set does this fall back to `MountGuard.blocks_root(root)`, which
+    covers `root` (here, `base`) actually landing ON or under a mount — the
+    case a resolved, already-covered-looking base can still be in."""
     if not out.get("covered"):
+        if out.get("blocked_query_path"):
+            return "mount"
         # BEFORE any kernel syscall of ours on the caller's path: blocks_root
         # is string work against the mount records plus one realpath, where a
         # stat under a wedged rclone mount blocks this thread indefinitely.

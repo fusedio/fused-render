@@ -520,28 +520,52 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tupl
     against the user's raw typed string, segment by segment, and a candidate
     that lands under a wedged NFS/rclone mount would otherwise park this
     thread on `os.path.isdir` forever — the exact failure this repo already
-    knows that class of mount can cause (`MountGuard`'s own docstring). A
-    blocked candidate is treated exactly like one that failed `isdir` (the
+    knows that class of mount can cause (`MountGuard`'s own docstring).
+
+    The check is `guard.blocks()`, deliberately NOT `guard.blocks_root()`:
+    `blocks()` is pure string comparison against `MountGuard`'s own
+    (once-resolved-at-construction) roots, no syscall at all, whereas
+    `blocks_root()` falls through to `mounts.is_mount_backed`, which pays an
+    `os.path.realpath` — itself a readlink/lstat per path component — on
+    every miss. Calling that per SEGMENT, per KEYSTROKE, on the hot path
+    item 5 exists to shave milliseconds off would add back exactly the class
+    of blocking syscall this item exists to remove, just relocated from
+    `isdir` into the guard. `blocks()` only covers fused's OWN rclone
+    mounts/home tree — a wedge in an arbitrary system mount outside that
+    tree (an external SMB share, iCloud) cannot be detected here without a
+    syscall, and this walk deliberately does not pay one; item 2's bounded
+    permit (`ABANDON_S`, routers/index.py) is the backstop for that case,
+    not this guard.
+
+    A blocked candidate is treated exactly like one that failed `isdir` (the
     same `break`), never raised: the walk just stops one segment early, the
-    same as a folder that doesn't exist yet. `guard=None` (every existing
-    caller) preserves today's behaviour unchanged."""
+    same as a folder that doesn't exist yet. The blocked candidate's path is
+    also returned (the 4th tuple element, `None` when nothing was blocked)
+    so a caller can still answer "this typed path is mount-backed" from a
+    string alone, even though `base` itself lands short of it (see
+    `resolve_query`'s `blocked_out` parameter, SPEC-index-search-wedge.md
+    item C / D-number TBD). `guard=None` (every existing caller) preserves
+    today's behaviour unchanged."""
     base = norm(start).rstrip("/") or "/"
     if not rest:
-        return base, "", False
+        return base, "", False, None
     segs = rest.split("/")
     i = 0
+    blocked = None
     while i < len(segs) and "*" not in segs[i]:
         candidate = base + "/" + segs[i] if base != "/" else "/" + segs[i]
-        if guard is not None and guard.blocks_root(candidate):
+        if guard is not None and guard.blocks(candidate):
+            blocked = candidate
             break
         if not os.path.isdir(candidate):
             break
         base = candidate
         i += 1
-    return base, "/".join(segs[i:]), i > 0
+    return base, "/".join(segs[i:]), i > 0, blocked
 
 
-def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dict:
+def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
+                   blocked_out: "list | None" = None) -> dict:
     """The one place a search box's typed string becomes a `(base, pattern,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
@@ -551,6 +575,20 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dic
     call below — see its docstring. `guard=None` (the default; every test in
     this module) preserves today's unguarded behaviour; the server caller
     (`routers/index.py`'s `_rank_body`) passes a real `MountGuard`.
+
+    `blocked_out`, when given, is a list this function APPENDS to (never
+    replaces) with the candidate path `_walk_from` refused, whenever a walk
+    actually blocked one — i.e. `resolve_query`'s return dict shape never
+    changes, so every existing caller and every `out == {...}` test in this
+    module stays exactly as it was; the extra information is opt-in, via a
+    side channel, for the one caller (`routers/index.py`'s `_rank_body`)
+    that needs it. This is what lets a typed path like
+    `~/.fused-render/branches/x/mounts/bucket/foo` still answer `reason:
+    "mount"` (SPEC-index-search-wedge.md item C): the walk stops at the last
+    unblocked ancestor, so `base` itself is never under the blocked tree and
+    a check against `base` alone would miss it — but the blocked candidate
+    is still a plain string, known without any further syscall, so a caller
+    can decide "mount" from it directly.
 
     `mode` is "glob" the moment `raw` contains a `*` anywhere, else
     "substring" — `?` and `[`/`]` are left as literal characters on purpose
@@ -592,16 +630,22 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dic
     `~/a/b`'s own depth 1 — exactly the point of the original request this
     rule exists for. Deciding it from the post-split pattern instead would
     have widened that one, and every query like it, to any depth."""
+    def _note(blocked):
+        if blocked is not None and blocked_out is not None:
+            blocked_out.append(blocked)
+
     raw = raw or ""
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))
         rest = raw[2:] if raw.startswith("~/") else ""
-        base, pattern, _ = _walk_from(home, rest, guard=guard)
+        base, pattern, _, blocked = _walk_from(home, rest, guard=guard)
+        _note(blocked)
     elif _DRIVE_ABS.match(raw):
         drive_root = raw[:2] + "/"
         rest = raw[3:].replace("\\", "/")
-        base, pattern, _ = _walk_from(drive_root, rest, guard=guard)
+        base, pattern, _, blocked = _walk_from(drive_root, rest, guard=guard)
+        _note(blocked)
         # A bare drive letter with nothing after it (`rest == ""`) leaves
         # `_walk_from` at its own bare-root collapse, `"C:"` — the same
         # bare spelling `_root_or_bare` exists to restore to `"C:/"`
@@ -611,7 +655,8 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dic
         base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
-        abs_base, abs_pattern, advanced = _walk_from("/", rest, guard=guard)
+        abs_base, abs_pattern, advanced, blocked = _walk_from("/", rest, guard=guard)
+        _note(blocked)
         if advanced:
             base, pattern = abs_base, abs_pattern
         else:
@@ -628,7 +673,8 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None) -> dic
         # is also what keeps a run of `..` past the filesystem root pinned
         # at that root instead of growing an ever-longer trail of ".." that
         # still, harmlessly, means the same directory.
-        walked_base, pattern, _ = _walk_from(root, raw, guard=guard)
+        walked_base, pattern, _, blocked = _walk_from(root, raw, guard=guard)
+        _note(blocked)
         base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
         base, pattern = root, raw

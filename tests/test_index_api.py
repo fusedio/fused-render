@@ -578,6 +578,43 @@ def test_a_slow_mount_guard_check_does_not_stall_the_event_loop(
     assert rank_resp.status_code == 200
 
 
+def test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of(
+        home, tmp_path, monkeypatch):
+    """Review finding C: `MountGuard.blocks()` (item B's fix) is pure string
+    comparison, so `_walk_from` now stops ONE SEGMENT SHORT of a blocked
+    mount instead of stat-ing its way into it — `base` therefore lands on
+    the last UNBLOCKED ancestor, never on the mount itself. Before item 1's
+    guard existed, the walk ran all the way down (paying `os.path.isdir` on
+    the mount, the very syscall this feature exists to avoid) and `base`
+    ended up AT the mount, so `_rank_reason`'s `MountGuard(...).blocks_root
+    (base)` caught it directly. With the guard, that same check on the
+    (now short) `base` alone would miss it entirely, silently reporting
+    whatever `_rank_reason` falls through to (`covered`/`ignored`/empty)
+    instead of `mount` — which is exactly what would send the frontend's
+    live-walk fallback (`home-search.ts`, `listing/index-source.ts`) down
+    the wrong path for a typed mount query. `_rank_body`'s
+    `blocked_query_path` side channel is what closes that gap without a
+    second syscall."""
+    os_home = tmp_path / "os-home"
+    os_home.mkdir()
+    _point_home_at(monkeypatch, os_home)
+    cfg = load_config()
+    cfg.roots = [str(os_home)]
+    index_router.save_config(cfg)
+
+    # `os_home` itself is an ordinary, unguarded folder (it never scanned, so
+    # `covered` comes back False on its own) — the guard only blocks
+    # `os_home/.fused-render` (via `default_home_dirs()`), one segment deeper.
+    # `q` escapes to `os_home` via `~` and then asks to walk one more segment
+    # into exactly that blocked subtree.
+    out = index_router._rank_worker(cfg, str(os_home), "~/.fused-render/x",
+                                    limit=10, token=None, ranked=True)
+    assert out["base"] == index_router.norm(str(os_home))
+    assert out["reason"] == "mount"
+    # The internal side channel must never reach the wire.
+    assert "blocked_query_path" not in out
+
+
 def test_ask_shares_the_query_lane_with_query(home, tmp_path, monkeypatch):
     """Review finding: `/api/index/ask` ran the same guarded DuckDB call
     `/api/index/query` does, over model-generated SQL, on a worker thread, and
