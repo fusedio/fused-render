@@ -18,6 +18,7 @@ X-Fused-guarded despite being reads: they execute a caller-shaped statement, so
 neither should be reachable from a crafted link.
 """
 import asyncio
+import functools
 import gzip
 import json
 import logging
@@ -25,6 +26,7 @@ import os
 import re
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -136,6 +138,63 @@ def _interactive_read_concurrency() -> asyncio.Semaphore:
 def _query_read_concurrency() -> asyncio.Semaphore:
     """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
     return _lane(_query_lane_loops, 1)
+
+
+# --- Dedicated thread pool for index reads (SPEC-index-search-wedge.md item 3) ---
+#
+# `asyncio.to_thread` dispatches onto the process-wide DEFAULT executor, which
+# every other `asyncio.to_thread` caller in the app shares. `asyncio.to_thread`
+# cannot kill the thread it starts — nothing in Python can — so a worker that
+# parks on an uninterruptible filesystem syscall (a wedged NFS/rclone mount,
+# this repo's known failure class) is abandoned, not stopped, the moment its
+# caller stops waiting (item 2 below). An abandoned thread sitting in the
+# DEFAULT executor would tie up a slot every unrelated `asyncio.to_thread`
+# caller in the app depends on. Routing index reads through their OWN pool
+# instead keeps that damage contained to index reads.
+#
+# Sized wider than the interactive lane (2, above) ON PURPOSE: pool 6 >
+# lane 2, so a couple of abandoned threads still leave the lane's own two
+# concurrent requests somewhere to run. Widening/narrowing one of these two
+# numbers should always prompt reconsidering the other.
+_INDEX_READ_POOL_SIZE = 6
+_INDEX_READ_POOL = ThreadPoolExecutor(
+    max_workers=_INDEX_READ_POOL_SIZE, thread_name_prefix="index-read")
+
+# How long `api_index_rank` (item 2) waits for its worker before giving up on
+# it. Chosen well above any real query's expected latency (single-digit ms
+# to low hundreds) so it only ever fires against a genuinely wedged read, not
+# a merely slow one.
+ABANDON_S = 5.0
+
+# Futures abandoned by a timed-out index read (item 2), kept referenced so
+# (a) they are not garbage-collected while their thread is still running — an
+# unreferenced Future whose thread later raises would print an "exception was
+# never retrieved" warning with nothing to attribute it to — and (b) their
+# count tells `_index_pool_exhausted` how many of the pool's threads are
+# currently tied up by abandoned work. A future removes itself the moment its
+# thread actually finishes, whenever that turns out to be.
+_abandoned_reads: "set" = set()
+
+
+def _index_pool_exhausted() -> bool:
+    """True once every `_INDEX_READ_POOL` thread is tied up by abandoned work.
+
+    Checked BEFORE submitting a new index read. Past that point the
+    executor's own unbounded work queue would happily accept the submission
+    and let it wait, unboundedly, for a thread to free up — exactly the
+    failure mode items 2/3 exist to turn into an explicit, immediate error
+    instead."""
+    return len(_abandoned_reads) >= _INDEX_READ_POOL_SIZE
+
+
+def _submit_index_read(fn, *a, **kw):
+    """Submit `fn(*a, **kw)` to the dedicated index-read pool and return the
+    resulting `asyncio.Future`. Callers that want the fast-503-on-exhaustion
+    behaviour must call `_index_pool_exhausted()` themselves first — this
+    function always submits."""
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(_INDEX_READ_POOL, functools.partial(fn, *a, **kw))
+
 
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
@@ -350,13 +409,46 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     default True, so the startup warm call and every caller that doesn't
     pass it keeps the scored behavior. `ranked` has no effect once `mode` is
     "glob": glob hits are never scored (see `search_ranked`'s own
-    docstring)."""
-    resolved = resolve_query(root, q)
+    docstring).
+
+    A `MountGuard` (SPEC-index-search-wedge.md item 1) is built here and
+    handed to `resolve_query`, so its filesystem walk refuses a candidate
+    path under a blocked mount BEFORE `os.path.isdir` would otherwise stat
+    it — the guard is built fresh each call (cheap: no syscall unless a
+    candidate's prefix actually matches a mount record, and even then the
+    realpath it pays only fires on that miss) rather than threaded in as a
+    parameter, so this function's call signature stays exactly what it was
+    for its two existing callers (`api_index_rank`'s `_rank_worker`,
+    `run_startup_warm`) and for the tests that replace this whole function
+    with a fake (`tests/test_index_search.py`)."""
+    guard = MountGuard(mounts_dir=runner._mounts_dir())
+    resolved = resolve_query(root, q, guard=guard)
     base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
     out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
                      ranked=ranked, glob=(mode == "glob"))
     out["base"] = base
     out["mode"] = mode
+    return out
+
+
+def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
+                  token: CancelToken | None, ranked: bool) -> dict:
+    """Everything `api_index_rank` needs from OFF the event loop, submitted
+    as one unit to the dedicated index-read pool (item 3): `_rank_body`
+    (whose own docstring covers its `MountGuard`-guarded filesystem walk,
+    item 1) followed by `_rank_reason` (item 4).
+
+    `_rank_reason` used to run directly on the event loop, in
+    `api_index_rank`, AFTER the worker thread had already finished and the
+    lane semaphore had already been released — so its own `MountGuard(...)
+    .blocks_root(root)` call, whose docstring already warns that a stat
+    under a wedged rclone mount blocks the thread indefinitely, could stall
+    the WHOLE server (every request sharing the loop), not merely this one.
+    Folding it in here costs no extra thread hop — this function already
+    runs on a worker thread — and keeps the exact reason values/precedence
+    `_rank_reason` already computed."""
+    out = _rank_body(cfg, root, q, limit, token, ranked)
+    out["reason"] = _rank_reason(cfg, out["base"], out)
     return out
 
 
@@ -1467,7 +1559,10 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
             if token.cancelled:
                 return Response(status_code=499)
             try:
-                out = await asyncio.to_thread(
+                # Item 3 (SPEC-index-search-wedge.md): the dedicated
+                # index-read pool, not the process-wide default executor
+                # `asyncio.to_thread` would otherwise use.
+                out = await _submit_index_read(
                     index_stats, cfg, root=root, breakdown=breakdown, token=token)
             except Cancelled:
                 logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
@@ -1512,7 +1607,8 @@ async def api_index_search(request: Request, root: str = Query(default=""),
             if token.cancelled:
                 return Response(status_code=499)
             try:
-                out = await asyncio.to_thread(
+                # Item 3: same dedicated pool as stats/rank.
+                out = await _submit_index_read(
                     index_search, cfg, root, q=q, limit=limit, token=token)
             except Cancelled:
                 logger.debug("index search: %r under %s abandoned by the client", q, root)
@@ -1613,32 +1709,71 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
         async with _interactive_read_concurrency():
+            # Item 6: split the timing log into lane-wait and worker time,
+            # so a wedged/serialised lane (all wait, ~0 worker) is
+            # distinguishable in the logs from a genuinely slow query (the
+            # reverse) instead of one number covering both.
+            lane_wait_ms = (time.monotonic() - t0) * 1000
             if token.cancelled:
                 return Response(status_code=499)
+            # Item 3: a pool-exhaustion check BEFORE submitting. Past this
+            # point `_submit_index_read` would hand the work to the
+            # executor's own unbounded queue and wait, unboundedly, for a
+            # thread — the exact failure this loud, immediate error replaces.
+            if _index_pool_exhausted():
+                logger.error(
+                    "index rank: read pool exhausted (%d/%d abandoned reads); "
+                    "refusing %r under %s", len(_abandoned_reads),
+                    _INDEX_READ_POOL_SIZE, q, root)
+                return JSONResponse(status_code=503,
+                                    content={"error": "index read pool exhausted"})
+            worker_t0 = time.monotonic()
+            fut = _submit_index_read(_rank_worker, cfg, root, q, limit, token, ranked)
             try:
-                out = await asyncio.to_thread(
-                    _rank_body, cfg, root, q, limit, token, ranked)
+                # Item 2: bound how long the permit (and the pool thread) can
+                # be held. `shield` is required: on timeout we must abandon
+                # `fut`, never cancel-await it — `asyncio.to_thread`/
+                # `run_in_executor` cannot kill the thread underneath it, so
+                # awaiting a cancelled wrapper would just block again on the
+                # same un-killable thread.
+                out = await asyncio.wait_for(asyncio.shield(fut), ABANDON_S)
+            except asyncio.TimeoutError:
+                # Cooperative: reaches a running duckdb statement via
+                # `con.interrupt()` (CancelToken.cancel), so the abandoned
+                # thread has a chance to actually stop even though nothing
+                # here can force it to.
+                token.cancel()
+                elapsed_ms = (time.monotonic() - worker_t0) * 1000
+                logger.warning(
+                    "index rank: %r under %s timed out after %.1fms waiting for "
+                    "the worker; abandoning it", q, root, elapsed_ms)
+                # Keep a reference (so it isn't GC'd mid-flight) with a
+                # done-callback that discards it once its thread actually
+                # finishes, whenever that turns out to be.
+                _abandoned_reads.add(fut)
+                fut.add_done_callback(_abandoned_reads.discard)
+                return JSONResponse(status_code=503,
+                                    content={"error": "index read timed out"})
             except Cancelled:
                 logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
                             q, root, (time.monotonic() - t0) * 1000)
                 return Response(status_code=499)
+            worker_ms = (time.monotonic() - worker_t0) * 1000
     _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
     out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
-    # `out["base"]` — not the box's own `root` — is what coverage is actually
-    # decided against: a `~`/`/`-escaping query resolves to a base that can
-    # be far outside `root` (see `_rank_body`), and mount/ignore/scanning all
-    # have to be asked about the place the search actually ran, not the box
-    # it was typed into.
-    out["reason"] = _rank_reason(cfg, out["base"], out)
-    # DEBUG: the request total, to set against the per-phase DEBUG lines
-    # logged underneath (stage A per pass) — this fires on every keystroke of
-    # the home search, so it stays DEBUG (see query.py's pass_over for the
-    # same reasoning at length).
-    # Without this, a slow report has nothing server-side to diagnose it with
-    # beyond guessing which phase was the ~4s.
-    logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
-                q, root, (time.monotonic() - t0) * 1000, out["reason"])
+    # `out["reason"]` is already set — `_rank_worker` folds `_rank_reason` in
+    # (item 4), off the event loop, alongside `_rank_body`.
+    total_ms = (time.monotonic() - t0) * 1000
+    # DEBUG normally; WARNING past ~750ms (item 6) so a wedge (lane_wait_ms
+    # large, worker_ms tiny) is self-identifying in the logs rather than
+    # indistinguishable from a genuinely slow query (the reverse shape) —
+    # this fires on every keystroke of the home search, so it stays DEBUG
+    # otherwise (see query.py's pass_over for the same reasoning at length).
+    log = logger.warning if total_ms > 750 else logger.debug
+    log("index rank: %r under %s answered in %.1fms (lane_wait=%.1fms "
+        "worker=%.1fms reason=%r)", q, root, total_ms, lane_wait_ms, worker_ms,
+        out["reason"])
     return {"ok": True, **out}
 
 

@@ -338,9 +338,12 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
 
     stats_resp, elapsed, query_resp = asyncio.run(run())
     assert stats_resp.status_code == 200
-    # Would be seconds if `stats` shared the query's slot; this only bounds
-    # generously to stay fast on a loaded CI box.
-    assert elapsed < 2.0, elapsed
+    # `fake_stats` is a pure Python stub with no real I/O, so a serialised
+    # lane would show up as (near-)instant, not merely "under 2s" — tightened
+    # from 2.0 (SPEC-index-search-wedge.md's "Also:" note: that bound was
+    # part of the blind spot that let a serialised interactive lane ship
+    # unnoticed).
+    assert elapsed < 0.5, elapsed
     assert query_resp.status_code == 200
 
 
@@ -400,10 +403,179 @@ def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path
 
     breakdown_resp, elapsed, plain_resps = asyncio.run(run())
     assert breakdown_resp.status_code == 200
-    # Would be seconds if breakdown queued behind the two plain calls filling
-    # the interactive lane.
-    assert elapsed < 2.0, elapsed
+    # Same tightening as above and for the same reason: `fake_stats` is a
+    # pure stub, so this bound should catch a serialised lane, not merely a
+    # multi-second one.
+    assert elapsed < 0.5, elapsed
     assert all(r.status_code == 200 for r in plain_resps)
+
+
+# -- SPEC-index-search-wedge.md: a parked read must not permanently halve or
+# zero the interactive lane -------------------------------------------------
+
+def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
+        home, tmp_path, monkeypatch):
+    """The regression this whole spec exists to fix: `/api/index/rank` used
+    to hold one of the two interactive-lane permits across an
+    `asyncio.to_thread` call that could never be killed, so a worker thread
+    parked on an uninterruptible syscall (a wedged NFS/rclone mount, in
+    practice) wedged the lane for the life of the process. Stub the rank
+    worker so the FIRST call blocks forever on a `threading.Event` that is
+    never set (exactly that: an un-killable, permanently parked thread);
+    every later call answers immediately. `ABANDON_S` (item 2) is
+    monkeypatched small so the test does not have to wait out the real
+    5-second default to see the permit actually get released."""
+    import threading
+
+    import httpx
+
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    lock = threading.Lock()
+    calls = {"n": 0}
+    first_entered = threading.Event()
+    never = threading.Event()
+
+    def fake_rank_worker(cfg, root, q, limit, token, ranked):
+        with lock:
+            calls["n"] += 1
+            is_first = calls["n"] == 1
+        if is_first:
+            first_entered.set()
+            never.wait()  # the un-killable, permanently-parked worker thread
+        return {"covered": True, "reason": "", "scanned_partitions": 0,
+                "of_partitions": 0, "base": root, "mode": "substring",
+                "hits": [], "truncated": False, "total": 0}
+
+    monkeypatch.setattr(index_router, "_rank_worker", fake_rank_worker)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            first_task = asyncio.create_task(
+                client.get("/api/index/rank",
+                          params={"root": str(tmp_path), "q": "x"}))
+            for _ in range(50):
+                if first_entered.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert first_entered.is_set()
+
+            # A later request must not queue behind the wedged one — today
+            # (pre-fix) it would block for the life of the process.
+            t0 = time.monotonic()
+            second_resp = await client.get(
+                "/api/index/rank", params={"root": str(tmp_path), "q": "y"})
+            second_elapsed = time.monotonic() - t0
+
+            # Both lane permits available afterwards: two further concurrent
+            # requests must both proceed, not serialise behind a lane the
+            # wedged permit never gave back.
+            t0 = time.monotonic()
+            more = await asyncio.gather(*[
+                client.get("/api/index/rank",
+                          params={"root": str(tmp_path), "q": "z"})
+                for _ in range(2)])
+            more_elapsed = time.monotonic() - t0
+
+            first_resp = await first_task
+            return second_resp, second_elapsed, more, more_elapsed, first_resp
+
+    (second_resp, second_elapsed, more, more_elapsed,
+     first_resp) = asyncio.run(run())
+    assert second_resp.status_code == 200, second_resp.text
+    assert second_elapsed < 0.3, second_elapsed
+    assert all(r.status_code == 200 for r in more)
+    assert more_elapsed < 0.3, more_elapsed
+    # The wedged first request itself eventually gets the abandon-timeout
+    # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
+    assert first_resp.status_code == 503
+    assert first_resp.json() == {"error": "index read timed out"}
+
+
+def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
+    """Item 3's loud-failure-on-exhaustion check. Seeds `_abandoned_reads`
+    directly to the pool's own size rather than driving real timeouts: doing
+    this end to end would mean actually parking `_INDEX_READ_POOL_SIZE` real,
+    un-killable OS threads forever (that is the whole point of an abandoned
+    read — nothing can stop it), which would permanently exhaust the
+    process-wide pool for the rest of this test session, not just this one
+    test. The exhaustion CHECK and its fast, explicit 503 is what this test
+    is about; item 2's own timeout-and-abandon path is covered by
+    `test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot`
+    above.
+
+    Isolates `_abandoned_reads` behind a fresh set via monkeypatch rather
+    than asserting it starts empty: a *real* abandoned future (as created by
+    the wedge test above) never completes by design, so if that test runs
+    first in the same worker process its leftover future is still sitting in
+    the real module-level set when this one starts — that is not a bug,
+    it's the literal meaning of "abandoned"."""
+    fake_pool = {object() for _ in range(index_router._INDEX_READ_POOL_SIZE)}
+    monkeypatch.setattr(index_router, "_abandoned_reads", fake_pool)
+
+    t0 = time.monotonic()
+    resp = _client(tmp_path).get(
+        "/api/index/rank", params={"root": str(tmp_path), "q": "x"})
+    elapsed = time.monotonic() - t0
+
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "index read pool exhausted"}
+    # Fast: refused before ever being submitted to the pool, no ABANDON_S
+    # wait_for round trip at all.
+    assert elapsed < 0.3, elapsed
+
+
+def test_a_slow_mount_guard_check_does_not_stall_the_event_loop(
+        home, tmp_path, monkeypatch):
+    """Item 4: `_rank_reason`'s `MountGuard(...).blocks_root(root)` call —
+    whose own docstring already warns that a stat under a wedged rclone
+    mount can block the calling thread indefinitely — used to run directly
+    on the event loop, in `api_index_rank`, after the worker thread had
+    already finished. A slow check there could stall the WHOLE server, every
+    request sharing the loop, not merely the one rank request that triggered
+    it. Folding it into `_rank_worker` (item 4) puts it on a pool thread
+    instead — an unrelated route must still answer promptly while it is in
+    flight."""
+    import threading
+
+    import httpx
+
+    entered = threading.Event()
+
+    def slow_blocks_root(self, root):
+        entered.set()
+        import time as _time
+        _time.sleep(1.0)
+        return False
+
+    monkeypatch.setattr(index_router.MountGuard, "blocks_root", slow_blocks_root)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            # A real (never-scanned) root: `covered` comes back False, which
+            # is exactly the branch that consults MountGuard.
+            rank_task = asyncio.create_task(
+                client.get("/api/index/rank",
+                          params={"root": str(tmp_path), "q": "x"}))
+            for _ in range(50):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert entered.is_set()
+
+            t0 = time.monotonic()
+            status_resp = await client.get("/api/index/status")
+            elapsed = time.monotonic() - t0
+            rank_resp = await rank_task
+            return status_resp, elapsed, rank_resp
+
+    status_resp, elapsed, rank_resp = asyncio.run(run())
+    assert status_resp.status_code == 200
+    assert elapsed < 0.3, elapsed
+    assert rank_resp.status_code == 200
 
 
 def test_ask_shares_the_query_lane_with_query(home, tmp_path, monkeypatch):
