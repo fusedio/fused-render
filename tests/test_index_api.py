@@ -49,17 +49,49 @@ def _tree(tmp_path):
 
 
 def _point_home_at(monkeypatch, path):
-    """Make `os.path.expanduser("~")` answer `path`, on every platform.
+    """Make `os.path.expanduser("~")` — and any `~/...`-prefixed path —
+    answer under `path`, on every platform.
 
     `monkeypatch.setenv("HOME", ...)` alone only works on POSIX: Windows'
     `ntpath.expanduser` reads `USERPROFILE` (falling back to
     `HOMEDRIVE`+`HOMEPATH`) and never consults `HOME` at all, so a test that
     only sets `HOME` silently keeps pointing `warm_root()`/`config.home` at
-    the real machine's profile instead of the tree it built."""
+    the real machine's profile instead of the tree it built.
+
+    D880 (index-search-wedge FIX round, CI finding 2): the previous version
+    of this helper only special-cased the literal string `"~"` and fell
+    through to the REAL `os.path.expanduser` for anything else, including a
+    compound path like `"~/.fused-render"` — exactly what
+    `ignore.default_home_dirs()` passes it directly (not
+    `os.path.join(expanduser("~"), ...)`). On POSIX that fallthrough happened
+    to work anyway, because `posixpath.expanduser` re-reads `os.environ["HOME"]`
+    at call time regardless of which function object is bound to
+    `os.path.expanduser` — but on Windows `ntpath.expanduser` reads
+    `USERPROFILE`/`HOMEDRIVE`+`HOMEPATH`, which this helper never set, so the
+    real function silently resolved against the CI runner's actual profile
+    instead of the test's `path`. That made `MountGuard`'s guarded-roots list
+    (built via `default_home_dirs()`) not include the directory a test
+    expected it to guard, purely as an artifact of this test shim — not of
+    `MountGuard`/`_walk_from` logic, which never runs on Windows-only code
+    (see `test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`'s
+    failure on the Windows CI lane). Fixed by handling every `~`-prefixed
+    path directly, with a plain string join, instead of delegating compound
+    forms to the real (platform-varying) implementation; `USERPROFILE` is
+    also set so any OTHER code path that calls the real `expanduser` without
+    going through this monkeypatch (there is none today, but nothing
+    guarantees that forever) still lands on `path` on Windows too."""
     real_expanduser = os.path.expanduser
     monkeypatch.setenv("HOME", str(path))
-    monkeypatch.setattr(os.path, "expanduser",
-                        lambda p: str(path) if p == "~" else real_expanduser(p))
+    monkeypatch.setenv("USERPROFILE", str(path))
+
+    def _expanduser(p):
+        if p == "~":
+            return str(path)
+        if p.startswith("~/") or p.startswith("~\\"):
+            return os.path.join(str(path), p[2:])
+        return real_expanduser(p)
+
+    monkeypatch.setattr(os.path, "expanduser", _expanduser)
 
 
 # -- guards --------------------------------------------------------------------
@@ -570,6 +602,18 @@ def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
     fake_pool = {object() for _ in range(index_router._INDEX_READ_POOL_SIZE)}
     monkeypatch.setattr(index_router, "_abandoned_reads", fake_pool)
 
+    # The property under test is "refused before ever being submitted to the
+    # pool" — not merely "fast". A wall-clock bound tight enough to catch a
+    # regression to the unbounded queue (which would hang for the life of the
+    # request, or at best ABANDON_S=15.0s) is also tight enough to flake on a
+    # loaded CI runner with no real bug present (see D880: 0.3s tripped at
+    # 0.366-0.658s on shared runners). Assert the property directly instead:
+    # if this 503 is really produced pre-submission, `_submit_index_read`
+    # (the only path onto the pool) must never be called.
+    def _fail_if_submitted(*a, **kw):
+        pytest.fail("exhaustion check did not short-circuit before submission")
+    monkeypatch.setattr(index_router, "_submit_index_read", _fail_if_submitted)
+
     t0 = time.monotonic()
     resp = _client(tmp_path).get(
         "/api/index/rank", params={"root": str(tmp_path), "q": "x"})
@@ -577,9 +621,9 @@ def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
 
     assert resp.status_code == 503
     assert resp.json() == {"error": "index read pool exhausted"}
-    # Fast: refused before ever being submitted to the pool, no ABANDON_S
-    # wait_for round trip at all.
-    assert elapsed < 0.3, elapsed
+    # Belt-and-suspenders sanity bound, well under ABANDON_S (15.0s) with
+    # real headroom for a loaded runner — not the property assertion itself.
+    assert elapsed < 3.0, elapsed
 
 
 @pytest.mark.parametrize("path,params", [
@@ -598,13 +642,23 @@ def test_stats_and_search_also_get_the_fast_exhaustion_503(
     fake_pool = {object() for _ in range(index_router._INDEX_READ_POOL_SIZE)}
     monkeypatch.setattr(index_router, "_abandoned_reads", fake_pool)
 
+    # See the sibling rank test above (D880): assert the property — refused
+    # pre-submission — directly, rather than trusting a wall-clock bound
+    # tight enough to catch an unbounded-queue regression not to also flake
+    # on a loaded CI runner.
+    def _fail_if_submitted(*a, **kw):
+        pytest.fail("exhaustion check did not short-circuit before submission")
+    monkeypatch.setattr(index_router, "_submit_index_read", _fail_if_submitted)
+
     t0 = time.monotonic()
     resp = _client(tmp_path).get(path, params=params)
     elapsed = time.monotonic() - t0
 
     assert resp.status_code == 503
     assert resp.json() == {"error": "index read pool exhausted"}
-    assert elapsed < 0.3, elapsed
+    # Belt-and-suspenders sanity bound, well under ABANDON_S (15.0s) with
+    # real headroom for a loaded runner — not the property assertion itself.
+    assert elapsed < 3.0, elapsed
 
 
 def _make_fake_index_stats(never, calls, lock):
