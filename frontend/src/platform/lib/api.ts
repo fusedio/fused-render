@@ -1175,6 +1175,11 @@ export interface Prefs {
   // reader asks `chat?.recap !== false` rather than `=== true`: an older
   // server answers without the field and that server's chat still shows it.
   chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  /** Whether a task on the Tasks page opens in a side panel beside the list
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
+   *  experimental, default off). Optional because a server that predates the
+   *  switch sends nothing — which reads as off, the same as the default. */
+  task_peek?: { enabled: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1394,6 +1399,11 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
+/** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
+export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_peek_enabled: enabled });
 }
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {

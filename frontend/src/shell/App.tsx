@@ -60,6 +60,8 @@ import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { PEEK_PARAM } from "@shell/task-peek-store";
+import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
@@ -99,6 +101,15 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+
+/** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
+ *  Module-level so the array identity is stable across renders. */
+const PAGE_PARAMS: readonly string[] = [PEEK_PARAM];
+/** …and the list when the side peek is off: EMPTY, so a traversal is judged on
+ *  the whole URL exactly as it was before the feature existed. Nothing else
+ *  pushes a same-path entry today, so the two lists behave identically in
+ *  practice — but "in practice" is not the flag's contract. */
+const NO_PAGE_PARAMS: readonly string[] = [];
 const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
@@ -497,7 +508,16 @@ function ClaudeConfigView() {
 }
 
 export default function App({ config }: { config: Config }) {
-  const epoch = useNavEpoch();
+  // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
+  // is judged on the whole URL, which is what it did before any of this.
+  const taskPeekOn = useTaskPeekEnabled();
+  // THE TASK PEEK'S PARAM IS NOT A ROUTE (shell/task-peek-store.ts). Opening,
+  // swapping and closing the peek each push an entry so Back can undo them —
+  // and every one of those entries is the SAME page. Left in the epoch, a Back
+  // out of an open peek remounted the whole Tasks page to close a panel, which
+  // is how a reader lost their search text, their filters, their expanded rows
+  // and their scroll position by pressing Back once.
+  const epoch = useNavEpoch(taskPeekOn ? PAGE_PARAMS : NO_PAGE_PARAMS);
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
   // broadened by D662 to every terminal state — done/error/cancelled, not

@@ -130,6 +130,16 @@ import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingF
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
 // module it takes the views from.
+import { useRowFit } from "./row-fit";
+import {
+  PEEK_ITEM_ATTR,
+  PEEK_OPEN_CLASS,
+  closePeek,
+  openPeek,
+  usePeekHost,
+  usePeekedKey,
+} from "./task-peek-store";
+
 export { EMPTY_FILTERS, filterTasks, filtersForView, projectOptions, tildePath, basename };
 export type { TaskFilters };
 
@@ -197,6 +207,9 @@ const icon = (paths: React.ReactNode, size = 14) => (
   </svg>
 );
 
+/** The merged filter trigger's mark — a funnel, the one glyph that means
+ *  "narrow this" without naming which facet. */
+const ICON_FILTER = icon(<polygon points="3 4 21 4 14 12.5 14 20 10 18 10 12.5" />, 13);
 const ICON_SEARCH = icon(<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>, 13);
 const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
 // There is no ICON_CHEVRON_DOWN any more (2026-08-18). It was the down-chevron on
@@ -247,6 +260,14 @@ const ICON_CLOCK = icon(
   <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 16 14" /></>,
   12,
 );
+/** Open as page — the arrows that mean "out of here and into the whole thing",
+ *  the same mark the side peek's header wears for the same act. */
+const ICON_EXPAND = icon(
+  <><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" /></>,
+  12,
+);
+/** The peeked row's own close, beside `ICON_OPEN` because the two swap. */
+const ICON_CLOSE = icon(<path d="M6 6l12 12M18 6L6 18" />, 12);
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 13);
@@ -864,7 +885,7 @@ function FilterMenu({
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          {glyph ?? ICON_CIRCLE_DOT} {label}
+          {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>
           {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
         {splittable && (
@@ -902,6 +923,7 @@ export function TaskFilterControls({
   home = "",
   onChange,
   hideArchiveStatus = false,
+  merged = false,
 }: {
   filters: TaskFilters;
   /** Every folder that has a task — `projectOptions(tasks)`. */
@@ -922,6 +944,15 @@ export function TaskFilterControls({
    * act on it.
    */
   hideArchiveStatus?: boolean;
+  /**
+   * THE LAST RUNG OF THE TOOLBAR'S LADDER (shell/row-fit.ts): the two triggers
+   * become ONE, and its popover holds both lists under their own headings.
+   *
+   * Not a different control — the same `FilterMenu`, the same rows, the same
+   * presses. What goes is the second trigger's width, which at a 360px toolbar
+   * is the difference between the row fitting and the row wrapping.
+   */
+  merged?: boolean;
 }) {
   // By LANE, like taskMatches: a tick is on when any stored status draws in
   // this lane, and turning it off removes every status of that lane — so a
@@ -959,6 +990,49 @@ export function TaskFilterControls({
         : [...filters.projects, path],
     });
 
+  // THE ROWS, ONCE. Both shapes of this control — two triggers or one — draw
+  // exactly these, so a press cannot mean something different at a narrow
+  // width than it does at a wide one.
+  const statusRows = () =>
+    statusColumns.map((col) => {
+      const on = laneOn(col.key);
+      return (
+        <button
+          type="button"
+          key={col.key}
+          className="schedule-tv-pop-item"
+          aria-pressed={on}
+          onClick={() => toggleStatus(col.key)}
+        >
+          <span className="schedule-tv-pop-check" aria-hidden>
+            {on ? ICON_CHECK : null}
+          </span>
+          <StatusIcon status={col.key} />
+          <span>{col.label}</span>
+        </button>
+      );
+    });
+  const projectRows = () =>
+    projects.map((path) => {
+      const on = filters.projects.includes(path);
+      return (
+        <button
+          type="button"
+          key={path}
+          className="schedule-tv-pop-item"
+          aria-pressed={on}
+          title={tildePath(path, home)}
+          onClick={() => toggleProject(path)}
+        >
+          <span className="schedule-tv-pop-check" aria-hidden>
+            {on ? ICON_CHECK : null}
+          </span>
+          <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
+          <span className="tasks-pop-label">{basename(path)}</span>
+        </button>
+      );
+    });
+
   return (
     <div className="schedule-tv-filters">
       <div className="schedule-tv-search">
@@ -976,33 +1050,40 @@ export function TaskFilterControls({
         />
       </div>
 
+      {/* MERGED, at the toolbar's last rung (see `merged`): one trigger, both
+          lists, each under its own heading. The rows are the very same
+          elements the two menus draw — built from the same two renderers
+          below — so nothing about a press changes with the width of the
+          window. */}
+      {merged ? (
+        <FilterMenu
+          label="Filters"
+          count={statusCount + filters.projects.length}
+          icon={ICON_FILTER}
+          onClear={() => onChange({ ...filters, statuses: [], projects: [] })}
+        >
+          {() => (
+            <>
+              <p className="schedule-tv-pop-head">Status</p>
+              {statusRows()}
+              {projects.length > 1 && (
+                <>
+                  <p className="schedule-tv-pop-head">Project</p>
+                  {projectRows()}
+                </>
+              )}
+            </>
+          )}
+        </FilterMenu>
+      ) : (
+        <>
       <FilterMenu
         label="Status"
         count={statusCount}
         onClear={() => onChange({ ...filters, statuses: [] })}
       >
-        {() =>
-          statusColumns.map((col) => {
-            const on = laneOn(col.key);
-            return (
-              <button
-                type="button"
-                key={col.key}
-                className="schedule-tv-pop-item"
-                aria-pressed={on}
-                onClick={() => toggleStatus(col.key)}
-              >
-                <span className="schedule-tv-pop-check" aria-hidden>
-                  {on ? ICON_CHECK : null}
-                </span>
-                <StatusIcon status={col.key} />
-                <span>{col.label}</span>
-              </button>
-            );
-          })
-        }
+        {statusRows}
       </FilterMenu>
-
       {/* Project is auto-detected from the tasks themselves (§10), so the menu
           is simply absent on a machine whose tasks all live in one folder —
           a control with one choice is not a choice. */}
@@ -1017,30 +1098,11 @@ export function TaskFilterControls({
           icon={ICON_FOLDER}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
-          {() =>
-            projects.map((path) => {
-              const on = filters.projects.includes(path);
-              return (
-                <button
-                  type="button"
-                  key={path}
-                  className="schedule-tv-pop-item"
-                  aria-pressed={on}
-                  title={tildePath(path, home)}
-                  onClick={() => toggleProject(path)}
-                >
-                  <span className="schedule-tv-pop-check" aria-hidden>
-                    {on ? ICON_CHECK : null}
-                  </span>
-                  <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-                  <span className="tasks-pop-label">{basename(path)}</span>
-                </button>
-              );
-            })
-          }
+          {projectRows}
         </FilterMenu>
       )}
-
+        </>
+      )}
     </div>
   );
 }
@@ -1217,6 +1279,16 @@ function performOpen(
       .then((answer) => marks.settleAll(task.key, held, answer))
       .catch(() => marks.restoreAll(task.key, held));
   }
+  // THE SIDE PEEK TAKES THE PRESS when the Tasks page is hosting one, and the
+  // mark above still happens either way — opening the thread is what clears it,
+  // and where the thread opens is not the badge's business
+  // (.claude-design/task-side-peek/design.md; `openPeek` answers false wherever
+  // there is no peek, which is every other surface in the app).
+  //
+  // Here rather than at the two call sites because THIS is the one place either
+  // view turns an OpenThreadIntent into a hop, and a second copy of the
+  // question is how the List and the Board start disagreeing again.
+  if (openPeek(task.key)) return;
   navigateUrl(intent.href);
 }
 
@@ -1355,6 +1427,20 @@ export function TaskList({
   // highlight is the page acknowledging the press rather than something that
   // only appears after a round trip.
   const [selected, setSelected] = useState(() => memory.current.selected);
+  // …and the row whose conversation is open in the side peek RIGHT NOW, which
+  // is a different claim from `selected` above and outranks it visually (the
+  // halo, styles/task-peek.css). Null everywhere the peek is not hosted.
+  // IS THE FEATURE ON AND ON THIS PAGE (task-peek-flag.ts, `task_peek_enabled`).
+  // Off, every line below that mentions the peek stands down and the list is
+  // byte-for-byte the list this page has always rendered.
+  const peekOn = usePeekHost();
+  // BOTH HOOKS, UNCONDITIONALLY, and the flag is spent on the VALUE. `host`
+  // starts false and flips true in a layout effect, so a view that painted its
+  // first commit with the feature off would grow a hook on the next render —
+  // which React throws on outright ("rendered more hooks than during the
+  // previous render"). A conditional hook is never worth the render it saves.
+  const peekedKey = usePeekedKey();
+  const peeked = peekOn ? peekedKey : null;
   const select = (key: string) => {
     setSelected(key);
     remember({ ...memory.current, selected: key });
@@ -1497,6 +1583,11 @@ export function TaskList({
   // scrollTop and not the window's — which is also why restoring it cannot fight
   // the explorer's msg-anchor scroll: that happens on a different page entirely.
   const listRef = useRef<HTMLDivElement | null>(null);
+  // How much of the row's right-hand cluster this width can afford. The
+  // scroller is the box that must never grow a horizontal bar, so it is the box
+  // that is measured (shell/row-fit.ts states the rule and why it is not a
+  // breakpoint).
+  const fit = useRowFit(listRef, peekOn);
   // The offset still owed to the reader, or null once it has been paid (or given
   // up on). Rows grow as their fetched threads land, so the wanted offset is
   // often past the end of the list for the first few frames; it is re-applied
@@ -1671,7 +1762,17 @@ export function TaskList({
           The Board keeps this same sentence above its lanes for the same
           reason. */}
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
-      <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+      {/* `data-fit` is how many of the row's meta marks have had to go for the
+          rows to fit the width the list actually has — measured, never a
+          breakpoint (shell/row-fit.ts states the rule and the reason). The
+          stylesheet does the hiding; this only says how far down the ladder we
+          are. */}
+      <div
+        className="tasks-list"
+        ref={listRef}
+        {...(peekOn ? { "data-fit": fit } : {})}
+        onScroll={onScroll}
+      >
       {/* THE FRAME IS INSIDE THE SCROLLER, not the scroller itself. When the
           bordered box was the thing that scrolled, its bar stood INSIDE the
           border: a 10px column between the last row's edge and the frame, so
@@ -1700,6 +1801,8 @@ export function TaskList({
           showProject={showProject}
           folderMissing={missing?.has(taskFolder(task)) ?? false}
           open={expanded.has(task.key)}
+          peekOn={peekOn}
+          peeked={peeked === task.key}
           selected={selected === task.key}
           onSelect={() => select(task.key)}
           onToggle={() => toggle(task)}
@@ -1735,6 +1838,8 @@ function TaskNode({
   showProject,
   folderMissing,
   open: requested,
+  peekOn = false,
+  peeked = false,
   selected,
   onSelect,
   onToggle,
@@ -1769,6 +1874,15 @@ function TaskNode({
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
+  /** The side peek exists on this page at all (`task_peek_enabled`). Off, this
+   *  row renders exactly as it did before the feature: no walk attribute, no
+   *  halo, no quick door. */
+  peekOn?: boolean;
+  /** This row's task is the one in the side peek: it wears the halo and its
+   * hover fill stands down (styles/task-peek.css). A stronger claim than
+   * `selected` below and deliberately a different one — `selected` is "where
+   * you last went", this is "what is open beside you right now". */
+  peeked?: boolean;
   /** Is this the row the reader last opened a conversation from? The List owns
    * the answer (one row at a time, remembered across the trip to the chat); the
    * row only wears it. */
@@ -2252,6 +2366,11 @@ function TaskNode({
    * tasks-lib.opensElsewhere for the rule it asks.
    */
   const href = chat?.href ?? null;
+  /** WHERE "OPEN AS PAGE" GOES, and it is today's route exactly: the
+   *  conversation in the Explorer's Claude pane. Null on a row with nowhere to
+   *  go — no session and no folder, or a folder the disk has lost — which is
+   *  what keeps the quick door off the rows it could not honour. */
+  const page = folderMissing ? null : href;
 
   /**
    * Does this row's press DO anything — and therefore, may the row claim to be a
@@ -2295,7 +2414,12 @@ function TaskNode({
       <div
         className={"tasks-row" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
+          + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
           + (refiled ? " is-refiled" : "")}
+        // The side peek's two hooks: the halo's selector, and — in DOM order —
+        // the prev/next walk, which on the List is simply the list's order
+        // (shell/task-peek-store.ts). Absent entirely when the feature is off.
+        {...(peekOn ? { [PEEK_ITEM_ATTR]: task.key } : {})}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -2317,17 +2441,32 @@ function TaskNode({
            `.tasks-title` below). Every other mark on the row already carries the
            one fact its own ink cannot show. */
         onClick={href ? undefined : pressable ? activate : undefined}
-        onKeyDown={
-          href
-            ? undefined
-            : (e) => {
-                if (!pressable) return;
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  activate();
-                }
-              }
-        }
+        onKeyDown={(e) => {
+          if (!pressable) return;
+          // `o` OPENS THE FOCUSED ROW (.claude-design/task-side-peek/design.md,
+          // Keyboard). Handled on the row rather than on the stretched link
+          // because the link is the tab stop but the row is what the key is
+          // about, and a keydown from inside bubbles here either way. Enter is
+          // already the link's own, natively, on every row that has one — which
+          // is why the branch below is still only for the rows that do not.
+          if (e.key === "o" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            const el = e.target as HTMLElement | null;
+            // Never while something is being typed into: a row can hold a
+            // field once a thread is expanded, and eating a letter would be
+            // the worst kind of shortcut.
+            if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+              return;
+            }
+            e.preventDefault();
+            activate();
+            return;
+          }
+          if (href) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            activate();
+          }
+        }}
         // The other half of the filing receipt (Akshil, 2026-08-19): leaving the
         // row is what re-arms its hover reveal. Handled — not conditional — even
         // while the flag is down, because a handler that appears and disappears
@@ -2684,18 +2823,53 @@ function TaskNode({
             row's OWN click is still not this (see `activate`): on an accordion it
             toggles and opens nothing, and on a leaf it opens that leaf's single
             message through the message path, marking that one message. */}
+        {/* THE QUICK DOOR OUT (.claude-design/task-side-peek/design.md, Round 3):
+            the row's own press opens the peek beside the list, and this is the
+            way to the WHOLE page when that is what the reader wants — today's
+            Explorer route, unchanged, which is exactly where the row used to
+            go. Hover-revealed like every other row action (`.tasks-act`, above
+            the stretched link at `z-index: 2`, so its press is its own), and a
+            real link with a real href so ⌘-click and middle-click open a tab.
+
+            NOT ON A DRAFT: an unfinished New task form has no page to open —
+            its press re-opens the card — so a door there would be a promise
+            nothing can keep. `page` is null on a row whose folder is gone for
+            the same reason (the toast already says so). */}
+        {peekOn && page && !openDraft && (
+          <a
+            className="tasks-act tasks-act--page"
+            href={page}
+            aria-label={`Open ${task.task_id} in Explorer`}
+            data-hint="Open in Explorer · ⌘↩"
+            onClick={(e) => {
+              // A modified press is the browser's (the row's own link rule).
+              if (opensElsewhere(e)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              navigateUrl(page);
+            }}
+          >
+            {ICON_EXPAND}
+          </a>
+        )}
+        {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
+            (.claude-design/task-side-peek/design.md): the conversation this
+            button opens is already open beside the row, so pressing it again
+            has to CLOSE it rather than re-open what is in front of you. One
+            control, two states, the way a disclosure works. */}
         {SHOW_ROW_ACTIONS && chat && (
           <button
             type="button"
             className="tasks-act"
-            title="Open chat"
-            aria-label="Open chat"
+            title={peeked ? "Close" : "Open chat"}
+            aria-label={peeked ? "Close side peek" : "Open chat"}
             onClick={(e) => {
               e.stopPropagation();
-              openChat(chat);
+              if (peeked) closePeek();
+              else openChat(chat);
             }}
           >
-            {ICON_OPEN}
+            {peeked ? ICON_CLOSE : ICON_OPEN}
           </button>
         )}
         {/* When this task runs next, or when it last ran — on EVERY row, because
@@ -3490,6 +3664,12 @@ export function TaskBoard({
   const openCard = (task: Task, intent: OpenThreadIntent) => {
     performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task));
   };
+  // Which card's conversation is open in the side peek right now — the halo,
+  // the List row's own mark drawn on a card (styles/task-peek.css).
+  const peekOn = usePeekHost();
+  // Unconditional — see the List's own note above.
+  const openKey = usePeekedKey();
+  const peekedKey = peekOn ? openKey : null;
 
   // Shared by expanded lane bodies AND collapsed rails, so a rolled-up lane —
   // an empty one, or one the reader closed — still catches the drop most cards
@@ -3683,6 +3863,8 @@ export function TaskBoard({
                     // stays cleared until the poll agrees — the same merge the
                     // List's rows make over the same set.
                     unread={taskUnread(task, read)}
+                    peekOn={peekOn}
+                    peeked={peekedKey === task.key}
                     isDragging={dragging?.key === task.key}
                     onDragStart={() => setDragging(task)}
                     onDragEnd={() => {
@@ -3733,6 +3915,8 @@ function TaskCard({
   folderMissing,
   onMissing,
   unread,
+  peekOn = false,
+  peeked = false,
   isDragging,
   onDragStart,
   onDragEnd,
@@ -3761,6 +3945,11 @@ function TaskCard({
   /** What the mark stands for: the server's count less anything cleared here since,
    * which the board merges (taskUnread) rather than the card re-deriving. */
   unread: number;
+  /** The side peek exists on this page at all (`task_peek_enabled`). */
+  peekOn?: boolean;
+  /** This card's task is the one in the side peek — halo on, hover fill off
+   * (styles/task-peek.css). */
+  peeked?: boolean;
   isDragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -3791,6 +3980,12 @@ function TaskCard({
   // click does nothing at all: no navigation, and no mark either, since nothing
   // was shown to the reader.
   const open = openThreadIntent(task, unread);
+  /** The List row's quick door, on the card (design.md, Round 3): today's
+   *  Explorer route — `open.href`, the SAME address the card's own press has
+   *  always used, so the door and the card cannot disagree about where this
+   *  task lives. Null on a card with nowhere to go, and on one whose folder the
+   *  disk has lost (its press already says so). */
+  const page = folderMissing ? null : (open?.href ?? null);
   // Filing without dragging, in whichever direction this card has. The drag stays
   // as the accelerator, but it cannot be the ONLY way: the Archive lane is
   // collapsed by default, so BOTH gestures otherwise start with "expand Archive
@@ -3876,8 +4071,15 @@ function TaskCard({
         className={
           "schedule-tv-card" +
           (draggable ? " is-draggable" : "") +
+          (peeked ? ` ${PEEK_OPEN_CLASS}` : "") +
           (isDragging ? " is-dragging" : "")
         }
+        // The side peek's halo selector and the prev/next walk's place. The
+        // Board's DOM order IS "column by column" — the lanes are rendered in
+        // BOARD_COLUMNS order, each with its cards — which is exactly the walk
+        // design.md asks for here (shell/task-peek-store.ts). Absent entirely
+        // when the feature is off.
+        {...(peekOn ? { [PEEK_ITEM_ATTR]: task.key } : {})}
         /* The Board card's own caption, on the same instant panel as the List's
            (hints.ts). It is the same page and the same fact; a card that waited
            four seconds while the rows beside it answered at once would read as a
@@ -4098,7 +4300,7 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DELETE FOR GOOD, only on a card whose folder is gone, and LEFT of
               Archive (Akshil, 2026-09-07: a trash in the foot "looks odd here …
@@ -4115,6 +4317,26 @@ function TaskCard({
             >
               {ICON_TRASH}
             </button>
+          )}
+          {/* The List row's quick door, in the card's own hover strip — same
+              act, same glyph, same caption (design.md, Round 3). A SIBLING of
+              the card rather than a child, because the card IS a button; that
+              is what this wrapper has always been for. */}
+          {peekOn && page && !isDraftTask(task) && (
+            <a
+              className="tasks-act tasks-card-act"
+              href={page}
+              aria-label={`Open ${task.task_id} in Explorer`}
+              data-hint="Open in Explorer · ⌘↩"
+              onClick={(e) => {
+                if (opensElsewhere(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                navigateUrl(page);
+              }}
+            >
+              {ICON_EXPAND}
+            </a>
           )}
           {SHOW_ROW_ACTIONS && run && (
             <button

@@ -3939,3 +3939,144 @@ input.schedule-when-field {
     -webkit-text-fill-color: var(--pill);
   }
 }
+
+/* -- The toolbar folds its words before it clips them ------------------------
+   EVERY SELECTOR HERE IS SCOPED TO `[data-fit]`, the attribute shell/row-fit.ts
+   writes and which exists only while `task_peek_enabled` is on
+   (shell/task-peek-flag.ts). That is the flag's contract: a reader who has
+   opted out of the side peek gets the toolbar this page has always had, down to
+   how it shrinks. Unscoped, these rules changed it for them — the search
+   floored at 72px where it used to collapse to nothing, the row stopped
+   shrinking, and the filter group's minimum moved.
+
+   `data-fit` itself is how many of TOOLBAR_DROPS have had to go for the row to
+   fit the width it has: measured, never a breakpoint.
+
+   THE CHILDREN MUST NOT SHRINK, and that is what makes the measurement possible
+   at all: a flex row whose items shrink never overflows, so a narrow bar
+   squeezed the view toggle instead — the reader got "List | Board" and an empty
+   stub where Cards and Calendar had been clipped away (Akshil, 2026-09-13, with
+   the side peek open). Now the row overflows honestly, the hook sees it, and
+   the words fold. */
+
+/* The view toggle and the primary button are what must not be squeezed — they
+   are fixed sets of words, and a clipped one is the defect this whole rule is
+   about. The filter group between them keeps its own `flex: 0 1 auto`: its
+   search box is 260px of slack that SHOULD be spent first, before any word is
+   folded. */
+.schedule-toolbar[data-fit] > .schedule-view-seg,
+.schedule-toolbar[data-fit] > .schedule-new {
+  flex-shrink: 0;
+}
+
+/* NOWRAP until the ladder is spent (see `data-wrap` below), and `flex: 0 0 auto`
+   with it: the toolbar is fixed furniture above a scrolling view, so a wrapped
+   second row must make the page taller rather than be squeezed back onto one
+   line by the page's column flex. */
+.schedule-toolbar[data-fit] {
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+}
+
+/* NO `min-width: 0` on the filter group while the ladder is live: the zero
+   removes the box's automatic minimum size, and flex was then free to squeeze
+   the group to 140px around 173px of controls — the Project chip drew straight
+   THROUGH the New task button beside it (measured live at frame 437). `auto` is
+   its own min-content: its filter buttons and their gap, exactly as narrow as
+   the group may honestly go. */
+.schedule-toolbar[data-fit] .schedule-tv-filters {
+  min-width: auto;
+}
+
+/* The search is the toolbar's designed slack, and it publishes two numbers:
+   what it OPENS at (a flex basis of 260) and what it must KEEP
+   (`--fit-natural`, which shell/row-fit.ts charges it). Everything between the
+   two is spent before any word in the row folds.
+
+   A FLEX BASIS carries the 260, not a `width`: a definite width makes an item
+   contribute that width to its container's min-content whatever its `min-width`
+   says, so the group could not shrink below 260 + its buttons and the row
+   simply overflowed instead.
+
+   72px is about six characters — the least a FILTER field can be and still be
+   one, and it is only ever this narrow on the ladder's last rung. */
+.schedule-toolbar[data-fit] .schedule-tv-search {
+  --fit-natural: 72px;
+  flex: 0 1 260px;
+  width: auto;
+  min-width: var(--fit-natural);
+}
+
+/* CUMULATIVE — every rule holds at its own level AND at every level past it.
+   Spelled out rather than left to `:not([data-fit="0"])`, because each starts at
+   a different rung; a level named once and then overtaken puts the words back on
+   (the New task label reappeared at level 4, the one level it most needed to be
+   gone).
+
+   AND EVERY ONE OF THEM NAMES `[data-fit]` FIRST. `:not([data-fit="0"])` alone
+   matches a toolbar with no attribute at all — which is precisely the flag-off
+   page — so the view labels folded for readers who had opted out of the whole
+   feature (measured live, 2026-09-13). A negation is not a scope. */
+.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-fit-lbl {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="2"], [data-fit="3"], [data-fit="4"])
+  .schedule-tv-filter-btn
+  .schedule-fit-lbl {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="3"], [data-fit="4"]) .schedule-new .schedule-fit-lbl {
+  display: none;
+}
+
+/* Folded, the button is its glyph and nothing else — so it stops being a pill
+   with a word's worth of side padding and becomes a square target of the same
+   height as its neighbours. The caption moves to the tooltip the button already
+   carries (`title`), which is where a label goes when it cannot be ink. */
+.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-view-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.schedule-toolbar[data-fit="3"] .schedule-new,
+.schedule-toolbar[data-fit="4"] .schedule-new {
+  /* A SQUARE, not a pill with its word taken out. `width` and not `min-width`:
+     `.btn` carries its own horizontal padding and its own floor, and a button
+     that folded its label while keeping both stayed 76px wide — which was the
+     difference between the row fitting on one line and wrapping onto three. */
+  width: 32px;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+
+/* THE LAST RESORT, and only ever that (shell/row-fit.ts `ToolbarFit.wrap`):
+   every rung of the ladder has been spent and the row STILL does not fit, so it
+   takes a second line rather than cutting a control in half. It cannot be on by
+   default — `flex-wrap` wraps an item BEFORE the line shrinks to hold it, so a
+   wrapping row never gives the search box's slack up at all and the ladder stops
+   meaning anything. */
+.schedule-toolbar[data-fit][data-wrap="1"] {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+/* The merged filter menu's two sections. A heading rather than a divider: the
+   rows below it are the same rows the separate menu drew, and the only thing
+   the reader needs is which facet they are looking at. */
+.schedule-tv-pop-head {
+  margin: 6px 0 2px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+}
+
+.schedule-tv-pop-head:first-child {
+  margin-top: 0;
+}

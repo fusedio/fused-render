@@ -61,6 +61,18 @@
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
   --accent-rgb: 229, 255, 68;
+  /* THE SIDE PEEK'S HALO — the ring on the row, card or chip whose conversation
+     is open in the task peek (styles/task-peek.css).
+   *
+   * THE SAME VALUE IN BOTH PALETTES, and it is the only colour in this file
+   * that is. The halo's job is "this one, here" and it is read by flicking
+   * between a panel and a list; `--accent` cannot do it, because it is a bright
+   * lime on the dark ground and a dark olive on the light one — two marks that
+   * look like two different states rather than one. A single mid lime-olive
+   * carries on both: it is the accent's own hue, dark enough to read on white
+   * and light enough to read on #131417. */
+  --peek-halo: #a8c21f;
+  --peek-halo-rgb: 168, 194, 31;
   --error-rgb: 255, 107, 107;
   --fg-muted-rgb: 154, 160, 166;
   /* --warning's triple, for the trouble card's wash (SPEC §42): those failures
@@ -384,6 +396,18 @@
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
+  /* THE SIDE PEEK'S HALO — the ring on the row, card or chip whose conversation
+     is open in the task peek (styles/task-peek.css).
+   *
+   * THE SAME VALUE IN BOTH PALETTES, and it is the only colour in this file
+   * that is. The halo's job is "this one, here" and it is read by flicking
+   * between a panel and a list; `--accent` cannot do it, because it is a bright
+   * lime on the dark ground and a dark olive on the light one — two marks that
+   * look like two different states rather than one. A single mid lime-olive
+   * carries on both: it is the accent's own hue, dark enough to read on white
+   * and light enough to read on #131417. */
+  --peek-halo: #a8c21f;
+  --peek-halo-rgb: 168, 194, 31;
   --error-rgb: 198, 40, 40;
   --fg-muted-rgb: 97, 101, 108;
   --warning-rgb: 143, 106, 16;
