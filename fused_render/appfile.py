@@ -10,11 +10,16 @@ while a ``.fused`` targets the opposite trade — carry everything the author
 put in the folder, because the thing that opens it is a full fused-render
 runtime, not a hosting layer.
 
-Physically the file is a zip: ``manifest.json`` at the root plus a single
-``files/`` payload dir mirroring the app folder (same payload-dir shape as
-bundle v2, docs/bundle-v2-design.md, so the two artifact families read alike).
-The manifest records the format tag and the entry page's payload-relative
-path, resolved at *export* time by the one shared entry rule
+Physically the file is an OPAQUE CONTAINER (``appfile_container``: magic
+``FUSEDAPP``, versioned header, deflated JSON index, per-file deflate streams)
+— NOT a zip. v1 was a zip with its extension renamed, and mail scanners
+classify by bytes, not names: Gmail saw ``PK``, walked the members, found the
+``.html`` and ``.py`` and flagged the attachment as suspicious. An unknown
+binary is not an archive to any scanner, which is the whole reason for the
+format; the zip layout survives ONLY on the read side so every v1 file already
+exported and indexed (D396) keeps opening. The index records the format tag,
+the app name, every member's path/size/hash, and the entry page's
+payload-relative path, resolved at *export* time by the one shared entry rule
 (``app_listing.app_entry``) so exporter and hub can never disagree about which
 page an app opens on.
 
@@ -26,9 +31,10 @@ changed file gets a fresh dir), every extracted file is chmod'd read-only
 ``fused.writeFile`` refuse with the existing ``readonly`` error rather than
 needing a new enforcement surface), and the browser lands on the entry page in
 **embed mode** (chrome-free: no sidebar, no editor, no Claude — the app as it
-is, nothing else). Extraction rides the one hardened unzip implementation
-(``zip_import``): a ``.fused`` that arrived by mail is exactly as untrusted as
-an uploaded template pack.
+is, nothing else). Extraction is hardened on both format branches — the
+container's own capped, hash-verified extractor for v2, ``zip_import`` for a
+v1 zip: a ``.fused`` that arrived by mail is exactly as untrusted as an
+uploaded template pack.
 
 There is deliberately NO confirm gate and no dedicated open URL (D389/D390,
 owner calls): a ``.fused`` renders at its own ``/explorer/view|embed/<path>``
@@ -50,7 +56,13 @@ import tempfile
 import zipfile
 
 from fused_render import app_listing
-from fused_render.zip_import import ZipRejected, ZipTooLarge, extract_to_staging, sweep_stale_staging
+from fused_render import appfile_container as container
+from fused_render.zip_import import (
+    ZipRejected,
+    ZipTooLarge,
+    extract_to_staging,
+    sweep_stale_staging,
+)
 
 # The payload dir inside the zip, mirroring the app folder — the same
 # single-payload-dir shape as bundle v2's `files/` (docs/bundle-v2-design.md).
@@ -338,26 +350,22 @@ def export_app_file(app_dir: str, out_path: str,
         if any(rel == app_listing.PREVIEW_IMAGE_NAME for _, rel in members):
             preview_bytes = None  # the authored still wins
 
-    manifest = {
-        "fused_app_file": 1,
-        "root": PAYLOAD_DIR,
-        "name": os.path.basename(app_dir),
-        "entry": entry_rel,
-    }
+    payload: list[tuple[str, str | bytes]] = []
+    if preview_bytes is not None:
+        payload.append((app_listing.PREVIEW_IMAGE_NAME, preview_bytes))
+    payload.extend((rel, full) for full, rel in members)
     # Build beside the destination, one rename in — out_path is only ever
     # absent or the complete file (same posture as export.py's staged bundle).
     parent = os.path.dirname(os.path.abspath(out_path)) or "."
     os.makedirs(parent, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".fused-appfile-", suffix=".zip", dir=parent)
+    fd, tmp = tempfile.mkstemp(prefix=".fused-appfile-", dir=parent)
     os.close(fd)
     try:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-            if preview_bytes is not None:
-                zf.writestr(
-                    f"{PAYLOAD_DIR}/{app_listing.PREVIEW_IMAGE_NAME}", preview_bytes)
-            for full, rel in members:
-                zf.write(full, arcname=f"{PAYLOAD_DIR}/{rel}")
+        try:
+            manifest = container.write(
+                tmp, {"name": os.path.basename(app_dir), "entry": entry_rel}, payload)
+        except container.ContainerError as exc:
+            raise AppFileError(str(exc))
         os.replace(tmp, out_path)
     finally:
         if os.path.exists(tmp):
@@ -365,9 +373,45 @@ def export_app_file(app_dir: str, out_path: str,
     return manifest
 
 
+def _entry_problem(entry: object) -> bool:
+    # `\\` is rejected outright rather than normalized: the exporter always
+    # writes forward slashes, and on Windows a backslash inside a "component"
+    # would act as a separator after os.path.join — `..\\..\\x` style entries
+    # would escape the extract dir while passing a `/`-split ".." check.
+    return (
+        not isinstance(entry, str)
+        or not entry
+        or "\\" in entry
+        or os.path.isabs(entry)
+        or ".." in entry.split("/")
+    )
+
+
 def read_manifest(fused_path: str) -> dict:
     """The validated manifest of the ``.fused`` file at ``fused_path`` —
-    read-only, nothing extracted."""
+    read-only, nothing extracted. A v2 container answers its index (which
+    carries ``files``); a v1 zip answers its ``manifest.json``. Both carry
+    ``fused_app_file``, ``name`` and a validated ``entry``."""
+    if container.is_container(fused_path):
+        try:
+            index = container.read_index(
+                fused_path,
+                max_entries=MAX_OPEN_ENTRIES,
+                max_entry_bytes=MAX_OPEN_ENTRY_BYTES,
+                max_total_bytes=MAX_OPEN_TOTAL_BYTES,
+            )
+        except container.ContainerError as exc:
+            raise AppFileError(str(exc))
+        entry = index.get("entry")
+        if _entry_problem(entry):
+            raise AppFileError(f"invalid entry path in manifest: {entry!r}")
+        return index
+    return _read_zip_manifest(fused_path)
+
+
+def _read_zip_manifest(fused_path: str) -> dict:
+    """v1: the zip's ``manifest.json``. Kept so every .fused exported before
+    the container format keeps opening."""
     try:
         with zipfile.ZipFile(fused_path) as zf:
             # Bounded read, never ZipFile.read(): this runs BEFORE the capped
@@ -388,17 +432,7 @@ def read_manifest(fused_path: str) -> dict:
     if not isinstance(manifest, dict) or manifest.get("fused_app_file") != 1:
         raise AppFileError("not a fused app file (manifest carries no fused_app_file: 1)")
     entry = manifest.get("entry")
-    # `\\` is rejected outright rather than normalized: the exporter always
-    # writes forward slashes, and on Windows a backslash inside a "component"
-    # would act as a separator after os.path.join — `..\\..\\x` style entries
-    # would escape the extract dir while passing a `/`-split ".." check.
-    if (
-        not isinstance(entry, str)
-        or not entry
-        or "\\" in entry
-        or os.path.isabs(entry)
-        or ".." in entry.split("/")
-    ):
+    if _entry_problem(entry):
         raise AppFileError(f"invalid entry path in manifest: {entry!r}")
     return manifest
 
@@ -411,6 +445,15 @@ def read_preview(fused_path: str) -> bytes | None:
     ``.fused``; a member that is over the cap or not a PNG answers None —
     for a THUMBNAIL, "broken still" and "no still" earn the same fallback."""
     manifest = read_manifest(fused_path)
+    if manifest["fused_app_file"] == container.VERSION:
+        try:
+            raw = container.read_member(
+                fused_path, manifest, app_listing.PREVIEW_IMAGE_NAME, MAX_PREVIEW_BYTES)
+        except container.ContainerError as exc:
+            raise AppFileError(str(exc))
+        if raw is None or len(raw) > MAX_PREVIEW_BYTES or not raw.startswith(_PNG_MAGIC):
+            return None
+        return raw
     root = manifest.get("root") or PAYLOAD_DIR
     if not isinstance(root, str) or "\\" in root or ".." in root.split("/"):
         raise AppFileError(f"invalid root path in manifest: {root!r}")
@@ -518,18 +561,27 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
         raise AppFileError("this app file has not been opened yet")
     staging = tempfile.mkdtemp(prefix="open-", dir=staging_root)
     try:
-        try:
-            with zipfile.ZipFile(fused_path) as zf:
-                extract_to_staging(
-                    zf,
-                    staging,
-                    max_entries=MAX_OPEN_ENTRIES,
-                    max_entry_bytes=MAX_OPEN_ENTRY_BYTES,
-                    max_total_bytes=MAX_OPEN_TOTAL_BYTES,
-                )
-        except (ZipRejected, ZipTooLarge, zipfile.BadZipFile) as exc:
-            raise AppFileError(str(exc))
         payload = os.path.join(staging, PAYLOAD_DIR)
+        if manifest["fused_app_file"] == container.VERSION:
+            # v2: the container's own hardened extractor (caps were applied to
+            # the index in read_manifest; bodies are checked against it here).
+            try:
+                container.extract(fused_path, manifest, payload)
+            except container.ContainerError as exc:
+                raise AppFileError(str(exc))
+        else:
+            # v1 zip: zip_import's hardened extractor, unchanged.
+            try:
+                with zipfile.ZipFile(fused_path) as zf:
+                    extract_to_staging(
+                        zf,
+                        staging,
+                        max_entries=MAX_OPEN_ENTRIES,
+                        max_entry_bytes=MAX_OPEN_ENTRY_BYTES,
+                        max_total_bytes=MAX_OPEN_TOTAL_BYTES,
+                    )
+            except (ZipRejected, ZipTooLarge, zipfile.BadZipFile) as exc:
+                raise AppFileError(str(exc))
         if not os.path.isdir(payload):
             raise AppFileError(f"the .fused file has no {PAYLOAD_DIR}/ payload directory")
         staged_entry = os.path.join(payload, *entry_rel.split("/"))
