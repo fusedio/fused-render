@@ -329,6 +329,55 @@ def test_a_minority_packed_dtype_still_reports_a_size(client, hub_cache, monkeyp
     assert row["estimatedSize"] == 16_001_000_000
 
 
+def test_a_packed_dtype_with_a_declared_bit_width_reports_an_estimated_size(
+        client, hub_cache, monkeypatch):
+    # Item 2 (D1298): when `config` declares the real per-weight bit width,
+    # `_estimated_bytes` no longer refuses outright — it sizes the packed
+    # dtype's (already-real, per D1297) weight count at the DECLARED width
+    # instead of the container's, rather than the naive container-width sum
+    # `test_a_packed_dtype_map_reports_no_size` (above, no `config`) still
+    # correctly refuses. Live-verified figures against
+    # `aufklarer/Voxtral-Mini-3B-2507-MLX-5bit`: real `usedStorage` is
+    # ~4.07 GB; this estimate comes in a bit under (~3.80 GB) because it has
+    # no line item for the quantization scale/zero-point tensors — an
+    # UNDERcount is flagged via `sizeSource: "estimated"`, never presented as
+    # exact.
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "aufklarer/Voxtral-Mini-3B-2507-MLX-5bit",
+        safetensors={"parameters": {"F16": 637_156_352, "U32": 4_039_114_752}},
+        config={"quantization_config": {"bits": 5}},
+    )]))
+    row = _search(client).json()["models"][0]
+    expected = (637_156_352 * 16 // 8) + (4_039_114_752 * 5 // 8)
+    assert row["estimatedSize"] == expected
+    # Sanity: within a few percent of the real, independently-known size, and
+    # never larger than it (this estimate structurally excludes scale/bias
+    # tensors, so it can only run under, never over, the real figure).
+    real_used_storage = 4_066_244_271
+    assert row["estimatedSize"] < real_used_storage
+    assert row["estimatedSize"] == pytest.approx(real_used_storage, rel=0.1)
+    assert row["sizeSource"] == "estimated"
+
+
+def test_a_packed_dtype_estimate_still_refuses_when_the_declared_width_is_absurd(
+        client, hub_cache, monkeypatch):
+    # `config` can declare a bit width and still leave the arithmetic
+    # incoherent (e.g. a bogus `bits: 0`) — `_config_quantization_bits` itself
+    # is trusted to filter these (see its own tests); this only checks that a
+    # falsy/missing declared width falls back to the no-evidence refusal
+    # rather than dividing by zero or reporting garbage.
+    _pin_hardware(monkeypatch)
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/packed-zero-bits",
+        safetensors={"parameters": {"U32": 4_039_114_752}},
+        config={"quantization_config": {"bits": 0}},
+    )]))
+    row = _search(client).json()["models"][0]
+    assert row["estimatedSize"] is None
+    assert row["sizeSource"] is None
+
+
 def test_a_repo_with_no_safetensors_metadata_reports_no_size(client, hub_cache, monkeypatch):
     # A size we cannot compute is left out. A guessed one would be a number
     # someone plans a download around.

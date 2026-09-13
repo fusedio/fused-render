@@ -865,62 +865,84 @@ def supported_tags() -> tuple[str, ...]:
     return ai_tasks.supported_tags()
 
 
-def _estimated_bytes(safetensors) -> int | None:
-    """Bytes on disk, recovered from the dtype -> parameter-count map. None when
-    the repo carries no safetensors metadata (a size we cannot compute is left
-    out, never guessed from the parameter count alone) OR when the naive byte
-    sum below is DOMINATED by a packed dtype (`_PACKED_DTYPES`, D775/D777's
-    own "names the storage CONTAINER, not the precision" rule, applied here to
-    size instead of the quantization label).
+def _estimated_bytes(safetensors, config=None) -> tuple[int | None, bool]:
+    """Bytes on disk, recovered from the dtype -> parameter-count map, and
+    whether that figure is an ESTIMATE (the second element of the tuple).
+    `(None, False)` when the repo carries no safetensors metadata (a size we
+    cannot compute is left out, never guessed from the parameter count alone)
+    OR when neither a declared bit width nor a clean float-only map is
+    available to size a packed dtype's count honestly.
 
-    An MLX/GPTQ checkpoint's `U32` packs several weights into one word; this
-    function has no honest way to know the packing factor (that is exactly
-    what `_quant`, elsewhere in this module, can never report for a packed
-    dtype either), so treating the container's own width as real per-weight
-    bytes overstates the size by that unknown factor. Verified live against
-    the repo that surfaced this bug: `mlx-community/Lens-3.8B-4bit` and
+    **`_PACKED_DTYPES`'s count is the real weight count (D1297) — the byte
+    question is which WIDTH each of those weights costs, not how many
+    weights there are.** A dtype like `U32` names the storage container a
+    quantized checkpoint packs its weights into, not the per-weight width, so
+    `count * 32 bits` overstates a 4-bit or 5-bit weight's real cost by
+    exactly the packing factor. When `config` declares a bit width
+    (`_config_quantization_bits`, the same source `_quant` trusts), a packed
+    dtype's row is sized at that DECLARED width instead of the container's —
+    verified live against `aufklarer/Voxtral-Mini-3B-2507-MLX-5bit`
+    (`config.quantization_config.bits = 5`): this yields ~3.80 GB against the
+    Hub's own `usedStorage` of ~4.07 GB (the shortfall is the quantization
+    scale/zero-point tensors this dtype-map arithmetic has no line item for,
+    same gap `_quant`'s own docstring for GGUF sizing accepts), a real
+    estimate — not the OLD ~24.6 GB the container-width sum produced for the
+    same repo (a ~6x over-report, the `_estimated_bytes` analogue of the
+    D1297 params bug). The returned `bool` is `True` whenever any packed
+    dtype's bytes were sized this way, so a caller can present the number as
+    an ESTIMATE rather than a measured fact (it excludes those scale/bias
+    tensors, so it runs a little under the real total).
+
+    **Without a declared bit width, this function is unchanged from before
+    D1297/this fix**: no honest per-weight width is knowable for a packed
+    dtype, so it falls back to the OLD refusal rule — refuse (`None, False`)
+    when packed-dtype rows account for a STRICT MAJORITY of the NAIVE
+    (container-width) byte sum. Verified live against the repo that
+    originally surfaced that rule: `mlx-community/Lens-3.8B-4bit` and
     `-8bit` report the IDENTICAL dtype map — `{"BF16": 27_361_664, "U32":
-    4_076_863_488}` — for two different quantizations, and the naive sum
-    (~15.24 GiB) is *larger* than the real BF16 original
-    (`mlx-community/Lens-3.8B-bf16`, ~7.65 GiB): a ~2x over-report for the
-    8-bit variant, ~6.6x for the 4-bit one, both reporting a QUANT of `—`
-    (`_quant` already refuses to name a packed dtype) as the corroborating
-    signal that nothing here actually knows this repo's real precision.
-
-    "Dominated" is measured in BYTES, over this function's own naive
-    (uncorrected) sum: refuse only when packed-dtype rows account for a
-    STRICT MAJORITY of that sum. Deliberately not "any packed dtype present"
-    or "majority of PARAMETERS packed" — a repo can legitimately mix a small
-    integer buffer (a quantization scale/zero-point tensor, a rotary cache)
-    alongside real float weights, and refusing a size for that case, where the
-    packed slice is a rounding error against the float majority, would be an
-    over-correction with no evidence behind it. Byte share is the direct
-    measure of how wrong the OUTPUT would be: a packed minority can only skew
-    the total by a small amount even at an unknown packing factor, while a
-    packed majority (both Lens variants above are ~99.7% packed by this
-    measure) means the number this function would return is mostly a count of
-    storage slots, not weight bytes.
+    4_076_863_488}` — for two different quantizations and no declared
+    `config` bit width, and the naive container-width sum (~15.24 GiB) is
+    *larger* than the real BF16 original (`mlx-community/Lens-3.8B-bf16`,
+    ~7.65 GiB). Deliberately not "any packed dtype present" or "majority of
+    PARAMETERS packed" — a repo can legitimately mix a small integer buffer
+    (a quantization scale/zero-point tensor) alongside real float weights,
+    and refusing a size for that case would be an over-correction with no
+    evidence behind it.
     """
     if not isinstance(safetensors, dict):
-        return None
+        return None, False
     by_dtype = safetensors.get("parameters")
     if not isinstance(by_dtype, dict):
-        return None
+        return None, False
+    quantized_bits = _config_quantization_bits(config) if isinstance(config, dict) else None
     total = 0
-    packed = 0
+    naive_total = 0
+    naive_packed = 0
+    used_declared_bits = False
     for dtype, count in by_dtype.items():
         dtype_u = str(dtype).upper()
         bits = _DTYPE_BITS.get(dtype_u)
-        if bits and isinstance(count, int) and count >= 0:
-            row_bytes = count * bits // 8
-            total += row_bytes
-            if dtype_u in _PACKED_DTYPES:
-                packed += row_bytes
+        if not bits or not isinstance(count, int) or count < 0:
+            continue
+        naive_row = count * bits // 8
+        naive_total += naive_row
+        if dtype_u in _PACKED_DTYPES:
+            naive_packed += naive_row
+            if quantized_bits:
+                row_bytes = count * quantized_bits // 8
+                used_declared_bits = True
+            else:
+                row_bytes = naive_row
+        else:
+            row_bytes = naive_row
+        total += row_bytes
+    if naive_total <= 0:
+        return None, False
+    if not quantized_bits and naive_packed * 2 > naive_total:
+        return None, False
     if total <= 0:
-        return None
-    if packed * 2 > total:
-        return None
-    return total
+        return None, False
+    return total, used_declared_bits
 
 
 def _quant(safetensors, file: str | None, config=None) -> str | None:
@@ -1427,7 +1449,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     if file is not None:
         safetensors = None
     params = _params(safetensors)
-    estimated_size = _estimated_bytes(safetensors)
+    estimated_size, estimated_size_is_estimate = _estimated_bytes(safetensors, config)
     quant = _quant(safetensors, file, config)
     # `params` from the Hub's own `gguf` metadata expand (`_EXPAND`, no extra
     # request), which reports the checkpoint's REAL parameter count straight
@@ -1510,7 +1532,18 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # itself already calls `fit.verdict(..., params=None, ...)` for the
     # identical reason.
     real_file_size = _cached_gguf_file_size(model_id, file) if file is not None else None
-    size_source = None
+    # Item 2 (fix round, D1298): a safetensors row's `estimatedSize`, when it
+    # came from a PACKED dtype sized at `config`'s declared bit width rather
+    # than a plain float dtype sum, excludes the quantization scale/zero-point
+    # tensors and so runs a little under the real total (see
+    # `_estimated_bytes`'s own docstring) — reusing the existing `sizeSource`
+    # convention (already `"estimated"`/`"cached"`/`None` for a GGUF row's
+    # fit/speed footprint) rather than inventing a second "is this a real
+    # measurement" flag for the same fact. Overwritten below by `"cached"` or
+    # a fresh `"estimated"` for a `file`-resolved GGUF row, neither of which
+    # can fire here (both require `file is not None`, and `estimated_size` is
+    # already forced to `None` for such a row above).
+    size_source = "estimated" if estimated_size_is_estimate else None
     if real_file_size is not None:
         size_gb = real_file_size / fit.GB_BYTES
         judgeable = True
