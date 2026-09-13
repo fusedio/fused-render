@@ -479,6 +479,28 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
             more_elapsed = time.monotonic() - t0
 
             first_resp = await first_task
+
+            # Review finding F: `never` is left unset by the test body on
+            # purpose (the whole point is a REAL, un-killable OS thread
+            # parked in `_INDEX_READ_POOL` forever) — but "forever" left
+            # unset for the rest of the pytest WORKER PROCESS degrades every
+            # later test that touches the real pool or `_abandoned_reads`:
+            # one fewer real pool thread, and a permanently non-empty
+            # `_abandoned_reads` (exactly what
+            # `test_index_read_pool_exhaustion_is_a_fast_503` works around by
+            # monkeypatching its OWN isolated set rather than asserting the
+            # real one starts empty). Draining must happen HERE, inside
+            # `run()`, while this event loop is still running: the abandoned
+            # future's done-callback (`_reap_abandoned`) is chained via
+            # `call_soon` on this specific loop, which never fires once
+            # `asyncio.run` has torn it down — waiting after `asyncio.run`
+            # returns would spin until the timeout with the future stuck at
+            # "pending" forever, exactly what happened before this loop was
+            # moved in here.
+            never.set()
+            deadline = time.monotonic() + 2.0
+            while index_router._abandoned_reads and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
             return second_resp, second_elapsed, more, more_elapsed, first_resp
 
     (second_resp, second_elapsed, more, more_elapsed,
@@ -491,6 +513,40 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
     assert first_resp.status_code == 503
     assert first_resp.json() == {"error": "index read timed out"}
+    assert not index_router._abandoned_reads, (
+        "the wedged worker's thread never drained; a later test in this "
+        "process would inherit a poisoned _abandoned_reads")
+
+
+def test_reap_abandoned_retrieves_the_exception():
+    """Review finding E: the comment the old `_abandoned_reads.discard`
+    done-callback carried claimed holding a reference to an abandoned future
+    prevents asyncio's "exception was never retrieved" error log — it only
+    DELAYS it until the future is actually garbage-collected, since nothing
+    called `.exception()` on it. `token.cancel()` on the timeout path makes
+    the abandoned worker likely raise `Cancelled`, so an abandoned future
+    ends up carrying an unretrieved exception in the overwhelmingly common
+    case, not a rare one.
+
+    `fut._log_traceback` is asyncio's own internal flag for exactly this: it
+    starts `True` the moment `set_exception` runs on an exception nobody has
+    fetched yet, and only `.exception()` clears it — pinning it here is a
+    direct check that `_reap_abandoned` actually retrieves, not merely a
+    behavioural proxy for it."""
+    async def _run():
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        index_router._abandoned_reads.add(fut)
+        fut.set_exception(RuntimeError("boom"))
+        assert fut._log_traceback is True
+        index_router._reap_abandoned(fut)
+        assert fut not in index_router._abandoned_reads
+        assert fut._log_traceback is False
+        # Retrieved, so a second read is safe too — proves this isn't
+        # accidentally leaving the future in a half-consumed state.
+        assert isinstance(fut.exception(), RuntimeError)
+
+    asyncio.run(_run())
 
 
 def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
@@ -524,6 +580,117 @@ def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
     # Fast: refused before ever being submitted to the pool, no ABANDON_S
     # wait_for round trip at all.
     assert elapsed < 0.3, elapsed
+
+
+@pytest.mark.parametrize("path,params", [
+    ("/api/index/stats", {"root": ""}),
+    ("/api/index/search", {"root": ""}),
+])
+def test_stats_and_search_also_get_the_fast_exhaustion_503(
+        home, tmp_path, path, params, monkeypatch):
+    """Review finding D: `api_index_rank` was the only one of the three
+    `/api/index/*` read routes with a pool-exhaustion check, even though
+    `api_index_stats` and `api_index_search` submit to the very same
+    `_INDEX_READ_POOL` and share the very same interactive lane. Same
+    isolated-set technique as `test_index_read_pool_exhaustion_is_a_fast_503`
+    above, parametrized over the two routes that used to lack this."""
+    params = dict(params, root=str(tmp_path))
+    fake_pool = {object() for _ in range(index_router._INDEX_READ_POOL_SIZE)}
+    monkeypatch.setattr(index_router, "_abandoned_reads", fake_pool)
+
+    t0 = time.monotonic()
+    resp = _client(tmp_path).get(path, params=params)
+    elapsed = time.monotonic() - t0
+
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "index read pool exhausted"}
+    assert elapsed < 0.3, elapsed
+
+
+def _make_fake_index_stats(never, calls, lock):
+    def fake(cfg, root, breakdown, token=None):
+        with lock:
+            calls["n"] += 1
+            is_first = calls["n"] == 1
+        if is_first:
+            never.wait()  # the un-killable, permanently-parked worker thread
+        return {"ok": True}
+    return fake
+
+
+def _make_fake_index_search(never, calls, lock):
+    def fake(cfg, root, q="", limit=0, token=None):
+        with lock:
+            calls["n"] += 1
+            is_first = calls["n"] == 1
+        if is_first:
+            never.wait()  # the un-killable, permanently-parked worker thread
+        return {"covered": False, "entries": []}
+    return fake
+
+
+@pytest.mark.parametrize("path,fake_target,make_fake", [
+    ("/api/index/stats", "index_stats", _make_fake_index_stats),
+    ("/api/index/search", "index_search", _make_fake_index_search),
+])
+def test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot(
+        home, tmp_path, path, fake_target, make_fake, monkeypatch):
+    """Review finding D, item 2's half: `api_index_rank` was the only route
+    with a *bounded* wait — a wedged `stats` or `search` request could still
+    permanently consume a pool thread and, since all three share the
+    width-2 interactive lane, two such wedges parked forever would exhaust
+    it for the life of the process with no rank request ever involved. Same
+    shape as `test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot`
+    above, parametrized over the other two routes, via the same shared
+    `_bounded_index_read` helper both now use. Only the FIRST call blocks
+    (a call counter, exactly like the rank version of this test) — otherwise
+    the second, supposedly-healthy request would hit the very same
+    `never.wait()` and time out too, since the fake is a plain function
+    shared across every call, not a per-request stub."""
+    import threading
+
+    import httpx
+
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    never = threading.Event()
+    calls = {"n": 0}
+    lock = threading.Lock()
+    monkeypatch.setattr(index_router, fake_target, make_fake(never, calls, lock))
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            wedged_task = asyncio.create_task(
+                client.get(path, params={"root": str(tmp_path)}))
+            await asyncio.sleep(0.15)  # let the wedged request time out
+
+            t0 = time.monotonic()
+            second_resp = await client.get(path, params={"root": str(tmp_path)})
+            second_elapsed = time.monotonic() - t0
+
+            wedged_resp = await wedged_task
+
+            # Same draining discipline as the rank version of this test
+            # (finding F), and for the same reason: a real, un-killable OS
+            # thread is parked in `never.wait()` until this fires, and it
+            # must happen HERE, inside `run()`, while this loop is still
+            # running — the abandoned future's done-callback is chained via
+            # `call_soon` on this loop and never fires once `asyncio.run`
+            # has torn it down.
+            never.set()
+            deadline = time.monotonic() + 2.0
+            while index_router._abandoned_reads and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return second_resp, second_elapsed, wedged_resp
+
+    second_resp, second_elapsed, wedged_resp = asyncio.run(run())
+    # A later request must not queue behind the wedged one.
+    assert second_resp.status_code == 200, second_resp.text
+    assert second_elapsed < 0.3, second_elapsed
+    assert wedged_resp.status_code == 503
+    assert wedged_resp.json() == {"error": "index read timed out"}
+    assert not index_router._abandoned_reads
 
 
 def test_a_slow_mount_guard_check_does_not_stall_the_event_loop(

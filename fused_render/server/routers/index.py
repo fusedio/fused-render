@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import threading
+import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 
@@ -194,6 +195,86 @@ def _submit_index_read(fn, *a, **kw):
     function always submits."""
     loop = asyncio.get_running_loop()
     return loop.run_in_executor(_INDEX_READ_POOL, functools.partial(fn, *a, **kw))
+
+
+def _pool_exhausted_response(op: str, q: str, root: str) -> JSONResponse:
+    """The fast, explicit 503 `_index_pool_exhausted()` exists to produce
+    (review finding D). One shared body/log line for all three
+    `/api/index/{stats,search,rank}` routes, so a reader sees the same shape
+    for the same condition regardless of which route hit it."""
+    logger.error(
+        "index %s: read pool exhausted (%d/%d abandoned reads); refusing "
+        "%r under %s", op, len(_abandoned_reads), _INDEX_READ_POOL_SIZE, q, root)
+    return JSONResponse(status_code=503, content={"error": "index read pool exhausted"})
+
+
+def _reap_abandoned(fut) -> None:
+    """Done-callback for a future abandoned by `_bounded_index_read`'s
+    timeout path (item 2).
+
+    Review finding E: the comment this replaces claimed holding a reference
+    to `fut` (via `_abandoned_reads.add`) prevents asyncio's "exception was
+    never retrieved" error log — it does not, it only DELAYS it until the
+    future is finally garbage-collected, which is exactly what the bare
+    `_abandoned_reads.discard` done-callback this replaces did nothing to
+    stop: `token.cancel()` (called right before abandonment) reaches the
+    worker via `con.interrupt()`, the abandoned worker most likely raises
+    `Cancelled`, and nothing ever calls `.exception()` on `fut` to retrieve
+    it. Retrieving it here (`fut.exception()`, guarded against a future that
+    somehow ended up cancelled outright rather than merely abandoned) is
+    what actually silences that log — the reference itself was only ever
+    needed to survive until this callback runs."""
+    if not fut.cancelled():
+        fut.exception()
+    _abandoned_reads.discard(fut)
+
+
+async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
+                              log_root: str, worker_t0: float, fn, *args, **kwargs):
+    """Submit `fn(*args, **kwargs)` to the dedicated index-read pool and wait
+    at most `ABANDON_S` (item 2) for it, abandoning — never cancel-awaiting —
+    it on timeout, exactly as `api_index_rank` originally did on its own.
+
+    Review finding D: `api_index_rank` was the only one of the three
+    `/api/index/*` read routes with this bounded-wait/abandon treatment even
+    though `api_index_stats` and `api_index_search` submit to the very same
+    `_INDEX_READ_POOL` and share the very same width-2 interactive lane —
+    one wedged `stats` or `search` request could still permanently consume a
+    pool thread forever (nothing bounded its wait), and since the lane is
+    shared, two such wedges exhaust it for the life of the process with no
+    rank request ever involved. This is the one bounded-wait implementation
+    all three routes now share, so a fix here (or a future change to the
+    timeout/abandon behaviour) cannot drift between them the way three
+    separate copies could.
+
+    Returns `(out, None)` on success, or `(None, response)` on timeout/
+    cancellation where `response` is the `Response`/`JSONResponse` the
+    caller should return immediately without touching `out`."""
+    fut = _submit_index_read(fn, *args, **kwargs)
+    try:
+        # `shield` is required: on timeout `fut` must be ABANDONED, never
+        # cancel-awaited — `run_in_executor` cannot kill the underlying OS
+        # thread, so awaiting a cancelled wrapper would just block again on
+        # the very same un-killable thread.
+        out = await asyncio.wait_for(asyncio.shield(fut), ABANDON_S)
+    except asyncio.TimeoutError:
+        # Cooperative: reaches a running duckdb statement via
+        # `con.interrupt()` (CancelToken.cancel), so the abandoned thread has
+        # a chance to actually stop even though nothing here can force it to.
+        cancel_token.cancel()
+        elapsed_ms = (time.monotonic() - worker_t0) * 1000
+        logger.warning(
+            "index %s: %r under %s timed out after %.1fms waiting for the "
+            "worker; abandoning it", op, log_q, log_root, elapsed_ms)
+        _abandoned_reads.add(fut)
+        fut.add_done_callback(_reap_abandoned)
+        return None, JSONResponse(status_code=503,
+                                  content={"error": "index read timed out"})
+    except Cancelled:
+        logger.debug("index %s: %r under %s abandoned by the client after %.1fms",
+                    op, log_q, log_root, (time.monotonic() - worker_t0) * 1000)
+        return None, Response(status_code=499)
+    return out, None
 
 
 # How recently a root must have been scanned for the startup scheduler to skip
@@ -1600,16 +1681,23 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
         async with lane:
             if token.cancelled:
                 return Response(status_code=499)
-            try:
-                # Item 3 (SPEC-index-search-wedge.md): the dedicated
-                # index-read pool, not the process-wide default executor
-                # `asyncio.to_thread` would otherwise use.
-                out = await _submit_index_read(
-                    index_stats, cfg, root=root, breakdown=breakdown, token=token)
-            except Cancelled:
-                logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
-                            root, breakdown)
-                return Response(status_code=499)
+            # Item 3 pool-exhaustion check (review finding D) — same
+            # treatment `api_index_rank` already had, extended here since
+            # this route submits to the very same `_INDEX_READ_POOL`.
+            if _index_pool_exhausted():
+                return _pool_exhausted_response("stats", "", root)
+            worker_t0 = time.monotonic()
+            # Item 3 (SPEC-index-search-wedge.md): the dedicated index-read
+            # pool, not the process-wide default executor `asyncio.to_thread`
+            # would otherwise use. Bounded/abandoned the same way rank is
+            # (review finding D): `breakdown=true`'s unbounded GROUP BY is
+            # exactly the kind of read that can run long, or wedge, on a
+            # partition under a bad mount.
+            out, err = await _bounded_index_read(
+                "stats", token, f"breakdown={breakdown}", root, worker_t0,
+                index_stats, cfg, root=root, breakdown=breakdown, token=token)
+            if err is not None:
+                return err
     return {"ok": True, **out}
 
 
@@ -1648,13 +1736,20 @@ async def api_index_search(request: Request, root: str = Query(default=""),
         async with _interactive_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
-            try:
-                # Item 3: same dedicated pool as stats/rank.
-                out = await _submit_index_read(
-                    index_search, cfg, root, q=q, limit=limit, token=token)
-            except Cancelled:
-                logger.debug("index search: %r under %s abandoned by the client", q, root)
-                return Response(status_code=499)
+            # Item 3 pool-exhaustion check (review finding D), same as rank.
+            if _index_pool_exhausted():
+                return _pool_exhausted_response("search", q, root)
+            worker_t0 = time.monotonic()
+            # Item 3: same dedicated pool as stats/rank, bounded/abandoned
+            # the same way rank is (review finding D) — this route submits
+            # to the identical pool and shares the identical lane, so an
+            # unbounded wait here was just as capable of permanently
+            # consuming a pool thread and, eventually, the whole lane.
+            out, err = await _bounded_index_read(
+                "search", token, q, root, worker_t0,
+                index_search, cfg, root, q=q, limit=limit, token=token)
+            if err is not None:
+                return err
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
@@ -1744,10 +1839,17 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     """
     if not root.strip():
         return _error("'root' is required")
-    import time
     t0 = time.monotonic()
     cfg = load_config()
     async with cancellable(request) as token:
+        # Review finding G: `lane_wait_t0` is taken HERE, immediately before
+        # lane acquisition is attempted — not at `t0` above. `t0` (used only
+        # for `total_ms` below) is taken before `load_config()` and before
+        # `cancellable(request)` is even entered, so measuring lane wait from
+        # it silently folded config-load and disconnect-watcher setup into
+        # what the log calls "lane_wait", overstating lane contention on
+        # every request whether or not the lane was actually contended.
+        lane_wait_t0 = time.monotonic()
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
         async with _interactive_read_concurrency():
@@ -1755,7 +1857,7 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
             # so a wedged/serialised lane (all wait, ~0 worker) is
             # distinguishable in the logs from a genuinely slow query (the
             # reverse) instead of one number covering both.
-            lane_wait_ms = (time.monotonic() - t0) * 1000
+            lane_wait_ms = (time.monotonic() - lane_wait_t0) * 1000
             if token.cancelled:
                 return Response(status_code=499)
             # Item 3: a pool-exhaustion check BEFORE submitting. Past this
@@ -1763,43 +1865,13 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
             # executor's own unbounded queue and wait, unboundedly, for a
             # thread — the exact failure this loud, immediate error replaces.
             if _index_pool_exhausted():
-                logger.error(
-                    "index rank: read pool exhausted (%d/%d abandoned reads); "
-                    "refusing %r under %s", len(_abandoned_reads),
-                    _INDEX_READ_POOL_SIZE, q, root)
-                return JSONResponse(status_code=503,
-                                    content={"error": "index read pool exhausted"})
+                return _pool_exhausted_response("rank", q, root)
             worker_t0 = time.monotonic()
-            fut = _submit_index_read(_rank_worker, cfg, root, q, limit, token, ranked)
-            try:
-                # Item 2: bound how long the permit (and the pool thread) can
-                # be held. `shield` is required: on timeout we must abandon
-                # `fut`, never cancel-await it — `asyncio.to_thread`/
-                # `run_in_executor` cannot kill the thread underneath it, so
-                # awaiting a cancelled wrapper would just block again on the
-                # same un-killable thread.
-                out = await asyncio.wait_for(asyncio.shield(fut), ABANDON_S)
-            except asyncio.TimeoutError:
-                # Cooperative: reaches a running duckdb statement via
-                # `con.interrupt()` (CancelToken.cancel), so the abandoned
-                # thread has a chance to actually stop even though nothing
-                # here can force it to.
-                token.cancel()
-                elapsed_ms = (time.monotonic() - worker_t0) * 1000
-                logger.warning(
-                    "index rank: %r under %s timed out after %.1fms waiting for "
-                    "the worker; abandoning it", q, root, elapsed_ms)
-                # Keep a reference (so it isn't GC'd mid-flight) with a
-                # done-callback that discards it once its thread actually
-                # finishes, whenever that turns out to be.
-                _abandoned_reads.add(fut)
-                fut.add_done_callback(_abandoned_reads.discard)
-                return JSONResponse(status_code=503,
-                                    content={"error": "index read timed out"})
-            except Cancelled:
-                logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                            q, root, (time.monotonic() - t0) * 1000)
-                return Response(status_code=499)
+            out, err = await _bounded_index_read(
+                "rank", token, q, root, worker_t0,
+                _rank_worker, cfg, root, q, limit, token, ranked)
+            if err is not None:
+                return err
             worker_ms = (time.monotonic() - worker_t0) * 1000
     _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
     out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
