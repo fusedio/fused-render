@@ -3209,7 +3209,9 @@ def _mflux_runner():
 
 
 def test_allowlist_kind_flags_a_repo_outside_the_set(client, hub_cache, monkeypatch):
-    monkeypatch.setattr(hub, "for_capability", lambda capability: _mflux_runner())
+    runner = _mflux_runner()
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("allowlist", frozenset({"org/allowed"})))
     monkeypatch.setattr(httpx, "get", _reply([
@@ -3225,11 +3227,16 @@ def test_allowlist_kind_flags_a_repo_outside_the_set(client, hub_cache, monkeypa
     assert by_id["org/blocked"]["loadableReason"] == "no engine here loads this"
 
 
-def test_allowlist_kind_with_diffusers_index_gets_a_switch_reason(client, hub_cache, monkeypatch):
-    """Item 4 (D1278): a non-allowlisted row that ships `model_index.json`
-    (a Diffusers pipeline) gets the actionable "switch to Diffusers" reason
-    instead of the generic "no engine here loads this"."""
-    monkeypatch.setattr(hub, "for_capability", lambda capability: _mflux_runner())
+def test_allowlist_kind_with_diffusers_index_gets_a_named_engine_reason(client, hub_cache, monkeypatch):
+    """D1287 (item 3): a non-allowlisted row that ships `model_index.json`
+    (a Diffusers pipeline) gets the actionable, architecture-named
+    "needs Diffusers" reason instead of the generic "no engine here loads
+    this" — the generalisation of D1278's own bespoke "switch to Diffusers"
+    wording, now built from `hub_architecture.resolve` for any engine, not
+    only Diffusers."""
+    runner = _mflux_runner()
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("allowlist", frozenset({"org/allowed"})))
     monkeypatch.setattr(httpx, "get", _reply([
@@ -3239,12 +3246,14 @@ def test_allowlist_kind_with_diffusers_index_gets_a_switch_reason(client, hub_ca
     models = _search(client).json()["models"]
     by_id = {m["id"]: m for m in models}
     assert by_id["org/diffusers-repo"]["loadable"] is False
-    assert by_id["org/diffusers-repo"]["loadableReason"] == "switch to Diffusers to run this"
+    assert by_id["org/diffusers-repo"]["loadableReason"] == "needs Diffusers"
+    assert by_id["org/diffusers-repo"]["engine"] == "Diffusers"
 
 
 def test_model_types_kind_flags_an_unsupported_architecture(client, hub_cache, monkeypatch):
-    monkeypatch.setattr(hub, "for_capability",
-                         lambda capability: _gguf_runner(tags=(), code="mlx-text"))
+    runner = _gguf_runner(tags=(), code="mlx-text")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("model_types", frozenset({"llama"})))
     monkeypatch.setattr(httpx, "get", _reply([
@@ -3286,8 +3295,9 @@ def test_admission_never_drops_a_row_ordering_stays_unchanged(client, hub_cache,
     row got flagged — the scope correction's other half of "flag, don't
     drop": popularity ordering here, unrelated to loadability, must survive
     untouched."""
-    monkeypatch.setattr(hub, "for_capability",
-                         lambda capability: _gguf_runner(tags=(), code="mflux-image"))
+    runner = _gguf_runner(tags=(), code="mflux-image")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("allowlist", frozenset({"org/allowed"})))
     monkeypatch.setattr(httpx, "get", _reply([

@@ -124,7 +124,7 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
-from fused_render.ai import hub_catalog, hub_catalog_builder
+from fused_render.ai import hub_architecture, hub_catalog, hub_catalog_builder
 from fused_render.ai import hub_loadable
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
@@ -1225,20 +1225,6 @@ _FILE_FORMAT_EXTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _has_diffusers_index(raw: dict) -> bool:
-    """Item 4 (D1278): whether this repo ships `model_index.json` — a
-    Diffusers pipeline manifest — read off the same `siblings` list
-    `_file_format`/`_count_variants` already read (already in `_EXPAND`, no
-    extra request). Used only to split `hub_loadable.admission`'s
-    mflux-image reason into "switch to Diffusers" vs. "no engine here loads
-    this" for a repo outside `MFLUX_VARIANTS`."""
-    siblings = raw.get("siblings")
-    if not isinstance(siblings, list):
-        return False
-    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
-    return formats.DIFFUSERS_INDEX in [n for n in names if isinstance(n, str)]
-
-
 def _file_format(raw: dict) -> str | None:
     """Item 3: the repo's on-disk weight format, read off the SAME
     `siblings` list `_count_variants`/`pick_gguf_file` already read (already
@@ -1567,17 +1553,34 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # (a safetensors main tree beside a community GGUF quant folder is
     # common; the main tree is what `formatToken()` should name).
     file_format = _file_format(raw)
-    # Item 2 (scope-corrected): is the runner ACTIVE for this row's
-    # capability actually going to be able to open it, once downloaded?
-    # `runner` is the same local this function already resolved above for
-    # the GGUF-picker branch — the capability's active runner is one fact,
-    # asked twice for two different questions, not two lookups.
+    # Item 2 (scope-corrected)/item 3 of the architecture-detection brief
+    # (D1287+): is ANYTHING available for this row's capability actually
+    # going to be able to open it, once downloaded? Widened from the single
+    # ACTIVE runner to every runner `registry.available_runners` says CAN
+    # run here — a row only the non-preferred runner can open must not be
+    # flagged just because it is not the one currently in force (see that
+    # function's own docstring for the identical argument about FORMAT).
+    #
+    # `architecture` (D1287, item 1 + the mid-task "always list the
+    # architecture" addition): resolved for EVERY row, not only ones that
+    # end up flagged — `hub_architecture.resolve` is a pure `raw`-dict walk,
+    # no extra Hub request, no per-row registry/filesystem cost (its own
+    # `shipped` memoization is the only registry touch, and it is cached
+    # after the first row of a given engine). Feeds both the new
+    # `architecture`/`engine` fields below AND `admission()`'s reason text
+    # when nothing available admits the row.
     model_type = config.get("model_type") if isinstance(config, dict) else None
-    has_diffusers_index = _has_diffusers_index(raw)
+    architecture = hub_architecture.resolve(raw)
     if runner is not None:
+        siblings = raw.get("siblings")
+        sibling_names = frozenset(
+            s.get("rfilename") for s in siblings if isinstance(s, dict)
+        ) if isinstance(siblings, list) else frozenset()
+        sibling_names = frozenset(n for n in sibling_names if isinstance(n, str))
+        runner_codes = tuple(r.code for r in available_runners(capability))
         loadable, loadable_reason = hub_loadable.admission(
-            runner_code=runner.code, model_id=model_id, model_type=model_type,
-            has_diffusers_index=has_diffusers_index)
+            runner_codes=runner_codes, model_id=model_id, model_type=model_type,
+            names=sibling_names, architecture=architecture)
     else:
         loadable, loadable_reason = True, None
     return {
@@ -1677,6 +1680,15 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # `loadable` is True.
         "loadable": loadable,
         "loadableReason": loadable_reason,
+        # Mid-task addition to D1287+: the same `hub_architecture.resolve`
+        # fact `loadableReason` above draws its wording from, surfaced
+        # unconditionally so the drawer can show an Architecture line for
+        # EVERY row, not only ones that fail loadability. `None`/`None` for
+        # a repo whose `raw` names nothing this module recognises — never a
+        # reason to blank the row, only to render the drawer's existing
+        # "not recorded" convention.
+        "architecture": architecture.name,
+        "engine": architecture.engine,
     }
 
 

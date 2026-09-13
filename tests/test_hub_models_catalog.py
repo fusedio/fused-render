@@ -460,6 +460,7 @@ def test_catalog_path_flags_an_unloadable_row_instead_of_dropping_it(client, hub
 
     runner = types.SimpleNamespace(hub_filter_tags=(), code="mlx-text")
     monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("model_types", frozenset({"llama"})))
 
@@ -516,6 +517,7 @@ def test_catalog_path_flags_a_cached_on_disk_row_too_no_exemption(
 
     runner = types.SimpleNamespace(hub_filter_tags=(), code="mlx-text")
     monkeypatch.setattr(hub, "for_capability", lambda capability: runner)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (runner,))
     monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
                          lambda code: ("model_types", frozenset({"llama"})))
 
