@@ -1585,54 +1585,42 @@ table.listing-table tr.skel-row:hover {
    straight under "Search ⌘L" exactly the way it once ran under the bare
    star (the fix just above this one).
 
-   `:has()` reads the button's OWN rendered form back out of the DOM
-   (`SearchField.tsx`'s `bar-ctl-icon` class, the same class the container
-   query below keys off) rather than assuming one — the reservation always
-   matches whichever width `boxWide` actually chose.
+   FIRST FIX (this file, since superseded): a pair of `:has()` rules read the
+   button's rendered form back out of the DOM and wrote a HAND-ESTIMATED
+   pixel width into `--pin-right-hint` for each form — 164px for the label,
+   72px for the collapsed glyph, both padded generously for the wider
+   non-Mac "Ctrl L" cap so the reservation would never be too tight. Also
+   fixed at that time: this used to write straight into `--pin-right`, which
+   only worked because these selectors happened to out-specificity every
+   other `--pin-right` setter (the star's bare 40px, `.has-clear`'s 38/68px)
+   by ACCIDENT of selector shape — the button writing its own
+   `--pin-right-hint` property instead, read via `max()` by every consumer
+   below, is the part of that fix that is still current; only the ESTIMATE
+   half is gone.
 
-   CODE REVIEW (2026-09-13): this used to write straight into `--pin-right`,
-   which only works because these `:has()` selectors happen to have higher
-   specificity than every other `--pin-right` setter in this file (the star's
-   bare 40px, `.has-clear`'s 38/68px) — so the button's reservation always
-   won the cascade whenever it applied, by ACCIDENT of selector shape, not by
-   a rule that says so. That happened to be safe here because the button and
-   every one of those other setters are mutually exclusive by construction
-   (the button only renders while `query === ""`; `.has-clear` and the
-   count/spinner pin both require `query !== ""` — see the crumbs-override
-   comment below for the citation), so nothing ever needed BOTH
-   reservations at once. But "safe because two things never happen
-   together" is exactly the kind of fact a later, unrelated change to
-   SearchField.tsx can quietly invalidate without anyone touching this file.
+   THE OMNIBOX-OVERLAP-DEFECT FOLLOW-UP (running-screen review, screenshot,
+   2026-09-13): the estimate was tried and REJECTED on a running screen with
+   this exact symptom class — sized generously "so it's never too tight" is
+   the same trade in reverse for every combination the estimate wasn't tuned
+   for (a Mac's shorter "⌘L", any font/zoom setting other than the one the
+   estimate was eyeballed at): too loose, reserving far more than the button
+   occupies, truncating a long path to a leading ellipsis behind a dead gap
+   of visible air. An estimate cannot be simultaneously right for both
+   platforms, both label forms, and every font/zoom setting — there is no
+   pixel count `:has()` could have selected instead that fixes this.
 
-   So the button writes its own property, `--pin-right-hint`, instead of
-   fighting over `--pin-right` on specificity — every place that positions
-   something off `--pin-right` below now reads
-   `max(var(--pin-right, …), var(--pin-right-hint, 0px))`, so whichever
-   reservation is actually largest wins regardless of which selector has
-   more classes on it. This is strictly a rename plus a different
-   combination rule; the two pixel values below are unchanged.
-
-   Widths are ESTIMATES (button padding + gap + kbd chrome, added by hand,
-   not measured in a browser) sized for the WIDER of the two shortcut labels
-   the button ever renders — "Ctrl L" (non-Mac) needs more room than "⌘L" —
-   so the reservation is never too tight on either platform. A human on a
-   running screen still needs to confirm the tail of a long path now clears
-   the button with air, not just "not touching" (see
-   DECISIONS-omnibox-search-affordance.md). */
-.crumb-search-slot .listing-search-box:has(.listing-search-shortcut-hint:not(.bar-ctl-icon)) {
-  /* 38px (past the star, same inset the button itself sits at) + ~120px
-     (the label form's own estimated width: 16px button padding + "Search" +
-     6px gap + the wider "Ctrl L" key-cap, with slack) + 6px clearance gap —
-     the same 24px-hit-area-plus-6px-gap arithmetic every other trailing
-     control in this file reserves. */
-  --pin-right-hint: 164px;
-}
-
-.crumb-search-slot .listing-search-box:has(.listing-search-shortcut-hint.bar-ctl-icon) {
-  /* 38px (past the star) + 28px (the collapsed glyph's own fixed
-     `.bar-ctl-icon` width, exact — not an estimate) + 6px clearance gap. */
-  --pin-right-hint: 72px;
-}
+   So `--pin-right-hint` is no longer SET here at all. `SearchField.tsx`
+   measures the button's actual rendered position against this box's own
+   right edge (`useControlReservationRef`, search-hint-width.ts) and
+   publishes the result as this exact custom property, inline, on the box
+   element itself — inline style always wins over a stylesheet declaration
+   for the same property with no specificity contest to referee, which is
+   why no `:has()` selector is needed to make this win the cascade either.
+   When the button is hidden or unmounted the inline style is left UNSET
+   (not "0px" — see the React side for why), so every `max(var(--pin-right,
+   …), var(--pin-right-hint, 0px))` consumer below falls back to its own
+   0px default, i.e. the plain star/border clearance, with no leftover
+   reservation for a button that isn't there. */
 
 /* A pin (the multi-selection readout, "12 selected", or the streaming
    spinner) reserves 126px of the input as padding-right (above) — the box
@@ -1824,28 +1812,24 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* THE PLAIN-BOX HALF of the same omnibox overlap defect the crumb-slot
-   fix (above, `.crumb-search-slot .listing-search-box:has(...)`, next to
-   `--pin-right`'s other crumb-slot rules) exists for: the inline/pane copy
-   of this field (no crumb bar, no star) renders its OWN "Search ⌘L" button
-   at `right: 8px` (`.listing-search-shortcut-hint` below, unscoped), and
-   the crumbs above never reserved room for it either — the base rule's
-   plain `right: 10px` only ever cleared the box's own border. Same
-   `:has()` mechanism, same two widths (label vs collapsed glyph), just the
-   plain 8px inset instead of the crumb-slot host's 38px past-the-star
-   inset. See the crumb-slot rule above for why this writes `--pin-right-hint`
-   (its own property) rather than `--pin-right` directly, and for why every
-   consumer of `--pin-right` now reads `max()` of the two instead of relying
-   on this selector's specificity to win. */
-.listing-search-box:has(.listing-search-shortcut-hint:not(.bar-ctl-icon)) {
-  /* 8px inset + ~120px estimated label width (see the crumb-slot rule
-     above for the arithmetic) + 6px clearance gap. */
-  --pin-right-hint: 134px;
-}
+   fix (above, next to `--pin-right`'s other crumb-slot rules) exists for:
+   the inline/pane copy of this field (no crumb bar, no star) renders its OWN
+   "Search ⌘L" button at `right: 8px` (`.listing-search-shortcut-hint` below,
+   unscoped), and the crumbs above never reserved room for it either — the
+   base rule's plain `right: 10px` only ever cleared the box's own border.
 
-.listing-search-box:has(.listing-search-shortcut-hint.bar-ctl-icon) {
-  /* 8px inset + 28px exact `.bar-ctl-icon` width + 6px clearance gap. */
-  --pin-right-hint: 42px;
-}
+   Like the crumb-slot host, this used to carry a pair of `:has()` rules
+   writing a hand-estimated width (134px label / 42px glyph, the same 8px
+   inset plus the same estimated label/glyph widths the crumb-slot rule
+   above once used) into `--pin-right-hint`. Removed for the same reason and
+   at the same time as the crumb-slot rule above: the estimate was tried and
+   rejected on a running screen showing exactly this box, over-reserving
+   space and truncating the path behind a dead gap. `--pin-right-hint` is
+   set here the same way now too — inline, by `SearchField.tsx`'s
+   `useControlReservationRef` measurement, on WHICHEVER box (this plain host
+   or the crumb-slot one) the button actually rendered inside — so this
+   selector needs no rule of its own any more; see the crumb-slot comment
+   above for the full mechanism. */
 
 /* The crumb-slot host's own star sits at the box's true right edge
    (`.bookmark-star-btn` below, `right: 8px` in a 24px hit box) — the plain

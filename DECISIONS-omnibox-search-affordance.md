@@ -1424,3 +1424,141 @@ this CSS-only round.
 any state reachable today (see "not currently happen" above), so there is
 nothing new for a human to eyeball on a running screen beyond what the
 previous round's own list already asks for.
+
+## Scope item 3, round 4: the estimate over-reserved (running-screen defect, 2026-09-13)
+
+**The report**: on a running screen, the overlap from the earlier rounds was
+gone, but a NEW symptom replaced it — the path truncated to a leading
+ellipsis ("…edGlass / index.html") with a wide, visibly dead gap between the
+end of the path and the "Search ⌘L" button. Screenshot confirmed: plenty of
+air, no touching.
+
+**Root cause**: the two `--pin-right-hint` values the previous round wrote
+(164px/72px crumb-slot, 134px/42px plain) were explicitly documented in
+their own comments as ESTIMATES — button padding, gap and kbd chrome added
+up by hand, never measured in a browser — sized generously for the WIDER of
+the two shortcut-key labels the button ever renders ("Ctrl L", non-Mac) so
+the reservation would never be too tight. That is exactly backwards on a
+Mac, where the button renders the shorter "⌘L" instead: the reservation
+still reserves room for "Ctrl L", so the crumbs give up ~30-40px more than
+the button actually occupies, every time, on every Mac. The same asymmetry
+applies to any font-size or zoom setting other than the one the estimate was
+eyeballed at. There is no single pixel count that is correct for both label
+forms, both platforms, and every zoom level simultaneously — "sized
+generously so it's never too tight" just moves the failure from "overlap"
+to "truncation," it does not remove it. The estimate approach was tried and
+is REJECTED on this exact symptom, on a running screen, twice now (once as
+the diagnosis for why 164/72/134/42 were chosen, once as the cause of this
+new report) — do not reintroduce a hand-picked pixel count for this
+property.
+
+**The fix**: replace the estimate with the button's own measured position.
+The button is `position: absolute`, so measuring it costs no reflow the
+button wasn't already causing on its own account, and it already knows its
+exact rendered width and position — no CSS number needs to describe it at
+all.
+
+Added `useControlReservationRef` to `search-hint-width.ts`, next to
+`useWidthThresholdRef` (the same file's established measurement pattern,
+per the spec instruction to look there). It takes two callback refs — one
+for the "box" (`.listing-search-box`), one for the "control" (the shortcut
+button) — and on every (re)attach of either, computes `box.getBoundingClientRect().right
+- control.getBoundingClientRect().left + gapPx` and reports it via
+`onChange`. That expression is, by construction, exactly the CSS `right`
+value the button is already positioned with (8px unscoped / 38px past the
+star in the crumb-slot host) plus the button's current rendered width —
+reading the geometry the browser already computed rather than duplicating
+the 8px/38px insets in JS a second time. `gapPx` is 6px, matching the
+"24px hit area + 6px gap" clearance convention every other trailing control
+in this file already uses (the star, the clear button, the count/spinner
+pin) — the breathing room reads as the same deliberate gap as the rest of
+the bar, not a bespoke number.
+
+Two elements are tracked, but only the control is `ResizeObserver`'d: a
+box-only resize does not change `box.right - control.left` for a button
+anchored by a fixed CSS `right`, since the button's left edge moves exactly
+as much as the box's right edge does — only the control's OWN size changing
+(the label/glyph swap `boxWide` drives, a platform's differing label text,
+a font or zoom change) needs a recompute, and observing the control alone
+catches exactly that. Both refs still trigger a full re-`attach()` on
+(re)mount, independent of resize, because a portal swap or the button's own
+mount/unmount can change which nodes exist without the new node being a
+different SIZE from the old one — an identity change needs its own trigger.
+
+Callback refs on both elements, not object refs plus a mount effect, for the
+reasons `useWidthThresholdRef`'s own header comment already gives for the
+box (the portal swap into the crumb bar rebuilds the subtree, so a ref
+captured once would go stale) — the control adds a second, independent
+reason: it mounts and unmounts on its own schedule entirely apart from any
+portal (`!pinnedOpen && !hasClear`), so it needs the same non-stale
+treatment for a different reason.
+
+`onChange(null)` — not a leftover number — is reported whenever either
+element is missing: before both refs have attached (first paint), on the
+button's own unmount (opening the field, or typing something that gives it
+a clear button), and on the box's unmount during a portal swap before the
+replacement re-attaches. `SearchField.tsx` turns a `null` into an UNSET
+inline style rather than `"0px"` — the two read differently once `max()` is
+in the picture: an inline `--pin-right-hint: 0px` would still say "no
+reservation" correctly here, but leaving the property unset entirely means
+every consumer's own `var(--pin-right-hint, 0px)` fallback does the same
+job with no chance of the JS-owned value and the CSS-owned fallback ever
+disagreeing about what "no button" means.
+
+`shortcutHintReservationPx` is published as an INLINE custom property on
+`.listing-search-box` (`style={{ "--pin-right-hint": ... }}`), not a new
+`:has()` rule — inline style always wins over any stylesheet declaration of
+the same property on the same element, with no specificity contest to referee at
+all, which is the same problem the 2026-09-13 code review round already
+solved once for `--pin-right` vs `--pin-right-hint` at the PRODUCER side;
+this round applies the identical reasoning one level up, to how the
+producer itself is expressed. The `max()` consumers added by that same
+review round (`.listing-search-crumbs` ×2, `.listing-search-count`,
+`.listing-search-spinner` ×2) are UNCHANGED by this round — they already
+read `--pin-right-hint` generically and don't care whether it was set by a
+`:has()` rule or an inline style.
+
+explorer.css: the four `:has()` rules that used to SET `--pin-right-hint`
+(164/72px crumb-slot, 134/42px plain) are deleted outright and replaced with
+comments explaining what used to be there, why it was rejected, and where
+the replacement lives — following this file's own convention of leaving the
+defect's shape and the rejected fix visible rather than only the current
+state.
+
+**The three-state ladder is untouched**: `HINT_WIDE_PX` (340px, the
+label/glyph JS switch) and the `@container (max-width: 189px)` hide rule are
+exactly as the previous rounds left them — this round only changes WHERE
+the reservation number comes from, not any of the widths that decide which
+button form renders.
+
+**Tests**: `search-crumbs-star-clearance.test.ts` asserts on the CONSUMER
+rules (`.listing-search-crumbs` ×2) — unchanged by this round, since those
+rules still read `max(var(--pin-right, …), var(--pin-right-hint, 0px))`
+exactly as before; only the PRODUCER moved from CSS to JS, which that file
+never asserted on. All 14 tests across
+`search-crumbs-star-clearance.test.ts` (6), `search-shortcut-collapse.test.ts`
+(4) and `FileSearchField.render.test.tsx` (4) pass unmodified — no test
+needed updating this round. No new test was added for the measurement
+hook itself: `useControlReservationRef` is exercised transitively by
+`FileSearchField.render.test.tsx`'s existing render, and this round's own
+instructions call for a new test only where real measurement logic is worth
+pinning in isolation (e.g. the reset-on-unmount behaviour) — that behaviour
+is already covered by the SAME reasoning `useWidthThresholdRef`'s own header
+comment documents and by this hook's `onChange(null)` contract being read
+directly in `shortcutHintReservationStyle`'s ternary, not by a parallel
+JSDOM ResizeObserver harness this repo's test setup does not otherwise
+provide for this file's siblings.
+
+Ran `bun test src/apps/explorer/listing/search-crumbs-star-clearance.test.ts
+src/apps/explorer/listing/search-shortcut-collapse.test.ts
+src/apps/explorer/FileSearchField.render.test.tsx` (14 pass, 0 fail) and
+`bun run build` (boundaries check, `tsc --noEmit`, vite build) — clean.
+
+**Cannot be verified headlessly** — a human on the running screen still
+needs to confirm: the gap between the path's tail and the button now reads
+as ordinary breathing room (not the wide dead zone from the screenshot) in
+both the crumb-bar host and the plain inline/pane box, on both a Mac
+("⌘L") and a non-Mac ("Ctrl L") rendering if reachable, across the
+label/glyph/hidden ladder, and that a resize or a button-mode change (focus
+the field to make it disappear, blur to bring it back) doesn't leave the
+path visibly mis-truncated for even one frame.
