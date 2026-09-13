@@ -26,3 +26,19 @@ export function loadableChipText(
   if (model.loadable !== false) return null;
   return model.loadableReason ? `Won't run here · ${model.loadableReason}` : "Won't run here";
 }
+
+/** Follow-up review finding 1: a third, neutral row state distinct from
+ *  the warning above. `loadable` stays `true` (unchanged ranking/sorting —
+ *  the widened admission rule, D1287 item 3, already covers this), but the
+ *  ACTIVE runner for this row's capability itself refuses it while another
+ *  AVAILABLE runner would admit it — `HubModel.runsOnEngine` names that
+ *  other engine. Renders as a plain, informational chip ("Runs on
+ *  Diffusers"), never the "Won't run here" wording `loadableChipText`
+ *  builds, and must be styled distinctly (not the warning chip's colors) —
+ *  see `.chip.info-chip` in `ai-models.css`. Null whenever there is no
+ *  engine to name: the common case (the active runner itself admits), a
+ *  row nothing admits at all (that is `loadableChipText`'s case), or a
+ *  response that predates this field. */
+export function runsOnChipText(model: Pick<HubModel, "runsOnEngine">): string | null {
+  return model.runsOnEngine ? `Runs on ${model.runsOnEngine}` : null;
+}

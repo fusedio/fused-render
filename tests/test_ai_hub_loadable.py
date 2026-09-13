@@ -41,27 +41,29 @@ def test_any_other_runner_is_the_any_kind_with_no_data():
 def test_admission_admits_when_any_available_runner_would_load_it():
     """Two available runners, and only the non-active one admits — no
     chip. `admission()` widened from the single ACTIVE runner to every
-    AVAILABLE one specifically so this stops being flagged."""
-    variant_id = next(iter(formats.MFLUX_VARIANTS))
-    loadable, reason = hub_loadable.admission(
+    AVAILABLE one specifically so this stops being flagged. No
+    `active_runner_code` given here, so `runs_on` stays `None` too (see the
+    dedicated `runs_on` tests below for that field's own behaviour)."""
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image", "diffusers-image"),
         model_id="some-org/unrelated-flux-repo", model_type=None)
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_flags_when_the_sole_available_runner_refuses():
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id="some-org/unrelated-flux-repo", model_type=None)
     assert loadable is False
     assert reason == "no engine here loads this"
+    assert runs_on is None
 
 
 def test_admission_allowlist_kind_admits_a_listed_variant():
     variant_id = next(iter(formats.MFLUX_VARIANTS))
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",), model_id=variant_id, model_type=None)
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_names_the_architecture_that_would_load_it():
@@ -70,17 +72,33 @@ def test_admission_names_the_architecture_that_would_load_it():
     (D1278) with the generic architecture-shaped vocabulary."""
     architecture = Architecture(name="MiniMaxH3Pipeline", engine="Diffusers",
                                  shipped=True)
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id="some-org/unrelated-flux-repo", model_type=None,
         architecture=architecture)
     assert loadable is False
     assert reason == "needs Diffusers (MiniMaxH3Pipeline)"
+    assert runs_on is None
 
 
 def test_admission_names_engine_alone_when_architecture_has_no_name():
     architecture = Architecture(name=None, engine="Diffusers", shipped=True)
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",),
+        model_id="some-org/unrelated-flux-repo", model_type=None,
+        architecture=architecture)
+    assert loadable is False
+    assert reason == "needs Diffusers"
+    assert runs_on is None
+
+
+def test_admission_suppresses_name_that_merely_stutters_the_engine():
+    """Finding 5: `name_is_bare_library` says `name` is nothing more than
+    the same word as `engine` ("diffusers" / "Diffusers") — the parenthetical
+    must not repeat it."""
+    architecture = Architecture(name="diffusers", engine="Diffusers", shipped=True,
+                                 name_is_bare_library=True)
+    loadable, reason, _runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id="some-org/unrelated-flux-repo", model_type=None,
         architecture=architecture)
@@ -91,22 +109,24 @@ def test_admission_names_engine_alone_when_architecture_has_no_name():
 def test_admission_says_not_supported_yet_when_engine_is_not_shipped():
     architecture = Architecture(name=None, engine="Sentence Transformers",
                                  shipped=False)
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id="some-org/unrelated-flux-repo", model_type=None,
         architecture=architecture)
     assert loadable is False
     assert reason == "needs Sentence Transformers — not supported yet"
+    assert runs_on is None
 
 
 def test_admission_says_no_engine_loads_name_when_architecture_has_no_engine():
     architecture = Architecture(name="SomeWeirdArch", engine=None, shipped=False)
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id="some-org/unrelated-flux-repo", model_type=None,
         architecture=architecture)
     assert loadable is False
     assert reason == "no engine loads SomeWeirdArch yet"
+    assert runs_on is None
 
 
 def test_admission_model_types_kind_unknown_set_never_flags(monkeypatch):
@@ -114,25 +134,26 @@ def test_admission_model_types_kind_unknown_set_never_flags(monkeypatch):
     `None` ("unknown"), and an unknown set must never read as "loads
     nothing" — every row stays loadable until the venv exists to ask."""
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types", lambda: None)
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mlx-text",),
         model_id="org/whatever", model_type="totally_unknown_arch")
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_model_types_kind_flags_an_unsupported_architecture(monkeypatch):
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types",
                          lambda: frozenset({"llama", "qwen2"}))
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mlx-text",),
         model_id="org/some-repo", model_type="neo_chat")
     assert loadable is False
     assert reason == "neo_chat not supported by mlx-vlm"
+    assert runs_on is None
 
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mlx-text",),
         model_id="org/some-repo", model_type="llama")
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_model_types_kind_with_no_model_type_at_all_stays_loadable(monkeypatch):
@@ -143,10 +164,10 @@ def test_admission_model_types_kind_with_no_model_type_at_all_stays_loadable(mon
     reading of the RUNNER's set."""
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types",
                          lambda: frozenset({"llama"}))
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mlx-text",),
         model_id="org/some-repo", model_type=None)
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_two_available_runners_both_model_types_kind_still_flags_generically(monkeypatch):
@@ -157,47 +178,117 @@ def test_admission_two_available_runners_both_model_types_kind_still_flags_gener
     misleading."""
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types",
                          lambda: frozenset({"llama"}))
-    variant_id = next(iter(formats.MFLUX_VARIANTS))
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mlx-text", "mflux-image"),
         model_id="org/some-repo", model_type="neo_chat")
     assert loadable is False
     assert reason == "no engine here loads this"
+    assert runs_on is None
 
 
 def test_admission_file_layout_kind_admits_the_curated_ltx_layout():
     names = frozenset({formats.LTX_SPLIT_MANIFEST,
                         "transformer-distilled.safetensors"})
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("ltx-video",), model_id="org/repo", model_type=None,
         names=names)
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_file_layout_kind_flags_a_repo_missing_the_layout():
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("ltx-video",), model_id="org/repo", model_type=None,
         names=frozenset({"model_index.json"}),
         architecture=Architecture(name="LTXPipeline", engine="Diffusers",
                                    shipped=True))
     assert loadable is False
     assert reason == "needs Diffusers (LTXPipeline)"
+    assert runs_on is None
 
 
 def test_any_kind_never_flags_regardless_of_model_type_or_id():
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("llamacpp-text",),
         model_id="org/anything", model_type="anything")
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_with_no_available_runners_at_all_stays_loadable():
     """Should not happen in production (`_model_row` only calls this when
     `for_capability` resolved a runner), but an empty set must read the
     same "unknown = loadable" way every other absent fact does here."""
-    loadable, reason = hub_loadable.admission(
+    loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=(), model_id="org/anything", model_type=None)
-    assert (loadable, reason) == (True, None)
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+# Finding 1 of the follow-up review: a third, neutral row state -------------
+
+
+def test_admission_silent_when_the_active_runner_itself_admits():
+    """Active runner admits -> nothing new: no reason, no `runs_on` info,
+    exactly like today."""
+    variant_id = next(iter(formats.MFLUX_VARIANTS))
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id=variant_id, model_type=None,
+        active_runner_code="mflux-image")
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_admission_names_the_engine_when_active_refuses_but_another_admits():
+    """The exact bug report: `stabilityai/sd-xl` (a plain Diffusers repo,
+    not an mflux-curated variant) with `mflux-image` ACTIVE and
+    `diffusers-image` merely available. `loadable` stays True (unchanged
+    ranking/sorting), `reason` stays None (no warning chip), but `runs_on`
+    now names the engine that WOULD load it, for a neutral, non-warning
+    chip."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="stabilityai/sd-xl", model_type=None,
+        active_runner_code="mflux-image")
+    assert loadable is True
+    assert reason is None
+    assert runs_on == "Diffusers"
+
+
+def test_admission_no_runs_on_when_active_runner_code_is_unknown():
+    """`active_runner_code=None` (the default — a caller that has not
+    resolved one) must not fabricate a `runs_on` chip out of "I don't know
+    which one is active" — preserves every pre-existing call site's
+    behaviour untouched."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="stabilityai/sd-xl", model_type=None)
+    assert loadable is True
+    assert reason is None
+    assert runs_on is None
+
+
+def test_admission_no_runs_on_when_only_one_runner_available_at_all(monkeypatch):
+    """A single available runner that itself is active and admits: no
+    `runs_on` — there is no "another" runner to name."""
+    variant_id = next(iter(formats.MFLUX_VARIANTS))
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",),
+        model_id=variant_id, model_type=None,
+        active_runner_code="mflux-image")
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_admission_runs_on_falls_back_to_none_when_admitting_runner_has_no_family_label(monkeypatch):
+    """`_engine_name` reads `Runner.family_label` off the registry — a code
+    the registry does not recognise (should not happen in production, but
+    this module never assumes) must not raise, just read as "nothing to
+    name"."""
+    monkeypatch.setattr(hub_loadable, "_engine_name", lambda code: None)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="stabilityai/sd-xl", model_type=None,
+        active_runner_code="mflux-image")
+    assert loadable is True
+    assert reason is None
+    assert runs_on is None
 
 
 def test_mlx_vlm_model_types_returns_none_when_the_venv_is_not_installed(monkeypatch):

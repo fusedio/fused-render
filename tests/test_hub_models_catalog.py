@@ -537,6 +537,77 @@ def test_catalog_path_flags_a_cached_on_disk_row_too_no_exemption(
     assert row["loadableReason"] == "neo_chat not supported by mlx-vlm"
 
 
+# -- finding 1 (follow-up review): the neutral "runs on <engine>" state -----
+
+
+def _image_pool_row(repo_id, downloads):
+    return {
+        "capability": registry.IMAGE_GENERATION,
+        "format": "",
+        "raw": {
+            "id": repo_id,
+            "pipeline_tag": "text-to-image",
+            "downloads": downloads,
+            "likes": 1,
+            "lastModified": "2026-01-01T00:00:00.000Z",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "library_name": "diffusers",
+            "gated": False,
+            "private": False,
+            "tags": ["text-to-image"],
+            "safetensors": None,
+        },
+    }
+
+
+def test_catalog_path_names_the_engine_when_active_refuses_but_another_admits(
+        client, hub_cache, monkeypatch):
+    """The widened admission rule (D1287 item 3) made `loadable` True for a
+    row the active runner itself refuses, as long as SOME available runner
+    would take it — correct, but it silently dropped the fact that
+    downloading it means switching engines first. `runsOnEngine` restores
+    that fact as a neutral, non-warning field: `loadable` stays True,
+    `loadableReason` stays None (no warning chip), and `runsOnEngine` names
+    the other engine."""
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.IMAGE_GENERATION, [
+        _image_pool_row("stabilityai/sd-xl", downloads=5),
+    ])
+
+    active = types.SimpleNamespace(hub_filter_tags=(), code="mflux-image")
+    other = types.SimpleNamespace(hub_filter_tags=(), code="diffusers-image")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: active)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (active, other))
+
+    resp = _search(client, {"capability": registry.IMAGE_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    row = resp.json()["models"][0]
+    assert row["loadable"] is True
+    assert row["loadableReason"] is None
+    assert row["runsOnEngine"] == "Diffusers"
+
+
+def test_catalog_path_runs_on_engine_is_null_when_the_active_runner_itself_admits(
+        client, hub_cache, monkeypatch):
+    """The common case: the active runner admits this row itself, so there
+    is no "switch engines" fact to surface — `runsOnEngine` stays null,
+    exactly like every row before this finding."""
+    cfg = hub_catalog.load_config()
+    hub_catalog.write_pool(cfg, registry.IMAGE_GENERATION, [
+        _image_pool_row("org/plain-diffusers-repo", downloads=5),
+    ])
+
+    active = types.SimpleNamespace(hub_filter_tags=(), code="diffusers-image")
+    monkeypatch.setattr(hub, "for_capability", lambda capability: active)
+    monkeypatch.setattr(hub, "available_runners", lambda capability: (active,))
+
+    resp = _search(client, {"capability": registry.IMAGE_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    row = resp.json()["models"][0]
+    assert row["loadable"] is True
+    assert row["runsOnEngine"] is None
+
+
 # -- item 1 (D1278): in-memory cache of the scored pool ---------------------
 
 

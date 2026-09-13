@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadableChipText } from "./loadableChip";
+import { loadableChipText, runsOnChipText } from "./loadableChip";
 
 describe("loadableChipText", () => {
   test("builds the chip text from the server's reason clause", () => {
@@ -43,5 +43,18 @@ describe("loadableChipText", () => {
   test("null when the row is loadable, or the field is absent (older server)", () => {
     expect(loadableChipText({ loadable: true, loadableReason: null })).toBeNull();
     expect(loadableChipText({})).toBeNull();
+  });
+});
+
+describe("runsOnChipText", () => {
+  test("names the engine the active runner would need to switch to", () => {
+    expect(runsOnChipText({ runsOnEngine: "Diffusers" })).toBe("Runs on Diffusers");
+    expect(runsOnChipText({ runsOnEngine: "MLX FLUX" })).toBe("Runs on MLX FLUX");
+  });
+
+  test("null when there is no other engine to name", () => {
+    expect(runsOnChipText({ runsOnEngine: null })).toBeNull();
+    expect(runsOnChipText({ runsOnEngine: undefined })).toBeNull();
+    expect(runsOnChipText({})).toBeNull();
   });
 });

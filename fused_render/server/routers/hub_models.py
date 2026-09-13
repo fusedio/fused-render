@@ -1253,7 +1253,9 @@ def _file_format(raw: dict) -> str | None:
 
 
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
-               footprint_store: dict | None, hardware) -> dict | None:
+               footprint_store: dict | None, hardware,
+               runner_codes_cache: dict[str, tuple[str, ...]] | None = None,
+               ) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
@@ -1564,25 +1566,53 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # `architecture` (D1287, item 1 + the mid-task "always list the
     # architecture" addition): resolved for EVERY row, not only ones that
     # end up flagged — `hub_architecture.resolve` is a pure `raw`-dict walk,
-    # no extra Hub request, no per-row registry/filesystem cost (its own
-    # `shipped` memoization is the only registry touch, and it is cached
-    # after the first row of a given engine). Feeds both the new
+    # no extra Hub request. Its own `shipped` memoization IS a registry
+    # touch, cached by `(engine, capability)` after the first row of a given
+    # pair — see that function's own docstring; the false "no per-row
+    # registry/filesystem cost" claim this comment used to make (finding 7
+    # of the follow-up review) was about a DIFFERENT cost, `available_
+    # runners(capability)` below, not this call. Feeds both the new
     # `architecture`/`engine` fields below AND `admission()`'s reason text
-    # when nothing available admits the row.
+    # when nothing available admits the row. `capability` is now threaded
+    # through (finding 4): `_is_shipped` must judge "is this engine shipped"
+    # against runners for THIS row's capability, not any capability at all —
+    # otherwise a text-to-video Diffusers repo reads "shipped" off the
+    # Diffusers IMAGE runners, which cannot open it.
     model_type = config.get("model_type") if isinstance(config, dict) else None
-    architecture = hub_architecture.resolve(raw)
+    architecture = hub_architecture.resolve(raw, capability=capability)
     if runner is not None:
         siblings = raw.get("siblings")
         sibling_names = frozenset(
             s.get("rfilename") for s in siblings if isinstance(s, dict)
         ) if isinstance(siblings, list) else frozenset()
         sibling_names = frozenset(n for n in sibling_names if isinstance(n, str))
-        runner_codes = tuple(r.code for r in available_runners(capability))
-        loadable, loadable_reason = hub_loadable.admission(
+        # Finding 7: `available_runners(capability)` does an `os.path.isfile`
+        # plus uncached platform probes per runner — real cost when called
+        # once per row. `runner_codes_cache`, when the caller supplies one
+        # (every production call site now does; see the three `_model_row`
+        # call sites), memoizes it per capability for the life of one
+        # request/pool build instead of paying that cost per row.
+        if runner_codes_cache is not None:
+            runner_codes = runner_codes_cache.get(capability)
+            if runner_codes is None:
+                runner_codes = tuple(r.code for r in available_runners(capability))
+                runner_codes_cache[capability] = runner_codes
+        else:
+            runner_codes = tuple(r.code for r in available_runners(capability))
+        # Finding 1: judged against every AVAILABLE runner (unchanged
+        # ranking/sorting/loadable verdict), but now ALSO told which runner
+        # is ACTIVE — `admission()` only uses this to populate the new,
+        # informational `runs_on` value (a "Runs on <Engine>" chip) when the
+        # active runner itself refuses but another available one admits.
+        # `loadable`/`loadable_reason` are unaffected by this addition, and
+        # `supervisor.load`'s own download routing (via `_runner_or_raise`)
+        # is untouched — this is a display-only fact.
+        loadable, loadable_reason, runs_on = hub_loadable.admission(
             runner_codes=runner_codes, model_id=model_id, model_type=model_type,
-            names=sibling_names, architecture=architecture)
+            names=sibling_names, architecture=architecture,
+            active_runner_code=runner.code)
     else:
-        loadable, loadable_reason = True, None
+        loadable, loadable_reason, runs_on = True, None, None
     return {
         "id": model_id,
         # Measured, never guessed from the repo's own name — see `_quant`'s
@@ -1680,6 +1710,16 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # `loadable` is True.
         "loadable": loadable,
         "loadableReason": loadable_reason,
+        # Finding 1 of the follow-up review: a third, neutral row state,
+        # distinct from `loadableReason` (which is only ever set when
+        # `loadable` is False). Set ONLY when `loadable` is True, the ACTIVE
+        # runner for this capability itself refuses this row, and another
+        # AVAILABLE runner would admit it — names that other engine (e.g.
+        # `"Diffusers"`) for a plain, non-warning "Runs on <Engine>" chip.
+        # `None` otherwise, including every row where the active runner
+        # itself admits (the common case) and every row nothing admits at
+        # all (that is `loadableReason`'s case, not this one).
+        "runsOnEngine": runs_on,
         # Mid-task addition to D1287+: the same `hub_architecture.resolve`
         # fact `loadableReason` above draws its wording from, surfaced
         # unconditionally so the drawer can show an Architecture line for
@@ -1689,6 +1729,13 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # "not recorded" convention.
         "architecture": architecture.name,
         "engine": architecture.engine,
+        # Finding 5: `architecture.name` is sometimes nothing more than the
+        # bare `library_name` that ALSO produced `engine` (e.g. "diffusers"
+        # / "Diffusers") — a stutter, not two facts. The frontend uses this
+        # to suppress its own drawer " · <engine>" suffix and the loadable
+        # chip's parenthetical already suppresses it server-side (see
+        # `hub_loadable._generic_reason`).
+        "architectureNameIsLibrary": architecture.name_is_bare_library,
     }
 
 
@@ -2191,8 +2238,13 @@ def _scored_pool(cfg, capability_filter: str, cache_dir: str, dirs: dict[str, st
             return [_refresh_row_local_state(row, cache_dir, dirs) for row in hit[1]]
 
     raw_rows = hub_catalog.query_pool(cfg, capability_filter)
+    # Finding 7: one memoized dict for the whole pool build, not one
+    # `available_runners()` call per row — see `_model_row`'s own docstring
+    # for the cost this avoids.
+    runner_codes_cache: dict[str, tuple[str, ...]] = {}
     models = [row
-              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware,
+                                      runner_codes_cache)
                           for r in raw_rows if isinstance(r, dict))
               if row is not None]
     # D851's over-match guard: the pool was built from a `filter=<tag>`
@@ -2611,8 +2663,13 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # page. Both the "cannot run here" drop below and the fit reorder run
     # BEFORE truncation, so `limit` keeps meaning "rows you will be shown"
     # rather than "rows the Hub was asked for".
+    # Finding 7: memoized per this request's whole batch (main rows plus the
+    # facet/publisher-unpinned rows below), not one `available_runners()`
+    # call per row.
+    runner_codes_cache: dict[str, tuple[str, ...]] = {}
     models = [row
-              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware,
+                                      runner_codes_cache)
                           for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
 
@@ -2656,7 +2713,8 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
             facet_payload = {"raw": [] if facet_error and not facet_rows else facet_rows}
             _store(facet_key, facet_payload)
         facet_models = [row
-                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware,
+                                                runner_codes_cache)
                                     for r in facet_payload["raw"] if isinstance(r, dict))
                         if row is not None]
         if capability_filter:

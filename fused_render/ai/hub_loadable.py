@@ -171,19 +171,36 @@ def _generic_reason(architecture: Architecture | None) -> str:
         return "no engine here loads this"
     if not architecture.shipped:
         return f"needs {architecture.engine} — not supported yet"
-    if architecture.name:
+    if architecture.name and not architecture.name_is_bare_library:
         return f"needs {architecture.engine} ({architecture.name})"
     return f"needs {architecture.engine}"
+
+
+def _engine_name(code: str) -> str | None:
+    """The display name for the engine runner `code` belongs to (e.g.
+    `"Diffusers"`, `"MLX FLUX"`) — used only to name the engine in the
+    neutral "Runs on <Engine>" info chip (finding 1 of the follow-up
+    review). `None` when the registry does not recognise `code` or the
+    runner has no `family_label` — this must never raise, only read as
+    "nothing to name"."""
+    from fused_render.ai import registry
+
+    runner = registry.by_code(code)
+    if runner is None or not runner.family_label:
+        return None
+    return runner.family_label
 
 
 def admission(*, runner_codes: tuple[str, ...], model_id: str,
               model_type: str | None,
               names: frozenset[str] = frozenset(),
-              architecture: Architecture | None = None) -> tuple[bool, str | None]:
-    """`(loadable, reason)` for one row, judged against EVERY runner
-    AVAILABLE for its capability right now (`runner_codes` — the caller
-    already resolved `registry.available_runners`; this module has no
-    opinion on which runners are registered, only on what a given runner
+              architecture: Architecture | None = None,
+              active_runner_code: str | None = None,
+              ) -> tuple[bool, str | None, str | None]:
+    """`(loadable, reason, runs_on)` for one row, judged against EVERY
+    runner AVAILABLE for its capability right now (`runner_codes` — the
+    caller already resolved `registry.available_runners`; this module has
+    no opinion on which runners are registered, only on what a given runner
     code can open).
 
     Loadable the moment ANY available runner would admit it — a row is only
@@ -191,6 +208,21 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
     frontend's chip shows after "Won't run here · " — never that full
     sentence itself, so the two stay reusable independently. Always `None`
     when `loadable` is True.
+
+    `runs_on`: the follow-up review's finding 1. Widening admission from the
+    single ACTIVE runner to every AVAILABLE one (D1287 item 3) silenced the
+    "won't run here" chip for a row that the active runner refuses but
+    another available runner admits — correct for `loadable`/`reason` (a
+    download still uses the ACTIVE runner via `supervisor.load`'s own
+    `_runner_or_raise`, untouched here), but it also silently dropped the
+    fact that downloading this row means switching engines first. `runs_on`
+    names that other engine (e.g. `"Diffusers"`) ONLY when: (a) the caller
+    passes `active_runner_code` (the row's own ACTIVE runner — omitting it,
+    as every pre-existing caller does, always reads `runs_on` as `None`,
+    preserving old behaviour exactly), (b) at least one runner admits, and
+    (c) the active one is not among the admitting runners. It is a plain,
+    non-warning fact — never a reason to flag the row, never consulted by
+    ranking/sorting/facets/hidden counts/family pull-in.
 
     `names`: the row's own sibling filenames (top-level), needed for
     `ltx-video`'s `"file_layout"` kind — empty for a caller that has not
@@ -209,17 +241,28 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
     reason to flag a row (see the module docstring's "never drops a row").
     """
     if not runner_codes:
-        return True, None
+        return True, None, None
     refusals: list[tuple[str, str, str | None]] = []
+    admitting: list[str] = []
     for code in runner_codes:
         kind, data = loadable_kind(code)
         loadable, bespoke_reason = _admits(
             kind, data, model_id=model_id, model_type=model_type, names=names)
         if loadable:
-            return True, None
-        refusals.append((code, kind, bespoke_reason))
-    if len(refusals) == 1:
-        _code, kind, bespoke_reason = refusals[0]
-        if kind == "model_types" and bespoke_reason is not None:
-            return False, bespoke_reason
-    return False, _generic_reason(architecture)
+            admitting.append(code)
+        else:
+            refusals.append((code, kind, bespoke_reason))
+    if not admitting:
+        if len(refusals) == 1:
+            _code, kind, bespoke_reason = refusals[0]
+            if kind == "model_types" and bespoke_reason is not None:
+                return False, bespoke_reason, None
+        return False, _generic_reason(architecture), None
+    if active_runner_code is None or active_runner_code in admitting:
+        return True, None, None
+    runs_on: str | None = None
+    for code in admitting:
+        runs_on = _engine_name(code)
+        if runs_on is not None:
+            break
+    return True, None, runs_on

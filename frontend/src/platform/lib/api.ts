@@ -3826,6 +3826,26 @@ export interface HubModel {
    *  in this app or available right now — see `loadableReason` for that.
    *  Null when `architecture` itself is null, or no engine mapping matched. */
   engine?: string | null;
+  /** Follow-up review finding 1: distinct from `loadableReason` — this is a
+   *  NEUTRAL, informational field, never a warning. Set only when
+   *  `loadable` is `true`, the ACTIVE runner for this row's capability
+   *  itself refuses it, but another AVAILABLE runner would admit it (the
+   *  widened admission rule, D1287 item 3, made `loadable` true for this
+   *  case but dropped the fact that a download still needs the ACTIVE
+   *  runner — `supervisor.load`'s own `_runner_or_raise` — so downloading
+   *  this row means switching engines first). Names that other engine
+   *  (e.g. `"Diffusers"`) for a plain "Runs on <Engine>" chip, visually
+   *  distinct from the warning chip `loadableReason` drives. Null/absent
+   *  in every other case, including a row nothing admits (that is
+   *  `loadableReason`'s case) and a response that predates this field. */
+  runsOnEngine?: string | null;
+  /** Follow-up review finding 5: `true` when `architecture` above is
+   *  nothing more than the bare library name that ALSO produced `engine`
+   *  (e.g. `architecture: "diffusers"`, `engine: "Diffusers"`) — a stutter,
+   *  not two facts. The drawer's "<architecture> · <engine>" line should
+   *  suppress the ` · <engine>` suffix when this is true. `false`/absent
+   *  otherwise, including on a response that predates this field. */
+  architectureNameIsLibrary?: boolean;
 }
 
 /** One line of `HubModel.matchBreakdown` — see that field's own doc.

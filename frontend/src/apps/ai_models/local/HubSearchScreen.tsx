@@ -19,7 +19,7 @@ import { ClockIcon, DownloadIcon, HeartIcon } from "./HitStatIcons";
 import { SearchControls } from "./SearchControls";
 import { hubModelUrl } from "./hub";
 import { formatToken } from "@apps/ai_models/lib/formatToken";
-import { loadableChipText } from "@apps/ai_models/lib/loadableChip";
+import { loadableChipText, runsOnChipText } from "@apps/ai_models/lib/loadableChip";
 import { type DiskCard, resultDisk } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityMeta } from "@apps/ai_models/lib/capabilityMeta";
 import {
@@ -246,7 +246,12 @@ function HitDrawer({
           {model.architecture ? (
             <>
               {model.architecture}
-              {model.engine ? ` · ${model.engine}` : ""}
+              {/* Follow-up review finding 5: `architecture` is sometimes
+               *  nothing more than the bare library name that ALSO produced
+               *  `engine` (e.g. "diffusers" / "Diffusers") —
+               *  `architectureNameIsLibrary` says so, and the suffix would
+               *  only repeat what was just said. */}
+              {model.engine && !model.architectureNameIsLibrary ? ` · ${model.engine}` : ""}
             </>
           ) : (
             <span className="unknown">not recorded</span>
@@ -413,6 +418,10 @@ function HitRow({
   // own docstring. A cached-on-disk row still shows this: the on-disk state
   // above only says a snapshot exists, not that it ever successfully loaded.
   const wontRunHere = loadableChipText(model);
+  // Follow-up review finding 1: mutually exclusive with `wontRunHere` — see
+  // `runsOnChipText`'s own docstring. A plain, non-warning fact, not a
+  // reason to flag the row.
+  const runsOnEngine = runsOnChipText(model);
 
   return (
     <div
@@ -471,6 +480,11 @@ function HitRow({
             {wontRunHere && (
               <span className="chip warn-chip" title={model.loadableReason ?? undefined}>
                 {wontRunHere}
+              </span>
+            )}
+            {!wontRunHere && runsOnEngine && (
+              <span className="chip info-chip" title={`Downloading switches the active engine to ${model.runsOnEngine}`}>
+                {runsOnEngine}
               </span>
             )}
           </div>
