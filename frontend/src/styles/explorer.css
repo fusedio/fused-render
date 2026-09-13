@@ -1588,14 +1588,29 @@ table.listing-table tr.skel-row:hover {
    `:has()` reads the button's OWN rendered form back out of the DOM
    (`SearchField.tsx`'s `bar-ctl-icon` class, the same class the container
    query below keys off) rather than assuming one — the reservation always
-   matches whichever width `boxWide` actually chose. Both states are safe to
-   override unconditionally here: crumbs and this button render on the
-   EXACT SAME condition (`!pinnedOpen && query === ""`, confirmed by reading
-   both — SearchField.tsx's crumbs guard and its `!pinnedOpen && !hasClear`
-   button guard, where `hasClear = query !== ""`), so whenever this
-   selector's `--pin-right` would apply, the crumbs it's read by are always
-   the thing on screen needing it, never a stale reservation left over for
-   an absent button.
+   matches whichever width `boxWide` actually chose.
+
+   CODE REVIEW (2026-09-13): this used to write straight into `--pin-right`,
+   which only works because these `:has()` selectors happen to have higher
+   specificity than every other `--pin-right` setter in this file (the star's
+   bare 40px, `.has-clear`'s 38/68px) — so the button's reservation always
+   won the cascade whenever it applied, by ACCIDENT of selector shape, not by
+   a rule that says so. That happened to be safe here because the button and
+   every one of those other setters are mutually exclusive by construction
+   (the button only renders while `query === ""`; `.has-clear` and the
+   count/spinner pin both require `query !== ""` — see the crumbs-override
+   comment below for the citation), so nothing ever needed BOTH
+   reservations at once. But "safe because two things never happen
+   together" is exactly the kind of fact a later, unrelated change to
+   SearchField.tsx can quietly invalidate without anyone touching this file.
+
+   So the button writes its own property, `--pin-right-hint`, instead of
+   fighting over `--pin-right` on specificity — every place that positions
+   something off `--pin-right` below now reads
+   `max(var(--pin-right, …), var(--pin-right-hint, 0px))`, so whichever
+   reservation is actually largest wins regardless of which selector has
+   more classes on it. This is strictly a rename plus a different
+   combination rule; the two pixel values below are unchanged.
 
    Widths are ESTIMATES (button padding + gap + kbd chrome, added by hand,
    not measured in a browser) sized for the WIDER of the two shortcut labels
@@ -1610,13 +1625,13 @@ table.listing-table tr.skel-row:hover {
      6px gap + the wider "Ctrl L" key-cap, with slack) + 6px clearance gap —
      the same 24px-hit-area-plus-6px-gap arithmetic every other trailing
      control in this file reserves. */
-  --pin-right: 164px;
+  --pin-right-hint: 164px;
 }
 
 .crumb-search-slot .listing-search-box:has(.listing-search-shortcut-hint.bar-ctl-icon) {
   /* 38px (past the star) + 28px (the collapsed glyph's own fixed
      `.bar-ctl-icon` width, exact — not an estimate) + 6px clearance gap. */
-  --pin-right: 72px;
+  --pin-right-hint: 72px;
 }
 
 /* A pin (the multi-selection readout, "12 selected", or the streaming
@@ -1783,8 +1798,15 @@ table.listing-table tr.skel-row:hover {
      the fallback for the one host that never sets it at all — the inline/
      pane copy of this box, which has neither a star nor (see the shortcut-
      hint reservation just below) a differently-sized button to clear, only
-     its own border. */
-  right: var(--pin-right, 10px);
+     its own border.
+
+     `max(…, var(--pin-right-hint, 0px))`, not `--pin-right` alone: the
+     shortcut button writes its own reservation into `--pin-right-hint`
+     rather than into `--pin-right` (see the button rules below), so the
+     crumbs always clear whichever of "the star/clear/count pin" or "the
+     button" reaches furthest in — a fact about the two numbers, not about
+     which selector has more classes on it. */
+  right: max(var(--pin-right, 10px), var(--pin-right-hint, 0px));
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -1810,18 +1832,19 @@ table.listing-table tr.skel-row:hover {
    plain `right: 10px` only ever cleared the box's own border. Same
    `:has()` mechanism, same two widths (label vs collapsed glyph), just the
    plain 8px inset instead of the crumb-slot host's 38px past-the-star
-   inset. See the crumb-slot rule above for the shared reasoning on why
-   overriding `--pin-right` unconditionally here is safe (crumbs and this
-   button render on the exact same condition). */
+   inset. See the crumb-slot rule above for why this writes `--pin-right-hint`
+   (its own property) rather than `--pin-right` directly, and for why every
+   consumer of `--pin-right` now reads `max()` of the two instead of relying
+   on this selector's specificity to win. */
 .listing-search-box:has(.listing-search-shortcut-hint:not(.bar-ctl-icon)) {
   /* 8px inset + ~120px estimated label width (see the crumb-slot rule
      above for the arithmetic) + 6px clearance gap. */
-  --pin-right: 134px;
+  --pin-right-hint: 134px;
 }
 
 .listing-search-box:has(.listing-search-shortcut-hint.bar-ctl-icon) {
   /* 8px inset + 28px exact `.bar-ctl-icon` width + 6px clearance gap. */
-  --pin-right: 42px;
+  --pin-right-hint: 42px;
 }
 
 /* The crumb-slot host's own star sits at the box's true right edge
@@ -1851,9 +1874,19 @@ table.listing-table tr.skel-row:hover {
    `useListingSearch.ts`'s `runsSearch`), and the crumbs only render while
    `query === "" && !pinnedOpen` (SearchField.tsx) — mutually exclusive
    states, confirmed by reading `searchState`'s `!runsSearch` branch, not
-   assumed. Only the star needed a rule here. */
+   assumed. Only the star needed a rule here.
+
+   CODE REVIEW (2026-09-13): also `max()`s in `--pin-right-hint` (the
+   shortcut button's own reservation, set by the `:has()` rules above `--pin-
+   right`) rather than trusting this selector to keep outranking them on
+   specificity forever — the button and this host's other `--pin-right`
+   setters (the star's bare 40px, `.has-clear`'s 68px) are mutually
+   exclusive today for the same reason the count pin is (the button only
+   renders while `query === ""`), but that is a fact about SearchField.tsx's
+   current guards, not about the cascade, and this way the cascade can't get
+   it wrong even if that fact ever stops holding. */
 #breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs {
-  right: var(--pin-right);
+  right: max(var(--pin-right, 40px), var(--pin-right-hint, 0px));
 }
 
 /* Scoped to the anchor tag, not `.path-crumb` generally: the LAST segment
@@ -1904,10 +1937,19 @@ table.listing-table tr.skel-row:hover {
 /* Match count pinned inside the input's right edge (no layout shift).
    `--pin-right` is where the pinned chips hang from, so the two hosts can move
    the whole pin group without either chip being left behind (the crumb-bar row
-   pulls it in — see .crumb-search-slot). */
+   pulls it in — see .crumb-search-slot).
+
+   `max(…, var(--pin-right-hint, 0px))` (code review, 2026-09-13): the
+   shortcut button's own reservation lives in `--pin-right-hint`, separate
+   from `--pin-right`, precisely so a consumer like this one clears the
+   button too without depending on which of the two setters wins the
+   cascade. This chip and the button are mutually exclusive by construction
+   today (the button needs `query === ""`; this chip needs `hasPin`, which
+   needs a non-empty, active search), so `--pin-right-hint` is always 0px
+   here in practice — this is defensive, not currently load-bearing. */
 .listing-search-count {
   position: absolute;
-  right: var(--pin-right, 26px);
+  right: max(var(--pin-right, 26px), var(--pin-right-hint, 0px));
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
@@ -1931,15 +1973,16 @@ table.listing-table tr.skel-row:hover {
    the spinner first), and it costs nothing in the settled state, where the
    spinner is gone and the count keeps the pin to itself. */
 .listing-search-spinner + .listing-search-count {
-  right: calc(var(--pin-right, 26px) + 17px);
+  right: calc(max(var(--pin-right, 26px), var(--pin-right-hint, 0px)) + 17px);
 }
 
 /* Small spinner shown while the recursive walk is still in flight, so a
    search on a huge folder doesn't look stalled while the input stays
-   fully interactive. */
+   fully interactive. Reads `--pin-right-hint` alongside `--pin-right` for
+   the same reason `.listing-search-count` above does — see its comment. */
 .listing-search-spinner {
   position: absolute;
-  right: var(--pin-right, 26px);
+  right: max(var(--pin-right, 26px), var(--pin-right-hint, 0px));
   top: 50%;
   width: 11px;
   height: 11px;

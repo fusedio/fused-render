@@ -44,7 +44,11 @@ function rulesFor(selectorExact: string): string[] {
 test("the crumb-slot host's crumbs strip reserves the star's own clearance (--pin-right), not a second hardcoded number", () => {
   const rules = rulesFor("#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs");
   expect(rules.length).toBe(1);
-  expect(rules[0]).toMatch(/right:\s*var\(--pin-right\)/);
+  // `max(--pin-right, --pin-right-hint)` (code review, 2026-09-13, the
+  // omnibox-overlap-defect follow-up): the shortcut button writes its own
+  // reservation into `--pin-right-hint` rather than fighting `--pin-right`
+  // on selector specificity, so this rule has to read both.
+  expect(rules[0]).toMatch(/right:\s*max\(var\(--pin-right,\s*40px\),\s*var\(--pin-right-hint,\s*0px\)\)/);
   // Not a literal pixel value duplicated alongside the property that already
   // carries this exact distance.
   expect(rules[0]).not.toMatch(/right:\s*\d/);
@@ -59,7 +63,11 @@ test("--pin-right is set on the crumb-slot's own box (not read from nowhere) at 
 test("the base crumbs rule reads --pin-right (with the old 10px kept only as the no-button fallback) — the omnibox overlap fix (explorer.css, the shortcut-hint reservation rules) reuses this same slot for the shortcut button, so this is no longer a bare literal", () => {
   const base = rulesFor(".listing-search-crumbs");
   expect(base.length).toBe(1);
-  expect(base[0]).toMatch(/right:\s*var\(--pin-right,\s*10px\)/);
+  // `max(--pin-right, --pin-right-hint)`, not `--pin-right` alone (code
+  // review, 2026-09-13): the button's own reservation lives in
+  // `--pin-right-hint` so this rule clears it without relying on which
+  // setter wins on specificity.
+  expect(base[0]).toMatch(/right:\s*max\(var\(--pin-right,\s*10px\),\s*var\(--pin-right-hint,\s*0px\)\)/);
 });
 
 test("the reservation is scoped to the crumb-slot host — the inline/pane copy of the box has no star inside it, so it must not get dead space", () => {
@@ -67,7 +75,7 @@ test("the reservation is scoped to the crumb-slot host — the inline/pane copy 
   // `.listing-search-box .listing-search-crumbs` generically (which would
   // also match the star-less inline/pane host).
   const overrideExists = CSS.includes(
-    "#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs {\n  right: var(--pin-right);\n}",
+    "#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs {\n  right: max(var(--pin-right, 40px), var(--pin-right-hint, 0px));\n}",
   );
   expect(overrideExists).toBe(true);
 });

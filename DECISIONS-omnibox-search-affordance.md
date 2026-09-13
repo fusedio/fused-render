@@ -1318,3 +1318,109 @@ confirm, at minimum:
   eyeballed;
 - both themes (light/dark) — this is a layout-only fix, no new colors, but
   worth a glance per the standing instruction to check both.
+
+## The button's `--pin-right` write was a specificity accident, not a rule (2026-09-13, code review)
+
+**The finding**: the previous round's `:has(.listing-search-shortcut-hint…)`
+rules wrote straight into `--pin-right`, the same custom property the star
+(40px), `.has-clear` (38/68px) and the count/spinner pin's own consumers
+all read. They only ever won the cascade because `:has()` with a class
+argument happens to add more to a selector's specificity than the plain
+class selectors those other rules use — an accident of selector shape, not
+a written rule that says "the button's reservation always wins."
+
+**Verified against the source, not assumed**: traced every place that
+matters before touching anything.
+- `--pin-right` is SET in exactly seven places (`grep -n -- "--pin-right:"
+  explorer.css`): the crumb-slot star base (40px), the two new button
+  `:has()` rules (164/72px crumb-slot, 134/42px plain), and `.has-clear`
+  (38px plain / 68px crumb-slot). Nowhere is it set to "126px" — the
+  finding's own text names that number, but 126px is a `padding-right`
+  written straight onto `.listing-search-input` by `.has-pin` (a completely
+  different property, on a different element in effect, never in the
+  `--pin-right` cascade at all), so that specific number was never at risk
+  from this specificity question to begin with.
+- The claimed co-occurrence — the button on screen at the same time as a
+  selection-count or spinner pin — **does not currently happen**. The
+  button only renders while `!pinnedOpen && !hasClear`, i.e. `query === ""`
+  (`SearchField.tsx`). `hasPin` (`Listing.tsx`, the count/spinner pin's own
+  gate) is `(searching && spinner) || searchCount !== null ||
+  searchCountDetail !== null`; `searchCount`/`searchCountDetail` are only
+  ever assigned inside `if (showsSearchHits && …)`, and `showsSearchHits =
+  showingSearchHits(searchState, awaitingCommit)` is `searchState.status
+  !== "idle"` — which requires a non-empty, actively-searching query
+  (`useListingSearch.ts`'s `runsSearch = searching && !isPathQuery`,
+  `searching` itself gated on non-empty text). So `hasPin` is false
+  whenever `query === ""`, and the button only exists when `query === ""`:
+  the two are mutually exclusive by construction, the same fact the
+  previous round's own crumbs-override comment already states and this
+  round's own test (`search-crumbs-star-clearance.test.ts`'s last case)
+  already asserts. `.has-clear` is disjoint from the button for the
+  identical reason (`hasClear = query !== ""`, the button's own `!hasClear`
+  guard).
+- So the literal defect as described — a live state where the wrong number
+  wins — is **not reachable today**. What is real is exactly what the
+  finding's own framing (and this file's established pattern, e.g. Finding
+  1's "kept the fix anyway... as defensive correctness" above) treats as
+  worth fixing regardless: correctness that depends on "these two things
+  never happen together" is one unrelated `SearchField.tsx` change away
+  from becoming a live, silent bug that nothing here would catch, because
+  nothing currently asserts the two properties combine correctly — only
+  that one specificity chain currently wins by luck.
+
+**The fix**: the button no longer writes `--pin-right` at all. It writes a
+new property, `--pin-right-hint`, set by the same two `:has()` selectors,
+same two pixel values (164/72px crumb-slot, 134/42px plain) — a pure
+rename, no number changed. Every consumer that used to read `var(--pin-
+right, …)` now reads `max(var(--pin-right, …), var(--pin-right-hint,
+0px))`:
+- `.listing-search-crumbs` (plain box)
+- `#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs`
+- `.listing-search-count`
+- `.listing-search-spinner + .listing-search-count`
+- `.listing-search-spinner`
+
+`max()` over "explicit combined selectors" (the spec's other offered
+option): a combined selector for every `(has-pin × has-clear × wide-pin ×
+button-label × button-glyph)` product across two hosts would multiply the
+existing matrix rather than add one line to it, and would still leave the
+next new `--pin-right` producer to remember to extend that matrix by hand.
+`max()` needs no such enumeration — a future setter of either property is
+correct by construction the moment it participates in the `max()`, not by
+remembering to out-rank every existing selector.
+
+Net effect: correctness now depends on which of the two numbers is bigger,
+never on which selector has more classes on it. Since the two states are
+still mutually exclusive today, `--pin-right-hint` is 0px (its fallback)
+whenever `--pin-right` is anything else, and vice versa — every current
+rendered value is byte-identical to before this round; nothing that used
+to reserve 40/68/126/etc. now reserves something else. The two are simply
+no longer racing on specificity to produce that identical result.
+
+**The other `--pin-right` setters, audited as instructed**: `.has-clear`
+(38/68px) and the star base (40px) both keep writing `--pin-right`
+directly, untouched — neither one is what the button's `:has()` rules ever
+raced against in a live state (see above), and `max()` at the read sites
+means it would no longer matter even if a future state made them coexist.
+No second fix was needed beyond the rename + `max()`.
+
+**Tests**: `search-crumbs-star-clearance.test.ts` asserted the exact old
+rule text (`right: var(--pin-right)` / `right: var(--pin-right, 10px)`) for
+the two crumbs rules this round changed — updated both, plus the literal
+whole-rule-text match in the "scoped to the crumb-slot host" case, to the
+new `max(var(--pin-right, …), var(--pin-right-hint, 0px))` form. The other
+four tests in that file (the 40px base value, the star's own selector
+scope, the pin/crumbs mutual-exclusion citation) were untouched — none of
+them assert on the button's rules or the count/spinner read sites, which
+this round also changed but that file never covered.
+
+Ran `bun test src/apps/explorer/listing/search-crumbs-star-clearance.test.ts`
+(6 pass, 0 fail) and `bun run build` (boundaries check, `tsc --noEmit`,
+and the real vite/lightningcss CSS parse) — clean. Per the orchestrator's
+instruction, no other test files were run and no full suite was run for
+this CSS-only round.
+
+**Cannot be verified headlessly** — this fix changes no rendered pixel in
+any state reachable today (see "not currently happen" above), so there is
+nothing new for a human to eyeball on a running screen beyond what the
+previous round's own list already asks for.
