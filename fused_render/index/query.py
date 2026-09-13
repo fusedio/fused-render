@@ -162,6 +162,40 @@ def _src_cols(con, src: str) -> set:
         f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
 
 
+_SRC_COLS_CACHE_MAX = 16
+_src_cols_cache: dict = {}
+
+
+def _cached_src_cols(con, src: str, cache_key: tuple) -> set:
+    """Cache-wrapped `_src_cols`, keyed on `cache_key` — callers pass
+    `(cfg.dir, manifest["generation"], "files"|"dirs")`.
+
+    Every partition a manifest generation names was written by one
+    compaction and shares one schema (see `_src_cols`'s own docstring), so
+    it is safe to skip the DESCRIBE entirely once ANY caller has already
+    paid for it this generation — not merely once per call, which
+    `_src_cols`'s own inline `cache` parameter used to do (D707/D708) before
+    being dropped as dead code. This is SPEC-index-search-wedge.md item 5:
+    every keystroke against an unchanged index used to pay one ~8ms DESCRIBE
+    purely to learn a column set that cannot have changed since the last
+    one.
+
+    `cfg.dir` is the store's stable identity (`IndexConfig.dir`); the
+    generation increments on compaction (`store.py`'s `compact`), so a new
+    generation invalidates itself automatically — no explicit eviction on
+    compaction is needed. Bounded to `_SRC_COLS_CACHE_MAX` entries, oldest
+    inserted evicted first, so a long-lived process juggling many index
+    stores/generations cannot grow this without limit."""
+    cached = _src_cols_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    cols = _src_cols(con, src)
+    _src_cols_cache[cache_key] = cols
+    if len(_src_cols_cache) > _SRC_COLS_CACHE_MAX:
+        _src_cols_cache.pop(next(iter(_src_cols_cache)))
+    return cols
+
+
 def _name_col(cols: set) -> str:
     """`lower(name)` when `cols` (from `_src_cols`) carries a `name` column,
     else the regex extracted from `path`.
@@ -398,7 +432,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
-                f"{_depth_col(_src_cols(con, fsrc), 'path')} AS depth FROM {fsrc} "
+                f"{_depth_col(_cached_src_cols(con, fsrc, (cfg.dir, m.get('generation'), 'files')), 'path')} AS depth FROM {fsrc} "
                 f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
@@ -406,7 +440,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(_src_cols(con, dsrc), 'dir')} AS depth FROM {dsrc} "
+                f"{_depth_col(_cached_src_cols(con, dsrc, (cfg.dir, m.get('generation'), 'dirs')), 'dir')} AS depth FROM {dsrc} "
                 f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
         entries, truncated = [], False
         if branches:
@@ -999,7 +1033,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # files branch, for `_name_col`, ever calls this.
         if hit:
             fsrc = files_src(cfg, hit)
-            fcols = _src_cols(con, fsrc)
+            fcols = _cached_src_cols(con, fsrc, (cfg.dir, m.get("generation"), "files"))
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
                 f"false AS is_dir, {_name_col(fcols)} AS nm "
