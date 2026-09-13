@@ -727,17 +727,34 @@ _DTYPE_BITS = {
     "U64": 64, "I64": 64, "F64": 64,
 }
 
-# The INTEGER dtypes, which store several packed weights per word in a
-# quantized checkpoint (D775-amending finding, code review F2) — the same set
-# `hub_cache._safetensors_params` already keys on for the identical reason on
-# a downloaded model's own card. `_quant` must never report one of these as
-# the model's quantization: it names the STORAGE CONTAINER (an MLX/GPTQ 4-bit
-# checkpoint packs 8 weights into one `U32`), not the precision, and reporting
-# it as one is a label as wrong in substance as guessing from the repo's name
-# — the thing D775 exists to rule out. `_params` must not sum these RAW either
-# — doing so counts storage slots, not weights, which is why a 27B MLX-4bit
-# repo used to report 4.7B params (`_params_band` then misclassified it into
-# "Under 8B"). See D777.
+# The INTEGER dtypes, which a quantized MLX/GPTQ/AWQ checkpoint reports its
+# packed weight matrix under (D775-amending finding, code review F2). `_quant`
+# must never report one of these as the model's quantization on its own: an
+# integer dtype name (`U32`) is a STORAGE CONTAINER, not a precision, and
+# reporting it as one is a label as wrong in substance as guessing from the
+# repo's name — the thing D775 exists to rule out.
+#
+# **Amending D777 (D1297): the Hub LIST endpoint's `safetensors.parameters`
+# count for a packed dtype is already the real logical weight count, not a
+# count of storage WORDS.** D777 assumed the opposite — that a packed dtype's
+# count needed expanding by `storage_bits / declared_bits` — reasoning from
+# `hub_cache._safetensors_params`, which parses a LOCAL file's safetensors
+# header directly and DOES need that expansion there, because a tensor's
+# recorded `shape` there is genuinely in storage words. The Hub's own bulk
+# list aggregate is a different code path with different semantics, and D777
+# never checked it against a repo whose real parameter count was independently
+# knowable. Live-verified against `mlx-community/Qwen3-30B-A3B-4bit` (a
+# 30B-parameter model): the Hub's `parameters.U32` is `30_531_911_680` —
+# already ~30.5B, matching the model's own name, not ~5x that. Expanding it
+# by a packing ratio (D777's `_params`) turned this repo into a fabricated
+# ~187B and, on the fixture that motivated D777 in the first place
+# (`aufklarer/Voxtral-Mini-3B-2507-MLX-5bit`, a real 4.68B-parameter model per
+# its own `usedStorage`/safetensors total), produced 24.9B — a 5.3x
+# overcount, not the undercount D777 set out to fix. `_params` now reports a
+# packed dtype's count exactly as published; only `_quant`'s "which dtype
+# counts as float evidence" rule and `_estimated_bytes`'s "how many BYTES does
+# one packed WEIGHT cost" rule still need to know which dtypes are packed,
+# which is what this set is for now.
 _PACKED_DTYPES = frozenset({"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"})
 
 # Hub `library_name` values NOTHING here can ever open, and the reason this is a
@@ -977,44 +994,42 @@ def _params_band(params: int | None) -> str | None:
     return "over15b"
 
 
-def _params(safetensors, config=None) -> int | None:
-    """The repo's real parameter count — not the number of storage SLOTS a
-    quantized checkpoint's dtype map counts (D777, code review F2).
+def _params(safetensors) -> int | None:
+    """The repo's real parameter count, read off the Hub's own aggregate
+    dtype -> count map exactly as published.
 
-    The Hub's own `safetensors.total` is the SAME undercount as summing
-    `parameters` raw: verified live against `mlx-community/Qwen3.8-27B-4bit`
-    (a declared 27B model), whose `total` (4,665,462,000) is exactly the sum
-    of its `BF16` and `U32` element counts with NEITHER unpacked — i.e. the
-    Hub does not adjust for packing either, so trusting `total` directly
-    reproduces this bug rather than avoiding it. `total` is therefore only a
-    fallback for the shape `parameters` cannot cover (present, but not a dict).
+    **D777's "a packed dtype's count needs expanding by a packing ratio" is
+    disproven and reverted (D1297).** D777 reasoned that `U32` (say) named a
+    count of storage WORDS in a 4-bit checkpoint, each holding several real
+    weights, and multiplied by `storage_bits / declared_bits` to recover a
+    weight count. That premise does not hold against the Hub's LIST endpoint:
+    live-verified against `mlx-community/Qwen3-30B-A3B-4bit`, a model whose own
+    name states its size, `parameters.U32` is `30_531_911_680` — already the
+    real ~30.5B parameter count, not a ~5x-smaller word count. Multiplying it
+    by a packing ratio would fabricate a ~187B model. Applied to the fixture
+    that motivated D777 in the first place, `aufklarer/Voxtral-Mini-3B-2507-
+    MLX-5bit` (a real 4.68B-parameter model, confirmed against its own
+    `usedStorage`/safetensors total), the multiply produced 24.9B: a 5.3x
+    OVERcount, the opposite of the undercount D777 set out to fix. `config`'s
+    declared bit width is therefore not used here at all any more — see
+    `_estimated_bytes`, which still needs it for a different question (how
+    many bytes one already-correctly-counted weight costs).
 
-    When `config` declares a bit width (`_config_quantization_bits`, the same
-    source `_quant` trusts), each PACKED dtype's count is expanded by how many
-    that width of weights its storage width holds — `hub_cache._safetensors_params`'s
-    own arithmetic, applied to the aggregate dtype->count map this endpoint
-    gets instead of that function's per-tensor shapes. Without a declared bit
-    width there is no honest way to un-pack a `U32` count, so it is counted as
-    published (an undercount `_params_band`/callers must live with, the same
-    as before this fix, rather than a guess at the packing ratio).
+    `total` is used only as a fallback for the shape `parameters` cannot cover
+    (present on the row, but not itself a dict) — it is the Hub's own sum of
+    the same per-dtype counts, so it agrees with the primary path by
+    construction.
     """
     if not isinstance(safetensors, dict):
         return None
     by_dtype = safetensors.get("parameters")
     if isinstance(by_dtype, dict):
-        quantized_bits = _config_quantization_bits(config) if isinstance(config, dict) else None
         counted = 0
         saw_any = False
         for dtype, count in by_dtype.items():
             if not isinstance(count, int) or count < 0:
                 continue
             saw_any = True
-            dtype_u = str(dtype).upper()
-            if quantized_bits and dtype_u in _PACKED_DTYPES:
-                bits = _DTYPE_BITS.get(dtype_u)
-                per_word = (bits // quantized_bits) if bits else 0
-                if per_word > 1:
-                    count *= per_word
             counted += count
         if saw_any:
             return counted or None
@@ -1411,7 +1426,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # repo's Download button would.
     if file is not None:
         safetensors = None
-    params = _params(safetensors, config)
+    params = _params(safetensors)
     estimated_size = _estimated_bytes(safetensors)
     quant = _quant(safetensors, file, config)
     # `params` from the Hub's own `gguf` metadata expand (`_EXPAND`, no extra

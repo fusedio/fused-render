@@ -2444,39 +2444,54 @@ def test_quant_still_reports_a_float_dtype_with_no_config(client, hub_cache, mon
     assert row["quant"] == "BF16"
 
 
-def test_params_unpacks_a_packed_dtype_using_configs_declared_bit_width(client, hub_cache, monkeypatch):
-    # Same live-verified fixture as the quant test above: the Hub's own raw
-    # element count (BF16 + U32 summed with neither unpacked) is ~4.7B, which
-    # is the bug (a declared-27B model reporting "Under 8B"). Unpacking the
-    # U32 count by the declared 4-bit width recovers ~28B, matching the
-    # model's own name.
+def test_params_reports_a_packed_dtypes_count_as_published_not_expanded(
+        client, hub_cache, monkeypatch):
+    # D1297: reverts D777's "expand a packed dtype's count by a packing
+    # ratio" — live-verified against `mlx-community/Qwen3-30B-A3B-4bit`
+    # (real params 30_531_911_680): the Hub's own `parameters.U32` for that
+    # repo is already ~30.5B, matching the model's own name. Expanding it
+    # would have fabricated a ~183B model. This fixture mirrors that shape at
+    # a smaller scale, and also checks the exact repo that surfaced the D777
+    # bug in the first place, `aufklarer/Voxtral-Mini-3B-2507-MLX-5bit`
+    # (real total 4_676_271_104, per its own `usedStorage`): the OLD (D777)
+    # code multiplied its `U32` count by `32 // 5 == 6`, producing 24.9B — a
+    # 5.3x overcount, not a fix for an undercount.
     _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
-        "org/mlx-4bit",
+        "aufklarer/Voxtral-Mini-3B-2507-MLX-5bit",
         safetensors={
-            "parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120},
-            "total": 4_665_462_000,
+            "parameters": {"F16": 637_156_352, "U32": 4_039_114_752},
+            "total": 4_676_271_104,
         },
-        config={"quantization_config": {"bits": 4}},
+        config={"quantization_config": {"bits": 5}},
     )]))
     row = _search(client).json()["models"][0]
-    assert row["params"] == 1_303_792_880 + 3_361_669_120 * 8
-    assert row["params"] > 27_000_000_000
+    assert row["params"] == 637_156_352 + 4_039_114_752
+    assert row["params"] == pytest.approx(4_676_271_104, rel=1e-9)
 
 
-def test_params_band_reclassifies_the_unpacked_model_correctly(client, hub_cache, monkeypatch):
+def test_params_band_no_longer_misclassifies_a_packed_repo_as_larger_than_it_is(
+        client, hub_cache, monkeypatch):
+    # The D777 fixture (`org/mlx-4bit`, ~4.665B real params) used to be pulled
+    # by `_config_quantization_bits`-driven expansion into "over15b" — a
+    # misclassification in the OTHER direction from the bug D777 set out to
+    # fix. It now lands in "4to15b", where its real size actually belongs.
     monkeypatch.setattr(httpx, "get", _reply([_hit(
-        "org/mlx-27b",
+        "org/mlx-4bit",
         safetensors={"parameters": {"BF16": 1_303_792_880, "U32": 3_361_669_120}},
         config={"quantization_config": {"bits": 4}},
     )]))
-    body = _search(client, {"paramsBand": "over15b", "includeUnfit": True}).json()
-    assert [m["id"] for m in body["models"]] == ["org/mlx-27b"]
+    body = _search(client, {"paramsBand": "4to15b", "includeUnfit": True}).json()
+    assert [m["id"] for m in body["models"]] == ["org/mlx-4bit"]
+    body_over = _search(client, {"paramsBand": "over15b", "includeUnfit": True}).json()
+    assert body_over["models"] == []
 
 
-def test_params_without_a_declared_bit_width_stays_the_raw_undercount(client, hub_cache, monkeypatch):
-    # No `config` at all: there is no honest way to know the packing ratio, so
-    # this is unchanged from before the fix — an undercount, not a guess.
+def test_params_ignores_a_declared_bit_width_now_that_the_count_is_trusted_as_is(
+        client, hub_cache, monkeypatch):
+    # A declared config bit width used to change the params figure (D777);
+    # after D1297 it no longer does — `_params` reads the published count
+    # unconditionally, with or without `config` evidence.
     _pin_hardware(monkeypatch)
     monkeypatch.setattr(httpx, "get", _reply([_hit(
         "org/packed-no-config", safetensors={"parameters": {"U32": 3_361_669_120}},
