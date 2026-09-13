@@ -915,6 +915,10 @@ class _Controller:
         self._watch_thread: threading.Thread | None = None
         self._watch_stop = threading.Event()
         self._last_seen: list[str] | None = None
+        # Set once an advertise failure has been logged, cleared on the next
+        # success — a flapping interface polls status() (every prefs read)
+        # and must not turn one dead-socket failure into per-poll log spam.
+        self._advertise_warned = False
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -1205,6 +1209,7 @@ class _Controller:
             self.error = "zeroconf not installed"
             return
         self._unadvertise()
+        zc = None
         try:
             zc = Zeroconf()
             infos = []
@@ -1226,9 +1231,28 @@ class _Controller:
             # a later success, e.g. status() re-advertising once Wi-Fi is
             # back, is the recovery and must clear it.
             self.error = None
+            self._advertise_warned = False
         except Exception as e:  # noqa: BLE001 — advertising is best-effort
-            logger.warning("lan: mDNS advertise failed: %s", e)
+            # ANY failure here — Zeroconf() itself, or register_service on any
+            # of the hosts — must not strand the half-built instance: an
+            # unclosed Zeroconf keeps its own thread + asyncio loop + ~3 UDP
+            # sockets alive forever, and this used to only log & drop the
+            # reference. `zc` may be None if Zeroconf() itself raised.
+            if zc is not None:
+                try:
+                    zc.close()
+                except Exception:  # noqa: BLE001 — close is best-effort too
+                    logger.warning("lan: mDNS close-after-failed-advertise also failed", exc_info=True)
+            # Record the addresses anyway: status() re-advertises whenever
+            # `lan_ips() != self._ips`, and it is read on EVERY prefs poll —
+            # if a failed advertise never updates `_ips`, a persistent mDNS
+            # failure turns into a re-advertise (and re-leak) on every poll
+            # instead of a single failure.
+            self._ips = list(ips)
             self.error = f"mDNS advertise failed: {e}"
+            if not self._advertise_warned:
+                logger.warning("lan: mDNS advertise failed: %s", e)
+                self._advertise_warned = True
 
     def _unadvertise(self) -> None:
         zc, infos = self._zeroconf, self._infos
@@ -1237,10 +1261,18 @@ class _Controller:
             return
         try:
             for info in infos:
-                zc.unregister_service(info)
-            zc.close()
-        except Exception:  # noqa: BLE001
-            pass
+                try:
+                    zc.unregister_service(info)
+                except Exception:  # noqa: BLE001 — one dead record must not skip the rest, or the close below
+                    logger.warning("lan: mDNS unregister_service failed", exc_info=True)
+        finally:
+            # Always runs, even if unregister_service raised (e.g. the
+            # interface's socket already died) — that used to skip close()
+            # entirely and strand the Zeroconf instance's thread + sockets.
+            try:
+                zc.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("lan: mDNS close failed", exc_info=True)
 
 
 _controller = _Controller()
