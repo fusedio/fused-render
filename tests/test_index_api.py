@@ -58,7 +58,7 @@ def _point_home_at(monkeypatch, path):
     only sets `HOME` silently keeps pointing `warm_root()`/`config.home` at
     the real machine's profile instead of the tree it built.
 
-    D880 (index-search-wedge FIX round, CI finding 2): the previous version
+    D882 (index-search-wedge FIX round, CI finding 2): the previous version
     of this helper only special-cased the literal string `"~"` and fell
     through to the REAL `os.path.expanduser` for anything else, including a
     compound path like `"~/.fused-render"` — exactly what
@@ -606,7 +606,7 @@ def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
     # pool" — not merely "fast". A wall-clock bound tight enough to catch a
     # regression to the unbounded queue (which would hang for the life of the
     # request, or at best ABANDON_S=15.0s) is also tight enough to flake on a
-    # loaded CI runner with no real bug present (see D880: 0.3s tripped at
+    # loaded CI runner with no real bug present (see D882: 0.3s tripped at
     # 0.366-0.658s on shared runners). Assert the property directly instead:
     # if this 503 is really produced pre-submission, `_submit_index_read`
     # (the only path onto the pool) must never be called.
@@ -642,7 +642,7 @@ def test_stats_and_search_also_get_the_fast_exhaustion_503(
     fake_pool = {object() for _ in range(index_router._INDEX_READ_POOL_SIZE)}
     monkeypatch.setattr(index_router, "_abandoned_reads", fake_pool)
 
-    # See the sibling rank test above (D880): assert the property — refused
+    # See the sibling rank test above (D882): assert the property — refused
     # pre-submission — directly, rather than trusting a wall-clock bound
     # tight enough to catch an unbounded-queue regression not to also flake
     # on a loaded CI runner.

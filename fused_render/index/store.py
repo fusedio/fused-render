@@ -632,7 +632,7 @@ def delete_store(cfg: IndexConfig) -> None:
     stays deleted.
 
     Also evicts `query.py`'s per-generation schema cache for this store
-    (review finding I / D878): deleting the manifest here resets the next
+    (review finding I / D880): deleting the manifest here resets the next
     compaction's `generation` back to 1, the same cache key a pre-delete
     generation 1 could already have populated earlier in this process's
     life — left uncached, a rebuilt store's real schema could be shadowed by

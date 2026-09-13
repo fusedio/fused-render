@@ -202,14 +202,14 @@ def test_resolve_never_stats_a_path_under_a_blocked_mount(_home, monkeypatch, tm
 
 def test_resolve_captures_the_blocked_candidate_even_though_base_stops_short(
         _home, tmp_path):
-    """D876 (review finding C): `guard.blocks()` is pure string comparison,
+    """D878 (review finding C): `guard.blocks()` is pure string comparison,
     so a query that escapes into a guarded subtree makes `_walk_from` stop
     ONE SEGMENT SHORT of it — `base` lands on the last UNBLOCKED ancestor,
     never on the guarded tree itself. The `blocked_out` side channel exists
     so a caller (`routers/index.py`'s `_rank_body`/`_rank_reason`) can still
     answer "mount" correctly even though `base` alone would miss it.
 
-    D880 (index-search-wedge FIX round): the regression test for this exact
+    D882 (index-search-wedge FIX round): the regression test for this exact
     contract, `tests/test_index_api.py::
     test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`,
     failed on Windows CI — but the cause traced to that test's OWN

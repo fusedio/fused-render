@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -77,6 +78,28 @@ WATCH_INTERVAL_S = 5.0
 # A watcher tick that took this much longer than WATCH_INTERVAL_S on the wall
 # clock was slept through (see _Controller._watch).
 SLEEP_GAP_S = 30.0
+
+# How long a failed mDNS advertise waits before it is retried (see
+# _Controller._advertise_due). `_ips` is left untouched on a failed advertise
+# so `status()`/`_watch` keep trying to recover — including the common case of
+# Wi-Fi flapping down and back up at the SAME address, which a previous fix
+# broke by recording `_ips` on failure to stop the leak. Left unbounded, that
+# recovery path re-attempts (and re-spins-up a Zeroconf instance, best-effort
+# closed each time) on every prefs poll / 5s watch tick for as long as the
+# interface stays dead — that per-poll churn plus its log line is exactly the
+# 1300-thread-in-20-hours incident, just rate-shifted instead of fixed. A
+# minute bounds that churn to once/minute while still recovering well within
+# the time it takes a human to notice devices can't reach the host — much
+# shorter than the SLEEP_GAP_S wake-detection window, which only covers a
+# flap the watcher's own poll interval missed entirely (laptop lid closed
+# between ticks), not a flap that stays down across several ticks.
+ADVERTISE_RETRY_INTERVAL_S = 60.0
+
+# Strips volatile numbers (ephemeral fds, ports, IP octets) out of a failure
+# message before _warn_once uses it to decide "is this a repeat" — see
+# _warn_once for why (a distinct fd on every retry defeated plain string
+# equality).
+_ADVERTISE_MSG_KEY_RE = re.compile(r"\d+")
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -915,6 +938,20 @@ class _Controller:
         self._watch_thread: threading.Thread | None = None
         self._watch_stop = threading.Event()
         self._last_seen: list[str] | None = None
+        # The normalized (see _warn_once/_ADVERTISE_MSG_KEY_RE) message text
+        # last logged at WARNING for an advertise (resp. unadvertise) failure,
+        # cleared on the next success — a flapping interface polls status()
+        # (every prefs read) and must not turn one dead-socket failure into
+        # per-poll log spam. Keyed on the normalized message (not a bare bool)
+        # so a DIFFERENT failure mode later — e.g. Zeroconf() itself starts
+        # failing where only register_service was before — still gets logged
+        # instead of going permanently silent after the first warning.
+        self._advertise_warned_msg: str | None = None
+        self._unadvertise_warned_msg: str | None = None
+        # Wall-clock time of the last failed advertise, or None if the most
+        # recent attempt (or none yet) succeeded. Gates retries to
+        # ADVERTISE_RETRY_INTERVAL_S apart — see _advertise_due.
+        self._advertise_failed_at: float | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -953,16 +990,27 @@ class _Controller:
                     self._server = self._thread = None
                     self.port = None
                     self._start()
-        if self.running and ips and ips != self._ips:
+        if self.running and ips and ips != self._ips and self._advertise_due():
             # Wi-Fi changed under us: re-advertise the new addresses, and
             # reissue the certificate (it names them) on a fresh https
             # listener. Under the controller lock: this runs on whatever
             # thread asks for prefs, and must not race apply()'s start/stop of
             # the same zeroconf and tls state.
+            #
+            # `_advertise_due()` gated here too, not just inside `_reannounce`
+            # itself: `_ips` is deliberately left empty for as long as an
+            # advertise keeps failing (see _advertise), so `ips != self._ips`
+            # is True on EVERY prefs read during that streak, not just when
+            # the address actually changes — this is the same per-poll-entry
+            # churn `_reannounce`'s own gate prevents from leaking a Zeroconf,
+            # just re-taking the lock here on every read instead. Checking it
+            # before the lock skips that entirely once a streak is underway;
+            # a genuine address change during a HEALTHY streak still fires
+            # every time (`_advertise_due()` is always True when nothing has
+            # failed).
             with self._lock:
-                if self.running and ips != self._ips:
-                    self._advertise(ips)
-                    self._start_tls(ips)
+                if self.running and ips != self._ips and self._advertise_due():
+                    self._reannounce(ips)
         from fused_render import lan_tls
 
         try:
@@ -1111,15 +1159,30 @@ class _Controller:
                         self.port = None
                         self._start()
                         continue  # _start advertised and reissued for `ip` itself
-                    if moved and self.running:
+                    if moved and self.running and self._advertise_due():
+                        # `_advertise_due()` gated here, not just inside
+                        # `_reannounce`: `_ips` is deliberately left empty for
+                        # as long as an advertise keeps failing (see
+                        # _advertise), so on a live-but-advertise-failing
+                        # interface `ips != self._ips` (part of `moved`
+                        # above) is True on EVERY tick, not just when the
+                        # address changes or the laptop actually slept —
+                        # without this check `moved` stays permanently true
+                        # for the whole streak and this log line + a
+                        # `_reannounce` re-entry (retaking the lock, calling
+                        # `_start_tls`) would fire every WATCH_INTERVAL_S
+                        # instead of once per ADVERTISE_RETRY_INTERVAL_S, the
+                        # exact per-poll churn this backoff exists to bound.
+                        # A genuine change during a HEALTHY streak still
+                        # fires every time (`_advertise_due()` is always True
+                        # once nothing has failed).
                         logger.info("lan: %s (%s -> %s); re-advertising",
                                     "woke from sleep" if slept else "network changed",
                                     ", ".join(self._ips) or "-", ", ".join(ips))
                         # `_advertise` closes the old zeroconf and opens a new
                         # one — bounded (goodbye packets, python-zeroconf
                         # 0.151), and on this thread rather than a request's.
-                        self._advertise(ips)
-                        self._start_tls(ips)
+                        self._reannounce(ips)
             except Exception:  # noqa: BLE001 — a watcher that dies stops watching
                 logger.warning("lan: network watch failed", exc_info=True)
 
@@ -1198,6 +1261,49 @@ class _Controller:
         logger.info("lan: sharing stopped")
 
     # -- mDNS
+    def _advertise_due(self) -> bool:
+        """Whether an advertise attempt may run now: always, unless the last
+        one failed less than ADVERTISE_RETRY_INTERVAL_S ago. See that
+        constant for why this exists — without it, `_ips` staying empty after
+        a failure (needed so status()/_watch keep trying to recover) makes
+        `ips != self._ips` true on every single poll for as long as the
+        interface stays dead."""
+        return (self._advertise_failed_at is None
+                or time.time() - self._advertise_failed_at >= ADVERTISE_RETRY_INTERVAL_S)
+
+    def _reannounce(self, ips: list[str]) -> None:
+        """Shared by status() and _watch(): re-advertise + reissue the TLS
+        cert for new addresses. Must be called holding `self._lock`. The
+        advertise half is skipped (but TLS is not — cert reissue is local and
+        has no comparable failure-storm risk, gated on its own `_tls_ips`) when
+        a previous attempt failed too recently; see _advertise_due."""
+        if self._advertise_due():
+            self._advertise(ips)
+        self._start_tls(ips)
+
+    def _warn_once(self, attr: str, message: str) -> None:
+        """Log `message` at WARNING with a traceback, unless it is a repeat of
+        the last message logged through this same `attr` — in which case it
+        still goes to the log, just at DEBUG without a traceback, so a
+        permanently-broken interface retrying every ADVERTISE_RETRY_INTERVAL_S
+        does not spam WARNING forever, while a genuinely NEW failure mode
+        (a different exception/message) is never dampened.
+
+        Compared with volatile numbers (fds, ports, octets) stripped out —
+        the production incident's own log line
+        (``Error with socket NNNN (('192.168.2.118', 5353))``) embeds a fresh
+        fd number on every single retry, which defeated plain string-equality
+        dampening: the fd differs so the message never repeats even though
+        it's the same permanently-broken interface. `_ADVERTISE_MSG_KEY_RE`
+        below normalizes that out before comparing/storing; the un-normalized
+        `message` is still what actually gets logged either way."""
+        key = _ADVERTISE_MSG_KEY_RE.sub("#", message)
+        if key == getattr(self, attr):
+            logger.debug(message, exc_info=True)
+        else:
+            logger.warning(message, exc_info=True)
+            setattr(self, attr, key)
+
     def _advertise(self, ips: list[str]) -> None:
         try:
             from zeroconf import ServiceInfo, Zeroconf
@@ -1205,6 +1311,7 @@ class _Controller:
             self.error = "zeroconf not installed"
             return
         self._unadvertise()
+        zc = None
         try:
             zc = Zeroconf()
             infos = []
@@ -1226,21 +1333,69 @@ class _Controller:
             # a later success, e.g. status() re-advertising once Wi-Fi is
             # back, is the recovery and must clear it.
             self.error = None
+            self._advertise_warned_msg = None
+            self._advertise_failed_at = None
         except Exception as e:  # noqa: BLE001 — advertising is best-effort
-            logger.warning("lan: mDNS advertise failed: %s", e)
+            # ANY failure here — Zeroconf() itself, or register_service on any
+            # of the hosts — must not strand the half-built instance: an
+            # unclosed Zeroconf keeps its own thread + asyncio loop + ~3 UDP
+            # sockets alive forever, and this used to only log & drop the
+            # reference. `zc` may be None if Zeroconf() itself raised.
+            if zc is not None:
+                try:
+                    zc.close()
+                except Exception:  # noqa: BLE001 — close is best-effort too
+                    logger.warning("lan: mDNS close-after-failed-advertise also failed", exc_info=True)
+            # Deliberately NOT recording `_ips` here (an earlier version of
+            # this fix did, to stop `status()`/`_watch` from re-attempting —
+            # and re-leaking — on every single poll). That disabled the only
+            # recovery path: both gate re-advertise on `ips != self._ips`, and
+            # with `_ips` set to the current addresses that is permanently
+            # False even once Wi-Fi comes back on the SAME address (the
+            # common wake-from-sleep case) — mDNS then stays dead until the
+            # address actually changes. `_unadvertise()` above already reset
+            # `_ips`/`_ip` to empty/None; leaving them there also keeps them
+            # consistent with each other (`_ip` is documented as "the first of
+            # `_ips`") and makes `_host_ok`'s `_ips or lan_ips()` correctly
+            # fall back to a live read instead of a stale recorded one. The
+            # leak this used to cause is bounded instead via
+            # `_advertise_failed_at` / ADVERTISE_RETRY_INTERVAL_S, checked by
+            # callers (_advertise_due) before they call back in here.
+            self._advertise_failed_at = time.time()
             self.error = f"mDNS advertise failed: {e}"
+            self._warn_once("_advertise_warned_msg", f"lan: mDNS advertise failed: {e}")
 
     def _unadvertise(self) -> None:
         zc, infos = self._zeroconf, self._infos
         self._zeroconf, self._infos, self._ips, self._ip = None, [], [], None
         if zc is None:
             return
+        ok = True
         try:
             for info in infos:
-                zc.unregister_service(info)
-            zc.close()
-        except Exception:  # noqa: BLE001
-            pass
+                try:
+                    zc.unregister_service(info)
+                except Exception as e:  # noqa: BLE001 — one dead record must not skip the rest, or the close below
+                    ok = False
+                    self._warn_once("_unadvertise_warned_msg", f"lan: mDNS unregister_service failed: {e}")
+        finally:
+            # Always runs, even if unregister_service raised (e.g. the
+            # interface's socket already died) — that used to skip close()
+            # entirely and strand the Zeroconf instance's thread + sockets.
+            try:
+                zc.close()
+            except Exception as e:  # noqa: BLE001
+                ok = False
+                self._warn_once("_unadvertise_warned_msg", f"lan: mDNS close failed: {e}")
+        # `_advertise` calls `_unadvertise()` on every attempt, including a
+        # retry (ADVERTISE_RETRY_INTERVAL_S apart) against a permanently dead
+        # interface — same per-poll-spam shape the advertise side dampens,
+        # just in the sibling function. Reset the dampening key on a clean run
+        # so an unrelated LATER failure here (a different message) still logs
+        # at WARNING with its traceback rather than being compared against a
+        # stale one.
+        if ok:
+            self._unadvertise_warned_msg = None
 
 
 _controller = _Controller()

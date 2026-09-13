@@ -354,7 +354,7 @@ def test_compact_reads_the_previous_index_through_the_manifest(tmp_path):
 
 
 def test_delete_store_evicts_the_schema_cache_for_this_store(tmp_path):
-    """Review finding I / D878: `delete_store` removes the manifest, so the
+    """Review finding I / D880: `delete_store` removes the manifest, so the
     next compaction's `generation` starts back at 1 — the same
     `query._cached_src_cols` key an earlier life of this same store dir
     could already have populated at generation 1. Left uncached across the

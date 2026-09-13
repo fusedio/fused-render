@@ -188,7 +188,7 @@ def _cached_src_cols(con, src: str, cache_key: tuple) -> set:
     stores/generations cannot grow this without limit.
 
     Two caveats review finding I raised, both real but neither worth more
-    machinery than this (D878 has the fuller reasoning):
+    machinery than this (D880 has the fuller reasoning):
 
     - `dirs.parquet` (the `"dirs"` half of `cache_key`) is a single file
       overwritten in place by every compaction (`store.py`'s COPY to
