@@ -95,6 +95,61 @@ export function useWidthThresholdRef(
 // button that is no longer there, silently truncating the path for no
 // reason — the exact failure mode this whole mechanism exists to avoid, just
 // moved from "wrong estimate" to "stale measurement."
+// THE DISAPPEARING-PATH DEFECT (running-screen review, 2026-09-13, measured
+// live at 700x900 on a 124px `.listing-search-box`): `display: none` does
+// NOT unmount `.listing-search-shortcut-hint` — only `!pinnedOpen &&
+// !hasClear` in SearchField.tsx does that. The narrow-box container query in
+// explorer.css (`@container (max-width: 189px) { .listing-search-shortcut-
+// hint { display: none } }`) hides the button while leaving its ref
+// attached to a node the layout engine has stopped placing. A hidden
+// element's `getBoundingClientRect()` is an all-zero rect pinned at the
+// origin, so the old `measure()` computed `box.right - 0 + gapPx` — a number
+// on the order of the box's OWN distance from the viewport's left edge, not
+// a button width. Measured concretely: a 124px box published a 214px
+// reservation, larger than the box itself, which collapsed
+// `.listing-search-crumbs`'s `right: max(...)` clearance past the box's
+// full width and blanked the breadcrumb path down to bare icon — confirmed
+// in a screenshot, invisible to every headless test in this file because
+// jsdom's layout is a no-op (every rect is already zero) and so never
+// distinguishes "hidden" from "not yet measured."
+//
+// `isLaidOut` below is the guard: `offsetParent === null` is the platform's
+// own "does this participate in layout right now" check, true for
+// `display: none` on the element OR any ancestor, and for a disconnected
+// node — exactly the "not really there" cases a hidden-but-mounted control
+// produces. (It is also null for `position: fixed`, but neither the box nor
+// the button is ever fixed, so that caveat is moot here.) The zero-area
+// rect check rides along as a second, independent signal: first paint,
+// before the browser has laid either element out at all, can hand back a
+// non-null `offsetParent` with a still-zero rect for exactly one frame
+// (`getBoundingClientRect()` measuring a node the browser hasn't placed
+// yet), and only the rect check catches that case.
+function isLaidOut(el: { offsetParent: Element | null }, rect: { width: number; height: number }): boolean {
+  return el.offsetParent !== null && (rect.width > 0 || rect.height > 0);
+}
+
+// The reservation arithmetic itself, pulled out of the hook as a pure
+// function of two rect-and-offsetParent-bearing objects so a test can hand
+// it stubbed elements (a plain object with the two methods/properties
+// `getBoundingClientRect`/`offsetParent` needs) without mounting real DOM —
+// jsdom's own rects are always zero, which is exactly the degenerate input
+// this function has to tell apart from a real hidden control, so a fake
+// with a non-zero stubbed rect is the only way to test the "normal case"
+// branch at all.
+export function computeControlReservation(
+  box: { getBoundingClientRect(): { right: number; width: number; height: number }; offsetParent: Element | null },
+  control: {
+    getBoundingClientRect(): { left: number; width: number; height: number };
+    offsetParent: Element | null;
+  },
+  gapPx: number,
+): number | null {
+  const boxRect = box.getBoundingClientRect();
+  const controlRect = control.getBoundingClientRect();
+  if (!isLaidOut(box, boxRect) || !isLaidOut(control, controlRect)) return null;
+  return boxRect.right - controlRect.left + gapPx;
+}
+
 export function useControlReservationRef(
   gapPx: number,
   onChange: (reservationPx: number | null) => void,
@@ -113,7 +168,7 @@ export function useControlReservationRef(
       onChange(null);
       return;
     }
-    onChange(box.getBoundingClientRect().right - control.getBoundingClientRect().left + gapPx);
+    onChange(computeControlReservation(box, control, gapPx));
   }, [gapPx, onChange]);
 
   // Re-run on every (re)attach of EITHER ref, not just on resize — a portal

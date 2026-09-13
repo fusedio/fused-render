@@ -1562,3 +1562,130 @@ both the crumb-bar host and the plain inline/pane box, on both a Mac
 label/glyph/hidden ladder, and that a resize or a button-mode change (focus
 the field to make it disappear, blur to bring it back) doesn't leave the
 path visibly mis-truncated for even one frame.
+
+## Round 4: the measured reservation shipped its own regression — the path
+## disappears entirely below 189px (running-screen review, 2026-09-13)
+
+The previous round's own closing paragraph asked a human to verify "across
+the label/glyph/**hidden** ladder" precisely because it could not check that
+itself — and the hidden rung is exactly where the measured approach broke.
+`@container (max-width: 189px) { .listing-search-shortcut-hint { display:
+none } }` (explorer.css, unchanged since round 1) hides the button on a
+narrow box, but `display: none` does not unmount it — only `!pinnedOpen &&
+!hasClear` in `SearchField.tsx` does that. `useControlReservationRef`'s ref
+stays attached to a node the layout engine has stopped placing, and
+`getBoundingClientRect()` on a `display: none` element returns an all-zero
+rect pinned at the origin. The old `measure()` computed `box.right - 0 +
+gapPx` unconditionally — no check that either element was actually laid
+out — so on a hidden button it published a number on the order of the
+box's own distance from the viewport's left edge, dressed up as a button
+width.
+
+**Measured live** at a 700x900 viewport, route `/explorer/view/.../
+ShatteredGlass/index.html`: a 124px `.listing-search-box` (button hidden,
+`btn:[0,0,0]`, `btnVisible:"none"`) published a **214px** reservation —
+larger than the box itself. `.listing-search-crumbs`'s `right: max(var(
+--pin-right, …), var(--pin-right-hint, 0px))` (round 3) then resolved to a
+value past the box's own width, collapsing the crumbs to zero width.
+Confirmed in a screenshot: the omnibox rendered as an empty rounded pill
+with only the folder icon — the breadcrumb path text was entirely gone, not
+merely mis-truncated. On `origin/main` (pre-measurement, hand-estimated
+CSS) the same width shows the path normally, so this was a regression this
+branch introduced, not a pre-existing defect the measured approach merely
+failed to fix.
+
+**Why headless tests never saw it**: jsdom's layout is a no-op — every
+element's `getBoundingClientRect()` returns an all-zero rect regardless of
+`display`, mounted or not. The exact bug (treating a real, positioned,
+zero-because-hidden rect as if it were a real button) has no jsdom
+manifestation to fail on: jsdom can't tell "hidden" apart from "not yet
+measured" because both are zero, always. `search-crumbs-star-clearance.
+test.ts` (round 3) only ever asserted on the CSS consumer rule's text, never
+on a value this hook actually computed against a real layout — which is
+exactly why round 3's own closing note flagged the hidden rung as
+unverified and asked a human to check it live.
+
+**The fix** (`search-hint-width.ts`): `computeControlReservation` — the
+arithmetic pulled out of `measure()` into a standalone, exported pure
+function — now requires BOTH elements to be laid out before publishing a
+number, checked two ways: `offsetParent !== null` (the platform's own
+"does this participate in layout right now" signal — true for `display:
+none` on the element or any ancestor, and for a disconnected node; also
+null for `position: fixed`, which neither element here ever is) OR a
+non-zero-area rect (`width > 0 || height > 0` — catches first paint, before
+the browser has laid either element out at all, which can hand back a
+non-null `offsetParent` with a still-zero rect for exactly one frame). Only
+when EITHER element fails BOTH checks is `null` published — matching the
+existing `onChange(null)` contract `shortcutHintReservationStyle`
+(SearchField.tsx) already reads: an unset `--pin-right-hint` falls back to
+the crumbs' own `var(--pin-right-hint, 0px)`, i.e. the plain star/border
+clearance, exactly the behaviour a genuinely-unmounted button already got
+before this round.
+
+**Reservation by button state**, after the fix: hidden (`display: none`,
+< 189px box) → `null` (no reservation, crumbs use plain `--pin-right`);
+glyph (190–339px box) → `box.right - control.left + 6`, same arithmetic as
+before, now guarded; label (>= 340px box) → same. Only the hidden case
+changed.
+
+**Does the ResizeObserver even fire for a `display: none` transition?**
+Verified against spec, not assumed: per the ResizeObserver spec, a target
+that stops being rendered is defined to report a zero content rect, and
+implementations (Chromium, Firefox, WebKit) all fire a notification for
+it — this hook already observes `control` directly (not an ancestor), so
+the hide transition itself reliably triggers `measure()`. No second signal
+was needed for THAT half of the problem; the bug was purely that `measure()`
+computed a number from the zero rect instead of recognizing it as "not
+laid out," which is what this round fixes.
+
+**The one-frame-lag question** (four-item list, item 4): immediately after
+a resize that flips the button between glyph and label form, is there a
+frame where the crumbs use a stale (too-small) reservation before the new
+one lands? The two are driven by independent `ResizeObserver`s —
+`useWidthThresholdRef` on the BOX decides `boxWide` (label vs. glyph), and
+`useControlReservationRef` on the CONTROL recomputes the reservation once
+the button's own rendered width changes as a result. That is a two-step
+chain (box resize → React state update → button re-render → button resize →
+reservation recompute), and it could in principle straddle a paint if any
+step deferred past it. It does not, for two independent reasons: (1) the
+ResizeObserver spec's notification loop keeps re-running "gather active
+observations / notify" within the same rendering frame, before paint, for
+up to a bounded depth whenever a callback's side effects change another
+(or the same) observed element's size — this chain is two levels deep,
+nowhere near that bound; and (2) React 18's automatic batching flushes a
+`setState` called from a non-React-event context like a `ResizeObserver`
+callback via a microtask, and microtasks are drained before the browser's
+next rendering opportunity, so the button's re-render commits (and its
+resulting resize fires) inside the same pre-paint window the RESIZE
+OBSERVER loop is already iterating in. The instructions' own "72px where
+135px was needed" observation is real as a snapshot taken by
+instrumentation reading the DOM synchronously mid-chain, but that is not
+the same as a user-visible paint: nothing above hands the browser a paint
+opportunity between the box resize and the settled reservation. No code
+change was made for this item; it is a timing property of the platform and
+of React 18's batching, not a defect in this hook, and it is not
+mechanically testable in jsdom (which has no rendering pipeline to race
+against in the first place).
+
+**Test added**: `search-control-reservation.test.ts`, next to
+`search-hint-width.test.ts`, tests `computeControlReservation` directly
+(not the hook) — jsdom's own rects are always zero, so a real DOM node
+can never exercise the "normal case" branch; only a stubbed element with a
+deliberately non-zero rect proves the function still returns `box.right -
+control.left + gap` there, alongside the hidden-control, hidden-box, and
+each-signal-checked-independently cases.
+
+Ran `bun test src/apps/explorer/listing/search-hint-width.test.ts src/apps/
+explorer/listing/search-control-reservation.test.ts src/apps/explorer/
+listing/search-crumbs-star-clearance.test.ts` (15 pass, 0 fail) and `bun run
+build` (clean). The full `src/apps/explorer/listing/` directory has 6
+pre-existing failures on this branch unrelated to this change (`Export
+named 'NAV_EVENT' not found in module '.../router.ts'`), confirmed present
+before this round's edit via `git stash`.
+
+**Cannot be verified headlessly** — the orchestrator needs to re-measure
+live: the 124px-box case that showed an empty pill with no path text should
+now show the path (ellipsized if needed) with normal `--pin-right` star
+clearance and no button reservation; the glyph and label cases should be
+unaffected; and a resize crossing the 189px/340px thresholds should show no
+visible flash of overlapping or disappearing text.
