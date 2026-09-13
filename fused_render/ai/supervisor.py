@@ -58,6 +58,7 @@ from fused_render import jobs
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
 from fused_render.ai import hub_catalog_builder
+from fused_render.ai.runners import worker_base
 
 logger = logging.getLogger(__name__)
 
@@ -847,6 +848,29 @@ def _tail(path: str, limit: int = 2000) -> str:
         return ""
 
 
+def _download_failure_text(stderr: str) -> str:
+    """The message to put on a failed download-only job row, from that
+    worker's own stderr log tail.
+
+    `worker_base.serve`'s `--download-only` except-branch prints the full
+    traceback (for whoever reads the raw log file) and then, as its last
+    line, `worker_base.JOB_ERROR_MARKER` followed by the one sentence meant
+    for a person reading the JOB ROW, not the log — a deliberately-raised
+    `RuntimeError("some written sentence")` should reach the row AS that
+    sentence, not behind the traceback that precedes it. Splits on the
+    marker's LAST occurrence (there is only ever one write per failure, but
+    `str.rsplit` is the honest choice either way) and returns what follows
+    it, stripped. Falls back to the whole tail, stripped, when the marker is
+    absent entirely — a process that never reached that except branch (killed
+    by a signal, an import that failed before `serve()` even ran) still needs
+    SOME text on the row, and the old whole-blob behaviour is still better
+    than nothing for that case.
+    """
+    if worker_base.JOB_ERROR_MARKER in stderr:
+        return stderr.rsplit(worker_base.JOB_ERROR_MARKER, 1)[-1].strip()
+    return stderr.strip()
+
+
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     """Start worker.py and wait for it to publish its port.
 
@@ -1359,7 +1383,8 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
             if _cancel_requested(job):
                 raise SupervisorError("cancelled")
             stderr = _tail(log)
-            raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
+            raise SupervisorError(
+                _download_failure_text(stderr) or f"the download exited {proc.returncode}")
         # `tier=jobs.TRAIL` restated explicitly: `job` here is
         # `job_id_for(model)`, the same row a RESIDENT load of this model
         # reports through, and `Job.tier` sticks until a report says

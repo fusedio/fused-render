@@ -4305,6 +4305,96 @@ def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
     assert not row.get("message")
 
 
+def test_a_failed_download_reports_the_written_sentence_not_a_traceback(
+        fake_runner, monkeypatch, tmp_path):
+    """Item 6 of the architecture-detection brief. The failure this exists to
+    fix: a runner's `download()` raises a deliberately-written
+    `RuntimeError("...")` — a sentence meant for the person reading the job
+    row — but `worker_base.serve`'s `--download-only` except-branch prints the
+    FULL traceback to stderr before that sentence, and `_tail` reads the
+    entire last-2000-chars of the log file, traceback included.
+
+    `worker_base.serve` writes `JOB_ERROR_MARKER` immediately before that final
+    clean `"ClassName: message"` line specifically so `_download_failure_text`
+    can pull out just the sentence. This test writes a log file shaped exactly
+    like that real output (a multi-line traceback, then the marker, then the
+    line) and proves the row's `message` is the sentence ALONE — the
+    traceback lines must not appear in it at all.
+    """
+    from fused_render.ai.runners import worker_base
+
+    log = tmp_path / "log.txt"
+    stderr_blob = (
+        "Traceback (most recent call last):\n"
+        '  File "worker.py", line 42, in download\n'
+        "    raise RuntimeError(\"this model needs the Diffusers engine\")\n"
+        f"\n{worker_base.JOB_ERROR_MARKER}RuntimeError: this model needs the Diffusers engine\n"
+    )
+
+    class _FailedProc:
+        pid = 4242
+        returncode = 1
+        def poll(self):
+            return 1
+
+    def fake_popen(argv, **kwargs):
+        # `_fetch_only` opens the log file itself and hands the fd to
+        # `subprocess.Popen` as `stderr=`; a real worker process writes into
+        # that same fd. Writing through the fd our fake is handed (rather
+        # than `log.write_text` beforehand) is the only way to land content
+        # AFTER `_fetch_only`'s own `open(log, "w")` truncates the file.
+        kwargs["stderr"].write(stderr_blob)
+        kwargs["stderr"].close()
+        return _FailedProc()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(log))
+
+    job = supervisor.JOB_PREFIX + "org-badconfig"
+    jobs.upsert({"id": job, "title": "org/badconfig", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/badconfig", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "error"
+    assert row["message"] == "RuntimeError: this model needs the Diffusers engine"
+    assert "Traceback" not in row["message"]
+    assert "line 42" not in row["message"]
+
+
+def test_a_failed_download_with_no_marker_falls_back_to_the_whole_tail(
+        fake_runner, monkeypatch, tmp_path):
+    """A worker that dies before `serve`'s except-branch ever runs (killed by
+    a signal, an import error at module load) never writes
+    `JOB_ERROR_MARKER` at all. `_download_failure_text` must still hand back
+    SOMETHING rather than an empty message — the old whole-tail behaviour,
+    unchanged, for exactly this case."""
+    log = tmp_path / "log.txt"
+
+    class _FailedProc:
+        pid = 4242
+        returncode = 1
+        def poll(self):
+            return 1
+
+    def fake_popen(argv, **kwargs):
+        kwargs["stderr"].write("Fatal Python error: Segmentation fault\n")
+        kwargs["stderr"].close()
+        return _FailedProc()
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda stub: str(log))
+
+    job = supervisor.JOB_PREFIX + "org-crashed"
+    jobs.upsert({"id": job, "title": "org/crashed", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/crashed", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "error"
+    assert row["message"] == "Fatal Python error: Segmentation fault"
+
+
 def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path):
     """`envinstall.start()` names its own key, and it is not always ours.
 

@@ -331,6 +331,21 @@ JOB_URL = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs
 
 JOB_TIMEOUT_S = 3.0
 
+#: Item 6 of the architecture-detection brief (D1287+). `serve`'s
+#: `--download-only` except-branch prints the FULL traceback to stderr, for
+#: whoever reads the raw log file — but `supervisor._fetch_only` tails that
+#: SAME stream for the sentence it puts on the job row, and before this
+#: marker existed it got the whole blob, traceback included: a runner's own
+#: deliberately-written `RuntimeError("...")` reached the row buried behind
+#: a wall of Python frames instead of as the sentence it was written to be.
+#: This NUL-wrapped marker (never legitimate text a traceback or an
+#: exception's own `str()` would contain) prefixes the one line meant for
+#: machine consumption, written last — `_fetch_only` takes only what
+#: follows its final occurrence, and falls back to the old whole-tail
+#: behaviour when a stderr blob has no marker at all (a process killed by a
+#: signal, for instance, never reaches this except branch to write one).
+JOB_ERROR_MARKER = "\x00fused-render-job-error\x00"
+
 
 def set_state(**fields):
     with _state_lock:
@@ -4855,7 +4870,7 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
             sys.exit(1)
         except BaseException as e:  # noqa: BLE001 - stderr is the supervisor's report
             traceback.print_exc(file=sys.stderr)
-            sys.stderr.write(f"\n{e.__class__.__name__}: {e}\n")
+            sys.stderr.write(f"\n{JOB_ERROR_MARKER}{e.__class__.__name__}: {e}\n")
             sys.exit(1)
         sys.exit(0)
 

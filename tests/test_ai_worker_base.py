@@ -3500,3 +3500,27 @@ def test_serve_download_only_ignores_file_for_a_runner_without_the_param(base, c
     assert excinfo.value.code == 0
     assert calls == ["org/model"]
     assert any("ignores --file" in r.message for r in caplog.records)
+
+
+# -- item 6: JOB_ERROR_MARKER, so a written sentence outlives the traceback -----
+
+
+def test_serve_download_only_marks_the_final_sentence_after_the_traceback(base, capsys):
+    """A deliberately-raised `RuntimeError` on the `--download-only` path must
+    still print the FULL traceback to stderr (a human reading the raw log
+    file needs it) — but `JOB_ERROR_MARKER` prefixes the last line, so
+    `supervisor._download_failure_text` can extract just the sentence for
+    the job row (item 6 of the architecture-detection brief)."""
+    def download(model_id):
+        raise RuntimeError("this model needs the Diffusers engine")
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only"])
+    assert excinfo.value.code == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert base.JOB_ERROR_MARKER in err
+    after_marker = err.rsplit(base.JOB_ERROR_MARKER, 1)[-1].strip()
+    assert after_marker == "RuntimeError: this model needs the Diffusers engine"
