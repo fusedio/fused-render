@@ -28,6 +28,8 @@ import json
 import os
 import time
 
+from fused_render.ai.runners import formats
+
 from fused_render.ai.hub_catalog_config import HubCatalogConfig, load_config
 
 #: Manifest schema version. Bump alongside any incompatible manifest shape
@@ -203,7 +205,7 @@ def _row_columns(rows: list[dict]) -> dict:
         if not isinstance(siblings, list):
             return False
         names = [sib.get("rfilename") for sib in siblings if isinstance(sib, dict)]
-        return "model_index.json" in [n for n in names if isinstance(n, str)]
+        return formats.DIFFUSERS_INDEX in [n for n in names if isinstance(n, str)]
 
     cols = {"id": [], "capability": [], "format": [], "downloads": [],
             "likes": [], "lastModified": [], "createdAt": [], "libraryName": [],
