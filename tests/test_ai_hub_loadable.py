@@ -35,12 +35,12 @@ def test_any_other_runner_is_the_any_kind_with_no_data():
 def test_admission_allowlist_kind_flags_a_repo_outside_the_two_variants():
     variant_id = next(iter(formats.MFLUX_VARIANTS))
     loadable, reason = hub_loadable.admission(
-        runner_code="mflux-image", runner_short="mflux",
+        runner_code="mflux-image",
         model_id=variant_id, model_type=None)
     assert (loadable, reason) == (True, None)
 
     loadable, reason = hub_loadable.admission(
-        runner_code="mflux-image", runner_short="mflux",
+        runner_code="mflux-image",
         model_id="some-org/unrelated-flux-repo", model_type=None)
     assert loadable is False
     assert reason == "no engine here loads this"
@@ -51,7 +51,7 @@ def test_admission_allowlist_kind_with_diffusers_index_gets_a_switch_reason():
     (`model_index.json`) gets a distinct, actionable reason instead of the
     generic "no engine here loads this"."""
     loadable, reason = hub_loadable.admission(
-        runner_code="mflux-image", runner_short="mflux",
+        runner_code="mflux-image",
         model_id="some-org/unrelated-flux-repo", model_type=None,
         has_diffusers_index=True)
     assert loadable is False
@@ -64,7 +64,7 @@ def test_admission_model_types_kind_unknown_set_never_flags(monkeypatch):
     nothing" — every row stays loadable until the venv exists to ask."""
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types", lambda: None)
     loadable, reason = hub_loadable.admission(
-        runner_code="mlx-text", runner_short="mlx-vlm",
+        runner_code="mlx-text",
         model_id="org/whatever", model_type="totally_unknown_arch")
     assert (loadable, reason) == (True, None)
 
@@ -73,13 +73,13 @@ def test_admission_model_types_kind_flags_an_unsupported_architecture(monkeypatc
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types",
                          lambda: frozenset({"llama", "qwen2"}))
     loadable, reason = hub_loadable.admission(
-        runner_code="mlx-text", runner_short="mlx-vlm",
+        runner_code="mlx-text",
         model_id="org/some-repo", model_type="neo_chat")
     assert loadable is False
     assert reason == "neo_chat not supported by mlx-vlm"
 
     loadable, reason = hub_loadable.admission(
-        runner_code="mlx-text", runner_short="mlx-vlm",
+        runner_code="mlx-text",
         model_id="org/some-repo", model_type="llama")
     assert (loadable, reason) == (True, None)
 
@@ -93,14 +93,14 @@ def test_admission_model_types_kind_with_no_model_type_at_all_stays_loadable(mon
     monkeypatch.setattr(hub_loadable, "mlx_vlm_model_types",
                          lambda: frozenset({"llama"}))
     loadable, reason = hub_loadable.admission(
-        runner_code="mlx-text", runner_short="mlx-vlm",
+        runner_code="mlx-text",
         model_id="org/some-repo", model_type=None)
     assert (loadable, reason) == (True, None)
 
 
 def test_any_kind_never_flags_regardless_of_model_type_or_id():
     loadable, reason = hub_loadable.admission(
-        runner_code="llamacpp-text", runner_short="llama.cpp",
+        runner_code="llamacpp-text",
         model_id="org/anything", model_type="anything")
     assert (loadable, reason) == (True, None)
 

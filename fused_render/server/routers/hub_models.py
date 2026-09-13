@@ -1576,8 +1576,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     has_diffusers_index = _has_diffusers_index(raw)
     if runner is not None:
         loadable, loadable_reason = hub_loadable.admission(
-            runner_code=runner.code, runner_short=getattr(runner, "short", runner.code),
-            model_id=model_id, model_type=model_type,
+            runner_code=runner.code, model_id=model_id, model_type=model_type,
             has_diffusers_index=has_diffusers_index)
     else:
         loadable, loadable_reason = True, None
@@ -2148,8 +2147,9 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     # since `str.__contains__`/`str.startswith` have no LIKE-style wildcard
     # semantics to escape against in the first place (see
     # `_catalog_ilike_escape`'s own docstring for the SQL-side hazard this
-    # sidesteps entirely; that helper is kept only for the live path's own
-    # SQL query elsewhere and its direct unit test).
+    # sidesteps entirely; that helper has no caller left in this module —
+    # it is retained, with its own direct unit test, as the escaping
+    # primitive a future SQL-side ILIKE/LIKE clause here would need).
     scored_pool = _scored_pool(cfg, capability_filter, cache_dir, dirs, footprint_store, hardware)
 
     def _id_contains(row: dict, needle: str) -> bool:

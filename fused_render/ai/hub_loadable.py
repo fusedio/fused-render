@@ -103,13 +103,13 @@ def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
     return ("any", None)
 
 
-def admission(*, runner_code: str, runner_short: str, model_id: str,
+def admission(*, runner_code: str, model_id: str,
               model_type: str | None,
               has_diffusers_index: bool = False) -> tuple[bool, str | None]:
     """`(loadable, reason)` for one row, judged against the runner ACTIVE for
-    its capability right now (`runner_code`/`runner_short` — the caller
-    already resolved `for_capability`, this module has no opinion on which
-    runner is active, only on what a given runner can open).
+    its capability right now (`runner_code` — the caller already resolved
+    `for_capability`, this module has no opinion on which runner is active,
+    only on what a given runner can open).
 
     `reason` is the short clause the frontend's chip shows after "Won't run
     here · " — never that full sentence itself, so the two stay reusable
@@ -121,10 +121,11 @@ def admission(*, runner_code: str, runner_short: str, model_id: str,
     reasons instead of one blanket "only loads FLUX.2 Klein" that read as
     wrong for every other diffusion repo on the pane. A repo that ships
     `model_index.json` (a Diffusers pipeline) could actually run today, just
-    not under mflux — "switch to Diffusers to run this". One that ships
-    neither has no engine on this machine that opens it at all — "no engine
-    here loads this". Defaults to `False` so the two pre-existing call sites
-    (both in tests) that predate this column keep passing without updating."""
+    not under mflux — "switch to Diffusers to run this". One that ships no
+    `model_index.json` has no engine on this machine that opens it at all —
+    "no engine here loads this". Defaults to `False` so the two pre-existing
+    call sites (both in tests) that predate this column keep passing without
+    updating."""
     kind, data = loadable_kind(runner_code)
     if kind == "allowlist":
         if isinstance(data, frozenset) and model_id in data:

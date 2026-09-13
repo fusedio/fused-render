@@ -3805,8 +3805,8 @@ export interface HubModel {
    *  they always have: nothing is flagged. */
   loadable?: boolean;
   /** The short clause the frontend's chip appends after "Won't run here · "
-   *  (e.g. "mflux only loads FLUX.2 Klein") — null/absent whenever
-   *  `loadable` is not `false`. */
+   *  (e.g. "no engine here loads this" or "switch to Diffusers to run
+   *  this", per D1278) — null/absent whenever `loadable` is not `false`. */
   loadableReason?: string | null;
 }
 

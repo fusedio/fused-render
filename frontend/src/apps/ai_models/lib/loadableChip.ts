@@ -2,8 +2,9 @@ import type { HubModel } from "@platform/lib/api";
 
 /** Item 2 (scope-corrected): the chip text for a row the runner ACTIVE for
  *  its capability cannot open — "Won't run here · <reason>", where `reason`
- *  is the server's own short clause (`HubModel.loadableReason`, e.g. "mflux
- *  only loads FLUX.2 Klein"). Split into its own testable function rather
+ *  is the server's own short clause (`HubModel.loadableReason`, e.g. "no
+ *  engine here loads this" or "switch to Diffusers to run this", per
+ *  D1278). Split into its own testable function rather
  *  than inlined JSX so the exact wording has one place to check, the same
  *  reason `formatToken`/`downloadedVariantLabel` live in this `lib/`
  *  directory rather than the screen component.
