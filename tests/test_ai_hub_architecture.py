@@ -161,3 +161,90 @@ def test_shipped_cache_is_stable_across_calls():
     second = hub_architecture.resolve(raw)
     assert first.shipped is True
     assert second.shipped is True
+
+
+# Follow-up review findings 2, 4, 5 -------------------------------------------
+
+
+def test_diffusers_manifest_wins_over_a_gguf_sibling_in_the_same_repo():
+    """Finding 2: a Diffusers repo that ALSO ships a `.gguf` quant under a
+    component subfolder (a common FLUX/SD publishing pattern) must resolve to
+    Diffusers, not llama.cpp — `.gguf` is checked only when no Diffusers
+    manifest/library signal is present at all."""
+    raw = {
+        "tags": ["diffusers:FluxPipeline"],
+        "library_name": "diffusers",
+        "siblings": _siblings("model_index.json", "transformer/diffusion_pytorch_model-Q4.gguf"),
+    }
+    arch = hub_architecture.resolve(raw)
+    assert arch.name == "FluxPipeline"
+    assert arch.engine == "Diffusers"
+
+
+def test_gguf_still_resolves_when_no_diffusers_signal_present():
+    """The reorder in the test above must not swallow the plain GGUF case —
+    a repo with no Diffusers manifest/library signal still resolves off its
+    `.gguf` sibling exactly as before."""
+    raw = {"siblings": _siblings("model.Q4_K_M.gguf"), "library_name": "gguf"}
+    arch = hub_architecture.resolve(raw)
+    assert arch.engine == "llama.cpp"
+
+
+def test_is_shipped_gated_on_capability_a_video_repo_is_not_shipped_by_diffusers_image():
+    """Finding 4: `_ENGINE_RUNNER_CODES["Diffusers"]` holds only IMAGE runner
+    codes. A text-to-video Diffusers repo judged against the VIDEO
+    capability's runner codes must read as NOT shipped — advising "needs
+    Diffusers" for an engine with no video runner is a bug; the honest
+    reading is "recognised, but no runner for THIS capability"."""
+    raw = {"library_name": "diffusers", "tags": ["diffusers:SomeVideoPipeline"]}
+    arch_video = hub_architecture.resolve(raw, capability="text-to-video")
+    assert arch_video.engine == "Diffusers"
+    assert arch_video.shipped is False
+
+    arch_image = hub_architecture.resolve(raw, capability="text-to-image")
+    assert arch_image.engine == "Diffusers"
+    assert arch_image.shipped is True
+
+
+def test_is_shipped_with_no_capability_given_falls_back_to_any_runner():
+    """Backward-compatible default: a caller that does not (yet) know the
+    row's capability gets the old, capability-blind reading."""
+    raw = {"library_name": "diffusers"}
+    arch = hub_architecture.resolve(raw)
+    assert arch.engine == "Diffusers"
+    assert arch.shipped is True
+
+
+def test_bare_library_fallback_name_is_flagged_as_stuttering_with_engine():
+    """Finding 5: the MiniMax-H3-shaped row — no `diffusers:` tag, no
+    `config` at all — falls back to the bare `library_name` for `name`,
+    which is the EXACT signal that also produced `engine="Diffusers"`.
+    `name_is_bare_library` names that stutter so a consumer (the chip's
+    parenthetical, the drawer's engine suffix) can suppress it."""
+    raw = {"library_name": "diffusers",
+           "siblings": _siblings("modular_model_index.json")}
+    arch = hub_architecture.resolve(raw)
+    assert arch.name == "diffusers"
+    assert arch.engine == "Diffusers"
+    assert arch.name_is_bare_library is True
+
+
+def test_bare_library_fallback_not_flagged_when_it_does_not_match_engine():
+    """A bare `library_name` fallback that does NOT read the same as the
+    engine name (`"onnx"` vs. `"ONNX Runtime"`) is still an honest, distinct
+    fact worth showing beside the engine — not suppressed."""
+    raw = {"library_name": "onnx", "siblings": _siblings("model.onnx")}
+    arch = hub_architecture.resolve(raw)
+    assert arch.name == "onnx"
+    assert arch.engine == "ONNX Runtime"
+    assert arch.name_is_bare_library is False
+
+
+def test_diffusers_tag_name_is_never_flagged_as_bare_library():
+    """A `diffusers:<Class>` tag name is a real, specific fact — never the
+    bare-library fallback, even though `engine` also reads "Diffusers"."""
+    raw = {"tags": ["diffusers:FluxPipeline"], "library_name": "diffusers",
+           "siblings": _siblings("model_index.json")}
+    arch = hub_architecture.resolve(raw)
+    assert arch.name == "FluxPipeline"
+    assert arch.name_is_bare_library is False

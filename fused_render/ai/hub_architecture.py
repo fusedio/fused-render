@@ -55,14 +55,33 @@ class Architecture:
     `"Sentence Transformers"`), or `None` when no engine mapping recognises
     the repo's format signals at all.
 
-    `shipped`: whether THIS APP has a runner code wired to `engine` — never
-    hardcoded per engine; see `_ENGINE_RUNNER_CODES` and `_is_shipped`. Always
-    `False` when `engine` is `None`.
+    `shipped`: whether THIS APP has a runner code wired to `engine` FOR THE
+    ROW'S OWN CAPABILITY — never hardcoded per engine; see
+    `_ENGINE_RUNNER_CODES` and `_is_shipped`. Always `False` when `engine` is
+    `None`. (Finding 4 of the follow-up review: `_ENGINE_RUNNER_CODES` lists
+    every runner code that can open `engine`'s format ACROSS capabilities —
+    "Diffusers" holds only image runner codes, for instance — so `shipped`
+    is gated on the `capability` `resolve()` was called with; a video repo
+    judged "Diffusers" must not read as shipped off an IMAGE runner that
+    cannot serve video at all. A caller that does not pass `capability`
+    (or an older one that predates this) gets the old, capability-blind
+    reading — any registered runner code counts.)
+
+    `name_is_bare_library`: True when `name` is nothing more than the bare
+    `library_name` fallback (finding 5) AND that same string is, once
+    case/punctuation-normalised, the word `engine` itself reads as
+    ("diffusers" / "Diffusers", "mlx" / "MLX") — the one case where naming
+    both stutters ("diffusers · Diffusers" in the drawer, "needs Diffusers
+    (diffusers)" in the chip). `name` itself is left populated — a reader
+    who wants ANY name still sees one wherever `engine` is not ALSO shown
+    beside it — this field only tells a consumer that already renders
+    `engine` to skip `name` rather than repeat it.
     """
 
     name: str | None
     engine: str | None
     shipped: bool
+    name_is_bare_library: bool = False
 
 
 #: engine name -> the runner `code`s that open it. The ONE place this
@@ -80,12 +99,13 @@ _ENGINE_RUNNER_CODES: dict[str, tuple[str, ...]] = {
     "Sentence Transformers": (),
 }
 
-#: engine name -> whether some runner code in `_ENGINE_RUNNER_CODES[engine]`
-#: is registered, memoized process-wide (registry's `_RUNNERS` tuple is
-#: static for the process's lifetime — this never goes stale). Cleared by
-#: `reset_cache()`, the same test hook `hub_loadable.reset_cache` provides
-#: for its own registry-adjacent cache.
-_SHIPPED_CACHE: dict[str, bool] = {}
+#: (engine name, capability or None) -> whether some runner code in
+#: `_ENGINE_RUNNER_CODES[engine]` is BOTH registered AND (when a capability
+#: was given) serves that capability, memoized process-wide (registry's
+#: `_RUNNERS` tuple is static for the process's lifetime — this never goes
+#: stale). Cleared by `reset_cache()`, the same test hook
+#: `hub_loadable.reset_cache` provides for its own registry-adjacent cache.
+_SHIPPED_CACHE: dict[tuple[str, str | None], bool] = {}
 
 
 def reset_cache() -> None:
@@ -94,14 +114,30 @@ def reset_cache() -> None:
     _SHIPPED_CACHE.clear()
 
 
-def _is_shipped(engine: str) -> bool:
-    if engine in _SHIPPED_CACHE:
-        return _SHIPPED_CACHE[engine]
+def _is_shipped(engine: str, capability: str | None) -> bool:
+    """Finding 4: gated on `capability`, not just on "is ANY runner code for
+    `engine` registered" — `_ENGINE_RUNNER_CODES[engine]` mixes runner codes
+    across capabilities for an engine offered on more than one (Diffusers
+    is image-only today, but the table's own shape does not promise that
+    stays true), so a code registered for a DIFFERENT capability than the
+    row's own must not count. `capability=None` (a caller that has not
+    resolved one, or an older call site) keeps the old, capability-blind
+    reading: any registered code for the engine counts."""
+    key = (engine, capability)
+    if key in _SHIPPED_CACHE:
+        return _SHIPPED_CACHE[key]
     from fused_render.ai import registry
 
     codes = _ENGINE_RUNNER_CODES.get(engine, ())
-    result = any(registry.by_code(code) is not None for code in codes)
-    _SHIPPED_CACHE[engine] = result
+    result = False
+    for code in codes:
+        runner = registry.by_code(code)
+        if runner is None:
+            continue
+        if capability is None or runner.capability == capability:
+            result = True
+            break
+    _SHIPPED_CACHE[key] = result
     return result
 
 
@@ -113,55 +149,80 @@ def _sibling_names(raw: dict) -> frozenset[str]:
     return frozenset(n for n in names if isinstance(n, str))
 
 
-def _resolve_name(raw: dict) -> str | None:
+def _resolve_name(raw: dict) -> tuple[str | None, bool]:
     """Signal order (brief item 1): a `diffusers:<PipelineClass>` tag, then
     `config.diffusers._class_name`, then `config.architectures[0]`, then
-    `config.model_type`, then `library_name` alone."""
+    `config.model_type`, then `library_name` alone.
+
+    Returns `(name, is_bare_library_fallback)` — the second element is True
+    only for the LAST branch, so `resolve()` can tell "this row's raw
+    `library_name` is the only thing that named anything" apart from every
+    other, more specific signal (finding 5)."""
     tags = raw.get("tags")
     if isinstance(tags, list):
         for tag in tags:
             if isinstance(tag, str) and tag.startswith("diffusers:"):
                 cls = tag.split(":", 1)[1]
                 if cls:
-                    return cls
+                    return cls, False
     config = raw.get("config")
     if isinstance(config, dict):
         diffusers_cfg = config.get("diffusers")
         if isinstance(diffusers_cfg, dict):
             cls = diffusers_cfg.get("_class_name")
             if isinstance(cls, str) and cls:
-                return cls
+                return cls, False
         archs = config.get("architectures")
         if isinstance(archs, list) and archs and isinstance(archs[0], str) and archs[0]:
-            return archs[0]
+            return archs[0], False
         model_type = config.get("model_type")
         if isinstance(model_type, str) and model_type:
-            return model_type
+            return model_type, False
     library = raw.get("library_name")
     if isinstance(library, str) and library:
-        return library
-    return None
+        return library, True
+    return None, False
+
+
+def _normalize_for_stutter_check(value: str) -> str:
+    """Case/punctuation-insensitive compare key for `resolve()`'s
+    `name_is_bare_library` check — "diffusers" must read as the same word as
+    "Diffusers", and "sentence-transformers" as "Sentence Transformers"."""
+    return value.lower().replace("-", " ").replace("_", " ").strip()
 
 
 def _resolve_engine(raw: dict, names: frozenset[str]) -> str | None:
     """Which engine's format signals this row carries — checked in an order
     that puts the two unambiguous, single-file-format checks first (a
-    directory of safetensors says nothing about modality on its own; a
-    `.gguf` or the LTX split manifest does), then the broader Diffusers/MLX/
-    ONNX/Sentence-Transformers library and manifest signals. Mirrors
-    `formats.loaders`'s own DECISIVE-first shape, at a much smaller scale —
-    this module only needs to name the engine, not classify the full
-    snapshot."""
+    directory of safetensors says nothing about modality on its own; the LTX
+    split manifest does), then the Diffusers manifest/library signal, THEN
+    `.gguf`, then the remaining MLX/ONNX/Sentence-Transformers library and
+    manifest signals. Mirrors `formats.loaders`'s own DECISIVE-first shape,
+    at a much smaller scale — this module only needs to name the engine, not
+    classify the full snapshot.
+
+    **Diffusers before `.gguf` (finding 2 of the follow-up review).** A
+    repo can publish BOTH a Diffusers manifest (`model_index.json` /
+    `modular_model_index.json`, or `library_name == "diffusers"`) and one or
+    more `.gguf` quant files under a component subfolder — a common FLUX/SD
+    publishing pattern (a quantized transformer alongside the full pipeline).
+    Checking `.gguf` first mis-resolved that shape to `"llama.cpp"`, which
+    also contradicted `_file_format`'s own documented safetensors-before-gguf
+    priority for a mixed repo (that function's docstring). The Diffusers
+    manifest/library check is exactly as unambiguous as `.gguf` — a repo does
+    not carry `model_index.json`/`library_name: diffusers` by accident — so it
+    is checked FIRST and a `.gguf` sibling only resolves to `"llama.cpp"` when
+    no Diffusers manifest signal is present at all."""
     if formats.has_ltx_split_layout(names):
         return "ltx-2-mlx"
-    if any(name.lower().endswith(".gguf") for name in names):
-        return "llama.cpp"
     library = raw.get("library_name")
     library = library if isinstance(library, str) else None
     if (formats.DIFFUSERS_INDEX in names
             or formats.DIFFUSERS_MODULAR_INDEX in names
             or library == "diffusers"):
         return "Diffusers"
+    if any(name.lower().endswith(".gguf") for name in names):
+        return "llama.cpp"
     if any(name.lower().endswith(".onnx") for name in names) or library == "onnx":
         return "ONNX Runtime"
     tags = raw.get("tags")
@@ -173,10 +234,15 @@ def _resolve_engine(raw: dict, names: frozenset[str]) -> str | None:
     return None
 
 
-def resolve(raw: dict) -> Architecture:
+def resolve(raw: dict, capability: str | None = None) -> Architecture:
     """`Architecture` for one Hub search row's `raw` dict — the same blob
     `_EXPAND` already fetched, no extra request, no filesystem lookup, no
     import from `hub_models`.
+
+    `capability` (finding 4): the row's OWN classified capability
+    (`ai_tasks.classify_repo(...).capability`), used only to gate `shipped`
+    — see `_is_shipped`'s own docstring. `None` (the default, for a caller
+    that has not resolved one) keeps the old capability-blind reading.
 
     Unknown always resolves to unloadable-safe defaults: an unrecognised
     architecture, an absent `config`, empty `siblings`, all read as `name=
@@ -185,7 +251,16 @@ def resolve(raw: dict) -> Architecture:
     own fallback text carries that meaning, not this dataclass.
     """
     names = _sibling_names(raw)
-    name = _resolve_name(raw)
+    name, name_is_bare_library_fallback = _resolve_name(raw)
     engine = _resolve_engine(raw, names)
-    shipped = _is_shipped(engine) if engine is not None else False
-    return Architecture(name=name, engine=engine, shipped=shipped)
+    shipped = _is_shipped(engine, capability) if engine is not None else False
+    # Finding 5: the fallback only STUTTERS against `engine` when the exact
+    # same word would appear twice — a bare `library_name` fallback that
+    # reads as something else entirely ("onnx" beside "ONNX Runtime") is
+    # still a distinct, worthwhile fact and stays unflagged.
+    name_is_bare_library = (
+        name_is_bare_library_fallback and engine is not None and name is not None
+        and _normalize_for_stutter_check(name) == _normalize_for_stutter_check(engine)
+    )
+    return Architecture(name=name, engine=engine, shipped=shipped,
+                         name_is_bare_library=name_is_bare_library)
