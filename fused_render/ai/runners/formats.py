@@ -28,6 +28,7 @@ invite.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import struct
@@ -223,6 +224,18 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
 
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
+
+#: A diffusers MODULAR pipeline's own manifest — the layout `DiffusersPipeline.
+#: from_pretrained` reads via `ModularPipeline` when the repo has no single
+#: flat `model_index.json` at all (component-level sub-pipelines instead,
+#: e.g. `MiniMax_H3_sdnq_4bit_pruned`'s `transformer/`, `transformer_ref/`,
+#: `vae/`, `scheduler/` beside this file). First-class Diffusers evidence in
+#: its own right, not a weaker cousin of `DIFFUSERS_INDEX` above — a repo
+#: that ships ONLY this manifest is exactly as much a Diffusers pipeline as
+#: one that ships the flat index, and treating it as "no engine recognised"
+#: is the bug `hub_architecture.py` exists to fix (see its own module
+#: docstring for the MiniMax H3 repo this constant was added for).
+DIFFUSERS_MODULAR_INDEX = "modular_model_index.json"
 
 #: The `model_type`s of the DUAL ENCODERS the embedding runners read — one
 #: checkpoint holding a text tower and a vision tower that project into one
@@ -1753,6 +1766,41 @@ def has_ltx_split_layout(names) -> bool:
         return False
     return any(name.startswith("transformer-") and name.endswith(".safetensors")
                for name in names)
+
+
+def resolve_versioned_name(names, stem: str) -> str | None:
+    """Mirrors `ltx_pipelines_mlx/_base.py::_resolve_safetensors`'s own
+    rule — prefer a versioned `{stem}-*.safetensors`, alphabetically latest;
+    else the plain `{stem}.safetensors` — against a Hub file LISTING rather
+    than a local directory, so a caller (`ltx_video/worker.py::download`) can
+    ask for the one file the loader will actually open instead of every name
+    that could conceivably match. Returns `None` when neither form is
+    present in `names`.
+
+    Moved here from `ltx_video/worker.py` (item 2, D1287+) so `hub_loadable`
+    can judge the same repo-shape rule the worker downloads against, without
+    either copy drifting from the other — the worker runs in its own venv
+    and cannot import `hub_loadable`, but both already import this module.
+    """
+    versioned = sorted(name for name in names
+                       if fnmatch.fnmatch(name, f"{stem}-*.safetensors"))
+    if versioned:
+        return versioned[-1]
+    plain = f"{stem}.safetensors"
+    return plain if plain in names else None
+
+
+def distilled_transformer_filename(names) -> str | None:
+    """The one transformer file `DistilledPipeline.load()` would actually
+    open: `transformer.safetensors` if present (no curated repo ships this
+    name today, but upstream tries it FIRST), else the versioned-preferred
+    `transformer-distilled*` — `resolve_versioned_name`'s own rule. `None`
+    when the repo has neither, which both `ltx_video/worker.py::download`
+    (a download-time refusal) and `hub_loadable` (a search-time "won't run
+    here" chip) treat as "this repo is not ltx-2-mlx's curated layout"."""
+    if "transformer.safetensors" in names:
+        return "transformer.safetensors"
+    return resolve_versioned_name(names, "transformer-distilled")
 
 
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
