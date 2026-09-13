@@ -3222,7 +3222,24 @@ def test_allowlist_kind_flags_a_repo_outside_the_set(client, hub_cache, monkeypa
     assert by_id["org/allowed"]["loadable"] is True
     assert by_id["org/allowed"]["loadableReason"] is None
     assert by_id["org/blocked"]["loadable"] is False
-    assert by_id["org/blocked"]["loadableReason"] == "mflux only loads FLUX.2 Klein"
+    assert by_id["org/blocked"]["loadableReason"] == "no engine here loads this"
+
+
+def test_allowlist_kind_with_diffusers_index_gets_a_switch_reason(client, hub_cache, monkeypatch):
+    """Item 4 (D1278): a non-allowlisted row that ships `model_index.json`
+    (a Diffusers pipeline) gets the actionable "switch to Diffusers" reason
+    instead of the generic "no engine here loads this"."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _mflux_runner())
+    monkeypatch.setattr(hub.hub_loadable, "loadable_kind",
+                         lambda code: ("allowlist", frozenset({"org/allowed"})))
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/diffusers-repo", pipeline_tag="text-to-image",
+             siblings=[{"rfilename": "model_index.json"}]),
+    ]))
+    models = _search(client).json()["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["org/diffusers-repo"]["loadable"] is False
+    assert by_id["org/diffusers-repo"]["loadableReason"] == "switch to Diffusers to run this"
 
 
 def test_model_types_kind_flags_an_unsupported_architecture(client, hub_cache, monkeypatch):

@@ -45,7 +45,13 @@ VERSION = 1
 #: mechanism and every such pool would otherwise mass-rebuild at once, while
 #: a pool with no `schemaVersion` is simply every pool that predates THIS
 #: column, which is exactly the one-time rebuild this exists to force.
-ROW_SCHEMA_VERSION = 2
+#: 3 (D1278, item 4): added `hasDiffusersIndex`, read off `raw["siblings"]`
+#: for `model_index.json` — see `_row_columns`'s `has_diffusers_index`
+#: helper and `hub_models._has_diffusers_index` (the query-time twin that
+#: reads the same fact straight off `raw`, so a pool built before this
+#: column existed still answers correctly at query time; the column exists
+#: for SQL filtering/facet use only, same shape as `modelType` (D1276)).
+ROW_SCHEMA_VERSION = 3
 
 
 @contextlib.contextmanager
@@ -189,9 +195,20 @@ def _row_columns(rows: list[dict]) -> dict:
         config = v.get("config")
         return s(config.get("model_type")) or "" if isinstance(config, dict) else ""
 
+    def has_diffusers_index(v):
+        """Whether `v["siblings"]` names `model_index.json` — the same fact
+        `hub_models._has_diffusers_index` reads straight off `raw` at query
+        time; this column exists for direct SQL use (item 4, D1278)."""
+        siblings = v.get("siblings")
+        if not isinstance(siblings, list):
+            return False
+        names = [sib.get("rfilename") for sib in siblings if isinstance(sib, dict)]
+        return "model_index.json" in [n for n in names if isinstance(n, str)]
+
     cols = {"id": [], "capability": [], "format": [], "downloads": [],
             "likes": [], "lastModified": [], "createdAt": [], "libraryName": [],
-            "gated": [], "private": [], "modelType": [], "raw": []}
+            "gated": [], "private": [], "modelType": [], "hasDiffusersIndex": [],
+            "raw": []}
     for row in rows:
         raw = row.get("raw") or {}
         cols["id"].append(s(raw.get("id")) or "")
@@ -211,6 +228,7 @@ def _row_columns(rows: list[dict]) -> dict:
         # column exists for DIRECT SQL filtering/facet use, not because
         # anything downstream depends on it being here.
         cols["modelType"].append(model_type(raw))
+        cols["hasDiffusersIndex"].append(has_diffusers_index(raw))
         cols["raw"].append(json.dumps(raw))
     return cols
 
@@ -266,6 +284,7 @@ def write_pool(cfg: HubCatalogConfig, capability: str, rows: list[dict], *,
             ("gated", pa.string()),
             ("private", pa.bool_()),
             ("modelType", pa.string()),
+            ("hasDiffusersIndex", pa.bool_()),
             ("raw", pa.string()),
         ])
         table = pa.table(_row_columns(rows), schema=schema)

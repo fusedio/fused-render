@@ -1225,6 +1225,20 @@ _FILE_FORMAT_EXTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _has_diffusers_index(raw: dict) -> bool:
+    """Item 4 (D1278): whether this repo ships `model_index.json` — a
+    Diffusers pipeline manifest — read off the same `siblings` list
+    `_file_format`/`_count_variants` already read (already in `_EXPAND`, no
+    extra request). Used only to split `hub_loadable.admission`'s
+    mflux-image reason into "switch to Diffusers" vs. "no engine here loads
+    this" for a repo outside `MFLUX_VARIANTS`."""
+    siblings = raw.get("siblings")
+    if not isinstance(siblings, list):
+        return False
+    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
+    return formats.DIFFUSERS_INDEX in [n for n in names if isinstance(n, str)]
+
+
 def _file_format(raw: dict) -> str | None:
     """Item 3: the repo's on-disk weight format, read off the SAME
     `siblings` list `_count_variants`/`pick_gguf_file` already read (already
@@ -1559,10 +1573,12 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
     # the GGUF-picker branch — the capability's active runner is one fact,
     # asked twice for two different questions, not two lookups.
     model_type = config.get("model_type") if isinstance(config, dict) else None
+    has_diffusers_index = _has_diffusers_index(raw)
     if runner is not None:
         loadable, loadable_reason = hub_loadable.admission(
             runner_code=runner.code, runner_short=getattr(runner, "short", runner.code),
-            model_id=model_id, model_type=model_type)
+            model_id=model_id, model_type=model_type,
+            has_diffusers_index=has_diffusers_index)
     else:
         loadable, loadable_reason = True, None
     return {

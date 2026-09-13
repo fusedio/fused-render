@@ -43,7 +43,19 @@ def test_admission_allowlist_kind_flags_a_repo_outside_the_two_variants():
         runner_code="mflux-image", runner_short="mflux",
         model_id="some-org/unrelated-flux-repo", model_type=None)
     assert loadable is False
-    assert reason == "mflux only loads FLUX.2 Klein"
+    assert reason == "no engine here loads this"
+
+
+def test_admission_allowlist_kind_with_diffusers_index_gets_a_switch_reason():
+    """Item 4 (D1278): a non-Klein repo that DOES ship a Diffusers pipeline
+    (`model_index.json`) gets a distinct, actionable reason instead of the
+    generic "no engine here loads this"."""
+    loadable, reason = hub_loadable.admission(
+        runner_code="mflux-image", runner_short="mflux",
+        model_id="some-org/unrelated-flux-repo", model_type=None,
+        has_diffusers_index=True)
+    assert loadable is False
+    assert reason == "switch to Diffusers to run this"
 
 
 def test_admission_model_types_kind_unknown_set_never_flags(monkeypatch):
