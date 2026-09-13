@@ -1223,3 +1223,98 @@ pass unchanged.
 
 **Verification**: `bun test src/apps/explorer` (1146 pass, 0 fail) and
 `bunx tsc --noEmit` (clean).
+
+## The shortcut button overlapping the crumb path (2026-09-13, user report + screenshot)
+
+**The defect**: same class of bug as "the star overlapping the last crumb"
+above, one layer later — the last crumb ("index.html") and the "Search ⌘L"
+button rendered directly on top of each other, illegible overlapping
+glyphs, screenshotted in a running-screen report.
+
+**Root cause, confirmed by reading, not assumed**: `.listing-search-crumbs`
+never reserved any room for `.listing-search-shortcut-hint` at all. The
+star-overlap fix above only taught `--pin-right` about the STAR (and,
+transitively, the count/spinner pin) — it never touched the shortcut
+button, which is a separate absolutely-positioned element sharing the
+star's own trailing slot (`right: 38px` in the crumb-slot host, `right:
+8px` in the plain inline/pane host — see the button's own big comment at
+`explorer.css` line ~1926). Confirmed both render on the EXACT SAME
+condition (`SearchField.tsx`: crumbs on `query === "" && !pinnedOpen`, the
+button on `!pinnedOpen && !hasClear` where `hasClear = query !== ""` — the
+same predicate, written twice), so whenever the crumbs show, the button is
+always sitting somewhere over their trailing end too, in whichever of its
+two forms `boxWide` picked.
+
+**Why this one is harder than the star**: the star is a fixed 24px hit box
+at a fixed offset — one number. This button's own footprint varies by
+form: `.bar-ctl-icon` is an exact 28px square, but the wide label form
+("Search" + a `<kbd>` shortcut) is not a constant — and the shortcut text
+itself differs by platform (`⌘L` vs `Ctrl L`, `isMac` in SearchField.tsx),
+so the wide form's own width isn't even a single number across machines.
+
+**Fix**: extended the SAME `--pin-right` mechanism the star fix already
+uses, rather than a parallel one. `:has(.listing-search-shortcut-hint:not
+(.bar-ctl-icon))` / `:has(.listing-search-shortcut-hint.bar-ctl-icon)` on
+`.listing-search-box` read the button's own rendered class back out of the
+DOM and set `--pin-right` to the width THAT form needs, in both hosts (the
+crumb-slot host needs the star's 38px inset added on top; the plain host
+needs its own 8px). Chose `:has()` over adding a second class to the box
+itself in React because the information (which form is rendering) already
+exists as the button's own class — SearchField.tsx needed zero changes.
+
+**Widths are estimates, stated as such in the CSS comments** — arithmetic
+(button padding + gap + kbd chrome) added by hand, not measured in a real
+browser, sized generously for the WIDER "Ctrl L" (non-Mac) label so the
+Mac "⌘L" case (this reporter's own screenshot) has slack rather than a
+tight fit. The icon-form numbers ARE exact (`.bar-ctl-icon`'s width is a
+literal `28px` in the CSS, not a guess).
+
+**Base `.listing-search-crumbs` rule changed** from a bare `right: 10px` to
+`right: var(--pin-right, 10px)` — same pattern `.listing-search-count`
+already uses (`right: var(--pin-right, 26px)`), so the crumbs strip can be
+pulled in by whichever trailing control is actually present without a
+third parallel mechanism. The 10px fallback preserves the exact old value
+for the one case that sets `--pin-right` to nothing at all.
+
+**`search-crumbs-star-clearance.test.ts` updated, not left to rot**: its
+third test asserted the base rule was the literal `right: 10px` — this is
+now the fallback inside `var(--pin-right, 10px)`, not the whole value, so
+the assertion was rewritten to match the new form rather than deleted or
+weakened. Nothing else in that file needed touching — its other four tests
+assert on the crumb-slot host's OWN override selector
+(`#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs
+{ right: var(--pin-right); }`), untouched, and the star's own rule,
+untouched.
+
+**No new tests added** — per the standing rule for a CSS/layout-only round
+(no TypeScript logic touched; `SearchField.tsx` is unmodified). Ran the
+existing targeted suite instead: `search-shortcut-collapse.test.ts`,
+`search-mode-chip.test.ts`, `search-crumbs-star-clearance.test.ts`,
+`search-count-pin-degrade.test.ts`, `FileSearchField.render.test.tsx` — 37
+pass, 0 fail. `bun run build` (full, includes `tsc --noEmit` and the real
+`lightningcss`/vite CSS parse — the same pipeline the `*/`-in-a-comment
+lesson earlier this session was about) — clean.
+
+**Deliberately NOT touched**: `HINT_WIDE_PX` (340px) and the container
+query's own hide breakpoint (189px, `search-shortcut-collapse.test.ts`'s
+own pinned numbers) — this fix is purely about the CRUMBS reserving room
+for whichever form the button is already in, not about when the button
+itself switches form. Those two numbers govern a different question
+entirely and were not touched or re-litigated.
+
+**Cannot be verified headlessly** — a human needs a running screen to
+confirm, at minimum:
+- the estimated wide-label width (~120px assumed content, +38/+8px inset,
+  +6px gap) is generous enough on an actual rendered "Search ⌘L" /
+  "Search Ctrl L" button in both themes, and not so generous it leaves an
+  ugly dead gap before the button;
+- the original reported scenario (a path ending in `index.html`, `⌘L`
+  shortcut, this reporter's own screenshot) now shows both fully legible
+  with visible air between them, not just non-overlapping;
+- the same scenario in the PLAIN (non-crumb-slot) inline/pane host, which
+  the original report's screenshot didn't show but this fix also changes;
+- the collapsed-glyph form (narrower boxes, ~189-339px) also clears
+  cleanly — the 28px number is exact, but the gap it leaves has not been
+  eyeballed;
+- both themes (light/dark) — this is a layout-only fix, no new colors, but
+  worth a glance per the standing instruction to check both.
