@@ -21,11 +21,13 @@
 // anything about search RESULTS, so neither host needs it and duplicating it
 // per host would be the drift this component exists to prevent.
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -45,7 +47,7 @@ import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/s
 import { resolveFolderToOpen } from "@apps/explorer/listing/enter-prompt";
 import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
-import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
+import { useControlReservationRef, useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
@@ -255,6 +257,55 @@ export function SearchField({
   const HINT_SHORT = "Search, or type a path or pattern";
   const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
   const searchBoxRef = useWidthThresholdRef(HINT_WIDE_PX, setBoxWide);
+
+  // THE OMNIBOX-OVERLAP-DEFECT FOLLOW-UP (running-screen review, 2026-09-13):
+  // the crumbs strip's reservation against the trailing "Search ⌘L" button
+  // used to be a pair of hand-estimated pixel widths in explorer.css, sized
+  // generously for the wider "Ctrl L" label so the reservation would never
+  // be too tight — which meant it was ALWAYS too loose for every other
+  // combination (Mac's shorter "⌘L", the collapsed glyph), truncating a long
+  // path's tail behind a wide dead gap the button never actually occupied.
+  // `useControlReservationRef` (search-hint-width.ts) measures the button's
+  // real position against this box's own right edge instead of guessing at
+  // it — see that file for why two elements are tracked and why a missing
+  // element reports `null` rather than a stale number.
+  //
+  // 6px: the same clearance gap every other trailing control in this file
+  // reserves (the star, the clear button, the count/spinner pin — see
+  // explorer.css's own "24px hit area + 6px gap" comments), so the button's
+  // breathing room reads as the SAME deliberate gap the rest of the bar
+  // uses, not a bespoke number invented for this one control.
+  const SHORTCUT_HINT_CLEARANCE_PX = 6;
+  const [shortcutHintReservationPx, setShortcutHintReservationPx] = useState<number | null>(null);
+  const { boxRef: shortcutHintBoxRef, controlRef: shortcutHintButtonRef } = useControlReservationRef(
+    SHORTCUT_HINT_CLEARANCE_PX,
+    setShortcutHintReservationPx,
+  );
+  // Both refs target the SAME `.listing-search-box` node below — `boxWide`'s
+  // own width threshold and this reservation measurement are two independent
+  // observers of one element, not a reason to merge the hooks themselves
+  // (they answer different questions and have no shared state).
+  const mergeSearchBoxRefs = useCallback(
+    (el: HTMLDivElement | null) => {
+      searchBoxRef(el);
+      shortcutHintBoxRef(el);
+    },
+    [searchBoxRef, shortcutHintBoxRef],
+  );
+  // Published as an inline custom property — not another `:has()` rule in
+  // explorer.css — because inline style always wins over a stylesheet rule
+  // for the same property on the same element, with no specificity contest
+  // to referee (the exact contest the 2026-09-13 code review already
+  // flagged once for this same `--pin-right-hint` property, see
+  // explorer.css). Left unset (`undefined`, not `"0px"`) whenever the
+  // measurement reports `null` — the button hidden, unmounted, or not yet
+  // measured on first paint — so every consumer's own `var(--pin-right-hint,
+  // 0px)` fallback in explorer.css supplies the plain star/border clearance
+  // instead of a leftover reservation for a button that isn't there.
+  const shortcutHintReservationStyle: CSSProperties | undefined =
+    shortcutHintReservationPx !== null
+      ? ({ "--pin-right-hint": `${shortcutHintReservationPx}px` } as CSSProperties)
+      : undefined;
 
   // Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this view's bar is
   // claimed, ask this field to focus instead of opening a second path editor
@@ -535,7 +586,8 @@ export function SearchField({
       }
     >
       <div
-        ref={searchBoxRef}
+        ref={mergeSearchBoxRefs}
+        style={shortcutHintReservationStyle}
         className={
           "listing-search-box" +
           // No mode modifier here any more (SPEC-omnibox-search-affordance.md
@@ -944,6 +996,7 @@ export function SearchField({
             sighted-hover affordance only, read by nothing else. */}
         {!pinnedOpen && !hasClear && (
           <button
+            ref={shortcutHintButtonRef}
             type="button"
             className={"listing-search-shortcut-hint bar-ctl" + (boxWide ? "" : " bar-ctl-icon")}
             data-hint={SEARCH_GRAMMAR_HINT}
