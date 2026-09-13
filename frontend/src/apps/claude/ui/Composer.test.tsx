@@ -1,12 +1,24 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
   await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
+
+const realFetch = globalThis.fetch;
+beforeEach(() => {
+  (globalThis as { fetch: unknown }).fetch = () =>
+    Promise.resolve(new Response("{}", { status: 200 }));
+});
+
+const mounted: ReactTestRenderer[] = [];
+afterEach(() => {
+  for (const r of mounted.splice(0)) act(() => r.unmount());
+  (globalThis as { fetch: unknown }).fetch = realFetch;
+});
 
 const controls = {
   model: DEFAULT_MODEL,
@@ -45,6 +57,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
       />,
     );
   });
+  mounted.push(renderer!);
   const root = renderer!.root;
   const box = () => root.findByType("textarea");
   const type = (value: string) =>
@@ -509,6 +522,7 @@ test("clicking Send puts focus back in the textarea", () => {
       { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
     );
   });
+  mounted.push(renderer);
   const root = renderer.root;
   act(() => {
     root.findByType("textarea").props.onChange({ currentTarget: { value: "hello" } });
