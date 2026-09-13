@@ -4315,11 +4315,13 @@ def test_a_failed_download_reports_the_written_sentence_not_a_traceback(
     entire last-2000-chars of the log file, traceback included.
 
     `worker_base.serve` writes `JOB_ERROR_MARKER` immediately before that final
-    clean `"ClassName: message"` line specifically so `_download_failure_text`
-    can pull out just the sentence. This test writes a log file shaped exactly
-    like that real output (a multi-line traceback, then the marker, then the
-    line) and proves the row's `message` is the sentence ALONE — the
-    traceback lines must not appear in it at all.
+    line specifically so `_download_failure_text` can pull out just the
+    sentence. Since follow-up review finding 6, a `RuntimeError`'s marker
+    line is the BARE sentence (no class-name prefix) — this test writes a
+    log file shaped exactly like that real output (a multi-line traceback,
+    then the marker, then the bare sentence) and proves the row's `message`
+    is the sentence ALONE — the traceback lines must not appear in it at
+    all.
     """
     from fused_render.ai.runners import worker_base
 
@@ -4328,7 +4330,7 @@ def test_a_failed_download_reports_the_written_sentence_not_a_traceback(
         "Traceback (most recent call last):\n"
         '  File "worker.py", line 42, in download\n'
         "    raise RuntimeError(\"this model needs the Diffusers engine\")\n"
-        f"\n{worker_base.JOB_ERROR_MARKER}RuntimeError: this model needs the Diffusers engine\n"
+        f"\n{worker_base.JOB_ERROR_MARKER}this model needs the Diffusers engine\n"
     )
 
     class _FailedProc:
@@ -4357,7 +4359,7 @@ def test_a_failed_download_reports_the_written_sentence_not_a_traceback(
 
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "error"
-    assert row["message"] == "RuntimeError: this model needs the Diffusers engine"
+    assert row["message"] == "this model needs the Diffusers engine"
     assert "Traceback" not in row["message"]
     assert "line 42" not in row["message"]
 

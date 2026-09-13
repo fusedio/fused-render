@@ -58,7 +58,16 @@ from fused_render import jobs
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
 from fused_render.ai import hub_catalog_builder
-from fused_render.ai.runners import worker_base
+# Follow-up review finding 3: `job_marker`, NOT `worker_base` — this module's
+# only reason to touch `worker_base` was `JOB_ERROR_MARKER` (see
+# `_download_failure_text` below), and `worker_base` starts a permanent
+# daemon thread at import time (`_GENERATE_TASKS = _start_generate_thread()`)
+# merely to be ready to serve a worker request. The supervisor is a process
+# that FORKS to spawn workers — a background thread alive here is exactly
+# the fork-after-thread SIGSEGV risk this codebase has hit before (see
+# MEMORY.md). `job_marker` holds the one constant both sides need, with no
+# import-time side effects of its own.
+from fused_render.ai.runners import job_marker
 
 logger = logging.getLogger(__name__)
 
@@ -857,7 +866,10 @@ def _download_failure_text(stderr: str) -> str:
     line, `worker_base.JOB_ERROR_MARKER` followed by the one sentence meant
     for a person reading the JOB ROW, not the log — a deliberately-raised
     `RuntimeError("some written sentence")` should reach the row AS that
-    sentence, not behind the traceback that precedes it. Splits on the
+    sentence, bare, with no `"RuntimeError: "` prefix (finding 6 of the
+    follow-up review) — a non-`RuntimeError` exception (one nothing here
+    deliberately raised as a row-facing message) still gets its class name,
+    since a bare `str(e)` there is often unreadable alone. Splits on the
     marker's LAST occurrence (there is only ever one write per failure, but
     `str.rsplit` is the honest choice either way) and returns what follows
     it, stripped. Falls back to the whole tail, stripped, when the marker is
@@ -866,8 +878,8 @@ def _download_failure_text(stderr: str) -> str:
     SOME text on the row, and the old whole-blob behaviour is still better
     than nothing for that case.
     """
-    if worker_base.JOB_ERROR_MARKER in stderr:
-        return stderr.rsplit(worker_base.JOB_ERROR_MARKER, 1)[-1].strip()
+    if job_marker.JOB_ERROR_MARKER in stderr:
+        return stderr.rsplit(job_marker.JOB_ERROR_MARKER, 1)[-1].strip()
     return stderr.strip()
 
 
