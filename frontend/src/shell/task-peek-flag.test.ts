@@ -106,9 +106,16 @@ describe("the markup adds nothing when the feature is off", () => {
     expect(VIEWS).not.toContain("{...{ [PEEK_ITEM_ATTR]: task.key }}");
   });
 
-  it("draws no halo, because the open key is read only when the host is up", () => {
+  it("draws no halo — the open key is read, and then spent only when the host is up", () => {
     for (const src of [VIEWS, CARDS, CALENDAR]) {
-      expect(src).toContain("peekOn ? usePeekedKey() : null");
+      // The FLAG IS SPENT ON THE VALUE, never on the call. `host` starts false
+      // and flips true in a layout effect, so a hook behind that condition is a
+      // hook that appears between two renders — which React throws on. Every
+      // one of these reads the key unconditionally and gates what it does with
+      // it (Bugbot, PR #1133).
+      expect(src).toMatch(/=\s*usePeekedKey\(\);/);
+      expect(src).not.toMatch(/\?\s*usePeekedKey\(\)/);
+      expect(src).toMatch(/peekOn \? (peekedKey|openKey) : null/);
     }
   });
 

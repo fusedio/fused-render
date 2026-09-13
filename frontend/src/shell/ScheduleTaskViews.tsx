@@ -1434,7 +1434,13 @@ export function TaskList({
   // Off, every line below that mentions the peek stands down and the list is
   // byte-for-byte the list this page has always rendered.
   const peekOn = usePeekHost();
-  const peeked = peekOn ? usePeekedKey() : null;
+  // BOTH HOOKS, UNCONDITIONALLY, and the flag is spent on the VALUE. `host`
+  // starts false and flips true in a layout effect, so a view that painted its
+  // first commit with the feature off would grow a hook on the next render —
+  // which React throws on outright ("rendered more hooks than during the
+  // previous render"). A conditional hook is never worth the render it saves.
+  const peekedKey = usePeekedKey();
+  const peeked = peekOn ? peekedKey : null;
   const select = (key: string) => {
     setSelected(key);
     remember({ ...memory.current, selected: key });
@@ -3661,7 +3667,9 @@ export function TaskBoard({
   // Which card's conversation is open in the side peek right now — the halo,
   // the List row's own mark drawn on a card (styles/task-peek.css).
   const peekOn = usePeekHost();
-  const peekedKey = peekOn ? usePeekedKey() : null;
+  // Unconditional — see the List's own note above.
+  const openKey = usePeekedKey();
+  const peekedKey = peekOn ? openKey : null;
 
   // Shared by expanded lane bodies AND collapsed rails, so a rolled-up lane —
   // an empty one, or one the reader closed — still catches the drop most cards

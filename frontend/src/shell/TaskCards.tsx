@@ -273,7 +273,10 @@ export function TaskCards({
   // The feature's own switch (task-peek-flag.ts). Off, the wall is the wall it
   // has always been: its own modal popup, and no marks of the peek's on a card.
   const peekOn = usePeekHost();
-  const peekedKey = peekOn ? usePeekedKey() : null;
+  // Unconditional: `host` flips in a layout effect, so a conditional call adds
+  // a hook between two renders and React throws (ScheduleTaskViews' own note).
+  const openKey = usePeekedKey();
+  const peekedKey = peekOn ? openKey : null;
   const openTask = (task: Task) => {
     if (openPeek(cardKey(task))) return;
     setPeek(task);

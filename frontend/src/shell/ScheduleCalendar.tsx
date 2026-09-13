@@ -1118,7 +1118,10 @@ export default function ScheduleCalendar({
   // wears the same halo the List's row and the Board's card do, so switching
   // view keeps the open item findable (styles/task-peek.css).
   const peekOn = usePeekHost();
-  const peekedKey = peekOn ? usePeekedKey() : null;
+  // Unconditional: `host` flips in a layout effect, so a conditional call adds
+  // a hook between two renders and React throws (ScheduleTaskViews' own note).
+  const openKey = usePeekedKey();
+  const peekedKey = peekOn ? openKey : null;
 
   // The grid below unmounts while the set is empty, and with it the scroll box
   // the placement effect aims. Forget the aim with it, or the effect on remount

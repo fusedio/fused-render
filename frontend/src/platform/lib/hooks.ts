@@ -79,6 +79,20 @@ export function useNavEpoch(ignore: readonly string[] = []): number {
   const ignoreRef = useRef(ignore);
   ignoreRef.current = ignore;
   const markRef = useRef("");
+  // THE MARK HAS TO BE RE-READ WHEN THE IGNORE LIST CHANGES, and it is its own
+  // effect because the subscription below deliberately never re-runs.
+  //
+  // The list arrives LATE: it comes from a pref, so the first paint passes an
+  // empty one and the mark recorded then still carries `?peek=`. Once the pref
+  // lands and `peek` joins the list, every later read strips it — and a Back
+  // that only dropped that param compared a stripped mark against the stale
+  // one, saw a difference, and remounted the very page the param belongs to
+  // (Bugbot, PR #1133). Re-recording it is enough: this is a correction to what
+  // "where we are" means, not a navigation, so nothing bumps.
+  const ignoreKey = ignore.join("\u0000");
+  useEffect(() => {
+    markRef.current = routeMark(location.pathname, location.search, ignoreRef.current);
+  }, [ignoreKey]);
   useEffect(() => {
     const read = () => routeMark(location.pathname, location.search, ignoreRef.current);
     markRef.current = read();

@@ -460,6 +460,32 @@ export function TaskPeek({
 
   // ---- the keyboard ----------------------------------------------------------
   /**
+   * WHAT ESCAPE MEANS IN THE PANEL: blur a composer that has words in it, and
+   * close only once it has not. Losing a half-typed message to a stray Escape
+   * is exactly the kind of thing an escape hatch must not do (design.md,
+   * Keyboard).
+   *
+   * ITS OWN FUNCTION BECAUSE THE NATIVE CHAT REACHES IT FROM THE OTHER SIDE.
+   * The chat answers Escape in its own document listener and hands the press up
+   * through `onEscape` once it has nothing of its own open — which it does
+   * BEFORE `peekKey` ever sees the event, so a panel wired straight to
+   * `closePeek` there shut on the first press with the composer full (Bugbot,
+   * PR #1133). Both routes spend this one rule instead.
+   */
+  const escapeOrBlur = useCallback((doc: Document) => {
+    const el = doc.activeElement as HTMLElement | null;
+    const typing =
+      el &&
+      (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable) &&
+      !!(el as HTMLTextAreaElement).value;
+    if (typing) {
+      el.blur();
+      return;
+    }
+    closePeek();
+  }, []);
+
+  /**
    * THE PEEK'S FOUR KEYS, in one function because they have to be answered in
    * TWO documents: this one, and — flag off — the legacy chat's, which is a
    * separate document whose keystrokes this page never hears (see the frame
@@ -474,21 +500,8 @@ export function TaskPeek({
     (e: KeyboardEvent, doc: Document): boolean => {
       if (e.defaultPrevented) return false;
       if (e.key === "Escape") {
-        const el = doc.activeElement as HTMLElement | null;
-        // FIRST ESC BLURS a composer that has something in it (design.md,
-        // Keyboard): losing a half-typed message to a stray Escape is exactly
-        // the kind of thing an escape hatch must not do.
-        const typing =
-          el &&
-          (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable) &&
-          !!(el as HTMLTextAreaElement).value;
-        if (typing) {
-          e.preventDefault();
-          el.blur();
-          return true;
-        }
         e.preventDefault();
-        closePeek();
+        escapeOrBlur(doc);
         return true;
       }
       if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
@@ -511,7 +524,7 @@ export function TaskPeek({
       }
       return false;
     },
-    [step, openAsPage],
+    [step, openAsPage, escapeOrBlur],
   );
 
   // One listener on THIS document while the peek is open.
@@ -1000,7 +1013,10 @@ export function TaskPeek({
                 chatOnly
                 peek
                 paramsSource="memory"
-                onEscape={() => closePeek()}
+                // NOT `closePeek` directly: the chat hands Escape up before
+                // this panel's own listener sees it, so the blur-first rule has
+                // to be applied here too (see `escapeOrBlur`).
+                onEscape={() => escapeOrBlur(document)}
                 // FOCUS STAYS ON THE TRIGGER (design.md, Keyboard — Notion's
                 // behaviour): the peek is a place to look first and type
                 // second, and a panel that steals the caret makes the next
