@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -93,6 +94,12 @@ SLEEP_GAP_S = 30.0
 # flap the watcher's own poll interval missed entirely (laptop lid closed
 # between ticks), not a flap that stays down across several ticks.
 ADVERTISE_RETRY_INTERVAL_S = 60.0
+
+# Strips volatile numbers (ephemeral fds, ports, IP octets) out of a failure
+# message before _warn_once uses it to decide "is this a repeat" — see
+# _warn_once for why (a distinct fd on every retry defeated plain string
+# equality).
+_ADVERTISE_MSG_KEY_RE = re.compile(r"\d+")
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -931,14 +938,14 @@ class _Controller:
         self._watch_thread: threading.Thread | None = None
         self._watch_stop = threading.Event()
         self._last_seen: list[str] | None = None
-        # The message text last logged at WARNING for an advertise (resp.
-        # unadvertise) failure, cleared on the next success — a flapping
-        # interface polls status() (every prefs read) and must not turn one
-        # dead-socket failure into per-poll log spam. Keyed on the message
-        # (not a bare bool) so a DIFFERENT failure mode later — e.g. Zeroconf()
-        # itself starts failing where only register_service was before —
-        # still gets logged instead of going permanently silent after the
-        # first warning.
+        # The normalized (see _warn_once/_ADVERTISE_MSG_KEY_RE) message text
+        # last logged at WARNING for an advertise (resp. unadvertise) failure,
+        # cleared on the next success — a flapping interface polls status()
+        # (every prefs read) and must not turn one dead-socket failure into
+        # per-poll log spam. Keyed on the normalized message (not a bare bool)
+        # so a DIFFERENT failure mode later — e.g. Zeroconf() itself starts
+        # failing where only register_service was before — still gets logged
+        # instead of going permanently silent after the first warning.
         self._advertise_warned_msg: str | None = None
         self._unadvertise_warned_msg: str | None = None
         # Wall-clock time of the last failed advertise, or None if the most
@@ -983,14 +990,26 @@ class _Controller:
                     self._server = self._thread = None
                     self.port = None
                     self._start()
-        if self.running and ips and ips != self._ips:
+        if self.running and ips and ips != self._ips and self._advertise_due():
             # Wi-Fi changed under us: re-advertise the new addresses, and
             # reissue the certificate (it names them) on a fresh https
             # listener. Under the controller lock: this runs on whatever
             # thread asks for prefs, and must not race apply()'s start/stop of
             # the same zeroconf and tls state.
+            #
+            # `_advertise_due()` gated here too, not just inside `_reannounce`
+            # itself: `_ips` is deliberately left empty for as long as an
+            # advertise keeps failing (see _advertise), so `ips != self._ips`
+            # is True on EVERY prefs read during that streak, not just when
+            # the address actually changes — this is the same per-poll-entry
+            # churn `_reannounce`'s own gate prevents from leaking a Zeroconf,
+            # just re-taking the lock here on every read instead. Checking it
+            # before the lock skips that entirely once a streak is underway;
+            # a genuine address change during a HEALTHY streak still fires
+            # every time (`_advertise_due()` is always True when nothing has
+            # failed).
             with self._lock:
-                if self.running and ips != self._ips:
+                if self.running and ips != self._ips and self._advertise_due():
                     self._reannounce(ips)
         from fused_render import lan_tls
 
@@ -1140,7 +1159,23 @@ class _Controller:
                         self.port = None
                         self._start()
                         continue  # _start advertised and reissued for `ip` itself
-                    if moved and self.running:
+                    if moved and self.running and self._advertise_due():
+                        # `_advertise_due()` gated here, not just inside
+                        # `_reannounce`: `_ips` is deliberately left empty for
+                        # as long as an advertise keeps failing (see
+                        # _advertise), so on a live-but-advertise-failing
+                        # interface `ips != self._ips` (part of `moved`
+                        # above) is True on EVERY tick, not just when the
+                        # address changes or the laptop actually slept —
+                        # without this check `moved` stays permanently true
+                        # for the whole streak and this log line + a
+                        # `_reannounce` re-entry (retaking the lock, calling
+                        # `_start_tls`) would fire every WATCH_INTERVAL_S
+                        # instead of once per ADVERTISE_RETRY_INTERVAL_S, the
+                        # exact per-poll churn this backoff exists to bound.
+                        # A genuine change during a HEALTHY streak still
+                        # fires every time (`_advertise_due()` is always True
+                        # once nothing has failed).
                         logger.info("lan: %s (%s -> %s); re-advertising",
                                     "woke from sleep" if slept else "network changed",
                                     ", ".join(self._ips) or "-", ", ".join(ips))
@@ -1252,12 +1287,22 @@ class _Controller:
         still goes to the log, just at DEBUG without a traceback, so a
         permanently-broken interface retrying every ADVERTISE_RETRY_INTERVAL_S
         does not spam WARNING forever, while a genuinely NEW failure mode
-        (a different exception/message) is never dampened."""
-        if message == getattr(self, attr):
+        (a different exception/message) is never dampened.
+
+        Compared with volatile numbers (fds, ports, octets) stripped out —
+        the production incident's own log line
+        (``Error with socket NNNN (('192.168.2.118', 5353))``) embeds a fresh
+        fd number on every single retry, which defeated plain string-equality
+        dampening: the fd differs so the message never repeats even though
+        it's the same permanently-broken interface. `_ADVERTISE_MSG_KEY_RE`
+        below normalizes that out before comparing/storing; the un-normalized
+        `message` is still what actually gets logged either way."""
+        key = _ADVERTISE_MSG_KEY_RE.sub("#", message)
+        if key == getattr(self, attr):
             logger.debug(message, exc_info=True)
         else:
             logger.warning(message, exc_info=True)
-            setattr(self, attr, message)
+            setattr(self, attr, key)
 
     def _advertise(self, ips: list[str]) -> None:
         try:
