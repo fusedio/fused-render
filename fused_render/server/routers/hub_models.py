@@ -2033,6 +2033,93 @@ def _catalog_ilike_escape(value: str) -> str:
     return value.replace("'", "''")
 
 
+#: Item 1 (D1278+): one entry per capability — `{capability: (key, rows)}`.
+#: `rows` is the list of `_model_row` outputs for the WHOLE pool, already
+#: past the D851 capability over-match guard, but before any query/publisher/
+#: fit/quant/params filter, sort, or facet computation. A search that only
+#: narrows or re-sorts that same slice (the overwhelming majority of repeat
+#: searches in one pane — typing, changing a filter chip, paging) costs zero
+#: `_model_row` calls once this is warm; only a genuinely new slice (a pool
+#: rebuild, a hardware change, a newly downloaded model, a runner swap)
+#: re-scores. Bounded to one entry per capability by construction: writing a
+#: new `(key, rows)` for a capability simply replaces whatever was there.
+_SCORED_POOL_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+_SCORED_POOL_LOCK = threading.Lock()
+
+
+def reset_scored_pool_cache() -> None:
+    """Test hook — a fixture-driven pool rebuild/hardware swap must not leak
+    a stale scored slice into the next test."""
+    with _SCORED_POOL_LOCK:
+        _SCORED_POOL_CACHE.clear()
+
+
+def _hardware_fingerprint(hardware) -> tuple:
+    """A value (not identity) fingerprint of `hw_detect.cached_hardware()`'s
+    reading: two calls describing the same machine state must compare equal
+    even if `hw_detect` happens to hand back a fresh `HardwareInfo` instance,
+    and two describing DIFFERENT states (a GPU appearing, a bandwidth re-read)
+    must compare unequal so the cache re-scores rather than serving a fit
+    verdict computed against the wrong machine."""
+    if hardware is None:
+        return (None,)
+    gpus = getattr(hardware, "gpus", None) or ()
+    gpus_fp = tuple((getattr(g, "name", None), getattr(g, "vram_gb", None),
+                      getattr(g, "unified_memory", None)) for g in gpus)
+    return (getattr(hardware, "total_vram_gb", None),
+            getattr(hardware, "bandwidth_gb_s", None), gpus_fp)
+
+
+def _scored_pool_cache_key(cfg, capability: str, hardware, dirs: dict[str, str]) -> tuple:
+    """Every fact that can change what `_model_row` would output for this
+    capability's pool: which pool GENERATION and ROW SCHEMA VERSION it is
+    (`hub_catalog.pool_entry`, one small JSON read — a rebuild or the daily
+    delta bumps `generation`, a schema-version bump forces a rebuild anyway),
+    which runner is ACTIVE for this capability right now (`admission()`'s
+    verdict depends on it), this machine's HARDWARE reading (fit verdicts),
+    and which repos are ALREADY ON DISK (`_local_state`'s onDisk bonus) —
+    plus `cfg.dir` itself, since two catalogs living in different homes
+    (two dev servers, or two test fixtures in the same process) must never
+    be mistaken for the same cache slot even if every other fact matches."""
+    entry = hub_catalog.pool_entry(cfg, capability) or {}
+    runner = for_capability(capability)
+    runner_code = runner.code if runner is not None else None
+    return (cfg.dir, capability, entry.get("generation"), entry.get("schemaVersion"),
+            runner_code, _hardware_fingerprint(hardware), frozenset(dirs.items()))
+
+
+def _scored_pool(cfg, capability_filter: str, cache_dir: str, dirs: dict[str, str],
+                  footprint_store: dict | None, hardware) -> list[dict]:
+    """Item 1 (SPEC docs/HUB_CATALOG_SPEC.md, this file's own follow-up):
+    every row of `capability_filter`'s pool run through `_model_row` and the
+    D851 capability guard — cached in-process, keyed by
+    `_scored_pool_cache_key`, so a warm cache costs one dict lookup instead of
+    however many thousand `_model_row` calls the pool holds. Callers get back
+    a fresh LIST each time (the cached rows themselves are shared, mutating
+    `matchScore`/`matchBreakdown` on them is idempotent) so sorting/slicing
+    one request's result can never reorder another concurrent request's view
+    of the same cache entry."""
+    key = _scored_pool_cache_key(cfg, capability_filter, hardware, dirs)
+    with _SCORED_POOL_LOCK:
+        hit = _SCORED_POOL_CACHE.get(capability_filter)
+        if hit is not None and hit[0] == key:
+            return list(hit[1])
+
+    raw_rows = hub_catalog.query_pool(cfg, capability_filter)
+    models = [row
+              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
+                          for r in raw_rows if isinstance(r, dict))
+              if row is not None]
+    # D851's over-match guard: the pool was built from a `filter=<tag>`
+    # request too, which matches ANY tag in a repo's list, not only its
+    # classified `pipeline_tag`.
+    models = [row for row in models if row.get("capability") == capability_filter]
+
+    with _SCORED_POOL_LOCK:
+        _SCORED_POOL_CACHE[capability_filter] = (key, models)
+    return list(models)
+
+
 def _catalog_search(capability_filter: str, query: str, publisher: str | None,
                      count: int, sort: str, fit_level: str, quant_filter: str,
                      params_band: str, task_filter: str) -> dict:
@@ -2047,46 +2134,45 @@ def _catalog_search(capability_filter: str, query: str, publisher: str | None,
     that would need its own invalidation story once the daily delta lands.
     """
     cfg = hub_catalog.load_config()
-    query_conditions = []
-    if query:
-        query_conditions.append(
-            f"id ILIKE '%{_catalog_ilike_escape(query)}%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
-    conditions = list(query_conditions)
-    if publisher:
-        conditions.append(
-            f"id ILIKE '{_catalog_ilike_escape(publisher)}/%' ESCAPE '{_CATALOG_LIKE_ESCAPE}'")
-    where = " AND ".join(conditions) if conditions else None
-    raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=where)
-
     cache_dir = hub_cache_dir()
     dirs = _cached_dirs()
     footprint_store = footprints.load_store()
     hardware = hw_detect.cached_hardware()
-    models = [row
-              for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
-                          for r in raw_rows if isinstance(r, dict))
-              if row is not None]
-    # Same over-match guard the live path applies (D851): the pool was built
-    # from a `filter=<tag>` request too, which matches ANY tag in a repo's
-    # list, not only its classified `pipeline_tag`.
-    models = [row for row in models if row.get("capability") == capability_filter]
+
+    # Item 1: the whole pool, scored once and cached — a repeat search in
+    # this capability (typing, a filter chip, paging) costs zero `_model_row`
+    # calls once this is warm. Item 2: text/publisher narrowing is a plain
+    # Python substring/prefix test over that cached, already-scored slice
+    # rather than a fresh DuckDB `ILIKE` query — cheaper on a warm cache (no
+    # query at all) and just as safe against `%`/`_` wildcard injection,
+    # since `str.__contains__`/`str.startswith` have no LIKE-style wildcard
+    # semantics to escape against in the first place (see
+    # `_catalog_ilike_escape`'s own docstring for the SQL-side hazard this
+    # sidesteps entirely; that helper is kept only for the live path's own
+    # SQL query elsewhere and its direct unit test).
+    scored_pool = _scored_pool(cfg, capability_filter, cache_dir, dirs, footprint_store, hardware)
+
+    def _id_contains(row: dict, needle: str) -> bool:
+        return needle.lower() in (row.get("id") or "").lower()
+
+    def _id_under_publisher(row: dict, pub: str) -> bool:
+        return (row.get("id") or "").lower().startswith(pub.lower() + "/")
+
+    models = scored_pool
+    if query:
+        models = [row for row in models if _id_contains(row, query)]
+    if publisher:
+        models = [row for row in models if _id_under_publisher(row, publisher)]
 
     # D853's live-path behaviour, mirrored here: the publisher facet must be
     # computed over the slice WITHOUT the publisher filter (all other filters
     # still applied) or picking a publisher collapses the dropdown to just
-    # that one entry with no way back to "any". Unlike the live path there is
-    # no Hub round-trip to save — a second local pool query is cheap — so
-    # this simply re-runs `query_pool` with the publisher condition dropped
-    # rather than caching a second fetch.
+    # that one entry with no way back to "any". Filtering the same cached
+    # `scored_pool` a second way costs nothing extra to score — no
+    # `_model_row` call either branch below.
     if publisher:
-        facet_where = " AND ".join(query_conditions) if query_conditions else None
-        facet_raw_rows = hub_catalog.query_pool(cfg, capability_filter, where=facet_where)
-        facet_models = [row
-                        for row in (_model_row(r, cache_dir, dirs, footprint_store, hardware)
-                                    for r in facet_raw_rows if isinstance(r, dict))
-                        if row is not None]
-        facet_models = [row for row in facet_models
-                        if row.get("capability") == capability_filter]
+        facet_models = ([row for row in scored_pool if _id_contains(row, query)]
+                         if query else list(scored_pool))
     else:
         facet_models = models
 

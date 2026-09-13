@@ -31,8 +31,10 @@ def _search(client, body=None):
 @pytest.fixture(autouse=True)
 def _clear_cache():
     hub._cache.clear()
+    hub.reset_scored_pool_cache()
     yield
     hub._cache.clear()
+    hub.reset_scored_pool_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -531,3 +533,114 @@ def test_catalog_path_flags_a_cached_on_disk_row_too_no_exemption(
     assert row["local"]["state"] == "downloaded"
     assert row["loadable"] is False
     assert row["loadableReason"] == "neo_chat not supported by mlx-vlm"
+
+
+# -- item 1 (D1278): in-memory cache of the scored pool ---------------------
+
+
+def test_second_identical_search_calls_model_row_zero_times(client, hub_cache, monkeypatch):
+    _build_big_pool(n_publishers=3, per_publisher=4)
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    body = {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24}
+    first = _search(client, body)
+    assert first.status_code == 200
+    assert len(calls) == 12  # one per pool row, cold cache
+
+    calls.clear()
+    second = _search(client, body)
+    assert second.status_code == 200
+    assert calls == []
+    assert ([m["id"] for m in second.json()["models"]]
+            == [m["id"] for m in first.json()["models"]])
+
+
+def test_a_different_query_on_a_warm_cache_still_calls_model_row_zero_times(
+        client, hub_cache, monkeypatch):
+    """Item 2: narrowing by text/publisher on an already-warm cache must not
+    re-invoke `_model_row` — the narrowing itself is a plain Python filter
+    over the cached, already-scored slice."""
+    _build_big_pool(n_publishers=3, per_publisher=4)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    monkeypatch.setattr(hub, "_model_row", lambda *a, **k: calls.append(1))
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "q": "pub1", "limit": 24})
+    assert resp.status_code == 200
+    assert calls == []
+    ids = {m["id"] for m in resp.json()["models"]}
+    assert ids and all(i.startswith("pub1/") for i in ids)
+
+
+def test_pool_generation_bump_re_scores(client, hub_cache, monkeypatch):
+    cfg, _rows = _build_big_pool(n_publishers=1, per_publisher=1)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    # A rebuild bumps the manifest's `generation` for this capability.
+    hub_catalog.write_pool(cfg, registry.TEXT_GENERATION,
+                            [_pool_row("pub0/model-0", downloads=1)])
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+def test_different_hardware_fingerprint_re_scores(client, hub_cache, monkeypatch):
+    from fused_render.ai import hw_detect
+
+    _build_big_pool(n_publishers=1, per_publisher=1)
+    monkeypatch.setattr(hub.hw_detect, "cached_hardware", lambda: hw_detect.HardwareInfo(
+        gpus=[], total_vram_gb=0.0, bandwidth_gb_s=None, detected_at=0.0))
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    # A different hardware reading (a GPU now detected) must invalidate the
+    # cached scored pool — its fit verdicts depend on it.
+    monkeypatch.setattr(hub.hw_detect, "cached_hardware", lambda: hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="Test GPU", vram_gb=24.0, unified_memory=False)],
+        total_vram_gb=24.0, bandwidth_gb_s=500.0, detected_at=1.0))
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+def test_a_new_on_disk_dir_re_scores(client, hub_cache, monkeypatch, tmp_path):
+    _build_big_pool(n_publishers=1, per_publisher=1)
+    _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+
+    calls = []
+    real_model_row = hub._model_row
+
+    def counting_model_row(*a, **k):
+        calls.append(1)
+        return real_model_row(*a, **k)
+    monkeypatch.setattr(hub, "_model_row", counting_model_row)
+
+    dirname = "models--pub0--model-0"
+    (hub_cache / dirname / "snapshots" / "c1").mkdir(parents=True)
+    (hub_cache / dirname / "refs").mkdir()
+    (hub_cache / dirname / "refs" / "main").write_text("c1")
+
+    resp = _search(client, {"capability": registry.TEXT_GENERATION, "sort": "downloads", "limit": 24})
+    assert resp.status_code == 200
+    assert len(calls) == 1  # a fresh dirs snapshot re-scores the whole pool
