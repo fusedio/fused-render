@@ -36,6 +36,7 @@ import { cn } from "@platform/lib/utils";
 import type { ChatController, ChatState, UserTurn } from "../protocol/controller-api";
 import type { PermissionMode, Segment } from "../protocol/types";
 import { CardStack, type CardActions } from "./CardStack";
+import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
 import { Turn } from "./Turn";
@@ -194,6 +195,15 @@ export const Transcript = memo(function Transcript({
     const grown =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(followBottom);
     if (grown && log.current) grown.observe(log.current);
+    // AND THE SCROLLPORT ITSELF, not only the log (#10). The landing bottom-
+    // anchor fires when the turns are laid out — and on a history landing with
+    // attachment chips the COMPOSER is still growing under it, so the port lost
+    // 66px of height a frame later and the conversation came to rest that far
+    // short of the bottom. The log never changed size, so the observer above
+    // never heard about it. The port shrinking IS the growth, seen from the
+    // other side; the flag decides what to do about it exactly as before, so a
+    // reader who has scrolled up is not moved by a chip mounting.
+    if (grown) grown.observe(wrap);
     return () => {
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("touchstart", onTouchStart);
@@ -469,6 +479,90 @@ export const Transcript = memo(function Transcript({
     state.permissions,
   ]);
 
+  // ── WHICH REPLIES ARE FOLDED (design.md §B) ──────────────────────────────
+  //
+  // A finished conversation is a wall of replies the reader has already read,
+  // and the one they came back for is the last one. So every SETTLED assistant
+  // turn lands folded except the newest, and the live turn is never folded.
+  //
+  // DECIDED ONCE PER TURN, when the row is first seen, and then owned by the
+  // reader. The rule "all but the last" re-evaluated every render would fold
+  // the reply a reader is in the middle of the moment the next turn starts —
+  // the transcript rewriting itself under a run is the exact thing the collapse
+  // policy (ui/cardPolicy) exists to prevent — so the default is written into
+  // the map on first sight and nothing but a click changes it afterwards.
+  //
+  // A REF PLUS A BUMP, not `useState`: the map is seeded during render (a row
+  // has to arrive already folded, not fold itself in an effect after a frame of
+  // full height) and every other turn's props have to stay identical across the
+  // click, or `Turn`'s memo — the thing that keeps a settled reply's markdown
+  // from being re-parsed on every 400 ms poll — misses for the whole log.
+  // Session-local by construction: a fresh mount is a fresh map.
+  const folds = useRef(new Map<string, boolean>());
+  /** Turn key → the key its fold is remembered by (`foldKey`). The toggle is ONE
+   *  stable callback for the whole log — a fresh closure per row would defeat
+   *  `Turn`'s memo — so it is handed the turn's own key and resolves it here. */
+  const foldIds = useRef(new Map<string, string>());
+  /** The keys the READER folded, as opposed to the ones the rule folded. An
+   *  unanswered card may not re-open a reply somebody deliberately shut
+   *  (review #2). */
+  const manualFolds = useRef(new Set<string>());
+  const [, bumpFold] = useState(0);
+  // A DIFFERENT CONVERSATION IS A DIFFERENT MAP (review #1). This component is
+  // not remounted when the host opens another session, and a restored turn's
+  // key is POSITIONAL (`protocol/history.ts`, `"h:" + i`) — so every fold of
+  // the 20-turn history on screen a moment ago applied itself, row for row, to
+  // the 12-turn one that replaced it, and the reply the reader came back for
+  // landed folded while an older one sat open.
+  //
+  // `transcriptGen` and not `sessionId`: the id also changes when the first
+  // poll of a brand-new chat reports one, mid-run (`noteSessionId`,
+  // controller-api `transcriptGen`), and clearing there would re-fold a reply
+  // the reader had just opened. The generation is bumped by `openSession` and
+  // by nothing else — the same event `resetCardPolicy` hangs on.
+  const foldsGen = useRef(state.transcriptGen);
+  if (foldsGen.current !== state.transcriptGen) {
+    foldsGen.current = state.transcriptGen;
+    folds.current.clear();
+    foldIds.current.clear();
+    manualFolds.current.clear();
+  }
+  const lastAssistant = lastAssistantKey(state.turns);
+  for (const t of state.turns) {
+    if (t.role !== "assistant") continue;
+    const id = foldKey(t);
+    foldIds.current.set(t.key, id);
+    if (folds.current.has(id)) continue;
+    folds.current.set(id, !t.streaming && t.key !== lastAssistant);
+  }
+  const onToggleCollapse = useCallback((key: string) => {
+    const id = foldIds.current.get(key) ?? key;
+    const next = !(folds.current.get(id) ?? false);
+    folds.current.set(id, next);
+    if (next) manualFolds.current.add(id);
+    else manualFolds.current.delete(id);
+    // THE READER JUST CHANGED THE LOG'S HEIGHT ON PURPOSE (review #3). Folding
+    // or opening a reply resizes `.chat-log`, the ResizeObserver above answers
+    // a resize by writing `scrollTop = scrollHeight`, and the reply that was
+    // just opened went straight off the bottom of the screen. Same rule, same
+    // line as the `?msg=` anchor: a gesture that asks to READ something drops
+    // the follow first.
+    followTail.current = false;
+    bumpFold((n) => n + 1);
+  }, []);
+  // …and the same for every disclosure BELOW a turn — a run's `more`/`less`, a
+  // chip, a thinking block — which resize the log the same way from five levels
+  // down a memoized tree (ui/cardPolicy `useHoldTail`).
+  useHoldTail(useCallback(() => {
+    followTail.current = false;
+  }, []));
+  // The open card is drawn in the tail pin, but the turn it belongs to is the
+  // one the run is blocked in — and NOT, as this read for one release, whichever
+  // reply happens to be newest (review #2): a card answered against a chip five
+  // turns back un-folded the turn at the bottom instead, which is a turn the
+  // reader had folded and nothing to do with the block.
+  const blocked = blockedTurnKey(state.turns, state.permissions);
+
   return (
     <div className={cn("chat-logwrap", pinFull && "is-locked")} ref={port}>
       <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
@@ -504,6 +598,11 @@ export const Transcript = memo(function Transcript({
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
+                  collapsed={folds.current.get(foldIds.current.get(turn.key) ?? turn.key) ?? false}
+                  onToggleCollapse={onToggleCollapse}
+                  {...(blocked === turn.key && !manualFolds.current.has(foldIds.current.get(turn.key) ?? turn.key)
+                    ? { pendingCard: true }
+                    : {})}
                 >
                   {/* Parked cards belong to the turn they were answered in —
                       whichever turn that was, streaming or long finished.
@@ -658,6 +757,67 @@ export function openCardIds(rows: ChatState["permissions"]): string {
     .filter((p) => p && p.id && !p.decision)
     .map((p) => p.id)
     .join(",");
+}
+
+/**
+ * THE KEY A REPLY'S FOLD IS REMEMBERED BY (review #1).
+ *
+ * The turn's own uuid wherever the wire carries one, because that is the only
+ * identity a reply keeps across a reload and across a switch to another
+ * conversation and back. `key` is the fallback and today it is what every
+ * restored assistant row has: `protocol/history.ts` numbers them by POSITION
+ * (`"h:" + i`), which is why the map is also cleared per transcript — a
+ * positional key means row 7 of one conversation and row 7 of the next are the
+ * same string.
+ */
+export function foldKey(turn: ChatState["turns"][number]): string {
+  return (turn as { uuid?: string }).uuid || turn.key;
+}
+
+/**
+ * THE TURN AN UNANSWERED CARD BELONGS TO, or null (review #2) — the one reply
+ * that may not be folded while the run is blocked on it (design.md §B).
+ *
+ * It is NOT "the newest reply". A card carries the id of the tool call that
+ * asked (`toolUseId`, the same field `parkPlan` files a resolved card by), so
+ * the turn that owns it is the turn holding that chip — which after a restore,
+ * or after a reply has already moved on, is not the turn at the bottom. Reading
+ * it as the newest one un-folded whichever reply happened to be last, including
+ * one the reader had just folded.
+ *
+ * With no id to go on the answer is the LIVE turn and nothing else: a streaming
+ * reply is the only turn a card can be blocking that the reader could not have
+ * folded themselves, so guessing stops there.
+ */
+export function blockedTurnKey(
+  turns: ChatState["turns"],
+  rows: ChatState["permissions"],
+): string | null {
+  const open = rows.filter((p) => p && p.id && !p.decision);
+  if (!open.length) return null;
+  for (const p of open) {
+    const wanted = (p as { toolUseId?: string }).toolUseId;
+    if (!wanted) continue;
+    for (const t of turns) {
+      if (t.role !== "assistant") continue;
+      const segs = t.segments ?? [];
+      for (const seg of segs) if (seg.kind === "tool" && seg.id === wanted) return t.key;
+    }
+  }
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.role === "assistant" && t.streaming) return t.key;
+  }
+  return null;
+}
+
+/** The newest assistant turn's key, or null — the one reply the fold rule
+ *  leaves open (design.md §B). Exported for the test: "the last ASSISTANT
+ *  turn", not "the last turn", because a note or an error row after a reply
+ *  must not make that reply fold. */
+export function lastAssistantKey(turns: ChatState["turns"]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "assistant") return turns[i].key;
+  return null;
 }
 
 /** The last `role: "error"` row's key, which is the one the trouble card at the

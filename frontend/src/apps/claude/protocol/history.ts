@@ -31,6 +31,11 @@
 //     and only when true (agent.py:5049) — it renders as the same ⏹ "Stopped."
 //     note a live stop leaves, so a conversation reads identically whether you
 //     watched the stop or came back to it (T:18040-18048).
+//   * `ts` is the transcript record's `timestamp` in epoch SECONDS (agent.py
+//     `_row_ts`), on USER rows only — the chat draws it in the left icon lane
+//     on hover. Optional on the wire and optional here: an older server, or a
+//     row whose stamp does not parse, simply has no time to show, and the key
+//     is absent rather than zero (`0` is a real instant, i.e. 1970).
 //   * `uuid` is the transcript record's own id — the value the Tasks list
 //     carries as a message `anchor`, which is what makes `?msg=` resolvable
 //     (T:18030). Optional: a payload without it simply cannot be anchored to.
@@ -63,6 +68,12 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         text: stripBlocks(t.text),
         raw: t.text,
         ...(t.uuid ? { uuid: t.uuid } : {}),
+        // WHEN they said it — carried straight through, already epoch seconds
+        // (agent.py `_row_ts` does the one ISO parse, server side). The guard
+        // is `typeof === "number"` and not truthiness: it has to survive an
+        // older server that sends nothing AND keep a legitimate 0 from a
+        // fixture, while never inventing a time for a row that has none.
+        ...(typeof t.ts === "number" ? { ts: t.ts } : {}),
       };
     }
     // BEFORE the assistant fallback, which is unconditional: a role this

@@ -48,72 +48,89 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
   return s && s.kind === "tool" && s.id ? "tool:" + s.id : seq + ":" + i;
 }
 
-/* ── tool-call runs (design.md §A) ──────────────────────────────────────────
+/* ── collapsible runs (design.md §A) ────────────────────────────────────────
  *
  * A turn that makes fifteen edits is fifteen chips, and fifteen chips are a
- * wall the prose either side of them disappears into. claude.ai folds a turn's
- * consecutive steps under one disclosure; this is the same shape, decided as
- * data so the paint side only paints.
+ * wall the prose either side of them disappears into. v1 folded them under an
+ * `N tool calls` header; that traded fifteen rows for one row, and one row is
+ * still a row the reader did not ask for. v2 takes the row away entirely: the
+ * stretch collapses behind a `more ▸` trigger that sits on the RIGHT EDGE of
+ * the sentence before it (ui/RunTrigger), so a settled turn is prose and
+ * nothing else until the reader asks.
+ *
+ * WHAT COLLAPSES: any consecutive stretch of `tool` | `thinking` | `notice`,
+ * in ANY MIX, down to a SINGLE member — a lone settled chip gets the trigger
+ * too, because the goal is zero machinery rows inline and one chip is one such
+ * row. There is no `RUN_MIN` any more.
  *
  * THREE THINGS BREAK A RUN, and each one is a thing the reader is owed:
  *
- *   * any other segment kind — prose, a thinking block, a notice — because the
- *     run is "these calls happened together", and a sentence between two calls
- *     means they did not;
- *   * a tool that is not KNOWN SETTLED anywhere in the stretch — running, or
- *     wearing a status this file has no literal for — which keeps EVERY chip in
- *     that stretch individual: while the turn is live the progress is the point, and
- *     a stretch that folds the moment its first call settles would move the
- *     transcript under the reader mid-run (Akshil 2026-09-14: running =
- *     individual, done = combined). Judged over the WHOLE consecutive stretch,
- *     not the piece a card happens to cut off it, so one running call cannot
- *     fold the calls in front of it;
- *   * AND, while the turn is still streaming, the stretch that runs to the END
- *     of the list — because that is the only stretch that can still GROW, and
- *     "every tool in it is settled" is a statement about the segments that have
- *     arrived, not about the turn. Without this the fold flickers exactly where
- *     it is worst: the second call settles, the two chips collapse under a lid,
- *     the third call lands running and the lid comes off again, once per tool
- *     for the whole run. A stretch with any segment AFTER it is closed — the
- *     poll only ever appends — so folding that one is final and it folds the
- *     moment it settles, live turn or not. The trailing one folds once, when
- *     the turn ends, which is the "done = combined" half of the rule.
+ *   * a `text` segment — prose between two calls means they did not happen
+ *     together (and anything a newer agent.py invents renders as text, so it
+ *     breaks a run for the same reason);
  *   * a segment with a filed card in `cardsAfter` — the permission or plan the
  *     reader answered under that chip. The card is glued to its chip
  *     (Transcript's `parkPlan`, #18), so the chip stays individual and the run
- *     ends BEFORE it; the tools after it are free to start a new one.
+ *     ends BEFORE it; the members after it are free to start a new one;
+ *   * the end of the list.
+ *
+ * AND TWO THINGS SUPPRESS ONE (v1's bugbot fix, kept): a stretch holding a tool
+ * that is not KNOWN SETTLED — running, or wearing a status this file has no
+ * literal for — renders member by member, because while the turn is live the
+ * progress is the point; and, while the turn is still streaming, the stretch
+ * that runs to the END of the list, because that is the only stretch that can
+ * still GROW and a lid that goes on when the second call settles comes straight
+ * back off when the third lands. A stretch with any segment AFTER it is closed —
+ * the poll only ever appends — so folding that one is final. Suppressed means
+ * the members are emitted individually WITH NO TRIGGER, exactly as before.
+ *
+ * RAW INDICES THROUGHOUT. Every row carries the index it had in the list that
+ * was handed in — `cardsAfter`, `cardKey` and the streaming tail are all keyed
+ * by position in THAT list — so a hole in the array is a run breaker that is
+ * dropped from the output without moving anything around it.
  */
 
-/** Fewer than this and a run is not a run — it is two chips wearing a lid. */
-export const RUN_MIN = 2;
-
-/** A folded stretch of settled tool calls. `start` is the ORIGINAL index of
- *  `segs[0]`; the rest are consecutive from there, which is what lets the paint
- *  side rebuild each chip's `cardKey` without carrying an index per segment. */
-export interface ToolRun {
-  kind: "toolrun";
+/** A folded stretch of collapsible segments. `start` is the ORIGINAL index of
+ *  `segs[0]`; the rest are consecutive from there (a hole breaks the stretch),
+ *  which is what lets the paint side rebuild each member's `cardKey` without
+ *  carrying an index per segment. */
+export interface CollapsibleRun {
+  kind: "run";
   start: number;
-  segs: ToolSegment[];
+  segs: Segment[];
 }
 
-/** One row of the grouped view: a segment as it always was, or a run. */
-export type SegmentOrRun = Segment | ToolRun;
+/** One segment, with the index it had in the raw list. A WRAPPER rather than
+ *  the bare segment: `kind` is the discriminant for the row union and a segment
+ *  has a `kind` of its own, so wrapping is what keeps the two from colliding —
+ *  and it carries the raw index instead of leaving the paint side to count it
+ *  off the rows before it, which a dropped hole made wrong. */
+export interface GroupedSeg {
+  kind: "seg";
+  index: number;
+  seg: Segment;
+}
+
+/** One row of the grouped view. */
+export type GroupedRow = GroupedSeg | CollapsibleRun;
 
 /** Narrow a grouped row. `kind` is the discriminant either way, so this is the
  *  whole test. */
-export function isToolRun(item: SegmentOrRun | null | undefined): item is ToolRun {
-  return !!item && (item as { kind?: string }).kind === "toolrun";
+export function isRun(row: GroupedRow | null | undefined): row is CollapsibleRun {
+  return !!row && row.kind === "run";
 }
 
-function isTool(seg: Segment | null | undefined): seg is ToolSegment {
-  return !!seg && seg.kind === "tool";
+/** The kinds that collapse: everything that is not prose. `viewKind` maps a
+ *  hole and anything a newer agent.py invents to "text", so both break a run. */
+function isCollapsible(seg: Segment | null | undefined): seg is Segment {
+  return !!seg && viewKind(seg) !== "text";
 }
 
 /** The `ToolStatus` members (protocol/types.ts) that mean the call is OVER.
  *  Spelled as the LIST OF SETTLED ONES rather than `!== "running"`: a payload
  *  whose `status` is missing, or one carrying a state a newer agent.py invents,
  *  is not something this file knows to be finished, and "not known finished"
- *  must keep its chips individual — folding a stretch that might still be
+ *  must keep its members individual — folding a stretch that might still be
  *  moving is the one mistake this grouping cannot take back on the next poll
  *  without shifting the transcript under the reader. */
 const SETTLED: readonly ToolStatus[] = ["ok", "error"];
@@ -123,73 +140,76 @@ function isSettled(seg: ToolSegment): boolean {
   return SETTLED.some((s) => s === status);
 }
 
+/** Is every TOOL in `[from, to)` known to be over? Thinking blocks and notices
+ *  have no status and are settled by construction. */
+function stretchSettled(list: readonly (Segment | null | undefined)[], from: number, to: number): boolean {
+  for (let k = from; k < to; k++) {
+    const seg = list[k];
+    if (seg && seg.kind === "tool" && !isSettled(seg)) return false;
+  }
+  return true;
+}
+
 /**
- * Fold consecutive settled tool calls into runs — see the note above for the
- * three things that break one.
+ * Group consecutive collapsible segments into runs — see the note above for
+ * what breaks one and what suppresses one.
  *
  * `cardsAfter` is read for its KEYS only (a filed card's position), so it is
  * typed as loosely as that use: the paint side's map holds React nodes and this
  * file imports types only.
  */
-export function groupToolRuns(
+export function groupCollapsibles(
   segments: Segment[] | null | undefined,
   cardsAfter?: Map<number, unknown> | null,
   /** `AssistantTurn.streaming` — is this turn still being polled? Only a live
    *  turn can gain segments, so it is the only one whose trailing stretch is
    *  held open. Defaults to false, which is every history replay and every
    *  turn that has ended. */
-  live = false,
-): SegmentOrRun[] {
-  // RAW INDICES THROUGHOUT, and that is the whole reason nothing is filtered
-  // out of `list` first. `cardsAfter` is keyed by the caller's own positions,
-  // `ToolRun.start` is the index the paint side rebuilds every chip's `cardKey`
-  // from, and `tailIndex` counts the same list — compacting a hole out of the
-  // array would slide every one of those by one and silently re-key the rows
-  // after it. A hole is simply a run BREAKER, like any other non-tool row, and
-  // it is dropped from the OUTPUT (there is nothing to paint) without moving
-  // anything around it.
+  streaming = false,
+): GroupedRow[] {
   const list: (Segment | null | undefined)[] = Array.isArray(segments) ? segments : [];
-  const out: SegmentOrRun[] = [];
-  const push = (from: number, to: number) => {
-    const segs = list.slice(from, to).filter(isTool);
-    if (segs.length >= RUN_MIN) out.push({ kind: "toolrun", start: from, segs });
-    else
-      for (let k = from; k < to; k++) {
-        const seg = list[k];
-        if (seg) out.push(seg);
-      }
+  const out: GroupedRow[] = [];
+  /** One segment on its own, at its own index. A hole paints nothing. */
+  const one = (index: number) => {
+    const seg = list[index];
+    if (seg) out.push({ kind: "seg", index, seg });
+  };
+  /** `[from, to)` as one run, or nothing when the span is empty. */
+  const run = (from: number, to: number) => {
+    const segs: Segment[] = [];
+    for (let k = from; k < to; k++) {
+      const seg = list[k];
+      if (seg) segs.push(seg);
+    }
+    if (segs.length) out.push({ kind: "run", start: from, segs });
   };
   let i = 0;
   while (i < list.length) {
-    const here = list[i];
-    if (!isTool(here)) {
-      if (here) out.push(here);
+    if (!isCollapsible(list[i])) {
+      one(i);
       i += 1;
       continue;
     }
     let end = i;
-    while (end < list.length && isTool(list[end])) end += 1;
-    let settled = true;
-    for (let k = i; k < end; k += 1) if (!isSettled(list[k] as ToolSegment)) settled = false;
-    // Still open to appends: the live turn's LAST stretch. Everything in it may
-    // be settled this poll and be two chips longer the next, so folding it now
-    // buys a lid that comes straight back off.
-    const growing = live && end === list.length;
-    if (!settled || growing) {
-      for (let k = i; k < end; k += 1) out.push(list[k] as Segment);
+    while (end < list.length && isCollapsible(list[end])) end += 1;
+    // Judged over the WHOLE consecutive stretch, not the piece a card happens
+    // to cut off it, so one running call cannot fold the calls in front of it.
+    const growing = streaming && end === list.length;
+    if (growing || !stretchSettled(list, i, end)) {
+      for (let k = i; k < end; k += 1) one(k);
       i = end;
       continue;
     }
-    // The card-bearing chip is emitted on its own, between the run that ended
+    // The card-bearing member is emitted on its own, between the run that ended
     // before it and whatever starts after it.
     let from = i;
     for (let k = i; k < end; k += 1) {
       if (!cardsAfter || !cardsAfter.has(k)) continue;
-      push(from, k);
-      out.push(list[k] as Segment);
+      run(from, k);
+      one(k);
       from = k + 1;
     }
-    push(from, end);
+    run(from, end);
     i = end;
   }
   return out;

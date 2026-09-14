@@ -94,6 +94,36 @@ describe("historyToTurns", () => {
     expect((turns[1] as { stopped?: boolean }).stopped).toBeUndefined();
   });
 
+  test("a user turn carries `ts` through, untouched (agent.py `_row_ts`)", () => {
+    const ts = 1789516743.5;
+    const turns = historyToTurns({
+      turns: [
+        { role: "user", text: "fix the header", uuid: "u-1", ts },
+        { role: "assistant", text: "done" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[0]).toEqual({ role: "user", key: "u-1", text: "fix the header", raw: "fix the header", uuid: "u-1", ts });
+    // The assistant side is dated by the message it answers; no second clock.
+    expect("ts" in turns[1]).toBe(false);
+  });
+
+  test("no `ts` on the wire means no `ts` on the turn — never a zeroed 1970", () => {
+    const turns = historyToTurns({
+      turns: [{ role: "user", text: "hi", uuid: "u-1" }],
+      transcript: stat,
+    });
+    expect("ts" in turns[0]).toBe(false);
+  });
+
+  test("a legitimate 0 survives the passthrough (the guard is not truthiness)", () => {
+    const turns = historyToTurns({
+      turns: [{ role: "user", text: "hi", uuid: "u-1", ts: 0 }],
+      transcript: stat,
+    });
+    expect((turns[0] as { ts?: number }).ts).toBe(0);
+  });
+
   test("an empty or malformed payload is an empty transcript, never a throw", () => {
     expect(historyToTurns({ turns: [], transcript: stat })).toEqual([]);
     expect(historyToTurns({} as HistoryResponse)).toEqual([]);

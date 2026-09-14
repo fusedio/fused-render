@@ -116,12 +116,14 @@ export {
   Transcript,
   ANCHOR_FLARE_MS,
   ANCHOR_SETTLE_MS,
+  lastAssistantKey,
   lastErrorKey,
   openCardIds,
 } from "./Transcript";
 export type { TranscriptProps, TranscriptTail } from "./Transcript";
-export { Turn } from "./Turn";
-export type { TurnProps } from "./Turn";
+export { Turn, collapsedLine } from "./Turn";
+export type { TurnProps, CollapsedLine } from "./Turn";
+export { formatStamp, stampTitle } from "./stamp";
 export { SegmentView } from "./SegmentView";
 export type { SegmentViewProps, SegmentTail } from "./SegmentView";
 export { Caret } from "./Caret";
@@ -129,8 +131,8 @@ export { MarkdownView, INNER_HTML_SITES } from "./MarkdownView";
 export type { MarkdownViewProps } from "./MarkdownView";
 export { ToolChip } from "./ToolChip";
 export type { ToolChipProps } from "./ToolChip";
-export { ToolRunChip } from "./ToolRunChip";
-export type { ToolRunChipProps } from "./ToolRunChip";
+export { RunTrigger } from "./RunTrigger";
+export type { RunTriggerProps } from "./RunTrigger";
 export { ThinkingView } from "./ThinkingView";
 export type { ThinkingViewProps } from "./ThinkingView";
 export { NoticeView } from "./NoticeView";
@@ -159,6 +161,8 @@ export {
   cardKey,
   runKey,
   useCardOpen,
+  useCardOpens,
+  useHoldTail,
   cardOverride,
   type CardPolicy,
 } from "./cardPolicy";

@@ -117,6 +117,42 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  /* The stamp's containing block: it is drawn in the LEFT icon lane — the
+     column an assistant turn's ✻ mark occupies — which on a right-aligned user
+     row is empty space no flow layout would put it in (design.md §C). */
+  position: relative;
+}
+/* WHEN THIS WAS SENT, on hover only. A time under every message is a second
+   column of numbers down the conversation, and the one message whose time a
+   reader wants is the one they are pointing at. Left-aligned in the mark's
+   lane, and tabular so the digits do not shimmy as the minute changes.
+
+   NO `pointer-events: none` (PR4 review #6). It read as "a label, not a
+   target", and it took the `title` with it: the exact instant — the ISO string
+   `stampTitle` builds — is only reachable by resting on the clock, and an
+   element the pointer cannot land on has no tooltip. It is still not a control:
+   nothing here is clickable, and `user-select: none` keeps the minute out of a
+   copied conversation. */
+.chat-root .turn.user .turn-stamp {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+.chat-root .turn.user:hover .turn-stamp {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.user .turn-stamp {
+    transition: none;
+  }
 }
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);
@@ -135,6 +171,9 @@
   display: flex;
   gap: 10px;
 }
+/* A BUTTON, not a span (design.md §B): the mark folds and unfolds its reply.
+   Everything below is the seat it always was — the UA button furniture is what
+   has to be turned off. */
 .chat-root .turn.assistant .dot {
   flex-shrink: 0;
   width: 24px;
@@ -148,6 +187,116 @@
   align-items: center;
   justify-content: center;
   margin-top: 2px;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 90ms ease-out;
+}
+.chat-root .turn.assistant .dot:hover:not(:disabled) {
+  border-color: var(--c-border-strong);
+}
+/* A STREAMING TURN, OR ONE HOLDING AN UNANSWERED CARD, cannot be folded — and
+   says so by not lighting up under the pointer. The mark stays exactly where it
+   was, because a control that disappears mid-run is a control nobody learns. */
+.chat-root .turn.assistant .dot:disabled {
+  cursor: default;
+}
+.chat-root .turn.assistant .dot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+/* FOLDED: one line, ellipsized at the column's real width. `block` so
+   `text-overflow` has a box to clip in; the `.body` is `min-width: 0` already,
+   which is what lets it shrink instead of pushing the row wide. */
+.chat-root .turn.assistant .turn-collapsed {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--c-dim);
+}
+/* The reply was nothing but tool calls and this is the first call standing in
+   for a sentence — machinery, so it is drawn as machinery. */
+.chat-root .turn.assistant .turn-collapsed.is-muted {
+  color: var(--c-faint);
+  font-size: 12px;
+}
+
+/* ── the run trigger (design.md §A) ──────────────────────────────────────────
+   `more ▸` in the bottom-right corner of the paragraph the run follows. The
+   transcript's left rail stays prose from top to bottom: a settled turn shows
+   NO machinery row at all until the reader asks for one.
+
+   Room is reserved for the word on the LAST LINE ONLY (PR4 review #5). The
+   padding used to sit on the whole `.seg-text`, which narrowed every paragraph
+   of the block by 46px — a measure change for the entire reply, to make room in
+   one corner of it — and now that every prose segment is wrapped in a block
+   (`SegmentView`, review #4) that would have been every paragraph in the log.
+   One variable, used by all of these rules, because it is the same number. */
+.chat-root .seg-block {
+  position: relative;
+  --c-run-trigger-w: 46px;
+}
+.chat-root .seg-block.has-trigger > .seg-text > :last-child {
+  padding-right: var(--c-run-trigger-w);
+}
+/* …EXCEPT where the last block is not prose. A code block or a table narrowed
+   by 46px re-wraps (or scrolls) its own content to make room for a word that is
+   not in it, so those keep their full width and the block reserves a ROW under
+   them instead — the trigger, still bottom-right, drops into it. */
+.chat-root .seg-block.has-trigger > .seg-text > pre:last-child,
+.chat-root .seg-block.has-trigger > .seg-text > table:last-child,
+.chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child {
+  padding-right: 0;
+}
+.chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
+.chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
+.chat-root .seg-block.has-trigger:has(> .seg-text > blockquote:last-child) {
+  padding-bottom: 18px;
+}
+.chat-root .seg-block > .run-trigger {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+}
+/* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
+   call, or a run that follows a card. The trigger takes its own line, still
+   right-aligned, still the same component. */
+.chat-root .seg-block.is-bare {
+  text-align: right;
+}
+.chat-root .seg-block.is-bare > .run-trigger {
+  position: static;
+}
+.chat-root .run-trigger {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0 0 0 8px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--c-faint);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 90ms ease-out;
+}
+.chat-root .run-trigger:hover {
+  color: var(--c-fg);
+}
+.chat-root .run-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.chat-root .run-trigger .run-chev {
+  margin-left: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.assistant .dot,
+  .chat-root .run-trigger {
+    transition: none;
+  }
 }
 .chat-root .turn.assistant .body {
   min-width: 0;
@@ -1248,14 +1397,6 @@
   border-radius: 0 8px 8px 0;
   margin: 8px 0;
   padding: 4px 0 6px 12px;
-}
-/* A RUN of tool calls wears the chip skin (design.md §A), so everything above
-   already applies; the only thing it needs of its own is that its body holds
-   CHIPS rather than a dump. `.chip-body`'s gutter already lines them up under
-   the run's own text — this is the hair of extra inset that makes the nested
-   rails read as inside the run's rail rather than continuous with it. */
-.chat-root .toolrun > .chip-body > .toolchip {
-  margin-left: 4px;
 }
 .chat-root .toolchip .chip-body {
   padding-right: 10px;

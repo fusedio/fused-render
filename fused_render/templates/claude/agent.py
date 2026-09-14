@@ -62,6 +62,7 @@ Actions:
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
+import datetime
 import io
 import json
 import os
@@ -5369,6 +5370,40 @@ def _transcript_stat(path: str) -> dict:
         return {"path": path, "mtime": 0.0, "size": 0}
 
 
+def _row_ts(row: dict) -> float | None:
+    """The transcript row's own `timestamp` as epoch SECONDS, or None.
+
+    Claude Code writes it as an ISO 8601 string in UTC (`2026-09-14T21:59:03.123Z`).
+    The page wants a number — it formats the clock itself, and a bare string
+    would make every reader parse dates in JS — so the one parse lives here.
+
+    None on a row that has no timestamp, or whose timestamp does not parse: the
+    caller OMITS the key entirely rather than sending a zero, because `0` is a
+    real instant (1970) and the hover would confidently show the wrong time.
+    Old transcripts and hand-written fixtures both take that road.
+
+    A string with NO ZONE is read as UTC, not as local time (PR4 review #8).
+    Claude Code writes UTC with a `Z`; a row that lost the suffix — an older
+    CLI, a transcript a tool rewrote, a hand-written fixture — is still UTC, and
+    `datetime.timestamp()` on a naive value applies the SERVER's offset instead.
+    That is silent and it is hours wide: the same message reads 21:59 in London
+    and 16:59 in New York off one transcript, which is the one thing a clock in
+    a conversation must never do.
+    """
+    raw = row.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        # `Z` is accepted by fromisoformat from 3.11 (the floor this file
+        # targets).
+        parsed = datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp()
+
+
 def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -5392,7 +5427,14 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     list reads the same uuid off the same record (`_prompt`, server/routers/
     tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
     turn a person clicked instead of to the top of the conversation. "" on a
-    record that has none — the template treats the key as optional throughout."""
+    record that has none — the template treats the key as optional throughout.
+
+    ...and `ts`, the record's own `timestamp` as epoch seconds, so the chat can
+    show WHEN a message was sent (design §C: the time appears in the left icon
+    lane on hover). Only on user turns — an assistant reply is dated by the
+    message it answers — and the key is ABSENT, not zero, on a row whose
+    timestamp is missing or unparseable (`_row_ts`). Optional throughout, the
+    same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
         return {"turns": [], "transcript": _transcript_stat("")}
     file = os.path.abspath(file)
@@ -5472,8 +5514,16 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
             # ignores the others.
             if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
-                turns.append({"role": "user", "text": text,
-                              "uuid": str(row.get("uuid") or "")})
+                turn = {"role": "user", "text": text,
+                        "uuid": str(row.get("uuid") or "")}
+                # WHEN they said it, epoch seconds, user turns only. The chat
+                # draws it in the left icon lane on hover (design §C) and the
+                # assistant side has no use for it. Omitted, never zeroed, when
+                # the row carries no parseable `timestamp` — see `_row_ts`.
+                ts = _row_ts(row)
+                if ts is not None:
+                    turn["ts"] = ts
+                turns.append(turn)
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are

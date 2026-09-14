@@ -217,6 +217,9 @@ function emptyState(file: string | null): ChatState {
 export function createChatController(deps: ControllerDeps): ChatController {
   const sleep = deps.sleep || nativeSleep;
   const now = deps.now || Date.now;
+  /** WHAT TIME IT IS, as opposed to how long something took (review #9). See
+   *  `ControllerDeps.wallClock`. */
+  const wallClock = deps.wallClock || Date.now;
   const dir = deps.agentDir;
   const FILE = deps.file;
   // Every `agent.py` call this controller makes carries the chat's own target
@@ -530,10 +533,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // out. A key that is no longer in the log (a Back mid-capture) is not
     // adopted — the row it named is gone, so this send posts its own.
     const held = !!adopt && state.turns.some((t) => t.key === adopt && t.role === "user");
+    // WHEN, in the same epoch SECONDS a restored turn carries (agent.py
+    // `_row_ts`), so the hover clock reads identically on a message you just
+    // sent and the same message after a reload. Off `wallClock` and never the
+    // controller's `now`, which is the DURATION clock every elapsed-time reader
+    // shares and which a test may set to `1_000` (review #9). Stamped from the
+    // ADOPTED row when there is one: the optimistic bubble went up when the
+    // user pressed send, and the capture that ran in between is not part of
+    // what they did.
+    const heldTs = held
+      ? (state.turns.find((t) => t.key === adopt && t.role === "user") as UserTurn | undefined)?.ts
+      : undefined;
     const turn: UserTurn = {
       role: "user",
       key: held ? (adopt as string) : nextKey("u"),
       text,
+      ts: typeof heldTs === "number" ? heldTs : wallClock() / 1000,
       ...(raw ? { raw } : {}),
       // The receipt rides the bubble the send posted, so the row is under the
       // words from the first paint rather than appended after the start

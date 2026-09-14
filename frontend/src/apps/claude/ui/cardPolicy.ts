@@ -18,13 +18,27 @@
 // (`seq:index`, and `tool:<id>` for the same tool call replayed in two cards):
 // same-keyed chips opened in lockstep across the wall, and one card's Back
 // wiped the collapse policy of the other five.
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import type { Segment } from "../protocol/types";
 
 /** One chat's collapse overrides. */
 export interface CardPolicy {
   overrides: Map<string, boolean>;
+  /**
+   * THE SCROLLPORT'S "the reader did this, do not yank them" HOOK (PR4 review
+   * #3). Every toggle in here resizes `.chat-log`, and the follow-the-tail
+   * ResizeObserver answers a resize by writing `scrollTop = scrollHeight` — so
+   * opening a run scrolled the thing that was just opened off the bottom of the
+   * screen. A disclosure is the reader asking to READ something, which is the
+   * same gesture as a wheel flick upward, so it drops the follow exactly as
+   * `?msg=` does before it lands an anchor.
+   *
+   * Filled by `Transcript` while it is mounted; absent everywhere else (a unit
+   * test, a compact card mount with no scrollport of its own), and then every
+   * toggle below simply does not call it.
+   */
+  holdTail?: () => void;
 }
 
 export function createCardPolicy(): CardPolicy {
@@ -72,6 +86,53 @@ export function useCardOpen(key: string): readonly [boolean, () => void] {
     bump((n) => n + 1);
   }, [key, policy]);
   return [open, toggle] as const;
+}
+
+/**
+ * THE SCROLLPORT LENDS ITS "hold the tail" HOOK to every disclosure under it
+ * (review #3). Called by `Transcript`, which is the only component that owns
+ * the follow flag; the hook is stored on the policy object because a card is
+ * five levels down a memoized tree and a prop for it would be a changed prop on
+ * every turn, which is exactly what `Turn`'s memo exists to avoid.
+ */
+export function useHoldTail(hold: () => void): void {
+  const policy = useContext(CardPolicyContext);
+  const held = useRef(hold);
+  held.current = hold;
+  useEffect(() => {
+    policy.holdTail = () => held.current();
+    return () => {
+      delete policy.holdTail;
+    };
+  }, [policy]);
+}
+
+/**
+ * The same policy for a VARIABLE number of keys, read and toggled through one
+ * subscription.
+ *
+ * `useCardOpen` cannot serve a run any more (PR4 review #4): the trigger is
+ * drawn inside the prose block and the run's members after it — two places in
+ * one list — and a hook cannot be called from the loop that builds that list.
+ * Two `useCardOpen(key)` calls with the same key do not work either: each holds
+ * its own re-render, so the trigger would say `less ▾` while the members stayed
+ * unmounted. One reader, one toggle, one bump for the whole container.
+ */
+export function useCardOpens(): readonly [(key: string) => boolean, (key: string) => void] {
+  const policy = useContext(CardPolicyContext);
+  const [, bump] = useState(0);
+  // Read live off the map rather than snapshotted into state: a container
+  // re-rendered under new keys must resolve to those keys, same as `useCardOpen`.
+  const isOpen = useCallback((key: string) => policy.overrides.get(key) ?? false, [policy]);
+  const toggle = useCallback(
+    (key: string) => {
+      policy.overrides.set(key, !(policy.overrides.get(key) ?? false));
+      policy.holdTail?.();
+      bump((n) => n + 1);
+    },
+    [policy],
+  );
+  return [isOpen, toggle] as const;
 }
 
 /** Test seam: what the map currently holds for a key. */

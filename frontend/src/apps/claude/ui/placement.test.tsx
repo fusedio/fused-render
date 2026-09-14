@@ -126,6 +126,19 @@ const actions = {
   stopRun: async () => {},
 };
 
+/** Click the Nth assistant turn's ✻ mark — the collapse toggle (design.md §B).
+ *  Every settled reply but the last one lands folded, and a folded reply draws
+ *  nothing but its first line; a test about what is INSIDE such a turn has to
+ *  open it the way a reader does. */
+function unfold(r: ReturnType<typeof create>, nth: number): void {
+  const dots: Json[] = [];
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("dot")) dots.push(n);
+  });
+  const onClick = (dots[nth]?.props as { onClick?: () => void } | undefined)?.onClick;
+  if (onClick) act(() => onClick());
+}
+
 const turn = (key: string, streaming = false) => ({
   role: "assistant" as const,
   key,
@@ -143,6 +156,11 @@ test("a parked card renders inside the turn it was answered in — not the strea
       actions={actions}
     />,
   );
+  // THE FIRST REPLY LANDS FOLDED (design.md §B: every settled turn but the
+  // last), and a folded turn draws its one line and nothing else — its parked
+  // card included. What is under test here is WHERE the card goes, so the turn
+  // is opened first, through the same control a reader would use: its ✻ mark.
+  unfold(r, 0);
   const seen = cards(r);
   expect(seen.length).toBe(1);
   // Inside an assistant turn, and inside the FIRST one: the DOM order is what

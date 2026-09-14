@@ -533,6 +533,11 @@ export interface HistoryUserTurn {
   /** App-state block stripped. */
   text: string;
   uuid: string;
+  /** The transcript record's own `timestamp`, as epoch SECONDS (agent.py
+   *  `_row_ts`). ABSENT — never `0` — on a row with no parseable stamp, which
+   *  is why it is optional rather than defaulted: `0` is a real instant and the
+   *  hover would confidently show 1970. User turns only. */
+  ts?: number;
 }
 export interface HistoryAssistantTurn {
   role: "assistant";
