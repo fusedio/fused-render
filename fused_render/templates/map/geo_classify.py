@@ -41,6 +41,16 @@ from raster_categories import classify_categories, read_pam_aux_xml, resolve_ren
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
 MAX_RASTER_DIM = 1400        # longest edge of the reprojected raster PNG
 MAX_VECTOR_FEATURES = 400_000    # cap for the GeoJSON (polygon/line) path
+# A handful of features can still carry a huge vertex TOTAL between them even
+# under MAX_VECTOR_FEATURES (survey-grade boundary digitization is the usual
+# cause) — the oneshot path hands the whole GeoJSON straight to deck.gl's
+# WebGL buffers in one layer, and at a few hundred thousand vertices that
+# corrupts rather than just slowing down: an edge renders as a stray straight
+# line to an unrelated vertex elsewhere in the buffer instead of a slow frame.
+# Simplifying (topology-preserving) back under budget avoids it; there is no
+# byte-size proxy for this — a compact WKB source can still unpack into a
+# huge coordinate count.
+MAX_VECTOR_VERTICES = 150_000
 BINARY_POINT_THRESHOLD = 50_000  # points beyond this go through the fast binary path
 LONLAT_PAD = 1e-6
 
@@ -394,6 +404,34 @@ def _from_dataframe(df, artifact_dir, artifact_id, opts, detected="DataFrame"):
     )
 
 
+def _simplify_to_vertex_budget(gdf, max_vertices, warnings):
+    """Topology-preserving simplify, escalating the tolerance until the
+    GeoDataFrame's total vertex count is back under `max_vertices` (see
+    MAX_VECTOR_VERTICES). A no-op, at zero cost beyond the count itself, for
+    the overwhelming majority of files that never approach the budget."""
+    import shapely
+
+    total = int(shapely.get_num_coordinates(gdf.geometry.values).sum())
+    if total <= max_vertices:
+        return gdf
+
+    w, s, e, n = gdf.total_bounds
+    tolerance = max(e - w, n - s, 1e-9) / 20_000
+    gdf = gdf.copy()
+    geom_name = gdf.geometry.name
+    for _ in range(16):
+        gdf[geom_name] = shapely.simplify(gdf.geometry.values, tolerance, preserve_topology=True)
+        total = int(shapely.get_num_coordinates(gdf.geometry.values).sum())
+        if total <= max_vertices:
+            break
+        tolerance *= 2
+    warnings.append(
+        f"Geometry simplified to {total:,} vertices (tolerance {tolerance:.6g}°) "
+        "to stay renderable."
+    )
+    return gdf
+
+
 def _json_safe_columns(gdf):
     """Coerce non-JSON dtypes (datetime, category, object-non-str) to str so
     GeoDataFrame.to_json() doesn't choke."""
@@ -452,6 +490,8 @@ def _from_gdf(gdf, artifact_dir, artifact_id, opts, detected):
     if n > MAX_VECTOR_FEATURES:
         warnings.append(f"{n:,} features — showing first {MAX_VECTOR_FEATURES:,} for performance.")
         gdf = gdf.iloc[:MAX_VECTOR_FEATURES]
+
+    gdf = _simplify_to_vertex_budget(gdf, MAX_VECTOR_VERTICES, warnings)
 
     gdf = _json_safe_columns(gdf)
 

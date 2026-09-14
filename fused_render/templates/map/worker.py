@@ -17,7 +17,18 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
+
+# The warm daemon imports this module with its own directory already on
+# sys.path (daemon.py). The one-shot CLI fallback spawns this file directly
+# instead, and the project venv's interpreter does not always add a run
+# script's own directory to sys.path (SPEC PY-16 python-build-standalone
+# builds use a `._pth` file, which skips that), so `geo_paths` next door
+# would not resolve without this.
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
 from geo_paths import multidim_suffix
 

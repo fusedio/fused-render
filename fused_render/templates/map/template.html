@@ -478,7 +478,7 @@
       <div id="georesults"></div>
     </div>
 
-    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © CARTO</div>
+    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © OpenFreeMap</div>
     <div id="coordpill"><span id="coords">—</span></div>
     <div id="toast" class="hidden"></div>
   </main>
@@ -606,9 +606,13 @@ function rasterStyle(tiles, attribution, maxzoom) {
   return { version: 8, sources: { base: { type: "raster", tiles, tileSize: 256, attribution, maxzoom } },
            layers: [{ id: "base", type: "raster", source: "base" }] };
 }
+// OpenFreeMap (openfreemap.org) — free, no API key, no usage cap. Vector
+// tiles rather than CARTO's raster PNGs, which require a paid plan past
+// CARTO's free tier. maplibregl.Map.style/setStyle both accept a style-JSON
+// URL directly, so these are handed to it as-is rather than fetched here.
 const BASEMAPS = {
-  dark:  rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
-  light: rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
+  dark:  "https://tiles.openfreemap.org/styles/dark",
+  light: "https://tiles.openfreemap.org/styles/positron",
   sat:   rasterStyle(["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], "Esri, Maxar, Earthstar Geographics", 18),
 };
 
@@ -1671,8 +1675,8 @@ function rebuildVectorTiles() {
       });
       L._vtileUrl = tileUrl;
     }
-    const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
-    const lineColor = cssColor(s.line_color, [90, 200, 255, 220]);
+    const fillColor = cssColor(s.fill_color, [56, 135, 255, 255]);
+    const lineColor = cssColor(s.line_color, [90, 200, 255, 255]);
     if (!map.getLayer(ids.fill)) {
       map.addLayer({
         id: ids.fill, type: "fill", source: sourceId, "source-layer": sourceLayer,
@@ -1811,7 +1815,7 @@ map.on("error", event => {
 
 function makePointsBinaryLayer(key, L) {
   const s = L.style, b = L.binary;
-  const fill = s.fill_color || [...L.defaultColor, 220];
+  const fill = s.fill_color || [...L.defaultColor, 255];
   const useCB = s.color_by && b.columns[s.color_by] && L._colorBuf;
   return new deck.ScatterplotLayer({
     id: "v_" + key,
@@ -1837,7 +1841,7 @@ async function computeBinaryColors(L) {
   const s = L.style, b = L.binary;
   if (!s.color_by || !b.columns[s.color_by]) { L._colorBuf = null; L._cb = null; return; }
   const { arr, meta } = await ensureColumn(L, s.color_by);
-  const a = (s.fill_color && s.fill_color[3]) ?? 220;
+  const a = (s.fill_color && s.fill_color[3]) ?? 255;
   const out = new Uint8Array(b.count * 4);
   const name = s.colormap || "viridis";
   if (meta.dtype === "f32") {
@@ -1853,8 +1857,8 @@ async function computeBinaryColors(L) {
 
 function makeGeoJsonLayer(key, L) {
   const s = L.style;
-  const fill = s.fill_color || [...L.defaultColor, 90];
-  const line = s.line_color || [...L.defaultColor, 220];
+  const fill = s.fill_color || [...L.defaultColor, 255];
+  const line = s.line_color || [...L.defaultColor, 255];
   let getFill = fill, getLine = line;
   if (s.color_by && L._cb) {
     const cb = L._cb, name = s.colormap || "viridis";
@@ -1862,10 +1866,10 @@ function makeGeoJsonLayer(key, L) {
       if (v === undefined || v === null) return [130,130,140,180];
       if (cb.numeric) {
         const t = cb.max > cb.min ? (Number(v) - cb.min) / (cb.max - cb.min) : 0.5;
-        const c = cmapColor(name, t); return [c[0], c[1], c[2], fill[3] ?? 200];
+        const c = cmapColor(name, t); return [c[0], c[1], c[2], fill[3] ?? 255];
       }
       const i = cb.cats.indexOf(String(v)); const c = CATEGORICAL[(i < 0 ? 0 : i) % CATEGORICAL.length];
-      return [c[0], c[1], c[2], fill[3] ?? 200];
+      return [c[0], c[1], c[2], fill[3] ?? 255];
     };
     getFill = f => colorFor(f.properties && f.properties[s.color_by]);
     getLine = f => colorFor(f.properties && f.properties[s.color_by]);
@@ -2321,18 +2325,18 @@ function vectorControls(body, L) {
     // fill + line color pickers
     if (!isLine) {
       body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
-        const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+        const a = (s.fill_color && s.fill_color[3]) ?? 255; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
       }));
-      body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+      body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 255, a => {
         s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched=true; rebuildDeck(); renderLayerCards();
       }));
     }
     body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color||L.defaultColor), hex => {
-      const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
-      if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??220; s.fill_color=[...hexToRgb(hex),fa]; }
+      const a = (s.line_color && s.line_color[3]) ?? 255; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
+      if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??255; s.fill_color=[...hexToRgb(hex),fa]; }
       rebuildDeck(); renderLayerCards();
     }));
-    body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+    body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 255, a => {
       s.line_color = [...(s.line_color||L.defaultColor).slice(0,3), a]; s._touched=true;
       if (isPoint) { s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; }
       rebuildDeck(); renderLayerCards();
@@ -2351,25 +2355,25 @@ function vectorTileControls(body, L) {
   const isLine = gtypes.some(g => g.includes("Line"));
   if (!isLine) {
     body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
-      const alpha = (s.fill_color && s.fill_color[3]) ?? 90;
+      const alpha = (s.fill_color && s.fill_color[3]) ?? 255;
       s.fill_color = [...hexToRgb(hex), alpha]; s._touched = true;
       rebuildVectorTiles(); renderLayerCards();
     }));
-    body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+    body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 255, a => {
       s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; s._touched = true;
       rebuildVectorTiles(); renderLayerCards();
     }));
   }
   body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color || L.defaultColor), hex => {
-    const alpha = (s.line_color && s.line_color[3]) ?? 220;
+    const alpha = (s.line_color && s.line_color[3]) ?? 255;
     s.line_color = [...hexToRgb(hex), alpha]; s._touched = true;
     if (isPoint) {
-      const fillAlpha = (s.fill_color && s.fill_color[3]) ?? 220;
+      const fillAlpha = (s.fill_color && s.fill_color[3]) ?? 255;
       s.fill_color = [...hexToRgb(hex), fillAlpha];
     }
     rebuildVectorTiles(); renderLayerCards();
   }));
-  body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+  body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 255, a => {
     s.line_color = [...(s.line_color || L.defaultColor).slice(0,3), a]; s._touched = true;
     if (isPoint) { s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; }
     rebuildVectorTiles(); renderLayerCards();
@@ -2397,9 +2401,9 @@ function binaryPointControls(body, L) {
     body.appendChild(leg);
   } else {
     body.appendChild(colorCtl("Color", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
+      const a = (s.fill_color && s.fill_color[3]) ?? 255; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
     }));
-    body.appendChild(alphaCtl("Opacity", s.fill_color && s.fill_color[3], 220, a => {
+    body.appendChild(alphaCtl("Opacity", s.fill_color && s.fill_color[3], 255, a => {
       s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched = true; rebuildDeck(); renderLayerCards();
     }));
   }
