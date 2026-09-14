@@ -2058,6 +2058,78 @@ export function TaskList({
   );
 }
 
+/**
+ * THE LIST ROW, LENT OUT — the Tasks page's own row skin, drawn for a list that
+ * is not the Tasks page (`apps/claude`'s "Recent chats" panel on the chat
+ * landing, .claude-design/design.md §B).
+ *
+ * A WRAPPER RATHER THAN A SECOND ROW: the two lists have to look and read the
+ * same, and a copied row is a copy that drifts — the status ring, the file mark,
+ * the schedule mark and the message count are decided once here and must stay
+ * decided once. So this spends `TaskNode` in its `chat` variant and answers
+ * every prop the Tasks page's own machinery needs with the nothing that variant
+ * asks of it: no expanded set, no read set, no page note, no filter chips.
+ *
+ * What the variant takes OFF the row is listed on `variant` below; what it takes
+ * OVER is the press, because "open this chat" is the host's answer here and not
+ * a URL this file can build — the landing opens a conversation IN PLACE when the
+ * row is about the pane's own file, and that has no href at all.
+ */
+export function TaskRowItem({
+  task,
+  home = "",
+  href = null,
+  onPress,
+}: {
+  task: Task;
+  /** For the marks that spell a path with `~` (the file mark's caption). */
+  home?: string;
+  /** Where a ⌘-click, a middle click or "Open in new tab" goes, or null when the
+   *  press has no URL because it stays on this page. */
+  href?: string | null;
+  /** The row's press. OMITTED is what makes the row inert — a row with nowhere
+   *  to go says so (`.tasks-row.is-inert`), exactly as on the Tasks page. */
+  onPress?: () => void;
+}) {
+  // THE SAME PREF THE TASKS PAGE READS (`task_card_last_message`, Akshil
+  // 2026-09-14: it must apply in chat rows too). Read HERE rather than handed
+  // down from the chat's list: the switch is a fact about how a task row is
+  // titled, so the row that borrows the component borrows its answer too, and
+  // the chat needs no prefs read of its own to draw a Tasks row. One shared
+  // GET behind `task-card-title-flag`, however many rows subscribe.
+  const titleMode = useTaskCardTitleMode();
+  return (
+    <TaskNode
+      task={task}
+      home={home}
+      titleMode={titleMode}
+      showProject={false}
+      folderMissing={false}
+      open={false}
+      selected={false}
+      onSelect={NO_OP}
+      onToggle={NO_OP}
+      loading={false}
+      onRetry={NO_OP}
+      onPageNote={NO_OP}
+      read={NO_READ}
+      onRead={NO_OP}
+      onReadAll={NO_OP}
+      onUnreadAll={NO_OP}
+      onSettleAll={NO_OP}
+      variant="chat"
+      chatHref={href}
+      {...(onPress ? { onChatPress: onPress } : {})}
+    />
+  );
+}
+
+/** The `chat` variant's answers to the state only the Tasks page keeps. One set
+ *  and one function at module scope, so a borrowed row is not handed a fresh
+ *  identity on every render of the list above it. */
+const NO_READ: Set<string> = new Set<string>();
+const NO_OP = () => {};
+
 function TaskNode({
   task,
   home,
@@ -2065,6 +2137,9 @@ function TaskNode({
   titleMode = false,
   folderMissing,
   open: requested,
+  variant = "task",
+  chatHref = null,
+  onChatPress,
   peekOn = false,
   peeked = false,
   selected,
@@ -2105,6 +2180,35 @@ function TaskNode({
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
+  /**
+   * WHOSE LIST THIS ROW IS IN, and the only thing it changes is what the row
+   * does NOT have (`TaskRowItem` above is the one caller that asks for anything
+   * but `"task"`, and the Tasks page never passes it at all).
+   *
+   * `"chat"` takes four things off the row, each because the surface borrowing
+   * it has no answer for them: the disclosure AND ITS GUTTER (a landing list is
+   * not an accordion — there is no thread fetch behind it, and with no chevron
+   * on any row of the list there is no rail for the empty slot to hold open),
+   * the Archive press in the mark slot (filing is the Tasks page's verb, and a
+   * row action one flick from "open the chat I was just in" is not what that
+   * panel is for), the folder chip and the draft chip's filter arm
+   * (`showProject`/`onPickProject`/`onPickDraft` are the List's own, and the
+   * borrowed list has no filters to set), and the side peek (`peekOn`, off by
+   * default).
+   *
+   * It takes NOTHING ELSE off: the id chip, the status ring, the outcome pill
+   * and the title line are the same marks in the same seats, because the two
+   * lists are meant to be one row (Akshil, 2026-09-14).
+   *
+   * And it takes ONE thing over: the press. See `chatHref` / `onChatPress`.
+   */
+  variant?: "task" | "chat";
+  /** `chat` variant only: where the row's press goes as a URL, or null when it
+   * stays on the host's own page and there is nothing to link to. Same job as
+   * `href` below, which is the `task` variant's own answer. */
+  chatHref?: string | null;
+  /** `chat` variant only: the press itself. Absent = an inert row. */
+  onChatPress?: () => void;
   /** The side peek exists on this page at all (`task_peek_enabled`). Off, this
    *  row renders exactly as it did before the feature: no walk attribute, no
    *  halo, no quick door. */
@@ -2182,7 +2286,12 @@ function TaskNode({
   // still draws — only the chevron goes — which is the same placeholder a
   // one-message row already gets, and the row becomes expandable on its own
   // when the listing lands and replaces it.
-  const expandable = isExpandable(task) && !task.provisional;
+  // …AND NEITHER IS A BORROWED ROW (see `variant`): the surface drawing it has
+  // no thread fetch behind it — no `loaded`, no `onRetry`, no expanded set — so
+  // a chevron there would be a control whose only possible answer is an empty
+  // accordion.
+  const chatVariant = variant === "chat";
+  const expandable = isExpandable(task) && !task.provisional && !chatVariant;
   const open = expandable && requested;
   const view = threadView(task, loaded);
   // Everything this thread holds, one list: the listing window before Show more,
@@ -2191,7 +2300,41 @@ function TaskNode({
   // rollback are all asked of THIS — one set, so the number on the row and the
   // dots under it cannot be answers about two different lists.
   const held = heldMessages(task, loaded);
-  const unread = taskUnread(task, read, held);
+  /**
+   * THE BORROWED ROW'S OWN OPTIMISM (see `variant`).
+   *
+   * The Tasks page clears a task's unread through the List's shared read set —
+   * `onReadAll` plants it, `onUnreadAll` takes it back, `onSettleAll`
+   * reconciles it — and a row lent to another surface has none of those: it is
+   * handed `NO_READ` and three no-ops, so without this its ring would stay
+   * filled from the press until the next listing landed, on a page whose whole
+   * point is that the press leaves it.
+   *
+   * So the row keeps the ONE fact it needs: the count it cleared. The ring reads
+   * hollow only while the live count is still exactly that, which is the same
+   * reconciliation `onSettleAll` does in one line —
+   *
+   *   * the server catches up and the live count is 0: hollow either way;
+   *   * something ARRIVES while the write is in flight (or after it): the live
+   *     count is no longer the one that was cleared, so the row goes back to
+   *     reporting it rather than swallowing it;
+   *   * the write is REFUSED: the press puts it back itself (`activate`).
+   *
+   * `null` is "nothing cleared here", which is every row on the Tasks page.
+   */
+  const [chatCleared, setChatCleared] = useState<number | null>(null);
+  const live = taskUnread(task, read, held);
+  const unread = chatCleared !== null && live === chatCleared ? 0 : live;
+  // AND IT LETS GO once the server has said the same thing. The stand-in above
+  // is "the listing still says N, and N is what I just cleared" — a value
+  // comparison, because this row has no read set to diff. Left standing after
+  // the listing settles to 0 it goes on matching, so a LATER burst of exactly N
+  // new messages would read as the same clear and the ring would stay hollow
+  // over unread work. Zero is the server agreeing, which is the moment the
+  // guess stops being needed.
+  useEffect(() => {
+    if (chatCleared !== null && live === 0) setChatCleared(null);
+  }, [chatCleared, live]);
   // What the thread holds AFTER an await, which is not what `held` above closed
   // over: markSeen is written against the render its button was pressed in, and a
   // Show more that lands while the write is in flight adopts the mark onto the
@@ -2291,7 +2434,12 @@ function TaskNode({
   // dragging, which is what those moves used to cost. tasks-lib decides
   // everything, by asking dropAction the same questions the drag does, so a row
   // draws the button exactly when the card would take the drop.
-  const file = filingIntent(task);
+  //
+  // NOT ON A BORROWED ROW (see `variant`). Filing is the Tasks page's verb, and
+  // this is the one row action that is live without SHOW_ROW_ACTIONS: a hover
+  // reveal here would put "put this away" one flick from "open the chat I was
+  // just in", on a panel whose whole subject is the chats about one file.
+  const file = chatVariant ? null : filingIntent(task);
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
@@ -2530,6 +2678,41 @@ function TaskNode({
   };
 
   /**
+   * THE BORROWED ROW'S OPEN (see `variant`) — the chat variant's own answer to
+   * what `openChat` above is for the Tasks page's two views, and deliberately a
+   * SEPARATE function rather than a third arm inside them.
+   *
+   * It does the two things opening a thread has always done, in the same order:
+   *
+   *   * IT CLEARS THE BADGE. Opening the thread is what clears it, and where the
+   *     thread opens is not the badge's business — so a row pressed on the chat
+   *     landing owes the same write (`markWholeTaskRead`, the whole task at
+   *     once) and the same hollow ring as a row pressed on the Tasks page.
+   *     `chat.markRead` is asked of the count this row is DRAWING, so a second
+   *     press on an already-cleared task posts nothing.
+   *   * AND IT LEAVES, through the host's own handler. The local clear is
+   *     planted FIRST and the write is never awaited, for the reason the shared
+   *     performer gives: this press is leaving the page and must not hold up the
+   *     hop. A REFUSAL puts the ring back (`chatCleared`, above) — the borrowed
+   *     row's one-line stand-in for the List's rollback, which it has no read set
+   *     to ask for.
+   *
+   * It cannot go through the shared performer itself: that one ends in
+   * `navigateUrl(intent.href)`, and this row's destination is often no URL at all
+   * — the landing adopts the conversation in place.
+   */
+  const openBorrowed = () => {
+    if (chat?.markRead) {
+      const wrote = unread;
+      setChatCleared(wrote);
+      void markWholeTaskRead(task.key).catch(() =>
+        setChatCleared((at) => (at === wrote ? null : at)),
+      );
+    }
+    onChatPress?.();
+  };
+
+  /**
    * The task ROW's own gesture — one function, so the mouse and the keyboard
    * cannot drift apart (Enter and Space, and the stretched link's plain click,
    * all run exactly this).
@@ -2570,6 +2753,14 @@ function TaskNode({
    * openThreadIntent's decision, not this function's.
    */
   const activate = () => {
+    // A BORROWED ROW HAS EXACTLY ONE ARM, and it is the host's (see `variant`).
+    // Every arm below is about state this row was not given — a draft form to
+    // re-open, a schedule entry to edit, a folder this page could toast about —
+    // so none of them can be the honest meaning of a press over there.
+    if (chatVariant) {
+      openBorrowed();
+      return;
+    }
     if (openDraft) openDraft(task);
     else if (chat) openChat(chat);
     else if (edit) onEditEntry?.(edit);
@@ -2616,7 +2807,7 @@ function TaskNode({
    * click is the only one this page intercepts — see the handler, and
    * tasks-lib.opensElsewhere for the rule it asks.
    */
-  const href = chat?.href ?? null;
+  const href = chatVariant ? chatHref : (chat?.href ?? null);
   /** WHERE "OPEN AS PAGE" GOES, and it is today's route exactly: the
    *  conversation in the Explorer's Claude pane. Null on a row with nowhere to
    *  go — no session and no folder, or a folder the disk has lost — which is
@@ -2637,7 +2828,9 @@ function TaskNode({
    * with its own tab stop — the row itself stays inert, and pointing at it would
    * be a promise the row's own press no longer keeps.
    */
-  const pressable = href !== null || edit !== null || openDraft !== null || folderMissing;
+  const pressable = chatVariant
+    ? onChatPress !== undefined
+    : href !== null || edit !== null || openDraft !== null || folderMissing;
 
   const cancel = async (m: TaskMessage, entryId: string) => {
     setCancelling(m.message_id);
@@ -2743,8 +2936,17 @@ function TaskNode({
             everything else opens. `stopPropagation` is belt and braces — the link
             is a sibling, not an ancestor — and costs nothing.
 
-            The rotation is on the inner glyph, not the button: see tasks.css. */}
-        {expandable ? (
+            The rotation is on the inner glyph, not the button: see tasks.css.
+
+            …AND THE GUTTER ITSELF IS NOT DRAWN IN THE CHAT VARIANT (Akshil,
+            2026-09-14). The argument above is about a COLUMN of rows that must
+            share one rail — a row with a chevron beside rows without one. The
+            borrowed list has no chevron on any row, so the slot there is 16px
+            plus a gap of nothing at the head of every row, and the status ring
+            — the first ink the reader sees — stood a mark and a gap inside the
+            panel's own content edge. Nothing zigzags when the whole list drops
+            it together. */}
+        {chatVariant ? null : expandable ? (
           <button
             type="button"
             className="tasks-caret"
@@ -2874,6 +3076,13 @@ function TaskNode({
             </button>
           )}
         </span>
+        {/* IN EVERY LIST, INCLUDING THE CHAT PANE'S (Akshil, 2026-09-14). It
+            was taken off the borrowed row for a round, on the argument that a
+            312px row cannot spend 55px on a number — but TASK-nnn is the name
+            this app prints for a conversation everywhere else, and a Recent
+            list that alone withholds it is a list whose rows cannot be quoted
+            or carried to the Tasks page. The title is the element that gives
+            way, which is what it is for. */}
         <IdChip id={task.task_id} kind="task" />
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would

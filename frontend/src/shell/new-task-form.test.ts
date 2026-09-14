@@ -2262,7 +2262,7 @@ describe("a draft remembers the conversation it is a message to", () => {
     // draft arm is asked before the chat arm.
     expect(views).toContain("const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;");
     expect(views).toMatch(
-      /const activate = \(\) => \{\s*if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);/,
+      /const activate = \(\) => \{[\s\S]*?if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);/,
     );
     // …and a bound draft is the first row that could ALSO have answered
     // `taskHref`, so the chat arm is refused outright rather than merely

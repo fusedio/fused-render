@@ -156,13 +156,25 @@ describe("EVERY view is titled by the same rule (Akshil, 2026-09-14)", () => {
   it("spends the flag once per VIEW, never per row or per card", () => {
     // A hook that appeared per row would be a hook count that moves with the
     // filter, which is what React throws on — the Cards wall's own note.
+    //
+    // THREE, since 2026-09-14: the List, the Board, and `TaskRowItem` — the row
+    // LENT to the chat's Recent list, which is a view of its own with no column
+    // above it to spend the hook for it. Akshil: the pref "must apply in chat
+    // rows too". One row per mount there, so the count cannot move with a
+    // filter either; and the flag module shares ONE prefs read however many
+    // subscribe (task-card-title-flag.ts), so the chat adds no request.
     expect((VIEWS.match(/const titleMode = useTaskCardTitleMode\(\);/g) ?? []).length)
-      .toBe(2);
+      .toBe(3);
     expect(VIEWS).not.toMatch(/\?\s*useTaskCardTitleMode\(\)/);
     // …and handed down as a value, with OFF as the default, so a caller that
     // predates the flag renders the row this page has always rendered.
     expect(VIEWS).toContain("titleMode = false,");
-    expect((VIEWS.match(/titleMode=\{titleMode\}/g) ?? []).length).toBe(2);
+    expect((VIEWS.match(/titleMode=\{titleMode\}/g) ?? []).length).toBe(3);
+    // The borrowed row reads it for itself rather than taking it as a prop: the
+    // chat draws a Tasks row, so it should not have to know what a Tasks row is
+    // titled by (nor read `/api/prefs` a second time to find out).
+    expect(VIEWS).toMatch(
+      /export function TaskRowItem\(\{[\s\S]*?const titleMode = useTaskCardTitleMode\(\);/);
   });
 
   it("asks `cardTitleLine` for the line in the List row and the Board card", () => {

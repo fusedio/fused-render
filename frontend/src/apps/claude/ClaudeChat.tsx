@@ -121,8 +121,9 @@ import {
   useAwayRecap,
   useFitStrip,
   useComposerDefaults,
-  useRecentSessions,
+  useRecentTasks,
   useRepairScroll,
+  useSessionTask,
   useTaskId,
   type TranscriptTail,
   type Viewable,
@@ -1784,7 +1785,7 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  const recent = useRecentSessions(
+  const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
     undefined,
@@ -1808,7 +1809,7 @@ function ChatBody(props: ChatBodyProps) {
    * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
    * target with no `agentDir` (which never subscribes), and a reader who enters
    * a chat before the first read lands — a recent row clicked on the skeleton,
-   * or a deep link resolving late. `useRecentSessions` is handed a null
+   * or a deep link resolving late. `useRecentTasks` is handed a null
    * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
    * the pane would stay covered for the life of the page. Entering a chat is
    * itself a reason to uncover it, and a target with no list has answered "no
@@ -2711,6 +2712,16 @@ function ChatBody(props: ChatBodyProps) {
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
   const taskId = useTaskId(state.sessionId ?? "");
+  /**
+   * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
+   * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
+   *
+   * Asked for only while a chat is up — the same window in which the landing's
+   * list is NOT subscribed — so the two never hold the listing open at once,
+   * and `null` while a brand-new chat waits for its row means the header prints
+   * the line it always did until one lands.
+   */
+  const headTask = useSessionTask(inChat ? (state.sessionId ?? null) : null, file);
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -2938,6 +2949,7 @@ function ChatBody(props: ChatBodyProps) {
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
+                task={headTask}
                 running={running}
               />
             ) : null}

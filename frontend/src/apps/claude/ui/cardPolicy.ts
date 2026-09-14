@@ -52,6 +52,14 @@ export function cardKey(seq: number, seg: Segment | null | undefined, i: number)
   return seg && seg.kind === "tool" && seg.id ? "tool:" + seg.id : seq + ":" + i;
 }
 
+/** The key a FOLDED RUN of tool calls is remembered by (design.md §A) —
+ *  `run:` over the first chip's own key, so a run and the chip that opens it
+ *  can never share an override, and a run whose first call has no `tool_use` id
+ *  still gets a stable position key out of the same function. */
+export function runKey(seq: number, seg: Segment | null | undefined, i: number): string {
+  return "run:" + cardKey(seq, seg, i);
+}
+
 /** The standing policy for one card, plus the toggle that records the reader's
  *  choice. Read straight off the module map so a component re-rendered under a
  *  NEW key resolves to that key's state rather than to stale local state. */

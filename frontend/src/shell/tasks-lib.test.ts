@@ -3435,10 +3435,16 @@ describe("the one-message row's missing chevron", () => {
   );
 
   it("puts the glyph behind the predicate and the gutter in front of it", () => {
-    // Both arms wear `tasks-caret`, so the gutter is drawn on EVERY row — an
-    // expandable one as a real button, the rest as an empty box holding the
-    // column open. What is conditional is which, never whether.
-    expect(ROW).toContain("{expandable ? (");
+    // Both arms wear `tasks-caret`, so the gutter is drawn on every row OF THIS
+    // PAGE — an expandable one as a real button, the rest as an empty box
+    // holding the column open. What is conditional is which, never whether.
+    //
+    // …EXCEPT IN THE CHAT VARIANT, which drops the slot entirely (Akshil,
+    // 2026-09-14). The gutter exists to keep one column's rings on one rail
+    // while some rows have a chevron and others do not; the borrowed list has a
+    // chevron on NO row, so the slot there was 16px of nothing in front of every
+    // status ring. Nothing zigzags when a whole list drops it together.
+    expect(ROW).toContain("{chatVariant ? null : expandable ? (");
     expect(ROW).toContain('className="tasks-caret"');
     expect(ROW).toContain('<span className="tasks-caret" aria-hidden />');
     // ...and only the expandable arm holds a glyph.
@@ -3462,12 +3468,16 @@ describe("the one-message row's missing chevron", () => {
     // `&& !task.provisional` since 2026-09-09: a row painted from pulse has a
     // DEFAULT message_count, not a count, so it is not an accordion until the
     // full listing replaces it (tasks-lib.provisionalTasks).
-    expect(VIEWS).toContain("const expandable = isExpandable(task) && !task.provisional;");
+    // `&& !chatVariant` since 2026-09-14: a row LENT to another surface
+    // (`TaskRowItem`) has no thread fetch behind it at all.
+    expect(VIEWS).toContain(
+      "const expandable = isExpandable(task) && !task.provisional && !chatVariant;",
+    );
     expect(VIEWS).toContain("const open = expandable && requested;");
     // The toggle is the CHEVRON's press now (2026-08-18) — the row's own press
     // opens the conversation — so the guard is the arm that renders the button at
     // all, and there is no toggle left anywhere in `activate`.
-    expect(ROW).toMatch(/\{expandable \? \([\s\S]*?onToggle\(\);/);
+    expect(ROW).toMatch(/\{chatVariant \? null : expandable \? \([\s\S]*?onToggle\(\);/);
     expect(ACTIVATE).not.toContain("onToggle");
     // A row with no disclosure does not claim one, and only the button that HAS
     // one carries the state.
@@ -3540,7 +3550,7 @@ describe("a one-message row's click", () => {
     // (The draft arm sits ahead of all three — a `kind: "draft"` row has no
     // session and no entry, so it is the one row whose press is the form.)
     expect(VIEWS).toMatch(
-      /const activate = \(\) => \{\s*if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);[\s\S]*?else if \(folderMissing\) toastMissingFolder\(\)/,
+      /const activate = \(\) => \{[\s\S]*?if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);[\s\S]*?else if \(folderMissing\) toastMissingFolder\(\)/,
     );
     expect(VIEWS).not.toContain("openMessage(sole)");
     // No per-turn anchor from a TASK row: `msg=` is a message row's business, and
@@ -3554,7 +3564,7 @@ describe("a one-message row's click", () => {
     // Nothing built here can navigate to nowhere: openThreadIntent answers null
     // without a session, and the row's href is exactly that intent's.
     expect(openThreadIntent(task({ session_id: "" }))).toBe(null);
-    expect(VIEWS).toContain("const href = chat?.href ?? null;");
+    expect(VIEWS).toContain("const href = chatVariant ? chatHref : (chat?.href ?? null);");
     expect(messageHref(task({ session_id: "" }), msg())).toBe(null);
   });
 });
@@ -3629,7 +3639,7 @@ describe("a row with no message at all", () => {
     // one of them any more — a disclosure is the CHEVRON's affordance, and it is a
     // button with a tab stop of its own.
     expect(VIEWS).toContain(
-      "const pressable = href !== null || edit !== null || openDraft !== null || folderMissing;",
+      "    : href !== null || edit !== null || openDraft !== null || folderMissing;",
     );
     // The row then claims no role and takes no tab stop...
     expect(ROW).toContain('role={pressable && !href ? "button" : undefined}');
@@ -3773,9 +3783,9 @@ describe("an upcoming row's click", () => {
     // control in its own right: a real button, with a real name, and its own
     // press that does not also fire the row's.
     expect(ACTIVATE).toMatch(
-      /^\s*const activate = \(\) => \{\s*if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);/,
+      /^\s*const activate = \(\) => \{[\s\S]*?if \(openDraft\) openDraft\(task\);\s*else if \(chat\) openChat\(chat\);/,
     );
-    const caret = ROW.slice(ROW.indexOf("{expandable ? ("));
+    const caret = ROW.slice(ROW.indexOf("{chatVariant ? null : expandable ? ("));
     const button = caret.slice(0, caret.indexOf("</button>"));
     expect(button).toContain('type="button"');
     expect(button).toContain("aria-expanded={open}");
@@ -3997,7 +4007,11 @@ describe("the archive action", () => {
     // was is why this button is shaped the way it is.
     expect(VIEWS).not.toMatch(/^\s*(const|let)\s+SHOW_UNARCHIVE/m);
     expect(VIEWS).not.toMatch(/SHOW_UNARCHIVE\s*&&/);
-    expect((VIEWS.match(/const file = filingIntent\(task\);/g) ?? []).length).toBe(2);
+    // Once per view. The ROW's is guarded for the row lent to another surface
+    // (`variant`), which has no filing to offer; the CARD's is unconditional.
+    expect((VIEWS.match(/const file = (chatVariant \? null : )?filingIntent\(task\);/g) ?? []).length)
+      .toBe(2);
+    expect(VIEWS).toContain("const file = chatVariant ? null : filingIntent(task);");
     for (const src of [ROW, CARD]) {
       expect(src).toContain("{file && (");
       // One button per view, branching on the direction rather than two buttons
@@ -5825,10 +5839,12 @@ describe("opening a thread, from either view", () => {
       "performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task))",
     );
     expect(NODE).toContain("performOpen(\n      task,\n      intent,\n      {");
-    // And the whole-task POST exists in exactly two places: the shared performer,
-    // and the List row's own Mark read button (which stays on the page and awaits
-    // it). No third mark-read path.
-    expect((VIEWS.match(/markWholeTaskRead\(/g) ?? []).length).toBe(2);
+    // And the whole-task POST exists in exactly three places, each a DIFFERENT
+    // gesture: the shared performer (the row's press and the card's, on the two
+    // views that navigate), the List row's own Mark read button (which stays on
+    // the page and awaits it), and `openBorrowed` — the row lent to the chat
+    // landing, whose press has no URL to hand the performer (see `variant`).
+    expect((VIEWS.match(/markWholeTaskRead\(/g) ?? []).length).toBe(3);
   });
 
   it("marks the whole thread read, local half first", () => {
@@ -5944,7 +5960,7 @@ describe("opening a thread, from either view", () => {
     // A REAL <a href>, not a click handler on a div — which is what makes
     // ⌘-click, middle click and "Open in new tab" work at all. Its href is the
     // intent's, so this file still builds no address of its own.
-    expect(VIEWS).toContain("const href = chat?.href ?? null;");
+    expect(VIEWS).toContain("const href = chatVariant ? chatHref : (chat?.href ?? null);");
     expect(VIEWS).not.toContain("taskHref(");
     const linkAt = ROW.indexOf('className="tasks-rowlink"');
     expect(linkAt).toBeGreaterThan(-1);

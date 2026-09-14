@@ -1249,6 +1249,14 @@
   margin: 8px 0;
   padding: 4px 0 6px 12px;
 }
+/* A RUN of tool calls wears the chip skin (design.md §A), so everything above
+   already applies; the only thing it needs of its own is that its body holds
+   CHIPS rather than a dump. `.chip-body`'s gutter already lines them up under
+   the run's own text — this is the hair of extra inset that makes the nested
+   rails read as inside the run's rail rather than continuous with it. */
+.chat-root .toolrun > .chip-body > .toolchip {
+  margin-left: 4px;
+}
 .chat-root .toolchip .chip-body {
   padding-right: 10px;
   /* Aligned to the head row's text, not to the rail (R2-7).

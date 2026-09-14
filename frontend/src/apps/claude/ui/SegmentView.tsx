@@ -10,16 +10,18 @@
 // typer, and arrives as `tail` (protocol/segments.ts `streamingTailOf`). This
 // component only paints it — the typer's slice plus the caret — because the
 // alternative is two renderers with their own opinion of the same string.
-import { Fragment, memo, useRef } from "react";
+import { Fragment, memo, useMemo, useRef } from "react";
 
+import { groupToolRuns, isToolRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
 import { Caret } from "./Caret";
-import { cardKey } from "./cardPolicy";
+import { cardKey, runKey } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
 import { NoticeView } from "./NoticeView";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
+import { ToolRunChip } from "./ToolRunChip";
 
 /** Numbers segment containers, for the position keys a thinking block is kept
  *  folded by (T:15196 `cardSeq`). */
@@ -64,9 +66,36 @@ export const SegmentView = memo(function SegmentView({
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
   const seq = seqRef.current;
+  // A settled stretch of tool calls folds into one row (design.md §A,
+  // `groupToolRuns`). The ORIGINAL index rides along with every row: a run
+  // carries its own `start`, and a plain segment's is counted off the rows
+  // before it — because `cardKey` and `cardsAfter` are both keyed by where a
+  // segment sits in the TURN, not by where it sits in the grouped list.
+  const rows = useMemo(() => {
+    let at = 0;
+    return groupToolRuns(segments, cardsAfter).map((item) => {
+      const index = at;
+      at += isToolRun(item) ? item.segs.length : 1;
+      return { item, index };
+    });
+  }, [segments, cardsAfter]);
   return (
     <>
-      {segments.map((seg, i) => {
+      {rows.map(({ item, index: i }) => {
+        if (isToolRun(item)) {
+          // A run never holds a filed card (one ENDS the run before its chip)
+          // and never holds the streaming tail (a tail is prose), so neither
+          // the `withFiled` wrap nor the `growing` branch can apply here.
+          return (
+            <ToolRunChip
+              key={runKey(seq, item.segs[0], item.start)}
+              segs={item.segs}
+              start={item.start}
+              seq={seq}
+            />
+          );
+        }
+        const seg = item;
         const key = cardKey(seq, seg, i);
         // Whatever is filed at this position, wrapped WITH the segment rather
         // than emitted beside it: the map's node and the segment have to stay

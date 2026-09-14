@@ -13,8 +13,9 @@ installDomShim();
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import type { Task } from "@platform/lib/api";
 import type { Artifact } from "../protocol/artifacts";
-import type { SessionRow, SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
+import type { SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
 
 // DYNAMIC, after the shim above has run: `Lists` reaches
 // `@platform/lib/router` through the recent rows' link builder, and that module
@@ -32,7 +33,9 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { sessionTitle: rowsSessionTitle } = await import("./list-rows");
+const { sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
+  "./list-rows"
+);
 const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
 const { MARKER_JOIN } = await import("../protocol/wire");
 
@@ -125,6 +128,27 @@ const ART: Artifact[] = [
     created_at: Date.now() / 1000 - 90000,
   },
 ];
+
+/** ONE PAST CHAT, as the row now takes it: a task about this pane's own file,
+ *  with a session to open. The shapes the Recent list draws are `/api/tasks`'s,
+ *  not the `sessions` action's (.claude-design/design.md §B). */
+function chat(id: string, over: Partial<Task> = {}): Task {
+  return {
+    key: id,
+    task_id: id.toUpperCase(),
+    project: "/repo",
+    target: "/repo/x.py",
+    session_id: id,
+    title: "hello",
+    title_source: "message",
+    description: "",
+    status: "done",
+    unread: 0,
+    message_count: 1,
+    last_active: Date.now() / 1000,
+    ...over,
+  } as Task;
+}
 
 test("the Artifacts list draws a row per published page, favicon and all", () => {
   const r = mount(
@@ -323,13 +347,7 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
     <Lists
       file="/repo/x.py"
       agentDir="/tpl"
-      recent={[
-        {
-          id: "s1",
-          preview: "hello",
-          last_used: Date.now() / 1000,
-        } as never,
-      ]}
+      recent={[chat("s1")]}
       artifacts={ART}
       snaps={{
         timeline: timeline([]),
@@ -356,9 +374,7 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
 const TABBED: Omit<ListsProps, "onOpen"> = {
   file: "/repo/x.py",
   agentDir: "/tpl",
-  recent: [
-    { id: "s1", preview: "hello", last_used: Date.now() / 1000 } as SessionRow,
-  ],
+  recent: [chat("s1")],
   artifacts: ART,
   snaps: {
     timeline: timeline([]),
@@ -625,33 +641,190 @@ test("A MODE HOLDS THE READER: a locked block refuses the rows (P4-23)", () => {
   const locked = mount(
     <Lists {...TABBED} onOpen={(id) => opened.push(id)} disabled />,
   );
-  const row = locked.root.find(
-    (n) =>
-      typeof n.type === "string" &&
-      String((n.props as { className?: string }).className || "").includes(
-        "c-chat-row",
-      ),
-  );
-  act(() => (row.props as { onClick(): void }).onClick());
+  const row = taskRow(locked);
+  act(() => (row.props as { onClick?(): void }).onClick?.());
   act(() =>
     (row.props as { onKeyDown(ev: { key: string }): void }).onKeyDown({
       key: "Enter",
     }),
   );
   expect(opened).toEqual([]);
+  // AND NO LINK EITHER: a stretched `<a href>` would take ⌘-click, middle click
+  // and "Open in new tab" out of the lock's reach entirely.
+  expect(locked.root.findAll((n) => n.type === "a").length).toBe(0);
 
   // And unlocked it opens on either gesture — so the assertion above is about
   // the lock and not about a row that never worked.
   const free = mount(<Lists {...TABBED} onOpen={(id) => opened.push(id)} />);
-  const open = free.root.find(
+  act(() => (taskRow(free).props as { onClick(): void }).onClick());
+  expect(opened).toEqual(["s1"]);
+});
+
+/** The one task row the fixtures draw. `.tasks-row` is the Tasks page's own row
+ *  (ScheduleTaskViews), which is what the Recent list renders now. */
+function taskRow(r: ReturnType<typeof create>) {
+  return r.root.find(
     (n) =>
       typeof n.type === "string" &&
-      String((n.props as { className?: string }).className || "").includes(
-        "c-chat-row",
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
       ),
   );
-  act(() => (open.props as { onClick(): void }).onClick());
+}
+
+test("A CHAT ABOUT THIS PANE opens in place; one about another file hops", () => {
+  // `RecentRow`'s own split, kept (T:18183-18197): same file ⇒ `onOpen`, other
+  // file ⇒ the host is sent to that file with the session attached.
+  const opened: string[] = [];
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chat("s1"), chat("s2", { key: "s2", target: "/repo/other.py" })]}
+      onOpen={(id) => opened.push(id)}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const rows = r.root.findAll(
+    (n) =>
+      typeof n.type === "string" &&
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
+      ),
+  );
+  expect(rows.length).toBe(2);
+  // The in-place row is the button; the hopping one wears a real stretched link
+  // so ⌘-click and middle click are the browser's own.
+  act(() => (rows[0].props as { onClick(): void }).onClick());
   expect(opened).toEqual(["s1"]);
+  const link = r.root.find((n) => n.type === "a");
+  expect(String((link.props as { href: string }).href)).toContain(
+    "session_id=s2",
+  );
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops.length).toBe(1);
+  expect(hops[0]).toContain("other.py");
+});
+
+test("OPENING A CHAT CLEARS ITS RING, and says so to the server", async () => {
+  // The same write `performOpen` makes for the Tasks page's own row and the
+  // Board card: opening the thread is what clears it, and where it opens is not
+  // the badge's business. Planted locally FIRST, because the press is leaving.
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (
+    input: unknown,
+    init?: { body?: unknown },
+  ) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, unread: 0 }),
+    } as unknown as Response;
+  };
+  try {
+    const r = mount(
+      <Lists {...TABBED} recent={[chat("s1", { unread: 3 })]} onOpen={() => {}} />,
+    );
+    const ring = () =>
+      r.root.find(
+        (n) =>
+          typeof n.type === "string" &&
+          String((n.props as { className?: string }).className || "").includes(
+            "schedule-ring",
+          ),
+      );
+    expect(String(ring().props.className)).toContain("schedule-ring--unread");
+    await act(async () => {
+      (taskRow(r).props as { onClick(): void }).onClick();
+    });
+    // The row asks the server for ONE thing on a press. It also reads
+    // `/api/prefs` on mount (TaskRowItem -> useTaskCardTitleMode), which is a
+    // fact about the row and not about this press, so the claim is filtered to
+    // the write rather than widened to "whatever the row happens to fetch".
+    const reads = calls.filter((c) => c.url === "/api/tasks/read");
+    expect(reads.map((c) => c.url)).toEqual(["/api/tasks/read"]);
+    expect(reads[0].body).toEqual({ key: "s1", all: true });
+    // …and the ring is hollow on the row's own press, not on the next listing.
+    expect(String(ring().props.className)).not.toContain("schedule-ring--unread");
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
+});
+
+test("A LATER BURST OF THE SAME SIZE RE-LIGHTS THE RING", async () => {
+  // The optimistic clear is a VALUE comparison — "the listing still says N, and
+  // N is what I just cleared" — because the borrowed row has no read set to diff
+  // against. Left standing after the listing settles to 0 it goes on matching,
+  // so three new messages behind a cleared three would read as the same clear
+  // and the ring would stay hollow over unread work. Zero is the server
+  // agreeing, and that is where the guess is dropped.
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({ ok: true, status: 200, json: async () => ({ ok: true, unread: 0 }) }) as unknown as Response;
+  try {
+    const r = mount(
+      <Lists {...TABBED} recent={[chat("s1", { unread: 3 })]} onOpen={() => {}} />,
+    );
+    const lit = () =>
+      String(
+        r.root.find(
+          (n) =>
+            typeof n.type === "string" &&
+            String((n.props as { className?: string }).className || "").includes(
+              "schedule-ring",
+            ),
+        ).props.className,
+      ).includes("schedule-ring--unread");
+    const listing = async (unread: number) => {
+      await act(async () => {
+        r.update(
+          <Lists {...TABBED} recent={[chat("s1", { unread })]} onOpen={() => {}} />,
+        );
+      });
+    };
+
+    expect(lit()).toBe(true);
+    await act(async () => {
+      (taskRow(r).props as { onClick(): void }).onClick();
+    });
+    // Hollow on the press itself, while the listing still says three.
+    expect(lit()).toBe(false);
+    // The server agrees, and the guess is no longer load-bearing.
+    await listing(0);
+    expect(lit()).toBe(false);
+    // Three NEW messages, the same count as the clear. A stale `chatCleared`
+    // would swallow exactly this.
+    await listing(3);
+    expect(lit()).toBe(true);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
+});
+
+test("THE PANE'S OWN FILTER: folder panes match by project, file panes by target", () => {
+  // .claude-design/design.md §B. One test either way — see `taskInPane`.
+  const here = chat("s1");
+  expect(taskInPane(here, "/repo/x.py")).toBe(true);
+  expect(taskInPane(here, "/repo")).toBe(true);
+  expect(taskInPane(here, "/repo/")).toBe(true);
+  expect(taskInPane(here, "/repo/other.py")).toBe(false);
+  expect(taskInPane(here, null)).toBe(false);
+  // …and a task about the FOLDER itself belongs to the folder pane only.
+  const folder = chat("s2", { target: "/repo" });
+  expect(taskInPane(folder, "/repo")).toBe(true);
+  expect(taskInPane(folder, "/repo/x.py")).toBe(false);
+  // `taskPane` is "" for this pane's own chat and for a folder-scoped task,
+  // which is what makes the press an in-place open rather than a hop.
+  expect(taskPane(here, "/repo/x.py")).toBe("");
+  expect(taskPane(folder, "/repo")).toBe("");
+  expect(taskPane(here, "/repo")).toBe("/repo/x.py");
 });
 
 // ---- the gutters (P4-12) and the property WKWebView ignores (P4-13) --------

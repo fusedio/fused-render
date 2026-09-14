@@ -47,16 +47,19 @@ import { runAgent } from "@apps/claude/protocol/agent";
 // Claude wordmark and the model/run cluster are facts about the TOOL, and this
 // panel is about a TASK. What is left is the task — its status, its number, its
 // title — with the panel's own controls either side.
-import { columnLabel, folderHref, peekFrameSrc } from "./schedule-lib";
+import { folderHref, peekFrameSrc } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
 import {
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
   ICON_UNARCHIVE,
-  StatusIcon,
 } from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
+// The header's identity block — status ring, number, title, project — lives in
+// its own module because the native chat's top line draws the SAME block for the
+// task behind the conversation it is showing (see that file's note).
+import { TaskPeekProject, TaskPeekWho, peekTitle } from "./TaskPeekWho";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -74,16 +77,11 @@ import {
 } from "./peek-preview";
 import {
   ERASE_BLOCKED_HINT,
-  basename,
   emptyPaneFailed,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
-  firstLine,
-  ringFailed,
-  taskColumn,
   taskHref,
-  tildePath,
 } from "./tasks-lib";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
@@ -1075,8 +1073,7 @@ export function TaskPeek({
     return items;
   };
 
-  const title = task ? firstLine(task.title) || "(untitled)" : "";
-  const column = task ? taskColumn(task) : null;
+  const title = task ? peekTitle(task) : "";
 
   return (
     <>
@@ -1215,23 +1212,7 @@ export function TaskPeek({
             </button>
           </div>
           {task ? (
-            <div className="task-side-peek-who">
-              {/* The ROW's ring, the same component and the same vocabulary —
-                  a reader who learned the mark in the list does not learn it
-                  twice. The word is the ring's tooltip rather than ink: it is
-                  the one fact here that repeats on every row of the list
-                  behind the panel. */}
-              <span
-                className="task-side-peek-status"
-                title={column ? columnLabel(column) : undefined}
-              >
-                <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
-              </span>
-              <span className="task-side-peek-id">{task.task_id}</span>
-              <span className="task-side-peek-title" title={title}>
-                {title}
-              </span>
-            </div>
+            <TaskPeekWho task={task} />
           ) : (
             <span className="task-side-peek-idle" aria-hidden />
           )}
@@ -1246,14 +1227,9 @@ export function TaskPeek({
                   back to being what it is, the label of the project this task
                   runs in, and the header keeps exactly ONE way out.
 
-                  The full path is still the tooltip: the basename is what fits,
-                  and two folders with the same basename are a real thing. */}
-              <span
-                className="task-side-peek-project"
-                title={tildePath(task.project, home)}
-              >
-                {basename(task.project)}
-              </span>
+                  The whole argument, and the markup, are in `TaskPeekWho.tsx`
+                  now — the chat's header draws this same chip. */}
+              <TaskPeekProject task={task} home={home} />
               {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
                   and 5). The folder glyph it replaced was the page's one door
                   picture, which is a good rule everywhere except beside a

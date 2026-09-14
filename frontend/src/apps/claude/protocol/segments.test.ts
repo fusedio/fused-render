@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 
 import {
   cardKey,
+  groupToolRuns,
+  isToolRun,
+  RUN_MIN,
   finishedTailText,
   parseTailKey,
   streamingTailOf,
@@ -290,5 +293,160 @@ describe("an unchanged chip keeps its OBJECT across polls (T:15549-15554)", () =
     expect(a.mode).toBe("segments");
     expect(b.mode).toBe("segments");
     expect(b.view!.rows[0]!.seg).toBe(a.view!.rows[0]!.seg);
+  });
+});
+
+describe("groupToolRuns (design.md §A)", () => {
+  /** A tool with a name of its own, so a tally can be read off a run. */
+  const named = (id: string, name: string, status: ToolSegment["status"] = "ok"): Segment => ({
+    kind: "tool",
+    id,
+    name,
+    input: {},
+    status,
+    output: "",
+    images: [],
+  });
+  const think = (t: string): Segment => ({ kind: "thinking", text: t });
+  /** Every segment back out in its original order — a run is a fold, never a
+   *  filter, and this is what says nothing was dropped. */
+  const flatten = (rows: ReturnType<typeof groupToolRuns>): Segment[] =>
+    rows.flatMap((row) => (isToolRun(row) ? row.segs : [row]));
+
+  test("RUN_MIN is 2 and a lone settled tool stays a chip", () => {
+    expect(RUN_MIN).toBe(2);
+    const segs = [text("a"), tool("t1", "ok"), text("b")];
+    expect(groupToolRuns(segs)).toEqual(segs);
+  });
+
+  test("two or more consecutive settled tools fold into one run", () => {
+    const segs = [text("a"), tool("t1", "ok"), tool("t2", "error"), tool("t3", "ok"), text("b")];
+    const rows = groupToolRuns(segs);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toBe(segs[0]!);
+    const run = rows[1]!;
+    expect(isToolRun(run)).toBe(true);
+    if (!isToolRun(run)) return;
+    expect(run.start).toBe(1);
+    expect(run.segs).toEqual([segs[1], segs[2], segs[3]] as ToolSegment[]);
+    expect(rows[2]).toBe(segs[4]!);
+    expect(flatten(rows)).toEqual(segs);
+  });
+
+  test("ONE running tool keeps the WHOLE stretch individual, settled ones included", () => {
+    const segs = [tool("t1", "ok"), tool("t2", "ok"), tool("t3", "running")];
+    expect(groupToolRuns(segs)).toEqual(segs);
+    // ...and the stretch folds the moment it settles.
+    const done = [tool("t1", "ok"), tool("t2", "ok"), tool("t3", "ok")];
+    expect(groupToolRuns(done).filter(isToolRun)).toHaveLength(1);
+  });
+
+  test("text, thinking and notice each break a run", () => {
+    for (const between of [text("mid"), think("mid"), { kind: "notice", text: "m", status: "" } as Segment]) {
+      const segs = [tool("t1", "ok"), between, tool("t2", "ok")];
+      expect(groupToolRuns(segs)).toEqual(segs);
+    }
+    // Two either side of the break are two runs, not one.
+    const split = [tool("t1", "ok"), tool("t2", "ok"), text("mid"), tool("t3", "ok"), tool("t4", "ok")];
+    const rows = groupToolRuns(split);
+    expect(rows.filter(isToolRun)).toHaveLength(2);
+    expect((rows.filter(isToolRun)[1] as { start: number }).start).toBe(3);
+  });
+
+  test("a filed card ends the run BEFORE its chip, which stays individual", () => {
+    const segs = [
+      tool("t1", "ok"),
+      tool("t2", "ok"),
+      tool("t3", "ok"),
+      tool("t4", "ok"),
+      tool("t5", "ok"),
+    ];
+    const rows = groupToolRuns(segs, new Map<number, unknown>([[2, "card"]]));
+    expect(rows).toHaveLength(3);
+    const first = rows[0]!;
+    const last = rows[2]!;
+    expect(isToolRun(first) && first.start === 0 && first.segs.length === 2).toBe(true);
+    expect(rows[1]).toBe(segs[2]!);
+    expect(isToolRun(last) && last.start === 3 && last.segs.length === 2).toBe(true);
+    expect(flatten(rows)).toEqual(segs);
+  });
+
+  test("a card leaving fewer than RUN_MIN either side leaves plain chips", () => {
+    const segs = [tool("t1", "ok"), tool("t2", "ok"), tool("t3", "ok")];
+    expect(groupToolRuns(segs, new Map<number, unknown>([[1, "card"]]))).toEqual(segs);
+  });
+
+  test("ORIGINAL indices survive, so cardKey and cardsAfter still line up", () => {
+    const segs = [
+      text("a"),
+      named("t1", "Read"),
+      named("t2", "Bash"),
+      think("why"),
+      named("t3", "Read"),
+      named("t4", "Read"),
+      named("t5", "Grep"),
+    ];
+    const rows = groupToolRuns(segs);
+    const runs = rows.filter(isToolRun);
+    expect(runs.map((r) => r.start)).toEqual([1, 4]);
+    for (const run of runs)
+      run.segs.forEach((seg, j) => {
+        expect(seg).toBe(segs[run.start + j] as ToolSegment);
+        expect(cardKey(7, seg, run.start + j)).toBe("tool:" + seg.id);
+      });
+    expect(flatten(rows)).toEqual(segs);
+  });
+
+  test("a null/empty list, and holes in it, come back empty", () => {
+    expect(groupToolRuns(null)).toEqual([]);
+    expect(groupToolRuns(undefined)).toEqual([]);
+    expect(groupToolRuns([])).toEqual([]);
+  });
+
+  test("A HOLE BREAKS THE RUN AND MOVES NOTHING: index 2 is still index 2", () => {
+    // The hole is dropped from the OUTPUT — there is nothing to paint for it —
+    // but every index after it is the caller's own, because `cardsAfter`,
+    // `cardKey` and `ToolRun.start` are all keyed by position in the list that
+    // was handed in. Compacting the hole away would slide `start` to 1 and
+    // re-key both chips.
+    const segs = [
+      named("t1", "Read"),
+      null,
+      named("t2", "Bash"),
+      named("t3", "Grep"),
+    ] as unknown as Segment[];
+    const rows = groupToolRuns(segs);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(segs[0]!);
+    const run = rows[1]!;
+    expect(isToolRun(run)).toBe(true);
+    expect((run as { start: number }).start).toBe(2);
+    expect((run as { segs: ToolSegment[] }).segs).toEqual([
+      segs[2] as ToolSegment,
+      segs[3] as ToolSegment,
+    ]);
+    // …and a card filed against the RAW index still lands on the right chip.
+    const carded = groupToolRuns(segs, new Map<number, unknown>([[2, "card"]]));
+    expect(carded).toEqual([segs[0]!, segs[2]!, segs[3]!]);
+  });
+
+  test("A STATUS THIS FILE HAS NO LITERAL FOR NEVER FOLDS", () => {
+    // `ToolStatus` is "running" | "ok" | "error", and the fold asks for one of
+    // the SETTLED two rather than for "not running". A payload with the field
+    // missing — an older agent.py, a truncated row — is not known to be over,
+    // and folding a stretch that might still be moving is the one mistake this
+    // grouping cannot take back without shifting the transcript under a reader.
+    const bare = (id: string): Segment =>
+      ({ kind: "tool", id, name: "Read", input: {}, output: "", images: [] }) as unknown as Segment;
+    const missing = [bare("t1"), bare("t2")];
+    expect(groupToolRuns(missing)).toEqual(missing);
+    const invented = [
+      { ...(named("t1", "Read") as object), status: "queued" },
+      { ...(named("t2", "Bash") as object), status: "queued" },
+    ] as unknown as Segment[];
+    expect(groupToolRuns(invented)).toEqual(invented);
+    // The two real settled literals still fold.
+    expect(groupToolRuns([named("t1", "Read"), named("t2", "Bash", "error")]).filter(isToolRun))
+      .toHaveLength(1);
   });
 });

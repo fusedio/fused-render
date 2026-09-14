@@ -159,18 +159,13 @@ export function ago(ts: number, now: () => number = Date.now): string {
  *  that has to explain a marker-only title reads the same list. */
 export const TITLE_BLOCK_OPENERS: readonly (readonly [string, string])[] = BLOCK_OPENERS;
 
-/** T:18106 `rowPane` needs this: only a drive-letter path has its backslashes
- *  rewritten, because a backslash is a legal POSIX filename char. */
+/** T:18106 — only a drive-letter path has its backslashes rewritten, because a
+ *  backslash is a legal POSIX filename char. (T's `rowPane`, which used to be
+ *  this function's only caller, is gone with `RecentRow`: the Recent list draws
+ *  the Tasks page's own row now and `ui/list-rows.ts` answers the pane
+ *  question for it.) */
 export function paneSlashes(path: string): string {
   return /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/") : String(path);
-}
-
-/** T:18113 `rowPane` — the file this row's chat was opened on, or "" for one
- *  opened on THIS target (naming the same file on every row is noise). */
-export function rowPane(s: Pick<SessionRow, "pane"> | null | undefined, file: string | null): string {
-  const pane = (s && s.pane) || "";
-  if (!pane) return "";
-  return paneSlashes(pane) === paneSlashes(file || "") ? "" : pane;
 }
 
 /** The tag name of the annotations block, re-exported so a caller explaining a

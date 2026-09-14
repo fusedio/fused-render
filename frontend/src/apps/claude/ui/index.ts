@@ -44,9 +44,7 @@ export { HomeCard } from "./HomeCard";
 export type { HomeCardProps } from "./HomeCard";
 export { Lists, RecentSkeleton, LIST_LABELS } from "./Lists";
 export type { ListsProps } from "./Lists";
-export { RecentRow } from "./RecentRow";
-export { useRecentSessions } from "./useRecentSessions";
-export type { RecentRowProps } from "./RecentRow";
+export { useRecentTasks, useSessionTask } from "./useRecentTasks";
 export { ArtifactRow } from "./ArtifactRow";
 export type { ArtifactRowProps } from "./ArtifactRow";
 export { SnapRow } from "./SnapRow";
@@ -92,8 +90,9 @@ export {
   ago,
   paneChatUrl,
   paneSlashes,
-  rowPane,
   sessionTitle,
+  taskInPane,
+  taskPane,
 } from "./list-rows";
 export {
   rowNeed,
@@ -130,6 +129,8 @@ export { MarkdownView, INNER_HTML_SITES } from "./MarkdownView";
 export type { MarkdownViewProps } from "./MarkdownView";
 export { ToolChip } from "./ToolChip";
 export type { ToolChipProps } from "./ToolChip";
+export { ToolRunChip } from "./ToolRunChip";
+export type { ToolRunChipProps } from "./ToolRunChip";
 export { ThinkingView } from "./ThinkingView";
 export type { ThinkingViewProps } from "./ThinkingView";
 export { NoticeView } from "./NoticeView";
@@ -156,6 +157,7 @@ export {
   createCardPolicy,
   resetCardPolicy,
   cardKey,
+  runKey,
   useCardOpen,
   cardOverride,
   type CardPolicy,

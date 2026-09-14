@@ -2,13 +2,14 @@
 // (T:4215-4331, inventory 05 §B). `#chat.home` hides the topbar, the transcript,
 // the chat composer, Back and the footnote; this is what stands in their place.
 import "../styles/home.css";
-import type { SessionRow } from "../protocol/types";
+import type { Task } from "@platform/lib/api";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
 import { useLandingReads } from "./useLandingReads";
 
 export interface HomeProps extends HomeCardProps {
-  recent: SessionRow[] | null;
+  /** The chats about this target, as TASKS — see `Lists`' own prop. */
+  recent: Task[] | null;
   /** A recent row on THIS target becomes the current session in place. */
   onOpenSession(sessionId: string): void;
   /** Rows dim and go inert while a comment mode holds the reader (PR3). */

@@ -21,7 +21,7 @@
 //     the payload before handing a span to `pollBody`. Nothing here guesses a
 //     boundary; the old frozen `segBase`/`textBase` pair did, and got it wrong
 //     by however much of the first reply streamed after the send (feedback #9).
-import type { Segment } from "./types";
+import type { Segment, ToolSegment, ToolStatus } from "./types";
 
 /** T:15637 — a segment's text, or "" for one that has none. */
 export function segText(seg: Segment | undefined | null): string {
@@ -46,6 +46,134 @@ export function viewKind(seg: Segment | undefined | null): SegmentKind {
 export function cardKey(seq: number, seg: Segment | undefined | null, i: number): string {
   const s = seg as { kind?: string; id?: string } | undefined | null;
   return s && s.kind === "tool" && s.id ? "tool:" + s.id : seq + ":" + i;
+}
+
+/* ── tool-call runs (design.md §A) ──────────────────────────────────────────
+ *
+ * A turn that makes fifteen edits is fifteen chips, and fifteen chips are a
+ * wall the prose either side of them disappears into. claude.ai folds a turn's
+ * consecutive steps under one disclosure; this is the same shape, decided as
+ * data so the paint side only paints.
+ *
+ * THREE THINGS BREAK A RUN, and each one is a thing the reader is owed:
+ *
+ *   * any other segment kind — prose, a thinking block, a notice — because the
+ *     run is "these calls happened together", and a sentence between two calls
+ *     means they did not;
+ *   * a tool that is not KNOWN SETTLED anywhere in the stretch — running, or
+ *     wearing a status this file has no literal for — which keeps EVERY chip in
+ *     that stretch individual: while the turn is live the progress is the point, and
+ *     a stretch that folds the moment its first call settles would move the
+ *     transcript under the reader mid-run (Akshil 2026-09-14: running =
+ *     individual, done = combined). Judged over the WHOLE consecutive stretch,
+ *     not the piece a card happens to cut off it, so one running call cannot
+ *     fold the calls in front of it;
+ *   * a segment with a filed card in `cardsAfter` — the permission or plan the
+ *     reader answered under that chip. The card is glued to its chip
+ *     (Transcript's `parkPlan`, #18), so the chip stays individual and the run
+ *     ends BEFORE it; the tools after it are free to start a new one.
+ */
+
+/** Fewer than this and a run is not a run — it is two chips wearing a lid. */
+export const RUN_MIN = 2;
+
+/** A folded stretch of settled tool calls. `start` is the ORIGINAL index of
+ *  `segs[0]`; the rest are consecutive from there, which is what lets the paint
+ *  side rebuild each chip's `cardKey` without carrying an index per segment. */
+export interface ToolRun {
+  kind: "toolrun";
+  start: number;
+  segs: ToolSegment[];
+}
+
+/** One row of the grouped view: a segment as it always was, or a run. */
+export type SegmentOrRun = Segment | ToolRun;
+
+/** Narrow a grouped row. `kind` is the discriminant either way, so this is the
+ *  whole test. */
+export function isToolRun(item: SegmentOrRun | null | undefined): item is ToolRun {
+  return !!item && (item as { kind?: string }).kind === "toolrun";
+}
+
+function isTool(seg: Segment | null | undefined): seg is ToolSegment {
+  return !!seg && seg.kind === "tool";
+}
+
+/** The `ToolStatus` members (protocol/types.ts) that mean the call is OVER.
+ *  Spelled as the LIST OF SETTLED ONES rather than `!== "running"`: a payload
+ *  whose `status` is missing, or one carrying a state a newer agent.py invents,
+ *  is not something this file knows to be finished, and "not known finished"
+ *  must keep its chips individual — folding a stretch that might still be
+ *  moving is the one mistake this grouping cannot take back on the next poll
+ *  without shifting the transcript under the reader. */
+const SETTLED: readonly ToolStatus[] = ["ok", "error"];
+
+function isSettled(seg: ToolSegment): boolean {
+  const status = (seg as { status?: unknown }).status;
+  return SETTLED.some((s) => s === status);
+}
+
+/**
+ * Fold consecutive settled tool calls into runs — see the note above for the
+ * three things that break one.
+ *
+ * `cardsAfter` is read for its KEYS only (a filed card's position), so it is
+ * typed as loosely as that use: the paint side's map holds React nodes and this
+ * file imports types only.
+ */
+export function groupToolRuns(
+  segments: Segment[] | null | undefined,
+  cardsAfter?: Map<number, unknown> | null,
+): SegmentOrRun[] {
+  // RAW INDICES THROUGHOUT, and that is the whole reason nothing is filtered
+  // out of `list` first. `cardsAfter` is keyed by the caller's own positions,
+  // `ToolRun.start` is the index the paint side rebuilds every chip's `cardKey`
+  // from, and `tailIndex` counts the same list — compacting a hole out of the
+  // array would slide every one of those by one and silently re-key the rows
+  // after it. A hole is simply a run BREAKER, like any other non-tool row, and
+  // it is dropped from the OUTPUT (there is nothing to paint) without moving
+  // anything around it.
+  const list: (Segment | null | undefined)[] = Array.isArray(segments) ? segments : [];
+  const out: SegmentOrRun[] = [];
+  const push = (from: number, to: number) => {
+    const segs = list.slice(from, to).filter(isTool);
+    if (segs.length >= RUN_MIN) out.push({ kind: "toolrun", start: from, segs });
+    else
+      for (let k = from; k < to; k++) {
+        const seg = list[k];
+        if (seg) out.push(seg);
+      }
+  };
+  let i = 0;
+  while (i < list.length) {
+    const here = list[i];
+    if (!isTool(here)) {
+      if (here) out.push(here);
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < list.length && isTool(list[end])) end += 1;
+    let settled = true;
+    for (let k = i; k < end; k += 1) if (!isSettled(list[k] as ToolSegment)) settled = false;
+    if (!settled) {
+      for (let k = i; k < end; k += 1) out.push(list[k] as Segment);
+      i = end;
+      continue;
+    }
+    // The card-bearing chip is emitted on its own, between the run that ended
+    // before it and whatever starts after it.
+    let from = i;
+    for (let k = i; k < end; k += 1) {
+      if (!cardsAfter || !cardsAfter.has(k)) continue;
+      push(from, k);
+      out.push(list[k] as Segment);
+      from = k + 1;
+    }
+    push(from, end);
+    i = end;
+  }
+  return out;
 }
 
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last

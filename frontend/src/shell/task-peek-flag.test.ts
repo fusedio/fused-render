@@ -188,6 +188,12 @@ describe("the markup adds nothing when the feature is off", () => {
 
 describe("the peek header", () => {
   const HEAD = read("TaskPeek.tsx");
+  /** WHO the panel is about — the ring, the number, the title and the project —
+   *  is a module of its own since 2026-09-14, because the native chat's own
+   *  header draws the same block for the task behind the conversation it shows
+   *  (apps/claude/ui/Topbar.tsx). The header still renders it in the same seat;
+   *  the markup is just one file further down. */
+  const WHO = read("TaskPeekWho.tsx");
 
   it("is the PEEK's own row — no Claude wordmark, no model cluster", () => {
     // It wore `@apps/claude/ui/Topbar` for a day (design.md, Round 3), which
@@ -218,17 +224,27 @@ describe("the peek header", () => {
       "task-side-peek-resize",
       'aria-label="Previous task"',
       'aria-label="Next task"',
-      "<StatusIcon",
-      "task-side-peek-id",
-      "task-side-peek-title",
+      // The identity block, in one element (TaskPeekWho.tsx) — its own three
+      // marks are ordered below.
+      "<TaskPeekWho",
       // …and the right cluster reads project · Open · ⋮: the FACT, then the
       // act, then the rest of the acts (design.md, Polish batch 4).
-      "task-side-peek-project",
+      "<TaskPeekProject",
       "task-side-peek-open",
       'aria-label="More actions"',
     ].map(at);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(head).not.toContain("tabIndex");
+    // RING · NUMBER · TITLE inside that block, and nothing between them that
+    // could take a tab stop.
+    const who = WHO.slice(WHO.indexOf('<div className="task-side-peek-who">'));
+    const inner = ["<StatusIcon", "task-side-peek-id", "task-side-peek-title"].map((n) => {
+      const i = who.indexOf(n);
+      expect(i).toBeGreaterThan(-1);
+      return i;
+    });
+    expect(inner).toEqual([...inner].sort((a, b) => a - b));
+    expect(WHO).not.toContain("tabIndex");
   });
 
   it("leads with a plain × in EVERY mode, and adds Resize panel only in cover", () => {
@@ -467,8 +483,11 @@ describe("the peek header", () => {
     expect(HEAD).not.toContain("ICON_FOLDER_MARK");
     // A plain muted span with the full path in its tooltip — and no hover
     // wash, because a label that lights up under the pointer promises a press.
-    expect(HEAD).toContain('<span\n                className="task-side-peek-project"');
-    expect(HEAD).toContain("title={tildePath(task.project, home)}");
+    expect(WHO).toContain('<span className="task-side-peek-project"');
+    expect(WHO).toContain('title={tildePath(task.project, home)}');
+    // …and the peek still hands its own home directory over, so the tooltip
+    // keeps its `~`.
+    expect(HEAD).toContain("<TaskPeekProject task={task} home={home} />");
     expect(PEEK_CSS).not.toContain(".task-side-peek-project:hover");
   });
 

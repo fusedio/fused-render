@@ -3,20 +3,37 @@
 // TERMINAL included, which no poke from this page could ever know about
 // (T:18340-18394 `watchRecent`, T:18399-18470 `loadRecent`).
 //
+// WHAT IT READS IS `/api/tasks` NOW, not agent.py's `sessions` action
+// (.claude-design/design.md §B: "Recent chats = TaskList"). The list draws the
+// Tasks page's own row, so it needs the Tasks page's own model — a `Task`, with
+// the status, the title source, the unread count and the message count the row
+// is made of, all decided by the server once for every view. The `sessions`
+// action answered a thinner shape that only this list could read, and pairing
+// it with a row built for `Task` would have meant inventing the missing halves
+// here, which is exactly the client-side model the tasks endpoint exists to
+// retire.
+//
+// The WATCH is unchanged, and was always about tasks: `/api/tasks/changes` is
+// the same endpoint either way, and `changeIsHere` is the same question.
+//
 // Semantics the UI depends on (05-sched-live-lists-boot.md §B):
 //   * `null` is NOT `0`. `null` means "we do not have rows yet" and draws the
 //     skeleton; `[]` means "this folder has no chats" and hides the section
 //     entirely (T:18458-18463). A FAILED read is also `[]` — count 0, no error
 //     UI (T:18469-18477).
+//   * the rows are the WHOLE listing, unfiltered. Which of them this pane shows
+//     is a question about paths, and paths are the row layer's vocabulary
+//     (`ui/list-rows.taskInPane`); this module's only use for the pane is
+//     deciding whether a change is worth a re-read.
 //   * the skeleton stands in for rows we do not have, never for rows already
 //     up: a re-read over a drawn list repaints in place (T:18411). That is why
 //     this only ever emits `null` ONCE, before the first read lands.
 //   * only the NEWEST read may write, because reads overlap by design (the back
 //     handler retries over a just-left run's spawn window) — the same seat idiom
 //     `sendSeq`/`loopSeq` use (T:18402-18407, Bugbot PR #653).
+import { getTasks } from "@platform/lib/api";
+import type { Task } from "@platform/lib/api";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { runAgent } from "./agent";
-import type { ErrorOnly, SessionRow, SessionsResponse } from "./types";
 
 /** T:18367 — the long-poll's own wait, in seconds. */
 export const CHANGES_WAIT_S = 25;
@@ -27,9 +44,9 @@ export const CHANGES_BACKOFF_MS = 3000;
  * T:13066-13072 — TWO MORE LOOKS AFTER LANDING, and they are the difference
  * between a chat you just had being in this list and not (R3-1).
  *
- * The list is the transcripts in the cwd's project dir (agent.py `_sessions`),
- * and a brand-new session's transcript only appears once the CLI has written
- * its first rows — which is SECONDS after the read this mount fires. T covers
+ * A brand-new session becomes a row only once the CLI has written the first
+ * lines of its transcript and the server's watcher has seen them — which is
+ * SECONDS after the read this mount fires. T covers
  * exactly that window from its Back handler, and it is not a poll loop: two
  * looks a few seconds apart cover the write, and after that the list is what it
  * honestly is.
@@ -41,6 +58,11 @@ export const CHANGES_BACKOFF_MS = 3000;
  * `sessions` reads for a transcript write that had already happened. The caller
  * says so through `coverWrite`, which ClaudeChat's Back path can answer because
  * it already knows `activeRun`/`sending`/`run` (P4-21).
+ *
+ * Still owed with the listing behind this rather than the transcript directory:
+ * a brand-new conversation becomes a task row when the server's watcher sees
+ * the transcript the CLI is in the middle of writing, which is the same race by
+ * one more hop.
  */
 export const RECENT_RETRY_MS = [2500, 6000];
 
@@ -75,7 +97,11 @@ export interface RecentEnv {
    *  closure — `ids`, `cb`, the loop — alive, and six card mounts leak six. */
   whenVisible(): { promise: Promise<void>; cancel(): void };
   sleep(ms: number): Promise<void>;
-  run?: typeof runAgent;
+  /** The listing itself (`GET /api/tasks`), injectable for the same reason
+   *  every other seam in this app is: `bun test` runs every suite in ONE
+   *  process, so a `mock.module` here would replace the platform's api module
+   *  for every suite loaded after this one. */
+  tasks?: () => Promise<{ tasks?: Task[] }>;
   /**
    * THE PUSH SIDE OF THE LIST, alongside the long-poll's pull side: subscribe
    * `fn` to every signal that says a chat just moved, and return the disposer.
@@ -156,25 +182,25 @@ export function changeIsHere(project: unknown, file: string): boolean {
 }
 
 /**
- * Load the recent list once and keep it fresh until the returned function is
+ * Load the task listing once and keep it fresh until the returned function is
  * called. `cb(null)` fires first (skeleton), then `cb(rows)` for every read.
  *
  * `file` may be `null` — the landing has no target to ask about, so the list is
- * empty and nothing is watched (agent.py refuses `sessions` without a file).
+ * empty and nothing is watched. It is the WATCH's scope and not a filter on the
+ * rows: see the header.
  */
-export function subscribeRecent(
-  agentDir: string,
+export function subscribeTasks(
   file: string | null,
-  cb: (rows: SessionRow[] | null) => void,
+  cb: (rows: Task[] | null) => void,
   env: RecentEnv = browserEnv(),
   /** T's `leftLive` — see `RECENT_RETRY_MS`. Only a chat left MID-TURN has a
    *  transcript write to race, so only that landing pays for the two extra
    *  looks. */
   coverWrite = false,
 ): () => void {
-  const run = env.run || runAgent;
+  const read = env.tasks || getTasks;
   let stopped = false;
-  /** The session ids the list last painted — what a `gone` key has to be one of
+  /** The task keys the list last painted — what a `gone` key has to be one of
    *  to concern this folder (a `gone` key carries no project of its own,
    *  T:18352-18354). */
   const ids = new Set<string>();
@@ -196,33 +222,34 @@ export function subscribeRecent(
   // inside the closures below.
   const target: string = file;
 
-  // NOT ABORTABLE, deliberately: `{key: null}` opts this read out of the
-  // supersede channel because two folders' lists must not cancel each other
+  // NOT ABORTABLE, deliberately: two folders' lists must not cancel each other
   // (T:16620), and the `stopped`/`seat` guards below already make a late result
-  // harmless — an aborted or superseded read never paints. A quick
-  // enter-and-back therefore spends one `sessions` read that nothing will paint,
-  // and that is the whole cost: accepted, because the read is cheap and the
-  // alternative is threading a signal through a transport whose whole point
-  // here is that these reads do NOT cancel each other.
+  // harmless — a superseded read never paints. A quick enter-and-back therefore
+  // spends one listing that nothing will paint, and that is the whole cost:
+  // accepted, because the read is cheap and the alternative is threading a
+  // signal through a transport whose whole point here is that these reads do
+  // NOT cancel each other.
+  //
+  // NO ORDER OF ITS OWN (.claude-design/design.md §B). The transport hands the
+  // listing over exactly as `/api/tasks` sent it; the ONE sort the chat's list
+  // spends is the Tasks page's own `sortForList`, and it is applied where the
+  // rows are narrowed to a pane (`ui/useRecentTasks.ts`) so the two surfaces
+  // cannot disagree about what is at the top of a list of the same rows.
   const load = async () => {
     const mine = ++seat;
-    let rows: SessionRow[] = [];
+    let rows: Task[] = [];
     try {
-      const res = (await run(agentDir, "sessions", { file: target }, { key: null })) as
-        | SessionsResponse
-        | ErrorOnly;
-      const failed = (res as ErrorOnly).error;
-      if (failed) throw new Error(failed);
-      const list = (res as SessionsResponse).sessions;
-      rows = (Array.isArray(list) ? list : []).filter((s): s is SessionRow => !!s && !!s.id);
+      const res = await read();
+      const list = res?.tasks;
+      rows = (Array.isArray(list) ? list : []).filter((t): t is Task => !!t && !!t.key);
     } catch {
-      // No error UI, by design: a folder whose sessions cannot be read reads as
-      // a folder with no chats (T:18469-18477).
+      // No error UI, by design: a listing that cannot be read reads as a folder
+      // with no chats (T:18469-18477).
       rows = [];
     }
     if (stopped || seat !== mine) return; // a newer read owns the list now
     ids.clear();
-    for (const s of rows) ids.add(s.id);
+    for (const t of rows) ids.add(t.key);
     cb(rows);
   };
 
