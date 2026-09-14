@@ -32,6 +32,16 @@
   .muted { color: var(--fg-muted); }
   .error { color: var(--error); white-space: pre-wrap;
            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .migrate { max-width: 460px; margin: 10vh auto 0; padding: 22px 24px;
+             border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+             border-radius: 10px; }
+  .migrate .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .migrate .error { margin-top: 10px; }
+  .btn { font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+         color: var(--fg); background: transparent;
+         border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent); }
+  .btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .btn:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body>
@@ -90,15 +100,109 @@
       if (isPreview) return placeholder();
       return fail(data.error || "Not a valid .fused file.");
     }
+    // Migrate-on-open (D883): a real open of a version that has no data yet,
+    // when an earlier version of the same app on this machine does, asks
+    // ONCE — copy that data across or start fresh — and only then frames
+    // the entry page, so the data is on disk before the app's first render.
+    // Previews never ask (a thumbnail is not an open), and a recorded
+    // decision, either way, is never asked again for this extract.
+    if (!isPreview) {
+      const ok = await maybeMigrate();
+      if (!ok) return;
+    }
+    mount(data.view);
+  }
+
+  function mount(view) {
     const frame = document.createElement("iframe");
     // The entry page's chrome-free embed URL. A preview forwards the two
     // picture-not-use stamps to the inner page: `_preview=1` (no open
     // recorded by anything downstream, D301) and `_nofocus=1` (a thumbnail
     // must not take the keyboard, D348).
-    frame.src = data.view + (isPreview ? "?_preview=1&_nofocus=1" : "");
+    frame.src = view + (isPreview ? "?_preview=1&_nofocus=1" : "");
     frame.allow = "clipboard-read; clipboard-write; fullscreen";
     state.remove();
     document.body.appendChild(frame);
+  }
+
+  async function dataApi(body) {
+    const resp = await fetch("/api/appfile/data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ file, ...body }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "data request failed");
+    return data;
+  }
+
+  // Resolves true when the app may mount. Any failure on this path opens
+  // the app plainly: the question is a courtesy, never a gate.
+  async function maybeMigrate() {
+    let st;
+    try {
+      st = await dataApi({});
+    } catch (e) {
+      return true;
+    }
+    if (!st.prior || st.decided || st.has_data) return true;
+    return new Promise((resolve) => {
+      state.innerHTML = "";
+      const card = document.createElement("div");
+      card.className = "migrate";
+      const h = document.createElement("h1");
+      h.textContent = "Bring your data along?";
+      const p = document.createElement("div");
+      p.className = "muted";
+      const when = st.prior.exported_at ? " exported " + st.prior.exported_at : "";
+      const from = st.prior.source ? " (" + st.prior.source + ")" : "";
+      p.textContent =
+        "This is a new version of an app you have used before. The version you " +
+        "opened last" + when + from + " holds " + st.prior.files +
+        (st.prior.files === 1 ? " data file" : " data files") +
+        " (" + fmtBytes(st.prior.bytes) + "). Copy that data into this version, or start fresh?";
+      const row = document.createElement("div");
+      row.className = "row";
+      const copy = button("Copy my data", true);
+      const fresh = button("Start fresh", false);
+      const err = document.createElement("div");
+      err.className = "error";
+      const decide = async (decision) => {
+        copy.disabled = fresh.disabled = true;
+        try {
+          await dataApi({ decision });
+        } catch (e) {
+          // A failed copy is reported and the app still opens: the user can
+          // re-open to be asked again (nothing was recorded).
+          err.textContent = String(e.message || e);
+          copy.disabled = fresh.disabled = false;
+          return;
+        }
+        resolve(true);
+      };
+      copy.onclick = () => decide("copy");
+      fresh.onclick = () => decide("fresh");
+      row.append(copy, fresh);
+      card.append(h, p, row, err);
+      state.append(card);
+      copy.focus();
+    });
+  }
+
+  function button(label, primary) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.className = primary ? "btn primary" : "btn";
+    return b;
+  }
+
+  function fmtBytes(n) {
+    if (!(n > 0)) return "0 B";
+    const u = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(1) : n) + " " + u[i];
   }
 
   open();

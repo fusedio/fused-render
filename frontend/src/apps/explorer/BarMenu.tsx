@@ -302,6 +302,82 @@ export type OverflowEntry = OverflowItem | "separator";
 // (EntryActionsMenu.tsx: App Doctor, Download app, Open as project, Open in
 // embed, MCP config).
 
+// A LABELLED dropdown for the bars — the same popup and rows as OverflowMenu
+// under a bordered trigger that names what the menu is about (icon + label +
+// caret, the ModeMenu trigger's shape). For a control that has one primary
+// verb most of the time but a few related ones (the `.fused` Clone button:
+// Clone / Upgrade / Open in local, D883) — where a `⋮` beside a button would
+// split one thing across two controls.
+export function ActionMenu({
+  label,
+  icon,
+  items,
+  title,
+  busy = false,
+}: {
+  label: string;
+  icon?: ReactNode;
+  items: OverflowEntry[];
+  title?: string;
+  // Spinner in the icon slot and a dead trigger while an action runs.
+  busy?: boolean;
+}) {
+  const { pos, rootRef, toggle, close } = useMenuAnchor();
+  if (items.length === 0) return null;
+  return (
+    <div className="mode-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-bordered mode-menu-btn"
+        aria-haspopup="menu"
+        aria-expanded={pos !== null}
+        title={title}
+        disabled={busy}
+        onClick={toggle}
+      >
+        {(icon || busy) && (
+          <span className="mode-menu-icon">{busy ? <span className="mode-icon-spinner" /> : icon}</span>
+        )}
+        <span className="mode-menu-label">
+          <span>{label}</span>
+        </span>
+        <CaretIcon open={pos !== null} />
+      </button>
+      {pos && (
+        <div
+          className="bar-menu-popup"
+          role="menu"
+          aria-label={title || label}
+          style={{ top: pos.top, left: pos.left, right: pos.right, minWidth: pos.width }}
+        >
+          {items.map((item, i) =>
+            item === "separator" ? (
+              <div key={"sep" + i} className="bar-menu-sep" role="separator" />
+            ) : (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                className="bar-menu-item"
+                disabled={item.disabled}
+                title={item.title}
+                onClick={() => {
+                  close();
+                  item.onClick();
+                }}
+              >
+                {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}
+                <span className="bar-menu-item-label">{item.label}</span>
+                {item.trailing && <span className="bar-menu-item-trailing">{item.trailing}</span>}
+              </button>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
 export function OverflowMenu({

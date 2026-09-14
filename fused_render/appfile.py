@@ -570,6 +570,8 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     entry_abs = os.path.join(dest, *entry_rel.split("/"))
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
+            if not reuse_only:
+                _stamp_open(dest, fused_path, manifest)
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True,
                     "exported_at": exported_at(manifest)}
         if reuse_only:
@@ -626,8 +628,18 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
                 raise AppFileError(f"could not place the extracted app at {dest}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    _stamp_open(dest, fused_path, manifest)
     return {"dir": dest, "entry": entry_abs, "name": name, "reused": False,
             "exported_at": exported_at(manifest)}
+
+
+def _stamp_open(dest: str, fused_path: str, manifest: dict) -> None:
+    """Record this open in the extract's `.fused/appfile.json`: the source
+    file, its export stamp and ``opened_at`` — what `prior_data` ranks on and
+    what the migrate popover names. Previews (reuse_only) never stamp: a card
+    peek is not an open (D396)."""
+    write_stamp(dest, source=os.path.abspath(fused_path),
+                exported_at=exported_at(manifest), opened_at=_utc_now())
 
 
 def _lift_read_only(root: str) -> None:
@@ -676,12 +688,21 @@ def clone_target(fused_path: str) -> dict:
     stem = os.path.splitext(os.path.basename(fused_path))[0]
     slug = _slug(name, fallback=_slug(stem))
     dest = os.path.join(clone_dir(), slug)
+    cloned = os.path.isdir(dest)
+    file_stamp = exported_at(manifest)
+    local = read_stamp(dest) if cloned else None
+    local_stamp = (local.get("exported_at")
+                   if local and isinstance(local.get("exported_at"), str) else None)
     return {
         "name": name or stem,
         "slug": slug,
         "path": dest.replace(os.sep, "/"),
-        "cloned": os.path.isdir(dest),
-        "exported_at": exported_at(manifest),
+        "cloned": cloned,
+        "exported_at": file_stamp,
+        # What the clone was last built from (None: unknown — cloned before
+        # the stamp existed) and whether this file is a newer export of it.
+        "local_exported_at": local_stamp,
+        "upgradable": cloned and _newer(file_stamp, local_stamp),
     }
 
 
@@ -720,6 +741,12 @@ def clone_app_file(fused_path: str) -> dict:
         # staging, before the rename, so a clone is never briefly visible in
         # the workspace as read-only.
         _lift_read_only(staged_app)
+        # The clone remembers its origin so a newer export can upgrade it
+        # (D883). Written in staging, so a visible clone is always stamped.
+        opened = open_app_file(fused_path, reuse_only=True)
+        write_stamp(staged_app, replace=True, source=os.path.abspath(fused_path),
+                    exported_at=opened["exported_at"], cloned_at=_utc_now(),
+                    files=_payload_files(staged_app))
         dest = os.path.join(local, target["slug"])
         try:
             os.rename(staged_app, dest)
@@ -733,3 +760,309 @@ def clone_app_file(fused_path: str) -> dict:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {**target, "cloned": False}
+
+
+# ---------------------------------------------------------------------------
+# Versions of one app: data migration between extracts, clone upgrade (D883)
+# ---------------------------------------------------------------------------
+#
+# The extract cache is CONTENT-addressed (`_file_key`), and an app's `.fused/`
+# state folder (D548) sits INSIDE the app dir — for an opened `.fused` that is
+# the extract dir. So v2 of an app, being different bytes, extracts beside v1
+# and starts with an empty `.fused/data`, while everything the user typed into
+# v1 sits in a sibling dir nothing points at any more. Same story for a clone:
+# D397's "folder exists = already cloned" makes a second Clone a no-op, so v2
+# never reaches `local/<slug>`.
+#
+# Two mechanics, both keyed on the SLUG (D397's identity, its collision cost
+# accepted and made visible by naming the source file), both recorded in one
+# stamp file we own, `.fused/appfile.json`, beside D548's `meta.json`:
+#
+#   * migrate-on-open: `data_state` finds the sibling extract of the same slug
+#     the user OPENED LAST that holds data and reports it as `prior`; the
+#     fusedapp template asks once — copy or start fresh — and `migrate_data`
+#     records the answer so the question is never asked again for that extract.
+#   * clone upgrade: the clone's stamp remembers which export it came from and
+#     the payload files it laid down; `upgrade_clone` overlays a newer export's
+#     payload onto the clone with `.fused/` untouched (so data rides through),
+#     removes files the old payload had and the new one lacks, and snapshots
+#     the user's edits in the `local` repo before and after.
+
+STAMP_NAME = "appfile.json"
+STAMP_VERSION = 1
+
+
+def _stamp_path(app_dir: str) -> str:
+    from fused_render import app_fused_dir
+
+    return os.path.join(app_fused_dir.dot_fused(app_dir), STAMP_NAME)
+
+
+def read_stamp(app_dir: str) -> dict | None:
+    """The `.fused/appfile.json` under ``app_dir``, or None for absent,
+    unreadable or malformed — a reader can do nothing different with those."""
+    try:
+        with open(_stamp_path(app_dir), encoding="utf-8") as f:
+            stamp = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return stamp if isinstance(stamp, dict) else None
+
+
+def write_stamp(app_dir: str, *, replace: bool = False, **fields: object) -> dict:
+    """Merge ``fields`` into the stamp under ``app_dir`` (creating `.fused/`
+    if needed) and return the result; ``replace`` starts from empty instead
+    (a clone's copytree carries the extract's stamp across, and a clone must
+    not inherit the extract's ``opened_at``/``data_decision``). Best-effort on
+    the write: a stamp that cannot land must not fail an open or a clone."""
+    from fused_render import app_fused_dir
+
+    stamp = {} if replace else (read_stamp(app_dir) or {})
+    stamp.update(fields)
+    stamp["version"] = STAMP_VERSION
+    try:
+        os.makedirs(app_fused_dir.dot_fused(app_dir), exist_ok=True)
+        tmp = _stamp_path(app_dir) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(stamp, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, _stamp_path(app_dir))
+    except OSError:
+        pass
+    return stamp
+
+
+def _data_dir(app_dir: str) -> str:
+    from fused_render import app_fused_dir
+
+    return app_fused_dir.data_dir(app_dir)
+
+
+def _data_stats(data_dir: str) -> tuple[int, int, float]:
+    """(files, bytes, newest mtime) under ``data_dir``; zeros when absent."""
+    files = size = 0
+    newest = 0.0
+    for dirpath, _dirnames, filenames in os.walk(data_dir):
+        for fname in filenames:
+            try:
+                st = os.stat(os.path.join(dirpath, fname))
+            except OSError:
+                continue
+            files += 1
+            size += st.st_size
+            newest = max(newest, st.st_mtime)
+    return files, size, newest
+
+
+def prior_data(dest: str, slug: str) -> dict | None:
+    """The sibling extract of the same app (``<slug>-*`` under the cache root,
+    other than ``dest``) whose `.fused/data` holds something, preferring the
+    one the user OPENED LAST — the stamp's ``opened_at``, falling back to the
+    newest data mtime for extracts that predate the stamp.
+
+    "Opened last" rather than "exported latest" on purpose: two extracts of
+    different versions can both exist, and the data the user was actually
+    working in is the one behind the most recent open, whatever its export
+    date. Answers ``{dir, key, files, bytes, exported_at, opened_at, source}``
+    or None."""
+    root = os.path.dirname(dest)
+    prefix = slug + "-"
+    best: dict | None = None
+    best_rank: tuple = ()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        cand = os.path.join(root, name)
+        if cand == dest or not os.path.isdir(cand):
+            continue
+        files, size, newest = _data_stats(_data_dir(cand))
+        if files == 0:
+            continue
+        stamp = read_stamp(cand) or {}
+
+        def _s(key: str) -> str | None:
+            v = stamp.get(key)
+            return v if isinstance(v, str) and v else None
+
+        rank = (_s("opened_at") or "", newest)
+        if best is None or rank > best_rank:
+            best_rank = rank
+            best = {
+                "dir": cand,
+                "key": name,
+                "files": files,
+                "bytes": size,
+                "exported_at": _s("exported_at"),
+                "opened_at": _s("opened_at"),
+                "source": _s("source"),
+            }
+    return best
+
+
+def data_state(fused_path: str) -> dict:
+    """What the fusedapp template needs to decide whether to ask: whether the
+    extract already holds data (``has_data``), whether a copy/fresh decision
+    was already recorded (``decided``), and the ``prior`` candidate. Read-only;
+    requires the extract to exist (call after ``open_app_file``)."""
+    opened = open_app_file(fused_path, reuse_only=True)
+    dest = opened["dir"]
+    stamp = read_stamp(dest) or {}
+    files, _size, _newest = _data_stats(_data_dir(dest))
+    return {
+        "has_data": files > 0,
+        "decided": stamp.get("data_decision") in ("copy", "fresh"),
+        "prior": prior_data(dest, _slug(opened["name"])),
+    }
+
+
+def migrate_data(fused_path: str, decision: str) -> dict:
+    """Record the user's answer for the extract of ``fused_path`` and, for
+    ``"copy"``, bring the prior extract's `.fused/data` across. The prior is
+    recomputed HERE, never taken from the client: the only dirs this can read
+    from are same-slug siblings in our own cache. `cache/` is deliberately
+    not copied — by the D548 contract it is rebuildable from `data/`.
+
+    The copy is additive and never overwrites a file the new extract already
+    wrote: data the user made in the new version beats the old copy."""
+    if decision not in ("copy", "fresh"):
+        raise AppFileError("decision must be 'copy' or 'fresh'")
+    opened = open_app_file(fused_path, reuse_only=True)
+    dest = opened["dir"]
+    copied = 0
+    if decision == "copy":
+        prior = prior_data(dest, _slug(opened["name"]))
+        if prior is None:
+            raise AppFileError("no earlier version of this app holds data to copy")
+        src = _data_dir(prior["dir"])
+        dst = _data_dir(dest)
+        for dirpath, _dirnames, filenames in os.walk(src):
+            rel = os.path.relpath(dirpath, src)
+            out_dir = dst if rel == "." else os.path.join(dst, rel)
+            os.makedirs(out_dir, exist_ok=True)
+            for fname in filenames:
+                target = os.path.join(out_dir, fname)
+                if os.path.exists(target):
+                    continue
+                try:
+                    shutil.copy2(os.path.join(dirpath, fname), target)
+                    copied += 1
+                except OSError as exc:
+                    raise AppFileError(f"could not copy {fname}: {exc}")
+        write_stamp(dest, data_decision="copy", data_from=prior["key"])
+    else:
+        write_stamp(dest, data_decision="fresh")
+    return {"decision": decision, "copied": copied}
+
+
+def _payload_files(app_dir: str) -> list[str]:
+    """Forward-slash relative paths of every file under ``app_dir`` outside
+    `.fused/` — the payload as it lies on disk, so v1 zips (whose manifest
+    lists no files) and v2 containers answer alike."""
+    from fused_render import app_fused_dir
+
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(app_dir):
+        if dirpath == app_dir:
+            dirnames[:] = [d for d in dirnames if d != app_fused_dir.DIRNAME]
+        for fname in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fname), app_dir)
+            out.append(rel.replace(os.sep, "/"))
+    out.sort()
+    return out
+
+
+def _newer(file_stamp: str | None, local_stamp: str | None) -> bool:
+    """Is the file's export newer than the clone's? ISO-8601 UTC ``Z`` stamps
+    compare as strings. A clone with no recorded export (cloned before the
+    stamp existed, or from a file with no ``exported_at``) is treated as
+    upgradable — the user sees both dates in the menu and can decline."""
+    if not local_stamp:
+        return True
+    if not file_stamp:
+        return False
+    return file_stamp > local_stamp
+
+
+def upgrade_clone(fused_path: str) -> dict:
+    """Overlay the payload of the ``.fused`` at ``fused_path`` onto its
+    existing clone at ``local/<slug>``: every payload file copied in (writable),
+    files the PREVIOUS payload laid down and this one lacks removed, `.fused/`
+    (data, cache, meta, this stamp) untouched so the user's data rides through.
+
+    The user's own edits are what an overlay can clobber, so the clone is
+    snapshotted in the shared ``local`` repo BEFORE the overlay and the
+    upgrade committed AFTER it — both scoped to this app (D626). A clone the
+    repo machinery cannot own is refused rather than upgraded blind.
+    Refuses when there is no clone (use ``clone_app_file``)."""
+    from fused_render import app_git
+
+    target = clone_target(fused_path)
+    dest = os.path.join(clone_dir(), target["slug"])
+    if not target["cloned"]:
+        raise AppFileError("this app is not cloned yet — clone it first")
+    if not app_git.ensure_local_repo() or app_git._repo_scope(dest) is None:
+        raise AppFileError(
+            "the workspace repo cannot snapshot this clone, so your edits could "
+            "not be recovered after an upgrade — refusing to overwrite")
+    app_git.commit(dest, f"Snapshot {target['slug']} before upgrading from .fused")
+
+    opened = open_app_file(fused_path)
+    src = opened["dir"]
+    old_stamp = read_stamp(dest) or {}
+    old_files = old_stamp.get("files") if isinstance(old_stamp.get("files"), list) else []
+    new_files = _payload_files(src)
+    for rel in new_files:
+        s = os.path.join(src, *rel.split("/"))
+        d = os.path.join(dest, *rel.split("/"))
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        try:
+            if os.path.exists(d):
+                os.chmod(d, 0o644)
+            shutil.copyfile(s, d)
+            os.chmod(d, 0o644)
+        except OSError as exc:
+            raise AppFileError(f"could not write {rel}: {exc}")
+    removed = 0
+    new_set = set(new_files)
+    for rel in old_files:
+        if not isinstance(rel, str) or rel in new_set:
+            continue
+        parts = rel.split("/")
+        if not parts or ".." in parts or parts[0] in ("", ".fused"):
+            continue
+        p = os.path.join(dest, *parts)
+        if os.path.isfile(p):
+            try:
+                os.unlink(p)
+                removed += 1
+            except OSError:
+                pass
+    _prune_empty_dirs(dest)
+    write_stamp(dest, source=os.path.abspath(fused_path),
+                exported_at=opened["exported_at"], upgraded_at=_utc_now(),
+                files=new_files)
+    stamp = opened["exported_at"]
+    app_git.commit(dest, f"Upgrade {target['slug']} from .fused"
+                   + (f" exported {stamp}" if stamp else ""))
+    return {**clone_target(fused_path), "removed": removed, "written": len(new_files)}
+
+
+def _prune_empty_dirs(app_dir: str) -> None:
+    """Drop directories an upgrade emptied, never `.fused/` or the app root."""
+    from fused_render import app_fused_dir
+
+    for dirpath, dirnames, filenames in os.walk(app_dir, topdown=False):
+        if dirpath == app_dir:
+            continue
+        head = os.path.relpath(dirpath, app_dir).split(os.sep)[0]
+        if head == app_fused_dir.DIRNAME:
+            continue
+        if not dirnames and not filenames:
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass

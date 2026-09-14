@@ -10,6 +10,8 @@ import {
   setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
+  upgradeAppFileClone,
+  type AppFileCloneTarget,
   rawUrl,
   statPath,
   resolveConditions,
@@ -84,7 +86,7 @@ import {
 } from "@platform/lib/snapshot-param";
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
-import { ModeMenu } from "@apps/explorer/BarMenu";
+import { ActionMenu, ModeMenu, type OverflowEntry } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
 import { McpDialog } from "@apps/explorer/McpDialog";
@@ -195,14 +197,22 @@ function usePreviewSideSlot(): HTMLElement | null {
 // `toView`: from the embed shell, `navigate` would keep the embed prefix and
 // land the clone folder as a chrome-free listing with no way out (D282's dead
 // end), so the strip's copy goes to the folder's VIEW URL instead.
+// The `.fused` → workspace control (D397, widened by D883): one labelled menu
+// with three verbs whose availability follows the clone's state —
+//   not cloned          → Clone (the primary), the other two disabled
+//   cloned, newer file  → Upgrade to this version (primary) + Open in local
+//   cloned, current     → Open in local (primary); Upgrade disabled, dated
+// The trigger names the primary so the common case is still one click-and-
+// pick; the disabled rows stay listed (BarMenu's rule: a menu that changes
+// shape reads as a different menu) with their reason in the tooltip.
 export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?: boolean }) {
-  const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [target, setTarget] = useState<AppFileCloneTarget | null>(null);
+  const [busy, setBusy] = useState<null | "clone" | "upgrade">(null);
   useEffect(() => {
     let alive = true;
     setTarget(null);
     getAppFileCloneTarget(fsPath)
-      .then((r) => alive && setTarget({ path: r.path, cloned: r.cloned }))
+      .then((r) => alive && setTarget(r))
       .catch(() => {
         /* unreadable file / not a .fused — no button rather than a broken one */
       });
@@ -230,42 +240,83 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
     if (toView) location.assign(viewUrlForFsPath(dest));
     else navigate(dest, { isDir });
   };
-  const go = async () => {
+  const clone = async () => {
     if (busy) return;
-    // Already cloned: this is pure navigation, so it never needs the spinner
-    // or the write route.
-    if (target.cloned) return land(target.path);
-    setBusy(true);
+    setBusy("clone");
     try {
       const r = await cloneAppFile(fsPath);
       await land(r.path);
     } catch (e) {
       notify({ title: (e as Error).message || "clone failed", tone: "error" });
-      setBusy(false);
+      setBusy(null);
     }
     // Success navigates away and unmounts this button; no busy reset needed.
   };
+  const upgrade = async () => {
+    if (busy) return;
+    setBusy("upgrade");
+    try {
+      const r = await upgradeAppFileClone(fsPath);
+      notify({
+        title: "Upgraded " + r.slug,
+        detail:
+          r.written + " files written" + (r.removed ? ", " + r.removed + " removed" : "") +
+          "; your data and a snapshot of your edits are kept in the workspace repo",
+      });
+      await land(r.path);
+    } catch (e) {
+      notify({ title: (e as Error).message || "upgrade failed", tone: "error" });
+      setBusy(null);
+    }
+  };
+  const dated = (s: string | null | undefined) => (s ? s.replace("T", " ").replace("Z", " UTC") : null);
+  const fileDate = dated(target.exported_at);
+  const localDate = dated(target.local_exported_at);
+  const upgradable = target.cloned && target.upgradable === true;
+  const primary = !target.cloned ? "Clone" : upgradable ? "Upgrade to this version" : "Open in local";
+  const items: OverflowEntry[] = [
+    {
+      label: "Clone",
+      icon: MenuIcons.duplicate,
+      disabled: target.cloned,
+      title: target.cloned
+        ? "Already cloned at " + target.path
+        : "Copy this app into " + target.path + " and open it for editing",
+      onClick: () => void clone(),
+    },
+    {
+      label: "Upgrade to this version",
+      icon: MenuIcons.refresh,
+      disabled: !upgradable,
+      title: !target.cloned
+        ? "Clone first — there is no local copy to upgrade"
+        : upgradable
+          ? "Overlay this export" + (fileDate ? " (" + fileDate + ")" : "") +
+            " onto " + target.path + (localDate ? ", last built from " + localDate : "") +
+            ". Your .fused/data is kept; your edits are snapshotted in the workspace repo first."
+          : "Your local copy is already at this version" + (localDate ? " (" + localDate + ")" : ""),
+      onClick: () => void upgrade(),
+    },
+    {
+      label: "Open in local",
+      icon: MenuIcons.open,
+      disabled: !target.cloned,
+      title: target.cloned ? "Open your editable copy at " + target.path : "Clone first",
+      onClick: () => void land(target.path),
+    },
+  ];
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
+    <ActionMenu
+      label={busy === "clone" ? "Cloning…" : busy === "upgrade" ? "Upgrading…" : primary}
+      icon={!target.cloned ? MenuIcons.duplicate : upgradable ? MenuIcons.refresh : MenuIcons.open}
+      items={items}
       title={
-        target.cloned
-          ? "Open your editable copy at " + target.path
-          : "Copy this app into " + target.path + " and open it for editing"
+        upgradable
+          ? "A newer version of your local copy" + (fileDate ? " — exported " + fileDate : "")
+          : "Clone, upgrade or open this app in your workspace"
       }
-      onClick={go}
-      disabled={busy}
-    >
-      {busy ? (
-        <span className="mode-icon-spinner" />
-      ) : target.cloned ? (
-        MenuIcons.open
-      ) : (
-        MenuIcons.duplicate
-      )}
-      {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
-    </button>
+      busy={busy !== null}
+    />
   );
 }
 
