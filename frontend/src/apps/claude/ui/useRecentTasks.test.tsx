@@ -248,3 +248,18 @@ test("no session, no subscription", async () => {
   await mountHead(null, "/repo/x.py");
   expect(subs.length).toBe(0);
 });
+
+test("…and a re-read's skeleton does not drop the header back to the fallback", async () => {
+  // Re-entering a chat re-subscribes over a listing the hook already holds, and
+  // `subscribeTasks` opens every subscription with `null`. Writing that through
+  // blanked the row for the length of the `/api/tasks` round trip, so the
+  // topbar printed its `✻ Claude` fallback over a task it could already name.
+  const h = await mountHead("b", "/repo/x.py");
+  await h.serve([row("a"), row("b")]);
+  expect(h.task()?.key).toBe("b");
+  await h.serve(null);
+  expect(h.task()?.key).toBe("b");
+  // …and a real answer still replaces it, skeleton rule or not.
+  await h.serve([row("a")]);
+  expect(h.task()).toBe(null);
+});

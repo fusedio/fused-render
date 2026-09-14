@@ -397,6 +397,30 @@ describe("groupToolRuns (design.md §A)", () => {
     expect(flatten(rows)).toEqual(segs);
   });
 
+  test("a LIVE turn's trailing stretch is held open, so the fold cannot flicker", () => {
+    // The flicker this guards: two settled calls fold, the third lands running
+    // and the lid comes off, it settles and the lid goes back on — once per
+    // tool, under a reader watching the run happen.
+    const two = [tool("t1", "ok"), tool("t2", "ok")];
+    expect(groupToolRuns(two, null, true)).toEqual(two);
+    const three = [...two, tool("t3", "running")];
+    expect(groupToolRuns(three, null, true)).toEqual(three);
+    const settled = [...two, tool("t3", "ok")];
+    expect(groupToolRuns(settled, null, true)).toEqual(settled);
+    // …and the moment the turn ends, the same stretch folds: done = combined.
+    expect(groupToolRuns(settled, null, false).filter(isToolRun)).toHaveLength(1);
+  });
+
+  test("a CLOSED stretch folds even mid-turn — the poll only ever appends", () => {
+    // Something after it means it can never gain a member, so folding it is
+    // final and there is nothing to take back.
+    const segs = [tool("t1", "ok"), tool("t2", "ok"), text("mid"), tool("t3", "running")];
+    const rows = groupToolRuns(segs, null, true);
+    expect(rows.filter(isToolRun)).toHaveLength(1);
+    expect((rows.filter(isToolRun)[0] as { start: number }).start).toBe(0);
+    expect(flatten(rows)).toEqual(segs);
+  });
+
   test("a null/empty list, and holes in it, come back empty", () => {
     expect(groupToolRuns(null)).toEqual([]);
     expect(groupToolRuns(undefined)).toEqual([]);

@@ -192,9 +192,20 @@ export const Turn = memo(function Turn({
         <span className="body">
           {/* Never both: the text segments join back to exactly the flat
               `text`, so rendering both would print the reply twice
-              (T:13486-13504). */}
+              (T:13486-13504).
+
+              `live` is the turn's own `streaming`: it holds the trailing tool
+              run OPEN while more segments can still land on the end of this
+              turn (protocol/segments.ts `groupToolRuns`), so the fold does not
+              go on and come off once per call mid-run. It folds when the turn
+              ends. */}
           {segments.length ? (
-            <SegmentView segments={segments} tail={tail} cardsAfter={cardsAfter ?? null}>
+            <SegmentView
+              segments={segments}
+              tail={tail}
+              cardsAfter={cardsAfter ?? null}
+              live={!!turn.streaming}
+            >
               {children}
             </SegmentView>
           ) : (

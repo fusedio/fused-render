@@ -150,9 +150,24 @@ export function useSessionTask(
    *  time, which is the only moment it is used. */
   const subscribeRef = useRef(subscribe);
   subscribeRef.current = subscribe;
+  /** The list hook above keeps the same flag for the same reason: every
+   *  `subscribeTasks` opens with a `null` SKELETON (T:18408-18411), and once a
+   *  listing has been held that `null` means "reading again", not "no rows".
+   *  Re-entering a chat re-subscribes over a listing we already have, and
+   *  writing the skeleton through dropped the header to its `✻ Claude` fallback
+   *  for the length of the `/api/tasks` round trip — a flash of the wrong
+   *  identity on a task whose name we were already printing. */
+  const painted = useRef(false);
   useEffect(() => {
     if (!sessionId) return;
-    return subscribeRef.current(file, (next) => setRows(next));
+    return subscribeRef.current(file, (next) => {
+      if (next === null) {
+        if (!painted.current) setRows(null);
+        return;
+      }
+      painted.current = true;
+      setRows(next);
+    });
   }, [sessionId, file]);
   return useMemo(() => {
     if (!sessionId || rows === null) return null;

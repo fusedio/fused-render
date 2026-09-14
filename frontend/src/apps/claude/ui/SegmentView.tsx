@@ -51,6 +51,11 @@ export interface SegmentViewProps {
    *  how a resolved card gets to sit under the tool chip it answered rather than
    *  at the end of the turn (#18, Transcript's `parkPlan`). */
   cardsAfter?: Map<number, React.ReactNode> | null;
+  /** `AssistantTurn.streaming` — this turn is still being polled, so more
+   *  segments may yet land on the end of it. `groupToolRuns` holds the trailing
+   *  run open while it is true, or the fold flickers once per tool for the
+   *  length of a live multi-tool turn. */
+  live?: boolean;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
@@ -62,6 +67,7 @@ export const SegmentView = memo(function SegmentView({
   tail,
   children,
   cardsAfter,
+  live = false,
 }: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
@@ -73,12 +79,12 @@ export const SegmentView = memo(function SegmentView({
   // segment sits in the TURN, not by where it sits in the grouped list.
   const rows = useMemo(() => {
     let at = 0;
-    return groupToolRuns(segments, cardsAfter).map((item) => {
+    return groupToolRuns(segments, cardsAfter, live).map((item) => {
       const index = at;
       at += isToolRun(item) ? item.segs.length : 1;
       return { item, index };
     });
-  }, [segments, cardsAfter]);
+  }, [segments, cardsAfter, live]);
   return (
     <>
       {rows.map(({ item, index: i }) => {

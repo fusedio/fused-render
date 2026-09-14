@@ -68,6 +68,16 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
  *     individual, done = combined). Judged over the WHOLE consecutive stretch,
  *     not the piece a card happens to cut off it, so one running call cannot
  *     fold the calls in front of it;
+ *   * AND, while the turn is still streaming, the stretch that runs to the END
+ *     of the list — because that is the only stretch that can still GROW, and
+ *     "every tool in it is settled" is a statement about the segments that have
+ *     arrived, not about the turn. Without this the fold flickers exactly where
+ *     it is worst: the second call settles, the two chips collapse under a lid,
+ *     the third call lands running and the lid comes off again, once per tool
+ *     for the whole run. A stretch with any segment AFTER it is closed — the
+ *     poll only ever appends — so folding that one is final and it folds the
+ *     moment it settles, live turn or not. The trailing one folds once, when
+ *     the turn ends, which is the "done = combined" half of the rule.
  *   * a segment with a filed card in `cardsAfter` — the permission or plan the
  *     reader answered under that chip. The card is glued to its chip
  *     (Transcript's `parkPlan`, #18), so the chip stays individual and the run
@@ -124,6 +134,11 @@ function isSettled(seg: ToolSegment): boolean {
 export function groupToolRuns(
   segments: Segment[] | null | undefined,
   cardsAfter?: Map<number, unknown> | null,
+  /** `AssistantTurn.streaming` — is this turn still being polled? Only a live
+   *  turn can gain segments, so it is the only one whose trailing stretch is
+   *  held open. Defaults to false, which is every history replay and every
+   *  turn that has ended. */
+  live = false,
 ): SegmentOrRun[] {
   // RAW INDICES THROUGHOUT, and that is the whole reason nothing is filtered
   // out of `list` first. `cardsAfter` is keyed by the caller's own positions,
@@ -156,7 +171,11 @@ export function groupToolRuns(
     while (end < list.length && isTool(list[end])) end += 1;
     let settled = true;
     for (let k = i; k < end; k += 1) if (!isSettled(list[k] as ToolSegment)) settled = false;
-    if (!settled) {
+    // Still open to appends: the live turn's LAST stretch. Everything in it may
+    // be settled this poll and be two chips longer the next, so folding it now
+    // buys a lid that comes straight back off.
+    const growing = live && end === list.length;
+    if (!settled || growing) {
       for (let k = i; k < end; k += 1) out.push(list[k] as Segment);
       i = end;
       continue;

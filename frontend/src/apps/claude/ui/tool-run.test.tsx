@@ -146,6 +146,20 @@ describe("SegmentView folds runs", () => {
     expect(byClass(loose, "toolchip")).toHaveLength(2);
   });
 
+  test("a live turn's trailing stretch stays individual until the turn ends", () => {
+    // `Turn` hands `live={!!turn.streaming}` down. While it is on, the stretch
+    // at the end of the list can still grow, so it is not folded — otherwise
+    // the lid goes on and comes off once per tool for the length of the run.
+    const segs: Segment[] = [text("hi"), tool("a", "Read"), tool("b", "Bash")];
+    const open = mount(
+      <CardPolicyProvider value={createCardPolicy()}>
+        <SegmentView segments={segs} live />
+      </CardPolicyProvider>,
+    ).toJSON() as Json | Json[];
+    expect(byClass(open, "toolrun")).toHaveLength(0);
+    expect(byClass(open, "toolchip")).toHaveLength(2);
+  });
+
   test("a filed card still sits under its own chip, and the run ends before it", () => {
     const segs: Segment[] = [
       tool("a", "Read"),
