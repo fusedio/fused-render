@@ -2125,6 +2125,15 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
+    // …AND SO DOES THE CARET REQUEST (Bugbot, PR #1145). `focusReq` is a
+    // COUNTER, so once a draft press has bumped it it is truthy for the rest of
+    // the page's life — and the prop is handed to every chat composer that
+    // mounts after it. Left standing, the next ordinary session opened from the
+    // explorer's folder pane took the keyboard off the listing, which is the
+    // exact case `focusRequest` exists to stay OUT of (`autoFocus` is the
+    // ambient policy; this is one gesture's request). Back is the funnel out of
+    // the chat, so the request is spent here.
+    setFocusReq(0);
   }, [controller, cardPolicy]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
@@ -2133,6 +2142,10 @@ function ChatBody(props: ChatBodyProps) {
       // Same rule as Back: a hand-back belongs to the conversation it was typed
       // in, and this is a different one.
       setStranded(null);
+      // And this session was opened by a press on a CONVERSATION, which asks for
+      // nothing but to be read — belt and braces beside the clear in `onBack`,
+      // the same way `setStranded(null)` is spelled in both.
+      setFocusReq(0);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
