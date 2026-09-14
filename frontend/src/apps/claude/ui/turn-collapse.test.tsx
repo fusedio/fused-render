@@ -168,6 +168,29 @@ describe("which replies land folded", () => {
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
   });
 
+  test("A REPLY THAT GOES AWAY HANDS THE FOLD BACK (bugbot)", () => {
+    // The new response folded the one before it — then the new row itself
+    // disappeared: a failed poll dropped its chunk, or `runEnding` discarded
+    // it. The previous reply is the newest again, so it is open again. A
+    // one-way sweep left it folded and made the reader click to get back the
+    // answer they were part-way through.
+    const r = log([assistant("a:1")]);
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns: [assistant("a:1"), assistant("a:2", { streaming: true })] })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1"]);
+    act(() => {
+      r.update(<Transcript state={state({ turns: [assistant("a:1")] })} actions={actions} />);
+    });
+    expect(folded(r)).toEqual([]);
+  });
+
   test("A REPLY THE READER OPENED SURVIVES EVERY LATER RESPONSE", () => {
     const r = log([assistant("a:1"), assistant("a:2")]);
     expect(folded(r)).toEqual(["reply a:1"]);

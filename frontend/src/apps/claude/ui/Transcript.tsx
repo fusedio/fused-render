@@ -165,13 +165,27 @@ export const Transcript = memo(function Transcript({
     // scrollIntoView, our own writes. `lastTop`/`lastHeight` tell a reader
     // moving UP apart from the browser CLAMPING scrollTop because the content
     // got shorter; a clamp is not a gesture.
+    //
+    // …AND A SHRINK RE-ARMS NOTHING EITHER (Akshil 2026-09-15). The auto-fold
+    // makes `.chat-log` SHORTER — a new reply folds the previous one, and a
+    // wall of replies loses several screenfuls at once — and a reader parked
+    // 200px up was suddenly within `NEAR_BOTTOM_PX` of a tail that had moved
+    // up to meet them. Geometry read that as "they are at the bottom", re-armed
+    // the follow, and the very next write yanked them to the tail of a
+    // conversation they were reading the middle of. Both halves of this branch
+    // are therefore gated on `h >= lastHeight`: a shrink is not a gesture in
+    // either direction. A reader who WAS following is untouched — the flag is
+    // already true and nothing here turns it off — so the fold still carries
+    // them down with the new reply.
     let lastTop = 0;
     let lastHeight = 0;
     const onScroll = () => {
       const top = wrap.scrollTop;
       const h = wrap.scrollHeight;
-      if (h >= lastHeight && top < lastTop - 1) followTail.current = false;
-      else if (nearBottom()) followTail.current = true;
+      if (h >= lastHeight) {
+        if (top < lastTop - 1) followTail.current = false;
+        else if (nearBottom()) followTail.current = true;
+      }
       lastTop = top;
       lastHeight = h;
     };
@@ -489,16 +503,17 @@ export const Transcript = memo(function Transcript({
   // one nobody asked to have open. That is the whole reason the fold is FOUR
   // states rather than a boolean: a turn is open (or shut) either because the
   // rule put it that way or because the reader clicked it, and only the rule's
-  // own doing is the rule's to undo. So when a new reply starts streaming every
-  // `default-open` turn folds — at most one, the previous newest — while a
-  // `manual-open` turn the reader deliberately opened stays open through any
-  // number of later responses, until they click it shut. A `manual-closed` turn
-  // is never re-opened by anything.
+  // own doing is the rule's to undo. So when a new reply starts streaming the
+  // previous newest folds, while a `manual-open` turn the reader deliberately
+  // opened stays open through any number of later responses, until they click
+  // it shut. A `manual-closed` turn is never re-opened by anything.
   //
-  // DECIDED ONCE PER TURN, when the row is first seen: a row has to arrive
-  // already folded rather than fold itself in an effect after a frame at full
-  // height, and nothing re-evaluates a turn already in the map except the new
-  // response above and the reader's own click.
+  // THE RULE'S HALF IS DERIVED, the reader's half is remembered. "Newest reply
+  // open, older ones folded" is read off `state.turns` every render, so a row
+  // arrives already folded rather than folding itself in an effect after a
+  // frame at full height, and a turn list that SHRINKS — a dropped chunk, a
+  // discarded `runEnding` turn — lands the right way up on its own. Only the
+  // two `manual-` states are sticky, and nothing but a click writes them.
   //
   // A REF PLUS A BUMP, not `useState`: the map is seeded during render, and
   // every other turn's props have to stay identical across the click, or
@@ -534,18 +549,23 @@ export const Transcript = memo(function Transcript({
     if (t.role !== "assistant") continue;
     const id = foldKey(t);
     foldIds.current.set(t.key, id);
-    if (folds.current.has(id)) continue;
-    // A TURN SEEN FOR THE FIRST TIME. The streaming one is always shown (and
-    // keeps `default-open` once it settles, as the newest reply); on a landing
-    // that is the last row of the replayed history and nothing else.
+    // ONCE A TURN IS THE READER'S, IT IS THEIRS FOR GOOD: a reply clicked open
+    // survives any number of later responses, one clicked shut is never handed
+    // back. Everything else is the rule's, and the rule RE-DERIVES rather than
+    // latches (bugbot): the newest settled reply is open, every older one is
+    // folded, recomputed from `state.turns` on each render.
+    //
+    // A sweep that flipped `default-open` to `default-closed` when a new row
+    // appeared said the same thing for as long as rows only ever arrive — but
+    // that write had nothing to undo it, and rows DO go away (a failed poll
+    // drops a chunk, `runEnding` discards a turn). The previous reply then
+    // stayed folded while being the newest again, and the reader had to click
+    // the mark to get back the answer they were mid-way through reading.
+    // Derived, that case fixes itself: the row is last once more, so it is open
+    // once more.
+    const prev = folds.current.get(id);
+    if (prev === "manual-open" || prev === "manual-closed") continue;
     const open = !!t.streaming || t.key === lastAssistant;
-    // …and the arrival of a reply that opens is what folds the previous one.
-    // Only `default-open` is touched: this is the rule closing its own door.
-    if (open) {
-      for (const [k, v] of folds.current) {
-        if (v === "default-open") folds.current.set(k, "default-closed");
-      }
-    }
     folds.current.set(id, open ? "default-open" : "default-closed");
   }
   const onToggleCollapse = useCallback((key: string) => {
