@@ -1785,6 +1785,10 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
+  /** Bumped by a gesture that has asked for the composer — today only the
+   *  never-sent chat's row (`onOpenChatDraft`). Handed to the CHAT's composer
+   *  alone: the landing's box is the one the reader is leaving. */
+  const [focusReq, setFocusReq] = useState(0);
   const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
@@ -2154,6 +2158,15 @@ function ChatBody(props: ChatBodyProps) {
     resetCardPolicy(cardPolicy);
     setEntered(true);
     setStranded(null);
+    // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
+    // That prop is ambient policy — "may this composer take the keyboard merely
+    // by appearing" — and the explorer's folder pane says no on purpose
+    // (`apps/explorer/ListingPreviewPane` mounts the chat `noFocus` so the
+    // listing keeps the keyboard). A row whose whole content is an unsent
+    // sentence is a request, not an arrival: the caret belongs in the box the
+    // words are in, or the promise the row makes (press Enter and this sends)
+    // is one the reader has to click to collect (Akshil QA, 2026-09-14).
+    setFocusReq((n) => n + 1);
   }, [cardPolicy]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
@@ -3025,6 +3038,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
+                {...(focusReq ? { focusRequest: focusReq } : {})}
                 footnote={footnoteFor(pane.noun)}
                 artStrip={<ArtStrip items={art.items} />}
               />

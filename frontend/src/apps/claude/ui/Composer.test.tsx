@@ -791,3 +791,77 @@ test("…and a composer that is NOT meant to take focus still does not", async (
     else G.getComputedStyle = realCS;
   }
 });
+
+test("a GESTURE that asked for the box beats a host that keeps the keyboard", async () => {
+  // Akshil QA, 2026-09-14 (browser, not this rig): the explorer's folder pane
+  // mounts the chat `noFocus` so the listing keeps the keyboard, so `autoFocus`
+  // is false there — and gating the draft's caret on it left `activeElement` on
+  // `<body>` in exactly the pane the Recent list lives in. `focusRequest` is the
+  // press saying so, and it wins.
+  const focused: Array<Record<string, unknown> | undefined> = [];
+  const carets: Array<[number, number]> = [];
+  const node = {
+    value: "",
+    focus: (opts?: Record<string, unknown>) => focused.push(opts),
+    setSelectionRange: (a: number, b: number) => carets.push([a, b]),
+    style: {} as Record<string, string>,
+    scrollHeight: 20,
+  };
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  G.getComputedStyle = () => ({
+    paddingTop: "0px",
+    paddingBottom: "0px",
+    lineHeight: "16px",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    columnGap: "6px",
+    marginLeft: "0px",
+    marginRight: "0px",
+    display: "flex",
+  });
+  (G as { fetch: unknown }).fetch = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          chat: { "new:/p/asked.py": { text: "ship the thing", attachments: [] } },
+          task: {},
+        }),
+        { status: 200 },
+      ),
+    );
+  try {
+    const boxRef = { current: null as unknown };
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ComposerCard
+          variant="chat"
+          file="/p/asked.py"
+          sessionId=""
+          controls={controls}
+          status="idle"
+          back="/explorer/view/p"
+          boxRef={boxRef as never}
+          // The host's answer is NO…
+          onSend={() => {}}
+          onFollowUp={() => {}}
+          onStop={() => {}}
+          // …and the press's answer is YES.
+          focusRequest={1}
+        />,
+        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
+      );
+    });
+    mounted.push(renderer);
+    expect(renderer.root.findByType("textarea").props.value).toBe("ship the thing");
+    expect(focused.length).toBeGreaterThan(0);
+    expect(focused[focused.length - 1]).toEqual({ preventScroll: true });
+    // …and the caret is after the restored sentence, not in the middle of it.
+    const last = carets[carets.length - 1];
+    expect(last).toEqual([node.value.length, node.value.length]);
+  } finally {
+    if (realCS === undefined) delete G.getComputedStyle;
+    else G.getComputedStyle = realCS;
+  }
+});

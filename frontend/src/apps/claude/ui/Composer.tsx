@@ -250,6 +250,13 @@ export interface ComposerCardProps {
    *  Bugbot #1046 closed on the Back button's twin. */
   navLockedReason?: string;
   autoFocus?: boolean;
+  /**
+   * A GESTURE ASKED FOR THE BOX — bump the number to ask again. Unlike
+   * `autoFocus` this is not policy about arriving, it is a request, so it wins
+   * over a host that keeps the keyboard elsewhere (see the effect that reads
+   * it). `ClaudeChat` raises it when a never-sent chat's row is pressed.
+   */
+  focusRequest?: number;
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
@@ -363,6 +370,7 @@ export function ComposerCard({
   navLocked,
   navLockedReason,
   autoFocus,
+  focusRequest,
   placeholder,
   restore,
   boxRef: hostBoxRef,
@@ -597,8 +605,23 @@ export function ComposerCard({
    * and a `noFocus` host must not be made to take the keyboard by a draft that
    * happened to load.
    */
-  useEffect(() => {
-    if (!seededAt || !autoFocus) return;
+  /**
+   * THE CARET, TAKEN AND PUT AT THE END OF WHATEVER IS IN THE BOX.
+   *
+   * TWICE, and the second time deferred by a task rather than a frame: the box
+   * this focuses can be REPLACED by the commit that follows (the auto-grow
+   * relayout, the fit ladder's re-key), and a focus on a node that is no longer
+   * in the document is a focus on nothing. `boxRef.current` is re-read inside
+   * `put` so the retry lands on whatever node is there now, and the focus is
+   * skipped when the caret is already home — so the common case costs one call.
+   *
+   * A TASK AND NOT `requestAnimationFrame`: a pane that is not on screen never
+   * gets a frame, and a caret that only arrives when somebody is looking is a
+   * caret that never arrives at all.
+   *
+   * Returns its own canceller, so every caller is an effect body's one-liner.
+   */
+  const takeCaret = useCallback(() => {
     let live = true;
     const put = () => {
       if (!live) return;
@@ -607,9 +630,9 @@ export function ComposerCard({
       const doc = (box as { ownerDocument?: Document }).ownerDocument
         ?? (typeof document === "undefined" ? undefined : document);
       if (doc?.activeElement !== box) box.focus({ preventScroll: true });
-      // The end of the restored sentence. Guarded because a textarea that is
-      // not in a document (and every test double) may refuse the call, and a
-      // throw here would cost the focus as well as the caret.
+      // Guarded because a textarea that is not in a document (and every test
+      // double) may refuse the call, and a throw here would cost the focus as
+      // well as the caret.
       try {
         const end = box.value.length;
         box.setSelectionRange(end, end);
@@ -623,7 +646,46 @@ export function ComposerCard({
       live = false;
       clearTimeout(again);
     };
-  }, [seededAt, autoFocus, boxRef]);
+  }, [boxRef]);
+
+  /**
+   * A GESTURE ASKED FOR THIS BOX (`focusRequest`) — which is NOT the same fact
+   * as `autoFocus`, and the difference is the whole of this seat (Akshil QA,
+   * 2026-09-14).
+   *
+   * `autoFocus` is ambient policy: "should this composer take the keyboard
+   * merely by appearing". The explorer's folder pane answers NO and is right to
+   * — `apps/explorer/ListingPreviewPane` mounts the chat with `noFocus` so the
+   * listing keeps the keyboard. But pressing a never-sent chat's row in the
+   * Recent list is a REQUEST for the composer: the whole content of that row is
+   * an unsent sentence, and the press promises the next Enter sends it. Gating
+   * that on the ambient answer is what left the caret on `<body>` in exactly
+   * the pane the gesture lives in.
+   *
+   * A COUNTER, so the same request twice is two requests. The flag it raises
+   * outlives this effect because the draft's own GET has not answered yet —
+   * `seededAt` below takes the caret again once the words are actually in the
+   * box, and it has to know the gesture happened.
+   */
+  const requested = useRef(false);
+  useEffect(() => {
+    if (!focusRequest) return;
+    requested.current = true;
+    return takeCaret();
+  }, [focusRequest, takeCaret]);
+
+  /**
+   * …AND AGAIN ONCE A RESTORED DRAFT IS IN THE BOX, with the caret after it.
+   *
+   * The seed answers well after the mount, so this is the call that actually
+   * lands the caret for a draft press — and it is also why `requested` is a ref
+   * rather than a dependency: the request happened one commit and several
+   * hundred milliseconds ago.
+   */
+  useEffect(() => {
+    if (!seededAt || !(autoFocus || requested.current)) return;
+    return takeCaret();
+  }, [seededAt, autoFocus, takeCaret]);
 
   // Stranded follow-ups come back. Keyed on `seq` and not on the text, so the
   // same words stranded twice are delivered twice — and the box takes the

@@ -285,7 +285,20 @@ export function Lists({
       };
     }
     const href = paneChatUrl(pane, task.session_id);
-    return { href, onPress: () => onNavigate?.(href) };
+    return {
+      href,
+      onPress: () => {
+        // THE HOP IS SEEDED TOO, and on a folder pane it is the ONLY arm that
+        // runs (Akshil QA, 2026-09-14). A folder's chats are all about files
+        // inside it, so `taskPane` answers with a path for every row and every
+        // press is this one — seeding only the in-place arm meant the header on
+        // the page that opens still waited out the whole listing, which is the
+        // bug the seed was written for. `seedSessionTask` stashes it for the
+        // trip; see its note.
+        seedSessionTask(task);
+        onNavigate?.(href);
+      },
+    };
   };
 
   const recentPanel = (

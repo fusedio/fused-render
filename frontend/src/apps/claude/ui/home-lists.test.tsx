@@ -36,6 +36,7 @@ const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
 const { sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
   "./list-rows"
 );
+const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
 const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
 const { MARKER_JOIN } = await import("../protocol/wire");
 
@@ -1014,4 +1015,44 @@ test("a LOCKED block still refuses every draft row", () => {
   act(() => (taskRow(r).props as { onClick?(): void }).onClick?.());
   expect(picked).toBe(0);
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});
+
+test("EVERY press seeds the header's identity — the hop as much as the in-place open", () => {
+  // Akshil QA, 2026-09-14: on a FOLDER pane every chat is about some file inside
+  // it, so `taskPane` answers with a path for every row and the hop is the only
+  // arm that ever runs. Seeding only the in-place arm meant the header on the
+  // page that opens still waited out the whole 800-row listing — which is the
+  // bug the seed was written for.
+  resetSessionSeeds();
+  const hops: string[] = [];
+  const here = chat("s1");
+  const there = chat("s2", { key: "s2", session_id: "s2", target: "/repo/other.py" });
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[here, there]}
+      onOpen={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops.length).toBe(1);
+  expect(sessionSeed("s2")?.key).toBe("s2");
+  // …and the in-place arm still does too.
+  const rows = r.root.findAll(
+    (n) =>
+      typeof n.type === "string" &&
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
+      ),
+  );
+  act(() => (rows[0].props as { onClick(): void }).onClick());
+  expect(sessionSeed("s1")?.key).toBe("s1");
+  resetSessionSeeds();
 });

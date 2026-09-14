@@ -209,17 +209,73 @@ export function seedSessionTask(task: Task): void {
     if (oldest.done) break;
     seeds.delete(oldest.value);
   }
+  stashSeed(id, task);
 }
 
 /** The seeded row for a session, or null. */
 export function sessionSeed(sessionId: string | null): Task | null {
-  return (sessionId && seeds.get(sessionId)) || null;
+  if (!sessionId) return null;
+  return seeds.get(sessionId) ?? stashedSeed(sessionId);
 }
 
 /** Tests only — module state outlives every renderer in a `bun test` process,
  *  exactly as `lists-visibility.resetRememberedTab` does. */
 export function resetSessionSeeds(): void {
   seeds.clear();
+  try {
+    sessionStorage.removeItem(SEED_STASH);
+  } catch {
+    // No storage — there was nothing stashed to clear.
+  }
+}
+
+/**
+ * …AND THE SAME ANSWER ACROSS A NAVIGATION (Akshil QA, 2026-09-14).
+ *
+ * MOST RECENT-LIST PRESSES LEAVE THE PAGE. A row is opened IN PLACE only when
+ * it is about the pane's own file; on a FOLDER pane — which is where the list
+ * is usually read — every chat is about some file inside it, so every row
+ * carries a real `href` and the press is a navigation (`Lists.pressFor`). The
+ * module map above cannot survive that, and a header that has to wait out an
+ * 800-row listing is exactly the bug the seed exists to fix.
+ *
+ * `sessionStorage` is the right lifetime and the one this app already uses for
+ * a handoff across a navigation (`ui/sched-draft.ts` carries the composer's
+ * draft the same way): per TAB, gone with it, never shared with another window.
+ *
+ * ONE ROW, not a map: a navigation carries exactly one press, and the trip is
+ * over by the time the next one happens. TTL'd, because this is the only copy
+ * that can outlive the errand it was written for — a reload of that same chat
+ * URL an hour later must not print a title the listing has since changed. The
+ * listing overwrites it within a second either way.
+ *
+ * EVERY ACCESS IS GUARDED: storage can be refused outright (a private window,
+ * blocked site data), and a seed that cannot be written costs a moment of
+ * skeleton — never the navigation.
+ */
+const SEED_STASH = "fused:chatseed";
+const SEED_TTL_MS = 60_000;
+
+function stashSeed(id: string, task: Task): void {
+  try {
+    sessionStorage.setItem(SEED_STASH, JSON.stringify({ id, task, at: Date.now() }));
+  } catch {
+    // Storage denied — the seed just does not survive the trip.
+  }
+}
+
+function stashedSeed(id: string): Task | null {
+  try {
+    const raw = sessionStorage.getItem(SEED_STASH);
+    if (!raw) return null;
+    const row = JSON.parse(raw) as { id?: string; task?: Task; at?: number };
+    if (!row || row.id !== id || !row.task) return null;
+    if (!(typeof row.at === "number") || Date.now() - row.at > SEED_TTL_MS) return null;
+    return row.task;
+  } catch {
+    // Unreadable or not ours — the same answer as "nothing stashed".
+    return null;
+  }
 }
 
 export function useSessionTask(
