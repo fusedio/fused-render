@@ -3446,6 +3446,11 @@ input.schedule-when-field {
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 
+/* …and with the side peek ON it is overridden in styles/task-peek.css, where
+   this page's ONE selected look lives: the card's hover has to be a lighter
+   tint of that look rather than a neutral wash beside an accent ring. The rule
+   above is what a reader with the feature OFF still gets, unchanged. */
+
 /* -- Drag: moving a card between lanes ---------------------------------------
    Native HTML5 drag. A draggable card says so with the grab cursor; while one
    is in flight, every lane that would accept it lifts slightly, and the lane
@@ -3969,10 +3974,10 @@ input.schedule-when-field {
   flex-shrink: 0;
 }
 
-/* NOWRAP until the ladder is spent (see `data-wrap` below), and `flex: 0 0 auto`
-   with it: the toolbar is fixed furniture above a scrolling view, so a wrapped
-   second row must make the page taller rather than be squeezed back onto one
-   line by the page's column flex. */
+/* NOWRAP, unconditionally (the wrap fallback is gone — see the note at the end
+   of this section), and `flex: 0 0 auto` with it: the toolbar is fixed
+   furniture above a scrolling view, and the page's column flex must not be able
+   to squeeze it. */
 .schedule-toolbar[data-fit] {
   flex-wrap: nowrap;
   flex: 0 0 auto;
@@ -4005,6 +4010,28 @@ input.schedule-when-field {
   flex: 0 1 260px;
   width: auto;
   min-width: var(--fit-natural);
+  /* A SIZE CONTAINER, so the rule below can ask how wide this field actually
+     ended up — see it for what the question is for. */
+  container: tasks-search / inline-size;
+}
+
+/* THE PLACEHOLDER IS WHOLE OR IT IS GONE — never "Sea".
+   At the ladder's lower rungs the field is squeezed towards its 72px floor, and
+   "Search tasks…" wants 82px of text inside 38px of padding, so somewhere
+   around 120px the caption starts being cut mid-word (measured live,
+   2026-09-14, at fit 1). A clipped word reads as a rendering fault; a field
+   that is a magnifier and an empty box reads as a search box that has run out
+   of room, which is what it is.
+   132 rather than 121: the exact figure moves with the font that actually
+   loads, and the failure on the wrong side of it is visible. Between the two
+   the caption is merely absent, which is the state it is heading for anyway.
+   A container query, not a `[data-fit]` level: the field's width is decided by
+   flex against whatever the other seats took, so no rung of the ladder names a
+   width this rule could key on. */
+@container tasks-search (max-width: 132px) {
+  .schedule-tv-search-input::placeholder {
+    color: transparent;
+  }
 }
 
 /* CUMULATIVE — every rule holds at its own level AND at every level past it.
@@ -4021,13 +4048,81 @@ input.schedule-when-field {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="2"], [data-fit="3"], [data-fit="4"])
+.schedule-toolbar:is(
+    [data-fit="2"],
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
   .schedule-tv-filter-btn
   .schedule-fit-lbl {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="3"], [data-fit="4"]) .schedule-new .schedule-fit-lbl {
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-new
+  .schedule-fit-lbl {
+  display: none;
+}
+
+/* -- and then CONTROLS GO, lowest priority first ------------------------------
+   The ladder's second half (design.md, Widths v2). Rung 4 is not here: Project
+   loses its own trigger by MERGING into the Status one (`merged` in
+   Scheduled.tsx), so its rows stay one press away rather than going off the
+   page. From rung 5 the controls are honestly gone, in the order Akshil set:
+   the filter trigger, the search, then Calendar, Cards and Board.
+
+   LIST AND NEW TASK ARE NOT IN THIS LIST AT ANY LEVEL, and that is the rule
+   rather than an omission: the page must always be able to get back to its
+   default view and must always be able to start a task. Everything else is a
+   lens, and a lens you cannot reach at 300px is a lens you set at 1400 and
+   left on. */
+.schedule-toolbar:is(
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-filters
+  .schedule-tv-pop-wrap {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-tv-search {
+  display: none;
+}
+
+/* The filter group is nothing but those two seats, so once both are gone it is
+   an empty box still charging the row its gap. */
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-tv-filters {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-view-btn[data-view="calendar"] {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="8"], [data-fit="9"]) .schedule-view-btn[data-view="cards"] {
+  display: none;
+}
+
+.schedule-toolbar[data-fit="9"] .schedule-view-btn[data-view="board"] {
   display: none;
 }
 
@@ -4040,8 +4135,16 @@ input.schedule-when-field {
   padding-right: 8px;
 }
 
-.schedule-toolbar[data-fit="3"] .schedule-new,
-.schedule-toolbar[data-fit="4"] .schedule-new {
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-new {
   /* A SQUARE, not a pill with its word taken out. `width` and not `min-width`:
      `.btn` carries its own horizontal padding and its own floor, and a button
      that folded its label while keeping both stayed 76px wide — which was the
@@ -4053,16 +4156,12 @@ input.schedule-when-field {
   justify-content: center;
 }
 
-/* THE LAST RESORT, and only ever that (shell/row-fit.ts `ToolbarFit.wrap`):
-   every rung of the ladder has been spent and the row STILL does not fit, so it
-   takes a second line rather than cutting a control in half. It cannot be on by
-   default — `flex-wrap` wraps an item BEFORE the line shrinks to hold it, so a
-   wrapping row never gives the search box's slack up at all and the ladder stops
-   meaning anything. */
-.schedule-toolbar[data-fit][data-wrap="1"] {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
+/* NO WRAP FALLBACK ANY MORE (2026-09-14, design.md Widths v2). The row used to
+   take a second line once every rung was spent; the ladder now runs down to
+   List and "+" — about 70px — so there is no width left where a second line is
+   the better answer, and the toolbar's whole contract is that it stays on ONE
+   line however narrow the middle pane gets. `flex-wrap: nowrap` above is now
+   unconditional. */
 
 /* The merged filter menu's two sections. A heading rather than a divider: the
    rows below it are the same rows the separate menu drew, and the only thing
