@@ -2715,6 +2715,42 @@ input.schedule-when-field {
   background: currentColor;
 }
 
+/* -- The same centre, in red: UNSENT WORDS ON A SETTLED ROW ---------------------
+   Akshil, 2026-09-14. A Done or Archived row whose composer is still holding a
+   sentence looks, at a glance, exactly like one that is finished — and it is the
+   one row on the page that is NOT. `tasks-lib.draftRing` is the gate and holds
+   the whole argument, including why In Progress never wears it.
+
+   THE SAME 8px CIRCLE, deliberately. It is not a second glyph to learn: the ring
+   already means "a unit of work", its centre already means "there is something
+   in here", and hue is what this page states a KIND of attention in. Red is the
+   one hue that means "yours is owed" here (`--status-failed`, the Blocked ring's
+   own), and an unsent sentence is the only thing on a settled row a person can
+   still act on.
+
+   AND IT OUTRANKS THE UNREAD FILL, by sitting after it at equal specificity —
+   which is a decision and not an accident of ordering. A settled row can be both
+   (output nobody read, input nobody sent), the two marks want the same pixels,
+   and only one of them is a thing the reader can DO something about. The unread
+   fact is not lost: the ring still carries `--unread`, the count still rides in
+   `data-tip` ("3 unread" on hover) and the row's own accessible name still reads
+   both ("Done, unsent draft, 3 unread"). What it loses is the hue, on the rows
+   where it has been outbid.
+
+   Not gated on `--done`/`--archived` here: the class is only ever written on
+   those two lanes, and a selector restating the rule is a second copy of it to
+   go stale — the same argument the `--unread` gate above settled. */
+.schedule-ring--draft-held::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--status-failed);
+}
+
 /* -- The count on hover, without the browser's two-second wait -----------------
    "3 unread" is the one thing the mark does not print, so a reader who wants the
    number hovers for it — and a native `title` makes them hold still for one to
@@ -2965,6 +3001,20 @@ input.schedule-when-field {
   text-align: center;
 }
 
+/* A RESERVED BADGE (Akshil, 2026-09-14: "don't move the dropdown position").
+   The pill is drawn at every count, holding a `0` nobody sees, because the
+   toolbar buys width out of the search field (`flex: 0 1 260px` on the ladder):
+   a badge that appeared on the press made the trigger 22px wider, the search
+   22px narrower, and every trigger in the row slide left — under a popover
+   pinned where it was placed on open. The ✕ half is held the same way, in
+   tasks.css beside its own rule.
+
+   `visibility` and not `opacity`, so the unseen digit is out of the
+   accessibility tree as well as out of the ink. */
+.schedule-tv-filter-count.is-empty {
+  visibility: hidden;
+}
+
 /* Absolute, and nothing between it and the page clips: the toolbar is a plain
    flex row with no overflow of its own. */
 .schedule-tv-pop {
@@ -3009,13 +3059,29 @@ input.schedule-when-field {
   border-color: transparent;
 }
 
-.schedule-tv-pop-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  flex: 0 0 13px;
-  color: var(--accent-soft);
+/* THE ROW THAT IS ON, said the way this app says it everywhere else: the row is
+   LIT (Akshil, 2026-09-14). There was a 13px tick column ahead of every label —
+   a second vocabulary for a fact the page already states with a fill, and a
+   column of empty boxes on every row that was off.
+
+   THE LIST ROW'S OWN TOKENS, so a filter row and a task row agree about what
+   "chosen" looks like: `--row-bg-hover` is the fill `.tasks-row.is-selected`
+   wears (tasks.css) and `--peek-halo` is the outline the open row wears
+   (task-peek.css). A step of `--fg` on top of the fill is what keeps the two
+   states apart — HOVER is the bare `--row-bg-hover` above and this is a rung
+   louder plus a ring, so a pointer passing over an unpicked row never looks
+   like the pick. The same step, from the same argument, as the Cards wall's
+   selected head (task-cards.css).
+
+   Restated under `:hover` — and under `.prefs-section`, where this control
+   actually lives — so the ring does not blink off when the pointer lands on the
+   row that is already on. */
+.schedule-tv-pop-item.is-on,
+.schedule-tv-pop-item.is-on:hover,
+.prefs-section .schedule-tv-pop-item.is-on,
+.prefs-section .schedule-tv-pop-item.is-on:hover {
+  background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
+  box-shadow: inset 0 0 0 1px var(--peek-halo);
 }
 
 /* The sessions feed failing is a missing HALF, not a broken page. */
@@ -4079,4 +4145,16 @@ input.schedule-when-field {
 
 .schedule-tv-pop-head:first-child {
   margin-top: 0;
+}
+
+/* The project rows' radiogroup (ScheduleTaskViews `projectRows`): a box in the
+   accessibility tree and no box in the layout, so the rows stay the panel's own
+   flex children and 28 folders are 28 rows rather than 28 slivers.
+
+   `display: contents` REMOVES THE BOX, NOT THE ELEMENT: the DOM is unchanged, so
+   every `>` selector aimed at these rows has to name this wrapper as a step on
+   the way down. tasks.css's `.schedule-tv-pop.tasks-pop > … > .schedule-tv-pop-item`
+   does; the two move together. */
+.schedule-tv-pop-radiogroup {
+  display: contents;
 }

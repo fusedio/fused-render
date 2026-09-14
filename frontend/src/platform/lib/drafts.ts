@@ -286,6 +286,23 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
   return write("DELETE", chatUrl(key), undefined, opts);
 }
 
+/** SPENT WITHOUT A DELETE — for the sender that does not own the delete.
+ *
+ *  The Board's drop on a Done row wearing the `✎ Draft` chip sends the
+ *  composer's unsent words as a message (shell/draft-run), and it never calls
+ *  `deleteChatDraft`: `POST /api/schedule` drops the chat draft filed under the
+ *  session it is scheduling into, so a second request from here would be the
+ *  half that can fail — the words back on the row beside the message they had
+ *  already become.
+ *
+ *  What that sender still owes this module is the OTHER half of the call above,
+ *  and it is the half `spent` exists for: the key goes spent BEFORE the request,
+ *  so nothing that re-reads in the meantime — the board's own reload, a composer
+ *  remounting on that conversation — hands the words back as still unsent. */
+export function markChatDraftSpent(key: string): void {
+  spent.add(key);
+}
+
 /**
  * THE DRAFT'S KEY MOVES WITH THE SESSION IT TURNED OUT TO BE, AND NOT FROM HERE
  * (design.md, Round 2: "Every draft has a TASK number").

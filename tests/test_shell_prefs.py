@@ -1320,6 +1320,54 @@ def test_task_peek_survives_a_write_of_another_pref(tmp_path, monkeypatch):
     assert stored["task_peek_enabled"] is True
 
 
+# -- task card title (experimental) flag ---------------------------------------
+
+
+def test_task_card_last_message_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: a card is titled by its task, exactly as the Cards wall has
+    # always drawn it, until someone opts in.
+    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
+    body = client.put(
+        "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).json()
+    assert body["task_cards"]["last_message"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_card_last_message"] is True
+    assert client.put(
+        "/api/prefs", json={"task_card_last_message": False}, headers=FUSED,
+    ).json()["task_cards"]["last_message"] is False
+
+
+def test_task_card_last_message_junk_value_reads_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"task_card_last_message": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
+    assert prefs_mod.task_card_last_message() is False
+
+
+def test_put_rejects_bad_task_card_last_message(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"task_card_last_message": "yes"}, headers=FUSED,
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
+
+
+def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
+    # One prefs.json, two experiments on one page, and neither turns the other
+    # on: the peek is about where a task opens, this is about what a card says.
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"task_card_last_message": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()
+    assert body["task_cards"]["last_message"] is True
+    assert body["task_peek"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_card_last_message"] is True
+    assert stored["task_peek_enabled"] is True
+
+
 def test_native_chat_junk_value_reads_as_off(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)

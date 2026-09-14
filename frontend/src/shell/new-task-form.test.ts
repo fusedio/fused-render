@@ -482,6 +482,46 @@ describe("what Save refuses", () => {
       // work is already done.
       expect(saveBlockedReason(gate({ replaced: true, title: "" }))?.field).toBe(null);
     });
+
+    test("a LOCKED target speaks but focuses nothing — the field is disabled", () => {
+      // Inside an app's Tasks tab the target input is `disabled` (lockTarget),
+      // and `.focus()` on a disabled input does nothing at all. A reason
+      // returning `field: "target"` there put a sentence in the banner, moved no
+      // caret, and offered no control that could answer it — a permanent dead
+      // end on a card whose whole point is that a press always says something.
+      for (const over of [
+        { target: "" },
+        { pathError: "This folder or file doesn't exist" },
+      ]) {
+        const loose = saveBlockedReason(gate(over));
+        expect(loose?.field).toBe("target");
+
+        const locked = saveBlockedReason({ ...gate(over), lockTarget: true });
+        // Still a refusal — the folder really is gone, so the task cannot run…
+        expect(locked).not.toBe(null);
+        // …still a sentence, so the banner has something to show…
+        expect(locked?.text).toContain("folder is missing");
+        // …and the caret stays where it is.
+        expect(locked?.field).toBe(null);
+      }
+    });
+
+    test("a lock changes the fix, never the verdict", () => {
+      // saveEnabled does not read `lockTarget` and must not: a locked path that
+      // does not exist is exactly as unsaveable as a typed one, and the two
+      // readers of this rule set stay in step.
+      const over = { pathError: "This folder or file doesn't exist" };
+      // Bound first: `saveEnabled` does not declare the field, and an inline
+      // literal would be an excess-property error rather than the point of the
+      // assertion — which is that the extra field changes nothing.
+      const locked = { ...gate(over), lockTarget: true };
+      expect(saveEnabled(locked)).toBe(false);
+      // And a lock over a form with nothing wrong with its target is silent.
+      expect(saveBlockedReason({ ...gate(), lockTarget: true })).toBe(null);
+      // The earlier reasons still outrank it — the title is read first.
+      expect(saveBlockedReason({ ...gate({ title: "", target: "" }), lockTarget: true })?.field)
+        .toBe("title");
+    });
   });
 });
 
@@ -2583,5 +2623,101 @@ describe("a reopened form opens on its own time, or on none", () => {
     expect(open).toContain(
       "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
     expect(open).not.toContain("NEW_LINK_LEAD_MS");
+  });
+});
+
+// ---- the path inside an app (design.md §2) -----------------------------------
+//
+// The app page's Tasks tab mounts this same card scoped to one folder, and a
+// task made there runs against that app. The combobox used to ask anyway —
+// prefilled, but every answer it accepted took the reader out of the app they
+// were standing in. Source assertions, because the card is a component and the
+// lock is markup rather than a function.
+describe("the path locks to the app the card was opened in", () => {
+  const card = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const page = () => readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+
+  test("the scoped page is the only caller that locks it", () => {
+    // `scope` IS the app page's Tasks tab (AppPage.tsx) — the unscoped /tasks
+    // route passes none, and its card keeps every folder it ever had.
+    expect(page()).toContain("lockTarget={!!scope}");
+  });
+
+  test("one `disabled` closes the field, the list and the picker together", () => {
+    const src = card();
+    // Disabling the input is what makes the whole combobox inert: no focus, so
+    // `openRecents` never fires, so the dropdown — and Browse, and the picker
+    // behind it — cannot be reached. A second rule per affordance is how the
+    // three start disagreeing.
+    expect(src).toContain("disabled={lockTarget}");
+    expect(src).toContain("readOnly={lockTarget}");
+    // …and it stops claiming to be a combobox, since nothing can expand.
+    expect(src).toContain('role={lockTarget ? undefined : "combobox"}');
+  });
+
+  test("it says why, and the line is attached to the field", () => {
+    const src = card();
+    expect(src).toContain("Tasks here run against this project.");
+    // Described-by, not merely printed underneath: a reader who never sees the
+    // layout still hears the reason from the field itself.
+    expect(src).toContain("? lockedTargetId");
+  });
+});
+
+// ---- the header says which task this came out of (design.md B, Option 1) -----
+describe("the source-task chip", () => {
+  const card = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const page = () => readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+
+  test("the session is what resolves it, from the listing the page already holds", () => {
+    const src = page();
+    // Both doors name the same conversation: the composer's hop, and the draft
+    // that hop saved (which is what survives closing and reopening the card).
+    expect(src).toContain(
+      "const session = hop.session || seededDraftForm(draftSeed).sessionId || \"\";");
+    expect(src).toContain("return tasks.find((t) => t.session_id === session) ?? null;");
+    // No second fetch: `tasks` is the poll this page runs anyway.
+    expect(src).not.toContain("getTaskBySession");
+  });
+
+  test("an Edit never wears one", () => {
+    // That heading already IS the task, and the card is not continuing anything.
+    expect(page()).toContain("if (editing) return null;");
+    expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
+    expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
+  });
+
+  test("pressing it puts the card away first, then opens the peek", () => {
+    const src = page();
+    const open = src.slice(src.indexOf("const openSourceTask = (task: Task) => {"));
+    const body = open.slice(0, open.indexOf("\n  };"));
+    // The peek slides in BESIDE a page that is currently behind a modal, so
+    // opening one under the card would look like the press did nothing.
+    expect(body.indexOf("closeCard();")).toBeLessThan(body.indexOf("openPeek(task.key)"));
+    // The peek is the ONLY door this page owns: it does not navigate, and
+    // tasks-lib.test.ts pins that it holds none of the tools for it.
+    expect(src).not.toContain("navigateUrl");
+  });
+
+  test("where there is no peek, the chip is a statement and not a dead button", () => {
+    // The page hands over the name alone…
+    expect(page()).toContain("onOpen: peekable ? () => openSourceTask(sourceTask) : null,");
+    // …and the card draws a span for it.
+    expect(card()).toContain(
+      '<span className="new-task-source">from {sourceTask.taskId}</span>');
+  });
+
+  test("it is beside the heading, never inside it", () => {
+    // The `h2` is what the dialog is NAMED by (Modal's `aria-labelledby`), so a
+    // chip inside it renamed the dialog "New task from TASK-003" and put a
+    // `<button>` inside a heading — read out by a heading walk, unpressable from
+    // one. `titleAside` is the head's other slot, same row, same placement.
+    expect(card()).toContain("titleAside: sourceTask.onOpen");
+    const MODAL = readFileSync(
+      join(import.meta.dir, "..", "platform", "ui", "modal", "Modal.tsx"),
+      "utf8",
+    );
+    expect(MODAL).toContain('<div className="modal-head-title">');
+    expect(MODAL).toContain("{titleAside}");
   });
 });

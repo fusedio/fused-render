@@ -398,6 +398,22 @@ button.tasks-caret,
   font-weight: 400;
 }
 
+/* …UNLESS THE LINE BESIDE IT IS NOT THE TASK'S NAME. With
+   `task_card_last_message` on, a row's title line shows the conversation's
+   newest message, and the id is then the only thing on the row that names the
+   task — so the reading priority the rule above protects is inverted and the id
+   is what the eye should land on. Weight and colour only, at the same size and
+   the same mono: the column of ids stays a column.
+
+   The Cards wall's own `.task-card-id--lead` (task-cards.css) says exactly this
+   in exactly these two properties. Two classes rather than one because the two
+   ids are two different elements with two different base rules; the VALUES are
+   deliberately identical, so a card and its row lift the id the same amount. */
+.tasks-id--lead {
+  font-weight: 600;
+  color: var(--fg);
+}
+
 /* -- Said, not shown ------------------------------------------------------------
    Text that exists for the accessibility tree and not for the eye. This page has
    one user of it and it is the reason the class exists: a board card says unread
@@ -1668,9 +1684,20 @@ button.tasks-caret,
 }
 
 /* Items keep their own height inside that scroller — a constrained flex column
-   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers. */
+   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers.
+
+   THE SECOND PAIR IS THE PROJECT ROWS, which sit inside a `role="radiogroup"`
+   wrapper (schedule.css `.schedule-tv-pop-radiogroup`). That wrapper is
+   `display: contents`, so the rows really are flex children of the panel and
+   this rule really does have to reach them — but `display` is layout and `>` is
+   the DOM, so the selector has to walk through it. Left un-named, the project
+   menu is the sliver bug the comment above describes. */
 .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
-.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item {
+.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
+.schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item,
+.prefs-section .schedule-tv-pop.tasks-pop
+  > .schedule-tv-pop-radiogroup
+  > .schedule-tv-pop-item {
   flex: 0 0 auto;
 }
 
@@ -2078,6 +2105,23 @@ button.tasks-draft-pill.is-on:focus-visible {
 .schedule-tv-filter-x:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* THE SLOT IS ALWAYS HERE, the control is not (Akshil, 2026-09-14: "don't move
+   the dropdown position"). The ✕ was rendered only with something to clear,
+   which grew this group by 26px on the press — and the toolbar pays for width
+   out of the search field, so every trigger in the row slid left under a
+   popover pinned where it was placed on open. Held box, hidden ink: a press
+   changes what this half does and nothing about where anything is. The count
+   badge inside the trigger is reserved the same way (schedule.css).
+
+   `visibility`, so the inert half is out of the accessibility tree and out of
+   hit testing too — the `disabled` on the element is the belt to that brace.
+   Listed against the same two skins as the rule above, for the same reason. */
+.schedule-tv-filter-x.is-empty,
+.prefs-section .schedule-tv-filter-x.is-empty,
+.deploy-body .schedule-tv-filter-x.is-empty {
+  visibility: hidden;
 }
 
 /* ------------------------------------------------------------- the ghosts
