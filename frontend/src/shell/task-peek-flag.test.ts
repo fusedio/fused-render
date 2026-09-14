@@ -319,6 +319,19 @@ describe("the peek header", () => {
     expect(HEAD).not.toContain("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
   });
 
+  it("draws the row's and the card's doors as OUTLINES, and the card keeps its hover under them (Akshil, 2026-09-14)", () => {
+    // No fill on hover — outline brightens and ink goes near-white.
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-act--page:hover:not(:disabled),");
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-act--archive:hover:not(:disabled),");
+    const hover = PEEK_CSS.slice(PEEK_CSS.indexOf(".tasks-peek-host .tasks-act--page:hover:not(:disabled),"));
+    const body = hover.slice(hover.indexOf("{"), hover.indexOf("}"));
+    expect(body).toContain("background: transparent;");
+    expect(body).toContain("color: var(--fg);");
+    // The strip is the card's sibling, so the wrapper's hover has to carry the fill.
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled)");
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card.is-peeked");
+  });
+
   it("walks with CHEVRONS, not arrows", () => {
     expect(HEAD).toContain('<svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>');
     expect(HEAD).toContain('<svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>');
