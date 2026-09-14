@@ -3332,16 +3332,25 @@ button.am-bench-model:focus-visible {
 .tp .chip.warn-chip {
   border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
   color: var(--warning);
-  /* D1288: the "Won't run here" reason clause now often names an engine and
-     architecture ("needs Diffusers (MiniMaxH3Pipeline)", "needs Sentence
-     Transformers — not supported yet") — noticeably longer than the old
-     bespoke sentences this chip was sized for. `.chip`'s own `white-space:
-     nowrap` with no width cap would let one of these push the row's layout
-     wide instead of wrapping; capped and ellipsised here instead, with the
-     full text still available via the chip's own `title` attribute. */
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* D1288 capped this chip at 220px with ellipsis truncation, on the theory
+     that a longer reason clause ("needs Diffusers (MiniMaxH3Pipeline)")
+     would otherwise push the row's layout wide. In practice it clipped the
+     common case mid-sentence ("Won't run here · needs Diffusers — not s…"),
+     hiding "not supported yet" — the exact fact a reader most needs, since
+     it is what tells them the row is a dead end rather than a fixable gap.
+     `.row-name`'s own `flex-wrap: wrap` (this file) already lets the chip
+     drop to its own line when the row is tight; there is no need to ALSO
+     truncate the chip's own text once it is there. `max-width: 100%` keeps
+     it from ever overflowing its flex container at any viewport width
+     (including phone width), `white-space: normal` lets it wrap onto a
+     second line instead of eliding, and `overflow-wrap` covers the one
+     unbreakable-token edge case (a long repo id or filename inside the
+     reason clause) that plain word-wrapping would not break on its own.
+     The full text is still available via the chip's own `title` attribute
+     for a reader who wants it on one line via a tooltip. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: break-word;
   vertical-align: bottom;
 }
 
@@ -3354,9 +3363,12 @@ button.am-bench-model:focus-visible {
   border-color: var(--ctl-quiet-border-hover);
   color: var(--fg-muted);
   background: var(--ctl-quiet-bg);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Same wrap-not-truncate treatment as `.warn-chip` above, for the same
+     reason: this text is short today ("Runs on <Engine>") but should not
+     silently clip if a future engine name is long. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: break-word;
   vertical-align: bottom;
 }
 
