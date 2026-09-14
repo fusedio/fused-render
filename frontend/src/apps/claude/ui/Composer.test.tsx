@@ -644,3 +644,150 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
   expect(box.props["data-gramm_editor"]).toBe("false");
   expect(box.props["data-enable-grammarly"]).toBe("false");
 });
+
+// ---- a restored draft takes the keyboard (Akshil QA, 2026-09-14) -----------
+
+test("a draft that lands in the box focuses it, caret at the end", async () => {
+  // Pressing a never-sent chat's row in the Recent list promises that the next
+  // Enter sends those words. The box filled and `document.activeElement` stayed
+  // on `<body>`: the mount's `autoFocus` fires before the draft's GET answers,
+  // and the commit that paints the restored text leaves the caret nowhere. So
+  // the focus is taken when the SEED lands, at the end of the sentence.
+  const focused: Array<Record<string, unknown> | undefined> = [];
+  const carets: Array<[number, number]> = [];
+  const node = {
+    value: "",
+    focus: (opts?: Record<string, unknown>) => focused.push(opts),
+    setSelectionRange: (a: number, b: number) => carets.push([a, b]),
+    style: {} as Record<string, string>,
+    scrollHeight: 20,
+  };
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  G.getComputedStyle = () => ({
+    paddingTop: "0px",
+    paddingBottom: "0px",
+    lineHeight: "16px",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    columnGap: "6px",
+    marginLeft: "0px",
+    marginRight: "0px",
+    display: "flex",
+  });
+  // The draft store, as `GET /api/drafts` answers it — keyed `new:<file>`,
+  // because this composer has no session yet (platform/lib/drafts.chatDraftKey).
+  (G as { fetch: unknown }).fetch = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          chat: { "new:/p/draft.py": { text: "ship the thing", attachments: [] } },
+          task: {},
+        }),
+        { status: 200 },
+      ),
+    );
+  try {
+    const boxRef = { current: null as unknown };
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ComposerCard
+          variant="chat"
+          file="/p/draft.py"
+          sessionId=""
+          controls={controls}
+          status="idle"
+          back="/explorer/view/p"
+          boxRef={boxRef as never}
+          autoFocus
+          onSend={() => {}}
+          onFollowUp={() => {}}
+          onStop={() => {}}
+        />,
+        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
+      );
+    });
+    mounted.push(renderer);
+    // The words are in the box…
+    expect(renderer.root.findByType("textarea").props.value).toBe("ship the thing");
+    // …the caret is in it too (the mount's own focus is the first; the seed's is
+    // what this test is about, so there is more than one and at least one landed
+    // after the text)…
+    expect(focused.length).toBeGreaterThan(1);
+    expect(focused[focused.length - 1]).toEqual({ preventScroll: true });
+    // …and it sits at the END of the restored sentence, not in the middle of it.
+    expect(carets.length).toBeGreaterThan(0);
+    const last = carets[carets.length - 1];
+    expect(last).toEqual([node.value.length, node.value.length]);
+  } finally {
+    if (realCS === undefined) delete G.getComputedStyle;
+    else G.getComputedStyle = realCS;
+  }
+});
+
+test("…and a composer that is NOT meant to take focus still does not", async () => {
+  // The landing, a preview and a `noFocus` host: a draft that happened to load
+  // must not steal the keyboard from the page around it.
+  const focused: unknown[] = [];
+  const node = {
+    value: "",
+    focus: () => focused.push(1),
+    setSelectionRange: () => {},
+    style: {} as Record<string, string>,
+    scrollHeight: 20,
+  };
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  G.getComputedStyle = () => ({
+    paddingTop: "0px",
+    paddingBottom: "0px",
+    lineHeight: "16px",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    columnGap: "6px",
+    marginLeft: "0px",
+    marginRight: "0px",
+    display: "flex",
+  });
+  (G as { fetch: unknown }).fetch = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          chat: { "new:/p/quiet.py": { text: "unsent", attachments: [] } },
+          task: {},
+        }),
+        { status: 200 },
+      ),
+    );
+  try {
+    let renderer!: ReactTestRenderer;
+    // AWAITED, like the test above: the draft's GET resolves into a `setText`
+    // and the relayout behind it, and a body that returned first would run that
+    // commit after the stub below had been taken away again.
+    await act(async () => {
+      renderer = create(
+        <ComposerCard
+          variant="chat"
+          file="/p/quiet.py"
+          sessionId=""
+          controls={controls}
+          status="idle"
+          back="/explorer/view/p"
+          onSend={() => {}}
+          onFollowUp={() => {}}
+          onStop={() => {}}
+        />,
+        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
+      );
+    });
+    mounted.push(renderer);
+    // The words did land — so this is about the focus and not about a draft
+    // that never arrived.
+    expect(renderer.root.findByType("textarea").props.value).toBe("unsent");
+    expect(focused).toHaveLength(0);
+  } finally {
+    if (realCS === undefined) delete G.getComputedStyle;
+    else G.getComputedStyle = realCS;
+  }
+});

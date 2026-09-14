@@ -436,6 +436,22 @@ export function ComposerCard({
   // StrictMode double mount costs one duplicate GET whose second answer is a
   // no-op `setText` of the same words.
   const seededKeys = useRef<Set<string>>(new Set());
+  /**
+   * A DRAFT THAT LANDED HAS TO TAKE THE KEYBOARD (Akshil QA, 2026-09-14).
+   *
+   * Pressing a never-sent chat's row in the Recent list is a promise that the
+   * next Enter sends those words — and it was not kept: the box filled and
+   * `document.activeElement` stayed on `<body>`. The mount effect below fires
+   * `autoFocus` when the composer APPEARS, which on that road is before the
+   * draft's GET has answered, and the commit that paints the restored text
+   * (plus the auto-grow relayout behind it) can leave the caret nowhere.
+   *
+   * So the seed says when it landed and the focus is taken THEN, at the end of
+   * the text — a caret in the middle of a restored sentence is its own small
+   * bug. A counter rather than a flag, because a key change (`new:<file>` →
+   * `<session>`) can seed twice in one composer's life.
+   */
+  const [seededAt, setSeededAt] = useState(0);
   useEffect(() => {
     if (seededKeys.current.has(draftKey)) return;
     seededKeys.current.add(draftKey);
@@ -455,6 +471,8 @@ export function ComposerCard({
         // the box coming back does not cost a PUT of the same text.
         autosaveRef.current.reset({ text: saved.text, attachments: saved.attachments ?? [] });
         grow();
+        // …and the caret goes in after them (see `seededAt`).
+        setSeededAt((n) => n + 1);
       }
       // The tray's half, through the same door "Back to chat" uses: these are
       // real paths, so they are registered rather than uploaded.
@@ -559,6 +577,53 @@ export function ComposerCard({
   useEffect(() => {
     if (autoFocus) boxRef.current?.focus({ preventScroll: true });
   }, [autoFocus, boxRef]);
+
+  /**
+   * …AND AGAIN ONCE A RESTORED DRAFT IS IN THE BOX (`seededAt`, Akshil QA
+   * 2026-09-14), with the caret at the END of it.
+   *
+   * TWICE, and the second time deferred by a task rather than a frame: the box
+   * this focuses can be REPLACED by the commit that follows (the auto-grow
+   * relayout, the fit ladder's re-key), and a focus on a node that is no longer
+   * in the document is a focus on nothing. `boxRef.current` is re-read inside
+   * `put` so the retry lands on whatever node is there now, and it is skipped
+   * when the caret is already home — so the common case costs one `focus`.
+   *
+   * A TASK AND NOT `requestAnimationFrame`: a pane that is not on screen never
+   * gets a frame, and a caret that only arrives when somebody is looking is a
+   * caret that never arrives for the test rig.
+   *
+   * Gated on `autoFocus` like the mount effect above: a landing page, a preview
+   * and a `noFocus` host must not be made to take the keyboard by a draft that
+   * happened to load.
+   */
+  useEffect(() => {
+    if (!seededAt || !autoFocus) return;
+    let live = true;
+    const put = () => {
+      if (!live) return;
+      const box = boxRef.current;
+      if (!box) return;
+      const doc = (box as { ownerDocument?: Document }).ownerDocument
+        ?? (typeof document === "undefined" ? undefined : document);
+      if (doc?.activeElement !== box) box.focus({ preventScroll: true });
+      // The end of the restored sentence. Guarded because a textarea that is
+      // not in a document (and every test double) may refuse the call, and a
+      // throw here would cost the focus as well as the caret.
+      try {
+        const end = box.value.length;
+        box.setSelectionRange(end, end);
+      } catch {
+        // No selection API — the focus above is the half that matters.
+      }
+    };
+    put();
+    const again = setTimeout(put, 0);
+    return () => {
+      live = false;
+      clearTimeout(again);
+    };
+  }, [seededAt, autoFocus, boxRef]);
 
   // Stranded follow-ups come back. Keyed on `seq` and not on the text, so the
   // same words stranded twice are delivered twice — and the box takes the

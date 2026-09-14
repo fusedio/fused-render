@@ -123,7 +123,12 @@ export function Topbar({
   //
   // The `running` word still shows, if the page's own turn clock says so: that
   // is THIS document's fact and owes the listing nothing.
-  if (pending) {
+  //
+  // A TASK ALWAYS OUTRANKS IT, stated rather than left to the branch order
+  // above (Akshil QA, 2026-09-14): `pending` is "nobody has answered", and a
+  // header holding a row HAS its answer — a skeleton over it would be the
+  // placeholder hiding the very thing it stands in for.
+  if (pending && !task) {
     return (
       <div className="c-topbar" title={sessionId || undefined}>
         <span className="c-tb-skel" aria-hidden="true">

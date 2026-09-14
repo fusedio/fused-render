@@ -257,6 +257,49 @@ async function write(
 const spent = new Set<string>();
 
 /**
+ * CHAT WRITES STILL ON THE WIRE, one per key — the OTHER half of `spent`, for
+ * the race a delete never had (Bugbot, PR #1145).
+ *
+ * THE RACE IT CLOSES. Pressing a never-sent chat's row in the Recent list flips
+ * `inChat`, and that ternary throws the LANDING composer away and mounts the
+ * CHAT one on the same `new:<file>` key. React runs the deleted subtree's effect
+ * cleanups before the new subtree's effects, so the landing's unmount flush
+ * (`useAutosave`'s cleanup) dispatches its PUT first — and then the new mount's
+ * seed fires `fetchChatDraft` on that very key while the PUT is still in the
+ * air. The GET is answered out of a snapshot taken BEFORE the write landed, so
+ * the box paints the words as they were one draft ago, and the autosave under
+ * it then puts that stale sentence back over the newer one.
+ *
+ * `spent` cannot cover it: nothing here is spent — the draft is alive, it is
+ * simply mid-write. And nothing inside one mount can cover it either, for the
+ * reason `spent` gives: the flush belongs to a component being thrown away and
+ * the seed runs in a different one. So, like spent-ness, this is a fact about
+ * the KEY and it lives at module scope.
+ *
+ * ONE PER KEY AND THE LATEST WINS: writes to a key are issued in order by a
+ * single composer, so the newest is the one whose answer makes the read honest.
+ * Dropped once it settles, and only if it is still the entry it put there — a
+ * write that overtook it owns the slot and must not be cleared by the older
+ * one's completion.
+ */
+const inflightChat = new Map<string, Promise<unknown>>();
+
+/** Record a chat write for the reads that must not overtake it, and hand the
+ *  caller back its own promise unchanged. */
+function trackChatWrite(key: string, out: Promise<boolean>): Promise<boolean> {
+  // `write` already resolves rather than rejecting, but the tracked copy carries
+  // its own `catch` so a future caller's failure can never leave every later
+  // `fetchChatDraft` awaiting a rejected promise (the guarantee `settle` keeps
+  // for the same reason).
+  const mine = out.catch(() => false);
+  inflightChat.set(key, mine);
+  void mine.then(() => {
+    if (inflightChat.get(key) === mine) inflightChat.delete(key);
+  });
+  return out;
+}
+
+/**
  * Upsert this chat's draft. EMPTY TEXT WITH NO ATTACHMENTS IS A DELETE, decided
  * server-side (design.md: "writing empty == delete") — so the caller does not
  * have to tell "cleared the box" apart from "never typed", and a composer
@@ -275,7 +318,9 @@ export function saveChatDraft(
   opts?: DraftWriteOptions,
 ): Promise<boolean> {
   if (text.trim() || attachments.length) spent.delete(key);
-  return write("PUT", chatUrl(key), { text, attachments }, opts);
+  // TRACKED, so a composer seeding on this key waits for these words rather
+  // than reading the ones they replace (see `inflightChat`).
+  return trackChatWrite(key, write("PUT", chatUrl(key), { text, attachments }, opts));
 }
 
 /** On send, and on an explicit clear. The key is marked spent BEFORE the
@@ -288,7 +333,11 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
   // composer — which empties its tray on the news, while the host is still
   // about to `take()` those files for the message going out. The tray went
   // empty under the send (ClaudeChat.attach tests, 2026-09-14).
-  return write("DELETE", chatUrl(key), undefined, opts);
+  // Tracked like the PUT above. `spent` already makes a read on this key answer
+  // null outright, so this buys nothing on its own — but the slot has to hold
+  // the LATEST write on the key either way, or a delete would leave a finished
+  // PUT's entry behind for a later read to wait on.
+  return trackChatWrite(key, write("DELETE", chatUrl(key), undefined, opts));
 }
 
 /** SPENT WITHOUT A DELETE — for the sender that does not own the delete.
@@ -466,6 +515,12 @@ export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
  *  start of the wait or in the middle of it makes no difference to the reader:
  *  the words came back after they were sent. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
+  if (spent.has(key)) return null;
+  // A WRITE ON THIS KEY STILL IN THE AIR IS WAITED FOR FIRST (see
+  // `inflightChat`): the composer that is being replaced flushes on unmount,
+  // and reading past that PUT hands the new box the previous draft.
+  const pending = inflightChat.get(key);
+  if (pending) await pending;
   if (spent.has(key)) return null;
   const all = await fetchDrafts();
   if (spent.has(key)) return null;

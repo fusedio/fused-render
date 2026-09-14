@@ -187,3 +187,74 @@ test("the ✻ Claude line is for a listing that answered and has NO row — a br
   expect(v.has("c-tb-title").length).toBe(1);
   expect(v.has("c-tb-file").length).toBe(1);
 });
+
+test("the seed is in hand on the FIRST render — no tick, no skeleton frame", () => {
+  // Akshil QA, 2026-09-14: a seeded header still wore the skeleton for ~260 ms.
+  // The seed is written by the press and read by the hook, so the only way to be
+  // late with it is to read it late — in an effect, or after a subscription
+  // tick. Every paint is counted here, and the first one already has the row.
+  seedSessionTask(task({ key: "sess-7", session_id: "sess-7", task_id: "TASK-007" }));
+  const feed = stubSubscribe();
+  const paints: Array<{ id: boolean; skel: boolean }> = [];
+  function Probe() {
+    const head = useSessionTask("sess-7", "/repo/app", feed.subscribe);
+    paints.push({ id: !!head.task, skel: head.pending });
+    return createElement(Topbar, {
+      sessionId: "sess-7",
+      task: head.task,
+      pending: head.pending,
+      running: false,
+    });
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Probe));
+  });
+  mounted.push(r);
+  expect(paints.length).toBeGreaterThan(0);
+  expect(paints.every((p) => p.id && !p.skel)).toBe(true);
+  // …including the subscription's opening `null`, which is what the 260 ms was.
+  act(() => feed.serve(null));
+  expect(paints.every((p) => p.id && !p.skel)).toBe(true);
+});
+
+test("the session ARRIVING is the same first render — the landing's hook is already mounted", () => {
+  // The hook lives in `ClaudeChat`'s body and is handed `null` while the landing
+  // is up, so the press does not mount it: the id arrives as a prop change, and
+  // the seed has to be adopted on THAT render rather than in the effect after it.
+  seedSessionTask(task({ key: "sess-8", session_id: "sess-8", task_id: "TASK-008" }));
+  const feed = stubSubscribe();
+  const paints: Array<{ id: boolean; skel: boolean }> = [];
+  function Probe({ sessionId }: { sessionId: string | null }) {
+    const head = useSessionTask(sessionId, "/repo/app", feed.subscribe);
+    paints.push({ id: !!head.task, skel: head.pending });
+    return createElement(Topbar, {
+      sessionId: sessionId ?? "",
+      task: head.task,
+      pending: head.pending,
+      running: false,
+    });
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Probe, { sessionId: null }));
+  });
+  mounted.push(r);
+  paints.length = 0;
+  act(() => r.update(createElement(Probe, { sessionId: "sess-8" })));
+  expect(paints.length).toBeGreaterThan(0);
+  expect(paints.every((p) => p.id && !p.skel)).toBe(true);
+  const has = (cls: string) =>
+    r.root.findAll(
+      (n) => typeof n.type === "string" && String(n.props.className ?? "").split(" ").includes(cls),
+      { deep: true },
+    );
+  expect(has("c-tb-skel").length).toBe(0);
+  expect(has("task-side-peek-who").length).toBe(1);
+});
+
+test("a task always outranks `pending` — the placeholder never covers its own answer", () => {
+  const v = render({ sessionId: "sess-1", task: task(), pending: true, running: false });
+  expect(v.has("c-tb-skel").length).toBe(0);
+  expect(v.has("task-side-peek-who").length).toBe(1);
+});

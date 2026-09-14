@@ -178,7 +178,24 @@ export interface SessionIdentity {
  * component alive on both sides of the gesture to hold it.
  */
 const SEED_CAP = 32;
-const seeds = new Map<string, Task>();
+/**
+ * ON `globalThis`, which is the one unusual thing here and is worth the line:
+ * this map is written by the LIST and read by the HEADER, and the two are only
+ * the same store while they are the same module instance. A dev server's HMR
+ * re-evaluates a module and hands the new copy an empty map; a bundler that
+ * ever splits this file between the landing's chunk and the chat's does the
+ * same thing permanently. Either way the seed is silently lost and the header
+ * goes back to waiting out a listing read — a bug that cannot be seen in a test,
+ * because a test process has exactly one copy. The key is namespaced and the
+ * value is a plain Map.
+ */
+const SEED_STORE = "__fusedRenderChatSessionSeeds";
+const seeds: Map<string, Task> =
+  ((globalThis as Record<string, unknown>)[SEED_STORE] as Map<string, Task>) ??
+  (((globalThis as Record<string, unknown>)[SEED_STORE] = new Map<string, Task>()) as Map<
+    string,
+    Task
+  >);
 
 export function seedSessionTask(task: Task): void {
   const id = task.session_id || task.key;
@@ -211,6 +228,35 @@ export function useSessionTask(
   subscribe: SubscribeTasks = subscribeTasks,
 ): SessionIdentity {
   const [rows, setRows] = useState<Task[] | null>(null);
+  /**
+   * THE SEED, READ ON THE FIRST RENDER THIS SESSION ID IS SEEN — not in an
+   * effect, and not inside the memo below (Akshil QA, 2026-09-14: a seeded
+   * header still wore the skeleton for ~260 ms).
+   *
+   * The press writes the row and THEN opens the session, so by the time this
+   * hook renders with the new id the answer is already sitting in the map: the
+   * only way to be late with it is to read it late.
+   *
+   * A REF CACHE AND NOT STATE, which is the one thing here worth defending.
+   * Adjusting STATE during render is React's documented shape for "a prop
+   * changed and some state derives from it", but it re-runs the render and
+   * THROWS THE FIRST PASS AWAY — so the very paint this fix is about would
+   * still be computed without the seed. Nothing outside this component can
+   * observe the write (it is a pure function of `sessionId`, recomputed rather
+   * than accumulated), so the cache is a ref and the first render with a new id
+   * is already the right one.
+   *
+   * HELD, rather than re-read every render: the map is capped and evicts, and
+   * an identity that vanished mid-conversation because somebody opened 32 other
+   * chats would be a worse bug than the one this fixes.
+   */
+  const seedFor = useRef(sessionId);
+  const seedRef = useRef<Task | null>(sessionSeed(sessionId));
+  if (seedFor.current !== sessionId) {
+    seedFor.current = sessionId;
+    seedRef.current = sessionSeed(sessionId);
+  }
+  const seed = seedRef.current;
   /** THE TRANSPORT THROUGH A REF (the list above spends a lint exemption for
    *  the same fact): the identity of the subscription function is not a fact
    *  about the session, so a caller that passes a fresh closure — every test
@@ -239,7 +285,7 @@ export function useSessionTask(
   }, [sessionId, file]);
   return useMemo(() => {
     if (!sessionId) return NO_IDENTITY;
-    const seeded = sessionSeed(sessionId);
+    const seeded = seed;
     // NOT READ YET. A seed answers it outright — the press handed us the row —
     // and without one the header is owed a skeleton, never the fallback: the
     // fallback is a CLAIM (this chat has no task row) and we do not know that.
@@ -256,7 +302,7 @@ export function useSessionTask(
     // moment ago; an identity that blinks out mid-conversation is worse than one
     // that is a poll behind, and the next read puts it right either way.
     return { task: found ?? seeded, pending: false };
-  }, [rows, sessionId]);
+  }, [rows, sessionId, seed]);
 }
 
 /** The two answers that carry no row, as constants: a new object every render

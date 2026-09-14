@@ -566,6 +566,70 @@ describe("fetchChatDraft re-checks spent after the answer", () => {
   });
 });
 
+// ---- a seed never overtakes the write it should be reading --------------------
+// Pressing a never-sent chat's row in Recent flips `inChat`, which throws the
+// LANDING composer away and mounts the CHAT one on the same `new:<file>` key.
+// The landing's unmount flush dispatches its PUT first, then the new mount's
+// seed GETs that key — and a GET answered out of a pre-write snapshot hands the
+// new box the previous draft, which its own autosave then writes back over the
+// newer one (Bugbot, PR #1145).
+describe("fetchChatDraft waits for a write still on the wire", () => {
+  test("the seed reads the flushed words, not the ones they replaced", async () => {
+    const key = "new:/Users/me/draft-press";
+    let stored = "the words as they were one draft ago";
+    const releasePut: (() => void)[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        // The unmount flush: held open, exactly as a PUT still in the air is.
+        const body = JSON.parse(String(init.body)) as { text: string };
+        return new Promise<Response>((resolve) => {
+          releasePut.push(() => {
+            stored = body.text;
+            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ chat: { [key]: { text: stored, attachments: [], updated_at: 1 } }, task: {} }),
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+
+    // The landing composer's unmount flush goes out…
+    const writing = saveChatDraft(key, "the newest sentence");
+    // …and the chat composer mounts and seeds on the same key while it is in
+    // the air. Without the wait this GET is answered first, out of the old
+    // snapshot.
+    const seeding = fetchChatDraft(key);
+    await Promise.resolve();
+    for (const answer of releasePut.splice(0)) answer();
+    await writing;
+
+    expect((await seeding)?.text).toBe("the newest sentence");
+    globalThis.fetch = real;
+  });
+
+  test("a settled write leaves nothing behind for the next read to wait on", async () => {
+    const key = "new:/Users/me/draft-settled";
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            init?.method === "PUT"
+              ? {}
+              : { chat: { [key]: { text: "done", attachments: [], updated_at: 1 } }, task: {} },
+          ),
+      } as unknown as Response)) as unknown as typeof fetch;
+    await saveChatDraft(key, "done");
+    expect((await fetchChatDraft(key))?.text).toBe("done");
+    globalThis.fetch = real;
+  });
+});
+
 // ---- a spend can be heard, and taken back ------------------------------------
 // The Board can send a conversation's draft from a drag (shell/draft-run
 // `chatBody`) while a composer sits open on the same key. Two facts follow
