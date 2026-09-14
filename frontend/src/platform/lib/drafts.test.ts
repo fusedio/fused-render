@@ -611,6 +611,64 @@ describe("fetchChatDraft waits for a write still on the wire", () => {
     globalThis.fetch = real;
   });
 
+  test("TWO writes in the air, and the read waits for BOTH", async () => {
+    // The debounce fires, the reader types one more word, and the press unmounts
+    // the box before that PUT is answered — so two writes are on the wire at
+    // once. A read that waited only for the NEWEST could be dispatched while the
+    // older one was still unlanded (Bugbot, PR #1145, second pass).
+    //
+    // Asserted as the CONTRACT rather than as a returned string: what matters is
+    // that the GET is not dispatched until every write that was already in the
+    // air has settled, and a test that only compares the answer passes or fails
+    // on microtask ordering instead.
+    const key = "new:/Users/me/two-writes";
+    const landed: string[] = [];
+    /** `landed`, as it stood the moment the GET went out. Held in an object so
+     *  the assignment below (inside a callback) is not narrowed away. */
+    const seen: { atGet: string[] | null } = { atGet: null };
+    const gate: Record<string, () => void> = {};
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { text: string };
+        return new Promise<Response>((resolve) => {
+          gate[body.text] = () => {
+            landed.push(body.text);
+            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+          };
+        });
+      }
+      seen.atGet = [...landed];
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: { [key]: { text: landed[landed.length - 1] ?? "", attachments: [], updated_at: 1 } },
+            task: {},
+          }),
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+
+    const first = saveChatDraft(key, "the debounced words");
+    const second = saveChatDraft(key, "the flushed words");
+    const seeding = fetchChatDraft(key);
+    await Promise.resolve();
+    // The NEWER write answers FIRST; the older one is still out there.
+    gate["the flushed words"]?.();
+    await second;
+    await Promise.resolve();
+    await Promise.resolve();
+    // The read must not have gone out yet — one write is still unlanded.
+    expect(seen.atGet).toBeNull();
+    gate["the debounced words"]?.();
+    await first;
+    await seeding;
+
+    // Both had landed before the GET was dispatched.
+    expect(seen.atGet).toEqual(["the flushed words", "the debounced words"]);
+    globalThis.fetch = real;
+  });
+
   test("a settled write leaves nothing behind for the next read to wait on", async () => {
     const key = "new:/Users/me/draft-settled";
     const real = globalThis.fetch;

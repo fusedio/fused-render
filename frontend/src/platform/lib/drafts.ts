@@ -276,13 +276,25 @@ const spent = new Set<string>();
  * the seed runs in a different one. So, like spent-ness, this is a fact about
  * the KEY and it lives at module scope.
  *
- * ONE PER KEY AND THE LATEST WINS: writes to a key are issued in order by a
- * single composer, so the newest is the one whose answer makes the read honest.
- * Dropped once it settles, and only if it is still the entry it put there — a
- * write that overtook it owns the slot and must not be cleared by the older
- * one's completion.
+ * EVERY WRITE ON THE KEY, NOT THE NEWEST ONE (Bugbot, PR #1145, second pass).
+ * A single slot per key looked right — one composer issues these in order — but
+ * "issued in order" is not "answered in order", and `useAutosave` really can
+ * have two PUTs in the air at once on this very path: the debounce fires, the
+ * reader types one more word, and the press unmounts the box a moment later, so
+ * the flush goes out while the debounced write is still unanswered. A read that
+ * waited only for the newest could be answered before the older one landed and
+ * seed from a snapshot that neither write had reached. So the entry is a SET,
+ * and a read waits for all of it.
+ *
+ * WHAT IS AWAITED IS A SNAPSHOT taken when the read starts: a write dispatched
+ * after that is genuinely concurrent with the GET, and making the read wait for
+ * writes that had not happened when it began would be a wait with no end during
+ * fast typing.
+ *
+ * Each promise drops itself once it settles, and the key's whole entry goes
+ * when the last one does.
  */
-const inflightChat = new Map<string, Promise<unknown>>();
+const inflightChat = new Map<string, Set<Promise<unknown>>>();
 
 /** Record a chat write for the reads that must not overtake it, and hand the
  *  caller back its own promise unchanged. */
@@ -292,11 +304,28 @@ function trackChatWrite(key: string, out: Promise<boolean>): Promise<boolean> {
   // `fetchChatDraft` awaiting a rejected promise (the guarantee `settle` keeps
   // for the same reason).
   const mine = out.catch(() => false);
-  inflightChat.set(key, mine);
+  let live = inflightChat.get(key);
+  if (!live) {
+    live = new Set();
+    inflightChat.set(key, live);
+  }
+  const held = live;
+  held.add(mine);
   void mine.then(() => {
-    if (inflightChat.get(key) === mine) inflightChat.delete(key);
+    held.delete(mine);
+    // Only if this is still the key's own set, and only once it is empty — a
+    // set replaced in the meantime belongs to writes this one knows nothing of.
+    if (held.size === 0 && inflightChat.get(key) === held) inflightChat.delete(key);
   });
   return out;
+}
+
+/** Wait for every chat write on `key` that was already on the wire when this
+ *  was called. Resolves at once when there are none. */
+async function settleChatWrites(key: string): Promise<void> {
+  const live = inflightChat.get(key);
+  if (!live || live.size === 0) return;
+  await Promise.all(Array.from(live));
 }
 
 /**
@@ -516,11 +545,10 @@ export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
  *  the words came back after they were sent. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
   if (spent.has(key)) return null;
-  // A WRITE ON THIS KEY STILL IN THE AIR IS WAITED FOR FIRST (see
+  // EVERY WRITE ON THIS KEY THAT IS STILL IN THE AIR IS WAITED FOR FIRST (see
   // `inflightChat`): the composer that is being replaced flushes on unmount,
-  // and reading past that PUT hands the new box the previous draft.
-  const pending = inflightChat.get(key);
-  if (pending) await pending;
+  // and reading past those PUTs hands the new box the previous draft.
+  await settleChatWrites(key);
   if (spent.has(key)) return null;
   const all = await fetchDrafts();
   if (spent.has(key)) return null;
