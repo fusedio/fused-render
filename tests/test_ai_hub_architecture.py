@@ -248,3 +248,80 @@ def test_diffusers_tag_name_is_never_flagged_as_bare_library():
     arch = hub_architecture.resolve(raw)
     assert arch.name == "FluxPipeline"
     assert arch.name_is_bare_library is False
+
+
+# Architecture-name recovery from `base_model:` when `config` is empty ------
+# (the user complaint: a video row with `config: {}` fell all the way
+# through to the bare `library_name`, so the chip read "needs Diffusers"
+# instead of naming the actual model family.)
+
+
+def test_base_model_tag_recovers_a_family_name_when_config_is_empty():
+    """`OzzyGT/MiniMax_H3_sdnq_8bit_pruned`-shaped row: `library_name:
+    diffusers`, `config: {}`, but a `base_model:` tag naming
+    `MiniMaxAI/MiniMax-H3` — the same tag `hub_models._base_model` already
+    parses to show "from MiniMaxAI/MiniMax-H3" under the chip. The last
+    path segment is the wanted display name, and it is NOT the bare-library
+    fallback."""
+    raw = {
+        "library_name": "diffusers",
+        "config": {},
+        "tags": ["minimax-h3", "text-to-audio-video", "video-generation",
+                 "base_model:quantized:MiniMaxAI/MiniMax-H3"],
+    }
+    arch = hub_architecture.resolve(raw, capability="text-to-video")
+    assert arch.name == "MiniMax-H3"
+    assert arch.name_is_bare_library is False
+    assert arch.engine == "Diffusers"
+    assert arch.shipped is False
+
+
+def test_base_model_tag_recovers_a_family_name_for_an_mlx_format_video_repo():
+    """`pipenetwork/MiniMax-H3-MLX-4bit`-shaped row: `library_name: mlx`,
+    empty `config`, a `base_model:` tag. `engine` resolves to "MLX" (a
+    text-generation-only runner in this app), but the recovered `name`
+    still leads: the chip must not say "needs MLX" for a video repo."""
+    raw = {
+        "library_name": "mlx",
+        "config": {},
+        "tags": ["base_model:quantized:MiniMaxAI/MiniMax-H3"],
+    }
+    arch = hub_architecture.resolve(raw, capability="text-to-video")
+    assert arch.name == "MiniMax-H3"
+    assert arch.name_is_bare_library is False
+    assert arch.engine == "MLX"
+    assert arch.shipped is False
+
+
+def test_base_model_tag_outranks_bare_library_but_not_config_signals():
+    """The new signal sits ABOVE the bare `library_name` fallback but below
+    every `config`-derived signal — a repo with a real `config.model_type`
+    still prefers that over a `base_model:` family name."""
+    raw = {
+        "library_name": "diffusers",
+        "config": {"model_type": "some_real_type"},
+        "tags": ["base_model:quantized:MiniMaxAI/MiniMax-H3"],
+    }
+    arch = hub_architecture.resolve(raw)
+    assert arch.name == "some_real_type"
+
+
+def test_no_base_model_tag_and_empty_config_falls_back_to_bare_library():
+    """No recoverable name anywhere: falls back to the bare `library_name`,
+    flagged as such, exactly as before this change."""
+    raw = {"library_name": "diffusers", "config": {}}
+    arch = hub_architecture.resolve(raw, capability="text-to-video")
+    assert arch.name == "diffusers"
+    assert arch.name_is_bare_library is True
+    assert arch.engine == "Diffusers"
+    assert arch.shipped is False
+
+
+def test_parse_base_model_tag_matches_hub_models_own_parse():
+    """`hub_architecture.parse_base_model_tag` is the SAME function
+    `hub_models._base_model` is now aliased to — one parse, not two."""
+    from fused_render.server.routers import hub_models
+
+    tags = ["base_model:quantized:MiniMaxAI/MiniMax-H3"]
+    assert hub_architecture.parse_base_model_tag(tags) == hub_models._base_model(tags)
+    assert hub_models._base_model(tags) == ("MiniMaxAI/MiniMax-H3", "quantized")

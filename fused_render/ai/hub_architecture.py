@@ -141,6 +141,65 @@ def _is_shipped(engine: str, capability: str | None) -> bool:
     return result
 
 
+#: `base_model:<relation>:<id>` — the Hub's own tag naming what a repo was
+#: derived from. Moved here (D1298-adjacent architecture-name recovery) from
+#: `hub_models.py`, which now imports `parse_base_model_tag` from this module
+#: instead of keeping its own copy — the row's "from <org>/<Base>" line and
+#: this module's recovered architecture `name` must read off the exact same
+#: parse, never two independently-maintained ones.
+_BASE_MODEL_TAG_PREFIX = "base_model:"
+
+
+def parse_base_model_tag(tags) -> tuple[str | None, str | None]:
+    """`(baseModel, relation)` parsed off a repo's own `tags`, or `(None,
+    None)` when none of them says what this was derived from — a row
+    standing alone, or a repo whose tags this server could not read at all
+    (missing, not a list, or entries that are not strings).
+
+    **Parsing only. The grouping RULE is the frontend's** (`hubFamilies.ts`)
+    — this function's whole job is turning the Hub's own colon-delimited tag
+    into two fields, never deciding which rows share a family or which one
+    leads it.
+
+    The FIRST matching tag wins where more than one exists, and the base
+    model id itself may contain colons in principle — `partition`, not
+    `split`, so only the first two colons are consumed and the id is
+    whatever remains.
+
+    **The relation-less form, `base_model:<id>` with no second colon, is a
+    real tag shape** — it is what the Hub emits from a model card's own
+    `base_model:` metadata when the card never set `base_model_relation:`.
+    When the remainder has no `:` at all, the whole remainder is the id and
+    `relation` is `None`. A malformed tag — an empty id either side of a
+    colon that IS present — is still skipped.
+    """
+    if not isinstance(tags, list):
+        return None, None
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.startswith(_BASE_MODEL_TAG_PREFIX):
+            continue
+        rest = tag[len(_BASE_MODEL_TAG_PREFIX):]
+        relation, sep, base_id = rest.partition(":")
+        if not sep:
+            # No second colon: the Hub's relation-less `base_model:<id>` form.
+            if not relation:
+                continue
+            return relation, None
+        if not relation or not base_id:
+            continue
+        return base_id, relation
+    return None, None
+
+
+def _family_name_from_base_model(base_model: str) -> str:
+    """The display name recovered from a `base_model:` tag's own id —
+    `"MiniMaxAI/MiniMax-H3"` -> `"MiniMax-H3"`. The last path segment IS the
+    base repo's own spelling (HF preserves case on this field verbatim), so
+    this never invents capitalisation — it only trims the org prefix. A
+    bare id with no `/` (no org segment) returns unchanged."""
+    return base_model.rsplit("/", 1)[-1]
+
+
 def _sibling_names(raw: dict) -> frozenset[str]:
     siblings = raw.get("siblings")
     if not isinstance(siblings, list):
@@ -150,9 +209,28 @@ def _sibling_names(raw: dict) -> frozenset[str]:
 
 
 def _resolve_name(raw: dict) -> tuple[str | None, bool]:
-    """Signal order (brief item 1): a `diffusers:<PipelineClass>` tag, then
+    """Signal order (brief item 1, widened by the D1298-adjacent "no
+    architecture name to show" fix): a `diffusers:<PipelineClass>` tag, then
     `config.diffusers._class_name`, then `config.architectures[0]`, then
-    `config.model_type`, then `library_name` alone.
+    `config.model_type`, then a `base_model:` tag's own repo family name,
+    then `library_name` alone.
+
+    **Why the `base_model:` tag outranks the bare `library_name` fallback.**
+    A republish that ships `config: {}` (common for modular Diffusers
+    pipelines and MLX/GGUF quant repos alike — the Hub's bulk list endpoint
+    does not expand into component subfolders) has NOTHING in `config` to
+    read, so every signal above falls through and the old code landed on the
+    bare `library_name` ("diffusers", "mlx") — the literal word for the
+    ENGINE, not a fact about the repo's architecture at all, and the direct
+    cause of a video row reading "needs Diffusers" when Diffusers cannot
+    even serve video in this app (see `hub_loadable._generic_reason`, which
+    now leads with `name` before `engine` for exactly this reason). A
+    `base_model:<relation>:<id>` tag — the SAME tag `hub_models.py` already
+    parses to show "from <org>/<Base>" under the row — names the actual
+    model FAMILY (`MiniMaxAI/MiniMax-H3` -> `"MiniMax-H3"`) regardless of
+    which engine happens to host this particular republish, so it is
+    checked before the bare-library fallback and never counts as one
+    (`is_bare_library_fallback` stays False for this branch).
 
     Returns `(name, is_bare_library_fallback)` — the second element is True
     only for the LAST branch, so `resolve()` can tell "this row's raw
@@ -178,6 +256,11 @@ def _resolve_name(raw: dict) -> tuple[str | None, bool]:
         model_type = config.get("model_type")
         if isinstance(model_type, str) and model_type:
             return model_type, False
+    base_model, _relation = parse_base_model_tag(tags)
+    if base_model:
+        family = _family_name_from_base_model(base_model)
+        if family:
+            return family, False
     library = raw.get("library_name")
     if isinstance(library, str) and library:
         return library, True

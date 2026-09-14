@@ -164,14 +164,39 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
 def _generic_reason(architecture: Architecture | None) -> str:
     """The reason to show when EVERY available runner refused and no
     bespoke, runner-specific wording applies — built from `hub_architecture.
-    resolve`'s own facts about the repo, never a single blanket sentence."""
+    resolve`'s own facts about the repo, never a single blanket sentence.
+
+    **Leads with the ARCHITECTURE, not the engine, when the engine is not
+    shipped.** The bug this fixes: every Diffusers runner registered in this
+    app serves IMAGE_GENERATION only, so a video row whose `engine` resolves
+    to `"Diffusers"` (or an MLX-format video row whose `engine` resolves to
+    `"MLX"`, itself text-generation-only) used to read "needs Diffusers —
+    not supported yet" / "needs MLX — not supported yet" — naming an engine
+    this app can NEVER use for that row's capability, which reads as "install
+    Diffusers/MLX and this will run," exactly backwards. When a real
+    architecture `name` was recovered (and is not just the bare-library
+    fallback stuttering the engine name), the not-shipped case says only
+    "<name> not supported yet" — true regardless of which engine happened to
+    host this particular republish. The bare-library fallback (`config: {}`,
+    no `base_model:` tag, `name` is nothing but the word "diffusers"/"mlx"
+    itself) still falls back to naming the engine, since there is nothing
+    else to say.
+
+    The SHIPPED case (the engine IS wired to a runner for this row's own
+    capability, but every currently AVAILABLE runner still refused — e.g.
+    the modular-Diffusers-pipeline story this module's docstring opens
+    with) is unchanged: an engine that DOES run here is worth naming
+    alongside the architecture, `"needs Diffusers (MiniMaxH3Pipeline)"`."""
     if architecture is None or architecture.engine is None:
         if architecture is not None and architecture.name:
             return f"no engine loads {architecture.name} yet"
         return "no engine here loads this"
+    has_real_name = architecture.name and not architecture.name_is_bare_library
     if not architecture.shipped:
+        if has_real_name:
+            return f"{architecture.name} not supported yet"
         return f"needs {architecture.engine} — not supported yet"
-    if architecture.name and not architecture.name_is_bare_library:
+    if has_real_name:
         return f"needs {architecture.engine} ({architecture.name})"
     return f"needs {architecture.engine}"
 

@@ -118,6 +118,31 @@ def test_admission_says_not_supported_yet_when_engine_is_not_shipped():
     assert runs_on is None
 
 
+def test_admission_leads_with_architecture_name_when_engine_is_not_shipped():
+    """Defect fix: a video row whose `engine` resolves to "Diffusers" (an
+    IMAGE-only engine in this app) or "MLX" (a TEXT-only engine) must not
+    tell the user to get that engine — it must name the actual model
+    family. `MiniMax-H3` is the name recovered from the row's own
+    `base_model:` tag (see `test_ai_hub_architecture.py`)."""
+    architecture = Architecture(name="MiniMax-H3", engine="Diffusers",
+                                 shipped=False)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("ltx-video",),
+        model_id="OzzyGT/MiniMax_H3_sdnq_8bit_pruned", model_type=None,
+        architecture=architecture)
+    assert loadable is False
+    assert reason == "MiniMax-H3 not supported yet"
+    assert runs_on is None
+
+    mlx_architecture = Architecture(name="MiniMax-H3", engine="MLX", shipped=False)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("ltx-video",),
+        model_id="pipenetwork/MiniMax-H3-MLX-4bit", model_type=None,
+        architecture=mlx_architecture)
+    assert loadable is False
+    assert reason == "MiniMax-H3 not supported yet"
+
+
 def test_admission_says_no_engine_loads_name_when_architecture_has_no_engine():
     architecture = Architecture(name="SomeWeirdArch", engine=None, shipped=False)
     loadable, reason, runs_on = hub_loadable.admission(

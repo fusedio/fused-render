@@ -1137,63 +1137,14 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
     }
 
 
-#: `base_model:<relation>:<id>` — the Hub's own tag naming what a repo was
-#: derived from. `relation` is free text on the Hub's side, but the four
-#: values every republish here actually uses are `quantized`, `finetune`,
-#: `merge` and `adapter`; the parse itself does not narrow to that set — a
-#: value the Hub adds later still groups, it would just group under a
-#: relation label the frontend has not written a name for yet.
-_BASE_MODEL_TAG_PREFIX = "base_model:"
-
-
-def _base_model(tags) -> tuple[str | None, str | None]:
-    """`(baseModel, relation)` parsed off a repo's own `tags`, or `(None,
-    None)` when none of them says what this was derived from — a row
-    standing alone, or a repo whose tags this server could not read at all
-    (missing, not a list, or entries that are not strings).
-
-    **Parsing only. The grouping RULE is the frontend's** (`hubFamilies.ts`)
-    — this function's whole job is turning the Hub's own colon-delimited tag
-    into two fields, never deciding which rows share a family or which one
-    leads it. Mirrors `_gate`'s own shape: never absent from the row, so "no
-    base" and "the Hub did not say" would be one field if this ever had a
-    reason to conflate them — it does not, both read as `None` today, but the
-    shape is deliberate rather than incidental.
-
-    The FIRST matching tag wins where more than one exists (a repo cannot
-    have two base models this table would agree on, and the Hub does not
-    document what a second one would mean), and the base model id itself may
-    contain colons in principle (an org or repo name never does on today's
-    Hub, but nothing here assumes otherwise) — `partition`, not `split`, so
-    only the first two colons are consumed and the id is whatever remains.
-
-    **The relation-less form, `base_model:<id>` with no second colon, is a
-    real tag shape** — it is what the Hub emits from a model card's own
-    `base_model:` metadata when the card never set `base_model_relation:`,
-    so treating it the same as a malformed tag (as an earlier version of this
-    function did) silently ungrouped a large share of repos. When the
-    remainder has no `:` at all, the whole remainder is the id and
-    `relation` is `None` — the frontend keys a family on `baseModel` alone
-    and never reads `relation`, so this costs nothing there. A malformed
-    tag — an empty id either side of a colon that IS present — is still
-    skipped.
-    """
-    if not isinstance(tags, list):
-        return None, None
-    for tag in tags:
-        if not isinstance(tag, str) or not tag.startswith(_BASE_MODEL_TAG_PREFIX):
-            continue
-        rest = tag[len(_BASE_MODEL_TAG_PREFIX):]
-        relation, sep, base_id = rest.partition(":")
-        if not sep:
-            # No second colon: the Hub's relation-less `base_model:<id>` form.
-            if not relation:
-                continue
-            return relation, None
-        if not relation or not base_id:
-            continue
-        return base_id, relation
-    return None, None
+#: `(baseModel, relation)` parsed off a repo's own `base_model:<relation>:
+#: <id>` tag. Moved to `hub_architecture.py` (D1298-adjacent architecture-
+#: name recovery) so that module's `_resolve_name` can recover an
+#: architecture family name from the SAME tag this row already parses to
+#: show "from <org>/<Base>" — one parse, not two independently-maintained
+#: copies. Aliased here under the old private name since this module's own
+#: call site below predates the move.
+_base_model = hub_architecture.parse_base_model_tag
 
 
 def _gate(raw) -> str | None:
