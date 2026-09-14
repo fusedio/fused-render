@@ -319,9 +319,12 @@ describe("the one selected style, and the flag that gates it", () => {
       ".tasks-row.is-selected,\n.tasks-row.is-selected:hover {\n  background: var(--row-bg-hover);\n}",
     );
     expect(TASKS_CSS).toContain(".tasks-row.is-inert:hover {\n  background: transparent;\n}");
-    expect(CARDS_CSS).toContain(
-      ".task-card-head:hover {\n  /* One more step of the same wash the token itself is made of (tokens.css:",
-    );
+    // The Cards wall's head has NO hover fill on either side of the flag
+    // (Akshil, 2026-09-14: "when we hover on the heading, we shouldn't change
+    // the color"); the fill went to the card last opened instead.
+    expect(CARDS_CSS).not.toMatch(/\.task-card-head:hover\s*\{/);
+    expect(CARDS_CSS).toContain(".task-card.is-selected .task-card-head {");
+    expect(PEEK_CSS).not.toContain(".tasks-peek-host .task-card-head:hover");
     expect(SCHEDULE_CSS).toContain(
       "background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));",
     );
