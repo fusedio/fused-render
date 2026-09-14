@@ -13,8 +13,9 @@ installDomShim();
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import type { Task } from "@platform/lib/api";
 import type { Artifact } from "../protocol/artifacts";
-import type { SessionRow, SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
+import type { SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
 
 // DYNAMIC, after the shim above has run: `Lists` reaches
 // `@platform/lib/router` through the recent rows' link builder, and that module
@@ -32,7 +33,10 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { sessionTitle: rowsSessionTitle } = await import("./list-rows");
+const { sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
+  "./list-rows"
+);
+const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
 const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
 const { MARKER_JOIN } = await import("../protocol/wire");
 
@@ -125,6 +129,27 @@ const ART: Artifact[] = [
     created_at: Date.now() / 1000 - 90000,
   },
 ];
+
+/** ONE PAST CHAT, as the row now takes it: a task about this pane's own file,
+ *  with a session to open. The shapes the Recent list draws are `/api/tasks`'s,
+ *  not the `sessions` action's (.claude-design/design.md §B). */
+function chat(id: string, over: Partial<Task> = {}): Task {
+  return {
+    key: id,
+    task_id: id.toUpperCase(),
+    project: "/repo",
+    target: "/repo/x.py",
+    session_id: id,
+    title: "hello",
+    title_source: "message",
+    description: "",
+    status: "done",
+    unread: 0,
+    message_count: 1,
+    last_active: Date.now() / 1000,
+    ...over,
+  } as Task;
+}
 
 test("the Artifacts list draws a row per published page, favicon and all", () => {
   const r = mount(
@@ -323,13 +348,7 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
     <Lists
       file="/repo/x.py"
       agentDir="/tpl"
-      recent={[
-        {
-          id: "s1",
-          preview: "hello",
-          last_used: Date.now() / 1000,
-        } as never,
-      ]}
+      recent={[chat("s1")]}
       artifacts={ART}
       snaps={{
         timeline: timeline([]),
@@ -356,9 +375,7 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
 const TABBED: Omit<ListsProps, "onOpen"> = {
   file: "/repo/x.py",
   agentDir: "/tpl",
-  recent: [
-    { id: "s1", preview: "hello", last_used: Date.now() / 1000 } as SessionRow,
-  ],
+  recent: [chat("s1")],
   artifacts: ART,
   snaps: {
     timeline: timeline([]),
@@ -625,33 +642,190 @@ test("A MODE HOLDS THE READER: a locked block refuses the rows (P4-23)", () => {
   const locked = mount(
     <Lists {...TABBED} onOpen={(id) => opened.push(id)} disabled />,
   );
-  const row = locked.root.find(
-    (n) =>
-      typeof n.type === "string" &&
-      String((n.props as { className?: string }).className || "").includes(
-        "c-chat-row",
-      ),
-  );
-  act(() => (row.props as { onClick(): void }).onClick());
+  const row = taskRow(locked);
+  act(() => (row.props as { onClick?(): void }).onClick?.());
   act(() =>
     (row.props as { onKeyDown(ev: { key: string }): void }).onKeyDown({
       key: "Enter",
     }),
   );
   expect(opened).toEqual([]);
+  // AND NO LINK EITHER: a stretched `<a href>` would take ⌘-click, middle click
+  // and "Open in new tab" out of the lock's reach entirely.
+  expect(locked.root.findAll((n) => n.type === "a").length).toBe(0);
 
   // And unlocked it opens on either gesture — so the assertion above is about
   // the lock and not about a row that never worked.
   const free = mount(<Lists {...TABBED} onOpen={(id) => opened.push(id)} />);
-  const open = free.root.find(
+  act(() => (taskRow(free).props as { onClick(): void }).onClick());
+  expect(opened).toEqual(["s1"]);
+});
+
+/** The one task row the fixtures draw. `.tasks-row` is the Tasks page's own row
+ *  (ScheduleTaskViews), which is what the Recent list renders now. */
+function taskRow(r: ReturnType<typeof create>) {
+  return r.root.find(
     (n) =>
       typeof n.type === "string" &&
-      String((n.props as { className?: string }).className || "").includes(
-        "c-chat-row",
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
       ),
   );
-  act(() => (open.props as { onClick(): void }).onClick());
+}
+
+test("A CHAT ABOUT THIS PANE opens in place; one about another file hops", () => {
+  // `RecentRow`'s own split, kept (T:18183-18197): same file ⇒ `onOpen`, other
+  // file ⇒ the host is sent to that file with the session attached.
+  const opened: string[] = [];
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chat("s1"), chat("s2", { key: "s2", target: "/repo/other.py" })]}
+      onOpen={(id) => opened.push(id)}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const rows = r.root.findAll(
+    (n) =>
+      typeof n.type === "string" &&
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
+      ),
+  );
+  expect(rows.length).toBe(2);
+  // The in-place row is the button; the hopping one wears a real stretched link
+  // so ⌘-click and middle click are the browser's own.
+  act(() => (rows[0].props as { onClick(): void }).onClick());
   expect(opened).toEqual(["s1"]);
+  const link = r.root.find((n) => n.type === "a");
+  expect(String((link.props as { href: string }).href)).toContain(
+    "session_id=s2",
+  );
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops.length).toBe(1);
+  expect(hops[0]).toContain("other.py");
+});
+
+test("OPENING A CHAT CLEARS ITS RING, and says so to the server", async () => {
+  // The same write `performOpen` makes for the Tasks page's own row and the
+  // Board card: opening the thread is what clears it, and where it opens is not
+  // the badge's business. Planted locally FIRST, because the press is leaving.
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (
+    input: unknown,
+    init?: { body?: unknown },
+  ) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, unread: 0 }),
+    } as unknown as Response;
+  };
+  try {
+    const r = mount(
+      <Lists {...TABBED} recent={[chat("s1", { unread: 3 })]} onOpen={() => {}} />,
+    );
+    const ring = () =>
+      r.root.find(
+        (n) =>
+          typeof n.type === "string" &&
+          String((n.props as { className?: string }).className || "").includes(
+            "schedule-ring",
+          ),
+      );
+    expect(String(ring().props.className)).toContain("schedule-ring--unread");
+    await act(async () => {
+      (taskRow(r).props as { onClick(): void }).onClick();
+    });
+    // The row asks the server for ONE thing on a press. It also reads
+    // `/api/prefs` on mount (TaskRowItem -> useTaskCardTitleMode), which is a
+    // fact about the row and not about this press, so the claim is filtered to
+    // the write rather than widened to "whatever the row happens to fetch".
+    const reads = calls.filter((c) => c.url === "/api/tasks/read");
+    expect(reads.map((c) => c.url)).toEqual(["/api/tasks/read"]);
+    expect(reads[0].body).toEqual({ key: "s1", all: true });
+    // …and the ring is hollow on the row's own press, not on the next listing.
+    expect(String(ring().props.className)).not.toContain("schedule-ring--unread");
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
+});
+
+test("A LATER BURST OF THE SAME SIZE RE-LIGHTS THE RING", async () => {
+  // The optimistic clear is a VALUE comparison — "the listing still says N, and
+  // N is what I just cleared" — because the borrowed row has no read set to diff
+  // against. Left standing after the listing settles to 0 it goes on matching,
+  // so three new messages behind a cleared three would read as the same clear
+  // and the ring would stay hollow over unread work. Zero is the server
+  // agreeing, and that is where the guess is dropped.
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({ ok: true, status: 200, json: async () => ({ ok: true, unread: 0 }) }) as unknown as Response;
+  try {
+    const r = mount(
+      <Lists {...TABBED} recent={[chat("s1", { unread: 3 })]} onOpen={() => {}} />,
+    );
+    const lit = () =>
+      String(
+        r.root.find(
+          (n) =>
+            typeof n.type === "string" &&
+            String((n.props as { className?: string }).className || "").includes(
+              "schedule-ring",
+            ),
+        ).props.className,
+      ).includes("schedule-ring--unread");
+    const listing = async (unread: number) => {
+      await act(async () => {
+        r.update(
+          <Lists {...TABBED} recent={[chat("s1", { unread })]} onOpen={() => {}} />,
+        );
+      });
+    };
+
+    expect(lit()).toBe(true);
+    await act(async () => {
+      (taskRow(r).props as { onClick(): void }).onClick();
+    });
+    // Hollow on the press itself, while the listing still says three.
+    expect(lit()).toBe(false);
+    // The server agrees, and the guess is no longer load-bearing.
+    await listing(0);
+    expect(lit()).toBe(false);
+    // Three NEW messages, the same count as the clear. A stale `chatCleared`
+    // would swallow exactly this.
+    await listing(3);
+    expect(lit()).toBe(true);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
+});
+
+test("THE PANE'S OWN FILTER: folder panes match by project, file panes by target", () => {
+  // .claude-design/design.md §B. One test either way — see `taskInPane`.
+  const here = chat("s1");
+  expect(taskInPane(here, "/repo/x.py")).toBe(true);
+  expect(taskInPane(here, "/repo")).toBe(true);
+  expect(taskInPane(here, "/repo/")).toBe(true);
+  expect(taskInPane(here, "/repo/other.py")).toBe(false);
+  expect(taskInPane(here, null)).toBe(false);
+  // …and a task about the FOLDER itself belongs to the folder pane only.
+  const folder = chat("s2", { target: "/repo" });
+  expect(taskInPane(folder, "/repo")).toBe(true);
+  expect(taskInPane(folder, "/repo/x.py")).toBe(false);
+  // `taskPane` is "" for this pane's own chat and for a folder-scoped task,
+  // which is what makes the press an in-place open rather than a hop.
+  expect(taskPane(here, "/repo/x.py")).toBe("");
+  expect(taskPane(folder, "/repo")).toBe("");
+  expect(taskPane(here, "/repo")).toBe("/repo/x.py");
 });
 
 // ---- the gutters (P4-12) and the property WKWebView ignores (P4-13) --------
@@ -702,4 +876,183 @@ test("THE ROWS RENDER THE PROTOCOL'S TITLE, not a second copy of it (P4-04)", ()
   expect(rowsSessionTitle({ id: "s1", preview: "<pane-shot>\nThe user att" })).toBe(
     "pane screenshot",
   );
+});
+
+// ---- DRAFT ROWS ARE NOT INERT ROWS (Akshil, 2026-09-14) ---------------------
+//
+// Every `kind: "draft"` row used to fall out of `pressFor`'s first line — no
+// `session_id`, therefore no press — which drew a lit, titled, Draft-chipped row
+// that did nothing at all. A draft HAS somewhere to go; it is simply not a
+// conversation, and where it goes is what `draft_kind` is for.
+
+/** A never-sent chat, as `/api/tasks` emits it (`_new_chat_draft_row`): no
+ *  session, a `file` that is the `new:<file>` key's own half, and the unsent
+ *  line as its `draft`. */
+function chatDraft(over: Partial<Task> = {}): Task {
+  return {
+    key: "new:/repo/x.py",
+    task_id: "TASK-900",
+    kind: "draft",
+    state: "draft",
+    draft_kind: "chat",
+    draft_id: "",
+    project: "/repo",
+    target: "/repo/x.py",
+    file: "/repo/x.py",
+    session_id: "",
+    title: "ship the thing",
+    title_source: "draft",
+    description: "",
+    status: "draft",
+    unread: 0,
+    message_count: 0,
+    draft: { preview: "ship the thing", updated_at: Date.now() / 1000, kind: "chat" },
+    last_active: Date.now() / 1000,
+    ...over,
+  } as unknown as Task;
+}
+
+test("A CHAT DRAFT ABOUT THIS PANE picks the composer up in place", () => {
+  // No session to open and no URL to go to: the words are already on this
+  // page's own key (`new:<file>`), so the press leaves the landing and the
+  // composer there seeds itself from them.
+  let picked = 0;
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft()]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {
+        picked += 1;
+      }}
+    />,
+  );
+  const row = taskRow(r);
+  expect(String((row.props as { className?: string }).className)).not.toContain(
+    "is-inert",
+  );
+  act(() => (row.props as { onClick(): void }).onClick());
+  expect(picked).toBe(1);
+  // In place means IN PLACE: no stretched link, because there is nowhere for a
+  // ⌘-click to go that is not this very page.
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});
+
+test("…and a chat draft about ANOTHER file hops to that file's chat, no session named", () => {
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft({ key: "new:/repo/other.py", target: "/repo/other.py", file: "/repo/other.py" })]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  const href = String((link.props as { href: string }).href);
+  expect(href).toContain("other.py");
+  expect(href).toContain("_side=claude");
+  // A draft has no session to wait for, so the param is omitted rather than
+  // sent empty (schedule-lib.chatPaneUrl draws the same distinction).
+  expect(href).not.toContain("session_id");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops).toEqual([href]);
+});
+
+test("A TASK DRAFT leaves at the card the Tasks page reopens it on", () => {
+  // The New task modal is `shell/Scheduled`'s, not this app's — so the row
+  // navigates to the param that reopens it under the SAME draft id, rather
+  // than doing nothing.
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[
+        chatDraft({
+          key: "draft:d-7",
+          draft_kind: "task",
+          draft_id: "d-7",
+          file: "/repo",
+          target: "/repo",
+          draft: null,
+        } as Partial<Task>),
+      ]}
+      onOpen={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  expect(String((link.props as { href: string }).href)).toBe("/tasks?draft=d-7");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops).toEqual(["/tasks?draft=d-7"]);
+});
+
+test("a LOCKED block still refuses every draft row", () => {
+  // P4-23 is about the block, not about which kind of row is in it.
+  let picked = 0;
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft()]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {
+        picked += 1;
+      }}
+      disabled
+    />,
+  );
+  act(() => (taskRow(r).props as { onClick?(): void }).onClick?.());
+  expect(picked).toBe(0);
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});
+
+test("EVERY press seeds the header's identity — the hop as much as the in-place open", () => {
+  // Akshil QA, 2026-09-14: on a FOLDER pane every chat is about some file inside
+  // it, so `taskPane` answers with a path for every row and the hop is the only
+  // arm that ever runs. Seeding only the in-place arm meant the header on the
+  // page that opens still waited out the whole 800-row listing — which is the
+  // bug the seed was written for.
+  resetSessionSeeds();
+  const hops: string[] = [];
+  const here = chat("s1");
+  const there = chat("s2", { key: "s2", session_id: "s2", target: "/repo/other.py" });
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[here, there]}
+      onOpen={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops.length).toBe(1);
+  expect(sessionSeed("s2")?.key).toBe("s2");
+  // …and the in-place arm still does too.
+  const rows = r.root.findAll(
+    (n) =>
+      typeof n.type === "string" &&
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
+      ),
+  );
+  act(() => (rows[0].props as { onClick(): void }).onClick());
+  expect(sessionSeed("s1")?.key).toBe("s1");
+  resetSessionSeeds();
 });

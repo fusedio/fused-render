@@ -121,8 +121,9 @@ import {
   useAwayRecap,
   useFitStrip,
   useComposerDefaults,
-  useRecentSessions,
+  useRecentTasks,
   useRepairScroll,
+  useSessionTask,
   useTaskId,
   type TranscriptTail,
   type Viewable,
@@ -1784,7 +1785,11 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  const recent = useRecentSessions(
+  /** Bumped by a gesture that has asked for the composer — today only the
+   *  never-sent chat's row (`onOpenChatDraft`). Handed to the CHAT's composer
+   *  alone: the landing's box is the one the reader is leaving. */
+  const [focusReq, setFocusReq] = useState(0);
+  const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
     undefined,
@@ -1808,7 +1813,7 @@ function ChatBody(props: ChatBodyProps) {
    * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
    * target with no `agentDir` (which never subscribes), and a reader who enters
    * a chat before the first read lands — a recent row clicked on the skeleton,
-   * or a deep link resolving late. `useRecentSessions` is handed a null
+   * or a deep link resolving late. `useRecentTasks` is handed a null
    * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
    * the pane would stay covered for the life of the page. Entering a chat is
    * itself a reason to uncover it, and a target with no list has answered "no
@@ -2120,6 +2125,15 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
+    // …AND SO DOES THE CARET REQUEST (Bugbot, PR #1145). `focusReq` is a
+    // COUNTER, so once a draft press has bumped it it is truthy for the rest of
+    // the page's life — and the prop is handed to every chat composer that
+    // mounts after it. Left standing, the next ordinary session opened from the
+    // explorer's folder pane took the keyboard off the listing, which is the
+    // exact case `focusRequest` exists to stay OUT of (`autoFocus` is the
+    // ambient policy; this is one gesture's request). Back is the funnel out of
+    // the chat, so the request is spent here.
+    setFocusReq(0);
   }, [controller, cardPolicy]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
@@ -2128,10 +2142,45 @@ function ChatBody(props: ChatBodyProps) {
       // Same rule as Back: a hand-back belongs to the conversation it was typed
       // in, and this is a different one.
       setStranded(null);
+      // And this session was opened by a press on a CONVERSATION, which asks for
+      // nothing but to be read — belt and braces beside the clear in `onBack`,
+      // the same way `setStranded(null)` is spelled in both.
+      setFocusReq(0);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
   );
+  /**
+   * A NEVER-SENT CHAT'S ROW, PRESSED (Akshil, 2026-09-14) — the `new:<file>`
+   * draft in the Recent list, which names no session because there is none.
+   *
+   * It is `onOpenSession` with the one thing it opens taken out: enter the chat
+   * view, open NOTHING, and let the composer that mounts there seed itself from
+   * the very key the row was drawn from (`chatDraftKey(null, file)` — the
+   * composer's own seed effect does the fetch). The caret lands in the box on
+   * its own, because `autoFocus` is `props.autoFocus && inChat` and this flip is
+   * what makes `inChat` true — the same transition `enterChat` is in T. So the
+   * next Enter is the send that creates the session, which is exactly what the
+   * reader was promised by a row whose whole content is an unsent sentence.
+   *
+   * NO `controller.openSession`, and no `newChat()` either: the landing's
+   * controller is already on a fresh chat, and re-cutting it here would throw
+   * away a run this page may have adopted in the background.
+   */
+  const onOpenChatDraft = useCallback(() => {
+    resetCardPolicy(cardPolicy);
+    setEntered(true);
+    setStranded(null);
+    // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
+    // That prop is ambient policy — "may this composer take the keyboard merely
+    // by appearing" — and the explorer's folder pane says no on purpose
+    // (`apps/explorer/ListingPreviewPane` mounts the chat `noFocus` so the
+    // listing keeps the keyboard). A row whose whole content is an unsent
+    // sentence is a request, not an arrival: the caret belongs in the box the
+    // words are in, or the promise the row makes (press Enter and this sends)
+    // is one the reader has to click to collect (Akshil QA, 2026-09-14).
+    setFocusReq((n) => n + 1);
+  }, [cardPolicy]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -2711,6 +2760,20 @@ function ChatBody(props: ChatBodyProps) {
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
   const taskId = useTaskId(state.sessionId ?? "");
+  /**
+   * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
+   * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
+   *
+   * Asked for only while a chat is up — the same window in which the landing's
+   * list is NOT subscribed — so the two never hold the listing open at once.
+   *
+   * THREE ANSWERS, not two (`SessionIdentity`): the row, "not read yet", or
+   * "read, and there is no row for this session". Only the last of those is the
+   * ✻ Claude line's own state — a brand-new chat — and the middle one draws the
+   * header's skeleton, so a deep link no longer wears the wrong identity for
+   * the length of an 800-row listing read (Akshil, 2026-09-14).
+   */
+  const head = useSessionTask(inChat ? (state.sessionId ?? null) : null, file);
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -2938,6 +3001,8 @@ function ChatBody(props: ChatBodyProps) {
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
+                task={head.task}
+                pending={head.pending}
                 running={running}
               />
             ) : null}
@@ -2986,6 +3051,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
+                {...(focusReq ? { focusRequest: focusReq } : {})}
                 footnote={footnoteFor(pane.noun)}
                 artStrip={<ArtStrip items={art.items} />}
               />
@@ -3003,6 +3069,7 @@ function ChatBody(props: ChatBodyProps) {
             placeholder={homePlaceholderFor(pane.noun)}
             recent={recent}
             onOpenSession={onOpenSession}
+            onOpenChatDraft={onOpenChatDraft}
             listsDisabled={ann.locked}
           />
         )}

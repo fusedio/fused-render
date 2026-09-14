@@ -2,15 +2,20 @@
 // (T:4215-4331, inventory 05 §B). `#chat.home` hides the topbar, the transcript,
 // the chat composer, Back and the footnote; this is what stands in their place.
 import "../styles/home.css";
-import type { SessionRow } from "../protocol/types";
+import type { Task } from "@platform/lib/api";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
 import { useLandingReads } from "./useLandingReads";
 
 export interface HomeProps extends HomeCardProps {
-  recent: SessionRow[] | null;
+  /** The chats about this target, as TASKS — see `Lists`' own prop. */
+  recent: Task[] | null;
   /** A recent row on THIS target becomes the current session in place. */
   onOpenSession(sessionId: string): void;
+  /** …and a NEVER-SENT chat about this target leaves the landing with no
+   *  session at all, the composer holding the draft the row was drawn from
+   *  (`Lists`' own prop carries the rule). */
+  onOpenChatDraft?(): void;
   /** Rows dim and go inert while a comment mode holds the reader (PR3). */
   listsDisabled?: boolean;
   /** The chat's template folder: the terminal hand-off in the landing kebab,
@@ -25,6 +30,7 @@ export interface HomeProps extends HomeCardProps {
 export function Home({
   recent,
   onOpenSession,
+  onOpenChatDraft,
   listsDisabled,
   agentDir,
   snapInvalidation,
@@ -69,6 +75,7 @@ export function Home({
             artifacts={artifacts}
             snaps={snaps}
             onOpen={onOpenSession}
+            {...(onOpenChatDraft ? { onOpenChatDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
           />

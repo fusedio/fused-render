@@ -727,6 +727,56 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
 
+  /**
+   * `?draft=<id>` — AN UNFINISHED NEW TASK FORM, PRESSED SOMEWHERE ELSE
+   * (Akshil, 2026-09-14).
+   *
+   * The chat landing's Recent list draws this page's rows, draft rows included,
+   * and a draft row's press has always meant "reopen the card". That card is
+   * this page's modal: `apps/claude` cannot mount it without pulling the whole
+   * schedule page in behind it, so the row leaves at the form instead
+   * (`apps/claude/ui/list-rows.taskDraftUrl` builds this URL).
+   *
+   * IT IS `openDraft`'S OWN ARM, reached by a param rather than by a row — same
+   * id, same stored form, same `NO_HOP` and the same "no time" rule
+   * (`reopenTime`: a reopened draft reads its `when` out of the form it stored,
+   * and an immediate task must stay one). The form comes off `GET /api/drafts`
+   * rather than off a row, because the listing has not answered on first render
+   * and this opening must not wait for 800 rows to decide which card to be.
+   *
+   * A lookup that fails opens the card on the id anyway: the server folds a
+   * write naming an existing id into that draft (`drafts.py put_task`), so an
+   * uninformed card costs a moment of stale fields and never a second draft.
+   * Same generation as every other door that fetches first, so a second press
+   * through any of them owns the modal.
+   *
+   * The param is CONSUMED, exactly as `?new=1` is: a reload that reopened the
+   * card for ever is a URL worth nothing to go back to.
+   */
+  useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    const id = q.get("draft");
+    if (!id) return;
+    const gen = ++chatDraftGen.current;
+    void fetchDrafts().then(
+      (all) => {
+        if (gen !== chatDraftGen.current) return;
+        // Spread rather than handed over: `TaskDraft` is an interface and
+        // `DraftSeed.form` is an index-signature bag, and only a fresh object
+        // literal crosses that gap.
+        const stored = all?.task[id];
+        openForm(null, null, NO_HOP, { id, form: stored ? { ...stored } : null });
+      },
+      () => {
+        if (gen !== chatDraftGen.current) return;
+        openForm(null, null, NO_HOP, { id, form: null });
+      },
+    );
+    q.delete("draft");
+    const rest = q.toString();
+    history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
+  }, []);
+
   // Three feeds, one poll, INDEPENDENT failures — each is allowed to fail
   // without taking the others down, because each answers a different question
   // and two thirds of an answer beats an error page.

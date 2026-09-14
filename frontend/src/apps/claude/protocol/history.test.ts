@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ago, historyToTurns, paneSlashes, rowPane, sessionTitle } from "./history";
+import { ago, historyToTurns, paneSlashes, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
 import {
   composeOutgoing,
@@ -177,17 +177,9 @@ describe("ago (T:17945)", () => {
   });
 });
 
-describe("rowPane (T:18113)", () => {
-  test("a row opened on THIS target names no file", () => {
-    expect(rowPane({ pane: "/a/b.py" }, "/a/b.py")).toBe("");
-    expect(rowPane({ pane: "" }, "/a/b.py")).toBe("");
-  });
-  test("another file is named", () => {
-    expect(rowPane({ pane: "/a/c.py" }, "/a/b.py")).toBe("/a/c.py");
-  });
+describe("paneSlashes (T:18106)", () => {
   test("only a drive-letter path has its backslashes rewritten", () => {
     expect(paneSlashes("C:\\a\\b.py")).toBe("C:/a/b.py");
     expect(paneSlashes("/a/we\\ird.py")).toBe("/a/we\\ird.py");
-    expect(rowPane({ pane: "C:\\a\\b.py" }, "C:/a/b.py")).toBe("");
   });
 });

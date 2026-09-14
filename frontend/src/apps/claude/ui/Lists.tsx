@@ -18,8 +18,10 @@ import {
   TabsList,
   TabsTrigger,
 } from "@platform/shadcn/ui/tabs";
+import type { Task } from "@platform/lib/api";
+import { TaskRowItem } from "@shell/ScheduleTaskViews";
+import { isChatDraftTask, isDraftTask } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
-import type { SessionRow } from "../protocol/types";
 import { ArtifactRow } from "./ArtifactRow";
 import {
   computeLists,
@@ -30,8 +32,13 @@ import {
   rememberTab,
   rememberedTab,
 } from "./lists-visibility";
-import { RecentRow } from "./RecentRow";
-import { sessionTitle } from "./list-rows";
+import {
+  paneChatDraftUrl,
+  paneChatUrl,
+  taskDraftUrl,
+  taskPane,
+} from "./list-rows";
+import { seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
 
@@ -68,16 +75,36 @@ export interface ListsProps {
   /** The template folder holding `agent.py`, for the snapshot plan/revert calls
    *  the rows make. Without it the snapshots panel does not mount. */
   agentDir?: string | null;
-  /** `null` = the sessions read has not answered; `[]` = it answered empty,
-   *  which hides the section entirely — no heading, no empty state, no error
+  /** The chats about this target, as TASKS — the Tasks page's own model, drawn
+   *  in the Tasks page's own row (`TaskRowItem`, .claude-design/design.md §B).
+   *  Already narrowed to this pane and in the TASKS PAGE'S OWN order — status
+   *  lanes, drafts at a lane's head, time inside that (`useRecentTasks`, which
+   *  spends `sortForList`).
+   *
+   *  `null` = the listing has not answered; `[]` = it answered empty, which
+   *  hides the section entirely — no heading, no empty state, no error
    *  (T:18452-18477). */
-  recent: SessionRow[] | null;
+  recent: Task[] | null;
   /** Every page published from this target's working directory
    *  (`useArtifacts`). Same `null` vs `[]` rule. */
   artifacts?: Artifact[] | null;
   /** The file-history timeline and its read state (`useSnapshots`). */
   snaps?: SnapshotsState;
   onOpen(sessionId: string): void;
+  /**
+   * A NEVER-SENT CHAT ABOUT THIS VERY PANE, pressed — the one row whose press
+   * opens no conversation because there is none: it leaves the landing with NO
+   * session and the composer holding this folder's `new:<file>` draft, so the
+   * next Enter is the send that creates the session (Akshil, 2026-09-14).
+   *
+   * No argument, because there is only one answer it could carry: the row is in
+   * this pane and the draft is keyed on this pane's own `file`, which the host
+   * already has. A draft about ANOTHER file is a navigation, not this.
+   *
+   * Absent — a host that does not offer the gesture — and the row falls back to
+   * the same URL a row about another file uses, which is this pane's own chat.
+   */
+  onOpenChatDraft?(): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
 }
@@ -89,6 +116,7 @@ export function Lists({
   artifacts = null,
   snaps,
   onOpen,
+  onOpenChatDraft,
   onNavigate,
   disabled,
 }: ListsProps) {
@@ -148,12 +176,17 @@ export function Lists({
   /** sessionId -> the name its chat goes by, so a checkpoint chain is titled by
    *  what the user asked for in it. Filled from the SAME rows the Recent list
    *  draws, and it races that read rather than waiting on it: a miss just falls
-   *  back to the session's short id (T:18847-18867). */
+   *  back to the session's short id (T:18847-18867).
+   *
+   *  The title is the SERVER'S now (`Task.title`, whose `title_source` records
+   *  which of the four it won from), which is the same string the row beside it
+   *  shows — a snapshot chain and the chat it came from can no longer be named
+   *  two different things by two different title functions. */
   const names = useMemo(() => {
     const map = new Map<string, string>();
-    for (const s of recent || []) {
-      const title = sessionTitle(s);
-      if (title && title !== s.id) map.set(s.id, title);
+    for (const t of recent || []) {
+      if (!t.session_id || !t.title) continue;
+      if (t.title !== t.session_id) map.set(t.session_id, t.title);
     }
     return map;
   }, [recent]);
@@ -162,8 +195,16 @@ export function Lists({
    *  own reach down the list. */
   const onRowKeys = useCallback((ev: React.KeyboardEvent<HTMLDivElement>) => {
     if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    // THE TAB STOP, WHICH IS NOT ALWAYS THE ROW. A task row that has somewhere
+    // to go carries a stretched `<a>` and the row div is a plain container; a
+    // row that opens IN PLACE has no href and the div is the button
+    // (ScheduleTaskViews' own note on `.tasks-rowlink`). Exactly one of the two
+    // per row, so a document-order query over both is still the list's order —
+    // and it is the element `document.activeElement` can actually be.
     const rows = Array.from(
-      listRef.current?.querySelectorAll<HTMLElement>(".c-chat-row") ?? [],
+      listRef.current?.querySelectorAll<HTMLElement>(
+        ".tasks-rowlink, .tasks-row[tabindex]",
+      ) ?? [],
     );
     const at = rows.indexOf(document.activeElement as HTMLElement);
     if (at < 0 || rows.length < 2) return;
@@ -172,21 +213,108 @@ export function Lists({
     rows[(at + step) % rows.length].focus();
   }, []);
 
+  /**
+   * ONE ROW'S PRESS, and the split is the same one `RecentRow` made: a chat
+   * about THIS pane's own file becomes the current conversation in place — a
+   * param write, a history load and a live-run adopt, no reload (T:18189-18197)
+   * — and a chat about another file does not belong in this pane at all, so the
+   * HOST is sent to that file with the session attached (T:18183-18188).
+   *
+   * `taskPane` is the second case's test and its path in one answer (""
+   * means "this pane"), and `paneChatUrl` is the same URL the Tasks list opens
+   * a task on. A task with no session yet — a never-sent draft — has no chat to
+   * open either way, and gets no press at all: `TaskRowItem` draws that row
+   * inert rather than lit and dead.
+   *
+   * A LOCKED BLOCK REFUSES EVERY ROW (P4-23): no press and no href, so the
+   * stretched link cannot navigate either.
+   *
+   * AND A DRAFT ROW IS NOT AN INERT ROW (Akshil, 2026-09-14). Every `kind:
+   * "draft"` row used to fall out of the first line — no `session_id`, no press
+   * — which drew a lit, titled, Draft-chipped row that did nothing at all,
+   * exactly the "lit and dead" state the note above claims this avoids. A draft
+   * has somewhere to go; it is simply not a conversation:
+   *
+   *   * a CHAT draft (`draft_kind: "chat"`) is this folder's unsent message. On
+   *     THIS pane it opens in place through `onOpenChatDraft` — the composer
+   *     seeds itself from the same `new:<file>` key the row was built from —
+   *     and on another file it is that file's chat, with no session named
+   *     (`paneChatDraftUrl`);
+   *   * a TASK draft (`draft_kind: "task"`) is an unfinished New task form,
+   *     which is the Tasks page's modal and not a view this app can mount, so
+   *     the row leaves at the card (`taskDraftUrl`).
+   *
+   * The pane test is `taskPane`'s, asked of the CHAT's own `file` rather than
+   * of `target`: a draft chat has no target — `target` is where a task's work
+   * happens — and `file` is the half of its `new:<file>` key that has to match
+   * or the composer seeds from a key nothing wrote.
+   */
+  const pressFor = (task: Task): { href: string | null; onPress?: () => void } => {
+    if (disabled) return { href: null };
+    if (isChatDraftTask(task)) {
+      const at = task.file || task.target || "";
+      // "" is this pane — and `onOpenChatDraft` is the only press that can honour
+      // it, because there is no URL for "stay here and pick up the draft".
+      const pane = at ? taskPane({ target: at, project: task.project }, file) : "";
+      if (!pane && onOpenChatDraft) {
+        return { href: null, onPress: onOpenChatDraft };
+      }
+      const to = paneChatDraftUrl(pane || at || file || "");
+      return { href: to, onPress: () => onNavigate?.(to) };
+    }
+    if (isDraftTask(task)) {
+      if (!task.draft_id) return { href: null };
+      const to = taskDraftUrl(task.draft_id);
+      return { href: to, onPress: () => onNavigate?.(to) };
+    }
+    if (!task.session_id) return { href: null };
+    const pane = taskPane(task, file);
+    if (!pane) {
+      return {
+        href: null,
+        onPress: () => {
+          // THE HEADER'S IDENTITY, HANDED OVER AT THE PRESS (Akshil,
+          // 2026-09-14). The chat this is about to become is entered in place,
+          // and `useSessionTask` would otherwise have to wait out a whole
+          // `/api/tasks` round trip — 800+ rows — before the top line could
+          // stop saying `✻ Claude`. The row IS that answer, and the reader just
+          // pointed at it.
+          seedSessionTask(task);
+          onOpen(task.session_id);
+        },
+      };
+    }
+    const href = paneChatUrl(pane, task.session_id);
+    return {
+      href,
+      onPress: () => {
+        // THE HOP IS SEEDED TOO, and on a folder pane it is the ONLY arm that
+        // runs (Akshil QA, 2026-09-14). A folder's chats are all about files
+        // inside it, so `taskPane` answers with a path for every row and every
+        // press is this one — seeding only the in-place arm meant the header on
+        // the page that opens still waited out the whole listing, which is the
+        // bug the seed was written for. `seedSessionTask` stashes it for the
+        // trip; see its note.
+        seedSessionTask(task);
+        onNavigate?.(href);
+      },
+    };
+  };
+
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
       {recent === null ? (
         <RecentSkeleton />
       ) : (
-        recent.map((session) => (
-          <RecentRow
-            key={session.id}
-            session={session}
-            file={file}
-            onOpen={onOpen}
-            onNavigate={onNavigate}
-            disabled={disabled}
-          />
-        ))
+        // The Tasks page's own frame around the Tasks page's own rows: the
+        // border, the rounded end rows and the hairlines between them all hang
+        // off it (styles/tasks.css), and without it the rows read as a column
+        // of floating lines rather than as one list.
+        <div className="tasks-list-frame">
+          {recent.map((task) => (
+            <TaskRowItem key={task.key} task={task} {...pressFor(task)} />
+          ))}
+        </div>
       )}
     </div>
   );
