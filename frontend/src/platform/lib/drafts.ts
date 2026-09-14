@@ -283,7 +283,66 @@ export function saveChatDraft(
  *  draft back out from under the delete. */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
   spent.add(key);
+  // NO announcement from here (contrast `markChatDraftSpent`): this is the
+  // composer's OWN send, and the listener that would hear it is that same
+  // composer — which empties its tray on the news, while the host is still
+  // about to `take()` those files for the message going out. The tray went
+  // empty under the send (ClaudeChat.attach tests, 2026-09-14).
   return write("DELETE", chatUrl(key), undefined, opts);
+}
+
+/** SPENT WITHOUT A DELETE — for the sender that does not own the delete.
+ *
+ *  The Board's drop on a Done row wearing the `✎ Draft` chip sends the
+ *  composer's unsent words as a message (shell/draft-run), and it never calls
+ *  `deleteChatDraft`: `POST /api/schedule` drops the chat draft filed under the
+ *  session it is scheduling into, so a second request from here would be the
+ *  half that can fail — the words back on the row beside the message they had
+ *  already become.
+ *
+ *  What that sender still owes this module is the OTHER half of the call above,
+ *  and it is the half `spent` exists for: the key goes spent BEFORE the request,
+ *  so nothing that re-reads in the meantime — the board's own reload, a composer
+ *  remounting on that conversation — hands the words back as still unsent. */
+export function markChatDraftSpent(key: string): Promise<void> {
+  spent.add(key);
+  // AWAITED: a composer that hears this has a PUT that may already be on the
+  // wire (its `reset` cancels only the pending timer), and the sender's create
+  // request deletes the draft server-side. The listener's promise is that
+  // write settling, so the caller sends only once nothing can land after the
+  // delete and put the words back (Bugbot, PR #1140).
+  return Promise.all([...spentListeners].map((cb) => cb(key))).then(() => undefined);
+}
+
+/** The other sender's mistake, undone: a drop that spent the key and then
+ *  FAILED to send (a 409 from the scheduler, the server not answering) leaves
+ *  the words exactly where they were on the server — so the key must read as
+ *  unsent again, or the board's own "try another drag" invitation surfaces
+ *  "that draft is gone" until a reload empties this set (Bugbot, PR #1140).
+ *  Nobody is told: the composer that heard the spend already emptied its box,
+ *  and the next thing that mounts on the key re-seeds from the server, which
+ *  still holds the words. */
+export function unmarkChatDraftSpent(key: string): void {
+  spent.delete(key);
+}
+
+/**
+ * WHO ELSE HOLDS THESE WORDS. A key can be spent by a sender that is NOT the
+ * composer showing it — the Board's drag of a Done row into In Progress
+ * (shell/draft-run `chatBody`). That composer's box still has the sentence in
+ * it, its autosave is still armed, and the next keystroke or blur would write
+ * the sent words back as an unsent draft — or Send would send them twice
+ * (Bugbot, PR #1140). So a spend BY SOMEBODY ELSE is announced, and a composer
+ * mounted on that key empties itself the way its own Send does — box, tray AND the in-flight
+ * autosave, which it settles and hands back as its promise. Module-scope for
+ * the same reason `spent` is: the composer and the board are different trees.
+ */
+const spentListeners = new Set<(key: string) => void | Promise<void>>();
+export function onChatDraftSpent(cb: (key: string) => void | Promise<void>): () => void {
+  spentListeners.add(cb);
+  return () => {
+    spentListeners.delete(cb);
+  };
 }
 
 /**

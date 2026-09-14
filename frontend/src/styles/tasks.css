@@ -1668,9 +1668,20 @@ button.tasks-caret,
 }
 
 /* Items keep their own height inside that scroller — a constrained flex column
-   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers. */
+   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers.
+
+   THE SECOND PAIR IS THE PROJECT ROWS, which sit inside a `role="radiogroup"`
+   wrapper (schedule.css `.schedule-tv-pop-radiogroup`). That wrapper is
+   `display: contents`, so the rows really are flex children of the panel and
+   this rule really does have to reach them — but `display` is layout and `>` is
+   the DOM, so the selector has to walk through it. Left un-named, the project
+   menu is the sliver bug the comment above describes. */
 .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
-.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item {
+.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
+.schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item,
+.prefs-section .schedule-tv-pop.tasks-pop
+  > .schedule-tv-pop-radiogroup
+  > .schedule-tv-pop-item {
   flex: 0 0 auto;
 }
 

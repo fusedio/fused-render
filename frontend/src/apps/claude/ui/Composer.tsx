@@ -16,6 +16,7 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
   deleteChatDraft,
+  onChatDraftSpent,
   fetchChatDraft,
   saveChatDraft,
   useAutosave,
@@ -313,6 +314,9 @@ export interface ComposerCardProps {
    * /api/fs/raw.
    */
   onRestoreAttachments?(paths: string[]): void;
+  /** Empty the tray without sending it — what a spend heard from elsewhere
+   *  (`onChatDraftSpent`) does to the files, the way `take()` does on Send. */
+  onDiscardAttachments?(): void;
   /**
    * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
    * whether the paste was an attachment — a paste of WORDS must reach the box,
@@ -369,6 +373,7 @@ export function ComposerCard({
   chips,
   attachments,
   onRestoreAttachments,
+  onDiscardAttachments,
   onPaste,
   camera,
   fitRevision,
@@ -490,6 +495,37 @@ export function ComposerCard({
   autosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // SOMEBODY ELSE SENT THESE WORDS. The Board can drag a Done row into In
+  // Progress and send this conversation's unsent draft from there
+  // (shell/draft-run `chatBody`), while this box is open on the same key with
+  // the same sentence in it. Left alone, the next autosave puts the sent words
+  // back on the list as a draft and Send sends them again (Bugbot, PR #1140).
+  // So the spend is heard and the box does what its own Send does: empties,
+  // and resets the autosave to the empty value so no debounced write survives.
+  // Only a spend from ELSEWHERE arrives here — the composer's own send
+  // (`deleteChatDraft`) is silent, since the host still has to `take()` the
+  // tray for the outgoing message.
+  const discardAttachments = useRef(onDiscardAttachments);
+  discardAttachments.current = onDiscardAttachments;
+  useEffect(
+    () =>
+      onChatDraftSpent((key) => {
+        if (key !== draftKeyRef.current) return;
+        setText("");
+        // THE TRAY GOES TOO (Bugbot, PR #1140): the files were part of the draft
+        // that was just sent, and a tray still holding them would autosave an
+        // attachments-only draft back under the key — un-spending it and
+        // resurrecting the chip.
+        discardAttachments.current?.();
+        autosaveRef.current.reset({ text: "", attachments: [] });
+        // AND THE WIRE IS DRAINED before the sender proceeds: `reset` cancels
+        // only the pending timer, so a PUT fired a keystroke ago is still out
+        // there and would land after the create's delete. The promise is what
+        // `markChatDraftSpent` awaits.
+        return autosaveRef.current.settle().then(() => undefined);
+      }),
+    [],
+  );
 
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the

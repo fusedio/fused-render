@@ -215,6 +215,20 @@ def task_peek_enabled() -> bool:
     return read_prefs().get("task_peek_enabled") is True
 
 
+def task_card_last_message() -> bool:
+    """Whether a card on the Tasks page's Cards wall is TITLED BY THE NEWEST
+    MESSAGE in its conversation — the reader's or Claude's — instead of by the
+    task's own title (default off, opt-in while the experiment runs).
+
+    Same idiom and the same strictness as `task_peek_enabled` above, and for the
+    same reason: it decides what a whole wall of cards reads as, so only a
+    stored `true` is on and anything else — missing, legacy, junk — leaves the
+    card the card it has always been. No env override either; there is nothing a
+    process needs to pin about one view's experiment.
+    """
+    return read_prefs().get("task_card_last_message") is True
+
+
 def _chat_forced_by() -> str | None:
     """The env string where it DECIDES `native_chat_enabled`, else `None`.
 
@@ -546,6 +560,12 @@ def _prefs_response() -> dict:
         # there is no env override to report, because there is nothing a
         # process needs to pin here (see `task_peek_enabled`).
         "task_peek": {"enabled": task_peek_enabled()},
+        # …and what a CARD on that page is titled by: the newest message in its
+        # conversation instead of the task's own title (experimental, opt-in).
+        # A namespace rather than a bare boolean beside the one above, because
+        # the card is one surface with more than one thing an experiment can
+        # move, and `last_message` names which one this is.
+        "task_cards": {"last_message": task_card_last_message()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -717,6 +737,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'task_peek_enabled' must be a boolean"}, status_code=400)
         prefs["task_peek_enabled"] = value
         changed = True
+    if "task_card_last_message" in body:
+        value = body.get("task_card_last_message")
+        if not isinstance(value, bool):
+            return JSONResponse(
+                {"error": "'task_card_last_message' must be a boolean"}, status_code=400)
+        prefs["task_card_last_message"] = value
+        changed = True
     if "chat_recap_enabled" in body:
         value = body.get("chat_recap_enabled")
         if not isinstance(value, bool):
@@ -826,6 +853,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
                       "'chat_recap_enabled', 'task_peek_enabled', "
+                      "'task_card_last_message', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "

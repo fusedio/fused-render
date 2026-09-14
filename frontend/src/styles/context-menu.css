@@ -19,6 +19,48 @@
   user-select: none;
 }
 
+/* THE ONE MENU THAT OPENS OVER THE SIDEBAR (GlobalSidebar's PreferencesPopover,
+   `context-menu placed sidebar-prefs-menu`). The chassis above paints
+   `--bg-alt`, which is a step up from the CONTENT area it normally floats over
+   — but the sidebar is `--bg-alt` too, so this menu came up the same colour as
+   the panel it grows out of, and only its 1px border said it was a menu at all
+   (Akshil, 2026-09-14).
+
+   SO IT GOES THE OTHER WAY: `--bg` — DARKER than the sidebar, and the same
+   ground the page itself stands on (#131417 on dark, #ffffff on light). Akshil,
+   2026-09-14: "make it the same color as home page bg". A menu that opens out of
+   an --bg-alt panel now reads against it the way the content area does, in both
+   themes — and it is the app's own surface rather than a third one invented for
+   this menu. The 1px border stays (it is what draws the edge where the two
+   grounds are closest) and the drop deepens, so the shadow says which surface is
+   in front.
+
+   DOUBLED SELECTOR so it cannot lose the cascade, and HERE rather than in
+   styles/sidebar.css with the menu's other rules: that file is imported BEFORE
+   this one, so a bare `.sidebar-prefs-menu` there ties with `.context-menu` on
+   specificity and loses on order. */
+.context-menu.sidebar-prefs-menu {
+  background: var(--bg);
+  box-shadow: 0 10px 32px var(--shadow-lg);
+}
+
+/* AND THE FLYOUT IT OPENS (Help ▸ — GlobalSidebar renders it as `context-menu
+   context-submenu placed`). That is a SECOND `.context-menu`, nested inside the
+   one above rather than inheriting from it, so the rule above — keyed on a class
+   only the parent carries — left the submenu on the chassis' `--bg-alt` and the
+   two surfaces came up different colours a pixel apart (Akshil, 2026-09-14).
+   Same ground, same drop, written here as one pair with its parent rather than
+   as the token repeated in sidebar.css (which is imported first and would lose
+   the cascade to the chassis anyway — see above).
+
+   Scoped to `.sidebar-prefs-menu` because this is the only menu whose ground
+   moved: the file explorer's submenus still float over CONTENT, where the
+   chassis' `--bg-alt` is already the step up. */
+.sidebar-prefs-menu .context-menu.context-submenu {
+  background: var(--bg);
+  box-shadow: 0 10px 32px var(--shadow-lg);
+}
+
 /* The clamp pass (components/ContextMenu.tsx) needs the menu's real size before
    it can decide where the menu goes, so the first — pre-paint — render is
    hidden rather than painted at the raw cursor coords and then moved. */

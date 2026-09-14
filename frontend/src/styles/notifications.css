@@ -1377,6 +1377,16 @@
   color: var(--warning-strong);
 }
 
+/* ---- The refresh DIALOG (ServerStatusBanner's UpdateDialog) ---------------- */
+/* NO RULES OF ITS OWN ANY MORE. `update-refresh` alone is not a card — the
+   bundle in this tab is no longer the one the server serves, so the page behind
+   it cannot be trusted to answer — and it now blocks on the shared platform
+   Modal chassis (deploy.css / buttons-modal.css), the same one the Delete task
+   dialog uses (Akshil, 2026-09-14). The `.server-update-backdrop/-dialog/
+   -title/-body/-action` skin that used to live here was a second modal
+   vocabulary for one dialog and went with it; `busy` is what keeps this one
+   undismissable. See ServerStatusBanner.tsx. */
+
 /* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
 .fda-steps {
   margin: 0;

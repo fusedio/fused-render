@@ -30,7 +30,9 @@ import {
   chatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
+  markChatDraftSpent,
   newChatFile,
+  onChatDraftSpent,
   saveChatDraft,
   saveTaskDraft,
   useAutosave,
@@ -39,6 +41,7 @@ import {
   type ChatDraft,
   type DraftWriteOptions,
   type TaskDraftForm,
+  unmarkChatDraftSpent,
 } from "@platform/lib/drafts";
 
 // `useAutosave`'s unload effect reaches for `window`/`document` — real
@@ -560,5 +563,77 @@ describe("fetchChatDraft re-checks spent after the answer", () => {
 
     expect(await reading).toBeNull();
     globalThis.fetch = real;
+  });
+});
+
+// ---- a spend can be heard, and taken back ------------------------------------
+// The Board can send a conversation's draft from a drag (shell/draft-run
+// `chatBody`) while a composer sits open on the same key. Two facts follow
+// (Bugbot, PR #1140): the composer must HEAR the spend and empty itself, and a
+// spend whose send then FAILS must be undone so the next drag does not read
+// "gone" for words the server still holds.
+describe("markChatDraftSpent announces, unmarkChatDraftSpent undoes", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+  function serve(chat: Record<string, ChatDraft>) {
+    const real = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ chat, task: {} }),
+      } as unknown as Response)) as unknown as typeof fetch;
+    return () => {
+      globalThis.fetch = real;
+    };
+  }
+
+  test("a listener hears the key, and only while subscribed", async () => {
+    const heard: string[] = [];
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
+    await markChatDraftSpent("s-1");
+    off();
+    await markChatDraftSpent("s-2");
+    expect(heard).toEqual(["s-1"]);
+  });
+
+  test("the spend waits for what the listener is still writing", async () => {
+    let settled = false;
+    const off = onChatDraftSpent(
+      () =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            settled = true;
+            r();
+          }, 5),
+        ),
+    );
+    const p = markChatDraftSpent("s-5");
+    expect(settled).toBe(false);
+    await p;
+    expect(settled).toBe(true);
+    off();
+  });
+
+  test("the composer's own send does NOT announce — it would empty its own tray mid-send", () => {
+    const heard: string[] = [];
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
+    const restore = serve({});
+    void deleteChatDraft("s-3");
+    restore();
+    off();
+    expect(heard).toEqual([]);
+  });
+
+  test("a failed send un-spends: the words read back again", async () => {
+    const key = "s-4";
+    const restore = serve({ [key]: held("still on the server") });
+    markChatDraftSpent(key);
+    expect(await fetchChatDraft(key)).toBeNull();
+    unmarkChatDraftSpent(key);
+    expect((await fetchChatDraft(key))?.text).toBe("still on the server");
+    restore();
   });
 });

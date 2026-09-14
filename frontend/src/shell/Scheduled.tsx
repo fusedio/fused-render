@@ -83,7 +83,7 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal, { splitDraft } from "./NewJobModal";
+import NewJobModal, { seededDraftForm, splitDraft } from "./NewJobModal";
 import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -122,6 +122,7 @@ import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
 import {
   closePeek,
   frameClickCloses,
+  openPeek,
   peekGutter,
   refreshPeekBaseline,
 } from "./task-peek-store";
@@ -998,6 +999,55 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         : "No tasks yet. Everything Claude runs for you shows up here."
       : "Nothing matches these filters.";
 
+  // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
+  // the task it names and cannot do that under an open card. One function, so
+  // "closing keeps the draft" (design.md, Decisions) has one meaning: the
+  // modal's own autosave has already flushed on unmount either way.
+  const closeCard = () => {
+    setCreating(null);
+    setEditing(null);
+    setDraftSeed(null);
+  };
+
+  /**
+   * WHICH TASK THE OPEN CARD CAME OUT OF (design.md B, Option 1) — null for
+   * every other opening.
+   *
+   * Nothing stores a "source task": scheduling from a task travels as its
+   * SESSION, either on the hop (`?new=1&session_id=…`, the composer's Schedule
+   * button) or on the draft that hop saved (`session_id` in the stored form,
+   * which is what survives closing and reopening the card). Both name the same
+   * conversation, and the listing this page already holds is what turns it back
+   * into a row — no second fetch, and nothing new on the wire.
+   *
+   * `tasks` and not `inScope`: the source is a fact about this card, not about
+   * what the app page is filtered to, and a chip that vanished inside an app
+   * would be saying the task does not exist.
+   */
+  const sourceTask = useMemo(() => {
+    if (editing) return null;
+    const session = hop.session || seededDraftForm(draftSeed).sessionId || "";
+    if (!session) return null;
+    return tasks.find((t) => t.session_id === session) ?? null;
+  }, [editing, hop.session, draftSeed, tasks]);
+
+  /**
+   * …and where its chip goes: THE SIDE PEEK, which is the one door this page
+   * owns. It does not navigate — deliberately, and the page holds none of the
+   * tools for it (tasks-lib.test.ts pins that) — so where there is no peek to
+   * open, the chip stays a statement rather than becoming a dead control: the
+   * modal draws a button only for a card that hands it an `onOpen`.
+   *
+   * The card goes away first. The peek slides in BESIDE this page, which is
+   * currently behind a modal, so opening one under the card would look like the
+   * press did nothing. The draft survives that (`closeCard`), and its row is
+   * one press away.
+   */
+  const openSourceTask = (task: Task) => {
+    closeCard();
+    openPeek(task.key);
+  };
+
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
   // An occurrence resolves to its template, because changing "tomorrow's run"
@@ -1320,6 +1370,24 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // `HopSeed` above. Null on every opening that did not come from a
           // composer, which is every opening but the Schedule hop.
           fromChatKey={hop.chatKey}
+          // SCOPED, THE PATH IS NOT A QUESTION (design.md §2): a task made from
+          // inside an app runs against that app, so the field states the target
+          // instead of asking for it. The unscoped `/tasks` page is untouched —
+          // there the folder is the first thing the card has to ask.
+          lockTarget={!!scope}
+          // WHICH TASK THIS CARD CAME OUT OF, and the way to it — see
+          // `sourceTask` above. The modal draws the chip; where a task opens
+          // stays this page's answer, because it is the one holding the peek.
+          sourceTask={
+            sourceTask
+              ? {
+                taskId: sourceTask.task_id,
+                // Pressable only where there is a peek to open — see
+                // `openSourceTask`.
+                onOpen: peekable ? () => openSourceTask(sourceTask) : null,
+              }
+              : null
+          }
           editing={editing}
           // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
           // the calendar (where "when" is the question the view itself asks),
@@ -1339,15 +1407,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // composer handoff's picture rode into every New task card opened
           // afterwards. The opening states its own hop now (`openForm`), so a
           // close has nothing to forget and no list to keep in step.
-          onClose={() => {
-            setCreating(null);
-            setEditing(null);
-            // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
-            // away, the draft stays — as its own row, or as the `Draft` chip on
-            // the conversation it is bound to — and the modal's own autosave has
-            // already flushed on unmount.
-            setDraftSeed(null);
-          }}
+          // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
+          // away, the draft stays — as its own row, or as the `Draft` chip on
+          // the conversation it is bound to — and the modal's own autosave has
+          // already flushed on unmount. See `closeCard`, which the source chip
+          // takes too.
+          onClose={closeCard}
           onCreated={reload}
         />
       )}

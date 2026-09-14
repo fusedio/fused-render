@@ -151,15 +151,27 @@
      of the frame in the dark). */
   background: var(--row-bg-hover);
   /* The head is a button (TaskCards: it opens the task's popup) and says so
-     the way every pressable strip on this page does — the pointer, and a wash
-     on hover at the row's own weight (tasks.css `.tasks-row:hover`). */
+     with the pointer. NO HOVER WASH (design.md §8, 2026-09-14): the head
+     already sits a step above the card on --row-bg-hover, so a hover step on
+     top of it was a third ground on one small strip — and on a wall where the
+     pointer crosses six cards on its way anywhere, a card lighting up under
+     every passing pointer said "you are about to do something" six times for
+     every time it was true. The pointer is the affordance; the fill is spent on
+     the one card the reader actually opened (`.is-selected` below). */
   cursor: pointer;
   user-select: none;
 }
 
-.task-card-head:hover {
-  /* One more step of the same wash the token itself is made of (tokens.css:
-     "--bg-alt under the neutral 0.06 wash"). */
+/* WHERE THE READER JUST WAS — the card whose task was last opened from this
+   wall (TaskCards `selected`, remembered per tab in sessionStorage).
+
+   THE FILL THE HOVER USED, exactly, and nothing else: one more step of the wash
+   the token itself is made of (tokens.css: "--bg-alt under the neutral 0.06
+   wash"). It is the List row's own mark in the List's own weight
+   (tasks.css `.tasks-row.is-selected`) — design-principles §1, one mark to
+   learn — and the quietest answer that still answers "which one did I just
+   open". One card per wall wears it, and it outlives the popup closing. */
+.task-card.is-selected .task-card-head {
   background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
 }
 

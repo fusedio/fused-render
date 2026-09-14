@@ -1244,7 +1244,12 @@ const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
 
 // A Date as the value a <input type="datetime-local"> wants: local wall-clock,
 // minute precision, no zone suffix. `toISOString` is exactly wrong here (UTC).
-function toLocalInput(d: Date): string {
+//
+// Exported for draft-run.ts, which builds this form's payload for a draft
+// nobody has opened (the Board's drag-a-draft-into-In-Progress gesture). `when`
+// on the wire is this field's format, so the two have to spell "now"
+// identically or the draft's run lands in a different minute than the card's.
+export function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
@@ -2268,7 +2273,25 @@ export function saveEnabled(f: {
 // description is not in the list any longer: it is optional, so there is no
 // sentence to say about an empty one, and "message" is gone from `field` with
 // it rather than kept as a case nothing can return.
-export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
+export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0] & {
+  /**
+   * THE TARGET FIELD IS DISABLED (the card opened inside an app's Tasks tab —
+   * see the prop of the same name). The gate is unchanged by it: a missing or
+   * unreachable folder still blocks Save, because the task genuinely cannot run.
+   * What changes is the FIX, and therefore the `field`.
+   *
+   * `.focus()` on a disabled input is a no-op, so a reason returning
+   * `field: "target"` here put the sentence in the banner and then moved nothing
+   * — and there was no control on the card that could answer it. The press read
+   * as a dead end, which is the very thing `saveBlockedReason` exists to stop
+   * (see above: a disabled Save button answers by doing nothing).
+   *
+   * So the reason still SPEAKS — the banner is the whole point, and "this app's
+   * folder is gone" is news worth having — and it names no field, because there
+   * is no field to send the caret to. The answer lies outside this card.
+   */
+  lockTarget?: boolean;
+}): {
   text: string;
   field: "title" | "target" | null;
 } | null {
@@ -2289,6 +2312,20 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
       text: "Say what Claude should do — a task with no instructions has nothing to run.",
       field: "title",
     };
+  }
+  if (f.target.trim() === "" || f.pathError !== null) {
+    // LOCKED FIRST, because under a lock neither of the two sentences below is
+    // actionable and neither has a field to land in (see `lockTarget`). One
+    // sentence covers both halves: the path the card was handed is not a folder
+    // that exists any more, and nothing on this card can change which path that
+    // is. It names the project rather than the field, because that is the thing
+    // the reader would go and look at.
+    if (f.lockTarget) {
+      return {
+        text: "This project's folder is missing, so there is nowhere to run the task.",
+        field: null,
+      };
+    }
   }
   if (f.target.trim() === "") {
     return { text: "Pick the folder or file this task runs against.", field: "target" };
@@ -2438,6 +2475,8 @@ export default function NewJobModal({
   chatSessionId,
   chatBack,
   fromChatKey,
+  lockTarget = false,
+  sourceTask = null,
   editing,
   permissionModes,
   recentTargets,
@@ -2496,6 +2535,40 @@ export default function NewJobModal({
    * It is also what "Back to chat" reverses — see `backToChat` below.
    */
   fromChatKey?: string | null;
+  /**
+   * THE PATH IS NOT A QUESTION HERE (design.md §2, 2026-09-14).
+   *
+   * True when the card was opened from inside ONE app — the app page's Tasks
+   * tab (AppPage.tsx) mounts the Tasks page scoped to that folder, and a task
+   * made there runs against that app by definition. The combobox then renders
+   * as a read-only field: no recents, no Browse, no picker, and a line under it
+   * saying why. `initialTarget` still decides the value, exactly as it does on
+   * the unscoped page.
+   *
+   * It changes nothing about what is SAVED — the field shows the target the
+   * payload carries either way. What it removes is a control whose every answer
+   * but one takes the reader out of the app they are standing in.
+   */
+  lockTarget?: boolean;
+  /**
+   * THE TASK THESE WORDS CAME OUT OF, when the card was opened from one
+   * (design.md B, Option 1).
+   *
+   * Scheduling from a task flows through `chatSessionId` / `fromChatKey`, which
+   * name a SESSION — nothing on the card said which task that session is, so a
+   * reader mid-form had no way to check what they were continuing. The header
+   * says it as a chip beside the title, and pressing it opens that task.
+   *
+   * The parent resolves it (it holds the listing, and where a task opens is its
+   * answer — the Tasks page has a side peek beside it), so this is the NAME plus
+   * the door, not the row. Null on every opening that did not come from a task,
+   * and never set on an Edit: that card's heading is the task.
+   *
+   * `onOpen` is optional because the door is not always there — a page with no
+   * peek to open hands over the name alone, and the chip is then a statement
+   * rather than a button that would do nothing.
+   */
+  sourceTask?: { taskId: string; onOpen?: (() => void) | null } | null;
   // An existing task to change. The server has no update: saving schedules the
   // replacement first, then withdraws this one — see submit().
   editing?: ScheduledMessage | null;
@@ -3386,6 +3459,11 @@ export default function NewJobModal({
   // it. Only ever one of the two is on screen (a refusal and a promise about the
   // same path cannot both be true), so they share the one slot.
   const newFolderId = useId();
+  // …and the line a LOCKED path prints instead of either (design.md §2): not a
+  // refusal and not a promise, but the reason the field cannot be typed in.
+  // Same slot, for the same reason — a locked field has no recents to open and
+  // therefore no new folder to be about.
+  const lockedTargetId = useId();
   // …and the third: what the repeat does to this task's thread, attached to
   // the checkbox that decides it.
   const threadHintId = useId();
@@ -3804,6 +3882,10 @@ export default function NewJobModal({
     legacyCron,
     pickedOk,
     replaced,
+    // Read ONLY by saveBlockedReason, which uses it to decide the fix rather
+    // than the verdict — `saveEnabled` ignores it, and must, since a locked
+    // target that does not exist is exactly as unsaveable as a typed one.
+    lockTarget,
   };
   const ready = saveEnabled(gate);
   // The word on the primary button: what this press is about to DO, not the
@@ -3834,6 +3916,34 @@ export default function NewJobModal({
   return (
     <Modal
       title={editing ? "Edit task" : "New task"}
+      // …plus WHICH TASK this one came out of, when it came out of one
+      // (design.md B, Option 1). A chip, not a field: it states the fact the
+      // session id was already carrying silently, and pressing it opens that
+      // task. An Edit never wears it — that heading is the task.
+      //
+      // BESIDE THE HEADING AND NOT INSIDE IT (`titleAside`, not `title`). It
+      // rendered inside the `h2` for a round, which is the element the dialog is
+      // NAMED by (`aria-labelledby`): the name became "New task from TASK-003",
+      // and a `<button>` lived inside a heading, where a screen reader's heading
+      // walk reads it out with no way to press it. Same row, same place on
+      // screen — `.modal-head-title` is the flex row that keeps it there.
+      {...(editing || !sourceTask ? {} : {
+        titleAside: sourceTask.onOpen
+          ? (
+            <button
+              type="button"
+              className="new-task-source"
+              title={`Open ${sourceTask.taskId}`}
+              onClick={sourceTask.onOpen}
+            >
+              from {sourceTask.taskId}
+            </button>
+          )
+          // No door on this surface, so no control: the same chip, saying the
+          // same thing, with nothing to press. A button that answers a press
+          // with nothing is the worse of the two.
+          : <span className="new-task-source">from {sourceTask.taskId}</span>,
+      })}
       onClose={onClose}
       busy={busy}
       width={460}
@@ -4234,21 +4344,43 @@ export default function NewJobModal({
             <input
               ref={pathRef}
               type="text"
-              className={"field-control" + (pathError ? " is-invalid" : "")}
-              aria-invalid={pathError !== null}
+              // A locked field never wears the red: the line it prints is a
+              // statement, not a refusal, and a border the reader cannot act on
+              // is an alarm with no exit. Save still refuses a path the check
+              // could not clear, and says so in the banner it already has.
+              className={"field-control"
+                + (pathError && !lockTarget ? " is-invalid" : "")
+                + (lockTarget ? " new-task-target-lock" : "")}
+              aria-invalid={!lockTarget && pathError !== null}
+              // LOCKED INSIDE AN APP (design.md §2): the field still SHOWS the
+              // target — the reader has to be able to see what the task runs
+              // against — but it is not a control there. `disabled` is what
+              // makes that true of the whole combobox rather than only of the
+              // typing: no focus, so `openRecents` never fires, so the list, the
+              // Browse row and the picker are all unreachable without a second
+              // rule to keep them in step. `readOnly` beside it is for the
+              // reader, not the browser: it says the value is the value.
+              disabled={lockTarget}
+              readOnly={lockTarget}
               // The new-folder row only exists while the list is open, so it is
               // only pointed at while it is there — a describedby aimed at a
               // node that is not in the document says nothing at all.
+              // …and a locked field points at its own line instead: there is no
+              // list to open, so neither of the other two can ever be on screen.
               aria-describedby={
-                pathError
-                  ? pathErrorId
-                  : newFolder && recentsOpen
-                    ? newFolderId
-                    : undefined
+                lockTarget
+                  ? lockedTargetId
+                  : pathError
+                    ? pathErrorId
+                    : newFolder && recentsOpen
+                      ? newFolderId
+                      : undefined
               }
               placeholder="Add folder or file"
-              role="combobox"
-              aria-expanded={recentsOpen}
+              // Not a combobox when there is nothing to expand: announcing one
+              // promises a list that a disabled field can never produce.
+              role={lockTarget ? undefined : "combobox"}
+              aria-expanded={lockTarget ? undefined : recentsOpen}
               value={target}
               onFocus={() => {
                 if (suppressOpen.current) {
@@ -4360,7 +4492,18 @@ export default function NewJobModal({
             )}
           </div>
         </div>
-        {pathError && (
+        {/* WHY THE FIELD ABOVE CANNOT BE TYPED IN (design.md §2). A statement,
+            not a refusal: nothing is wrong, the answer is simply already known.
+            It replaces the path error rather than sitting beside it — a locked
+            path is the app's own folder, and the one case where the check could
+            still fail (the app deleted under the open card) is not something
+            this card can offer a fix for. */}
+        {lockTarget && (
+          <span id={lockedTargetId} className="field-hint schedule-form-sub">
+            Tasks here run against this project.
+          </span>
+        )}
+        {!lockTarget && pathError && (
           <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
                 role="alert">
             {pathError}

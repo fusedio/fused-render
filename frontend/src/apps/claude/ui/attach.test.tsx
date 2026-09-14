@@ -552,6 +552,85 @@ test("A PLACEHOLDER ALWAYS BECOMES A CHIP, even when the pipeline throws", async
   expect(items.every((s) => !s.pending)).toBe(true);
 });
 
+test("discard() empties the tray for good: ready chips revoked, late bytes revoked on arrival", async () => {
+  // Somebody else sent this conversation's draft (the Board's drag of a Done
+  // row into In Progress), files included, off the server's copy. The tray is
+  // holding handles to a message that already went (Bugbot, PR #1140).
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const { api, spy } = fakeApi({
+    attachFiles: async function* (_dir, files) {
+      yield att({ kind: "file", name: files[0]!.name, view: "/shots/ready.csv" });
+      await gate;
+      yield att({ kind: "file", name: files[1]!.name, view: "/shots/late.csv" });
+    },
+  });
+  const tray = mountTray(api);
+  let adding!: Promise<void>;
+  await act(async () => {
+    adding = tray.get().addFiles([{ name: "ready.csv" } as File, { name: "late.csv" } as File]);
+    await Promise.resolve();
+  });
+  // A placeholder has no name yet — only the ready one does.
+  expect(tray.get().items.map((s) => [s.name ?? null, !!s.pending])).toEqual([
+    ["ready.csv", false],
+    [null, true],
+  ]);
+  const ready = tray.get().items[0]!;
+  act(() => {
+    tray.get().discard();
+  });
+  // Gone now, and the ready one's handle released — unlike `take()`, which
+  // keeps its pictures alive for a `giveBack`.
+  expect(tray.get().items).toEqual([]);
+  expect(spy.revoked).toContain(ready);
+  // The late one lands after the discard: revoked, never seated, no refusal
+  // chip either — nothing that could autosave an attachments-only draft.
+  await act(async () => {
+    release();
+    await adding;
+  });
+  expect(tray.get().items).toEqual([]);
+  expect(spy.revoked.map((a) => a.view)).toContain("/shots/late.csv");
+});
+
+test("discard() also disowns a capture and a path registration still in flight", async () => {
+  // Bugbot, PR #1140: `addFiles` was the only path that checked, so a camera
+  // shot or an `addPaths` (the peek's draft re-seed) past its await still seated
+  // into the emptied tray and autosaved the sent files back. `attachPaths` is
+  // synchronous, so its window is the one microtask between the hook's `await`
+  // and its commit — which is exactly where a discard fired in the same tick
+  // lands.
+  let releasePane!: () => void;
+  const { api, spy } = fakeApi({
+    attachPane: () =>
+      new Promise((r) => {
+        releasePane = () => r(att({ kind: "pane", seat: "pane", thumb: "blob:late-pane" }));
+      }),
+    attachPaths: (_dir, paths) =>
+      paths.map((p) => att({ kind: "file", view: p, name: p, brought: true })),
+  });
+  const tray = mountTray(api);
+  let capturing!: Promise<void>;
+  let adding!: Promise<void>;
+  await act(async () => {
+    capturing = tray.get().capture();
+    await Promise.resolve();
+    adding = tray.get().addPaths(["/late/a.csv"]);
+    // Same tick as the registration, before its continuation runs.
+    tray.get().discard();
+    await adding;
+    releasePane();
+    await capturing;
+  });
+  expect(tray.get().items).toEqual([]);
+  expect(spy.revoked.map((a) => a.thumb ?? a.view)).toEqual(
+    expect.arrayContaining(["blob:late-pane", "/late/a.csv"]),
+  );
+});
+
 // ---- D8: the picture an OPEN viewer is showing ----------------------------
 
 /** The `<img>` the viewer's body is drawing, which is the whole of what the

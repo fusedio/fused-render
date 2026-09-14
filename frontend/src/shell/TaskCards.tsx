@@ -56,6 +56,7 @@ import {
   draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
+  draftRing,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
@@ -76,12 +77,39 @@ import {
   usePeekHost,
   usePeekedKey,
 } from "./task-peek-store";
+import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
  *  whatever the reason (no tasks, or a filter narrowed them away), because the
  *  view's claim is about the set it was handed and it cannot tell those apart. */
 export const CARDS_EMPTY = "Nothing to show here.";
+
+/** WHERE THE READER JUST WAS, on this wall — the key of the card whose task was
+ *  last opened from it (design.md §8).
+ *
+ *  Per-TAB, per-sitting, and the List's own idiom for the same claim
+ *  (ScheduleTaskViews' list memory): "which one did I just open" is not a
+ *  preference, and a week-old key restored onto a wall of different cards is a
+ *  surprise rather than a memory. A blocked store costs the memory, never the
+ *  wall — the read runs during the first render. */
+const SELECTED_KEY = "tasks.cards.selected";
+
+function readSelectedCard(): string {
+  try {
+    return sessionStorage.getItem(SELECTED_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSelectedCard(key: string): void {
+  try {
+    sessionStorage.setItem(SELECTED_KEY, key);
+  } catch {
+    // best-effort; a full or blocked store never breaks the wall
+  }
+}
 
 /** The claude template's path for one folder, cached for the LIFE OF THE PAGE.
  *
@@ -278,8 +306,22 @@ export function TaskCards({
   // a hook between two renders and React throws (ScheduleTaskViews' own note).
   const openKey = usePeekedKey();
   const peekedKey = peekOn ? openKey : null;
+  // WHICH CARD THE READER LAST OPENED. Held in state as well as in the store
+  // because it is also LIVE: the card lights on the press rather than after the
+  // popup (or the peek) has finished opening, which is the wall acknowledging
+  // the press. A DIFFERENT claim from `peeked` below and a quieter one — that
+  // is "this conversation is open RIGHT NOW", this is "this is the one you came
+  // back out of" — and it outlives the peek being closed.
+  const [selected, setSelected] = useState(readSelectedCard);
+  // Titled by the task, or by the last thing said in it (task-card-title-flag,
+  // `task_card_last_message`). Read once for the wall rather than per card: one
+  // subscription, one answer, and no chance of two cards disagreeing mid-poll.
+  const titleMode = useTaskCardTitleMode();
   const openTask = (task: Task) => {
-    if (openPeek(cardKey(task))) return;
+    const key = cardKey(task);
+    setSelected(key);
+    writeSelectedCard(key);
+    if (openPeek(key)) return;
     setPeek(task);
   };
   const { cards, hidden } = useMemo(() => cardsForTasks(tasks, pages * CARD_PAGE), [tasks, pages]);
@@ -400,6 +442,8 @@ export function TaskCards({
           onPeek={openTask}
           peekOn={peekOn}
           peeked={peekedKey === cardKey(task)}
+          selected={selected === cardKey(task)}
+          titleMode={titleMode}
           onReload={onReload}
           project={
             showProject
@@ -433,6 +477,8 @@ function TaskCard({
   onPeek,
   peekOn = false,
   peeked = false,
+  selected = false,
+  titleMode = false,
   onReload,
   project,
   onPickDraft,
@@ -452,6 +498,13 @@ function TaskCard({
   /** This card's task is the one in the side peek — it wears the halo and its
    * hover fill stands down (styles/task-peek.css). */
   peeked?: boolean;
+  /** This is the card the reader last opened from this wall — it keeps the quiet
+   * fill the head's hover used to draw (task-cards.css `.is-selected`), whether
+   * or not anything is open now. The List row's own mark, and its fill. */
+  selected?: boolean;
+  /** Title the card by the last thing said in its conversation rather than by
+   * the task's own title (task-card-title-flag, `task_card_last_message`). */
+  titleMode?: boolean;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
   onReload?: () => void;
@@ -464,7 +517,12 @@ function TaskCard({
   draftOn?: boolean;
 }) {
   const when = taskWhen(task);
-  const title = firstLine(task.title) || "(untitled)";
+  // THE ONE LINE UNDER THE HEAD ROW: the task's title, or — with the experiment
+  // on and something said in this conversation — its newest message, whoever
+  // said it (design.md §A, Option 1). The rule is `cardTitleLine`'s, so the
+  // card is not a second place deciding what a blank one falls back to.
+  const line = cardTitleLine(task, titleMode);
+  const title = line.text || "(untitled)";
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
@@ -540,7 +598,8 @@ function TaskCard({
 
   return (
     <section
-      className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")}
+      className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+        + (selected ? " is-selected" : "")}
       // The side peek's two hooks on every openable item in every view: the
       // halo's selector and — read in DOM order — the prev/next walk, which on
       // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
@@ -594,7 +653,19 @@ function TaskCard({
               view sits under no lane header, so nothing else on it says what
               state the run is in — the same argument that keeps the ring on
               every List row and every Calendar chip. */}
-          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+          {/* …and it carries the draft mark for the same reason the List row's
+              does (tasks-lib.draftRing): this wall is the other place a settled
+              task is SCANNED, and a card that looks finished while holding an
+              unsent sentence is the one state the glance would otherwise miss. */}
+          <StatusIcon
+            status={taskColumn(task)}
+            failed={ringFailed(task)}
+            draftHeld={draftRing(task)}
+          />
+          {/* The id keeps the List row's muted skin whatever the title row below
+              shows. It was lifted to bold + full fg while that row was the
+              conversation's last message (design.md §A); Akshil (2026-09-14)
+              took the emphasis back out — one weight for the id everywhere. */}
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -643,7 +714,14 @@ function TaskCard({
             app's own hint the moment the pointer rests (hints.ts), and a native
             tooltip that arrives a second later read as no tooltip at all
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
-        <span className="task-card-title" data-hint={task.title}>
+        <span
+          className="task-card-title"
+          // The hint says the line's own words, whole: the title where the line
+          // is the title, the message where it is the message — the server caps
+          // that at 200 characters and the card clamps it to one, so the hint is
+          // where the rest of a long sentence is.
+          data-hint={line.said ? task.last_message?.text : task.title}
+        >
           {title}
         </span>
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
