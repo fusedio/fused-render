@@ -83,6 +83,11 @@ export function useCardOpen(key: string): readonly [boolean, () => void] {
   const open = policy.overrides.get(key) ?? false;
   const toggle = useCallback(() => {
     policy.overrides.set(key, !(policy.overrides.get(key) ?? false));
+    // Same gesture, same hold as a run's `more`/`less` (bugbot): a chip or a
+    // thinking block opened during a live turn grows `.chat-log` too, and the
+    // follow-the-tail ResizeObserver would answer by scrolling the body the
+    // reader just opened off the bottom of the screen.
+    policy.holdTail?.();
     bump((n) => n + 1);
   }, [key, policy]);
   return [open, toggle] as const;

@@ -257,6 +257,24 @@ describe("opening a run", () => {
     expect(policy.overrides.get("run:tool:a")).toBe(true);
   });
 
+  test("a MEMBER opened inside the run drops the follow too (bugbot)", () => {
+    // The run's own trigger held the tail; the chips and thinking blocks under
+    // it went through `useCardOpen`, which did not — so during a live turn,
+    // where members render individually, opening one grew `.chat-log` and the
+    // ResizeObserver scrolled the body that was just opened off screen.
+    const policy = createCardPolicy();
+    policy.overrides.set("run:tool:a", true);
+    let held = 0;
+    policy.holdTail = () => held++;
+    const json = view([text("lead"), tool("a", "Read")], {}, policy).toJSON() as Json | Json[];
+    // The chip's summary is a Radix trigger, so its handler reads the event.
+    const press = (byClass(json, "chip-summary")[0]!.props as { onClick: (e: unknown) => void })
+      .onClick;
+    act(() => press({ nativeEvent: {}, defaultPrevented: false, preventDefault() {} }));
+    expect(held).toBe(1);
+    expect(policy.overrides.get("tool:a")).toBe(true);
+  });
+
 
   test("the members render exactly as they do outside one, under their own keys", () => {
     const policy = createCardPolicy();
