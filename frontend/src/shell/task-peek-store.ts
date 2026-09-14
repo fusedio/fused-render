@@ -305,6 +305,12 @@ export function frameClickCloses(hit: Element | null): boolean {
  *   * a SELECT, whose arrows ARE how it is operated without a pointer;
  *   * an open MENU, where ↑/↓ walk the rows — and the kebab's menu is opened
  *     from this very header;
+ *   * an open DIALOG, which is the worst of the lot (Bugbot, 78118e0fa): the
+ *     delete confirmation's Confirm and Cancel are plain buttons, so an arrow
+ *     pressed in it went straight past them and SWAPPED THE PANEL'S TASK behind
+ *     a dialog still naming the old one. A modal is modal — nothing outside it
+ *     may act while it is up — and this mirrors `PEEK_FRAME_KEEPS_OPEN`, which
+ *     already spares `.modal-dialog` from the frame's click-to-close;
  *   * an IFRAME that holds focus: the app preview and the legacy chat are other
  *     documents and the arrows there are the app's. The documents themselves
  *     are handled at the call site (a press that did not happen in the top
@@ -328,8 +334,15 @@ export function arrowShouldWalk(target: EventTarget | null): boolean {
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "IFRAME") return false;
   // The menus this app draws (`platform/ui/ContextMenu`) and the filter
   // popovers on the page behind the panel, which are menus in everything but
-  // the element's name.
-  return el.closest('.context-menu, .tasks-pop, [role="menu"], [role="listbox"]') === null;
+  // the element's name — and every dialog, by all three of the marks the shared
+  // `Modal` chassis puts on one (`platform/ui/modal/Modal`), so a dialog that
+  // wears only one of them is still covered.
+  return (
+    el.closest(
+      '.context-menu, .tasks-pop, [role="menu"], [role="listbox"], ' +
+        '.modal-dialog, [role="dialog"], [aria-modal="true"]',
+    ) === null
+  );
 }
 
 // ---- pure: prev / next -------------------------------------------------------

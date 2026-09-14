@@ -431,7 +431,19 @@ export function TaskPeek({
     return () => clearTimeout(t);
   }, [layout.open]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
-  const [erasing, setErasing] = useState(false);
+  /**
+   * THE TASK THE DELETE WAS ASKED ABOUT — a SNAPSHOT, not `task` (Bugbot,
+   * 78118e0fa). The modal used to read the live `task`, which is whatever the
+   * panel is showing NOW; anything that swaps the open task while the
+   * confirmation is up — a chevron, ⌃⇧J, an arrow key, an archive advancing the
+   * panel, a poll dropping the row — retargeted the confirmation at a task the
+   * reader never asked about, under a dialog still spelling out the old one's
+   * number. The word "Delete TASK-126" has to keep meaning TASK-126.
+   *
+   * Non-null IS the open state; there is no separate boolean to fall out of step
+   * with it.
+   */
+  const [erasing, setErasing] = useState<Task | null>(null);
   // THE ORDER TO ADVANCE ALONG, read when the delete is asked for, not when it
   // has happened: by `onDone` the poll may already have dropped the row, and
   // `nextAfterRemoval` on a list that no longer holds the task closes the panel
@@ -998,7 +1010,9 @@ export function TaskPeek({
       disabled: blocked,
       onClick: () => {
         eraseOrder.current = order();
-        setErasing(true);
+        // Both facts captured at the PRESS: the order to walk afterwards, and
+        // the task the dialog is about.
+        setErasing(task);
       },
     });
     return items;
@@ -1342,18 +1356,22 @@ export function TaskPeek({
       {menuAt && (
         <ContextMenu x={menuAt.x} y={menuAt.y} items={menuItems()} onClose={() => setMenuAt(null)} />
       )}
-      {erasing && task && (
+      {erasing && (
         <EraseTaskModal
-          task={task}
-          onClose={() => setErasing(false)}
+          // THE CAPTURED TASK, every time it is named — the prop, the toast and
+          // the advance. `task` is the panel's current one and may no longer be
+          // this one by the time the reader presses Delete (Bugbot, 78118e0fa).
+          task={erasing}
+          onClose={() => setErasing(null)}
           onDone={() => {
-            setErasing(false);
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            const erased = erasing;
+            setErasing(null);
+            notify({ title: `Deleted ${erased.task_id}`, tone: "info" });
             onReload?.();
             // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
             // the task is gone, the panel is not — it moves on to the next one
             // down, and only closes when there is nothing left to move to.
-            advancePast(task.key, eraseOrder.current);
+            advancePast(erased.key, eraseOrder.current);
           }}
         />
       )}

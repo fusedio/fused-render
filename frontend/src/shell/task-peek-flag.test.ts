@@ -31,6 +31,7 @@ const PAGE = read("Scheduled.tsx");
 const APP = read("App.tsx");
 const FIT = read("row-fit.ts");
 const FLAG = read("task-peek-flag.ts");
+const STORE = read("task-peek-store.ts");
 const SCHEDULE_CSS = read("../styles/schedule.css");
 const PEEK_CSS = read("../styles/task-peek.css");
 const TASKS_CSS = read("../styles/tasks.css");
@@ -391,6 +392,30 @@ describe("the peek header", () => {
     expect(HEAD).toContain("if (!next) return false;");
   });
 
+  it("confirms the delete against the task it was ASKED about, not the open one", () => {
+    // Bugbot, 78118e0fa. The modal read the live `task`, which is whatever the
+    // panel is showing NOW — so anything that swapped the open task while the
+    // confirmation was up (a chevron, ⌃⇧J, an arrow key, an archive advancing
+    // the panel, a poll) retargeted the confirmation at a task the reader never
+    // asked about, under a dialog still spelling out the old one's number.
+    //
+    // The snapshot IS the open state: one value, so a stale boolean cannot
+    // disagree with it.
+    expect(HEAD).toContain("const [erasing, setErasing] = useState<Task | null>(null);");
+    expect(HEAD).toContain("setErasing(task);"); // captured at the press
+    expect(HEAD).toContain("{erasing && (");
+    expect(HEAD).toContain("task={erasing}");
+    // …and every later mention of the deleted task is the SNAPSHOT — the prop,
+    // the toast and the advance alike.
+    expect(HEAD).toContain("const erased = erasing;");
+    expect(HEAD).toContain("notify({ title: `Deleted ${erased.task_id}`, tone: \"info\" });");
+    expect(HEAD).toContain("advancePast(erased.key, eraseOrder.current);");
+    expect(HEAD).not.toContain("setErasing(true)");
+    // …and the arrows cannot reach the panel from inside the dialog in the
+    // first place, which is the other half of the same fix.
+    expect(STORE).toContain('.modal-dialog, [role="dialog"], [aria-modal="true"]');
+  });
+
   it("advances rather than closing when the task is filed or deleted", () => {
     // Filing is a sweep. The order is read BEFORE the act, because the poll
     // that follows takes the row away (shell/task-peek-store.ts).
@@ -400,7 +425,9 @@ describe("the peek header", () => {
     // by then the confirmation has been on screen for as long as the reader
     // took to read it, and a poll in between would have moved the list.
     expect(HEAD).toContain("eraseOrder.current = order();");
-    expect(HEAD).toContain("advancePast(task.key, eraseOrder.current);");
+    // …against the SNAPSHOT of the task the delete was asked about, not the
+    // panel's current one (Bugbot, 78118e0fa — the test above).
+    expect(HEAD).toContain("advancePast(erased.key, eraseOrder.current);");
     expect(HEAD).toContain("if (next) openPeek(next);\n    else closePeek();");
   });
 });

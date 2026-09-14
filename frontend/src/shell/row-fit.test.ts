@@ -645,6 +645,38 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     expect(TOOLBAR_DROPS.filter((sel) => sel === ".schedule-tv-search")).toHaveLength(1);
   });
 
+  it("hides the folded field's VALUE too, and says a filter is on with a dot", () => {
+    // Bugbot, 78118e0fa: blanking only the placeholder left a typed query
+    // painted into a 32px box with 28px of left padding — two letters wedged
+    // against the magnifier and clipped mid-word, which is the "Sea" this whole
+    // ladder exists to prevent, with the reader's own words this time.
+    const folded = FLAT.indexOf(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search .schedule-tv-search-input {`,
+    );
+    expect(folded).toBeGreaterThan(-1);
+    const block = FLAT.slice(folded).slice(0, 400);
+    expect(block).toContain("color: transparent");
+    // A caret blinking in a box with no text in it is a field claiming a focus
+    // it does not have.
+    expect(block).toContain("caret-color: transparent");
+    // …and it comes BACK when the field opens, restated rather than left to the
+    // cascade: the folded rule sets `color` at the same specificity and first.
+    const open = FLAT.indexOf(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:focus-within .schedule-tv-search-input {`,
+    );
+    expect(open).toBeGreaterThan(folded);
+    expect(FLAT.slice(open).slice(0, 400)).toContain("color: var(--fg)");
+    // A FILTER THAT IS ON SAYS SO — the same rule the filter triggers follow,
+    // whose count badge and ✕ survive every rung. `:has()`, because the
+    // magnifier is drawn before the input and no sibling combinator reaches it.
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) ` +
+        ".schedule-tv-search:not(:focus-within)" +
+        ":has(.schedule-tv-search-input:not(:placeholder-shown)) " +
+        ".schedule-tv-search-icon::after {",
+    );
+  });
+
   it("folds the filter labels from level 2 onwards", () => {
     expect(FLAT).toContain(`.schedule-toolbar:is(${levelsFrom(2).join(",")})`);
   });

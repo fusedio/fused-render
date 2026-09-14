@@ -315,6 +315,17 @@ describe("arrowShouldWalk — who owns ↑/↓", () => {
     expect(arrowShouldWalk(el("BUTTON", { inside: ".tasks-pop" }))).toBe(false);
     expect(arrowShouldWalk(el("DIV", { inside: '[role="menu"]' }))).toBe(false);
   });
+
+  it("stands down inside a DIALOG — a modal is modal (Bugbot, 78118e0fa)", () => {
+    // The worst case of all, and the one that found this: the delete
+    // confirmation's Confirm and Cancel are plain buttons, so an arrow pressed
+    // in it went straight past them and swapped the panel's task behind a
+    // dialog still naming the old one. All three marks the shared `Modal`
+    // chassis puts on a dialog, so one that wears only one is still covered.
+    expect(arrowShouldWalk(el("BUTTON", { inside: ".modal-dialog" }))).toBe(false);
+    expect(arrowShouldWalk(el("BUTTON", { inside: '[role="dialog"]' }))).toBe(false);
+    expect(arrowShouldWalk(el("DIV", { inside: '[aria-modal="true"]' }))).toBe(false);
+  });
 });
 
 describe("nextAfterRemoval", () => {
