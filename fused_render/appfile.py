@@ -870,7 +870,10 @@ def prior_data(dest: str, slug: str) -> dict | None:
     date. Answers ``{dir, key, files, bytes, exported_at, opened_at, source}``
     or None."""
     root = os.path.dirname(dest)
-    prefix = slug + "-"
+    # Exact key shape, not a prefix: `_file_key` is `<slug>-<16 hex>`, and a
+    # bare `startswith(slug + "-")` would let `note` claim `notebook-…`'s data
+    # (or the `app` fallback claim every `app-…`).
+    key_re = re.compile(re.escape(slug) + r"-[0-9a-f]{16}\Z")
     best: dict | None = None
     best_rank: tuple = ()
     try:
@@ -878,7 +881,7 @@ def prior_data(dest: str, slug: str) -> dict | None:
     except OSError:
         return None
     for name in names:
-        if not name.startswith(prefix):
+        if not key_re.match(name):
             continue
         cand = os.path.join(root, name)
         if cand == dest or not os.path.isdir(cand):
@@ -1012,6 +1015,19 @@ def upgrade_clone(fused_path: str) -> dict:
             "the workspace repo cannot snapshot this clone, so your edits could "
             "not be recovered after an upgrade — refusing to overwrite")
     app_git.commit(dest, f"Snapshot {target['slug']} before upgrading from .fused")
+    # `commit` answers False for "nothing to commit" AND for a failed add or
+    # commit, so the return value cannot say whether the edits are safe. Ask
+    # git directly: anything still pending under the app after the snapshot
+    # means the overlay would clobber work nothing recorded — refuse.
+    scope = app_git._repo_scope(dest)
+    if scope is not None:
+        repo_dir, spec = scope
+        status = app_git._git(repo_dir, "status", "--porcelain", "--untracked-files=all",
+                              "--", app_git._pathspec(spec))
+        if status.returncode != 0 or (status.stdout or "").strip():
+            raise AppFileError(
+                "could not snapshot your edits in the workspace repo before "
+                "upgrading — refusing to overwrite them")
 
     opened = open_app_file(fused_path)
     src = opened["dir"]
@@ -1071,8 +1087,11 @@ def _prune_empty_dirs(app_dir: str) -> None:
         head = os.path.relpath(dirpath, app_dir).split(os.sep)[0]
         if head == app_fused_dir.DIRNAME:
             continue
-        if not dirnames and not filenames:
-            try:
+        # Re-list rather than trust os.walk's cached `dirnames`: a child
+        # removed on an earlier (bottom-up) step still appears there, which
+        # would leave every emptied ancestor standing.
+        try:
+            if not os.listdir(dirpath):
                 os.rmdir(dirpath)
-            except OSError:
-                pass
+        except OSError:
+            pass
