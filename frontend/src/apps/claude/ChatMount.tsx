@@ -99,7 +99,12 @@ export class ChatChunkBoundary extends Component<
  * Exported for its own test: the store is per-mount and internal, so effect
  * DEPS — the actual bug — are only observable through the hook.
  */
-export function useHostIds(memory: ParamsStore, sessionId?: string, runId?: string) {
+export function useHostIds(
+  memory: ParamsStore,
+  sessionId?: string,
+  runId?: string,
+  msgAnchor?: string,
+) {
   useEffect(() => {
     if (sessionId && memory.get("session_id") !== sessionId) {
       memory.set({ session_id: sessionId });
@@ -108,6 +113,12 @@ export function useHostIds(memory: ParamsStore, sessionId?: string, runId?: stri
   useEffect(() => {
     if (runId && memory.get("run") !== runId) memory.set({ run: runId });
   }, [memory, runId]);
+  // …and the anchor, which unlike the two above can be re-handed for a
+  // conversation that is ALREADY open: pressing a second message row in the
+  // same thread swaps nothing but this.
+  useEffect(() => {
+    if (msgAnchor && memory.get("msg") !== msgAnchor) memory.set({ msg: msgAnchor });
+  }, [memory, msgAnchor]);
 }
 
 /** The flag-off element, and the boundary's fallback: one builder so the two
@@ -139,6 +150,12 @@ export interface ChatMountProps {
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
   runId?: string;
+  /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
+   *  transcript stamps `data-msg` on every turn it draws and the param is spent
+   *  the moment the named one is on screen (params/store.ts). Handed over by
+   *  the Tasks list, whose expanded threads list the very turns this addresses
+   *  (shell/ScheduleTaskViews `openMessage`). */
+  msgAnchor?: string;
   /** The "Fix with AI" prompt, PULLED and cleared by the host before it is
    *  passed (explorer `takeClaudeAsk`) — so it reaches exactly one mount. */
   initialAsk?: ClaudeAsk;
@@ -227,9 +244,10 @@ export function ChatMount(props: ChatMountProps) {
     const seed: ParamsSnapshot = {};
     if (props.sessionId) seed.session_id = props.sessionId;
     if (props.runId) seed.run = props.runId;
+    if (props.msgAnchor) seed.msg = props.msgAnchor;
     return createMemoryParamsStore(seed);
   });
-  useHostIds(memory, props.sessionId, props.runId);
+  useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);
 
   // NEITHER BRANCH while the flag read is in flight. A `false` here is not
   // "legacy": it is "we have not asked yet", and mounting the legacy template

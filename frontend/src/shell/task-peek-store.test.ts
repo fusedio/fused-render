@@ -15,6 +15,7 @@
 //     nothing else, so an open, a close or a swap moves no sidebar and a
 //     reader's own chevron stands until the floor is crossed the other way;
 //   * the store: who may open a peek at all (nobody, off the Tasks page).
+import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { beforeEach, describe, expect, it } from "bun:test";
@@ -64,6 +65,8 @@ const {
   readPeekParam,
   applyResize,
   currentRoom,
+  measureTasksBaseline,
+  peekGutter,
   setPeekBaselineCandidate,
   refreshPeekBaseline,
   resetPeekStoreForTests,
@@ -73,6 +76,9 @@ const {
   settlePeek,
   setPeekHost,
   setPeekWidth,
+  showListBesidePeek,
+  arrowShouldWalk,
+  peekScrollTarget,
   stepPeekKey,
   syncPeekFromUrl,
 } = await import("./task-peek-store");
@@ -94,10 +100,15 @@ beforeEach(() => {
  *  551px peek. Wide enough that nothing is at a clamp, which is the point: what
  *  is being checked is the CROSSING, not an edge. */
 const VIEWPORT = 1538;
-const BASELINE = 1006;
-/** 1006 × ¾, rounded — stated here so a test reads as arithmetic rather than as
+/** A baseline that leaves the panel MORE than its minimum on this window —
+ *  1306 of content less 906 is 400, exactly the floor — so "the first open
+ *  keeps the column where it was" is a statement about the arithmetic and not
+ *  about a clamp. It moved from 1006 when the minimum went from 220 to 400
+ *  (platform/lib/pane-metrics.ts). */
+const BASELINE = 906;
+/** 906 × ¾, rounded — stated here so a test reads as arithmetic rather than as
  *  a magic number, and pinned against the implementation below. */
-const FLOOR = 755;
+const FLOOR = 680;
 
 function windowWidth(px: number): void {
   (globalThis as { window: { innerWidth: number } }).window.innerWidth = px;
@@ -115,8 +126,8 @@ describe("the width", () => {
   });
 
   it("takes its minimum when there is no remainder to speak of", () => {
-    // 1200 of content against a 1006 baseline leaves 194 — under the panel's
-    // own floor, so the panel takes 220 and the middle pane is the one that
+    // 1200 of content against a 906 baseline leaves 294 — under the panel's own
+    // floor, so the panel takes its minimum and the middle pane is the one that
     // gives way (down to ITS floor, and then into an overflow).
     expect(defaultPeekWidth(1200, BASELINE)).toBe(PEEK_MIN_WIDTH);
   });
@@ -141,9 +152,11 @@ describe("the width", () => {
     expect(peekWidthFor(700, 2000, BASELINE)).toBe(700);
   });
 
-  it("floors at 220 — the Explorer Claude pane's minimum, not one of its own", () => {
+  it("floors at the Explorer Claude pane's minimum, which is now literally it", () => {
+    // One constant for the two panes that are the same chat in the same shell
+    // (platform/lib/pane-metrics.ts, which carries the derivation).
     expect(clampPeekWidth(100, 2000)).toBe(PEEK_MIN_WIDTH);
-    expect(PEEK_MIN_WIDTH).toBe(220);
+    expect(PEEK_MIN_WIDTH).toBe(SIDE_PANE_MIN_WIDTH);
   });
 
   it("has NO maximum but the content area itself", () => {
@@ -257,6 +270,112 @@ describe("stepPeekKey", () => {
   });
 });
 
+describe("peekScrollTarget — which element a walk brings back", () => {
+  // The items as the walk reads them: nodes carrying the attribute, in the
+  // order the view painted them. Only `getAttribute` is ever asked for, which
+  // is why this is provable without a browser.
+  const item = (key: string) => ({
+    key,
+    getAttribute: (name: string) => (name === "data-peek-key" ? key : null),
+  });
+  const items = [item("a"), item("b"), item("c")];
+
+  it("is the item the walk landed on", () => {
+    expect(peekScrollTarget(items, "b")?.key).toBe("b");
+  });
+
+  it("takes the FIRST node a key is painted on", () => {
+    // A view may paint one task twice — a board card and its drag ghost — and
+    // the walk means places, not nodes, exactly as `visibleOrder` does when it
+    // reads these same elements.
+    const twice = [item("a"), item("b"), { ...item("b"), key: "ghost" }];
+    expect(peekScrollTarget(twice, "b")?.key).toBe("b");
+  });
+
+  it("is nothing when the view has not painted the task", () => {
+    // Filtered away between the press and the paint: scroll nothing rather than
+    // guess at a neighbour.
+    expect(peekScrollTarget(items, "z")).toBeNull();
+    expect(peekScrollTarget(items, null)).toBeNull();
+    expect(peekScrollTarget([], "a")).toBeNull();
+  });
+
+  it("never splices a key into a selector", () => {
+    // Task keys are paths and session ids — arbitrary strings, which have no
+    // business inside a CSS attribute selector. A key full of quotes is just a
+    // string comparison here.
+    const odd = 'a"b\\c';
+    expect(peekScrollTarget([item(odd)], odd)?.key).toBe(odd);
+  });
+});
+
+describe("arrowShouldWalk — who owns ↑/↓", () => {
+  // A pure guard over the focused element (design.md, Polish batch 4). Plain
+  // objects rather than a rendered tree: what is being checked is the rule, and
+  // the three properties it reads are the whole of its input.
+  const el = (
+    tagName: string,
+    opts: { editable?: boolean; inside?: string } = {},
+  ): EventTarget =>
+    ({
+      tagName,
+      isContentEditable: !!opts.editable,
+      closest: (sel: string) => (opts.inside && sel.includes(opts.inside) ? {} : null),
+    }) as unknown as EventTarget;
+
+  it("walks for the chrome the panel and the page are made of", () => {
+    for (const tag of ["BUTTON", "DIV", "A", "SPAN", "LI", "BODY"]) {
+      expect(arrowShouldWalk(el(tag))).toBe(true);
+    }
+    // A press with nothing focused lands on the document, which has no
+    // `closest` — nobody has a prior claim, so the panel takes it.
+    expect(arrowShouldWalk(null)).toBe(true);
+    expect(arrowShouldWalk({} as EventTarget)).toBe(true);
+  });
+
+  it("stands down inside anything that types", () => {
+    // An ↑ in a composer moves the caret and in a search field walks the
+    // history; taking it would move the reader's place without losing anything,
+    // which is the quiet version of the Escape bug this panel has already had.
+    for (const tag of ["INPUT", "TEXTAREA", "SELECT"]) {
+      expect(arrowShouldWalk(el(tag))).toBe(false);
+    }
+    expect(arrowShouldWalk(el("DIV", { editable: true }))).toBe(false);
+  });
+
+  it("stands down on a focused frame — the arrows there are the app's", () => {
+    // The app preview and the legacy chat are other documents; this is the case
+    // where the element holding focus in OURS is the frame itself.
+    expect(arrowShouldWalk(el("IFRAME"))).toBe(false);
+  });
+
+  it("stands down inside an open menu, where ↑/↓ already walk rows", () => {
+    // Including the kebab's own menu, which is opened from this very header.
+    expect(arrowShouldWalk(el("DIV", { inside: ".context-menu" }))).toBe(false);
+    expect(arrowShouldWalk(el("BUTTON", { inside: ".tasks-pop" }))).toBe(false);
+    expect(arrowShouldWalk(el("DIV", { inside: '[role="menu"]' }))).toBe(false);
+  });
+
+  it("stands down inside a DIALOG — a modal is modal (Bugbot, 78118e0fa)", () => {
+    // The worst case of all, and the one that found this: the delete
+    // confirmation's Confirm and Cancel are plain buttons, so an arrow pressed
+    // in it went straight past them and swapped the panel's task behind a
+    // dialog still naming the old one. All three marks the shared `Modal`
+    // chassis puts on a dialog, so one that wears only one is still covered.
+    expect(arrowShouldWalk(el("BUTTON", { inside: ".modal-dialog" }))).toBe(false);
+    expect(arrowShouldWalk(el("BUTTON", { inside: '[role="dialog"]' }))).toBe(false);
+    expect(arrowShouldWalk(el("DIV", { inside: '[aria-modal="true"]' }))).toBe(false);
+  });
+
+  it("stands down over the native chat transcript — those arrows scroll it (Bugbot, 3b720ee0b)", () => {
+    // The native chat lives in THIS document, so the frame guard at the call
+    // site does not see it; ↑/↓ over a turn belong to the transcript's scroll.
+    expect(arrowShouldWalk(el("DIV", { inside: ".task-side-peek-chat" }))).toBe(false);
+    // The panel's header is not the transcript: chevrons and title still walk.
+    expect(arrowShouldWalk(el("DIV", { inside: ".task-side-peek-head" }))).toBe(true);
+  });
+});
+
 describe("nextAfterRemoval", () => {
   const order = ["a", "b", "c"];
 
@@ -289,11 +408,11 @@ describe("planRoom", () => {
   };
 
   it("leaves the column EXACTLY where it was on a first open", () => {
-    // The whole of Widths v2's first rule: 1306 of content, a 1006 baseline, so
-    // the panel takes the 300 that is left over and the middle pane keeps the
+    // The whole of Widths v2's first rule: 1306 of content, a 906 baseline, so
+    // the panel takes the 400 that is left over and the middle pane keeps the
     // width it was already being read at.
     const plan = planRoom(open);
-    expect(plan.peekWidth).toBe(300);
+    expect(plan.peekWidth).toBe(400);
     expect(plan.frameAfter).toBe(BASELINE);
     expect(plan.floored).toBe(false);
     expect(plan.cover).toBe(false);
@@ -301,16 +420,16 @@ describe("planRoom", () => {
   });
 
   it("reflows, without flooring, while the middle pane is above three quarters", () => {
-    const plan = planRoom({ ...open, chosenWidth: 400 });
-    expect(plan.frameAfter).toBe(906);
+    const plan = planRoom({ ...open, chosenWidth: 500 });
+    expect(plan.frameAfter).toBe(806);
     expect(plan.floored).toBe(false);
   });
 
   it("FLOORS the middle pane once it would drop under three quarters", () => {
-    // 1306 − 600 = 706, under the 755 floor: the rows stop shrinking and the
+    // 1306 − 700 = 606, under the 680 floor: the rows stop shrinking and the
     // pane scrolls sideways instead.
-    const plan = planRoom({ ...open, chosenWidth: 600 });
-    expect(plan.frameAfter).toBe(706);
+    const plan = planRoom({ ...open, chosenWidth: 700 });
+    expect(plan.frameAfter).toBe(606);
     expect(plan.floored).toBe(true);
     expect(plan.contentFloor).toBe(FLOOR);
     expect(plan.cover).toBe(false);
@@ -349,14 +468,14 @@ describe("openTimeCollapse — the ONE thing an open may do to the sidebar", () 
     sidebarCollapsed: false,
   });
 
-  it("leaves a wide window alone: there is already room for a 220 peek", () => {
-    // 1538 − 232 = 1306 of content, less a 1006 baseline → 300 spare.
+  it("leaves a wide window alone: there is already room for a full peek", () => {
+    // 1538 − 232 = 1306 of content, less a 906 baseline → exactly the minimum.
     expect(openTimeCollapse(at(VIEWPORT))).toBe(false);
   });
 
   it("COLLAPSES when the column and a minimum peek will not both fit", () => {
-    // 1400 − 232 = 1168, less 1006 → 162 spare, under the panel's 220 minimum.
-    // The rail gives 1400 − 44 = 1356, less 1006 → 350. Worth spending.
+    // 1400 − 232 = 1168, less 906 → 262 spare, under the panel's minimum. The
+    // rail gives 1400 − 44 = 1356, less 906 → 450. Worth spending.
     expect(openTimeCollapse(at(1400))).toBe(true);
   });
 
@@ -365,9 +484,9 @@ describe("openTimeCollapse — the ONE thing an open may do to the sidebar", () 
   });
 
   it("does not move it for NOTHING — a window too narrow either way", () => {
-    // 1200 − 44 = 1156, less 1006 → 150, still under 220. The collapse would
-    // buy a panel that still cannot have its minimum, so the middle pane gives
-    // way exactly as it did before and the sidebar stays put.
+    // 1200 − 44 = 1156, less 906 → 250, still under the minimum. The collapse
+    // would buy a panel that still cannot have its minimum, so the middle pane
+    // gives way exactly as it did before and the sidebar stays put.
     expect(openTimeCollapse(at(1200))).toBe(false);
   });
 
@@ -399,8 +518,8 @@ describe("planCrossing", () => {
   });
 
   it("collapses on a DOWNWARD crossing", () => {
-    const plan = planCrossing(at(600));
-    expect(plan.middleIfExpanded).toBe(706);
+    const plan = planCrossing(at(700));
+    expect(plan.middleIfExpanded).toBe(606);
     expect(plan.sidebar).toBe(true);
     expect(plan.side).toBe("below");
   });
@@ -409,12 +528,12 @@ describe("planCrossing", () => {
     // The one place the floor rule overrules them, and Akshil asked for it by
     // name: the middle pane is about to overflow and the 188px is the only
     // room left to give it.
-    const plan = planCrossing({ ...at(600), side: "above", sidebarCollapsed: false });
+    const plan = planCrossing({ ...at(700), side: "above", sidebarCollapsed: false });
     expect(plan.sidebar).toBe(true);
   });
 
   it("asks for nothing when the sidebar is already where the crossing wants it", () => {
-    expect(planCrossing({ ...at(600), sidebarCollapsed: true }).sidebar).toBeNull();
+    expect(planCrossing({ ...at(700), sidebarCollapsed: true }).sidebar).toBeNull();
     expect(planCrossing({ ...at(400), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
   });
 
@@ -427,7 +546,7 @@ describe("planCrossing", () => {
   it("does NOTHING while the pane stays on the side it was already on", () => {
     // Narrower still, below the floor throughout: no second crossing, so a
     // sidebar the reader re-opened in between is simply left alone.
-    const plan = planCrossing({ ...at(700), side: "below", sidebarCollapsed: false });
+    const plan = planCrossing({ ...at(800), side: "below", sidebarCollapsed: false });
     expect(plan.sidebar).toBeNull();
     expect(plan.side).toBe("below");
   });
@@ -435,13 +554,13 @@ describe("planCrossing", () => {
   it("holds the reader's override until the floor is crossed the OTHER way", () => {
     // They re-opened the sidebar while below the floor. Resizing about below
     // the floor changes nothing…
-    expect(planCrossing({ ...at(620), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
+    expect(planCrossing({ ...at(750), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
     // …until the pane comes back up (nothing to do, it is already open)…
     const up = planCrossing({ ...at(400), side: "below", sidebarCollapsed: false });
     expect(up.sidebar).toBeNull();
     expect(up.side).toBe("above");
     // …and then goes down again, which IS a crossing and does collapse it.
-    expect(planCrossing({ ...at(600), side: up.side, sidebarCollapsed: false }).sidebar).toBe(true);
+    expect(planCrossing({ ...at(700), side: up.side, sidebarCollapsed: false }).sidebar).toBe(true);
   });
 
   it("holds a manual CLOSE until the floor is crossed upward", () => {
@@ -664,7 +783,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // The rule of 2026-09-14 (design.md, Widths v2): open/close/swap have no
     // say at all. A width the reader dragged last week is restored and the
     // sidebar is simply left where they had it.
-    setPeekWidth(600);
+    setPeekWidth(700);
     arm();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(getPeekState().autoCollapsed).toBe(false);
@@ -672,7 +791,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("collapses it when a RESIZE takes the middle pane under its floor", () => {
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(getPeekState().autoCollapsed).toBe(true);
@@ -683,7 +802,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("remembers across a reload that the collapse was ours", () => {
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     let stored: string | null = null;
     try {
@@ -696,10 +815,10 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("puts it back when a resize brings the middle pane up again", () => {
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(getPeekState().autoCollapsed).toBe(false);
@@ -707,20 +826,20 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("leaves the reader's own chevron alone until the floor is crossed again", () => {
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     // They press the rail's chevron.
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
     expect(getPeekState().autoCollapsed).toBe(false);
     // Further narrowing, still below the floor: NOT a crossing, so it stands.
-    setPeekWidth(650);
+    setPeekWidth(750);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     // Up over the floor and back down under it — that IS one, and it collapses
     // even though they opened it deliberately.
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
   });
@@ -733,13 +852,13 @@ describe("the sidebar, and the only thing that moves it", () => {
     // it. The trigger overwrote a decision they can see; it has to be written
     // down like one.
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     // They shut it themselves while the pane is below the floor.
     sidebar.setSidebarState((s) => ({ ...s, collapsed: true }));
     expect(sidebar.loadSidebarState().collapsed).toBe(true);
     // Back over the floor: an upward crossing, overriding THEIR toggle.
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
@@ -750,11 +869,11 @@ describe("the sidebar, and the only thing that moves it", () => {
     // left exactly as they last set it.
     arm();
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
@@ -767,15 +886,15 @@ describe("the sidebar, and the only thing that moves it", () => {
     // → 44. What a write persists has to be decided by what it OVERWRITES, and
     // a collapse we wrote down is one of those things.
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize(); //  (1) our own collapse, silent
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false })); // they expand
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize(); //  (2) overrides their expand → persisted collapse
     expect(sidebar.loadSidebarState().collapsed).toBe(true);
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize(); //  (3) undoes (2) → must be persisted too
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
@@ -784,13 +903,13 @@ describe("the sidebar, and the only thing that moves it", () => {
   it("hands back a PERSISTED collapse the same way it was written", () => {
     arm();
     // They open it themselves…
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
     // …and a later downward crossing overrides that, persistently.
-    setPeekWidth(300);
+    setPeekWidth(400);
     applyResize();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(sidebar.loadSidebarState().collapsed).toBe(true);
@@ -806,7 +925,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // exactly where the last crossing left it; what puts it back is leaving
     // /tasks, below.
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     closePeek();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
@@ -814,7 +933,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("hands it back when the page goes away", () => {
     arm();
-    setPeekWidth(600);
+    setPeekWidth(700);
     applyResize();
     // Navigating away from /tasks: there is no middle pane out here for the
     // floor rule to be about, so the reader must not be stranded with a rail
@@ -942,7 +1061,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // remembered is held back by the middle pane's floor.
     setPeekWidth(5000);
     const stored = Number(localStorage.getItem(PEEK_WIDTH_KEY));
-    expect(stored).toBeLessThanOrEqual(1494 - PEEK_COVER_FLOOR);
+    expect(stored).toBeLessThanOrEqual(1306 - PEEK_COVER_FLOOR);
     // …and the next open comes back to a page with a view on it.
     closePeek();
     openPeek("sess-2");
@@ -950,14 +1069,116 @@ describe("the sidebar, and the only thing that moves it", () => {
   });
 
   it("re-clamps a remembered width against a window that has since shrunk", () => {
-    // It was written safe on a wide desktop; the reader is on a narrow one now.
+    // It was written safe on a wide desktop; the reader is on a narrower one
+    // now — 1100 less a 232 sidebar is 868 of content, and a 1400 panel would
+    // be cover with 532px of it to spare.
+    setPeekWidth(1400);
+    windowWidth(1100);
+    setPeekHost(true);
+    setPeekBaselineCandidate(BASELINE);
+    openPeek("sess-1");
+    expect(currentRoom().cover).toBe(false);
+    expect(getPeekState().width).toBeLessThanOrEqual(868 - PEEK_COVER_FLOOR);
+  });
+
+  it("…and lets the window itself win when even the clamp cannot help", () => {
+    // 900 less a 232 sidebar is 668 of content: a 400 panel and a 360 middle
+    // pane do not both fit at any width, so cover is the honest answer rather
+    // than a sliver of list nobody can read.
     setPeekWidth(1400);
     windowWidth(900);
     setPeekHost(true);
     setPeekBaselineCandidate(BASELINE);
     openPeek("sess-1");
+    expect(getPeekState().width).toBe(PEEK_MIN_WIDTH);
+    expect(currentRoom().cover).toBe(true);
+  });
+
+  it("comes back out of cover without closing the task", () => {
+    // Akshil's option b (design.md, Polish batch 3): in cover the header's
+    // first control says "Show list", and pressing it spends the split a fresh
+    // open would — not a close, and not a seam nobody can find.
+    arm();
+    setPeekWidth(5000);
+    expect(currentRoom().cover).toBe(true);
+    const covering = getPeekState().key;
+    showListBesidePeek();
     expect(currentRoom().cover).toBe(false);
-    expect(getPeekState().width).toBeLessThanOrEqual(900 - 44 - PEEK_COVER_FLOOR);
+    // The default width, which is the remainder past the middle pane's
+    // baseline — the same number a first open would have taken.
+    expect(getPeekState().width).toBe(1306 - BASELINE);
+    expect(currentRoom().frameAfter).toBe(BASELINE);
+    // …and the same task is still open.
+    expect(getPeekState().key).toBe(covering);
+  });
+
+  it("…and leaves the middle pane clear of the cover floor on a tight window", () => {
+    // A window where the default would itself be cover: the restore is held
+    // back rather than handing the reader straight back into it.
+    setPeekWidth(5000);
+    windowWidth(1100);
+    setPeekHost(true);
+    setPeekBaselineCandidate(BASELINE);
+    openPeek("sess-1");
+    showListBesidePeek();
+    expect(currentRoom().cover).toBe(false);
+    expect(currentRoom().frameAfter).toBeGreaterThanOrEqual(PEEK_COVER_FLOOR);
+  });
+
+  it("does nothing at all with no peek open", () => {
+    // The header that offers it only exists while the panel does, but the store
+    // is a module anyone can reach and "restore the split" is meaningless with
+    // nothing to split.
+    windowWidth(VIEWPORT);
+    setPeekHost(true);
+    const before = getPeekState();
+    showListBesidePeek();
+    expect(getPeekState()).toBe(before);
+    expect(localStorage.getItem(PEEK_WIDTH_KEY)).toBeNull();
+  });
+
+  it("carries a MESSAGE anchor, and only from the press that named one", () => {
+    // A message row addresses one turn of a conversation, which is smaller than
+    // a task and is the one thing this page can address that a task row cannot
+    // (design.md, Polish batch 3).
+    arm();
+    expect(getPeekState().anchor).toBeNull();
+    openPeek("sess-2", { anchor: "turn-7" });
+    expect(getPeekState().anchor).toBe("turn-7");
+    // A plain open of another task means the thread, not a turn of it.
+    openPeek("sess-3");
+    expect(getPeekState().anchor).toBeNull();
+  });
+
+  it("re-anchors a conversation that is ALREADY open", () => {
+    // Pressing a second message row in the same expanded thread swaps nothing
+    // but the anchor — and an ordinary re-press of the open task still does
+    // nothing at all.
+    arm();
+    openPeek("sess-2", { anchor: "turn-1" });
+    expect(openPeek("sess-2", { anchor: "turn-9" })).toBe(true);
+    expect(getPeekState().anchor).toBe("turn-9");
+    expect(openPeek("sess-2")).toBe(true);
+    expect(getPeekState().anchor).toBe("turn-9");
+  });
+
+  it("re-pressing the SAME message row changes nothing", () => {
+    // Deliberately not a re-scroll: the turn is already where the reader put
+    // it, and a press that silently jumps the transcript back to a place it is
+    // already at reads as the panel losing their scroll position. Nobody has
+    // asked for the other behaviour; if they do, this is the test to change.
+    arm();
+    openPeek("sess-2", { anchor: "turn-7" });
+    const settled = getPeekState();
+    expect(openPeek("sess-2", { anchor: "turn-7" })).toBe(true);
+    expect(getPeekState()).toBe(settled);
+  });
+
+  it("forgets the anchor when the panel closes", () => {
+    arm();
+    openPeek("sess-2", { anchor: "turn-7" });
+    closePeek();
+    expect(getPeekState().anchor).toBeNull();
   });
 
   it("freezes the baseline at the FIRST open and keeps it across a swap", () => {
@@ -967,6 +1188,138 @@ describe("the sidebar, and the only thing that moves it", () => {
     setPeekBaselineCandidate(700);
     openPeek("sess-2");
     expect(getPeekState().baseline).toBe(BASELINE);
+  });
+});
+
+// ---- measureTasksBaseline: the gutter, tight or not (Bugbot, PR #1141) -----
+// No jsdom in this suite (`fit.test.ts` sets the precedent), so the `.tasks-
+// frame` section `measureTasksBaseline` reads off the real DOM is three plain
+// objects here — `document.querySelector` answers its three exact selectors,
+// and `getComputedStyle` answers each one's box. `--tasks-page-gutter` is
+// faked exactly as `styles/schedule.css` declares it on `.schedule-page`:
+// present and worth 44 whether or not `tightEachSide` (what `data-tight`,
+// `styles/task-peek.css`, would have narrowed the LIVE padding to) says
+// something smaller. `gutterVar: null` fakes a page that predates the var, to
+// prove the padding-sum fallback still works.
+function withFakeTasksDom(
+  opts: { content: number; cap?: number; gutterVar?: number | null; tightEachSide?: number },
+  fn: () => void,
+): void {
+  const cap = opts.cap ?? 1050;
+  const untightEachSide = 22; // `.prefs-page`'s own padding (styles/preferences.css)
+  const liveEachSide = opts.tightEachSide ?? untightEachSide;
+  const main = { getBoundingClientRect: () => ({ width: Math.min(cap, opts.content) }) };
+  const page = {};
+  const host = { clientWidth: opts.content };
+  const styles = new Map<unknown, Record<string, unknown>>();
+  styles.set(main, {
+    getPropertyValue: () => "",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    maxWidth: `${cap}px`,
+  });
+  styles.set(page, {
+    getPropertyValue: (name: string) =>
+      name === "--tasks-page-gutter" && opts.gutterVar != null ? `${opts.gutterVar}px` : "",
+    // The LIVE padding — 0 either side once `data-tight="1"` lands
+    // (styles/task-peek.css), 22px either side otherwise. This is exactly
+    // what the old, buggy read used, and every test below that passes a var
+    // proves the fix no longer reads it.
+    paddingLeft: `${liveEachSide}px`,
+    paddingRight: `${liveEachSide}px`,
+    maxWidth: "none",
+  });
+
+  interface FakeDoc {
+    querySelector: (sel: string) => unknown;
+  }
+  const doc = globalThis as unknown as { document: FakeDoc };
+  const realQuerySelector = doc.document.querySelector;
+  const globalWithStyle = globalThis as { getComputedStyle?: (el: unknown) => unknown };
+  const realGetComputedStyle = globalWithStyle.getComputedStyle;
+  doc.document.querySelector = (sel: string) => {
+    if (sel === ".tasks-frame .schedule-main") return main;
+    if (sel === ".tasks-frame .schedule-page") return page;
+    if (sel === ".tasks-peek-host") return host;
+    return null;
+  };
+  globalWithStyle.getComputedStyle = (el: unknown) => styles.get(el) ?? {};
+  try {
+    fn();
+  } finally {
+    doc.document.querySelector = realQuerySelector;
+    if (realGetComputedStyle === undefined) delete globalWithStyle.getComputedStyle;
+    else globalWithStyle.getComputedStyle = realGetComputedStyle;
+  }
+}
+
+describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)", () => {
+  it("measures the same gutter whether the frame is tight or not", () => {
+    // Untight: the live padding (22+22) and the var (44) agree, as they would
+    // on a wide frame that has never gone tight.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 22 }, () => {
+      expect(measureTasksBaseline()).toBe(1094); // 1050 (cap) + 44 (gutter)
+      expect(peekGutter()).toBe(44);
+    });
+    // Tight: the live padding is down to 0+0, but the var — which
+    // `[data-tight="1"] .schedule-page` never redeclares — still says 44, and
+    // that is the number the measurement takes. The bug read the padding sum
+    // instead and would have answered 1050 (1050 + 0) here.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 0 }, () => {
+      expect(measureTasksBaseline()).toBe(1094);
+      expect(peekGutter()).toBe(44);
+    });
+  });
+
+  it("a re-measure while tight, after the baseline is frozen, leaves peekGutter() unchanged", () => {
+    windowWidth(1600);
+    // Freeze the baseline untight, exactly as a normal first open would.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 22 }, () => {
+      refreshPeekBaseline();
+    });
+    setPeekHost(true);
+    openPeek("sess-1");
+    expect(getPeekState().baseline).toBe(1094);
+    expect(peekGutter()).toBe(44);
+    // A resize lands the frame in tight AFTER the freeze — the observer goes
+    // on running while the peek is open (`refreshPeekBaseline` is what
+    // Scheduled.tsx's own ResizeObserver calls). Before the fix this
+    // overwrote the module's `baselineGutter` with 0 on every such tick,
+    // which is exactly what fed the wrong number into `contentFloor`
+    // (Scheduled.tsx) for the rest of the visit.
+    withFakeTasksDom({ content: 900, gutterVar: 44, tightEachSide: 0 }, () => {
+      refreshPeekBaseline();
+    });
+    expect(getPeekState().baseline).toBe(1094); // already frozen, untouched
+    expect(peekGutter()).toBe(44); // and neither is the gutter it was frozen with
+  });
+
+  it("a deep link that opens already tight still freezes the full gutter", () => {
+    // The deep-link race (design.md, Widths v2 — "the store reads the DOM
+    // itself"): `useTaskPeekHost` adopts `?peek=` in a layout effect, before
+    // any passive ResizeObserver has run, so the FIRST measurement — landing
+    // with the frame already narrow enough to be tight, live padding 0
+    // either side — is what the visit's baseline (and its gutter) freezes
+    // from. `state.baseline` is null and `baselineCandidate` is null too (no
+    // observer tick has happened yet), so `syncPeekFromUrl` reaches all the
+    // way to `measureTasksBaseline` itself for its very first reading.
+    windowWidth(1600);
+    setPeekHost(true);
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 0 }, () => {
+      syncPeekFromUrl("?peek=sess-1");
+    });
+    expect(getPeekState().key).toBe("sess-1");
+    // 1050 (cap) + 44 (the var's gutter), not + 0 (the live tight padding
+    // the old code read instead).
+    expect(getPeekState().baseline).toBe(1094);
+    expect(peekGutter()).toBe(44);
+  });
+
+  it("falls back to the padding sum on a page that predates the var", () => {
+    withFakeTasksDom({ content: 1200, gutterVar: null, tightEachSide: 22 }, () => {
+      expect(measureTasksBaseline()).toBe(1094); // 1050 + (22+22)
+      expect(peekGutter()).toBe(44);
+    });
   });
 });
 

@@ -33,8 +33,22 @@
 // for every caller in the app to suit a test, whereas this arithmetic never
 // wanted the router in the first place.
 import { companionFrac } from "@apps/explorer/lib/side-width";
+import { closeOverdrag } from "@platform/lib/panel-drag";
+import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
 
-const PANE_MIN_W = 220;
+/**
+ * THE PANE'S PIXEL FLOOR, and it is the SHARED one now
+ * (platform/lib/pane-metrics.ts) rather than a number of this module's own.
+ *
+ * It was 220 here and 220 in `.listing-pane-slot`, which was fine for as long
+ * as both said 220. When the CSS floor moved to the composer row's width
+ * (2026-09-14) and this did not, every clamp below went on computing against a
+ * width the layout would not render: between 400 and 220 the arithmetic
+ * answered a fraction, CSS overrode it with its own `min-width`, and the
+ * divider walked away from the cursor — for every user, on every drag, not only
+ * under the Tasks flag. One import is what stops that happening twice.
+ */
+export const PANE_MIN_W = SIDE_PANE_MIN_WIDTH;
 const LIST_MIN_W = 60;
 
 // **THE PANE'S WIDTH: the companion share of its container** — 30%, or 50% at
@@ -80,7 +94,8 @@ export {
 // LIST_MIN_W (a sliver — the columns shed themselves via container queries as
 // it narrows). PANE_MIN_W is applied last: in the degenerate case (a container
 // too small for both minimums) the pane keeps its floor and the list scrolls.
-// CSS mirrors both floors (.listing-pane-slot / .listing-main min-width),
+// CSS mirrors both floors (.listing-pane-slot / .listing-main min-width — the
+// pane's through `--side-pane-min`, the same number this module imports),
 // which is what holds them on a window resize — the stored fraction is
 // deliberately proportional and knows nothing about pixels.
 export function clampPaneWidth(containerW: number, width: number): number {
@@ -129,10 +144,10 @@ export const MAX_PANE_SHARE = 0.7;
 //
 // Floor-last is not a stylistic choice: below ~314px (`PANE_MIN_W /
 // MAX_PANE_SHARE`) the share ceiling alone would ask for fewer pixels than
-// the pane's own floor — 196px of a 280px container, for instance — and
+// the pane's own floor — 322px of a 460px container, for instance — and
 // `.listing-pane-slot`'s CSS `min-width: 220px` would then override the
-// computed flex-basis, so the rendered layout and the fraction this function
-// answered would disagree. Applying the floor SECOND, unconditionally, is
+// flex-basis, so the rendered layout and the fraction this function answered
+// would disagree. Applying the floor SECOND, unconditionally, is
 // what `clampPaneWidth` already did for the pixel floors alone; this keeps
 // that guarantee once a share ceiling is in the mix too. In that narrow band
 // the floor simply wins outright — the pane is wider than `MAX_PANE_SHARE`
@@ -154,9 +169,10 @@ export function clampSharedPaneWidth(containerW: number, px: number): number {
 // floor — which is what lets the two surfaces share one stored pixel value
 // while keeping different minimums: a width dragged comfortable for a chat
 // composer (the file sidebar's 380px floor) is still valid input here, just
-// re-clamped against this pane's narrower 220px one, and vice versa.
+// re-clamped against this pane's own — which is now the same kind of number,
+// since both are the width that chat's composer row needs.
 //
-// A DEGENERATE CONTAINER (under PANE_MIN_W + LIST_MIN_W = 280px — the same
+// A DEGENERATE CONTAINER (under PANE_MIN_W + LIST_MIN_W = 460px — the same
 // threshold `dragPaneFrac` guards) answers the plain companion share too,
 // UNCONDITIONALLY, before the shared number is even consulted: at that width
 // `clampSharedPaneWidth` returns PANE_MIN_W regardless of input, which is
@@ -186,17 +202,18 @@ export function paneFracFromSharedWidth(sharedPx: number | null, containerW: num
 // `null` means THIS CONTAINER CANNOT EXPRESS A SPLIT, and the caller must
 // neither move the pane nor record anything. Two cases, one rule:
 //   • no width at all (unmeasurable, zero-sized);
-//   • narrower than both floors together (PANE_MIN_W + LIST_MIN_W = 280px — a
+//   • narrower than both floors together (PANE_MIN_W + LIST_MIN_W = 460px — a
 //     panel-split grid, a zoomed-in window). There the clamp returns
 //     PANE_MIN_W whatever the cursor does, so the fraction it yields describes
-//     the CONTAINER'S narrowness and not the user's choice — at 220px wide it
+//     the CONTAINER'S narrowness and not the user's choice — at the floor's own
+//     width it
 //     is exactly 1.0, "the pane takes everything", which no wider window can
 //     honour: re-opening the folder on a normal screen left the list at its
 //     60px sliver, permanently, from one drag in a narrow pane. A number that
 //     is not a choice must not be recorded as one, and capping it just below
 //     1 would still keep a proportion nobody picked.
-// Above ~314px (`PANE_MIN_W / MAX_PANE_SHARE`) the ceiling is `MAX_PANE_SHARE`
-// itself; below that and down to 280px the pane's own floor wins instead (see
+// Above ~571px (`PANE_MIN_W / MAX_PANE_SHARE`) the ceiling is `MAX_PANE_SHARE`
+// itself; below that and down to 460px the pane's own floor wins instead (see
 // `clampSharedPaneWidth`) — either way the fraction can never reach 1.
 export function dragPaneFrac(containerW: number, rawPx: number): number | null {
   if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return null;
@@ -211,11 +228,19 @@ export function dragPaneFrac(containerW: number, rawPx: number): number | null {
 // the pane sticks (the clamp above already renders that resistance band), and
 // only a pull clean through it — the cursor within PANE_MIN_W/2 of the
 // container's right edge — reads as "shut it". Half the floor rather than a
-// flat count, so the band scales with the floor exactly as `closeOverdrag`
-// does for the sidebar. In a container too narrow to express a split there is
-// no resistance band to pull through (dragPaneFrac is already null there), so
-// there is no close either: a gesture whose warning cannot render must not act.
+// flat count, so the band scales with the floor — and it is `closeOverdrag`
+// itself now, not a hand-rolled copy of its arithmetic. The two were the same
+// halving, and one of them was in a file that did not notice when the floor
+// moved (code review, 2026-09-14); one function is what stops that being true
+// twice. The band is therefore wider than it was — 200px at a 400px floor where
+// it was 110 at 220 — which is the rule doing what it says, but it is a lot of
+// travel: if the gesture starts feeling like a fight, the number to revisit is
+// `closeOverdrag`'s halving, for every panel at once.
+//
+// In a container too narrow to express a split there is no resistance band to
+// pull through (dragPaneFrac is already null there), so there is no close
+// either: a gesture whose warning cannot render must not act.
 export function paneDragCloses(containerW: number, rawPx: number): boolean {
   if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return false;
-  return rawPx < PANE_MIN_W / 2;
+  return rawPx < PANE_MIN_W - closeOverdrag(PANE_MIN_W);
 }

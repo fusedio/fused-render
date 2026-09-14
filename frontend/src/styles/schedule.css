@@ -104,6 +104,17 @@
   gap: 12px;
   overflow: hidden;
   min-height: 0;
+  /* THE UNTIGHT GUTTER, carried as a var rather than left to whatever the
+     live padding happens to be (Bugbot, PR #1141). `.prefs-page`'s own 22px
+     each side (`styles/preferences.css`) is where this page's left/right
+     padding actually comes from — this rule never restates it — but
+     `task-peek-store.ts`'s `measureTasksBaseline` needs a number that stays
+     the FULL gutter even once `task-peek.css`'s `[data-tight="1"]` rule below
+     narrows the padding to 12px either side. Declared ONLY here, on the base
+     rule, so the tight override — which redeclares `padding-left`/
+     `padding-right` and nothing else — never touches it. Update together with
+     `.prefs-page`'s padding if that ever changes. */
+  --tasks-page-gutter: 44px;
 }
 
 .schedule-page > .schedule-header h1 {
@@ -4057,10 +4068,36 @@ input.schedule-when-field {
    says, so the group could not shrink below 260 + its buttons and the row
    simply overflowed instead.
 
-   72px is about six characters — the least a FILTER field can be and still be
-   one, and it is only ever this narrow on the ladder's last rung. */
+   Below its floor the field does not get narrower, it GOES — rung 2 takes it
+   off the row entirely, further down this file. */
 .schedule-toolbar[data-fit] .schedule-tv-search {
-  --fit-natural: 72px;
+  /* WHAT THE FIELD MUST KEEP, and it is now the width that holds its own
+     caption rather than a bare six characters (Akshil, 2026-09-14). At 72 the
+     placeholder was cut to "Sea" at the default panel width — and worse, the
+     fit arithmetic charged the field 72 while flex stopped it well above that,
+     so the toolbar's need was understated at every level. One number, read by
+     the stylesheet as the floor and by shell/row-fit.ts as the charge, and the
+     two now describe the same field.
+
+     THE FLOOR IS ABOVE THE BACKSTOP, and that one pixel of daylight is the
+     whole of the bug Akshil kept seeing (design.md, Polish batch 4, item 3:
+     "placeholder still not visible at the default width"). The floor and the
+     container query below were the SAME number, and a container query's
+     `max-width` is INCLUSIVE — so the instant flex squeezed the field down onto
+     its own floor, which is the ordinary state of this toolbar at the default
+     panel width, the query matched and blanked the caption the floor exists to
+     protect. The field was never too narrow to read; it was exactly wide
+     enough, and told to go transparent for it.
+
+     120 = "Search tasks…" (82px at this size) inside the 28px of left padding
+     the magnifier sits in and 10px of right padding. 132 is that plus a couple
+     of pixels for the font that actually loads — the width the query below
+     still names, because it is the width at which the caption stops fitting.
+     140 is the FLOOR: the same caption with 8px of daylight over the query, so
+     a field resting on its floor is a field reading properly. */
+  --fit-natural: 140px;
+  /* Opens at 260 and gives that slack up first — everything between the basis
+     and the floor is spent before any word in the row folds. */
   flex: 0 1 260px;
   width: auto;
   min-width: var(--fit-natural);
@@ -4070,15 +4107,19 @@ input.schedule-when-field {
 }
 
 /* THE PLACEHOLDER IS WHOLE OR IT IS GONE — never "Sea".
-   At the ladder's lower rungs the field is squeezed towards its 72px floor, and
-   "Search tasks…" wants 82px of text inside 38px of padding, so somewhere
-   around 120px the caption starts being cut mid-word (measured live,
-   2026-09-14, at fit 1). A clipped word reads as a rendering fault; a field
-   that is a magnifier and an empty box reads as a search box that has run out
-   of room, which is what it is.
-   132 rather than 121: the exact figure moves with the font that actually
-   loads, and the failure on the wrong side of it is visible. Between the two
-   the caption is merely absent, which is the state it is heading for anyway.
+   132 is the width at which the caption stops fitting; the floor above is 140,
+   STRICTLY WIDER, so in the ordinary run of things this rule never fires: the
+   field is either resting on its floor and reading properly, or the ladder has
+   taken it off the row (rung 2) and there is no caption to clip. It stays as a
+   BACKSTOP, for the widths the floor cannot govern — a font that loads wider
+   than the one measured, a zoomed page, a future seat that squeezes the group
+   below its own minimum. A clipped word reads as a rendering fault; a bare
+   magnifier over an empty box reads as a search that has run out of room, which
+   is what it is.
+
+   THE TWO NUMBERS MUST NOT MEET. `max-width` in a container query is
+   inclusive, so a query set at the floor fires ON the floor — see the floor's
+   own comment for the day that cost.
    A container query, not a `[data-fit]` level: the field's width is decided by
    flex against whatever the other seats took, so no rung of the ladder names a
    width this rule could key on. */
@@ -4118,7 +4159,6 @@ input.schedule-when-field {
 }
 
 .schedule-toolbar:is(
-    [data-fit="3"],
     [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],
@@ -4131,37 +4171,61 @@ input.schedule-when-field {
   display: none;
 }
 
-/* -- and then CONTROLS GO, lowest priority first ------------------------------
-   The ladder's second half (design.md, Widths v2). Rung 4 is not here: Project
-   loses its own trigger by MERGING into the Status one (`merged` in
-   Scheduled.tsx), so its rows stay one press away rather than going off the
-   page. From rung 5 the controls are honestly gone, in the order Akshil set:
-   the filter trigger, the search, then Calendar, Cards and Board.
+/* -- rung 2: THE SEARCH GOES ---------------------------------------------------
+   Before "+ New task" loses its words, and that ORDER is the point (Akshil,
+   2026-09-14 — design.md, Polish batch 4, item 3). A search field is 140px of
+   row spent on a control the reader is not using this second, and the omnibox
+   (⌘K) answers the same question from anywhere; "+ New task" is the one thing
+   on this toolbar that STARTS something, and a button that has lost its verb is
+   a button a newcomer has to press to find out about. The wide thing folds
+   before the important thing.
 
-   LIST AND NEW TASK ARE NOT IN THIS LIST AT ANY LEVEL, and that is the rule
-   rather than an omission: the page must always be able to get back to its
-   default view and must always be able to start a task. Everything else is a
-   lens, and a lens you cannot reach at 300px is a lens you set at 1400 and
-   left on. */
+   AND IT GOES ENTIRELY (Polish batch 5). It spent a day folding to a 32px
+   magnifier that opened over the row on focus, which kept its tab stop at the
+   price of a control whose caption, whose value and whose caret all had to be
+   painted out and put back by rules — three states of one field, two of them
+   drawn to look like something the field is not. A row with no room for a
+   search field is better off saying so: `display: none` and the toolbar
+   re-measures, `⌘K` is where the question goes, and the field comes back the
+   moment the width does. The `--fit-natural` override, the `:focus-within`
+   expansion, the transparent text and the "a filter is on" dot went with it. */
 .schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
     [data-fit="9"]
   )
+  .schedule-tv-search {
+  display: none;
+}
+
+/* -- and then CONTROLS GO, lowest priority first ------------------------------
+   The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
+   Rung 5 is not here: Project loses its own trigger by MERGING into the Status
+   one (`merged` in Scheduled.tsx), so its rows stay one press away rather than
+   going off the page. From rung 6 the controls are honestly gone, in the order
+   Akshil set: the remaining filter trigger, then Calendar, Cards and Board.
+
+   LIST AND NEW TASK ARE NOT IN THIS LIST AT ANY LEVEL, and that is the rule
+   rather than an omission: the page must always be able to get back to its
+   default view and must always be able to start a task. The SEARCH is not here
+   either — it left two rungs earlier, and ⌘K answers the same question from
+   anywhere, which no filter trigger does. Everything else is a lens, and a lens
+   you cannot reach at 300px is a lens you set at 1400 and left on. */
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
   .schedule-tv-filters
   .schedule-tv-pop-wrap {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
-  .schedule-tv-search {
-  display: none;
-}
-
-/* The filter group is nothing but those two seats, so once both are gone it is
-   an empty box still charging the row its gap. */
+/* AND THE GROUP GOES WITH THE LAST TRIGGER IN IT. The search left at rung 2 and
+   the two filter triggers at this one, so from here `.schedule-tv-filters` is
+   an empty flex box — nothing to see, and still charging the row one gap. It is
+   the same rung, not a new one: the group is gone exactly when the last thing
+   inside it is (design.md, Polish batch 5). */
 .schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
   .schedule-tv-filters {
   display: none;
@@ -4189,8 +4253,32 @@ input.schedule-when-field {
   padding-right: 8px;
 }
 
+/* THE SAME FOR A FILTER TRIGGER, and it matters most on an ACTIVE one (Akshil,
+   2026-09-14): with a selection it is a split control — glyph, word, count,
+   and a ✕ in its own half — so it is the widest seat on the row exactly when
+   the row has least to spare. Folding took the word and left the pill's
+   padding, which is a lot of nothing between a glyph and a badge.
+
+   THE COUNT AND THE ✕ STAY. The badge is the only thing on a folded trigger
+   that says a filter is ON at all, and the ✕ is the one gesture that turns it
+   off without opening the menu first; hiding either would make a narrow page a
+   page you cannot get your own filter off. */
 .schedule-toolbar:is(
+    [data-fit="2"],
     [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-filter-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.schedule-toolbar:is(
     [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],

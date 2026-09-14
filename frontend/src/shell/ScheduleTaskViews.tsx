@@ -282,7 +282,38 @@ const ICON_CLOCK = icon(
 export const ICON_OPEN_FOLDER_PATH =
   "M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z";
 
-const ICON_OPEN_DOOR = icon(<path d={ICON_OPEN_FOLDER_PATH} />, 12);
+/** THE DOOR IS A WORD NOW, on the row and on the card alike (Akshil,
+ *  2026-09-14 — design.md, Polish batch 4). `ICON_OPEN_FOLDER_PATH` above is
+ *  still the page's door SHAPE and is still drawn in the peek's ⋮, where a menu
+ *  row wants a mark; out here, in a strip of glyph buttons that are all verbs, a
+ *  folder was the one picture a reader had to be told the meaning of. "Open"
+ *  says the act, in the header and on the row in the same word.
+ *
+ *  AND THE MARK IN FRONT OF IT IS AN EXTERNAL LINK (Polish batch 5): an arrow
+ *  leaving a box towards the upper right, which is the web's own "this goes
+ *  somewhere else". The "→" it replaces trailed the word and meant "forward",
+ *  which is what the peek's own Next chevron means three inches away.
+ *
+ *  11px, and no `viewBox` gymnastics: it sits beside 11px text, not in a 22px
+ *  square with the other marks. */
+export const ICON_OPEN_EXTERNAL = icon(
+  <>
+    <path d="M7 17 17 7" />
+    <path d="M8 7h9v9" />
+  </>,
+  11,
+);
+/** The row's and the card's one door, in full: the mark and its label.
+ *
+ *  EXPORTED like `ICON_OPEN_FOLDER_PATH` beside it, and for the same reason:
+ *  the Cards wall lives in TaskCards.tsx and draws this very door, so the words
+ *  are stated once here rather than typed again over there and left to drift. */
+export const OPEN_DOOR_LABEL = (
+  <>
+    {ICON_OPEN_EXTERNAL}
+    Open
+  </>
+);
 /** The peeked row's own close, beside `ICON_OPEN` because the two swap. */
 const ICON_CLOSE = icon(<path d="M6 6l12 12M18 6L6 18" />, 12);
 const ICON_OPEN = icon(
@@ -2404,6 +2435,20 @@ function TaskNode({
     onRead(task.key, m);
     const to = messageHref(task, m);
     if (!to) return;
+    // THE PEEK TAKES IT, WITH THE TURN NAMED. A message row addresses something
+    // smaller than a task — one turn of the conversation — and the panel can
+    // show exactly that: the same `msg=` anchor the Explorer route carries,
+    // handed to the chat instead of to the router (design.md, Polish batch 3).
+    // The thread the reader has expanded stays on screen beside it, which is
+    // the whole point of a peek and was the one thing this press could not do.
+    //
+    // `openPeek` answers false anywhere the page is not hosting one (the app
+    // page's Tasks tab, the flag off), and then this is the navigation it has
+    // always been.
+    if (openPeek(task.key, { anchor: m.anchor || null })) {
+      onSelect();
+      return;
+    }
     // Leaving the page, so this is the row to come back to — the thread row
     // belongs to this task, and the task's row is what is still on screen when
     // the reader returns.
@@ -3043,7 +3088,7 @@ function TaskNode({
               navigateUrl(page);
             }}
           >
-            {ICON_OPEN_DOOR}
+            {OPEN_DOOR_LABEL}
           </a>
         )}
         {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
@@ -4724,7 +4769,7 @@ function TaskCard({
               is what this wrapper has always been for. */}
           {peekOn && page && !isDraftTask(task) && (
             <a
-              className="tasks-act tasks-card-act"
+              className="tasks-act tasks-card-act tasks-act--page"
               href={page}
               aria-label={`Open ${task.task_id} in Explorer`}
               data-hint="Open in Explorer · ⌘↩"
@@ -4735,7 +4780,7 @@ function TaskCard({
                 navigateUrl(page);
               }}
             >
-              {ICON_OPEN_DOOR}
+              {OPEN_DOOR_LABEL}
             </a>
           )}
           {SHOW_ROW_ACTIONS && run && (

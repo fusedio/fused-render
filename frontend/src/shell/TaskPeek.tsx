@@ -37,7 +37,6 @@ import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
-import PanelIcon from "@platform/ui/PanelIcon";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
 import { runAgent } from "@apps/claude/protocol/agent";
@@ -64,7 +63,6 @@ import {
   PREVIEW_LOAD_TIMEOUT_MS,
   PREVIEW_MIN_H,
   PREVIEW_CHAT_MIN,
-  PREVIEW_VH,
   PREVIEW_VW,
   getPreviewHeight,
   previewBox,
@@ -92,10 +90,13 @@ import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import {
   PEEK_ITEM_ATTR,
   PEEK_KEY_STEP,
+  PEEK_WALK_ATTR,
+  peekScrollTarget,
   nextAfterRemoval,
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
   applyResize,
+  arrowShouldWalk,
   clampPeekWidth,
   closePeek,
   currentRoom,
@@ -106,9 +107,11 @@ import {
   setPeekHost,
   setPeekWidth,
   settlePeek,
+  showListBesidePeek,
   stepPeekKey,
   subscribePeek,
   syncPeekFromUrl,
+  usePeekAnchor,
   usePeekedKey,
 } from "./task-peek-store";
 
@@ -167,6 +170,9 @@ export interface PeekLayout {
   /** The frame is under that floor: the middle pane scrolls sideways instead of
    *  reflowing any further. */
   floored: boolean;
+  /** The frame is narrower than the column plus its gutters — there are no
+   *  centred margins left to absorb anything, so the gutters come in. */
+  tight: boolean;
   instant: boolean;
 }
 
@@ -198,6 +204,7 @@ export function useTaskPeekLayout(enabled = true): PeekLayout {
         cover: false,
         floor: room.floor,
         floored: false,
+        tight: false,
         instant: state.instant,
       };
     }
@@ -207,6 +214,7 @@ export function useTaskPeekLayout(enabled = true): PeekLayout {
       cover: room.cover,
       floor: room.contentFloor,
       floored: room.floored,
+      tight: room.tight,
       instant: state.instant,
     };
     // `viewport` is not read directly — `currentRoom()` reads the window — but
@@ -272,6 +280,51 @@ function visibleOrder(): string[] {
   return keys;
 }
 
+/**
+ * WHAT A WALK DOES TO THE PAGE BEHIND THE PANEL (design.md, Polish batch 5).
+ *
+ * Two things, and they are both about not losing the reader:
+ *
+ *   1. THE ITEM COMES BACK INTO VIEW. The order the panel walks is longer than
+ *      the frame showing it, so a ⌃⇧J at the bottom of a list opened a task the
+ *      reader could not see — the panel's contents changed and nothing on the
+ *      page said which row it was now about. `block: "nearest"` is deliberate:
+ *      it does nothing at all when the item is already on screen, so an
+ *      ordinary walk down a visible list never jerks the scroller.
+ *
+ *   2. FOCUS FOLLOWS, BUT ONLY FROM THE FRAME, and it arrives without a ring.
+ *      A press that came from the list has to leave focus somewhere the NEXT
+ *      arrow can come from, and leaving it on the row the reader clicked two
+ *      taps ago left a `:focus-visible` ring burning on a row the panel had
+ *      walked away from (the yellow outline Akshil reported). A press that came
+ *      from the panel's own chevrons does NOT move focus: the chevron is a
+ *      button a keyboard may want to press again, and stealing focus out of it
+ *      on the first press is a control that works once.
+ *
+ * `tabindex="-1"` because the items are containers — the List row's tab stop is
+ * the stretched `<a>` inside it, the wall card's is its head — and a container
+ * that is not focusable cannot be handed focus at all. `-1` adds no tab stop;
+ * it only makes the element a legal target for this one call.
+ */
+function walkTo(key: string): void {
+  if (typeof document === "undefined") return;
+  const items = Array.from(
+    document.querySelectorAll<HTMLElement>(`.tasks-frame [${PEEK_ITEM_ATTR}]`),
+  );
+  const el = peekScrollTarget(items, key);
+  if (!el) return;
+  el.scrollIntoView({ block: "nearest" });
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || typeof active.closest !== "function" || !active.closest(".tasks-frame")) return;
+  if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+  el.setAttribute(PEEK_WALK_ATTR, "");
+  el.focus({ preventScroll: true });
+  // The mark is about THIS focus and no other: once the element loses it, a
+  // later keyboard focus on the same item is the reader's own and is entitled
+  // to its ring.
+  el.addEventListener("blur", () => el.removeAttribute(PEEK_WALK_ATTR), { once: true });
+}
+
 // ---- icons -------------------------------------------------------------------
 
 const ICON = {
@@ -286,13 +339,32 @@ const ICON = {
   "aria-hidden": true,
 };
 
+/** CLOSE, and it is the header's FIRST control in every mode (Akshil,
+ *  2026-09-14 — design.md, Polish batch 4, item 11). It wore a panel glyph for
+ *  a day — "hide the right panel", and in cover "show the list" — which is a
+ *  picture of a LAYOUT, and a reader who wants this task off their screen
+ *  should not have to work out which layout they are in first. One mark, one
+ *  meaning, in the corner every panel in this app puts it. */
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/** OPEN IN EXPLORER — the page's one door glyph, drawn here at the header's own
- *  weight (ScheduleTaskViews `ICON_OPEN_FOLDER_PATH` carries the shape). */
-const ICON_OPEN_DOOR = (
-  <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
+/* THE WAY BACK TO THE SPLIT IS A WORD NOW, not a glyph (Akshil, 2026-09-14 —
+   design.md, Polish batch 5): "Resize panel", in the same outline skin the Open
+   door wears. The four inward corner marks it replaces were the "fit" glyph,
+   which is a picture a reader has to be told the meaning of for an act that
+   happens once in a visit — and a header with two labelled buttons and a ×
+   needs no legend at all. The glyph is gone, not folded away. */
+/** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
+ *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
+ *  mark the whole web uses for "this leaves the page you are on", which is
+ *  exactly what the press does. It leads the label rather than trailing it, the
+ *  way every other icon-and-word control in this app is built; the "→" that
+ *  used to follow the word said "forward", which is what a Next control says. */
+const ICON_OPEN_EXTERNAL = (
+  <svg {...ICON} width={13} height={13}>
+    <path d="M7 17 17 7" />
+    <path d="M8 7h9v9" />
+  </svg>
 );
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
  *  through a list that is on screen; an arrow would promise travel. */
@@ -311,6 +383,16 @@ const ICON_DOTS = (
     <circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none" />
   </svg>
 );
+/** THE ⋮'s OWN door mark — the page's shared open-in-Explorer glyph
+ *  (ScheduleTaskViews `ICON_OPEN_FOLDER_PATH`), drawn at the header's weight.
+ *  It is no longer in the header itself: the door there is the words "Open →"
+ *  now (design.md, Polish batch 4), and this is the menu row that stands in for
+ *  it when the header has folded its door away. A MENU row is a label with a
+ *  mark beside it, so the mark stays a picture. */
+const ICON_OPEN_DOOR = (
+  <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
+);
+
 /** The terminal hand-off's mark — the prompt caret, the one picture of a shell
  *  this app already uses for it. */
 const ICON_TERMINAL = (
@@ -339,6 +421,7 @@ export function TaskPeek({
 }) {
   const layout = useTaskPeekLayout();
   const key = usePeekedKey();
+  const anchor = usePeekAnchor();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -393,7 +476,19 @@ export function TaskPeek({
     return () => clearTimeout(t);
   }, [layout.open]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
-  const [erasing, setErasing] = useState(false);
+  /**
+   * THE TASK THE DELETE WAS ASKED ABOUT — a SNAPSHOT, not `task` (Bugbot,
+   * 78118e0fa). The modal used to read the live `task`, which is whatever the
+   * panel is showing NOW; anything that swaps the open task while the
+   * confirmation is up — a chevron, ⌃⇧J, an arrow key, an archive advancing the
+   * panel, a poll dropping the row — retargeted the confirmation at a task the
+   * reader never asked about, under a dialog still spelling out the old one's
+   * number. The word "Delete TASK-126" has to keep meaning TASK-126.
+   *
+   * Non-null IS the open state; there is no separate boolean to fall out of step
+   * with it.
+   */
+  const [erasing, setErasing] = useState<Task | null>(null);
   // THE ORDER TO ADVANCE ALONG, read when the delete is asked for, not when it
   // has happened: by `onDone` the poll may already have dropped the row, and
   // `nextAfterRemoval` on a list that no longer holds the task closes the panel
@@ -424,10 +519,12 @@ export function TaskPeek({
       // `_nofocus=1`, the shell's embedded-frame focus contract
       // (platform/lib/frame-focus): without it the chat template focuses its
       // own composer ~300ms after boot, which pulls the keyboard out of this
-      // page and takes ⌃⇧J / ⌃⇧K / ⌘↩ with it. A wrapper at the HOST, which is
+      // page and takes ⌃⇧J / ⌃⇧K / Esc with it. A wrapper at the HOST, which is
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
-      ? withNoFocus(peekFrameSrc(template, task.target || task.project, task.session_id))
+      ? withNoFocus(
+          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
+        )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
 
@@ -439,7 +536,7 @@ export function TaskPeek({
   const previewSrc = app?.entry
     ? // The SAME document the app page's Overview frames and the Home card
       // opens, plus the shell's embedded-frame focus contract: an app that
-      // focused an input on boot would take ⌃⇧J and ⌘↩ away from the panel
+      // focused an input on boot would take ⌃⇧J and ↑/↓ away from the panel
       // around it (platform/lib/frame-focus).
       withNoFocus(`/render?path=${encodeURIComponent(app.entry)}`)
     : null;
@@ -494,10 +591,19 @@ export function TaskPeek({
   }, [page]);
 
   const order = useCallback(() => visibleOrder(), []);
+  /** Walk one task. ANSWERS WHETHER IT WALKED, which the bare arrow keys spend:
+   *  at the ends of the list there is nowhere to go, and a key that is
+   *  swallowed there is a key the page's own scroll never gets — the panel
+   *  would be eating ↓ at the last task to do nothing with it. */
   const step = useCallback(
-    (delta: number) => {
+    (delta: number): boolean => {
       const next = stepPeekKey(order(), getPeekState().key, delta);
-      if (next) openPeek(next);
+      if (!next) return false;
+      openPeek(next);
+      // …and the page behind the panel keeps up: the new item comes back into
+      // view, and focus follows it without a ring (`walkTo`).
+      walkTo(next);
+      return true;
     },
     [order],
   );
@@ -545,7 +651,7 @@ export function TaskPeek({
   }, []);
 
   /**
-   * THE PEEK'S FOUR KEYS, in one function because they have to be answered in
+   * THE PEEK'S KEYS, in one function because they have to be answered in
    * TWO documents: this one, and — flag off — the legacy chat's, which is a
    * separate document whose keystrokes this page never hears (see the frame
    * effect below). `doc` is whichever document the press happened in, because
@@ -576,14 +682,40 @@ export function TaskPeek({
           return true;
         }
       }
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      // THERE IS NO COMMAND-ENTER ANY MORE (Akshil, 2026-09-14 — design.md,
+      // Polish batch 5). It opened the task as a page, and it was a chord with
+      // no mark on it anywhere except the tooltip of the button that does the
+      // same thing one press away — while the same chord in this app's other
+      // half SUBMITS (the New task modal), which is the opposite of leaving.
+      // The header's Open door and the row's own are the way out, and they say
+      // so in words.
+      // ↑/↓ WALK THE LIST, and they do it BARE (Akshil, 2026-09-14 — design.md,
+      // Polish batch 4). ⌃⇧J/K above stay exactly as they were; this is the
+      // gesture a reader scanning a list with a panel open actually reaches
+      // for.
+      //
+      // TWO GUARDS, and they answer two different questions. `doc === document`
+      // is WHICH DOCUMENT: the app preview and the legacy chat attach this very
+      // listener in documents of their own, and in there the arrows belong to
+      // the app and to the conversation — a chat whose message list stopped
+      // scrolling by arrow because the panel around it had taken the key would
+      // be the worse bargain. `arrowShouldWalk` is WHAT IS FOCUSED in ours: a
+      // field, a select, a menu, or the frame element itself.
+      //
+      // AND `preventDefault` ONLY WHEN IT WALKS — which includes the ENDS of
+      // the list. `step` answers whether it moved, and at the first or last
+      // task it does not: a key eaten there is a key the page's own scroll
+      // never gets, for a walk that did nothing. An arrow this panel declines,
+      // for whatever reason, has to reach whatever would have had it.
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.metaKey && !e.ctrlKey &&
+          !e.altKey && !e.shiftKey && doc === document && arrowShouldWalk(e.target)) {
+        if (!step(e.key === "ArrowDown" ? 1 : -1)) return false;
         e.preventDefault();
-        openAsPage();
         return true;
       }
       return false;
     },
-    [step, openAsPage, escapeOrBlur],
+    [step, escapeOrBlur],
   );
 
   // One listener on THIS document while the peek is open.
@@ -600,7 +732,7 @@ export function TaskPeek({
   // document, and every key the reader presses in it fires there — where the
   // listener above cannot hear it. `_nofocus=1` (below) stops the template
   // TAKING the keyboard on its own, but the reader is entitled to click into
-  // the chat and type, and ⌃⇧J / ⌃⇧K / ⌘↩ have to keep working when they do.
+  // the chat and type, and ⌃⇧J / ⌃⇧K / Esc have to keep working when they do.
   // Same origin, so the frame's document takes a listener of its own; a key the
   // template already stopped never reaches it, which is the right precedence.
   // Flag ON there is no frame and no second document.
@@ -728,7 +860,7 @@ export function TaskPeek({
   };
 
   // THE SAME KEYS AGAIN, FROM INSIDE THE APP. The preview is a third document
-  // and the reader may well be clicking about in it; ⌃⇧J / ⌃⇧K / ⌘↩ / Esc have
+  // and the reader may well be clicking about in it; ⌃⇧J / ⌃⇧K / Esc have
   // to keep meaning the panel's things there too.
   //
   // AND THE APP GETS FIRST REFUSAL: `peekKey` stands down on a press the app
@@ -876,6 +1008,12 @@ export function TaskPeek({
    * header, and the second was a menu row nobody could find for an act the
    * address bar already does.
    *
+   * AND SO IS "Close" (design.md, Polish batch 4). It was here because the
+   * header's first control had become a panel glyph that meant "show the list"
+   * in cover mode, leaving a covered page with no × on it. The × is back, in
+   * every mode, so a "Close" row in a menu is a second way to do the thing the
+   * corner of the panel already does.
+   *
    * A FOURTH appears only when the header has had to fold its own door away
    * (`headFit`): a hidden control has to be somewhere, and the kebab is where.
    */
@@ -922,7 +1060,9 @@ export function TaskPeek({
       disabled: blocked,
       onClick: () => {
         eraseOrder.current = order();
-        setErasing(true);
+        // Both facts captured at the PRESS: the order to walk afterwards, and
+        // the task the dialog is about.
+        setErasing(task);
       },
     });
     return items;
@@ -995,21 +1135,43 @@ export function TaskPeek({
             and the door reappears in the ⋮ so the act is never unreachable. */}
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
           <div className="task-side-peek-acts">
-            {/* HIDE THE PANEL, and the glyph says which panel: the app's shared
-                frame-with-one-half-filled (platform/ui/PanelIcon), `right`
-                because that is the column this is. The × is kept for COVER
-                mode alone — there the peek is not a column beside anything, it
-                IS the content area, and "hide the right panel" would be a
-                picture of a layout that is not on screen. */}
+            {/* CLOSE, IN EVERY MODE (Akshil, 2026-09-14 — design.md, Polish
+                batch 4, item 11). This was a panel glyph whose meaning changed
+                with the layout — "hide the right panel", and in cover "show the
+                list" — so the one control every reader reaches for first was
+                the one control they had to decode. A × in the panel's leading
+                corner is the same promise every other panel in this app makes,
+                and it no longer has to live in the ⋮ as well. */}
             <button
               type="button"
               className="task-side-peek-btn"
-              aria-label={layout.cover ? "Close" : "Hide the task panel"}
-              data-hint={layout.cover ? "Close · Esc" : "Hide · Esc"}
+              aria-label="Close the task panel"
+              data-hint="Close · Esc"
               onClick={() => closePeek()}
             >
-              {layout.cover ? ICON_CLOSE : <PanelIcon side="right" />}
+              {ICON_CLOSE}
             </button>
+            {/* AND IN COVER, THE WAY BACK TO THE SPLIT — a second control, next
+                to the first, because the two are different acts and a control
+                that changes what it does under you is worse than two controls
+                (the reason the × above stopped being clever).
+
+                Cover is easy to fall into and hard to climb out of: the seam is
+                a 12px edge at the far left of the page, which is a thing you
+                have to know is there. This spends exactly the split a fresh
+                open would give — the remainder past the middle pane's baseline,
+                held back far enough that the answer is not cover again — and
+                leaves the task open. */}
+            {layout.cover && (
+              <button
+                type="button"
+                className="task-side-peek-resize"
+                data-hint="Restore the list beside the panel"
+                onClick={() => showListBesidePeek()}
+              >
+                Resize panel
+              </button>
+            )}
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
                 reader can see, one step at a time — the gesture a chevron means
                 everywhere else in this app. A full arrow is for travel. */}
@@ -1017,7 +1179,7 @@ export function TaskPeek({
               type="button"
               className="task-side-peek-btn"
               aria-label="Previous task"
-              data-hint="Previous task · ⌃⇧K"
+              data-hint="Previous task · ↑"
               disabled={!ends.prev}
               onClick={() => step(-1)}
             >
@@ -1027,7 +1189,7 @@ export function TaskPeek({
               type="button"
               className="task-side-peek-btn"
               aria-label="Next task"
-              data-hint="Next task · ⌃⇧J"
+              data-hint="Next task · ↓"
               disabled={!ends.next}
               onClick={() => step(1)}
             >
@@ -1057,34 +1219,51 @@ export function TaskPeek({
           )}
           {task && (
             <div className="task-side-peek-marks">
-              {/* THE SAME DOOR AS THE ROW'S AND THE CARD'S — one folder glyph
-                  for "open in Explorer" everywhere (ScheduleTaskViews
-                  `ICON_OPEN_FOLDER_PATH`). A real link with a real href, so
-                  ⌘-click opens a tab, exactly like the row's. */}
-              {page && (
-                <a
-                  className="task-side-peek-btn task-side-peek-open"
-                  href={page}
-                  aria-label="Open in Explorer"
-                  data-hint="Open in Explorer · ⌘↩"
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-                    e.preventDefault();
-                    openAsPage();
-                  }}
-                >
-                  {ICON_OPEN_DOOR}
-                </a>
-              )}
-              {/* The project as a WORD, not a chip: a chip is a control, and
-                  there is nothing to press here — the folder is where the door
-                  beside it leads. */}
+              {/* THE PROJECT IS A FACT, NOT A DOOR (Akshil, 2026-09-14 —
+                  design.md, Polish batch 4). It was a folder mark and a name
+                  wired to the folder's Explorer page, sitting an inch from a
+                  second door — with a folder glyph on it — that went somewhere
+                  else. Two doors, two folder pictures, one header: the reader
+                  had to learn which folder each one meant. So the name goes
+                  back to being what it is, the label of the project this task
+                  runs in, and the header keeps exactly ONE way out.
+
+                  The full path is still the tooltip: the basename is what fits,
+                  and two folders with the same basename are a real thing. */}
               <span
                 className="task-side-peek-project"
                 title={tildePath(task.project, home)}
               >
                 {basename(task.project)}
               </span>
+              {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
+                  and 5). The folder glyph it replaced was the page's one door
+                  picture, which is a good rule everywhere except beside a
+                  folder NAME, where it read as "open that folder" and did not;
+                  the label says the act, and the external-link arrow in front
+                  of it says the press leaves this page. The icon LEADS, the way
+                  every other icon-and-word control in this app is built, and
+                  the outline around the pair is what makes it read as a button
+                  rather than as more of the header's ink.
+
+                  A real link with a real href, so ⌘-click opens a tab, exactly
+                  like the row's own door. */}
+              {page && (
+                <a
+                  className="task-side-peek-open"
+                  href={page}
+                  aria-label="Open in Explorer"
+                  data-hint="Open in Explorer"
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    openAsPage();
+                  }}
+                >
+                  {ICON_OPEN_EXTERNAL}
+                  Open
+                </a>
+              )}
               <button
                 type="button"
                 className="task-side-peek-btn task-side-peek-kebab"
@@ -1120,9 +1299,15 @@ export function TaskPeek({
                   <>
                     <div
                       className="task-side-peek-preview-scale"
+                      // The scaled frame's real footprint, and it tracks the
+                      // FRAME's height rather than a constant 720 now: past its
+                      // natural size the box gives the app a taller viewport
+                      // instead of cropping it (shell/peek-preview.ts
+                      // `previewBox`), and the wrapper is what tells the
+                      // scroller how much there is.
                       style={{
                         width: PREVIEW_VW * box.scale,
-                        height: PREVIEW_VH * box.scale,
+                        height: box.frameHeight * box.scale,
                       }}
                     >
                       <iframe
@@ -1132,7 +1317,7 @@ export function TaskPeek({
                         title={app ? `${app.name} preview` : "App preview"}
                         style={{
                           width: PREVIEW_VW,
-                          height: PREVIEW_VH,
+                          height: box.frameHeight,
                           transform: `scale(${box.scale})`,
                         }}
                         onLoad={() => stepLoad("load")}
@@ -1186,6 +1371,11 @@ export function TaskPeek({
                 title={`${task.task_id} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
+                // ONE TURN TO LAND ON, when the press that opened this was a
+                // message row rather than a task row (task-peek-store
+                // `PeekState.anchor`). Absent, the conversation opens where a
+                // conversation opens: at the end.
+                {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
                 paramsSource="memory"
@@ -1218,18 +1408,22 @@ export function TaskPeek({
       {menuAt && (
         <ContextMenu x={menuAt.x} y={menuAt.y} items={menuItems()} onClose={() => setMenuAt(null)} />
       )}
-      {erasing && task && (
+      {erasing && (
         <EraseTaskModal
-          task={task}
-          onClose={() => setErasing(false)}
+          // THE CAPTURED TASK, every time it is named — the prop, the toast and
+          // the advance. `task` is the panel's current one and may no longer be
+          // this one by the time the reader presses Delete (Bugbot, 78118e0fa).
+          task={erasing}
+          onClose={() => setErasing(null)}
           onDone={() => {
-            setErasing(false);
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            const erased = erasing;
+            setErasing(null);
+            notify({ title: `Deleted ${erased.task_id}`, tone: "info" });
             onReload?.();
             // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
             // the task is gone, the panel is not — it moves on to the next one
             // down, and only closes when there is nothing left to move to.
-            advancePast(task.key, eraseOrder.current);
+            advancePast(erased.key, eraseOrder.current);
           }}
         />
       )}

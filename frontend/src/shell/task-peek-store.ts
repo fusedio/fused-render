@@ -16,6 +16,7 @@
 // the window, writes history and pokes the sidebar.
 import { useSyncExternalStore } from "react";
 import { forgetAppsCache, resetPreviewHeight } from "./peek-preview";
+import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
 import {
   SIDEBAR_RAIL_WIDTH,
   getSidebarState,
@@ -43,6 +44,25 @@ export const PEEK_ITEM_ATTR = "data-peek-key";
 export const PEEK_OPEN_CLASS = "is-peeked";
 
 /**
+ * THE MARK A WALKED-TO ITEM WEARS WHILE IT HOLDS THE WALK'S OWN FOCUS, and the
+ * whole of its job is to take the focus RING off (styles/task-peek.css).
+ *
+ * ↑/↓ move the panel, and they move focus with it so the next press has
+ * somewhere to come from — but a focus the reader never asked for must not be
+ * drawn like one they did. The UA flips `:focus-visible` on the moment a
+ * keyboard is used, so the row clicked a second ago lit up with a yellow ring
+ * as the panel walked away from it, and walking back put that ring on the open
+ * row (Akshil, 2026-09-14 — design.md, Polish batch 5).
+ *
+ * AN ATTRIBUTE RATHER THAN A CLASS, and that is not a preference: every item
+ * this can land on (`.tasks-row`, `.task-card`, a calendar chip) has a React-
+ * owned `className` which changes on the very same open — `is-peeked` goes on
+ * — so a class added here would be wiped by the render that follows. React
+ * never touches an attribute it did not itself set.
+ */
+export const PEEK_WALK_ATTR = "data-peek-walk";
+
+/**
  * WHERE THE "WE COLLAPSED IT" MARKER LIVES, and why it lives anywhere at all.
  *
  * The flag is the difference between putting a sidebar back and overruling a
@@ -66,21 +86,24 @@ export const PEEK_AUTOCOLLAPSE_KEY = "tasks.peek.autocollapsed";
 export const PEEK_WIDTH_KEY = "tasks.peek.width";
 
 /**
- * THE PEEK'S MINIMUM, and it is the Explorer Claude pane's (220px,
- * `.listing-pane-slot` in styles/explorer.css) rather than a number of this
- * panel's own — the two are the same chat in the same shell, and a reader who
- * has dragged one down to a column of message bubbles expects the other to go
- * there too (design.md, Widths v2).
+ * THE PEEK'S MINIMUM, and it is the Explorer Claude pane's — literally, now:
+ * one constant (platform/lib/pane-metrics.ts) for the two panes that are the
+ * same chat in the same shell, so a reader who has learned how narrow one goes
+ * has learned the other.
  *
- * 564 until 2026-09-14, with a ⅔ ceiling above it. Both are gone: the ceiling
- * because the middle pane now has a floor of its own to stop at (below), and
- * the 564 because a panel that cannot be made narrow is a panel you close
- * instead of narrowing.
+ * WHAT THE NUMBER IS ABOUT has changed twice. It was 564 with a ⅔ ceiling until
+ * 2026-09-14; both went, the ceiling because the middle pane now has a floor of
+ * its own to stop at and the 564 because a panel that cannot be made narrow is
+ * a panel you close instead of narrowing. It was then 220 — the Explorer pane's
+ * own long-standing figure — until Akshil pointed out what 220 actually looks
+ * like: the composer's control row tightened to nothing with the send button
+ * wrapped onto a second line. It is now the width that row needs, which is the
+ * width below which this stops being a chat pane at all.
  *
- * There is NO MAXIMUM. The peek may take everything the middle pane's own floor
- * and the cover threshold below have not claimed.
+ * There is still NO MAXIMUM. The peek may take everything the middle pane's own
+ * floor and the cover threshold below have not claimed.
  */
-export const PEEK_MIN_WIDTH = 220;
+export const PEEK_MIN_WIDTH = SIDE_PANE_MIN_WIDTH;
 
 /**
  * WHAT SHARE OF ITS BASELINE THE MIDDLE PANE KEEPS BEFORE IT STOPS SHRINKING —
@@ -282,6 +305,69 @@ export function frameClickCloses(hit: Element | null): boolean {
   return !!hit && hit.closest(PEEK_FRAME_KEEPS_OPEN) === null;
 }
 
+/**
+ * WHERE ↑/↓ MEAN "the task before / the task after", and where they mean what
+ * they have always meant (Akshil, 2026-09-14 — design.md, Polish batch 4).
+ *
+ * The chevrons in the peek's header walk the visible order, and a reader
+ * scanning a list with a panel open reaches for the arrow keys for that same
+ * walk long before they reach for ⌃⇧J. So the peek answers them — but only
+ * where nothing else is entitled to.
+ *
+ * NOT ENTITLED, in the order it matters:
+ *
+ *   * a TEXT FIELD, of any shape: an ↑ in a composer moves the caret, in a
+ *     search field it walks the history, in a `contenteditable` it moves a
+ *     line. Stealing that is the composer bug this panel has already been
+ *     bitten by once (Escape, PR #1133) in a quieter medium — nothing is lost,
+ *     but the caret jumps and the reader's place goes with it;
+ *   * a SELECT, whose arrows ARE how it is operated without a pointer;
+ *   * an open MENU, where ↑/↓ walk the rows — and the kebab's menu is opened
+ *     from this very header;
+ *   * an open DIALOG, which is the worst of the lot (Bugbot, 78118e0fa): the
+ *     delete confirmation's Confirm and Cancel are plain buttons, so an arrow
+ *     pressed in it went straight past them and SWAPPED THE PANEL'S TASK behind
+ *     a dialog still naming the old one. A modal is modal — nothing outside it
+ *     may act while it is up — and this mirrors `PEEK_FRAME_KEEPS_OPEN`, which
+ *     already spares `.modal-dialog` from the frame's click-to-close;
+ *   * an IFRAME that holds focus: the app preview and the legacy chat are other
+ *     documents and the arrows there are the app's. The documents themselves
+ *     are handled at the call site (a press that did not happen in the top
+ *     document is not ours), and this is the case where the element holding
+ *     focus in OUR document is the frame.
+ *
+ * A PURE FUNCTION OF THE TARGET, so it can be proved without a browser. Note
+ * what it is NOT allowed to be: a list of the places arrows DO work. The peek's
+ * header, the chat's chrome, the list, the board and the cards are simply
+ * everything else, and an allow-list would have to be extended by every surface
+ * this panel ever grows — quietly failing closed, which for a shortcut means
+ * "the key did nothing" and no way to find out why.
+ */
+export function arrowShouldWalk(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  // A press with no element behind it happened on the document — nothing is
+  // focused, so nobody has a prior claim.
+  if (!el || typeof el.closest !== "function") return true;
+  if (el.isContentEditable) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "IFRAME") return false;
+  // The menus this app draws (`platform/ui/ContextMenu`) and the filter
+  // popovers on the page behind the panel, which are menus in everything but
+  // the element's name — and every dialog, by all three of the marks the shared
+  // `Modal` chassis puts on one (`platform/ui/modal/Modal`), so a dialog that
+  // wears only one of them is still covered.
+  // The native chat renders in THIS document (the legacy one is behind the
+  // frame guard above), and ↑/↓ over its transcript belong to the transcript's
+  // scroll, not to the task list (Bugbot, 3b720ee0b). The header keeps walking.
+  return (
+    el.closest(
+      '.context-menu, .tasks-pop, [role="menu"], [role="listbox"], ' +
+        '.modal-dialog, [role="dialog"], [aria-modal="true"], ' +
+        '.task-side-peek-chat',
+    ) === null
+  );
+}
+
 // ---- pure: prev / next -------------------------------------------------------
 
 /**
@@ -301,6 +387,36 @@ export function stepPeekKey(
   const next = at + delta;
   if (next < 0 || next >= order.length) return null;
   return order[next] ?? null;
+}
+
+/**
+ * WHICH ELEMENT A WALK SCROLLS BACK INTO VIEW — the walked-to item itself, or
+ * nothing at all when the view has not painted it.
+ *
+ * ↑/↓ and the chevrons move the panel through an order the reader can only
+ * partly see: the list is a scroller, the board's columns are scrollers, the
+ * wall is a grid taller than its frame. A walk that opens a task off screen is
+ * a panel whose contents changed for no visible reason — so the item is
+ * brought back with `scrollIntoView({ block: "nearest" })`, which is the one
+ * option that does NOTHING when the item is already in view and moves the
+ * least when it is not.
+ *
+ * TAKES THE NODES, NOT A SELECTOR, for two reasons: it is then a pure function
+ * of a list and a key, provable without a browser; and a task key is an
+ * arbitrary string (a path, a session id) which has no business being spliced
+ * into a CSS attribute selector. The FIRST match wins, because a view may paint
+ * one task twice — a board card and its drag ghost — and the walk means places,
+ * exactly as `visibleOrder` does when it reads the same nodes.
+ */
+export function peekScrollTarget<T extends { getAttribute(name: string): string | null }>(
+  items: readonly T[],
+  key: string | null,
+): T | null {
+  if (!key) return null;
+  for (const item of items) {
+    if (item.getAttribute(PEEK_ITEM_ATTR) === key) return item;
+  }
+  return null;
 }
 
 /**
@@ -361,6 +477,10 @@ export interface RoomPlan {
   contentFloor: number;
   /** The frame is narrower than the floor: the middle pane scrolls sideways. */
   floored: boolean;
+  /** The frame is narrower than the column plus its gutters: the centred
+   *  margins are spent, and the page's side padding is all that is left to
+   *  give (design.md, Polish batch 3). */
+  tight: boolean;
   /** The peek takes the whole content area and the middle pane is hidden. */
   cover: boolean;
 }
@@ -391,6 +511,7 @@ export function planRoom(input: RoomInput): RoomPlan {
       floor,
       contentFloor: floor,
       floored: false,
+      tight: false,
       cover: false,
     };
   }
@@ -404,6 +525,7 @@ export function planRoom(input: RoomInput): RoomPlan {
     contentFloor: floor,
     // Cover is not "floored": there is no middle pane on screen to scroll.
     floored: !cover && frameAfter < floor,
+    tight: !cover && frameAfter < baselineOr(baseline, content),
     cover,
   };
 }
@@ -548,6 +670,17 @@ export interface PeekState {
    * it changing would go on drawing the peek at the width it had a frame ago.
    */
   baseline: number | null;
+  /**
+   * ONE TURN inside the open conversation to scroll to, or null for "the end",
+   * which is where a conversation ordinarily opens.
+   *
+   * Set by the List's MESSAGE rows (shell/ScheduleTaskViews `openMessage`),
+   * which are the only place on this page that addresses something smaller than
+   * a task. Cleared by every other way in, because they all mean the thread
+   * rather than a turn of it — and a stale anchor would send the next open
+   * scrolling backwards for no reason the reader could see.
+   */
+  anchor: string | null;
   /** Opened by a deep link / a Back: no slide, the panel is simply there. */
   instant: boolean;
 }
@@ -618,6 +751,7 @@ let state: PeekState = {
   width: loadWidth(),
   autoCollapsed: seedAutoCollapsed(),
   baseline: null,
+  anchor: null,
   instant: true,
 };
 
@@ -633,9 +767,12 @@ let state: PeekState = {
  */
 let baselineCandidate: number | null = null;
 
-/** The page's side padding as last measured (`measureTasksBaseline`). The
- *  stylesheet's own 22px either side is the fallback, used only before anything
- *  has been on screen to read. */
+/** The page's UNTIGHT side padding as last measured (`measureTasksBaseline`),
+ *  off `--tasks-page-gutter` rather than the live padding — so a resize that
+ *  lands the frame in `data-tight` cannot feed its 12px inset back in here
+ *  after a baseline is already frozen (Bugbot, PR #1141). The stylesheet's
+ *  own 22px either side is the fallback, used only before anything has been
+ *  on screen to read. */
 let baselineGutter = TASKS_PAGE_GUTTER;
 
 /** Which side of the floor the last resize left the layout on (`planCrossing`).
@@ -760,8 +897,21 @@ export function measureTasksBaseline(): number | null {
     const host = document.querySelector<HTMLElement>(".tasks-peek-host");
     if (!main || !page || !host) return null;
     const cs = getComputedStyle(page);
+    // THE UNTIGHT GUTTER (Bugbot, PR #1141). `.tasks-frame[data-tight="1"]
+    // .schedule-page` (styles/task-peek.css) narrows the LIVE padding to 12px
+    // either side once the frame is narrow — and reading that padding here
+    // meant a resize landing on the tight side after the baseline was already
+    // frozen fed the reduced inset back into `peekGutter()`, which mixes the
+    // frozen baseline's 44px gutter with a 12px one in the floor's arithmetic
+    // (Scheduled.tsx's `contentFloor`). `--tasks-page-gutter` is declared once,
+    // on `.schedule-page` itself (styles/schedule.css), and the tight rule
+    // never redeclares it — so it reads 44px whether or not the frame is
+    // tight. The padding sum is a fallback only for a page predating the var.
+    const gutterVar = Number.parseFloat(cs.getPropertyValue("--tasks-page-gutter"));
     const gutter =
-      (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+      Number.isFinite(gutterVar) && gutterVar > 0
+        ? gutterVar
+        : (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
     const content = host.clientWidth;
     if (!(content > 0)) return null;
     const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
@@ -770,7 +920,11 @@ export function measureTasksBaseline(): number | null {
     // back to — but only the rendered box can confirm the element is laid out
     // at all, so a zero-width one is still "not yet".
     if (!Number.isFinite(cap) && !(main.getBoundingClientRect().width > 0)) return null;
-    baselineGutter = gutter;
+    // NEVER OVERWRITE ONCE FROZEN. The baseline is a fact about the visit's
+    // FIRST open, and the gutter it was measured with has to stay that same
+    // fact — a re-measure after the freeze (the observer keeps running) must
+    // not let `peekGutter()` drift mid-visit, tight or not.
+    if (state.baseline === null) baselineGutter = gutter;
     return tasksBaselineFrom(cap, gutter, content);
   } catch {
     return null; // no layout to read (a test harness, a detached document)
@@ -878,7 +1032,7 @@ function replacePeekUrl(key: string | null): void {
  * still hands it back (`setPeekHost`).
  */
 function dropPeek(instant: boolean): void {
-  publish({ ...state, key: null, instant });
+  publish({ ...state, key: null, anchor: null, instant });
 }
 
 /**
@@ -916,9 +1070,19 @@ export function settlePeek(tasks: readonly PeekNamed[]): void {
  * signal to do what it always did (navigate). That answer is the ONLY thing
  * separating the four views' presses from every other way into a task.
  */
-export function openPeek(key: string, opts?: { push?: boolean }): boolean {
+export function openPeek(
+  key: string,
+  opts?: { push?: boolean; anchor?: string | null },
+): boolean {
   if (!host || !key) return false;
-  if (state.key === key) return true;
+  const anchor = opts?.anchor ?? null;
+  // RE-PRESSING THE OPEN TASK IS ORDINARILY A NO-OP — except from a message
+  // row, which is asking for somewhere ELSE in the conversation already on
+  // screen, and that is a real request rather than a repeat.
+  if (state.key === key) {
+    if (anchor && anchor !== state.anchor) publish({ ...state, anchor });
+    return true;
+  }
   // A fresh OPENING freezes the middle pane's baseline — the width the column
   // is being read at, RIGHT NOW, before the panel takes anything (design.md,
   // Widths v2). It also re-reads the desk's table (shell/peek-preview.ts): the
@@ -941,7 +1105,14 @@ export function openPeek(key: string, opts?: { push?: boolean }): boolean {
   // panel that opens in cover has hidden the only control that would get it out
   // (`storableWidth`).
   const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
-  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: false });
+  publish({
+    ...state,
+    key,
+    width,
+    anchor,
+    baseline: state.baseline ?? freezeBaseline(),
+    instant: false,
+  });
   // AN OPEN IS NOT A RESIZE (design.md, Widths v2): it moves no sidebar — with
   // the ONE exception below, which is a first open on a window too narrow to
   // give the panel its minimum without eating into the column.
@@ -989,7 +1160,14 @@ export function syncPeekFromUrl(search: string): void {
   }
   const fresh = state.key === null;
   const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
-  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: true });
+  publish({
+    ...state,
+    key,
+    width,
+    anchor: null,
+    baseline: state.baseline ?? freezeBaseline(),
+    instant: true,
+  });
   // A traversal that ARRIVES at a peek is a first open too (a deep link is the
   // commonest way in), so it gets the same one exception.
   if (fresh) spendOpenTimeCollapse();
@@ -1006,6 +1184,31 @@ export function setPeekWidth(width: number, persist = true): void {
   if (persist) saveWidth(storableWidth(next, contentWidth()));
   if (next === state.width) return;
   publish({ ...state, width: next });
+}
+
+/**
+ * OUT OF COVER, WITHOUT CLOSING THE TASK — what the header's first control does
+ * while the panel is covering the page (Akshil, 2026-09-14 — design.md, Polish
+ * batch 3, option b).
+ *
+ * Cover is easy to get into and was hard to get out of: the seam is a 12px
+ * edge at the far left of the page, which is a thing you have to know is there.
+ * So the panel grows a control that says what it does — "Show list" — and
+ * spends exactly the split the reader would get from a fresh open: the
+ * remainder past the middle pane's baseline, held back far enough that the
+ * middle pane clears its cover floor and the answer is not cover again.
+ *
+ * The peek stays open on the same task. Closing is still Esc, and the kebab.
+ */
+export function showListBesidePeek(): void {
+  if (state.key === null) return;
+  const content = contentWidth();
+  const next = storableWidth(defaultPeekWidth(content, peekBaseline()), content);
+  saveWidth(next);
+  publish({ ...state, width: next });
+  // A width change IS a resize, so the sidebar's crossing detector gets its say
+  // — coming out of cover is the widest upward crossing there is.
+  applyResize();
 }
 
 /** Double-click on the seam: back to NO CHOICE, which is the remainder past the
@@ -1199,6 +1402,16 @@ export function usePeekedKey(): string | null {
   return useSyncExternalStore(subscribePeek, peekKey, peekKey);
 }
 
+function peekAnchor(): string | null {
+  return state.anchor;
+}
+
+/** Which TURN of it to land on, when the press that opened the panel addressed
+ *  one (`PeekState.anchor`). */
+export function usePeekAnchor(): string | null {
+  return useSyncExternalStore(subscribePeek, peekAnchor, peekAnchor);
+}
+
 function peekHost(): boolean {
   return state.host;
 }
@@ -1234,6 +1447,7 @@ export function resetPeekStoreForTests(): void {
     width: null,
     autoCollapsed: false,
     baseline: null,
+    anchor: null,
     instant: true,
   };
   listeners.clear();

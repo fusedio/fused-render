@@ -1447,6 +1447,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // instead (styles/task-peek.css). The toolbar is deliberately NOT under
         // it — it stays one line at every width and folds its own way.
         data-floored={peek.floored ? "1" : undefined}
+        // …and `data-tight` a little earlier: once the frame is narrower than
+        // the column plus its gutters there are no centred margins left to give
+        // and the page's side padding is just two dark bands (design.md, Polish
+        // batch 3). Written off the same baseline the floor is.
+        data-tight={peek.open && peek.tight ? "1" : undefined}
         style={
           {
             width: `calc(100% - ${taken}px)`,
