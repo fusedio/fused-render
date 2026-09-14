@@ -78,14 +78,11 @@ test("a session with a task row wears the peek's identity block", () => {
   expect(v.has("c-session").length).toBe(0);
 });
 
-test("the running word stays beside the ring", () => {
-  // The ring is the LISTING's answer and arrives on a long-poll; this is the
-  // page's own turn clock, and at both ends of a turn it is the faster of the
-  // two.
+test("no running word beside the ring — the ring already says it", () => {
+  // Akshil, 2026-09-14: the identity line's status ring is the one mark; a
+  // word repeating it at the far end of the same line was removed.
   const v = render({ sessionId: "sess-1", task: task(), running: true });
-  expect(v.has("c-tb-run").length).toBe(1);
-  const off = render({ sessionId: "sess-1", task: task(), running: false });
-  expect(off.has("c-tb-run").length).toBe(0);
+  expect(v.has("c-tb-run").length).toBe(0);
 });
 
 test("no row yet — the line the chat has always printed", () => {

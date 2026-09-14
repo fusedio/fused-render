@@ -99,18 +99,10 @@ export function Topbar({
       <div className="c-topbar" title={sessionId || undefined}>
         <TaskPeekWho task={task} />
         <TaskPeekProject task={task} {...(home ? { home } : {})} />
-        {/* THE WORD STAYS, beside a ring that also says it (Akshil, 2026-09-14
-            left the choice to whether the ring conveys it). It does not, quite:
-            the ring is the LISTING's answer and arrives on a long-poll, while
-            this is THIS page's own turn clock — the same flag the composer's
-            stop square is drawn from. The two disagree for as long as a poll
-            takes at both ends of a turn, and the faster of them is the one a
-            reader watching their own request wants. */}
-        {running ? (
-          <span className="c-tb-run" aria-live="polite">
-            running
-          </span>
-        ) : null}
+        {/* NO "running" WORD HERE (Akshil, 2026-09-14): the ring at the left
+            already says it, and one line saying one thing twice spends the
+            header's last inch on nothing. The page's own turn clock still
+            drives the composer's stop square; the header defers to the ring. */}
       </div>
     );
   }
@@ -120,9 +112,6 @@ export function Topbar({
   // place it will land — so the header's height and rhythm do not move when it
   // does. `aria-hidden`, because there is nothing here to read out: the line has
   // no name yet, and announcing a placeholder is worse than announcing nothing.
-  //
-  // The `running` word still shows, if the page's own turn clock says so: that
-  // is THIS document's fact and owes the listing nothing.
   //
   // A TASK ALWAYS OUTRANKS IT, stated rather than left to the branch order
   // above (Akshil QA, 2026-09-14): `pending` is "nobody has answered", and a
@@ -135,11 +124,6 @@ export function Topbar({
           <span className="c-skel-dot" />
           <span className="c-skel-bar is-title" />
         </span>
-        {running ? (
-          <span className="c-tb-run" aria-live="polite">
-            running
-          </span>
-        ) : null}
       </div>
     );
   }
