@@ -100,7 +100,16 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
     }
     return {
       role: "assistant" as const,
-      key: "h:" + i,
+      // THE REPLY'S OWN RECORD ID WHEREVER THERE IS ONE, exactly as the user
+      // branch above. A positional key is not an identity: a history re-read
+      // that gained or lost a row moved every fold the reader had set (the map
+      // in `ui/Transcript` is keyed by `foldKey`, which is this key for a turn
+      // with no uuid), so a reply they had opened folded itself and its
+      // neighbour opened. `"h:" + i` remains the fallback for an older server.
+      key: t.uuid || "h:" + i,
+      // Carried as well as keyed: `foldKey` PREFERS `uuid`, so the reply's fold
+      // identity is the record id no matter what the key derivation does later.
+      ...(t.uuid ? { uuid: t.uuid } : {}),
       text: t.text || "",
       ...(Array.isArray(t.segments) ? { segments: t.segments } : {}),
       // Only ever on the last turn — guarded here too, so a payload that ever

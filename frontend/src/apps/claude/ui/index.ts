@@ -88,6 +88,7 @@ export {
 export type { ComposerDefaults } from "./composer-defaults";
 export {
   ago,
+  draftTextOf,
   paneChatUrl,
   paneSlashes,
   sessionTitle,

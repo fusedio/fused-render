@@ -69,6 +69,12 @@ export interface UserTurn {
 export interface AssistantTurn {
   role: "assistant";
   key: string;
+  /** The transcript record that OPENED this reply, on a restored turn (agent.py
+   *  `_history`). The reply's only identity across a history re-read, which is
+   *  what its fold is remembered by (`ui/Transcript.foldKey`). Absent on a live
+   *  turn, which has no record yet, and on an older server's payload. NOT drawn
+   *  as `data-msg`: only a user turn is a position a `?msg=` link may land on. */
+  uuid?: string;
   /** Finalised markdown text; while streaming this is the text so far. */
   text: string;
   /** Present when the turn had tool/thinking/notice segments (T:15591). */

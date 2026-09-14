@@ -28,6 +28,24 @@ describe("historyToTurns", () => {
     expect((turns[0] as { uuid?: string }).uuid).toBeUndefined();
   });
 
+  test("an assistant turn is keyed by its own record id, not by its position", () => {
+    // A positional key is not an identity: a re-read that gained or lost a row
+    // moved every fold the reader had set one turn down the log (the fold map
+    // in `ui/Transcript` is keyed by `foldKey`, which is this key).
+    const turns = historyToTurns({
+      turns: [
+        { role: "assistant", text: "one", uuid: "r1" },
+        { role: "assistant", text: "two" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[0].key).toBe("r1");
+    expect((turns[0] as { uuid?: string }).uuid).toBe("r1");
+    // …and an older server that sends none falls back exactly as before.
+    expect(turns[1].key).toBe("h:1");
+    expect((turns[1] as { uuid?: string }).uuid).toBeUndefined();
+  });
+
   test("segments ride along only when the turn had any (agent.py:5041)", () => {
     const turns = historyToTurns({
       turns: [

@@ -256,8 +256,20 @@
    one corner of it — and now that every prose segment is wrapped in a block
    (`SegmentView`, review #4) that would have been every paragraph in the log.
    One variable, used by all of these rules, because it is the same number. */
+/* FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `right: 0` below is only
+   "the right edge of the transcript" if the box it is positioned in reaches
+   that edge — and it did not. `.turn.assistant` is a flex row and `.body` was
+   a flex item with no `flex` of its own, so it SHRINK-WRAPPED to its content:
+   a turn ending in a short line put its `more ▸` a few hundred px in from the
+   column, level with nothing, while the next turn's sat at the margin. One x
+   for every trigger in the log is the whole point of a corner affordance, so
+   the body takes the column (`flex: 1` on `.body` below) and every block in it
+   takes the body. `display: block` is stated rather than assumed because a
+   `<span>` ancestor is one rule away from making these inline. */
 .chat-root .seg-block {
   position: relative;
+  display: block;
+  width: 100%;
   --c-run-trigger-w: 46px;
 }
 .chat-root .seg-block.has-trigger > .seg-text > :last-child {
@@ -322,6 +334,14 @@
   }
 }
 .chat-root .turn.assistant .body {
+  /* THE COLUMN, not the content (see `.seg-block` above): a flex item that
+     shrink-wraps takes the trigger's `right: 0` with it. `min-width: 0` stays —
+     it is the half that lets a long unbroken token shrink the item instead of
+     pushing the row wide — and `display: block` is stated because this is a
+     `<span>`, which a flex container blockifies today and nothing guarantees
+     for a future one. */
+  flex: 1;
+  display: block;
   min-width: 0;
   word-break: break-word;
   padding-top: 2px;

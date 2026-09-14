@@ -9,6 +9,9 @@ installDomShim();
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 import { SegmentView } from "./SegmentView";
 import type { Segment, ToolSegment } from "../protocol/types";
@@ -293,5 +296,54 @@ describe("opening a run", () => {
     policy.overrides.set("tool:b", true);
     const again = view(segs, {}, policy).toJSON() as Json | Json[];
     expect(byClass(again, "chip-body")).toHaveLength(1);
+  });
+});
+
+// ── WHERE THE WORD SITS, ACROSS TURNS (Akshil, 2026-09-15) ───────────────────
+//
+// `right: 0` only means "the right edge of the transcript" if the positioned
+// box reaches that edge. `.turn.assistant` is a flex row and `.body` had no
+// `flex`, so it shrink-wrapped to its content: a turn ending in a short line
+// put its `more ▸` hundreds of px in from the column while the next turn's sat
+// at the margin. A corner affordance at a different x per row is not a corner.
+//
+// Geometry, so it is the SHEET that is asserted — this renderer lays nothing
+// out. The rules are read whole rather than grepped for a token, so a
+// `flex: 1` in some neighbouring block cannot answer for this one.
+describe("the trigger's column", () => {
+  const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
+  const ruleFor = (selector: string): string => {
+    const at = sheet.indexOf(selector + " {");
+    expect(at).toBeGreaterThan(-1);
+    const open = sheet.slice(at + selector.length + 2);
+    return open.slice(0, open.indexOf("}"));
+  };
+
+  test("the reply's body takes the whole column, not the width of its words", () => {
+    const body = ruleFor(".chat-root .turn.assistant .body");
+    expect(body).toContain("flex: 1");
+    // …and it still shrinks for a long unbroken token rather than widening the
+    // row — the half that was already right.
+    expect(body).toContain("min-width: 0");
+  });
+
+  test("every block in it is full width, so `right: 0` is the column's edge", () => {
+    const block = ruleFor(".chat-root .seg-block");
+    expect(block).toContain("width: 100%");
+    expect(block).toContain("display: block");
+    // The trigger itself is unmoved: bottom-right of the block it belongs to.
+    const trigger = ruleFor(".chat-root .seg-block > .run-trigger");
+    expect(trigger).toContain("right: 0");
+    expect(trigger).toContain("bottom: 0");
+  });
+
+  test("the BARE case lands on the same edge, by the same box", () => {
+    // A run with no prose in front of it takes its own line — `text-align:
+    // right` inside a block that now reaches the column, so the word ends up
+    // exactly where the positioned one does.
+    expect(ruleFor(".chat-root .seg-block.is-bare")).toContain("text-align: right");
+    expect(ruleFor(".chat-root .seg-block.is-bare > .run-trigger")).toContain(
+      "position: static",
+    );
   });
 });

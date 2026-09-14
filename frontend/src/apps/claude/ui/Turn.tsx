@@ -7,7 +7,7 @@ import { memo, useId } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/controller-api";
-import { viewKind } from "../protocol/segments";
+import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
 import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
@@ -345,6 +345,15 @@ export interface CollapsedLine {
   muted: boolean;
 }
 
+/** The noun a reply is named by when it has nothing else to show for itself —
+ *  the kind of the first thing in it. Machinery, so always muted. */
+const KIND_NOUN: Record<SegmentKind, string> = {
+  text: "Response",
+  thinking: "Thinking",
+  tool: "Tool call",
+  notice: "Notice",
+};
+
 /**
  * The first line of the turn's first `text` segment, or — for a turn that was
  * nothing but tool calls — the first call's own chip summary, muted.
@@ -353,8 +362,17 @@ export interface CollapsedLine {
  * reply's structure is, and a heading or a list item is exactly the fragment a
  * reader scanning a folded log wants. The ellipsis is CSS (`text-overflow`), so
  * the cut lands at the column's real width rather than at a character count.
+ *
+ * NEVER NULL (Akshil 2026-09-15). A folded turn draws this line and nothing
+ * else, so a null answer is a row with a mark, a fold, and no words at all —
+ * a control the reader can only work by pressing it to find out. Every road
+ * out ends in a noun: the prose, then the first tool call's summary, then the
+ * KIND of the first segment ("Thinking" for a reply that only thought,
+ * "Interrupted" for one that was cut off), and finally "Response" for a turn
+ * with nothing in it whatsoever. The fallbacks are muted because none of them
+ * is the answer — they say what the row IS, not what it said.
  */
-export function collapsedLine(turn: TurnRow): CollapsedLine | null {
+export function collapsedLine(turn: TurnRow): CollapsedLine {
   const segs = (turn as AssistantTurn).segments ?? [];
   for (const seg of segs) {
     if (!seg || viewKind(seg) !== "text") continue;
@@ -367,7 +385,16 @@ export function collapsedLine(turn: TurnRow): CollapsedLine | null {
   for (const seg of segs) {
     if (seg && seg.kind === "tool") return { text: toolChipSummary(seg), muted: true };
   }
-  return null;
+  const first = segs.find((seg) => !!seg);
+  if (first) {
+    const kind = viewKind(first);
+    // The one kind with a better word than its own name: a turn the reader
+    // ended reads as what happened to it, not as the notice that recorded it.
+    const interrupted =
+      kind === "notice" && isInterruptMark((first as { text?: string }).text ?? "");
+    return { text: interrupted ? "Interrupted" : KIND_NOUN[kind], muted: true };
+  }
+  return { text: KIND_NOUN.text, muted: true };
 }
 
 /** The first line with anything on it, trimmed. */

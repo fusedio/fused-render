@@ -245,6 +245,18 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   // The body it opens and shuts is the one it always named.
   const bodyId = /"aria-controls":"([^"]*)"/.exec(before)![1]!;
   expect(shown).toContain('"aria-controls":"' + bodyId + '"');
+  // …AND IT IS THE SAME NODE, not a rebuild that happens to read alike — the
+  // half a final-state assertion cannot see, and the whole point of R4-3. The
+  // fold is the only thing standing between the two serializations, so press
+  // the mark open and the subtree must come back BYTE FOR BYTE: same `useId`
+  // body id, same rendered markdown, same everything. A bubble rebuilt under
+  // the newer one would differ here even when it read the same on screen.
+  unfold(r, 0);
+  let reopened: Json | null = null;
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("assistant") && !reopened) reopened = n;
+  });
+  expect(JSON.stringify(reopened)).toBe(before);
 });
 
 test("a parked card survives the run ending: no streaming turn anywhere", () => {

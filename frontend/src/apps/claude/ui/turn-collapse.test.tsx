@@ -18,7 +18,8 @@ import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 // `location` at module init — static imports are hoisted above the
 // `installDomShim()` call above.
 const { Transcript } = await import("./Transcript");
-const { collapsedLine, Turn } = await import("./Turn");
+const { collapsedLine, INTERRUPT_MARK, Turn } = await import("./Turn");
+const { historyToTurns } = await import("../protocol/history");
 
 const mounted: Array<ReturnType<typeof create>> = [];
 function mount(el: React.ReactElement) {
@@ -302,6 +303,82 @@ describe("which replies land folded", () => {
     expect(folded(r)).toHaveLength(2);
   });
 
+  test("AN UNANSWERED CARD HOLDS ITS TURN OPEN PAST THE NEXT REPLY (Akshil 2026-09-15)", () => {
+    // The card is the one thing on screen to do, and it is answered against a
+    // chip in `a:1`. A new reply starting made `a:1` "not the newest", so the
+    // rule derived it CLOSED underneath — invisible only because `pendingCard`
+    // kept it drawn open. The reply therefore snapped shut in the same gesture
+    // that pressed Allow, which is the reader's own click taking the thing they
+    // were reading away from them.
+    const turns = [assistant("a:1", { segments: [tool("t9", "Bash") ] }), assistant("a:2")];
+    const blocked = card({ toolUseId: "t9" });
+    const r = log(turns, { permissions: blocked });
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [...turns, assistant("a:3", { streaming: true })],
+            permissions: blocked,
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    // `a:2` folds as any settled reply does; the blocked one is untouched.
+    expect(folded(r)).toEqual(["reply a:2"]);
+    // …and it is only exempt while the card stands: answered, it is an ordinary
+    // reply again and the newest one is the only one open.
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [...turns, assistant("a:3", { streaming: true })],
+            permissions: card({ toolUseId: "t9", decision: "allow" }),
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+  });
+
+  test("THE FOLDS SURVIVE A HISTORY RE-READ (Akshil 2026-09-15)", () => {
+    // `refreshHistory` re-emits the whole conversation whenever the transcript
+    // grows underneath the page. A restored reply used to be keyed by its
+    // POSITION in that payload, so any re-read that shifted the rows moved
+    // every fold the reader had set one turn down the log: the reply they had
+    // opened folded itself and its neighbour opened instead. agent.py now sends
+    // the reply's own record id and `historyToTurns` keys by it.
+    const stat = { path: "/t.jsonl", mtime: 1, size: 2 };
+    const rows = ["r1", "r2", "r3", "r4"].map((uuid) => ({
+      role: "assistant" as const,
+      text: "reply " + uuid,
+      uuid,
+    }));
+    const read = (extra: typeof rows) =>
+      historyToTurns({ turns: [...extra, ...rows], transcript: stat }) as TurnRow[];
+    const r = log(read([]));
+    expect(folded(r)).toEqual(["reply r1", "reply r2", "reply r3"]);
+    // Turn 3 opened on purpose, the last one shut on purpose.
+    act(() => (marks(r)[2]!.props as { onClick?: () => void }).onClick!());
+    act(() => (marks(r)[3]!.props as { onClick?: () => void }).onClick!());
+    expect(folded(r)).toEqual(["reply r1", "reply r2", "reply r4"]);
+    // The re-read carries an EARLIER row this page had not seen — the shift a
+    // positional key cannot survive. Same conversation, so the same generation.
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: read([{ role: "assistant" as const, text: "reply r0", uuid: "r0" }]),
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply r0", "reply r1", "reply r2", "reply r4"]);
+  });
+
   test("ANOTHER CONVERSATION IS ANOTHER MAP (review #1)", () => {
     // A restored turn's key is POSITIONAL (`protocol/history.ts`, "h:" + i) and
     // this component is not remounted between two sessions — so a 20-turn
@@ -449,6 +526,34 @@ describe("the line a folded reply shows", () => {
       text: "flat reply",
       muted: false,
     });
-    expect(collapsedLine(assistant("a:1", { text: "" }))).toBeNull();
+  });
+
+  test("IT IS NEVER NULL — a folded row always has a word on it (Akshil 2026-09-15)", () => {
+    // A folded turn draws this line and nothing else, so a null answer is a row
+    // with a mark, a fold, and no words at all: a control the reader can only
+    // work by pressing it to find out. The last resort is the KIND of the first
+    // thing in the turn, muted — it says what the row IS, not what it said.
+    const only = (segments: Segment[]) =>
+      collapsedLine(assistant("a:1", { text: "", segments }));
+    expect(only([{ kind: "thinking", text: "" } as Segment])).toEqual({
+      text: "Thinking",
+      muted: true,
+    });
+    expect(only([{ kind: "notice", text: "" } as Segment])).toEqual({
+      text: "Notice",
+      muted: true,
+    });
+    // A turn the reader ended reads as what happened to it, not as the notice
+    // that recorded it.
+    expect(only([{ kind: "notice", text: INTERRUPT_MARK } as Segment])).toEqual({
+      text: "Interrupted",
+      muted: true,
+    });
+    // And a turn with nothing in it whatsoever still names itself.
+    const empty = collapsedLine(assistant("a:1", { text: "" }));
+    expect(empty.muted).toBe(true);
+    expect(empty.text.length).toBeGreaterThan(0);
+    const r = mount(<Turn turn={assistant("a:1", { text: "" })} collapsed onToggleCollapse={() => {}} />);
+    expect(folded(r)).toEqual([empty.text]);
   });
 });

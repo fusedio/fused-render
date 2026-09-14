@@ -5422,6 +5422,16 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     anything else reads it (below), which is also why segments cannot become a
     second route back for the block the user never saw.
 
+    BOTH ROLES carry `uuid`, the transcript record's own id — the first record
+    of the reply, for an assistant turn that merged several. On a user turn it is
+    what makes `?msg=` resolvable (below); on an assistant turn it is the only
+    identity a REPLY keeps across a re-read, and the chat's fold state is
+    remembered by it (`ui/Transcript.foldKey`). Without one, a restored reply is
+    keyed by its POSITION in the payload, so a history refresh that inserted a
+    row moved every fold the reader had set one turn down the log. Omitted — not
+    ""ed — on an assistant row with no id, which falls back to the position key
+    exactly as before.
+
     User turns DO carry `uuid`, the transcript record's own id. It is the one
     field a restored turn can be addressed by from outside this page: the Tasks
     list reads the same uuid off the same record (`_prompt`, server/routers/
@@ -5474,13 +5484,23 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
         if not stretch:
             return
         segments = _segments_from_rows(stretch, app_reads=app_reads)
+        # The stretch's own first record id, for a reply that opens NO text turn
+        # — see the `uuid` note below. Read before the list is emptied.
+        opener = ""
+        for r in stretch:
+            opener = str(r.get("uuid") or "")
+            if opener:
+                break
         del stretch[:]
         if not segments:
             return
         if turns and turns[-1]["role"] == "assistant":
             turns[-1]["segments"] = turns[-1].get("segments", []) + segments
         else:
-            turns.append({"role": "assistant", "text": "", "segments": segments})
+            reply = {"role": "assistant", "text": "", "segments": segments}
+            if opener:
+                reply["uuid"] = opener
+            turns.append(reply)
 
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
@@ -5576,7 +5596,15 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
                 if turns and turns[-1]["role"] == "assistant":
                     turns[-1]["text"] += "\n\n" + text
                 else:
-                    turns.append({"role": "assistant", "text": text})
+                    reply = {"role": "assistant", "text": text}
+                    # The record that OPENED this reply, never a later one it
+                    # merged: the id has to name the same turn on every re-read
+                    # of an append-only transcript, which the first row does and
+                    # a moving "latest row" would not.
+                    opener = str(row.get("uuid") or "")
+                    if opener:
+                        reply["uuid"] = opener
+                    turns.append(reply)
     close_stretch()
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read

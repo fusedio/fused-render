@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isChatDraftTask, isDraftTask } from "@shell/tasks-lib";
+import { isDraftTask } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -32,12 +32,7 @@ import {
   rememberTab,
   rememberedTab,
 } from "./lists-visibility";
-import {
-  paneChatDraftUrl,
-  paneChatUrl,
-  taskDraftUrl,
-  taskPane,
-} from "./list-rows";
+import { paneChatUrl, taskPane } from "./list-rows";
 import { seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
@@ -92,19 +87,17 @@ export interface ListsProps {
   snaps?: SnapshotsState;
   onOpen(sessionId: string): void;
   /**
-   * A NEVER-SENT CHAT ABOUT THIS VERY PANE, pressed — the one row whose press
-   * opens no conversation because there is none: it leaves the landing with NO
-   * session and the composer holding this folder's `new:<file>` draft, so the
-   * next Enter is the send that creates the session (Akshil, 2026-09-14).
+   * A DRAFT ROW, PRESSED — EITHER KIND (Akshil, 2026-09-15).
    *
-   * No argument, because there is only one answer it could carry: the row is in
-   * this pane and the draft is keyed on this pane's own `file`, which the host
-   * already has. A draft about ANOTHER file is a navigation, not this.
+   * The words go into the composer the reader is already looking at, and the
+   * page does not move. The host resolves the text (`list-rows.draftTextOf`)
+   * because a chat draft's full body has to be fetched; this list only says
+   * WHICH row was pressed.
    *
-   * Absent — a host that does not offer the gesture — and the row falls back to
-   * the same URL a row about another file uses, which is this pane's own chat.
+   * Absent — a host that does not offer the gesture — and a draft row has no
+   * press at all, which is the state it was in before either door existed.
    */
-  onOpenChatDraft?(): void;
+  onFillDraft?(task: Task): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
 }
@@ -116,7 +109,7 @@ export function Lists({
   artifacts = null,
   snaps,
   onOpen,
-  onOpenChatDraft,
+  onFillDraft,
   onNavigate,
   disabled,
 }: ListsProps) {
@@ -229,43 +222,28 @@ export function Lists({
    * A LOCKED BLOCK REFUSES EVERY ROW (P4-23): no press and no href, so the
    * stretched link cannot navigate either.
    *
-   * AND A DRAFT ROW IS NOT AN INERT ROW (Akshil, 2026-09-14). Every `kind:
-   * "draft"` row used to fall out of the first line — no `session_id`, no press
-   * — which drew a lit, titled, Draft-chipped row that did nothing at all,
-   * exactly the "lit and dead" state the note above claims this avoids. A draft
-   * has somewhere to go; it is simply not a conversation:
+   * AND A DRAFT ROW GOES NOWHERE AT ALL (Akshil, 2026-09-15). Both kinds used
+   * to be doors: a chat draft about another file hopped the HOST to that file's
+   * chat, and a task draft left the app for `/tasks?draft=<id>` and the modal
+   * there. Round 1 was right that a draft is not inert and wrong about what to
+   * do with it — a press on a list that sits directly under the landing's own
+   * composer should not move the page, least of all out of the app. The words
+   * are unsent words; the box they belong in is the one already on screen.
    *
-   *   * a CHAT draft (`draft_kind: "chat"`) is this folder's unsent message. On
-   *     THIS pane it opens in place through `onOpenChatDraft` — the composer
-   *     seeds itself from the same `new:<file>` key the row was built from —
-   *     and on another file it is that file's chat, with no session named
-   *     (`paneChatDraftUrl`);
-   *   * a TASK draft (`draft_kind: "task"`) is an unfinished New task form,
-   *     which is the Tasks page's modal and not a view this app can mount, so
-   *     the row leaves at the card (`taskDraftUrl`).
+   * So every draft row is one gesture now: fill the composer, caret after the
+   * text, no URL change, no view change. `onFillDraft` is handed the ROW, and
+   * the host does the resolving — a chat draft's body has to be fetched, and a
+   * task draft's is already on the row (`list-rows.draftTextOf`).
    *
-   * The pane test is `taskPane`'s, asked of the CHAT's own `file` rather than
-   * of `target`: a draft chat has no target — `target` is where a task's work
-   * happens — and `file` is the half of its `new:<file>` key that has to match
-   * or the composer seeds from a key nothing wrote.
+   * Neither `isChatDraftTask` nor `draft_id` is consulted here any more: the
+   * two kinds differ only in where their words come from, which is a question
+   * this list does not ask.
    */
   const pressFor = (task: Task): { href: string | null; onPress?: () => void } => {
     if (disabled) return { href: null };
-    if (isChatDraftTask(task)) {
-      const at = task.file || task.target || "";
-      // "" is this pane — and `onOpenChatDraft` is the only press that can honour
-      // it, because there is no URL for "stay here and pick up the draft".
-      const pane = at ? taskPane({ target: at, project: task.project }, file) : "";
-      if (!pane && onOpenChatDraft) {
-        return { href: null, onPress: onOpenChatDraft };
-      }
-      const to = paneChatDraftUrl(pane || at || file || "");
-      return { href: to, onPress: () => onNavigate?.(to) };
-    }
     if (isDraftTask(task)) {
-      if (!task.draft_id) return { href: null };
-      const to = taskDraftUrl(task.draft_id);
-      return { href: to, onPress: () => onNavigate?.(to) };
+      if (!onFillDraft) return { href: null };
+      return { href: null, onPress: () => onFillDraft(task) };
     }
     if (!task.session_id) return { href: null };
     const pane = taskPane(task, file);

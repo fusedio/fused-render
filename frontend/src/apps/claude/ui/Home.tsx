@@ -12,10 +12,9 @@ export interface HomeProps extends HomeCardProps {
   recent: Task[] | null;
   /** A recent row on THIS target becomes the current session in place. */
   onOpenSession(sessionId: string): void;
-  /** …and a NEVER-SENT chat about this target leaves the landing with no
-   *  session at all, the composer holding the draft the row was drawn from
-   *  (`Lists`' own prop carries the rule). */
-  onOpenChatDraft?(): void;
+  /** …and a DRAFT row of either kind fills THIS card's composer with its words
+   *  and goes nowhere at all (`Lists`' own prop carries the rule). */
+  onFillDraft?(task: Task): void;
   /** Rows dim and go inert while a comment mode holds the reader (PR3). */
   listsDisabled?: boolean;
   /** The chat's template folder: the terminal hand-off in the landing kebab,
@@ -30,7 +29,7 @@ export interface HomeProps extends HomeCardProps {
 export function Home({
   recent,
   onOpenSession,
-  onOpenChatDraft,
+  onFillDraft,
   listsDisabled,
   agentDir,
   snapInvalidation,
@@ -75,7 +74,7 @@ export function Home({
             artifacts={artifacts}
             snaps={snaps}
             onOpen={onOpenSession}
-            {...(onOpenChatDraft ? { onOpenChatDraft } : {})}
+            {...(onFillDraft ? { onFillDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
           />

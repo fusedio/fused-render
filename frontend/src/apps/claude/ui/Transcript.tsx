@@ -545,6 +545,23 @@ export const Transcript = memo(function Transcript({
     foldIds.current.clear();
   }
   const lastAssistant = lastAssistantKey(state.turns);
+  // The open card is drawn in the tail pin, but the turn it belongs to is the
+  // one the run is blocked in — and NOT, as this read for one release, whichever
+  // reply happens to be newest (review #2): a card answered against a chip five
+  // turns back un-folded the turn at the bottom instead, which is a turn the
+  // reader had folded and nothing to do with the block.
+  //
+  // READ BEFORE THE FOLD IS DERIVED, because the derivation has to know about it
+  // (Akshil 2026-09-15). An unanswered card is the one thing on screen to do,
+  // and the next reply to start streaming made its turn "not the newest" — so
+  // the rule derived `default-closed` underneath it. `pendingCard` kept the turn
+  // DRAWN open for as long as the card stood, which meant the reply snapped shut
+  // the instant the reader pressed Allow, in the same gesture. A blocked turn is
+  // therefore open by the rule too; once its card is answered it is an ordinary
+  // reply again and the next response folds it like any other.
+  const blocked = blockedTurnKey(state.turns, state.permissions);
+  const blockedTurn = blocked ? state.turns.find((t) => t.key === blocked) : undefined;
+  const blockedFold = blockedTurn ? foldKey(blockedTurn) : null;
   for (const t of state.turns) {
     if (t.role !== "assistant") continue;
     const id = foldKey(t);
@@ -565,7 +582,7 @@ export const Transcript = memo(function Transcript({
     // once more.
     const prev = folds.current.get(id);
     if (prev === "manual-open" || prev === "manual-closed") continue;
-    const open = !!t.streaming || t.key === lastAssistant;
+    const open = !!t.streaming || t.key === lastAssistant || id === blockedFold;
     folds.current.set(id, open ? "default-open" : "default-closed");
   }
   const onToggleCollapse = useCallback((key: string) => {
@@ -588,12 +605,6 @@ export const Transcript = memo(function Transcript({
   useHoldTail(useCallback(() => {
     followTail.current = false;
   }, []));
-  // The open card is drawn in the tail pin, but the turn it belongs to is the
-  // one the run is blocked in — and NOT, as this read for one release, whichever
-  // reply happens to be newest (review #2): a card answered against a chip five
-  // turns back un-folded the turn at the bottom instead, which is a turn the
-  // reader had folded and nothing to do with the block.
-  const blocked = blockedTurnKey(state.turns, state.permissions);
 
   return (
     <div className={cn("chat-logwrap", pinFull && "is-locked")} ref={port}>

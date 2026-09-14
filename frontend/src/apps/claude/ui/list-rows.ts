@@ -24,7 +24,10 @@
 //
 // `protocol/history.ts`'s copy already had all three right and was imported by
 // nothing but its own test, while the live rows rendered this one.
+import type { Task } from "@platform/lib/api";
+import { chatDraftKey, fetchChatDraft } from "@platform/lib/drafts";
 import { urlForFsPath } from "@platform/lib/router";
+import { isChatDraftTask } from "@shell/tasks-lib";
 import { sessionTitle } from "../protocol/history";
 
 export { sessionTitle };
@@ -96,37 +99,38 @@ export function paneChatUrl(pane: string, sessionId: string): string {
 }
 
 /**
- * THE SAME DOOR WITH NO CONVERSATION NAMED — a never-sent chat (`draft_kind:
- * "chat"`) has no session to attach, so the pane is opened on the FILE alone
- * and the composer there seeds itself from the `new:<file>` draft the row was
- * drawn from (platform/lib/drafts.chatDraftKey; apps/claude/ui/Composer's own
- * seed effect). shell/schedule-lib.chatPaneUrl is the Tasks page's spelling of
- * exactly this URL — restated here rather than imported because this module
- * owns the list's one path codec (`urlForFsPath`), and two codecs for one link
- * is how the two surfaces would come to disagree about an encoded space.
+ * A DRAFT ROW'S WORDS, FOR THE COMPOSER THE READER IS ALREADY LOOKING AT
+ * (Akshil, 2026-09-15).
  *
- * `session_id` is OMITTED rather than sent empty, which is the distinction
- * `chatPaneUrl` draws too: an empty value means "this folder's sessions, one is
- * coming", and there is no session coming for a draft.
- */
-export function paneChatDraftUrl(pane: string): string {
-  return urlForFsPath(paneSlashes(pane), "?_side=claude");
-}
-
-/**
- * AND THE OTHER DRAFT KIND'S DOOR — an unfinished New task form
- * (`draft_kind: "task"`), which is a MODAL and not a view, and a modal this app
- * cannot open: `shell/NewJobModal` is the Tasks page's own card, hosted by
- * `shell/Scheduled`, and hoisting it into the chat to answer one row would pull
- * the whole schedule page in behind it.
+ * A draft row used to be a DOOR: a chat draft about another file hopped the
+ * host to that file's chat, and a task draft left the app entirely for
+ * `/tasks?draft=<id>`. Both were navigations away from the landing page in
+ * answer to a press on a list that sits UNDER the landing's own composer —
+ * which is the one box those words belong in. So neither goes anywhere now:
+ * the press fills the composer and puts the caret after the text, and the
+ * reader decides what to do with it from there.
  *
- * So the row leaves, and it leaves at the form: `shell/Scheduled` reads this
- * param and reopens the card on that stored draft — the same `openForm(…,
- * {id, form})` its own draft rows spend, so both doors land on one card under
- * one id and neither mints a second draft.
+ * WHERE THE WORDS COME FROM is the one asymmetry between the two kinds:
+ *
+ *   * a CHAT draft is stored under `new:<file>` and the row carries only a
+ *     `preview` of it — a first line, clipped (`fused_render/drafts.preview`)
+ *     — so the full text is FETCHED, through the same door the composer's own
+ *     seed effect uses. The preview stands in only if that read answers
+ *     nothing, because half a sentence is better than an empty box;
+ *   * a TASK draft carries its whole stored form on the row already (`form`,
+ *     the field the modal used to reopen on), so its description — or its
+ *     title, for a title-only form — is read straight off it.
  */
-export function taskDraftUrl(draftId: string): string {
-  return `/tasks?draft=${encodeURIComponent(draftId)}`;
+export async function draftTextOf(task: Task): Promise<string> {
+  if (isChatDraftTask(task)) {
+    const key = chatDraftKey(null, task.file || task.target || "");
+    const saved = await fetchChatDraft(key);
+    return saved?.text || task.draft?.preview || "";
+  }
+  const form = (task.form ?? {}) as { description?: unknown; title?: unknown };
+  const described = String(form.description ?? "").trim();
+  if (described) return described;
+  return String(form.title ?? task.title ?? "").trim();
 }
 
 /** T:17947-17953. */
