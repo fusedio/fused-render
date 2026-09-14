@@ -10930,9 +10930,13 @@ else: no editor, no Claude, no explorer chrome.
   failure on this path opens the app plainly: courtesy, not gate.
   **Clone upgrade** — the clone is stamped in staging with its origin and
   payload file list; `GET /api/appfile/clone` adds `exported_at`,
-  `local_exported_at`, `upgradable` (string-compared ISO stamps; a clone with
-  no stamp FILE is upgradable once, a stamp with no date is not — an undated
-  v1 export must not read as newer forever); X-Fused `POST /api/appfile/upgrade` snapshots the
+  `local_exported_at`, `upgradable` (string-compared ISO stamps; a stamp with
+  no date is not upgradable — an undated v1 export must not read as newer
+  forever; a folder with no stamp FILE is compared byte-for-byte against the
+  file's per-file sha256 index, capped at 64 MB — equal is stamped as current,
+  only a differing one is offered the upgrade; export stamps its SOURCE folder
+  too, so an app living at `local/<slug>` never sees its own export as an
+  upgrade); X-Fused `POST /api/appfile/upgrade` snapshots the
   clone's edits in the shared `local` repo (refuses if it cannot), overlays
   the payload writable, removes files the old list had and the new lacks,
   leaves `.fused/` untouched, restamps, commits. The header/strip button is

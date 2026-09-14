@@ -375,6 +375,13 @@ def export_app_file(app_dir: str, out_path: str,
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    # The SOURCE folder now corresponds to this export (D883): stamp it, so
+    # that when the folder is also where a clone of this file would land
+    # (an app that lives at local/<slug> and was exported from there) the
+    # file reads as current rather than as an upgrade of itself. Best-effort;
+    # `.fused/` is excluded from the payload, so the stamp never ships.
+    write_stamp(app_dir, exported_at=manifest.get("exported_at"),
+                files=sorted(rel for _, rel in members))
     return manifest
 
 
@@ -691,6 +698,13 @@ def clone_target(fused_path: str) -> dict:
     cloned = os.path.isdir(dest)
     file_stamp = exported_at(manifest)
     local = read_stamp(dest) if cloned else None
+    if cloned and local is None and _folder_matches_payload(dest, manifest):
+        # An unstamped folder whose payload IS this file's — the app this
+        # very file was exported from (exports before the source stamp
+        # existed), or a pre-D883 clone of it. Byte-equal means current, so
+        # record that and never offer the file as an upgrade of itself.
+        local = write_stamp(dest, exported_at=file_stamp,
+                            files=[f["path"] for f in manifest.get("files", [])])
     local_stamp = (local.get("exported_at")
                    if local and isinstance(local.get("exported_at"), str) else None)
     return {
@@ -981,6 +995,46 @@ def _payload_files(app_dir: str) -> list[str]:
             out.append(rel.replace(os.sep, "/"))
     out.sort()
     return out
+
+
+# Byte-comparing an unstamped folder against a file's index is bounded: past
+# this much payload the answer is "unknown" and the offer stands (the snapshot
+# commit makes a needless upgrade recoverable; a hang on every header probe is
+# not).
+_MATCH_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _folder_matches_payload(folder: str, manifest: dict) -> bool:
+    """True when ``folder``'s payload (everything outside `.fused/`) is
+    byte-for-byte the file's: same relative paths, same sha256 per file, per
+    the v2 index. False for a v1 zip (no hashes), any extra or missing file,
+    any differing hash, or a payload over the size cap."""
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        return False
+    try:
+        total = sum(int(f.get("size", 0)) for f in files)
+    except (TypeError, ValueError):
+        return False
+    if total > _MATCH_MAX_BYTES:
+        return False
+    expected = {f.get("path"): f.get("sha256") for f in files
+                if isinstance(f.get("path"), str) and isinstance(f.get("sha256"), str)}
+    if len(expected) != len(files):
+        return False
+    try:
+        if set(_payload_files(folder)) != set(expected):
+            return False
+        for rel, digest in expected.items():
+            h = hashlib.sha256()
+            with open(os.path.join(folder, *rel.split("/")), "rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            if h.hexdigest() != digest:
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def _newer(file_stamp: str | None, local_stamp: str | None) -> bool:
