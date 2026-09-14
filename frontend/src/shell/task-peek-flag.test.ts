@@ -209,7 +209,7 @@ describe("the peek header", () => {
       'aria-label="Close the task panel"',
       // Only in cover, and directly after the ×: two acts, two controls
       // (design.md, Polish batch 4, item 11).
-      'aria-label="Reset panel size"',
+      "task-side-peek-resize",
       'aria-label="Previous task"',
       'aria-label="Next task"',
       "<StatusIcon",
@@ -225,7 +225,7 @@ describe("the peek header", () => {
     expect(head).not.toContain("tabIndex");
   });
 
-  it("leads with a plain × in EVERY mode, and adds Reset size only in cover", () => {
+  it("leads with a plain × in EVERY mode, and adds Resize panel only in cover", () => {
     // It was a `PanelIcon` whose meaning changed with the layout — "hide the
     // right panel", and in cover "show the list" (Polish batch 3, option b).
     // The one control every reader reaches for first was the one they had to
@@ -240,19 +240,32 @@ describe("the peek header", () => {
     // there is a split to go back to — a control that changes what it does
     // under the reader is worse than two controls.
     expect(HEAD).toContain("{layout.cover && (");
-    expect(HEAD).toContain('aria-label="Reset panel size"');
+    // …and it says what it does IN WORDS, with no glyph at all (design.md,
+    // Polish batch 5): the four inward corner marks it wore were a picture a
+    // reader had to be taught, for an act that happens once in a visit.
+    expect(HEAD).toContain('className="task-side-peek-resize"');
+    expect(HEAD).toContain("Resize panel");
+    expect(HEAD).toContain('data-hint="Restore the list beside the panel"');
+    expect(HEAD).not.toContain("ICON_RESET_SIZE");
     expect(HEAD).toContain("onClick={() => showListBesidePeek()}");
     // …and with a × in the corner at every width, the ⋮'s own Close row is a
     // second way to do what the corner already does.
     expect(HEAD).not.toContain('items.push({ label: "Close", icon: ICON_CLOSE');
   });
 
-  it('says "Open →" in words, in the header and on the row alike', () => {
+  it('says "↗ Open" in words, in the header and on the row alike', () => {
     // The folder door mark was the page's one picture for this act, and a good
     // one in a MENU. Out on a row of glyph buttons that are otherwise verbs —
     // run, archive, delete — it was the only mark a reader had to be taught,
     // one tooltip at a time (design.md, Polish batch 4).
-    expect(HEAD).toContain("Open\n                  {ICON_ARROW_RIGHT}");
+    //
+    // THE MARK LEADS AND THE ARROW POINTS OUT (Polish batch 5): an external-
+    // link glyph in front of the word, the way every other icon-and-word
+    // control in this app is built. The trailing "→" it replaces meant
+    // "forward", which is what the Next chevron three inches away means.
+    expect(HEAD).toContain("{ICON_OPEN_EXTERNAL}\n                  Open");
+    expect(HEAD).not.toContain("ICON_ARROW_RIGHT");
+    expect(VIEWS).not.toContain("ICON_ARROW_RIGHT");
     expect(VIEWS).toContain("const OPEN_DOOR_LABEL = (");
     expect(VIEWS).toContain("{OPEN_DOOR_LABEL}");
     // …and the same words on the row AND on the wall card, which is the whole
@@ -275,6 +288,16 @@ describe("the peek header", () => {
     expect(CARDS).toContain('(peekOn ? " task-card-door--page" : "")');
     expect(CARDS).toContain("const ICON_FOLDER = (");
     expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door--page {");
+    // …and all three doors wear an OUTLINE at rest (design.md, Polish batch 5).
+    // The wall's already did; the other two were bare words in a run of ink,
+    // with only a hover wash to say they could be pressed.
+    expect(PEEK_CSS).toContain(".task-side-peek-open,\n.task-side-peek-resize {");
+    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open,"))).toContain(
+      "border: 1px solid var(--border);",
+    );
+    expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
+      "border-color: var(--border);",
+    );
     // The SHAPE survives where a mark is still the right answer — the peek's ⋮,
     // where a menu row is a label with a glyph beside it.
     expect(HEAD).toContain("<svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>");
@@ -288,6 +311,63 @@ describe("the peek header", () => {
   it("walks with CHEVRONS, not arrows", () => {
     expect(HEAD).toContain('<svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>');
     expect(HEAD).toContain('<svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>');
+  });
+
+  it("names the ARROW KEYS in the chevrons' tooltips", () => {
+    // A tooltip names the gesture a reader is most likely to reach for, and on
+    // a list with a panel open that is ↑/↓ — not ⌃⇧K/J, which is a chord you
+    // have to be told about twice (design.md, Polish batch 5). The chords still
+    // work; they are simply not what the button advertises.
+    expect(HEAD).toContain('data-hint="Previous task · ↑"');
+    expect(HEAD).toContain('data-hint="Next task · ↓"');
+    expect(HEAD).not.toContain("⌃⇧K\"");
+    expect(HEAD).not.toContain("⌃⇧J\"");
+  });
+
+  it("has no ⌘↩ anywhere — the doors are the way out", () => {
+    // A chord with no mark on it except the tooltip of the button that does the
+    // same thing one press away, while ⌘↩ in the New task modal SUBMITS
+    // (design.md, Polish batch 5). Handler, binding and tooltip all gone.
+    expect(HEAD).not.toContain("⌘↩");
+    expect(HEAD).not.toContain('e.key === "Enter" && (e.metaKey || e.ctrlKey)');
+    // …and the act itself is untouched: the header's door and the ⋮ row both
+    // still call it.
+    expect(HEAD).toContain("const openAsPage = useCallback(");
+  });
+
+  it("walks quietly: into view, focused, and without a ring", () => {
+    // Three claims, and they are one gesture (design.md, Polish batch 5).
+    // `block: "nearest"` does nothing when the item is already on screen, so an
+    // ordinary walk down a visible list never jerks the scroller.
+    expect(HEAD).toContain('el.scrollIntoView({ block: "nearest" });');
+    // Focus follows ONLY from the frame: a chevron is a button a keyboard may
+    // want to press again, and stealing focus out of it on the first press is a
+    // control that works once.
+    expect(HEAD).toContain('active.closest(".tasks-frame")');
+    expect(HEAD).toContain("el.focus({ preventScroll: true });");
+    // …and the ring the UA would draw on that focus is taken off by a mark
+    // React cannot wipe (an ATTRIBUTE: every one of these items has a
+    // React-owned className that changes on the very same open).
+    expect(STORE).toContain('export const PEEK_WALK_ATTR = "data-peek-walk";');
+    expect(HEAD).toContain("el.setAttribute(PEEK_WALK_ATTR, \"\");");
+    expect(PEEK_CSS).toContain("[data-peek-walk]:focus,\n[data-peek-walk]:focus-visible {");
+  });
+
+  it("paints the preview's gutters with the CHAT's ground, not the page's", () => {
+    // Edge to edge the panel showed three colours down one column: header, then
+    // 28px of page either side of the app, then the conversation on a lighter
+    // surface again (design.md, Polish batch 5).
+    expect(PEEK_CSS).toContain("background: var(--peek-chat-bg);");
+    // AND THE VALUE IS THE CHAT'S OWN, both themes. It is a literal here
+    // because `apps/claude/styles/chat.css` arrives with a `lazy()` import and
+    // is not loaded at all for a reader on the legacy iframe chat, so
+    // `var(--c-panel)` would resolve to nothing exactly half the time. The two
+    // files are pinned to each other here instead.
+    const chat = read("../apps/claude/styles/chat.css");
+    const panel = (from: number) => /--c-panel: (#[0-9a-f]{6});/.exec(chat.slice(from))?.[1];
+    const light = chat.indexOf(':root[data-theme="light"] .chat-root,');
+    expect(PEEK_CSS).toContain(`--peek-chat-bg: ${panel(0)};`);
+    expect(PEEK_CSS).toContain(`--peek-chat-bg: ${panel(light)};`);
   });
 
   it("carries a VERTICAL kebab holding exactly the three stated acts", () => {
@@ -310,7 +390,7 @@ describe("the peek header", () => {
       HEAD.indexOf("</header>"),
     );
     // One `data-hint` per control — the app's own tooltip contract. Six now:
-    // close, reset size (cover only), prev, next, Open, kebab. The project name
+    // close, Resize panel (cover only), prev, next, Open, kebab. The project name
     // is not in the count any more: it is a label, and its full path is a
     // `title` rather than a hint (design.md, Polish batch 4).
     expect(head.match(/data-hint=/g)?.length).toBe(6);
@@ -502,8 +582,12 @@ describe("the one selected style, and the flag that gates it", () => {
     }
     const hover = block(PEEK_CSS, ".tasks-peek-host .tasks-row:hover");
     expect(hover).toContain("background: var(--row-bg-hover)");
-    expect(hover).toContain(".tasks-peek-host .task-card-head:hover");
     expect(hover).toContain(".tasks-peek-host .schedule-tv-board .schedule-tv-card:hover");
+    // …BUT NOT THE WALL CARD'S HEAD (Akshil, 2026-09-14: "when we hover on the
+    // heading, we shouldn't change the color"). That strip has no hover fill
+    // with the flag off, and the flag does not put one back — the card's own
+    // press is the whole of its affordance.
+    expect(hover).not.toContain(".tasks-peek-host .task-card-head:hover");
     // NO ACCENT RING left on any of the three.
     expect(active).not.toContain("--peek-halo");
     expect(hover).not.toContain("--peek-halo");

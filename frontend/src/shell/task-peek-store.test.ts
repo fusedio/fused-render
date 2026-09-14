@@ -78,6 +78,7 @@ const {
   setPeekWidth,
   showListBesidePeek,
   arrowShouldWalk,
+  peekScrollTarget,
   stepPeekKey,
   syncPeekFromUrl,
 } = await import("./task-peek-store");
@@ -266,6 +267,45 @@ describe("stepPeekKey", () => {
     // jumping to whatever happens to be first.
     expect(stepPeekKey(order, "z", 1)).toBeNull();
     expect(stepPeekKey(order, null, 1)).toBeNull();
+  });
+});
+
+describe("peekScrollTarget — which element a walk brings back", () => {
+  // The items as the walk reads them: nodes carrying the attribute, in the
+  // order the view painted them. Only `getAttribute` is ever asked for, which
+  // is why this is provable without a browser.
+  const item = (key: string) => ({
+    key,
+    getAttribute: (name: string) => (name === "data-peek-key" ? key : null),
+  });
+  const items = [item("a"), item("b"), item("c")];
+
+  it("is the item the walk landed on", () => {
+    expect(peekScrollTarget(items, "b")?.key).toBe("b");
+  });
+
+  it("takes the FIRST node a key is painted on", () => {
+    // A view may paint one task twice — a board card and its drag ghost — and
+    // the walk means places, not nodes, exactly as `visibleOrder` does when it
+    // reads these same elements.
+    const twice = [item("a"), item("b"), { ...item("b"), key: "ghost" }];
+    expect(peekScrollTarget(twice, "b")?.key).toBe("b");
+  });
+
+  it("is nothing when the view has not painted the task", () => {
+    // Filtered away between the press and the paint: scroll nothing rather than
+    // guess at a neighbour.
+    expect(peekScrollTarget(items, "z")).toBeNull();
+    expect(peekScrollTarget(items, null)).toBeNull();
+    expect(peekScrollTarget([], "a")).toBeNull();
+  });
+
+  it("never splices a key into a selector", () => {
+    // Task keys are paths and session ids — arbitrary strings, which have no
+    // business inside a CSS attribute selector. A key full of quotes is just a
+    // string comparison here.
+    const odd = 'a"b\\c';
+    expect(peekScrollTarget([item(odd)], odd)?.key).toBe(odd);
   });
 });
 

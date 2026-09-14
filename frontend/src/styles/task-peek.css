@@ -38,6 +38,25 @@
      conversation inside it is a column of two-word lines. The wall drops a
      column instead (`.task-cards` below). */
   --task-card-min: 300px;
+  /* THE CHAT'S OWN GROUND, and the preview's gutters are painted with it
+     (Akshil, 2026-09-14 — design.md, Polish batch 5). Edge to edge the panel
+     showed three colours down one column: the header, then 28px of PAGE either
+     side of the app, then the conversation on a lighter surface again. The
+     gutters belong to the body they are cut out of, not to the page behind it.
+
+     STATED HERE AS A LITERAL, which is the one thing this file does that its
+     neighbours do not, and the reason is that the chat's palette is LAZY:
+     `apps/claude/styles/chat.css` arrives with `ClaudeChat`, which is a
+     `lazy()` import and is never loaded at all for a reader on the legacy
+     iframe chat. `var(--c-panel)` would therefore resolve to nothing exactly
+     half the time. The value is `--c-panel`'s, both themes, and
+     `task-peek-flag.test.ts` reads the two files and fails if they ever
+     disagree. */
+  --peek-chat-bg: #1e2025;
+}
+
+:root[data-theme="light"] {
+  --peek-chat-bg: #fafafa;
 }
 
 /* -- the row the two halves live in ---------------------------------------- */
@@ -451,22 +470,29 @@ body.tasks-peek-dragging {
   text-overflow: ellipsis;
 }
 
-/* "OPEN →" — THE HEADER'S ONE DOOR, and it is a WORD (design.md, Polish batch
-   4). A glyph-only door has to be recognised; a labelled one has only to be
-   read, and this is the act a reader leaves the panel by. The arrow after the
-   word is what says they are leaving — the same grammar the app's other "go
-   somewhere" buttons use.
+/* THE HEADER'S TWO LABELLED BUTTONS — the Open door, and (in cover) the way
+   back to the split. One skin, because they are the same kind of thing: a word
+   you press, in a row that is otherwise glyph squares and ink.
 
-   Sized off `.task-side-peek-btn`'s own height so it sits on the row's baseline
-   with the ⋮ beside it rather than next to it. */
-.task-side-peek-open {
+   AN OUTLINE AT REST (Akshil, 2026-09-14 — design.md, Polish batch 5). Without
+   one they were two runs of muted text sitting beside the project NAME, which
+   is a run of muted text that is not pressable; the only thing that said
+   otherwise was a hover wash, and a hover is not an affordance for a reader who
+   has not hovered yet. 1px of `--border` and the app's small-control radius
+   says "button" before the pointer arrives; the wash still says "this one"
+   after it does.
+
+   Sized off `.task-side-peek-btn`'s own height so they sit on the row's
+   baseline with the ⋮ beside them rather than next to them. */
+.task-side-peek-open,
+.task-side-peek-resize {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   height: var(--peek-icon-w);
-  padding: 0 6px;
-  border: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border);
   border-radius: 5px;
   background: transparent;
   font: inherit;
@@ -477,11 +503,14 @@ body.tasks-peek-dragging {
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 
-.task-side-peek-open:hover {
+.task-side-peek-open:hover,
+.task-side-peek-resize:hover {
   background: var(--row-bg-hover);
+  border-color: var(--fg-muted);
   color: var(--fg);
 }
 
@@ -674,6 +703,26 @@ body.tasks-peek-dragging {
   border-radius: inherit;
 }
 
+/* A WALKED-TO ITEM IS FOCUSED, AND IT IS NOT RINGED (Akshil, 2026-09-14 —
+   design.md, Polish batch 5; the mark is `PEEK_WALK_ATTR` in
+   shell/task-peek-store.ts, put on by `walkTo` in shell/TaskPeek.tsx).
+
+   ↑/↓ move focus with the panel so the next press has somewhere to come from,
+   but the focus is the PANEL'S, not the reader's: the UA turns `:focus-visible`
+   on as soon as a keyboard is used, so every walk left a yellow outline on a
+   row nobody had tabbed to — and a walk back put it on the open row, beside the
+   halo that already says which one that is.
+
+   BOTH STATES, because this focus is programmatic and the two selectors answer
+   different questions: `:focus-visible` is the ring the UA would draw, `:focus`
+   is the one an item with a rule of its own might. The mark comes off the
+   moment the element is blurred, so a later TAB onto the same item gets its
+   ring back — which is the case the ring is for. */
+[data-peek-walk]:focus,
+[data-peek-walk]:focus-visible {
+  outline: none;
+}
+
 /* -- the app preview ------------------------------------------------------- */
 /* The peeked task's project IS a fused-render app: its entry view, live and
    interactive, above the conversation (.claude-design/task-side-peek/design.md,
@@ -690,7 +739,10 @@ body.tasks-peek-dragging {
   width: 100%;
   min-height: 0;
   overflow: auto;
-  background: var(--bg);
+  /* THE CHAT'S GROUND, not the page's (`--peek-chat-bg` at the top of this
+     file): the gutters are a margin cut out of the panel's body, and the
+     panel's body under them is the conversation. */
+  background: var(--peek-chat-bg);
   border-bottom: 1px solid var(--border);
   /* A GUTTER THE WIDTH OF ONE HEADER BUTTON (Akshil, 2026-09-14 — design.md,
      Polish batch 4). Edge to edge, the app inside read as a second window
@@ -741,7 +793,9 @@ body.tasks-peek-dragging .task-side-peek-preview {
   position: absolute;
   inset: 0;
   padding: 12px 16px;
-  background: var(--bg);
+  /* `inset: 0` covers the gutters too, so the cover has to be the same ground
+     they are or the inset appears and disappears with the app's load. */
+  background: var(--peek-chat-bg);
 }
 
 /* The horizontal twin of the panel's own seam: same 12px hit area, same 1px of

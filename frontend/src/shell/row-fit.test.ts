@@ -569,6 +569,10 @@ describe("the search field's caption", () => {
     expect(floor?.[1]).toBe("140");
     expect(Number(floor?.[1])).toBeGreaterThan(132);
     expect(SCHEDULE_CSS).toContain("min-width: var(--fit-natural);");
+    // AND THERE IS NO SECOND `--fit-natural` for this field any more (design
+    // .md, Polish batch 5): the magnifier rung used to restate it at 32px, and
+    // a floor stated twice is a floor that drifts. One number, one place.
+    expect((SCHEDULE_CSS.match(/--fit-natural: \d+px;/g) ?? []).length).toBe(1);
   });
 });
 
@@ -582,10 +586,9 @@ describe("the toolbar's ladder, in order", () => {
       // words → marks: the view labels, then the filter labels…
       ".schedule-fit-lbl",
       ".schedule-fit-lbl",
-      // …then the SEARCH folds to its magnifier, BEFORE "+ New task" loses its
-      // words (design.md, Polish batch 4): the widest seat on the row, whose
-      // question ⌘K also answers, against the one control here that starts
-      // something.
+      // …then the SEARCH goes, BEFORE "+ New task" loses its words (design.md,
+      // Polish batches 4 and 5): the widest seat on the row, whose question ⌘K
+      // also answers, against the one control here that starts something.
       ".schedule-tv-search",
       ".schedule-fit-lbl",
       // …and then controls leave: Project (by merging), Status, Calendar,
@@ -620,60 +623,48 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     );
   });
 
-  it("folds the search to a magnifier at level 3, and never hides it", () => {
-    // A 32px square that keeps its place, its tab stop and its press — the
-    // field opens over the row on focus rather than widening the seat, which
-    // would move the toolbar the moment the reader reached for it.
+  it("HIDES the search at level 3 — one rung, one rule", () => {
+    // A row with no room for a search field says so (design.md, Polish batch
+    // 5). `display: none` and nothing else: the toolbar re-measures, ⌘K answers
+    // the same question from anywhere, and the field comes back with the width.
     const at = FLAT.indexOf(
       `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search {`,
     );
     expect(at).toBeGreaterThan(-1);
-    const block = FLAT.slice(at).slice(0, 500);
-    expect(block).toContain("--fit-natural: 32px");
-    expect(block).toContain("flex: 0 0 32px");
-    expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:focus-within .schedule-tv-search-input {`,
-    );
-    // NO RUNG TAKES IT OFF THE ROW — neither the field nor the group it sits
-    // in, which is no longer an empty box at any level.
+    expect(FLAT.slice(at).slice(0, 200)).toContain("display: none");
+    // ONE RUNG, and it is rung 2 of the ladder.
+    expect(TOOLBAR_DROPS.filter((sel) => sel === ".schedule-tv-search")).toHaveLength(1);
+    expect(TOOLBAR_DROPS[2]).toBe(".schedule-tv-search");
+    // …and nothing takes it at any LATER rung, which is the shape the old
+    // ladder had (the field went at rung 5, after New task's words).
     expect(FLAT).not.toContain(
       `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-search {`,
     );
-    expect(FLAT).not.toContain(
-      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters {`,
-    );
-    expect(TOOLBAR_DROPS.filter((sel) => sel === ".schedule-tv-search")).toHaveLength(1);
   });
 
-  it("hides the folded field's VALUE too, and says a filter is on with a dot", () => {
-    // Bugbot, 78118e0fa: blanking only the placeholder left a typed query
-    // painted into a 32px box with 28px of left padding — two letters wedged
-    // against the magnifier and clipped mid-word, which is the "Sea" this whole
-    // ladder exists to prevent, with the reader's own words this time.
-    const folded = FLAT.indexOf(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search .schedule-tv-search-input {`,
+  it("keeps no magnifier rung behind it — no fold, no dot, no expansion", () => {
+    // The 32px square, the field that opened over the row on `:focus-within`,
+    // the transparent text and caret, and the accent dot that had to say a
+    // filter was on because the query was painted out. All of it existed to
+    // make a field look like a button; the field simply leaves now (design.md,
+    // Polish batch 5).
+    expect(SCHEDULE_CSS).not.toContain("--fit-natural: 32px");
+    expect(SCHEDULE_CSS).not.toContain(".schedule-tv-search:focus-within");
+    expect(SCHEDULE_CSS).not.toContain(".schedule-tv-search-icon::after");
+    expect(SCHEDULE_CSS).not.toContain("caret-color: transparent");
+    // …and the caption's own backstop is the container query and nothing else:
+    // no rung blanks a placeholder any more.
+    expect(FLAT).not.toContain(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search-input::placeholder {`,
     );
-    expect(folded).toBeGreaterThan(-1);
-    const block = FLAT.slice(folded).slice(0, 400);
-    expect(block).toContain("color: transparent");
-    // A caret blinking in a box with no text in it is a field claiming a focus
-    // it does not have.
-    expect(block).toContain("caret-color: transparent");
-    // …and it comes BACK when the field opens, restated rather than left to the
-    // cascade: the folded rule sets `color` at the same specificity and first.
-    const open = FLAT.indexOf(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:focus-within .schedule-tv-search-input {`,
-    );
-    expect(open).toBeGreaterThan(folded);
-    expect(FLAT.slice(open).slice(0, 400)).toContain("color: var(--fg)");
-    // A FILTER THAT IS ON SAYS SO — the same rule the filter triggers follow,
-    // whose count badge and ✕ survive every rung. `:has()`, because the
-    // magnifier is drawn before the input and no sibling combinator reaches it.
+  });
+
+  it("takes the filter group away with the last trigger in it", () => {
+    // The search left at rung 2 and the triggers at rung 5, so from level 6 the
+    // group is an empty flex box still charging the row a gap. Same rung as the
+    // last thing inside it — not a rung of its own (design.md, Polish batch 5).
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) ` +
-        ".schedule-tv-search:not(:focus-within)" +
-        ":has(.schedule-tv-search-input:not(:placeholder-shown)) " +
-        ".schedule-tv-search-icon::after {",
+      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters {`,
     );
   });
 
@@ -700,9 +691,8 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   it("HIDES the controls in the order Akshil set, lowest priority first", () => {
     // Project (by merging, so its rows stay reachable), then Status, then
     // Calendar, Cards, Board (design.md, Widths v2 as reordered by Polish
-    // batch 4 — the search is no longer one of these; it folds at rung 2 and
-    // stays). Each rung's rule must hold at its own level and at every level
-    // past it.
+    // batch 4 — the search is not one of these; it goes two rungs earlier).
+    // Each rung's rule must hold at its own level and at every level past it.
     expect(FLAT).toContain(
       `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
     );

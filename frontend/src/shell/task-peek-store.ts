@@ -44,6 +44,25 @@ export const PEEK_ITEM_ATTR = "data-peek-key";
 export const PEEK_OPEN_CLASS = "is-peeked";
 
 /**
+ * THE MARK A WALKED-TO ITEM WEARS WHILE IT HOLDS THE WALK'S OWN FOCUS, and the
+ * whole of its job is to take the focus RING off (styles/task-peek.css).
+ *
+ * ↑/↓ move the panel, and they move focus with it so the next press has
+ * somewhere to come from — but a focus the reader never asked for must not be
+ * drawn like one they did. The UA flips `:focus-visible` on the moment a
+ * keyboard is used, so the row clicked a second ago lit up with a yellow ring
+ * as the panel walked away from it, and walking back put that ring on the open
+ * row (Akshil, 2026-09-14 — design.md, Polish batch 5).
+ *
+ * AN ATTRIBUTE RATHER THAN A CLASS, and that is not a preference: every item
+ * this can land on (`.tasks-row`, `.task-card`, a calendar chip) has a React-
+ * owned `className` which changes on the very same open — `is-peeked` goes on
+ * — so a class added here would be wiped by the render that follows. React
+ * never touches an attribute it did not itself set.
+ */
+export const PEEK_WALK_ATTR = "data-peek-walk";
+
+/**
  * WHERE THE "WE COLLAPSED IT" MARKER LIVES, and why it lives anywhere at all.
  *
  * The flag is the difference between putting a sidebar back and overruling a
@@ -364,6 +383,36 @@ export function stepPeekKey(
   const next = at + delta;
   if (next < 0 || next >= order.length) return null;
   return order[next] ?? null;
+}
+
+/**
+ * WHICH ELEMENT A WALK SCROLLS BACK INTO VIEW — the walked-to item itself, or
+ * nothing at all when the view has not painted it.
+ *
+ * ↑/↓ and the chevrons move the panel through an order the reader can only
+ * partly see: the list is a scroller, the board's columns are scrollers, the
+ * wall is a grid taller than its frame. A walk that opens a task off screen is
+ * a panel whose contents changed for no visible reason — so the item is
+ * brought back with `scrollIntoView({ block: "nearest" })`, which is the one
+ * option that does NOTHING when the item is already in view and moves the
+ * least when it is not.
+ *
+ * TAKES THE NODES, NOT A SELECTOR, for two reasons: it is then a pure function
+ * of a list and a key, provable without a browser; and a task key is an
+ * arbitrary string (a path, a session id) which has no business being spliced
+ * into a CSS attribute selector. The FIRST match wins, because a view may paint
+ * one task twice — a board card and its drag ghost — and the walk means places,
+ * exactly as `visibleOrder` does when it reads the same nodes.
+ */
+export function peekScrollTarget<T extends { getAttribute(name: string): string | null }>(
+  items: readonly T[],
+  key: string | null,
+): T | null {
+  if (!key) return null;
+  for (const item of items) {
+    if (item.getAttribute(PEEK_ITEM_ATTR) === key) return item;
+  }
+  return null;
 }
 
 /**

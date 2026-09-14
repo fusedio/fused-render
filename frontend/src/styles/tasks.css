@@ -2283,12 +2283,19 @@ button.tasks-draft-pill.is-on:focus-visible {
    poor one here: the strip it sits in is four small squares, the other three are
    verbs a reader already knows (run, archive, delete), and the folder was the
    only one that had to be learned — from a tooltip, one hover at a time. "Open"
-   with an arrow after it needs no learning, and it is the SAME words the peek's
-   header uses for the same act (`styles/task-peek.css`, `.task-side-peek-open`).
+   behind an external-link arrow needs no learning, and it is the SAME mark and
+   the same word the peek's header uses for the same act
+   (`styles/task-peek.css`, `.task-side-peek-open`).
 
    So it stops being a square: `width`/`flex` are overridden because the label
    decides the size now, and the box is still 22px tall so the strip's baseline
-   does not move. */
+   does not move.
+
+   AND IT CARRIES ITS BORDER AT REST (design.md, Polish batch 5). Its three
+   neighbours are glyph squares, which read as controls from their shape alone;
+   a bare word in a row of ink does not, and this is the one door on the row.
+   `.tasks-act` already draws a 1px transparent border and fills it on hover, so
+   this is a colour and not a box — the strip's geometry does not move. */
 .tasks-act--page,
 .prefs-section .tasks-act--page {
   width: auto;
@@ -2299,4 +2306,5 @@ button.tasks-draft-pill.is-on:focus-visible {
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
+  border-color: var(--border);
 }

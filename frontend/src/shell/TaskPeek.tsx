@@ -90,6 +90,8 @@ import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import {
   PEEK_ITEM_ATTR,
   PEEK_KEY_STEP,
+  PEEK_WALK_ATTR,
+  peekScrollTarget,
   nextAfterRemoval,
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
@@ -278,6 +280,51 @@ function visibleOrder(): string[] {
   return keys;
 }
 
+/**
+ * WHAT A WALK DOES TO THE PAGE BEHIND THE PANEL (design.md, Polish batch 5).
+ *
+ * Two things, and they are both about not losing the reader:
+ *
+ *   1. THE ITEM COMES BACK INTO VIEW. The order the panel walks is longer than
+ *      the frame showing it, so a ⌃⇧J at the bottom of a list opened a task the
+ *      reader could not see — the panel's contents changed and nothing on the
+ *      page said which row it was now about. `block: "nearest"` is deliberate:
+ *      it does nothing at all when the item is already on screen, so an
+ *      ordinary walk down a visible list never jerks the scroller.
+ *
+ *   2. FOCUS FOLLOWS, BUT ONLY FROM THE FRAME, and it arrives without a ring.
+ *      A press that came from the list has to leave focus somewhere the NEXT
+ *      arrow can come from, and leaving it on the row the reader clicked two
+ *      taps ago left a `:focus-visible` ring burning on a row the panel had
+ *      walked away from (the yellow outline Akshil reported). A press that came
+ *      from the panel's own chevrons does NOT move focus: the chevron is a
+ *      button a keyboard may want to press again, and stealing focus out of it
+ *      on the first press is a control that works once.
+ *
+ * `tabindex="-1"` because the items are containers — the List row's tab stop is
+ * the stretched `<a>` inside it, the wall card's is its head — and a container
+ * that is not focusable cannot be handed focus at all. `-1` adds no tab stop;
+ * it only makes the element a legal target for this one call.
+ */
+function walkTo(key: string): void {
+  if (typeof document === "undefined") return;
+  const items = Array.from(
+    document.querySelectorAll<HTMLElement>(`.tasks-frame [${PEEK_ITEM_ATTR}]`),
+  );
+  const el = peekScrollTarget(items, key);
+  if (!el) return;
+  el.scrollIntoView({ block: "nearest" });
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || typeof active.closest !== "function" || !active.closest(".tasks-frame")) return;
+  if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+  el.setAttribute(PEEK_WALK_ATTR, "");
+  el.focus({ preventScroll: true });
+  // The mark is about THIS focus and no other: once the element loses it, a
+  // later keyboard focus on the same item is the reader's own and is entitled
+  // to its ring.
+  el.addEventListener("blur", () => el.removeAttribute(PEEK_WALK_ATTR), { once: true });
+}
+
 // ---- icons -------------------------------------------------------------------
 
 const ICON = {
@@ -301,25 +348,24 @@ const ICON = {
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/** BACK TO THE SPLIT — the second control, and only in cover (design.md, Polish
- *  batch 4). Four corner marks pointing inwards: the "fit" glyph, which says
- *  "bring this back to its size" without saying which size, and reads as the
- *  opposite of the ⤢ that means "make this bigger". */
-const ICON_RESET_SIZE = (
-  <svg {...ICON}>
-    <path d="M9 3v3a3 3 0 0 1-3 3H3" />
-    <path d="M15 3v3a3 3 0 0 0 3 3h3" />
-    <path d="M9 21v-3a3 3 0 0 0-3-3H3" />
-    <path d="M15 21v-3a3 3 0 0 1 3-3h3" />
+/* THE WAY BACK TO THE SPLIT IS A WORD NOW, not a glyph (Akshil, 2026-09-14 —
+   design.md, Polish batch 5): "Resize panel", in the same outline skin the Open
+   door wears. The four inward corner marks it replaces were the "fit" glyph,
+   which is a picture a reader has to be told the meaning of for an act that
+   happens once in a visit — and a header with two labelled buttons and a ×
+   needs no legend at all. The glyph is gone, not folded away. */
+/** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
+ *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
+ *  mark the whole web uses for "this leaves the page you are on", which is
+ *  exactly what the press does. It leads the label rather than trailing it, the
+ *  way every other icon-and-word control in this app is built; the "→" that
+ *  used to follow the word said "forward", which is what a Next control says. */
+const ICON_OPEN_EXTERNAL = (
+  <svg {...ICON} width={13} height={13}>
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
   </svg>
-);
-/** OPEN IN EXPLORER — a WORD with an arrow after it, not a folder (Akshil,
- *  2026-09-14 — design.md, Polish batch 4). The folder glyph was the page's one
- *  door mark, and in this header it sat an inch from a folder NAME and meant
- *  something else entirely; "Open →" says the act in the act's own words and
- *  the arrow says the reader is leaving this page for it. */
-const ICON_ARROW_RIGHT = (
-  <svg {...ICON} width={14} height={14}><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></svg>
 );
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
  *  through a list that is on screen; an arrow would promise travel. */
@@ -474,7 +520,7 @@ export function TaskPeek({
       // `_nofocus=1`, the shell's embedded-frame focus contract
       // (platform/lib/frame-focus): without it the chat template focuses its
       // own composer ~300ms after boot, which pulls the keyboard out of this
-      // page and takes ⌃⇧J / ⌃⇧K / ⌘↩ with it. A wrapper at the HOST, which is
+      // page and takes ⌃⇧J / ⌃⇧K / Esc with it. A wrapper at the HOST, which is
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
       ? withNoFocus(
@@ -491,7 +537,7 @@ export function TaskPeek({
   const previewSrc = app?.entry
     ? // The SAME document the app page's Overview frames and the Home card
       // opens, plus the shell's embedded-frame focus contract: an app that
-      // focused an input on boot would take ⌃⇧J and ⌘↩ away from the panel
+      // focused an input on boot would take ⌃⇧J and ↑/↓ away from the panel
       // around it (platform/lib/frame-focus).
       withNoFocus(`/render?path=${encodeURIComponent(app.entry)}`)
     : null;
@@ -555,6 +601,9 @@ export function TaskPeek({
       const next = stepPeekKey(order(), getPeekState().key, delta);
       if (!next) return false;
       openPeek(next);
+      // …and the page behind the panel keeps up: the new item comes back into
+      // view, and focus follows it without a ring (`walkTo`).
+      walkTo(next);
       return true;
     },
     [order],
@@ -603,7 +652,7 @@ export function TaskPeek({
   }, []);
 
   /**
-   * THE PEEK'S FOUR KEYS, in one function because they have to be answered in
+   * THE PEEK'S KEYS, in one function because they have to be answered in
    * TWO documents: this one, and — flag off — the legacy chat's, which is a
    * separate document whose keystrokes this page never hears (see the frame
    * effect below). `doc` is whichever document the press happened in, because
@@ -634,11 +683,13 @@ export function TaskPeek({
           return true;
         }
       }
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        openAsPage();
-        return true;
-      }
+      // THERE IS NO COMMAND-ENTER ANY MORE (Akshil, 2026-09-14 — design.md,
+      // Polish batch 5). It opened the task as a page, and it was a chord with
+      // no mark on it anywhere except the tooltip of the button that does the
+      // same thing one press away — while the same chord in this app's other
+      // half SUBMITS (the New task modal), which is the opposite of leaving.
+      // The header's Open door and the row's own are the way out, and they say
+      // so in words.
       // ↑/↓ WALK THE LIST, and they do it BARE (Akshil, 2026-09-14 — design.md,
       // Polish batch 4). ⌃⇧J/K above stay exactly as they were; this is the
       // gesture a reader scanning a list with a panel open actually reaches
@@ -665,7 +716,7 @@ export function TaskPeek({
       }
       return false;
     },
-    [step, openAsPage, escapeOrBlur],
+    [step, escapeOrBlur],
   );
 
   // One listener on THIS document while the peek is open.
@@ -682,7 +733,7 @@ export function TaskPeek({
   // document, and every key the reader presses in it fires there — where the
   // listener above cannot hear it. `_nofocus=1` (below) stops the template
   // TAKING the keyboard on its own, but the reader is entitled to click into
-  // the chat and type, and ⌃⇧J / ⌃⇧K / ⌘↩ have to keep working when they do.
+  // the chat and type, and ⌃⇧J / ⌃⇧K / Esc have to keep working when they do.
   // Same origin, so the frame's document takes a listener of its own; a key the
   // template already stopped never reaches it, which is the right precedence.
   // Flag ON there is no frame and no second document.
@@ -810,7 +861,7 @@ export function TaskPeek({
   };
 
   // THE SAME KEYS AGAIN, FROM INSIDE THE APP. The preview is a third document
-  // and the reader may well be clicking about in it; ⌃⇧J / ⌃⇧K / ⌘↩ / Esc have
+  // and the reader may well be clicking about in it; ⌃⇧J / ⌃⇧K / Esc have
   // to keep meaning the panel's things there too.
   //
   // AND THE APP GETS FIRST REFUSAL: `peekKey` stands down on a press the app
@@ -1115,12 +1166,11 @@ export function TaskPeek({
             {layout.cover && (
               <button
                 type="button"
-                className="task-side-peek-btn"
-                aria-label="Reset panel size"
-                data-hint="Reset panel size"
+                className="task-side-peek-resize"
+                data-hint="Restore the list beside the panel"
                 onClick={() => showListBesidePeek()}
               >
-                {ICON_RESET_SIZE}
+                Resize panel
               </button>
             )}
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
@@ -1130,7 +1180,7 @@ export function TaskPeek({
               type="button"
               className="task-side-peek-btn"
               aria-label="Previous task"
-              data-hint="Previous task · ⌃⇧K"
+              data-hint="Previous task · ↑"
               disabled={!ends.prev}
               onClick={() => step(-1)}
             >
@@ -1140,7 +1190,7 @@ export function TaskPeek({
               type="button"
               className="task-side-peek-btn"
               aria-label="Next task"
-              data-hint="Next task · ⌃⇧J"
+              data-hint="Next task · ↓"
               disabled={!ends.next}
               onClick={() => step(1)}
             >
@@ -1187,12 +1237,15 @@ export function TaskPeek({
               >
                 {basename(task.project)}
               </span>
-              {/* "OPEN →" — a WORD, not a glyph (design.md, Polish batch 4).
-                  The folder mark it replaces was the page's one door picture,
-                  which is a good rule everywhere except beside a folder NAME,
-                  where it read as "open that folder" and did not. The label
-                  says the act, the arrow says the reader is leaving this page
-                  for it, and ⌘↩ still maps here.
+              {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
+                  and 5). The folder glyph it replaced was the page's one door
+                  picture, which is a good rule everywhere except beside a
+                  folder NAME, where it read as "open that folder" and did not;
+                  the label says the act, and the external-link arrow in front
+                  of it says the press leaves this page. The icon LEADS, the way
+                  every other icon-and-word control in this app is built, and
+                  the outline around the pair is what makes it read as a button
+                  rather than as more of the header's ink.
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
@@ -1201,15 +1254,15 @@ export function TaskPeek({
                   className="task-side-peek-open"
                   href={page}
                   aria-label="Open in Explorer"
-                  data-hint="Open in Explorer · ⌘↩"
+                  data-hint="Open in Explorer"
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
                     openAsPage();
                   }}
                 >
+                  {ICON_OPEN_EXTERNAL}
                   Open
-                  {ICON_ARROW_RIGHT}
                 </a>
               )}
               <button

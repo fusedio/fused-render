@@ -287,24 +287,32 @@ export const ICON_OPEN_FOLDER_PATH =
  *  still the page's door SHAPE and is still drawn in the peek's ⋮, where a menu
  *  row wants a mark; out here, in a strip of glyph buttons that are all verbs, a
  *  folder was the one picture a reader had to be told the meaning of. "Open"
- *  with an arrow after it says the act and says the reader is leaving the page
- *  for it, in the header and on the row in the same words.
+ *  says the act, in the header and on the row in the same word.
  *
- *  10px, and no `viewBox` gymnastics: it sits beside 11px text, not in a 22px
+ *  AND THE MARK IN FRONT OF IT IS AN EXTERNAL LINK (Polish batch 5): an arrow
+ *  leaving a box towards the upper right, which is the web's own "this goes
+ *  somewhere else". The "→" it replaces trailed the word and meant "forward",
+ *  which is what the peek's own Next chevron means three inches away.
+ *
+ *  11px, and no `viewBox` gymnastics: it sits beside 11px text, not in a 22px
  *  square with the other marks. */
-export const ICON_ARROW_RIGHT = icon(
-  <><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></>,
-  10,
+export const ICON_OPEN_EXTERNAL = icon(
+  <>
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+  </>,
+  11,
 );
-/** The row's and the card's one door, in full: the label and its arrow.
+/** The row's and the card's one door, in full: the mark and its label.
  *
  *  EXPORTED like `ICON_OPEN_FOLDER_PATH` beside it, and for the same reason:
  *  the Cards wall lives in TaskCards.tsx and draws this very door, so the words
  *  are stated once here rather than typed again over there and left to drift. */
 export const OPEN_DOOR_LABEL = (
   <>
+    {ICON_OPEN_EXTERNAL}
     Open
-    {ICON_ARROW_RIGHT}
   </>
 );
 /** The peeked row's own close, beside `ICON_OPEN` because the two swap. */

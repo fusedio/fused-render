@@ -442,18 +442,19 @@ export const TOOLBAR_DROPS = [
   // ---- words → marks. Nothing leaves the row; it stops being spelled out.
   ".schedule-view-seg .schedule-fit-lbl",
   ".schedule-tv-filter-btn .schedule-fit-lbl",
-  // ---- THE SEARCH FOLDS TO ITS MAGNIFIER, and it does so BEFORE "+ New task"
-  // loses its words (Akshil, 2026-09-14 — design.md, Polish batch 4). It is the
-  // widest seat on the row by a distance (140px at its floor against the New
-  // task button's 76) and the one whose question the omnibox also answers, and
-  // "+ New task" is the only control here that STARTS something — a bare "+"
-  // beside a row of glyphs is a button a newcomer has to press to learn about.
-  // The wide thing folds before the important thing.
+  // ---- THE SEARCH GOES, and it goes BEFORE "+ New task" loses its words
+  // (Akshil, 2026-09-14 — design.md, Polish batch 4). It is the widest seat on
+  // the row by a distance (140px at its floor against the New task button's 76)
+  // and the one whose question the omnibox also answers, and "+ New task" is
+  // the only control here that STARTS something — a bare "+" beside a row of
+  // glyphs is a button a newcomer has to press to learn about. The wide thing
+  // folds before the important thing.
   //
-  // NOT a rung that HIDES it: the field keeps its place, its tab stop and its
-  // 32px square, and opens over the row on focus (styles/schedule.css). That is
-  // why the old "the search box goes too" rung further down is gone — there is
-  // no width at which this page has no search.
+  // A RUNG THAT HIDES, not one that folds (Polish batch 5). It spent a day
+  // taking the field to a 32px magnifier that opened over the row on focus —
+  // its tab stop kept, at the price of a control whose caption, value and caret
+  // were painted out and put back by rules. ⌘K is a real search that is always
+  // there; a field pretending to be a button is not.
   ".schedule-tv-search",
   ".schedule-new .schedule-fit-lbl",
   // ---- and then CONTROLS LEAVE, lowest priority first (design.md, Widths v2:

@@ -336,9 +336,11 @@
 }
 
 /* THE EXPLORER DOOR IS A WORD, under the side peek (Akshil, 2026-09-14 —
-   design.md, Polish batch 4). Same act, same wording and same arrow as the List
-   row's `.tasks-act--page` and the peek header's `.task-side-peek-open`: one
-   page cannot say "open this in Explorer" three ways. The label decides the
+   design.md, Polish batch 4). Same act, same wording and the same external-link
+   mark in front of it as the List row's `.tasks-act--page` and the peek
+   header's `.task-side-peek-open`: one page cannot say "open this in Explorer"
+   three ways. The outline these doors already wear is what batch 5 gave the
+   other two, so this is the shape the other two were brought to. The label decides the
    size, so the 24px square above is released — the height stays, so the strip's
    three doors keep one baseline and the head's row of marks does not shift.
 
