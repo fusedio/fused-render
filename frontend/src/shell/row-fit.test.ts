@@ -16,6 +16,9 @@ import {
   FIT_HYSTERESIS,
   FIT_TEXT_FLOOR,
   ROW_DROPS,
+  TOOLBAR_DROPS,
+  pickLevelFromNeeds,
+  TOOLBAR_MERGE_LEVEL,
   naturalNeed,
   pickRowLevel,
   rowNeed,
@@ -407,21 +410,149 @@ describe("the toolbar at its narrowest", () => {
   });
 });
 
+describe("pickLevelFromNeeds — the toolbar's fixed point", () => {
+  // THE NUMBERS ARE THE LIVE ONES (2026-09-14, measured on :2652 with the peek
+  // open). The toolbar sat at 692px of content with the ladder unfolded and
+  // needed 717 — a 25px overflow that put the New task button's right edge 26px
+  // past the toolbar and under the peek panel. Folding rung 0 brings it to 498.
+  const AVAILABLE_736 = 692; // frame 736 − the page's 44px of gutters
+  const NEED_AT_0 = 717;
+  const NEED_AT_1 = 498;
+
+  it("folds when the level it is RENDERING does not fit", () => {
+    expect(pickLevelFromNeeds(AVAILABLE_736, [NEED_AT_0], 9)).toBe(1);
+  });
+
+  it("STAYS folded once the folded level is the one that fits", () => {
+    // The two-cycle this replaced: the old reconstruction rebuilt level 0's
+    // need by adding back the four label spans (147px measured) — but folding
+    // rung 0 also takes 8px of padding off each of the four view buttons, so
+    // the seat really gives back 219. 72px short, every time, which made the
+    // verdict at level 1 "level 0" and the verdict at level 0 "level 1".
+    expect(pickLevelFromNeeds(AVAILABLE_736, [NEED_AT_0, NEED_AT_1], 9)).toBe(1);
+    // …and asked again from either side it answers the same thing, which is
+    // what "fixed point" means and what the old shape could not do.
+    expect(pickLevelFromNeeds(AVAILABLE_736, [NEED_AT_0, NEED_AT_1], 9)).toBe(1);
+  });
+
+  it("UNFOLDS the moment level 0's measured need fits again", () => {
+    // Frame 776 and up: 732 of content against the same 717.
+    expect(pickLevelFromNeeds(732, [NEED_AT_0, NEED_AT_1], 9)).toBe(0);
+  });
+
+  it("walks one rung at a time into levels it has never measured", () => {
+    // Unknown levels are unknown, and the only way to learn one is to render
+    // it. Each read steps once; the walk is bounded by the ladder's length.
+    expect(pickLevelFromNeeds(200, [NEED_AT_0], 9)).toBe(1);
+    expect(pickLevelFromNeeds(200, [NEED_AT_0, NEED_AT_1], 9)).toBe(2);
+    expect(pickLevelFromNeeds(200, [NEED_AT_0, NEED_AT_1, 400], 9)).toBe(3);
+  });
+
+  it("stops at the last rung rather than past it", () => {
+    const needs = Array.from({ length: 10 }, (_, i) => 900 - i);
+    expect(pickLevelFromNeeds(100, needs, 9)).toBe(9);
+  });
+
+  it("tolerates nothing — FIT_HYSTERESIS stays 0", () => {
+    // A band would have hidden the flap rather than fixed it, and one pixel
+    // over is one pixel of a control outside the row.
+    expect(FIT_HYSTERESIS).toBe(0);
+    expect(pickLevelFromNeeds(717, [NEED_AT_0, NEED_AT_1], 9)).toBe(0);
+    expect(pickLevelFromNeeds(716, [NEED_AT_0, NEED_AT_1], 9)).toBe(1);
+  });
+
+  it("answers 0 for a row that has not been laid out", () => {
+    expect(pickLevelFromNeeds(0, [NEED_AT_0], 9)).toBe(0);
+  });
+});
+
+describe("the search field's caption", () => {
+  it("is whole or it is gone — never clipped mid-word", () => {
+    // Measured live at fit 1: the field floors at 72px with 38px of padding, so
+    // "Search tasks…" (82px of text) was being cut to "Sea". A container query
+    // rather than a ladder rung, because the field's width is decided by flex
+    // against whatever the other seats took — no rung names a width.
+    expect(SCHEDULE_CSS).toContain("container: tasks-search / inline-size;");
+    expect(SCHEDULE_CSS).toContain("@container tasks-search (max-width: 132px)");
+    const block = SCHEDULE_CSS.slice(
+      SCHEDULE_CSS.indexOf("@container tasks-search (max-width: 132px)"),
+    ).slice(0, 200);
+    expect(block).toContain(".schedule-tv-search-input::placeholder");
+    expect(block).toContain("color: transparent");
+    // Scoped to the flag's attribute like every other rule that changes how
+    // this toolbar lays out.
+    const at = SCHEDULE_CSS.indexOf("container: tasks-search / inline-size;");
+    expect(SCHEDULE_CSS.slice(Math.max(0, at - 400), at)).toContain(
+      ".schedule-toolbar[data-fit] .schedule-tv-search {",
+    );
+  });
+});
+
+describe("the toolbar's ladder, in order", () => {
+  // The order is the spec (design.md, Widths v2), and it is the one thing about
+  // this ladder a reader would notice being wrong: a Board button that goes
+  // before the Project filter is a page that has thrown away the control you
+  // were reaching for and kept the one you were not.
+  it("spends words first, then controls, lowest priority first", () => {
+    expect(TOOLBAR_DROPS.map((sel) => sel.split(" ").pop())).toEqual([
+      // words → marks
+      ".schedule-fit-lbl",
+      ".schedule-fit-lbl",
+      ".schedule-fit-lbl",
+      // …and then controls leave: Project (by merging), Status, search,
+      // Calendar, Cards, Board.
+      '.schedule-tv-pop-wrap[data-filter="project"]',
+      '.schedule-tv-pop-wrap[data-filter="all"]',
+      ".schedule-tv-search",
+      '.schedule-view-btn[data-view="calendar"]',
+      '.schedule-view-btn[data-view="cards"]',
+      '.schedule-view-btn[data-view="board"]',
+    ]);
+  });
+
+  it("merges the two filters at the rung the page reads", () => {
+    // Project stops having a trigger of its own and its rows move under a
+    // heading in the merged menu — folded, not taken away. `TOOLBAR_MERGE_LEVEL`
+    // is what Scheduled.tsx compares `level` against, so it has to name the
+    // rung whose selector is the Project one.
+    expect(TOOLBAR_DROPS[TOOLBAR_MERGE_LEVEL - 1]).toContain('[data-filter="project"]');
+  });
+});
+
 describe("the toolbar's fold rules, in the stylesheet", () => {
   // The ladder is half arithmetic and half CSS, and the CSS half has its own
   // failure: a level named once and then overtaken puts the words back on. The
   // New task label did exactly that — folded at level 3 and BACK at level 4,
   // which is the one level it most needed to be gone (measured live).
+  /** Every level at or past `from`, as the `:is()` list the stylesheet spells
+   *  out — the ladder runs to 9 rungs now (design.md, Widths v2), and writing
+   *  them out is what keeps a level from being named once and then overtaken. */
+  const levelsFrom = (from: number) =>
+    Array.from({ length: TOOLBAR_DROPS.length + 1 - from }, (_, i) => `[data-fit="${from + i}"]`);
+
+  /**
+   * The stylesheet with its comments gone, every run of whitespace collapsed
+   * and the padding inside `(…)` and around commas removed — so a selector
+   * prettier has broken over eight lines and one it has left on a single line
+   * read as the same string here.
+   *
+   * The alternative is pinning prettier's line-breaking decisions, which is a
+   * test that fails on a rename three rungs away.
+   */
+  const FLAT = SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .replace(/\s*,\s*/g, ",");
+
   it("folds the New task label at level 3 AND at every level past it", () => {
-    expect(SCHEDULE_CSS).toContain(
-      '.schedule-toolbar:is([data-fit="3"], [data-fit="4"]) .schedule-new .schedule-fit-lbl',
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-new .schedule-fit-lbl`,
     );
   });
 
   it("folds the filter labels from level 2 onwards", () => {
-    expect(SCHEDULE_CSS).toContain(
-      '.schedule-toolbar:is([data-fit="2"], [data-fit="3"], [data-fit="4"])',
-    );
+    expect(FLAT).toContain(`.schedule-toolbar:is(${levelsFrom(2).join(",")})`);
   });
 
   it("folds the view labels at every level but the first", () => {
@@ -433,22 +564,44 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   });
 
   it("draws the folded New task button as a square, not a padded pill", () => {
-    const block = SCHEDULE_CSS.slice(
-      SCHEDULE_CSS.indexOf('.schedule-toolbar[data-fit="3"] .schedule-new,'),
-    ).slice(0, 900);
+    const at = FLAT.indexOf(`.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-new {`);
+    expect(at).toBeGreaterThan(-1);
+    const block = FLAT.slice(at).slice(0, 400);
     expect(block).toContain("width: 32px");
     expect(block).toContain("min-width: 0");
   });
 
-  it("wraps ONLY when the ladder is spent, never by default", () => {
-    // `flex-wrap` wraps before it shrinks, so a row that wraps by default never
-    // spends the search box's slack and the ladder stops meaning anything.
+  it("HIDES the controls in the order Akshil set, lowest priority first", () => {
+    // Project (by merging, so its rows stay reachable), then Status, then the
+    // search, then Calendar, Cards, Board (design.md, Widths v2). Each rung's
+    // rule must hold at its own level and at every level past it.
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(5).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
+    );
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-search`,
+    );
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(7).join(",")}) .schedule-view-btn[data-view="calendar"]`,
+    );
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(8).join(",")}) .schedule-view-btn[data-view="cards"]`,
+    );
+    expect(FLAT).toContain('.schedule-toolbar[data-fit="9"] .schedule-view-btn[data-view="board"]');
+  });
+
+  it("never hides List, and never hides New task", () => {
+    // The two controls the page cannot be without: its default view, and the
+    // one control on the row that STARTS something. No rung may name either.
+    expect(FLAT).not.toContain('.schedule-view-btn[data-view="list"] { display: none');
+    expect(TOOLBAR_DROPS.some((sel) => sel.includes('data-view="list"'))).toBe(false);
+    expect(TOOLBAR_DROPS.some((sel) => /\.schedule-new$/.test(sel))).toBe(false);
+  });
+
+  it("NEVER wraps — the fallback is gone (design.md, Widths v2)", () => {
+    // The toolbar is exempt from the middle pane's floor and stays on one line
+    // at every width; the ladder now runs down to List and "+".
     expect(SCHEDULE_CSS).toContain("flex-wrap: nowrap");
-    expect(SCHEDULE_CSS).toContain('.schedule-toolbar[data-fit][data-wrap="1"] {');
-    const wrapBlock = SCHEDULE_CSS.slice(
-      SCHEDULE_CSS.indexOf('.schedule-toolbar[data-fit][data-wrap="1"] {'),
-    ).slice(0, 120);
-    expect(wrapBlock).toContain("flex-wrap: wrap");
-    expect(wrapBlock).toContain("row-gap: 8px");
+    expect(SCHEDULE_CSS).not.toContain("data-wrap");
   });
 });

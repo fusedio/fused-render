@@ -31,7 +31,7 @@
 //
 // The pure half is here so it can be proved without a browser (row-fit.test.ts);
 // the hook underneath owns the ResizeObserver and the cache.
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 /**
  * THE ORDER THE WIDTH IS SPENT IN, right to left across the row's meta cluster
@@ -125,8 +125,64 @@ export function pickRowLevel(
   return lastUseful + 1;
 }
 
+/**
+ * THE SMALLEST LEVEL WHOSE MEASURED NEED ACTUALLY FITS.
+ *
+ * `needAt[L]` is `rowNeed` as it was OBSERVED while the row was rendered at
+ * level L — not a reconstruction. That is the whole difference, and it is what
+ * makes this a fixed point: the answer for a level no longer depends on which
+ * level the row happens to be in when the question is asked.
+ *
+ * ── WHY THE RECONSTRUCTION HAD TO GO ────────────────────────────────────────
+ *
+ * `naturalNeed` rebuilt level 0's need by adding back a per-rung COST, and each
+ * cost was measured as the width of the thing the rung hides. For the list rows
+ * that is honest — a folded chip is a chip that is gone. For the TOOLBAR it is
+ * not: folding rung 0 hides four label spans (147px measured) *and* takes 8px
+ * of horizontal padding off each of the four view buttons, so the seat actually
+ * gives back 219px. The reconstruction was 72px short at every folded level,
+ * which meant `pickRowLevel` said "level 1" while the row was at 0 and "level
+ * 0" while the row was at 1 — a two-cycle. It settled on whichever the last
+ * observer callback produced, and in the 736-776px band it settled on 0, with
+ * the New task button hanging 26px past the toolbar's right edge and under the
+ * peek (measured live, 2026-09-14, frame 736).
+ *
+ * `FIT_HYSTERESIS` is 0 and staying 0: a band would only have hidden the flap,
+ * and the flap was a wrong number rather than a jitter.
+ *
+ * ── CONVERGENCE ─────────────────────────────────────────────────────────────
+ *
+ * A level whose need has never been observed is UNKNOWN, and the answer for an
+ * unknown one is "go one rung deeper than the deepest level we have measured" —
+ * which renders it, which measures it, which is how the walk terminates. Levels
+ * only ever step by one, the sequence is bounded by the ladder's length, and a
+ * level that fits is returned immediately on the next read.
+ */
+export function pickLevelFromNeeds(
+  available: number,
+  needAt: readonly (number | undefined)[],
+  rungs: number,
+): number {
+  if (!(available > 0)) return 0;
+  let deepest = 0;
+  for (let level = 0; level <= rungs; level += 1) {
+    const need = needAt[level];
+    if (need === undefined) break;
+    if (need <= available + FIT_HYSTERESIS) return level;
+    deepest = level;
+  }
+  // Nothing measured fits. One rung past the deepest thing we know about, so
+  // the next frame has something new to measure.
+  return Math.min(deepest + 1, rungs);
+}
+
 /** What the rows need at level 0, rebuilt from what is on screen plus what this
- *  level has already taken away. Pure, so the reconstruction is testable. */
+ *  level has already taken away. Pure, so the reconstruction is testable.
+ *
+ *  STILL USED BY `useRowFit` (the list's own meta ladder), where every rung
+ *  hides a whole element and the cost really is that element's width. The
+ *  TOOLBAR and the peek header use `pickLevelFromNeeds` instead — see its note
+ *  for the geometry that broke this one. */
 export function naturalNeed(
   measured: number,
   level: number,
@@ -372,16 +428,41 @@ export function useRowFit(ref: React.RefObject<HTMLElement>, enabled = true): nu
  * since they are hidden together.
  */
 export const TOOLBAR_DROPS = [
+  // ---- words → marks. Nothing leaves the row; it stops being spelled out.
   ".schedule-view-seg .schedule-fit-lbl",
   ".schedule-tv-filter-btn .schedule-fit-lbl",
   ".schedule-new .schedule-fit-lbl",
-  // THE LAST RUNG, and the only one that is not a hidden label: the two filter
-  // triggers become ONE (TaskFilterControls `merged`), so what this measures is
-  // the SECOND trigger — the width that stops existing when they merge. Once
-  // merged it is absent from the row, and `naturalNeed` adds its cached width
-  // back to answer "would they still fit apart?".
-  ".schedule-tv-filters .schedule-tv-pop-wrap:last-of-type",
+  // ---- and then CONTROLS LEAVE, lowest priority first (design.md, Widths v2:
+  // Project filter, Status filter, search, Calendar, Cards, Board; List and
+  // New task never go).
+  //
+  // PROJECT GOES BY MERGING rather than by vanishing, and that is the rung's
+  // whole point: the two filter triggers become ONE (TaskFilterControls
+  // `merged`), so the Project rows are still a press away under their own
+  // heading instead of being unreachable. It is the overflow menu this toolbar
+  // would otherwise have to grow. What the rung MEASURES is the Project
+  // trigger — the width that stops existing when they merge — and `naturalNeed`
+  // adds it back to answer "would they still fit apart?".
+  '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="project"]',
+  // …and then the one remaining trigger goes too. Measured as whichever of the
+  // two shapes is on screen: the Status trigger while they are still apart (the
+  // merged one does not exist yet to be measured), the merged one after.
+  '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="status"], ' +
+    '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="all"]',
+  // The search box. It has already given up its slack by now (260 → 72, see
+  // `--fit-natural` in styles/schedule.css); this is the 72 going as well.
+  ".schedule-tv-search",
+  // The three views that are not List, newest-to-oldest in how much the page
+  // leans on them. LIST NEVER GOES: it is the default and the one view the page
+  // must always be able to get back to.
+  '.schedule-view-btn[data-view="calendar"]',
+  '.schedule-view-btn[data-view="cards"]',
+  '.schedule-view-btn[data-view="board"]',
 ] as const;
+
+/** The last rung at which a control is merely FOLDED rather than gone. Read by
+ *  the page to decide `merged`, and by the stylesheet's comment. */
+export const TOOLBAR_MERGE_LEVEL = 4;
 
 /**
  * How many of `TOOLBAR_DROPS` to fold.
@@ -396,57 +477,88 @@ export const TOOLBAR_DROPS = [
 export interface ToolbarFit {
   /** How many of `TOOLBAR_DROPS` are folded. */
   level: number;
-  /**
-   * EVEN WITH EVERY RUNG SPENT IT DOES NOT FIT — wrap onto a second row.
-   *
-   * A LAST RESORT, and it has to be one: `flex-wrap` wraps BEFORE it shrinks
-   * (an item that does not fit at its base size moves to the next line, and
-   * only then do the items on a line shrink to share it). Left on
-   * unconditionally it therefore cancels the whole ladder — the search box
-   * never gives up its 260, so the filter group jumps to a line of its own and
-   * the row is three tall while every fold is still available. So the row is
-   * `nowrap` until the arithmetic says nothing more can be folded, and only
-   * then does it wrap rather than clip.
-   */
-  wrap: boolean;
 }
 
-export function useToolbarFit(enabled = true): [ToolbarFit, (el: HTMLElement | null) => void] {
-  const [fit, setFit] = useState<ToolbarFit>({ level: 0, wrap: false });
-  const level = fit.level;
+/**
+ * THE TOOLBAR NEVER WRAPS ANY MORE (design.md, Widths v2).
+ *
+ * It used to, as the ladder's last resort: every rung spent and the row still
+ * too wide, so it took a second line rather than clipping. That is gone,
+ * because the ladder now runs all the way down to a row holding nothing but
+ * List and "+" — about 70px — and there is no width at which a second line is
+ * the better answer. The toolbar is also the one part of the page the middle
+ * pane's floor does not apply to: it stays on ONE LINE at every width, which is
+ * exactly what a second line would break.
+ */
+
+/**
+ * THE PEEK HEADER'S OWN LADDER (design.md, Header + list state v2).
+ *
+ * The header is one line at every width the panel can be dragged to, down to
+ * 220px, and the TITLE is what gives — it ellipsises, which is what a title is
+ * for. Everything else in the row is a mark or a control, and a mark that
+ * ellipsises is a mark that lies. So when even a floored title will not fit,
+ * two things leave, in this order:
+ *
+ *   1. the project NAME — a fact, repeated on the row behind the panel, and the
+ *      door beside it already says where the folder is;
+ *   2. the Open door — an act, so it does not simply vanish: it reappears in
+ *      the ⋮ (TaskPeek `menuItems`). A hidden control has to be somewhere.
+ *
+ * The panel-hide button, the chevrons, the status ring, the number and the ⋮
+ * are not in this list at any level: hiding the way out of a panel, or the way
+ * to its actions, is the one thing a narrow window must not do.
+ */
+export const PEEK_HEAD_DROPS = [
+  ".task-side-peek-project",
+  ".task-side-peek-open",
+] as const;
+
+/**
+ * WATCH ONE ROW AND ANSWER HOW MANY OF ITS SEATS HAVE TO FOLD — the engine
+ * under both `useToolbarFit` and the peek header's fit, parameterised only by
+ * the ladder.
+ *
+ * One implementation rather than two, because everything that is subtle here is
+ * in the measurement, not in the list: `rowNeed`'s refusal to charge slack,
+ * `naturalNeed`'s reconstruction of a need from a folded row, and the fixed
+ * point that keeps `pickRowLevel` from oscillating. A second copy is a second
+ * place for those to drift.
+ */
+export function useStripFit(
+  drops: readonly string[],
+  enabled = true,
+): [number, (el: HTMLElement | null) => void] {
+  const [level, setLevel] = useState(0);
   // A CALLBACK REF, not a `useRef`, and the difference is the whole reason the
-  // first version did nothing: the toolbar is rendered only once the page's
-  // state has arrived, so a layout effect keyed on a stable ref object ran
-  // ONCE against `null` and never again — the observer was never attached, and
-  // the row clipped exactly as before. State makes the node a dependency.
+  // first version did nothing: the row is rendered only once the page's state
+  // has arrived, so a layout effect keyed on a stable ref object ran ONCE
+  // against `null` and never again — the observer was never attached, and the
+  // row clipped exactly as before. State makes the node a dependency.
   const [el, setEl] = useState<HTMLElement | null>(null);
-  const costs = useRef<number[]>([]);
+  /** What the row NEEDED at each level it has actually been rendered at. The
+   *  cache is the measurement (`pickLevelFromNeeds` says why it is not a set of
+   *  per-rung costs). */
+  const needAt = useRef<(number | undefined)[]>([]);
   const levelRef = useRef(0);
   levelRef.current = level;
   useLayoutEffect(() => {
-    // Off, the toolbar is measured by nothing and folds nothing — see
-    // `useRowFit`'s note.
+    // Off, the row is measured by nothing and folds nothing — see `useRowFit`'s
+    // note on what the flag's "off" has to mean.
     if (!enabled || !el) return;
     let frame = 0;
     const read = () => {
-      TOOLBAR_DROPS.forEach((selector, at) => {
-        let sum = 0;
-        el.querySelectorAll<HTMLElement>(selector).forEach((node) => {
-          sum += node.getBoundingClientRect().width;
-        });
-        // Zero is "hidden at this level", which says nothing about the cost.
-        if (sum > (costs.current[at] ?? 0)) costs.current[at] = sum;
-      });
-      const need = naturalNeed(rowNeed(el), levelRef.current, costs.current);
-      const available = el.clientWidth;
-      const next = pickRowLevel(available, need, costs.current);
-      // What is still owed once every rung this verdict spends has been spent.
-      let left = need;
-      for (let i = 0; i < next && i < costs.current.length; i += 1) {
-        left -= costs.current[i] ?? 0;
-      }
-      const wrap = next >= TOOLBAR_DROPS.length && left > available + FIT_HYSTERESIS;
-      setFit((cur) => (cur.level === next && cur.wrap === wrap ? cur : { level: next, wrap }));
+      const at = levelRef.current;
+      const need = rowNeed(el);
+      const known = needAt.current[at];
+      // CONTENT CHANGED UNDER US — a poll landed a longer folder name, a Draft
+      // chip appeared — so what we remember about the OTHER levels was taken of
+      // a different row. Forget it and let the walk re-measure; keeping it is
+      // how a ladder ends up answering about a row that no longer exists.
+      if (known !== undefined && Math.abs(known - need) > 1) needAt.current = [];
+      needAt.current[at] = need;
+      const next = pickLevelFromNeeds(el.clientWidth, needAt.current, drops.length);
+      setLevel((cur) => (cur === next ? cur : next));
     };
     const schedule = () => {
       if (frame) return;
@@ -466,10 +578,18 @@ export function useToolbarFit(enabled = true): [ToolbarFit, (el: HTMLElement | n
       ro.disconnect();
       mo.disconnect();
     };
-  }, [el, enabled]);
-  return [enabled ? fit : OFF_FIT, setEl];
+  }, [el, enabled, drops]);
+  return [enabled ? level : 0, setEl];
 }
 
-/** The verdict a disabled toolbar reports: nothing folded, nothing wrapped.
- *  A module constant so the identity is stable across renders. */
-const OFF_FIT: ToolbarFit = { level: 0, wrap: false };
+export function useToolbarFit(enabled = true): [ToolbarFit, (el: HTMLElement | null) => void] {
+  const [level, setEl] = useStripFit(TOOLBAR_DROPS, enabled);
+  // An object, because the caller reads `.level` and a bare number would make
+  // every call site of this hook change when the shape next grows.
+  const fit = useMemo<ToolbarFit>(() => (enabled ? { level } : OFF_FIT), [enabled, level]);
+  return [fit, setEl];
+}
+
+/** The verdict a disabled toolbar reports: nothing folded. A module constant so
+ *  the identity is stable across renders. */
+const OFF_FIT: ToolbarFit = { level: 0 };
