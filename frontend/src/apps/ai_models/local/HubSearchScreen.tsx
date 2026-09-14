@@ -972,7 +972,13 @@ export function HubSearchScreen({
         onParamsBand={(paramsBand) => onSettle({ ...settled, paramsBand })}
         onQuant={(quant) => onSettle({ ...settled, quant })}
         onPublisher={(publisher) => onSettle({ ...settled, publisher })}
-        loading={loading && models === null}
+        // D1300 (item 3): suppressed at the call site (not in SearchControls'
+        // own ternary — see SearchControls.test.ts:54's literal-source
+        // assertion) whenever the wait block is showing. It duplicates the
+        // wait block's own "Searching the local catalog"/"Asking {host}"
+        // line on a first search; a re-search (models already on screen,
+        // wait block hidden) is untouched.
+        loading={loading && models === null && waitPhase === "hidden"}
         matchCount={shown?.length ?? null}
         facets={facets}
       />
