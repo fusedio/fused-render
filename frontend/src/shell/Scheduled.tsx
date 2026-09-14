@@ -1288,6 +1288,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               missing={missing}
+              // At the floor the rows stop folding their marks and the list
+              // scrolls to them instead (design.md, Fix batch 6 §2) — the same
+              // `floored` the frame writes as `data-floored` below, so the
+              // stylesheet and the fit ladder can never disagree about which
+              // side of the floor the pane is on.
+              floored={peek.floored}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is

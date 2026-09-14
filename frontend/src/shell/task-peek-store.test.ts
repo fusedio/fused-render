@@ -77,8 +77,12 @@ const {
   setPeekHost,
   setPeekWidth,
   showListBesidePeek,
+  canShowList,
+  planShowList,
   arrowShouldWalk,
+  peekItemProps,
   peekScrollTarget,
+  peekVisibleOrder,
   stepPeekKey,
   syncPeekFromUrl,
 } = await import("./task-peek-store");
@@ -100,6 +104,9 @@ beforeEach(() => {
  *  551px peek. Wide enough that nothing is at a clamp, which is the point: what
  *  is being checked is the CROSSING, not an edge. */
 const VIEWPORT = 1538;
+/** The sidebar's rail, from the module that owns it, so the arithmetic below
+ *  reads as arithmetic and cannot drift from it. */
+const SIDEBAR_RAIL = sidebar.SIDEBAR_RAIL_WIDTH;
 /** A baseline that leaves the panel MORE than its minimum on this window —
  *  1306 of content less 906 is 400, exactly the floor — so "the first open
  *  keeps the column where it was" is a statement about the arithmetic and not
@@ -267,6 +274,65 @@ describe("stepPeekKey", () => {
     // jumping to whatever happens to be first.
     expect(stepPeekKey(order, "z", 1)).toBeNull();
     expect(stepPeekKey(order, null, 1)).toBeNull();
+  });
+});
+
+describe("peekVisibleOrder — the walk skips what the panel cannot open", () => {
+  // The items as the walk reads them: nodes carrying the attributes, in the
+  // order the view painted them. A draft row still carries its KEY (it is an
+  // item, and the frame's click-to-close must keep sparing it) and carries the
+  // skip mark beside it — design.md, Fix batch 6 §3.
+  const node = (props: Record<string, string>) => ({
+    getAttribute: (name: string) => props[name] ?? null,
+  });
+  const item = (key: string, openable = true) => node(peekItemProps(key, openable));
+
+  it("stamps the skip only on an item the panel cannot open", () => {
+    expect(peekItemProps("a", true)).toEqual({ "data-peek-key": "a" });
+    expect(peekItemProps("a", false)).toEqual({
+      "data-peek-key": "a",
+      "data-peek-skip": "1",
+    });
+  });
+
+  it("leaves the drafts out of the order", () => {
+    const order = peekVisibleOrder([
+      item("a"),
+      item("draft-1", false),
+      item("b"),
+      item("draft-2", false),
+      item("c"),
+    ]);
+    expect(order).toEqual(["a", "b", "c"]);
+  });
+
+  it("steps OVER a draft that sits between two tasks", () => {
+    // The row is still on the page and still opens its own form on a press —
+    // what changes is that ↓ no longer stops on it and asks to be pressed again.
+    const order = peekVisibleOrder([item("a"), item("draft-1", false), item("b")]);
+    expect(stepPeekKey(order, "a", 1)).toBe("b");
+    expect(stepPeekKey(order, "b", -1)).toBe("a");
+  });
+
+  it("advances past a draft after an archive", () => {
+    // The panel does not close on an archive — it moves to the next task DOWN
+    // (design.md, Header + list state v2), and "next" means the next one it can
+    // actually show.
+    const order = peekVisibleOrder([item("a"), item("draft-1", false), item("b")]);
+    expect(nextAfterRemoval(order, "a")).toBe("b");
+    // …and at the end of the list, the previous one — never the draft.
+    expect(nextAfterRemoval(order, "b")).toBe("a");
+  });
+
+  it("closes when the drafts are all that is left", () => {
+    const order = peekVisibleOrder([item("a"), item("draft-1", false)]);
+    expect(nextAfterRemoval(order, "a")).toBeNull();
+    expect(stepPeekKey(order, "a", 1)).toBeNull();
+  });
+
+  it("still takes each key once, whatever the view painted twice", () => {
+    const order = peekVisibleOrder([item("a"), item("a"), item("b")]);
+    expect(order).toEqual(["a", "b"]);
   });
 });
 
@@ -1123,6 +1189,85 @@ describe("the sidebar, and the only thing that moves it", () => {
     showListBesidePeek();
     expect(currentRoom().cover).toBe(false);
     expect(currentRoom().frameAfter).toBeGreaterThanOrEqual(PEEK_COVER_FLOOR);
+  });
+
+  describe("…on a window too small for the default split (Fix batch 6 §1)", () => {
+    // Three branches, and the control has to be honest about all three: spend
+    // the widest non-cover width, buy one with the sidebar, or say it cannot.
+    const env = (viewport: number, baseline: number | null, collapsed = false) => ({
+      viewport,
+      baseline,
+      sidebarExpanded: 232,
+      sidebarCollapsed: collapsed,
+    });
+
+    it("falls back to the WIDEST non-cover width when the default is itself cover", () => {
+      // 1132 less a 232 sidebar is 900 of content, against a baseline measured
+      // at 300 — the default (content − baseline = 600) would leave the middle
+      // pane 300px, under its 360 cover floor, so the panel is held back to
+      // exactly what clears it.
+      const plan = planShowList(env(1132, 300));
+      expect(plan.collapse).toBe(false);
+      expect(plan.width).toBe(900 - PEEK_COVER_FLOOR);
+    });
+
+    it("spends the sidebar when that is the only thing that clears it", () => {
+      // 900 wide: 668 of content cannot hold a 400 panel and a 360 pane at
+      // once, and 856 (the rail) can. The same trade the open-time exception
+      // makes, and it is made here for the same 188px.
+      const plan = planShowList(env(900, BASELINE));
+      expect(plan.collapse).toBe(true);
+      expect(plan.width).toBe(PEEK_MIN_WIDTH);
+      expect(900 - SIDEBAR_RAIL - (plan.width ?? 0)).toBeGreaterThanOrEqual(PEEK_COVER_FLOOR);
+    });
+
+    it("answers null when not even the rail buys enough room", () => {
+      expect(planShowList(env(700, BASELINE))).toEqual({ width: null, collapse: false });
+      // …and a sidebar the reader has already collapsed has nothing left to
+      // give, so the middle branch is not tried twice.
+      expect(planShowList(env(900, BASELINE, true)).collapse).toBe(false);
+    });
+
+    it("collapses the sidebar for real, silently, and marks it ours", () => {
+      windowWidth(900);
+      setPeekHost(true);
+      setPeekBaselineCandidate(BASELINE);
+      openPeek("sess-1");
+      // The open-time exception does not fire here (the collapse would not buy
+      // the panel its minimum beside an untouched column), so the sidebar is
+      // still open and the panel is covering.
+      expect(sidebar.getSidebarState().collapsed).toBe(false);
+      expect(currentRoom().cover).toBe(true);
+      expect(canShowList()).toBe(true);
+      showListBesidePeek();
+      expect(sidebar.getSidebarState().collapsed).toBe(true);
+      expect(currentRoom().cover).toBe(false);
+      expect(currentRoom().frameAfter).toBeGreaterThanOrEqual(PEEK_COVER_FLOOR);
+      // Ours to hand back when the reader leaves /tasks, and NOT a preference:
+      // the layout got out of the way, the reader did not ask for a rail.
+      expect(getPeekState().autoCollapsed).toBe(true);
+      expect(localStorage.getItem("fused-render:sidebar")).toBeNull();
+    });
+
+    it("is refused, and says so, when the window cannot hold both", () => {
+      windowWidth(700);
+      setPeekHost(true);
+      setPeekBaselineCandidate(BASELINE);
+      openPeek("sess-1");
+      expect(canShowList()).toBe(false);
+      const before = getPeekState().width;
+      showListBesidePeek();
+      // Nothing moved — which is why the header draws the control disabled with
+      // "Window too narrow to show the list" rather than offering the press.
+      expect(getPeekState().width).toBe(before);
+      expect(sidebar.getSidebarState().collapsed).toBe(false);
+    });
+
+    it("has nothing to offer with no panel open", () => {
+      windowWidth(VIEWPORT);
+      setPeekHost(true);
+      expect(canShowList()).toBe(false);
+    });
   });
 
   it("does nothing at all with no peek open", () => {

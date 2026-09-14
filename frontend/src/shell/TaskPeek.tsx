@@ -92,6 +92,8 @@ import {
   PEEK_KEY_STEP,
   PEEK_WALK_ATTR,
   peekScrollTarget,
+  peekVisibleOrder,
+  canShowList,
   nextAfterRemoval,
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
@@ -266,18 +268,18 @@ export function useTaskPeekHost(enabled: boolean): void {
 
 // ---- the walk ----------------------------------------------------------------
 
-/** The visible order, read off the frame in DOM order (see PEEK_ITEM_ATTR). */
+/**
+ * The visible order, read off the frame in DOM order (see PEEK_ITEM_ATTR) —
+ * less the items the panel cannot open, which carry `PEEK_SKIP_ATTR` and are
+ * dropped by `peekVisibleOrder` (design.md, Fix batch 6 §3). The dedupe and the
+ * filter both live in the store, so the DOM read here is the only part of this
+ * that needs a browser.
+ */
 function visibleOrder(): string[] {
   if (typeof document === "undefined") return [];
-  const nodes = document.querySelectorAll(`.tasks-frame [${PEEK_ITEM_ATTR}]`);
-  const keys: string[] = [];
-  nodes.forEach((el) => {
-    const key = el.getAttribute(PEEK_ITEM_ATTR);
-    // A view may paint the same task twice (a board card and its drag ghost);
-    // the walk wants places, not nodes.
-    if (key && !keys.includes(key)) keys.push(key);
-  });
-  return keys;
+  return peekVisibleOrder(
+    Array.from(document.querySelectorAll(`.tasks-frame [${PEEK_ITEM_ATTR}]`)),
+  );
 }
 
 /**
@@ -420,6 +422,11 @@ export function TaskPeek({
   onReload?: () => void;
 }) {
   const layout = useTaskPeekLayout();
+  // IS THERE A SPLIT TO GO BACK TO — asked of the store, on every render that
+  // `layout` changes on (the window, the sidebar, the seam), which is every
+  // render that could change the answer. Only in cover, because that is the one
+  // state the control is drawn in (design.md, Fix batch 6 §1).
+  const canList = layout.cover && canShowList();
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
@@ -1166,7 +1173,18 @@ export function TaskPeek({
               <button
                 type="button"
                 className="task-side-peek-resize"
-                data-hint="Restore the list beside the panel"
+                /* …AND ON A WINDOW THAT CANNOT HOLD BOTH, it says so rather than
+                   pressing and moving nothing (Akshil, 2026-09-14 — design.md,
+                   Fix batch 6 §1). `canShowList` asks the store whether ANY
+                   width clears the middle pane's cover floor, the sidebar's own
+                   188px included; below that the control is a label for a state
+                   of the window, which is worth more than a dead press. */
+                disabled={!canList}
+                data-hint={
+                  canList
+                    ? "Restore the list beside the panel"
+                    : "Window too narrow to show the list"
+                }
                 onClick={() => showListBesidePeek()}
               >
                 Resize panel

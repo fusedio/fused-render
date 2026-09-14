@@ -63,6 +63,7 @@ import {
   filingIntent,
   firstLine,
   opensElsewhere,
+  peekOpenable,
   spansProjects,
   ringFailed,
   taskColumn,
@@ -72,8 +73,8 @@ import {
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
-  PEEK_ITEM_ATTR,
   PEEK_OPEN_CLASS,
+  peekItemProps,
   openPeek,
   usePeekHost,
   usePeekedKey,
@@ -605,7 +606,7 @@ function TaskCard({
       // halo's selector and — read in DOM order — the prev/next walk, which on
       // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
       // when the feature is off.
-      {...(peekOn ? { [PEEK_ITEM_ATTR]: cardKey(task) } : {})}
+      {...(peekOn ? peekItemProps(cardKey(task), peekOpenable(task)) : {})}
       aria-label={`${task.task_id} ${title}`}
       // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
       // used to be the live chat with its own scroll and its own clicks —

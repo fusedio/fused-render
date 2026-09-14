@@ -20,6 +20,7 @@ import {
   pickLevelFromNeeds,
   TOOLBAR_MERGE_LEVEL,
   naturalNeed,
+  pickRowFit,
   pickRowLevel,
   rowNeed,
 } from "./row-fit";
@@ -88,6 +89,44 @@ describe("pickRowLevel", () => {
 
   it("answers 0 for a box that has not been laid out yet", () => {
     expect(pickRowLevel(0, 900, COSTS)).toBe(0);
+  });
+});
+
+describe("pickRowFit — the ladder stands down at the floor", () => {
+  // design.md, Fix batch 6 §2: below three quarters of the baseline the middle
+  // pane has stopped shrinking and scrolls sideways, so a row that went on
+  // folding would give up its project, its count and its time to buy width the
+  // scroll had already found.
+  const costs = [46 + 8, 34 + 8, 80 + 8, 0];
+  // A row that does NOT fit — the whole point: this is exactly the width at
+  // which the unfloored ladder folds.
+  const need = 520;
+  const available = 400;
+
+  it("folds nothing while floored, however tight the row is", () => {
+    expect(pickRowFit({ floored: true, available, need, costs }).level).toBe(0);
+  });
+
+  it("…and is the ordinary ladder when it is not", () => {
+    expect(pickRowFit({ floored: false, available, need, costs }).level).toBe(
+      pickRowLevel(available, need, costs),
+    );
+    expect(pickRowFit({ floored: false, available, need, costs }).level).toBeGreaterThan(0);
+  });
+
+  it("publishes the row's need either way, whole pixels, never negative", () => {
+    // It is the number the floored content's `min-width` is held at
+    // (`--tasks-row-need`, styles/task-peek.css), so a fraction would be a
+    // scrollbar that appears and disappears on a rounding.
+    expect(pickRowFit({ floored: true, available, need: 519.2, costs }).need).toBe(520);
+    expect(pickRowFit({ floored: false, available, need: 519.2, costs }).need).toBe(520);
+    expect(pickRowFit({ floored: true, available, need: -1, costs }).need).toBe(0);
+  });
+
+  it("leaves a row that already fits alone on both sides of the floor", () => {
+    const fits = { available: 900, need: 520, costs };
+    expect(pickRowFit({ floored: false, ...fits }).level).toBe(0);
+    expect(pickRowFit({ floored: true, ...fits }).level).toBe(0);
   });
 });
 

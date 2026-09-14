@@ -422,6 +422,32 @@ export function isDraftTask(task: Pick<Task, "kind">): boolean {
 }
 
 /**
+ * CAN THE SIDE PEEK SHOW THIS TASK AT ALL? (design.md, Fix batch 6 §3.)
+ *
+ * The panel holds a CONVERSATION, and two kinds of row on this page are not
+ * one:
+ *
+ *   * a DRAFT — an unfinished New task form. Its press opens that form, in a
+ *     modal, in every view (`isDraftTask` is the whole rule the List row and
+ *     the Board card both spend before anything else);
+ *   * a row with NO SESSION — a scheduled run that has never happened.
+ *     `taskHref` is null for it and `openThreadIntent` therefore offers no
+ *     intent, so its press opens the edit form or does nothing.
+ *
+ * The same two questions the two views already ask before they route a press,
+ * asked once here so the WALK can ask them too: ↑/↓ and the chevrons stopped on
+ * rows the panel could not open, and the reader had to press again to get past
+ * each one.
+ *
+ * Deliberately NOT asked of the folder's existence: a missing folder is a fact
+ * about the disk that the poll can change under us, the row stays on the page
+ * saying so, and the panel opens on it the same way a `?peek=` deep link does.
+ */
+export function peekOpenable(task: Pick<Task, "kind" | "session_id">): boolean {
+  return !isDraftTask(task) && !!task.session_id;
+}
+
+/**
  * …AND WHICH OF THE TWO KINDS IT IS (design.md, Round 2: "New-chat drafts are
  * rows").
  *

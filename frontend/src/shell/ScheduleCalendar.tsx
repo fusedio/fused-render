@@ -169,6 +169,7 @@ import {
   openMessageHref,
   popoverPill,
   taskColumn,
+  peekOpenable,
   taskHref,
   taskRunIntent,
 } from "./tasks-lib";
@@ -178,8 +179,8 @@ import type { TaskRunIntent } from "./tasks-lib";
 // the board — red on Blocked, and dashed (below) when it is only projected.
 import { StatusIcon } from "./ScheduleTaskViews";
 import {
-  PEEK_ITEM_ATTR,
   PEEK_OPEN_CLASS,
+  peekItemProps,
   openPeek,
   usePeekHost,
   usePeekedKey,
@@ -1295,7 +1296,7 @@ export default function ScheduleCalendar({
                       // its own time, so DOM order here IS chronological, which
                       // is the walk design.md asks the calendar for
                       // (shell/task-peek-store.ts).
-                      {...(peekOn ? { [PEEK_ITEM_ATTR]: chip.task.key } : {})}
+                      {...(peekOn ? peekItemProps(chip.task.key, peekOpenable(chip.task)) : {})}
                       onClick={(e) => {
                         e.stopPropagation();
                         setOpenChip({ chip, x: e.clientX, y: e.clientY });

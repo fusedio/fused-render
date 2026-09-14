@@ -356,18 +356,74 @@ function measureCosts(scroller: HTMLElement, into: number[]): void {
 }
 
 /**
- * Watch a task list and answer how many of its meta marks have to go.
+ * WHAT A LIST'S ROWS ARE OWED: how many marks have to go, and what the widest
+ * row would need if none of them did.
  *
- * The returned number is written to the scroller as `data-fit` by the caller;
- * the stylesheet does the hiding, cumulatively (styles/tasks.css).
+ * `level` is written to the scroller as `data-fit` by the caller and the
+ * stylesheet does the hiding, cumulatively (styles/tasks.css). `need` is the
+ * other half, and it only matters at the floor: the pane has stopped shrinking,
+ * so the rows must stop folding and the CONTENT must be as wide as they need
+ * (`--tasks-row-need`, styles/task-peek.css).
  */
-export function useRowFit(ref: React.RefObject<HTMLElement>, enabled = true): number {
-  const [level, setLevel] = useState(0);
+export interface RowFit {
+  /** How many of `ROW_DROPS` are folded — 0 keeps every mark. */
+  level: number;
+  /** The widest row's need with nothing folded, in px (its title charged
+   *  `FIT_TEXT_FLOOR`, so a sentence cannot make this unbounded). */
+  need: number;
+}
+
+/** The feature off, and the floor's own answer before anything is measured. */
+const NO_FIT: RowFit = { level: 0, need: 0 };
+
+/**
+ * THE VERDICT, AND THE ONE THING THE FLOOR CHANGES ABOUT IT (Akshil,
+ * 2026-09-14 — design.md, Fix batch 6 §2).
+ *
+ * Above the floor this is `pickRowLevel` and nothing else: the pane is
+ * reflowing, so the row spends its marks right to left to stay on one line.
+ *
+ * AT THE FLOOR IT IS ZERO, always. Below three quarters of the baseline the
+ * middle pane has stopped shrinking and SCROLLS instead (Widths v2), and a row
+ * that goes on folding inside a pane that scrolls loses its project, its count
+ * and its time to buy width nobody asked for — the scroll was the answer. So
+ * the ladder stands down and the content's `min-width` takes over: the marks
+ * stay on the row and the reader scrolls right to them.
+ *
+ * `need` is published either way and is measured at the level the rows are
+ * ACTUALLY at (`rowNeed`'s `restore` puts the folded ones back), so the number
+ * the stylesheet is handed does not depend on which rung the row was on when
+ * the floor arrived.
+ */
+export function pickRowFit(input: {
+  floored: boolean;
+  available: number;
+  need: number;
+  costs: readonly number[];
+}): RowFit {
+  const need = Math.max(0, Math.ceil(input.need));
+  if (input.floored) return { level: 0, need };
+  return { level: pickRowLevel(input.available, input.need, input.costs), need };
+}
+
+/**
+ * Watch a task list and answer how many of its meta marks have to go — and,
+ * for the floored case, how wide the widest row wants to be.
+ *
+ * `floored` is the middle pane's own state (task-peek-store `planRoom`), handed
+ * down from the page rather than read off the DOM here: the attribute that
+ * carries it lives on `.tasks-frame`, three components up, and this hook's
+ * observers deliberately watch nothing but the scroller's box and its children.
+ */
+export function useRowFit(
+  ref: React.RefObject<HTMLElement>,
+  enabled = true,
+  floored = false,
+): RowFit {
+  const [fit, setFit] = useState<RowFit>(NO_FIT);
   // The cache outlives every measurement: an item's width is a fact about the
   // CONTENT, and re-reading it while the item is hidden would read zero.
   const costs = useRef<number[]>([]);
-  const levelRef = useRef(0);
-  levelRef.current = level;
   useLayoutEffect(() => {
     // OFF MEANS NOTHING IS OBSERVED. The ladder arrived with the side peek and
     // it is part of what the flag turns off, so with the feature down there is
@@ -388,8 +444,8 @@ export function useRowFit(ref: React.RefObject<HTMLElement>, enabled = true): nu
         const row = rows[i];
         if (row) need = Math.max(need, rowNeed(row, costs.current));
       }
-      const next = pickRowLevel(el.clientWidth, need, costs.current);
-      setLevel((cur) => (cur === next ? cur : next));
+      const next = pickRowFit({ floored, available: el.clientWidth, need, costs: costs.current });
+      setFit((cur) => (cur.level === next.level && cur.need === next.need ? cur : next));
     };
     // READ IN THE CALLBACK, not on a frame. A `requestAnimationFrame` hop is
     // the tidier shape and it is the wrong one here: a ResizeObserver already
@@ -422,8 +478,11 @@ export function useRowFit(ref: React.RefObject<HTMLElement>, enabled = true): nu
       ro.disconnect();
       mo.disconnect();
     };
-  }, [ref, enabled]);
-  return enabled ? level : 0;
+    // `floored` is in the deps because it changes the VERDICT, not the
+    // measurement: crossing the floor has to re-read at once, in the same
+    // commit the frame's own attribute lands in.
+  }, [ref, enabled, floored]);
+  return enabled ? fit : NO_FIT;
 }
 
 // ---- the Tasks toolbar -------------------------------------------------------
@@ -558,12 +617,12 @@ export function useStripFit(
   // against `null` and never again — the observer was never attached, and the
   // row clipped exactly as before. State makes the node a dependency.
   const [el, setEl] = useState<HTMLElement | null>(null);
+  const levelRef = useRef(0);
+  levelRef.current = level;
   /** What the row NEEDED at each level it has actually been rendered at. The
    *  cache is the measurement (`pickLevelFromNeeds` says why it is not a set of
    *  per-rung costs). */
   const needAt = useRef<(number | undefined)[]>([]);
-  const levelRef = useRef(0);
-  levelRef.current = level;
   useLayoutEffect(() => {
     // Off, the row is measured by nothing and folds nothing — see `useRowFit`'s
     // note on what the flag's "off" has to mean.

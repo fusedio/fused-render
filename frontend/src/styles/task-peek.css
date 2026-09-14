@@ -158,9 +158,32 @@
 
 /* WHAT ACTUALLY STOPS SHRINKING. The scroller keeps the frame's width; its
    content is held at the floor, and the difference is the scroll. */
-.tasks-frame[data-floored="1"] .tasks-list > *,
 .tasks-frame[data-floored="1"] .schedule-cal > * {
   min-width: var(--tasks-floor, 0px);
+}
+
+/* …AND THE LIST IS HELD AT THE LARGER OF TWO NUMBERS (Akshil, 2026-09-14 —
+   design.md, Fix batch 6 §2).
+
+   The floor is three quarters of the baseline, and a row wants what a row
+   wants: with the content held at the floor alone the pane stopped shrinking
+   but the ROWS did not — the fit ladder went on folding the project, the
+   message count and the time to keep each row on one line inside a box that was
+   already scrolling. Two mechanisms answering the same narrowness, and the one
+   that took the marks away won.
+
+   So at the floor the ladder stands down (shell/row-fit.ts `pickRowFit` returns
+   level 0) and this takes over: `--tasks-row-need` is the widest row's measured
+   need with nothing folded, written on the scroller by the list itself. The
+   marks stay on the row and the reader scrolls right to them.
+
+   `max()` rather than a swap, because the two are both real: a short row on a
+   narrow pane must still fill the floor (the frame's own border and the empty
+   state read off it), and a long one must be able to exceed it. The `0px`
+   fallbacks make this exactly the old rule on a page that has not written
+   either variable yet. */
+.tasks-frame[data-floored="1"] .tasks-list > * {
+  min-width: max(var(--tasks-floor, 0px), var(--tasks-row-need, 0px));
 }
 
 /* THE CARDS WALL IS NOT IN THAT LIST, and that is this batch's decision (Akshil,
