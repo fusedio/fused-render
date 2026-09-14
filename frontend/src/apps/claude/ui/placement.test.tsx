@@ -229,13 +229,22 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   // The answer to the follow-up is ONLY the answer to the follow-up: reply A
   // is not typed a second time under it.
   expect(rows[2]).not.toContain("Reply A");
-  // …and the landed bubble is untouched — same node, same content, not rebuilt
-  // beneath the newer one.
+  // …and the landed reply is the SAME reply, folded — not rebuilt beneath the
+  // newer one. A new response folds whatever the rule had left open (design.md
+  // §B, Akshil 2026-09-15), so the row loses its body and keeps its identity:
+  // same first line, same mark, nothing typed twice.
   let after: Json | null = null;
   walk(r.toJSON() as Json, (n) => {
     if (cls(n).includes("assistant") && !after) after = n;
   });
-  expect(JSON.stringify(after)).toBe(before);
+  const shown = JSON.stringify(after);
+  expect(before).toContain("Reply A, all of it.");
+  expect(shown).toContain("is-folded");
+  expect(shown).toContain("Reply A, all of it.");
+  expect(shown).toContain('"aria-label":"Expand response"');
+  // The body it opens and shuts is the one it always named.
+  const bodyId = /"aria-controls":"([^"]*)"/.exec(before)![1]!;
+  expect(shown).toContain('"aria-controls":"' + bodyId + '"');
 });
 
 test("a parked card survives the run ending: no streaming turn anywhere", () => {

@@ -117,10 +117,20 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  /* The stamp's containing block: it is drawn in the LEFT icon lane — the
-     column an assistant turn's ✻ mark occupies — which on a right-aligned user
-     row is empty space no flow layout would put it in (design.md §C). */
+}
+/* THE BUBBLE'S LINE, and the stamp's containing block: the clock is drawn in
+   the LEFT icon lane — the column an assistant turn's ✻ mark occupies — which
+   on a right-aligned user row is empty space no flow layout would put it in
+   (design.md §C). Scoped to the bubble rather than to the whole turn so that a
+   turn carrying receipt rows — taller than its bubble — still centres the time
+   on the WORDS it is the time of. */
+.chat-root .turn.user .turn-line {
   position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
 }
 /* WHEN THIS WAS SENT, on hover only. A time under every message is a second
    column of numbers down the conversation, and the one message whose time a
@@ -136,7 +146,12 @@
 .chat-root .turn.user .turn-stamp {
   position: absolute;
   left: 0;
-  top: 2px;
+  /* CENTRED ON THE BUBBLE (design.md §C, Akshil 2026-09-15). Top-aligned, the
+     time sat level with the first line of a five-line message and read as a
+     label hanging off the top corner; the eye pairs a mark in the lane with the
+     middle of the block beside it. */
+  top: 50%;
+  transform: translateY(-50%);
   font-size: 11px;
   line-height: 20px;
   color: var(--c-faint);
@@ -194,6 +209,14 @@
 }
 .chat-root .turn.assistant .dot:hover:not(:disabled) {
   border-color: var(--c-border-strong);
+}
+/* A FOLDED REPLY'S MARK IS GREY (design.md §B). The accent ✻ is the colour of a
+   reply that is on screen; a mark still burning above one line of ellipsized
+   text says the reply is there when it is not. Same muted token the folded line
+   itself wears — and the hover lift above is untouched, because the control is
+   still very much live. */
+.chat-root .turn.assistant.is-folded .dot {
+  color: var(--c-faint);
 }
 /* A STREAMING TURN, OR ONE HOLDING AN UNANSWERED CARD, cannot be folded — and
    says so by not lighting up under the pointer. The mark stays exactly where it

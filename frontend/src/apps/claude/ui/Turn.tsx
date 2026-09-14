@@ -126,18 +126,26 @@ export const Turn = memo(function Turn({
             time under every message is a second column of numbers down a
             conversation nobody reads, and the one message a reader wants the
             time of is the one they are pointing at (design.md §C). */}
-        {stamp ? (
-          <span className="turn-stamp" {...(stampTitle(ts) ? { title: stampTitle(ts)! } : {})}>
-            {stamp}
-          </span>
-        ) : null}
+        {/* THE BUBBLE'S OWN LINE, and the stamp centred on it. The stamp is
+            absolute inside THIS box rather than inside the turn, because a turn
+            with receipt rows under it is taller than its bubble and a clock
+            centred on the whole row drifts away from the words it times
+            (design.md §C). The receipts stay SIBLINGS of this line — see
+            below — so nothing the re-attach probe reads moves. */}
+        <div className="turn-line">
+          {stamp ? (
+            <span className="turn-stamp" {...(stampTitle(ts) ? { title: stampTitle(ts)! } : {})}>
+              {stamp}
+            </span>
+          ) : null}
         {/* A WORDLESS SEND'S BUBBLE says what the message carried instead —
             "pane screenshot", "files", "annotations" — and each of those gets
             the same lucide glyph the chip and the receipt wear (P2-7). Anything
             the reader actually typed is their own words and gets none. The
             bubble's TEXT is identical either way. */}
-        <div className="bubble">
-          {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
+          <div className="bubble">
+            {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
+          </div>
         </div>
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
             matches on `.user .bubble`'s text, and folding a receipt inside
@@ -257,7 +265,15 @@ export const Turn = memo(function Turn({
           className="dot"
           aria-label={folded ? "Expand response" : "Collapse response"}
           {...(foldable
-            ? { "aria-expanded": !folded, "aria-controls": bodyId }
+            ? {
+                "aria-expanded": !folded,
+                "aria-controls": bodyId,
+                // THE SAME WORDS THE SCREEN READER GETS (platform/lib/hints.ts,
+                // the app's one instant tooltip). Only while the mark can
+                // actually be pressed: a hint over a `disabled` control names
+                // an action that will not happen.
+                "data-hint": folded ? "Expand response" : "Collapse response",
+              }
             : {})}
           disabled={!foldable}
           onClick={foldable ? () => onToggleCollapse!(turn.key) : undefined}

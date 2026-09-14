@@ -485,28 +485,31 @@ export const Transcript = memo(function Transcript({
   // and the one they came back for is the last one. So every SETTLED assistant
   // turn lands folded except the newest, and the live turn is never folded.
   //
-  // DECIDED ONCE PER TURN, when the row is first seen, and then owned by the
-  // reader. The rule "all but the last" re-evaluated every render would fold
-  // the reply a reader is in the middle of the moment the next turn starts —
-  // the transcript rewriting itself under a run is the exact thing the collapse
-  // policy (ui/cardPolicy) exists to prevent — so the default is written into
-  // the map on first sight and nothing but a click changes it afterwards.
+  // AND A NEW RESPONSE CLOSES THE OLD ONE (Akshil 2026-09-15) — but only the
+  // one nobody asked to have open. That is the whole reason the fold is FOUR
+  // states rather than a boolean: a turn is open (or shut) either because the
+  // rule put it that way or because the reader clicked it, and only the rule's
+  // own doing is the rule's to undo. So when a new reply starts streaming every
+  // `default-open` turn folds — at most one, the previous newest — while a
+  // `manual-open` turn the reader deliberately opened stays open through any
+  // number of later responses, until they click it shut. A `manual-closed` turn
+  // is never re-opened by anything.
   //
-  // A REF PLUS A BUMP, not `useState`: the map is seeded during render (a row
-  // has to arrive already folded, not fold itself in an effect after a frame of
-  // full height) and every other turn's props have to stay identical across the
-  // click, or `Turn`'s memo — the thing that keeps a settled reply's markdown
-  // from being re-parsed on every 400 ms poll — misses for the whole log.
-  // Session-local by construction: a fresh mount is a fresh map.
-  const folds = useRef(new Map<string, boolean>());
+  // DECIDED ONCE PER TURN, when the row is first seen: a row has to arrive
+  // already folded rather than fold itself in an effect after a frame at full
+  // height, and nothing re-evaluates a turn already in the map except the new
+  // response above and the reader's own click.
+  //
+  // A REF PLUS A BUMP, not `useState`: the map is seeded during render, and
+  // every other turn's props have to stay identical across the click, or
+  // `Turn`'s memo — the thing that keeps a settled reply's markdown from being
+  // re-parsed on every 400 ms poll — misses for the whole log. Session-local by
+  // construction: a fresh mount is a fresh map.
+  const folds = useRef(new Map<string, FoldState>());
   /** Turn key → the key its fold is remembered by (`foldKey`). The toggle is ONE
    *  stable callback for the whole log — a fresh closure per row would defeat
    *  `Turn`'s memo — so it is handed the turn's own key and resolves it here. */
   const foldIds = useRef(new Map<string, string>());
-  /** The keys the READER folded, as opposed to the ones the rule folded. An
-   *  unanswered card may not re-open a reply somebody deliberately shut
-   *  (review #2). */
-  const manualFolds = useRef(new Set<string>());
   const [, bumpFold] = useState(0);
   // A DIFFERENT CONVERSATION IS A DIFFERENT MAP (review #1). This component is
   // not remounted when the host opens another session, and a restored turn's
@@ -525,7 +528,6 @@ export const Transcript = memo(function Transcript({
     foldsGen.current = state.transcriptGen;
     folds.current.clear();
     foldIds.current.clear();
-    manualFolds.current.clear();
   }
   const lastAssistant = lastAssistantKey(state.turns);
   for (const t of state.turns) {
@@ -533,14 +535,24 @@ export const Transcript = memo(function Transcript({
     const id = foldKey(t);
     foldIds.current.set(t.key, id);
     if (folds.current.has(id)) continue;
-    folds.current.set(id, !t.streaming && t.key !== lastAssistant);
+    // A TURN SEEN FOR THE FIRST TIME. The streaming one is always shown (and
+    // keeps `default-open` once it settles, as the newest reply); on a landing
+    // that is the last row of the replayed history and nothing else.
+    const open = !!t.streaming || t.key === lastAssistant;
+    // …and the arrival of a reply that opens is what folds the previous one.
+    // Only `default-open` is touched: this is the rule closing its own door.
+    if (open) {
+      for (const [k, v] of folds.current) {
+        if (v === "default-open") folds.current.set(k, "default-closed");
+      }
+    }
+    folds.current.set(id, open ? "default-open" : "default-closed");
   }
   const onToggleCollapse = useCallback((key: string) => {
     const id = foldIds.current.get(key) ?? key;
-    const next = !(folds.current.get(id) ?? false);
-    folds.current.set(id, next);
-    if (next) manualFolds.current.add(id);
-    else manualFolds.current.delete(id);
+    // EVERY CLICK IS MANUAL, both ways: opening one pins it open past the next
+    // response, shutting one pins it shut past everything.
+    folds.current.set(id, isFolded(folds.current.get(id)) ? "manual-open" : "manual-closed");
     // THE READER JUST CHANGED THE LOG'S HEIGHT ON PURPOSE (review #3). Folding
     // or opening a reply resizes `.chat-log`, the ResizeObserver above answers
     // a resize by writing `scrollTop = scrollHeight`, and the reply that was
@@ -598,9 +610,10 @@ export const Transcript = memo(function Transcript({
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
-                  collapsed={folds.current.get(foldIds.current.get(turn.key) ?? turn.key) ?? false}
+                  collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
                   onToggleCollapse={onToggleCollapse}
-                  {...(blocked === turn.key && !manualFolds.current.has(foldIds.current.get(turn.key) ?? turn.key)
+                  {...(blocked === turn.key &&
+                  folds.current.get(foldIds.current.get(turn.key) ?? turn.key) !== "manual-closed"
                     ? { pendingCard: true }
                     : {})}
                 >
@@ -757,6 +770,25 @@ export function openCardIds(rows: ChatState["permissions"]): string {
     .filter((p) => p && p.id && !p.decision)
     .map((p) => p.id)
     .join(",");
+}
+
+/**
+ * HOW OPEN A REPLY IS, AND WHO SAID SO (design.md §B, Akshil 2026-09-15).
+ *
+ * Two bits, not one. "Is it folded" is what the row needs; "did the reader ask
+ * for that" is what the LOG needs, because the arrival of a new response folds
+ * the replies the rule opened and must leave alone the one the reader opened
+ * themselves. A boolean plus a side-set of manual keys said the same thing and
+ * kept drifting out of step with it — the set only ever learned about folds,
+ * never about opens, so a reply the reader had deliberately unfolded was
+ * indistinguishable from one the rule had left open.
+ */
+export type FoldState = "default-open" | "default-closed" | "manual-open" | "manual-closed";
+
+/** Is a reply in this state drawn as one line? Also the answer for a turn with
+ *  no entry at all (a row nothing has seeded yet): open, like a live one. */
+export function isFolded(state: FoldState | undefined): boolean {
+  return state === "default-closed" || state === "manual-closed";
 }
 
 /**

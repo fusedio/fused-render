@@ -148,10 +148,10 @@ describe("which replies land folded", () => {
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
   });
 
-  test("A NEW TURN STARTING DOES NOT FOLD THE ONE THE READER IS ON", () => {
-    // The default is decided when a row is first seen and then owned by the
-    // reader; "all but the last" re-applied per render would rewrite the
-    // transcript under a run.
+  test("A NEW RESPONSE FOLDS THE ONE THE RULE LEFT OPEN (Akshil 2026-09-15)", () => {
+    // The landing's last reply is open because the RULE opened it. A new
+    // response starting is the rule closing its own door: one reply on screen,
+    // the one being written.
     const r = log([assistant("a:1")]);
     expect(folded(r)).toEqual([]);
     act(() => {
@@ -162,7 +162,68 @@ describe("which replies land folded", () => {
         />,
       );
     });
+    expect(folded(r)).toEqual(["reply a:1"]);
+    // …and the new one is open, with a mark that cannot be pressed while it
+    // streams.
+    expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
+  });
+
+  test("A REPLY THE READER OPENED SURVIVES EVERY LATER RESPONSE", () => {
+    const r = log([assistant("a:1"), assistant("a:2")]);
+    expect(folded(r)).toEqual(["reply a:1"]);
+    // They click the old folded one open. That is a MANUAL open, and nothing
+    // but another click closes it.
+    act(() => (marks(r)[0]!.props as { onClick?: () => void }).onClick!());
     expect(folded(r)).toEqual([]);
+    const turns = [assistant("a:1"), assistant("a:2")];
+    for (const next of ["a:3", "a:4"]) {
+      turns.push(assistant(next, { streaming: true }));
+      act(() => {
+        r.update(<Transcript state={state({ turns: [...turns] })} actions={actions} />);
+      });
+      // The rule's own open reply folded; the reader's did not.
+      expect(folded(r)).not.toContain("reply a:1");
+      turns[turns.length - 1] = assistant(next);
+    }
+    expect(folded(r)).toEqual(["reply a:2", "reply a:3"]);
+  });
+
+  test("A REPLY THE READER SHUT STAYS SHUT", () => {
+    // The landing's last turn, closed on purpose: a later response must not
+    // hand it back, and neither must anything else.
+    const r = log([assistant("a:1"), assistant("a:2")]);
+    act(() => (marks(r)[1]!.props as { onClick?: () => void }).onClick!());
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [assistant("a:1"), assistant("a:2"), assistant("a:3", { streaming: true })],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+  });
+
+  test("OPENED THEN CLOSED IS CLOSED — the last click is the one that counts", () => {
+    const r = log([assistant("a:1"), assistant("a:2")]);
+    const press = () => act(() => (marks(r)[0]!.props as { onClick?: () => void }).onClick!());
+    press(); // manual-open
+    press(); // manual-closed
+    expect(folded(r)).toEqual(["reply a:1"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [assistant("a:1"), assistant("a:2"), assistant("a:3", { streaming: true })],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
   });
 
   test("a turn holding an unanswered card stays open, and its mark is dead", () => {
@@ -304,6 +365,30 @@ describe("the toggle", () => {
       "Collapse response",
     );
     expect(byClass(open, "run-trigger")).toHaveLength(1);
+  });
+
+  test("the folded mark greys and says what a click will do (Akshil 2026-09-15)", () => {
+    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={() => {}} />);
+    // GREY IS CSS, off `.turn.is-folded` — what the row owes the stylesheet is
+    // the class.
+    expect(
+      (byClass(shut, "turn")[0]!.props as { className: string }).className,
+    ).toContain("is-folded");
+    expect((marks(shut)[0]!.props as Record<string, unknown>)["data-hint"]).toBe(
+      "Expand response",
+    );
+    const open = mount(<Turn turn={turn} onToggleCollapse={() => {}} />);
+    expect((byClass(open, "turn")[0]!.props as { className: string }).className).not.toContain(
+      "is-folded",
+    );
+    expect((marks(open)[0]!.props as Record<string, unknown>)["data-hint"]).toBe(
+      "Collapse response",
+    );
+    // NOTHING while the mark is dead: a hint over a `disabled` control names an
+    // action that will not happen.
+    const live = mount(<Turn turn={assistant("a:2", { streaming: true })} />);
+    expect("data-hint" in (marks(live)[0]!.props as Record<string, unknown>)).toBe(false);
   });
 
   test("with no handler at all the mark is inert — the fold is the log's to offer", () => {
