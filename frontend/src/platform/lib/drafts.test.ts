@@ -586,23 +586,45 @@ describe("markChatDraftSpent announces, unmarkChatDraftSpent undoes", () => {
     };
   }
 
-  test("a listener hears the key, and only while subscribed", () => {
+  test("a listener hears the key, and only while subscribed", async () => {
     const heard: string[] = [];
-    const off = onChatDraftSpent((k) => heard.push(k));
-    markChatDraftSpent("s-1");
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
+    await markChatDraftSpent("s-1");
     off();
-    markChatDraftSpent("s-2");
+    await markChatDraftSpent("s-2");
     expect(heard).toEqual(["s-1"]);
   });
 
-  test("the composer's own send announces too", () => {
+  test("the spend waits for what the listener is still writing", async () => {
+    let settled = false;
+    const off = onChatDraftSpent(
+      () =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            settled = true;
+            r();
+          }, 5),
+        ),
+    );
+    const p = markChatDraftSpent("s-5");
+    expect(settled).toBe(false);
+    await p;
+    expect(settled).toBe(true);
+    off();
+  });
+
+  test("the composer's own send does NOT announce — it would empty its own tray mid-send", () => {
     const heard: string[] = [];
-    const off = onChatDraftSpent((k) => heard.push(k));
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
     const restore = serve({});
     void deleteChatDraft("s-3");
     restore();
     off();
-    expect(heard).toEqual(["s-3"]);
+    expect(heard).toEqual([]);
   });
 
   test("a failed send un-spends: the words read back again", async () => {

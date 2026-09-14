@@ -419,7 +419,10 @@ async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload>
   // instant the drop lands, and a `fetchChatDraft` racing the create answers out
   // of a snapshot taken before it — the words back on the row as still unsent,
   // one drag away from being sent a second time.
-  markChatDraftSpent(sessionId);
+  // …and AWAITED, because the composer that hears it settles its in-flight
+  // autosave before answering — the one write that could otherwise land after
+  // the create's delete and put the sentence back (see `markChatDraftSpent`).
+  await markChatDraftSpent(sessionId);
   return body;
 }
 
