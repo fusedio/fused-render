@@ -64,6 +64,15 @@ let reply = null;
 let typer = null;
 let segMode = false;
 let tailText = null;
+// What the done branch records for the NEXT loop on this run (PR #1119's
+// `landedWindow`): the run it belongs to and the window it settled. Declared
+// here because the branch these tests extract now writes it — the ownership
+// rules below are unchanged by it, and asserting it stays untouched is not
+// this file's job.
+const run_id = "r1";
+const fullSegs = [];
+const fullText = "";
+let landedWindow = null;
 """
 
 

@@ -10738,11 +10738,19 @@ our vocabulary, with nowhere to go. Four failures, one answer.
 ## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397)
 
 One app, one double-clickable file. Exporting a fused app produces
-`<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
-app's name, and its entry page resolved by the shared entry rule,
-`app_listing.app_entry`) plus a `files/` payload dir mirroring the whole app
-folder (bundle v2's payload shape). Opening one lands the recipient in the app
-experience and nothing else: no editor, no Claude, no explorer chrome.
+`<app name>.fused` — since D870 an OPAQUE CONTAINER (`appfile_container`:
+magic `FUSEDAPP`, versioned header, deflated JSON index carrying
+`fused_app_file: 2`, the app's name, its entry page resolved by the shared
+entry rule `app_listing.app_entry`, an `exported_at` UTC ISO-8601 stamp
+(`2026-09-14T10:05:12Z`; absent on files exported before it existed, and
+`open_app_file`/`clone_target` answer it as `exported_at`, None when missing),
+and every member's path/size/sha256; then one deflate stream per file). It is deliberately NOT a zip: v1 (D385) was a
+zip with its extension renamed, and mail scanners classify by bytes — Gmail
+walked the members and flagged the `.html`/`.py` inside as suspicious. v1
+files stay READABLE (`read_manifest`/`open_app_file` branch on the magic) so
+every already-exported and indexed `.fused` keeps opening; nothing writes v1
+anymore. Opening one lands the recipient in the app experience and nothing
+else: no editor, no Claude, no explorer chrome.
 
 - **AF-1** Export walks the app FOLDER (`appfile.export_app_file`), not a
   per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
@@ -10789,9 +10797,15 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   chrome-free, the app experience. Errors render as the template's own fail
   state. The accepted trade: a `.fused` from an untrusted source runs its
   Python on first render, like any folder of pages someone sent you.
-- **AF-6** Open extracts through `zip_import`'s hardened extractor (zip-slip,
-  symlink entries, count/size caps on bytes actually written) into a
-  content-addressed dir under `~/.fused-render/appfiles/`
+- **AF-6** Open extracts through a hardened extractor — the container's own
+  for v2 (`appfile_container.read_index` validates the WHOLE index before a
+  byte lands: bounded inflate of the index, relative forward-slash paths
+  only, no `..`/`\`/NUL/empty segments, no duplicates, no path that is both
+  a file and another's directory, count/size caps, offsets inside the file;
+  `extract` then checks every body's written length and sha256 against the
+  index and removes the stage on any disagreement), `zip_import`'s for a v1
+  zip (zip-slip, symlink entries, count/size caps on bytes actually written)
+  — into a content-addressed dir under `~/.fused-render/appfiles/`
   (`<name-slug>-<sha256[:16]>` — same bytes re-use the extract, a re-export
   lands fresh). The manifest's entry must exist in the payload and still carry
   the fused-app marker, or the open is refused.

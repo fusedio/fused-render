@@ -8,9 +8,7 @@ records file — so most of what is worth pinning here is about that presence
 test and about the copy landing writable.
 """
 
-import json
 import os
-import zipfile
 
 import pytest
 
@@ -49,17 +47,17 @@ def export(tmp_path, name="demo", out_name=None):
 
 
 def rewrite_manifest_name(fused_path, new_name):
-    """Re-zip the file with `manifest.json`'s `name` replaced — how a hostile
-    or merely odd app file is produced without hand-building a whole zip."""
-    with zipfile.ZipFile(fused_path) as zf:
-        items = [(i, zf.read(i.filename)) for i in zf.infolist()]
-    with zipfile.ZipFile(fused_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for info, raw in items:
-            if info.filename == "manifest.json":
-                man = json.loads(raw)
-                man["name"] = new_name
-                raw = json.dumps(man).encode()
-            zf.writestr(info.filename, raw)
+    """Re-write the container with the index's `name` replaced — how a hostile
+    or merely odd app file is produced without hand-building a whole file."""
+    from fused_render import appfile_container as container
+
+    index = appfile.read_manifest(str(fused_path))
+    members = [
+        (f["path"], container.read_member(str(fused_path), index, f["path"], f["size"]))
+        for f in index["files"]
+    ]
+    os.unlink(fused_path)
+    container.write(str(fused_path), {"name": new_name, "entry": index["entry"]}, members)
 
 
 # -- the probe ----------------------------------------------------------------

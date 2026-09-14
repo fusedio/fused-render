@@ -45,18 +45,18 @@ def test_export_then_open_round_trip(tmp_path, monkeypatch):
     app = make_app(tmp_path)
     out = tmp_path / "demo.fused"
     manifest = appfile.export_app_file(str(app), str(out))
-    assert manifest["fused_app_file"] == 1
+    assert manifest["fused_app_file"] == 2
     assert manifest["entry"] == "index.html"
     assert manifest["name"] == "demo"
+    assert manifest["exported_at"].endswith("Z") and len(manifest["exported_at"]) == 20
 
-    with zipfile.ZipFile(out) as zf:
-        names = set(zf.namelist())
-    assert names == {
-        "manifest.json",
-        "files/index.html",
-        "files/data.py",
-        "files/assets/logo.svg",
-    }
+    # v2 is an opaque container, not a zip: no PK magic anywhere a scanner
+    # sniffs, and the member names live in the deflated index only.
+    assert out.read_bytes()[:8] == b"FUSEDAPP"
+    with pytest.raises(zipfile.BadZipFile):
+        zipfile.ZipFile(out)
+    names = {f["path"] for f in appfile.read_manifest(str(out))["files"]}
+    assert names == {"index.html", "data.py", "assets/logo.svg"}
 
     result = appfile.open_app_file(str(out))
     assert result["reused"] is False
@@ -84,8 +84,7 @@ def test_export_skips_machinery_and_hidden(tmp_path):
     (app / "__pycache__" / "d.pyc").write_bytes(b"\x00")
     out = tmp_path / "demo.fused"
     appfile.export_app_file(str(app), str(out))
-    with zipfile.ZipFile(out) as zf:
-        names = set(zf.namelist())
+    names = {f["path"] for f in appfile.read_manifest(str(out))["files"]}
     assert not any(
         ".git" in n or ".env" in n or "CLAUDE" in n or "node_modules" in n or "pycache" in n
         for n in names
@@ -111,10 +110,9 @@ def test_export_fails_open_on_a_git_dir_git_rejects(tmp_path):
     (app / "keep.txt").write_text("data")
     out = tmp_path / "demo.fused"
     appfile.export_app_file(str(app), str(out))
-    with zipfile.ZipFile(out) as zf:
-        names = set(zf.namelist())
-    assert "files/keep.txt" in names
-    assert "files/run.log" not in names
+    names = {f["path"] for f in appfile.read_manifest(str(out))["files"]}
+    assert "keep.txt" in names
+    assert "run.log" not in names
     assert not any(".git" in n for n in names)
 
 
@@ -134,8 +132,7 @@ def test_export_allows_fused_ai_pages(tmp_path):
     (app / "chat.html").write_text("<html><script>fused.ai.text({prompt: 'hi'})</script></html>")
     out = tmp_path / "x.fused"
     appfile.export_app_file(str(app), str(out))
-    with zipfile.ZipFile(out) as zf:
-        assert "files/chat.html" in zf.namelist()
+    assert "chat.html" in {f["path"] for f in appfile.read_manifest(str(out))["files"]}
 
 
 def test_export_refuses_existing_out_path(tmp_path):

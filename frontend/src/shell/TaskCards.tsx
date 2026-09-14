@@ -31,6 +31,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
+import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder } from "@platform/ui/ChatFrame";
@@ -39,8 +40,11 @@ import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
   ICON_ARCHIVE,
+  ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
   ICON_UNARCHIVE,
+  OPEN_DOOR_LABEL,
+  DraftChip,
   IdentityChip,
   StatusIcon,
 } from "./ScheduleTaskViews";
@@ -50,13 +54,16 @@ import {
   basename,
   cardKey,
   cardsForTasks,
+  draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
+  draftRing,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
   firstLine,
   opensElsewhere,
+  peekOpenable,
   spansProjects,
   ringFailed,
   taskColumn,
@@ -65,12 +72,46 @@ import {
   tildePath,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
+import {
+  PEEK_OPEN_CLASS,
+  peekItemProps,
+  openPeek,
+  usePeekHost,
+  usePeekedKey,
+} from "./task-peek-store";
+import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
  *  whatever the reason (no tasks, or a filter narrowed them away), because the
  *  view's claim is about the set it was handed and it cannot tell those apart. */
 export const CARDS_EMPTY = "Nothing to show here.";
+
+/** WHERE THE READER JUST WAS, on this wall — the key of the card whose task was
+ *  last opened from it (design.md §8).
+ *
+ *  Per-TAB, per-sitting, and the List's own idiom for the same claim
+ *  (ScheduleTaskViews' list memory): "which one did I just open" is not a
+ *  preference, and a week-old key restored onto a wall of different cards is a
+ *  surprise rather than a memory. A blocked store costs the memory, never the
+ *  wall — the read runs during the first render. */
+const SELECTED_KEY = "tasks.cards.selected";
+
+function readSelectedCard(): string {
+  try {
+    return sessionStorage.getItem(SELECTED_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSelectedCard(key: string): void {
+  try {
+    sessionStorage.setItem(SELECTED_KEY, key);
+  } catch {
+    // best-effort; a full or blocked store never breaks the wall
+  }
+}
 
 /** The claude template's path for one folder, cached for the LIFE OF THE PAGE.
  *
@@ -126,7 +167,7 @@ function resolveChatTemplate(dir: string): Promise<void> {
  *  Seeded from the cache SYNCHRONOUSLY on the first render, which is the whole
  *  point of the cache being module-level: a remount frames its cards on the
  *  render that mounts them, with no resolving beat in between. */
-function useChatTemplates(dirs: string[]): Record<string, string | null> {
+export function useChatTemplates(dirs: string[]): Record<string, string | null> {
   const seed = () => {
     const known: Record<string, string | null> = {};
     for (const dir of dirs) {
@@ -172,6 +213,8 @@ export function TaskCards({
   onReload,
   onPickProject,
   pinnedProjects = [],
+  onPickDraft,
+  draftOn = false,
   missing,
   emptyLabel = CARDS_EMPTY,
 }: {
@@ -193,6 +236,12 @@ export function TaskCards({
   /** Which projects the page is pinned to — the chip wears the ON state, and
    * survives the filter that makes every card agree (see `showProject`). */
   pinnedProjects?: string[];
+  /** The Draft chip's press and its pressed state, passed through untouched —
+   *  the List row's and the Board card's own props, and deliberately the same
+   *  ones (Akshil, 2026-09-12): the chip is one control in three views, so a
+   *  wall that drew it inert would be a fourth thing to learn. */
+  onPickDraft?: () => void;
+  draftOn?: boolean;
   /** Folders the disk no longer has — the SAME set the List and the Board read
    * (Scheduled → useMissingFolders), so the three views can never disagree
    * about one folder. A card in one says "Folder no longer exists" and its
@@ -247,6 +296,36 @@ export function TaskCards({
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to
   // its first page each time would undo the reader's own gesture under them.
   const [pages, setPages] = useState(1);
+  // THE PRESS GOES TO THE SIDE PEEK when the Tasks page is hosting one, and to
+  // this wall's own modal popup when it is not (the app page's Tasks tab).
+  // `openPeek` answers false wherever there is no peek, which is the whole of
+  // "everything that opens a task from outside /tasks keeps today's behaviour"
+  // (.claude-design/task-side-peek/design.md).
+  // The feature's own switch (task-peek-flag.ts). Off, the wall is the wall it
+  // has always been: its own modal popup, and no marks of the peek's on a card.
+  const peekOn = usePeekHost();
+  // Unconditional: `host` flips in a layout effect, so a conditional call adds
+  // a hook between two renders and React throws (ScheduleTaskViews' own note).
+  const openKey = usePeekedKey();
+  const peekedKey = peekOn ? openKey : null;
+  // WHICH CARD THE READER LAST OPENED. Held in state as well as in the store
+  // because it is also LIVE: the card lights on the press rather than after the
+  // popup (or the peek) has finished opening, which is the wall acknowledging
+  // the press. A DIFFERENT claim from `peeked` below and a quieter one — that
+  // is "this conversation is open RIGHT NOW", this is "this is the one you came
+  // back out of" — and it outlives the peek being closed.
+  const [selected, setSelected] = useState(readSelectedCard);
+  // Titled by the task, or by the last thing said in it (task-card-title-flag,
+  // `task_card_last_message`). Read once for the wall rather than per card: one
+  // subscription, one answer, and no chance of two cards disagreeing mid-poll.
+  const titleMode = useTaskCardTitleMode();
+  const openTask = (task: Task) => {
+    const key = cardKey(task);
+    setSelected(key);
+    writeSelectedCard(key);
+    if (openPeek(key)) return;
+    setPeek(task);
+  };
   const { cards, hidden } = useMemo(() => cardsForTasks(tasks, pages * CARD_PAGE), [tasks, pages]);
   // The List's rule for whether the chip is worth its pixels: only when the
   // cards span more than one folder — or the page is pinned to one, in which
@@ -296,14 +375,13 @@ export function TaskCards({
   // today, so the cost was only honesty; the fix is to wait for the answer.
   // The legacy path is byte-identical: a `false` sets it while mounted and
   // removes it on the way out, exactly as before.
+  //
+  // HELD THROUGH A COUNT (platform/lib/param-boundary), not set and deleted
+  // here: the side peek frames a chat on this same page and used to fight this
+  // effect for the flag — whichever unmounted first took the boundary away from
+  // the other, and the survivor's frame started climbing to `/tasks` again.
   const nativeChatState = useNativeChatFlag();
-  useEffect(() => {
-    if (nativeChatState !== false) return;
-    window._fusedParamBoundary = true;
-    return () => {
-      delete window._fusedParamBoundary;
-    };
-  }, [nativeChatState]);
+  useParamBoundary(nativeChatState === false);
 
   // The popup outlives the wall it was opened from: a failed poll empties
   // `tasks`, and a filter can drop the last card, while someone is typing into
@@ -363,13 +441,19 @@ export function TaskCards({
           // template — the card draws a different body for each.
           template={templates[task.target || task.project]}
           folderMissing={missing?.has(taskFolder(task)) ?? false}
-          onPeek={setPeek}
+          onPeek={openTask}
+          peekOn={peekOn}
+          peeked={peekedKey === cardKey(task)}
+          selected={selected === cardKey(task)}
+          titleMode={titleMode}
           onReload={onReload}
           project={
             showProject
               ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
               : null
           }
+          onPickDraft={onPickDraft}
+          draftOn={draftOn}
         />
       ))}
       </div>
@@ -393,8 +477,14 @@ function TaskCard({
   template,
   folderMissing,
   onPeek,
+  peekOn = false,
+  peeked = false,
+  selected = false,
+  titleMode = false,
   onReload,
   project,
+  onPickDraft,
+  draftOn = false,
 }: {
   task: Task;
   home: string;
@@ -405,15 +495,40 @@ function TaskCard({
    * because the body says something different for each (below). */
   template: string | null | undefined;
   onPeek: (task: Task) => void;
+  /** The side peek exists on this page at all (`task_peek_enabled`). */
+  peekOn?: boolean;
+  /** This card's task is the one in the side peek — it wears the halo and its
+   * hover fill stands down (styles/task-peek.css). */
+  peeked?: boolean;
+  /** This is the card the reader last opened from this wall — it keeps the quiet
+   * fill the head's hover used to draw (task-cards.css `.is-selected`), whether
+   * or not anything is open now. The List row's own mark, and its fill. */
+  selected?: boolean;
+  /** Title the card by the last thing said in its conversation rather than by
+   * the task's own title (task-card-title-flag, `task_card_last_message`). */
+  titleMode?: boolean;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
   onReload?: () => void;
   /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
    * apart); otherwise whether the page is pinned to it and the tag's handler. */
   project: { pinned: boolean; onPick?: (project: string) => void } | null;
+  /** The Draft chip's press and its pressed state — the wall's, from Scheduled,
+   *  unchanged on the way down (see TaskCards' own props). */
+  onPickDraft?: () => void;
+  draftOn?: boolean;
 }) {
   const when = taskWhen(task);
-  const title = firstLine(task.title) || "(untitled)";
+  // THE ONE LINE UNDER THE HEAD ROW: the task's title, or — with the experiment
+  // on and something said in this conversation — its newest message, whoever
+  // said it (design.md §A, Option 1). The rule is `cardTitleLine`'s, so the
+  // card is not a second place deciding what a blank one falls back to.
+  const line = cardTitleLine(task, titleMode);
+  const title = line.text || "(untitled)";
+  // Words nobody has sent, in this conversation's composer — the List row's and
+  // the Board card's own chip, from the same function, so the three views
+  // cannot describe one draft differently (tasks-lib.draftTag).
+  const draft = draftTag(task);
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
@@ -485,7 +600,13 @@ function TaskCard({
 
   return (
     <section
-      className="task-card task-card--door"
+      className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+        + (selected ? " is-selected" : "")}
+      // The side peek's two hooks on every openable item in every view: the
+      // halo's selector and — read in DOM order — the prev/next walk, which on
+      // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
+      // when the feature is off.
+      {...(peekOn ? peekItemProps(cardKey(task), peekOpenable(task)) : {})}
       aria-label={`${task.task_id} ${title}`}
       // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
       // used to be the live chat with its own scroll and its own clicks —
@@ -534,7 +655,19 @@ function TaskCard({
               view sits under no lane header, so nothing else on it says what
               state the run is in — the same argument that keeps the ring on
               every List row and every Calendar chip. */}
-          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+          {/* …and it carries the draft mark for the same reason the List row's
+              does (tasks-lib.draftRing): this wall is the other place a settled
+              task is SCANNED, and a card that looks finished while holding an
+              unsent sentence is the one state the glance would otherwise miss. */}
+          <StatusIcon
+            status={taskColumn(task)}
+            failed={ringFailed(task)}
+            draftHeld={draftRing(task)}
+          />
+          {/* The id keeps the List row's muted skin whatever the title row below
+              shows. It was lifted to bold + full fg while that row was the
+              conversation's last message (design.md §A); Akshil (2026-09-14)
+              took the emphasis back out — one weight for the id everywhere. */}
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -548,6 +681,25 @@ function TaskCard({
               (Akshil, 2026-09-05: "when we click on them they filter?"): the
               chip stops its own press (IdentityChip's shield), so pressing the
               folder filters the page and does not also open the popup. */}
+          {/* …and, before it, the one thing a card can carry that the head
+              otherwise cannot say: unsent words in this conversation's composer
+              (tasks-lib.draftTag). The same chip, in the same seat relative to
+              the folder, as the List row and the Board card — design-principles
+              §1: a mark that moved between views would be three marks to learn.
+
+              A TAG HERE TOO (Akshil, 2026-09-12), reversing the label this was
+              for a day. The argument for the label was that the wall draws no
+              draft ROW (CARD_LANES), so pressing it would empty the wall and
+              leave nothing wearing the chip that turns it back off. That reads
+              the wrong row: the chip a CARD carries is never a draft row's — a
+              card has a session by construction (cardsForTasks) — it is an
+              ordinary conversation whose composer is holding unsent words, and
+              those cards keep wearing it after the press. So the filter narrows
+              the wall to exactly the cards that can clear it, which is the
+              condition the label was protecting against, and the chip is now one
+              control with one gesture in all three views (design-principles §1).
+              tasks-lib.filtersForView stopped dropping the facet here to match. */}
+          {draft && <DraftChip draft={draft} onPick={onPickDraft} active={draftOn} />}
           {project && (
             <IdentityChip
               name={basename(task.project)}
@@ -564,7 +716,14 @@ function TaskCard({
             app's own hint the moment the pointer rests (hints.ts), and a native
             tooltip that arrives a second later read as no tooltip at all
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
-        <span className="task-card-title" data-hint={task.title}>
+        <span
+          className="task-card-title"
+          // The hint says the line's own words, whole: the title where the line
+          // is the title, the message where it is the message — the server caps
+          // that at 200 characters and the card clamps it to one, so the hint is
+          // where the rest of a long sentence is.
+          data-hint={line.said ? task.last_message?.text : task.title}
+        >
           {title}
         </span>
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
@@ -620,7 +779,7 @@ function TaskCard({
             <a
               // A real link with a real href, so ⌘-click and middle-click open
               // the folder in a tab — the rule every row on this page follows.
-              className="task-card-door"
+              className={"task-card-door" + (peekOn ? " task-card-door--page" : "")}
               href={explorer}
               data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
               aria-label="Open in Explorer"
@@ -630,19 +789,21 @@ function TaskCard({
                 navigateUrl(explorer);
               }}
             >
-              {ICON_FOLDER}
+              {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
             </a>
           )}
           {gone && (
             <button
               type="button"
-              className="task-card-door is-disabled"
+              className={
+                "task-card-door is-disabled" + (peekOn ? " task-card-door--page" : "")
+              }
               aria-disabled="true"
               data-hint={MISSING_FOLDER_TOAST}
               aria-label="Open in Explorer — folder deleted"
               onClick={toastMissingFolder}
             >
-              {ICON_FOLDER}
+              {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
             </button>
           )}
         </span>
@@ -1008,10 +1169,21 @@ const ICON_PROPS = {
   "aria-hidden": true,
 };
 
-/** Open in Explorer — the folder (MenuIcons.folder's outline). */
+/** Open in Explorer — the folder (MenuIcons.folder's outline). The SHAPE now
+ *  lives in ScheduleTaskViews (`ICON_OPEN_FOLDER_PATH`), because the List row,
+ *  the Board card and the peek header draw the very same door and one page must
+ *  not hold two pictures of one act (design.md, Header + list state v2). Only
+ *  the weight is this file's: 16px at 1.6, the card head's own.
+ *
+ *  STILL DRAWN, and that is deliberate: the wall card's door became the words
+ *  "Open →" for readers with the side peek (design.md, Polish batch 4), and it
+ *  is `peekOn` that decides which — this file's cards also render on the app
+ *  page's Tasks tab, and off the peek host a reader gets main's glyph exactly
+ *  as they do today. The strip's other two doors are glyphs either way, so a
+ *  flag-off wall is three marks and a flag-on one is two marks and a word. */
 const ICON_FOLDER = (
   <svg {...ICON_PROPS}>
-    <path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z" />
+    <path d={ICON_OPEN_FOLDER_PATH} />
   </svg>
 );
 

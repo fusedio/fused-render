@@ -157,6 +157,64 @@ def test_rekey_of_something_that_has_no_number_does_nothing():
     assert tasks_store.task_ids() == {}
 
 
+# --------------------------------------------------- a draft that moves house
+
+
+def test_reproject_renumbers_a_draft_in_the_project_it_now_points_at():
+    """The one exception to allocate-once, and only for a row nobody has been
+    promised anything about: a draft numbered under the folder the modal opened
+    on and then pointed somewhere else (Akshil, 2026-09-11)."""
+    draft = "draft:d1"
+    assert tasks_store.ensure_ids([(draft, "/a", 1.0)],
+                                  reproject=True)[draft] == "TASK-001"
+    assert tasks_store.ensure_ids([(draft, "/b", 1.0)],
+                                  reproject=True)[draft] == "TASK-001", \
+        "the first number of /b, not the one it carried out of /a"
+    assert tasks_store.task_ids()[draft] == {"project": "/b", "n": 1}
+    # Idempotent from there: the project it names is the project it is in.
+    assert tasks_store.ensure_ids([(draft, "/b", 1.0)],
+                                  reproject=True)[draft] == "TASK-001"
+
+
+def test_a_reprojected_number_is_spent_not_released():
+    """Gaps over renumbering, the same price every delete in here pays: /a's
+    high-water mark stands, so nothing is handed TASK-001 twice."""
+    draft = "draft:d1"
+    tasks_store.ensure_ids([(draft, "/a", 1.0)], reproject=True)
+    tasks_store.ensure_ids([(draft, "/b", 1.0)], reproject=True)
+    assert tasks_store.ensure_ids([("next", "/a", 2.0)])["next"] == "TASK-002"
+
+
+def test_a_booked_number_is_never_reprojected():
+    """`pending:<entry-id>` is a scheduled task, and its number is one the user
+    has already been shown as final — the renumber schedule.py's `replaces`
+    rekey exists to prevent."""
+    key = tasks_store.pending_key("e1")
+    tasks_store.ensure_ids([(key, "/a", 1.0)])
+    assert tasks_store.ensure_ids([(key, "/b", 1.0)], reproject=True)[key] == \
+        "TASK-001"
+    assert tasks_store.task_ids()[key] == {"project": "/a", "n": 1}
+
+
+def test_a_draft_with_no_target_keeps_the_number_it_has():
+    """"Somewhere else" is not somewhere. A cleared target names no project, so
+    there is nothing to renumber INTO — and nothing is spent on the parent
+    folders a half-typed path passes through on its way to the real one."""
+    draft = "draft:d1"
+    tasks_store.ensure_ids([(draft, "/a", 1.0)], reproject=True)
+    assert tasks_store.ensure_ids([(draft, "", 1.0)],
+                                  reproject=True)[draft] == "TASK-001"
+    assert tasks_store.task_ids()[draft] == {"project": "/a", "n": 1}
+
+
+def test_a_project_change_moves_nothing_without_the_flag():
+    """Off by default: the listing's own `_numbers` passes a session's project
+    on every poll, and a transcript read two ways must not renumber a task."""
+    tasks_store.ensure_ids([("s1", "/a", 1.0)])
+    assert tasks_store.ensure_ids([("s1", "/b", 1.0)])["s1"] == "TASK-001"
+    assert tasks_store.task_ids()["s1"] == {"project": "/a", "n": 1}
+
+
 # ------------------------------------------------------------------- backfill
 
 

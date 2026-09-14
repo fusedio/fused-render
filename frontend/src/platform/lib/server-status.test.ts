@@ -10,6 +10,7 @@ import {
   FAIL_THRESHOLD,
   initialStatus,
   reduceProbe,
+  updateDialogMode,
   type StatusState,
 } from "@platform/lib/server-status";
 
@@ -126,4 +127,54 @@ test("probe body without versions is treated as healthy, not an update", () => {
   const { state, reload } = run(initialStatus(), [{ ok: true }]);
   expect(state.banner).toBe("hidden");
   expect(reload).toBe(false);
+});
+
+// ---- the refresh case's dialog, and its three modes -----------------------
+// The state machine is unchanged by dev (a stale bundle IS a stale bundle); it
+// is the PROMPT that is wrong on a dev.sh server, where the served version is
+// the checkout's while the bundle in the tab was rebuilt by the vite watch
+// seconds ago. So the suppression lives in the render, and here — as does the
+// preview that puts the dialog back with no mismatch to reveal.
+
+test("a packaged server always gets the real dialog", () => {
+  expect(updateDialogMode(false, "", null)).toBe("real");
+  // …including with the flag set: prod is never suppressed, so there is
+  // nothing for it to lift and nothing to preview.
+  expect(updateDialogMode(false, "?update_modal=1", "1")).toBe("real");
+  expect(updateDialogMode(false, "?foo=1", null)).toBe("real");
+});
+
+test("a dev server gets no dialog", () => {
+  expect(updateDialogMode(true, "", null)).toBe("off");
+  expect(updateDialogMode(true, "?update_modal=0", "0")).toBe("off");
+});
+
+test("the dev flag previews it, from the URL or from storage", () => {
+  // PREVIEW, not merely un-suppressed: a dev server and the bundle it just
+  // built agree on the version, so lifting the suppression alone left the
+  // developer looking at nothing (Akshil, 2026-09-14).
+  expect(updateDialogMode(true, "?update_modal=1", null)).toBe("preview");
+  expect(updateDialogMode(true, "?tab=list&update_modal=1", null)).toBe("preview");
+  expect(updateDialogMode(true, "", "1")).toBe("preview");
+});
+
+test("a dev probe still reduces to the refresh state", () => {
+  // Suppressing the dialog must not rewrite what the banner KNOWS — an
+  // auto-reload on the next transition still depends on `served` being right.
+  const { state } = reduceProbe(
+    initialStatus(),
+    { ok: true, version: "0.4.9", dev: true },
+    BUILD
+  );
+  expect(state.banner).toBe("update-refresh");
+  expect(state.served).toBe("0.4.9");
+});
+
+test("a dev probe with matching versions stays hidden — what preview renders over", () => {
+  // The ordinary dev case, and the reason the preview cannot be gated on the
+  // banner: there is no mismatch here at all, so the state machine has nothing
+  // to say and the component has to force the dialog up itself.
+  const { state } = reduceProbe(initialStatus(), { ok: true, version: BUILD, dev: true }, BUILD);
+  expect(state.banner).toBe("hidden");
+  expect(updateDialogMode(true, "?update_modal=1", null)).toBe("preview");
 });

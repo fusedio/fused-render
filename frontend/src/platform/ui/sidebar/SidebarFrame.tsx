@@ -4,7 +4,7 @@
 // frame with its own sections, so the platform stays ignorant of bookmarks,
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
-import React, { useRef, useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { FusedMark } from "@platform/ui/FusedMark";
 import { navigateUrl } from "@platform/lib/router";
@@ -66,6 +66,14 @@ export interface SidebarFrameProps {
       collapses to just the expand control. */
   rail?: SidebarRailItem[];
   children: React.ReactNode;
+  /**
+   * Does a COLLAPSE tuck its contents away, or simply swap to the rail?
+   *
+   * The tuck arrived with the task side peek (which collapses this panel on the
+   * reader's behalf) and is part of what that feature's flag turns off. Platform
+   * may not read a shell pref, so the shell's own sidebar hands the answer down.
+   */
+  tuckOnCollapse?: boolean;
 }
 
 // A plain sidebar nav row: highlights on exact pathname match, navigates
@@ -115,13 +123,64 @@ export function NavItem({
   );
 }
 
-export function SidebarFrame({ title, homeHref = "/apps", rail, children }: SidebarFrameProps) {
+/** How long the expanded panel is held while it tucks away — `--dur-slow`, the
+ *  width transition it has to outlast (styles/sidebar.css). */
+const SIDEBAR_TUCK_MS = 200;
+
+export function SidebarFrame({
+  title,
+  homeHref = "/apps",
+  rail,
+  children,
+  tuckOnCollapse = false,
+}: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
   // shared store (platform/lib/sidebarstate) rather than here so that a
   // remount — every sub-app composes its own frame — inherits the live layout
   // instead of re-reading the persisted one.
   const { width: sidebarWidth, collapsed: sidebarCollapsed } = useSidebarState();
+  // THE TUCK. Collapsing used to CLIP: the rail and the expanded panel are two
+  // different subtrees (see the collapsed branch below), swapped the instant
+  // the flag flips, so the 200ms the nav spends narrowing to 44px showed the
+  // RAIL already in place with `overflow-x: hidden` cutting it — a width
+  // animation with nothing animating inside it.
+  //
+  // So the panel HOLDS ITS EXPANDED CONTENTS for the length of that transition
+  // and slides them out under a fade (`#sidebar.sidebar-tucking`, styles/
+  // sidebar.css), then swaps. Notion's own collapse, and the reason it reads as
+  // the panel going away rather than as the window eating it
+  // (.claude-design/task-side-peek/design.md, Make-room rule 2 — the peek
+  // collapses the sidebar on the reader's behalf, which is exactly when a clip
+  // is most jarring because nobody asked for it).
+  //
+  // COLLAPSE ONLY. Expanding already animates: the panel widens while the
+  // newly-mounted rows fade in on `sidebar-content-in`, which is the same
+  // motion in reverse and needs no holding.
+  //
+  // BEHIND THE SIDE PEEK'S FLAG (`tuckOnCollapse`, handed down from the shell's
+  // own sidebar): the tuck arrived with that feature — the peek collapses this
+  // panel on the reader's behalf, which is when a clip is most jarring because
+  // nobody asked for it — and a reader who has opted out gets the collapse they
+  // have always had. Platform may not read a shell pref, so the answer is a
+  // prop rather than an import.
+  const [tucking, setTucking] = useState(false);
+  const wasCollapsed = useRef(sidebarCollapsed);
+  // A LAYOUT effect, so the tuck's start and the width transition land in the
+  // same paint: a passive effect would show one frame of the panel still
+  // expanded and the collapse would begin a frame behind the side peek that
+  // asked for it.
+  useLayoutEffect(() => {
+    const collapsing = tuckOnCollapse && sidebarCollapsed && !wasCollapsed.current;
+    wasCollapsed.current = sidebarCollapsed;
+    if (!collapsing) {
+      setTucking(false);
+      return;
+    }
+    setTucking(true);
+    const t = setTimeout(() => setTucking(false), SIDEBAR_TUCK_MS);
+    return () => clearTimeout(t);
+  }, [sidebarCollapsed, tuckOnCollapse]);
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
@@ -254,7 +313,7 @@ export function SidebarFrame({ title, homeHref = "/apps", rail, children }: Side
     />
   );
 
-  if (sidebarCollapsed) {
+  if (sidebarCollapsed && !tucking) {
     // Collapsed: an icon RAIL, not the old anonymous 20px strip (which read as
     // a full-height bar whose only content was an arrow). The expand control
     // stays on top — the ONE reopen control, on every route, pinned to the
@@ -321,11 +380,27 @@ export function SidebarFrame({ title, homeHref = "/apps", rail, children }: Side
     <>
     {/* The collapse/expand width change glides (shell.css); a pointer DRAG must
         not, or every pointermove would chase a 200ms transition and the handle
-        would lag the cursor. `sidebar-no-transition` is that suppression. */}
+        would lag the cursor. `sidebar-no-transition` is that suppression.
+
+        MID-TUCK the nav is already `sidebar-collapsed` — it is narrowing to the
+        rail's 44px — while still holding these expanded children, which is the
+        whole trick (see `tucking` above). The inline width must go with it, or
+        it would outrank the class and the panel would not narrow at all. */}
     <nav
       id="sidebar"
-      className={resizing ? "sidebar-no-transition" : undefined}
-      style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
+      className={
+        [
+          tucking ? "sidebar-collapsed sidebar-tucking" : "",
+          resizing ? "sidebar-no-transition" : "",
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined
+      }
+      style={
+        tucking
+          ? ({ ["--sidebar-tuck-w"]: `${sidebarWidth}px` } as React.CSSProperties)
+          : { flexBasis: sidebarWidth, width: sidebarWidth }
+      }
     >
       <div className="sidebar-brand">
         {/* Logo + name are one click target that goes to the owner's home —

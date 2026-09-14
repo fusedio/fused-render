@@ -61,6 +61,18 @@
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
   --accent-rgb: 229, 255, 68;
+  /* THE SIDE PEEK'S HALO — the ring on the row, card or chip whose conversation
+     is open in the task peek (styles/task-peek.css).
+   *
+   * THE SAME VALUE IN BOTH PALETTES, and it is the only colour in this file
+   * that is. The halo's job is "this one, here" and it is read by flicking
+   * between a panel and a list; `--accent` cannot do it, because it is a bright
+   * lime on the dark ground and a dark olive on the light one — two marks that
+   * look like two different states rather than one. A single mid lime-olive
+   * carries on both: it is the accent's own hue, dark enough to read on white
+   * and light enough to read on #131417. */
+  --peek-halo: #a8c21f;
+  --peek-halo-rgb: 168, 194, 31;
   --error-rgb: 255, 107, 107;
   --fg-muted-rgb: 154, 160, 166;
   /* --warning's triple, for the trouble card's wash (SPEC §42): those failures
@@ -97,6 +109,16 @@
      translucent wash over its own background, so the flat result is a token. */
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+  /* THE ITEM YOU ARE LOOKING AT, AND IT IS GREY (Akshil, 2026-09-14 —
+     design.md, Polish batch 4). `--row-bg-active` is an ACCENT wash, which on
+     this palette is a lime-tinted olive: right for a sidebar row that is the
+     app's current PLACE, wrong for the one task a side panel happens to be
+     open on, where a coloured fill reads as a status — running, flagged,
+     failed — rather than as "this is the one on screen". Selection is not a
+     status, so it is painted in the same neutral the hover is and only one
+     step stronger: --bg-alt under a white 0.12 wash against the hover's 0.06.
+     Same family, twice the step, no hue. */
+  --row-bg-selected: #36383c; /* --bg-alt under the neutral 0.12 wash */
 
   /* Status-bar item states (D576, matching VS Code's own
      `statusBarItem.hoverBackground` / `statusBarItem.activeBackground`).
@@ -384,6 +406,18 @@
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
+  /* THE SIDE PEEK'S HALO — the ring on the row, card or chip whose conversation
+     is open in the task peek (styles/task-peek.css).
+   *
+   * THE SAME VALUE IN BOTH PALETTES, and it is the only colour in this file
+   * that is. The halo's job is "this one, here" and it is read by flicking
+   * between a panel and a list; `--accent` cannot do it, because it is a bright
+   * lime on the dark ground and a dark olive on the light one — two marks that
+   * look like two different states rather than one. A single mid lime-olive
+   * carries on both: it is the accent's own hue, dark enough to read on white
+   * and light enough to read on #131417. */
+  --peek-halo: #a8c21f;
+  --peek-halo-rgb: 168, 194, 31;
   --error-rgb: 198, 40, 40;
   --fg-muted-rgb: 97, 101, 108;
   --warning-rgb: 143, 106, 16;
@@ -404,6 +438,10 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+  /* The dark palette's argument, mirrored: the neutral here is BLACK over
+     --bg-alt (a white overlay on a pale ground is invisible), at the same
+     0.12 against the hover's 0.06. */
+  --row-bg-selected: #d7d8d9; /* --bg-alt under the neutral 0.12 wash */
 
   /* Black-alpha here, not white — the same inversion VS Code applies to these
      two tokens in a light theme. A white overlay on a light bar is invisible. */
@@ -533,3 +571,23 @@
   --scrim-letterbox: #000000;
 }
 
+/* -- METRICS, NOT COLOURS ----------------------------------------------------
+   Its own `:root`, deliberately AFTER both palettes and outside either of them.
+   The two blocks above are a PALETTE — tests/test_theme.py holds them to the
+   rule that every token in one has a value in the other, which is exactly right
+   for a colour and meaningless for a length. A width does not have a dark
+   version.
+
+   Only lengths that more than one stylesheet has to agree on belong here; a
+   metric one component owns stays in that component's sheet (styles/
+   task-peek.css keeps its own seam width and header height). */
+:root {
+  /* THE NARROWEST A RIGHT-HAND CHAT PANE MAY BE. The Explorer listing's Claude
+     pane (`.listing-pane-slot`, styles/explorer.css) and the Tasks side peek
+     both floor here, because they are the same chat in the same shell. It is
+     the composer control row's natural width plus its gutters;
+     platform/lib/pane-metrics.ts carries the derivation and holds the same
+     number for the code that clamps a drag, and pane-metrics.test.ts pins the
+     two together so neither can move without the other. */
+  --side-pane-min: 400px;
+}

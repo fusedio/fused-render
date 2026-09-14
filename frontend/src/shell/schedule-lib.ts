@@ -285,15 +285,16 @@ export function assignLanes<T extends { time: Date }>(
 // still be Retry for one and Open for the other.
 //
 // SIX KEYS, FIVE LANES. `needs_attention` is a STATUS — its own word, its own
-// hue, its own rank at the top of the List — and it draws in the Blocked lane
-// rather than a sixth column of its own (see BOARD_LANES). A board is read by
-// sweeping across it, and a lane that is empty except during the minutes
-// somebody is being waited on is a lane that teaches the reader to skip it.
+// hue — and it draws in the Blocked lane rather than a sixth column of its own
+// (see BOARD_LANES), at the head of it. A board is read by sweeping across it,
+// and a lane that is empty except during the minutes somebody is being waited on
+// is a lane that teaches the reader to skip it.
 //
-// THIS IS THE LIST'S VOCABULARY TOO, and a test holds the two arrays to the same
-// sequence apart from the two ranks the List hoists (tasks-lib.LIST_ORDER, whose
-// note carries the argument): a reader moving between the views carries ONE
-// mental picture of what a status IS, even where urgency reorders them.
+// THIS IS EVERY VIEW'S ORDER, not just the board's: the List and the Cards wall
+// read this array through tasks-lib.LIST_ORDER and sort by the very function the
+// board sorts by (2026-09-14, design.md §5). So a reader moving between the
+// views carries ONE mental picture of what a status is AND of where it sits, and
+// this is the single place either can be changed.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },
@@ -303,11 +304,26 @@ export const BOARD_COLUMNS = [
   { key: "archived", label: "Archive" },
 ] as const;
 
-export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"];
+/**
+ * …PLUS `draft`, which is deliberately NOT in the array above.
+ *
+ * A draft is a status a row can be in (api.Task.status) but never a COLUMN: the
+ * array is the board's lanes and the List's ranks, and drafts draw inside
+ * Upcoming (laneOf) with no lane, no header and no count of their own — "no new
+ * lane; six columns is already the width budget" (design.md, Decisions, Akshil
+ * 2026-09-11). Adding it to BOARD_COLUMNS would have drawn a seventh lane and
+ * put a "Draft" entry in the Status filter, neither of which was asked for.
+ *
+ * So the union is widened here and the array is left alone, which is also what
+ * keeps every `Record<BoardColumn, …>` in this page honest: a draft has to be
+ * given an answer in each of them rather than inheriting one by accident.
+ */
+export type BoardColumn = (typeof BOARD_COLUMNS)[number]["key"] | "draft";
 
 /** A column the BOARD actually draws. Every status is one except
- *  `needs_attention`, which shares the Blocked lane — see `laneOf`. */
-export type BoardLane = Exclude<BoardColumn, "needs_attention">;
+ *  `needs_attention`, which shares the Blocked lane, and `draft`, which shares
+ *  Upcoming — see `laneOf`. */
+export type BoardLane = Exclude<BoardColumn, "needs_attention" | "draft">;
 
 /**
  * The lanes, left to right — BOARD_COLUMNS minus the one that shares.
@@ -330,7 +346,12 @@ export const BOARD_LANES = BOARD_COLUMNS.filter(
  * would each have to be remembered again the next time a status is added.
  */
 export function laneOf(column: BoardColumn): BoardLane {
-  return column === "needs_attention" ? "blocked" : column;
+  if (column === "needs_attention") return "blocked";
+  // An unfinished task is the most upcoming thing there is (design.md), and it
+  // sorts to the head of that lane — tasks-lib.groupByColumn does the hoist,
+  // the same stable partition that puts a waiting card at the top of Blocked.
+  if (column === "draft") return "upcoming";
+  return column;
 }
 
 export function boardColumn(entry: ScheduledMessage): BoardColumn {
@@ -516,10 +537,26 @@ export function repeatChoicesFor(picked: Date): RepeatChoice[] {
 // about). Same /view codec + `_side=claude` handoff the retired Inbox's
 // own open-dir button used.
 export function explorerUrl(target: string, sessionId: string): string {
+  return `${chatPaneUrl(target)}&session_id=${encodeURIComponent(sessionId)}`;
+}
+
+/**
+ * THE SAME DOOR WITH NO CONVERSATION NAMED — the folder, with the Claude pane
+ * on it, and no `session_id` at all.
+ *
+ * Split out of `explorerUrl` rather than spelled again because the two differ
+ * in exactly one param and share the whole /view path codec. `explorerUrl` keeps
+ * emitting an EMPTY `session_id=` for its own no-session callers (`folderHref`,
+ * `taskHref`) — those name a task whose session has not been reported yet, and
+ * the empty value is the chat pane's own "this folder's sessions" signal there.
+ * A never-sent chat is a different fact: there is no session to be waiting for,
+ * so the parameter is omitted rather than sent empty (Akshil, 2026-09-11).
+ */
+export function chatPaneUrl(target: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
   const encoded = norm.replace(/^\/+/, "").split("/")
     .filter(Boolean).map(encodeURIComponent).join("/");
-  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}`;
+  return `/explorer/view/${encoded}?_side=claude`;
 }
 
 // The same door, for a task that has no thread to open YET.
@@ -884,6 +921,12 @@ export function taskChips(
   for (const day of days) out.set(dayKey(day), []);
   for (const task of tasks) {
     if (isArchivedTask(task)) continue;
+    // A DRAFT IS NOT A PLAN (design.md, Decisions: List and Board only, never
+    // Cards or Calendar). It names no time — that is most of what makes it
+    // unfinished — so a calendar drawing it would have to invent a day for it.
+    // `kind`, not `status`: a draft row arrives as `status: "upcoming"` so the
+    // rest of the page needs no new word (api.Task.kind).
+    if (task.kind === "draft") continue;
     const messages = threads[task.key] ?? task.messages ?? [];
     const byDay = new Map<string, TaskMessage[]>();
     const seen = new Set<string>();

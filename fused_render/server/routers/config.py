@@ -43,6 +43,15 @@ def api_config(
         # Drifts from `version` after a DMG install replaces the bundle under
         # this still-running process — the shell then asks for an app restart.
         "installed_version": installed_version(),
+        # Is this server a DEV RUN (scripts/dev.sh exports FUSED_RENDER_DEV=1)?
+        # The shell's status banner asks because its update prompt is a lie
+        # here: `version` is whatever the checkout says, while the bundle in
+        # the tab was rebuilt by the vite watch seconds ago — so a version bump
+        # or a branch switch popped a blocking "refresh to update" modal at a
+        # developer who is already looking at the newest code.
+        # Read per request, like `engine` below: the env belongs to the
+        # launcher, and nothing in a packaged app ever sets it.
+        "dev": os.environ.get("FUSED_RENDER_DEV") == "1",
         # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
         # Read per request — it can change under the Preferences switch.
         "engine": shell_prefs.effective_engine(),

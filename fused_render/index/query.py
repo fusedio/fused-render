@@ -18,7 +18,12 @@ import re
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
+from fused_render.index.ignore import (
+    MountGuard,
+    is_inside_leaf_dir,
+    is_leaf_dir,
+    norm,
+)
 from fused_render.index.store import (
     depth_expr,
     like_literal,
@@ -155,6 +160,83 @@ def _src_cols(con, src: str) -> set:
     anyway)."""
     return {r[0] for r in con.execute(
         f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+
+
+_SRC_COLS_CACHE_MAX = 16
+_src_cols_cache: dict = {}
+
+
+def _cached_src_cols(con, src: str, cache_key: tuple) -> set:
+    """Cache-wrapped `_src_cols`, keyed on `cache_key` — callers pass
+    `(cfg.dir, manifest["generation"], "files"|"dirs")`.
+
+    Every partition a manifest generation names was written by one
+    compaction and shares one schema (see `_src_cols`'s own docstring), so
+    it is safe to skip the DESCRIBE entirely once ANY caller has already
+    paid for it this generation — not merely once per call, which
+    `_src_cols`'s own inline `cache` parameter used to do (D707/D708) before
+    being dropped as dead code. This is SPEC-index-search-wedge.md item 5:
+    every keystroke against an unchanged index used to pay one ~8ms DESCRIBE
+    purely to learn a column set that cannot have changed since the last
+    one.
+
+    `cfg.dir` is the store's stable identity (`IndexConfig.dir`); the
+    generation increments on compaction (`store.py`'s `compact`), so a new
+    generation invalidates itself automatically — no explicit eviction on
+    compaction is needed. Bounded to `_SRC_COLS_CACHE_MAX` entries, oldest
+    inserted evicted first, so a long-lived process juggling many index
+    stores/generations cannot grow this without limit.
+
+    Two caveats review finding I raised, both real but neither worth more
+    machinery than this (D880 has the fuller reasoning):
+
+    - `dirs.parquet` (the `"dirs"` half of `cache_key`) is a single file
+      overwritten in place by every compaction (`store.py`'s COPY to
+      `dirs_parquet + ".new"` then `os.replace`), unlike `files/*.parquet`
+      which are named per generation and never overwritten. The swap lands
+      before the manifest naming the new generation is written, so a reader
+      that already loaded the OLD manifest and asks for that generation's
+      dirs schema for the first time during the swap's race window could, in
+      principle, DESCRIBE the new generation's bytes under the old
+      generation's cache key. This is harmless for what this cache actually
+      answers (a column SET) because compaction never changes dirs.parquet's
+      schema between generations — only its rows — so every generation's
+      "dirs" entry holds the same value regardless of which generation's
+      bytes were actually behind the read. It would stop being harmless only
+      if a future change made the dirs schema itself vary by generation, at
+      which point this cache key stops being sound and would need to key on
+      something that actually is generation-stable content, not merely a
+      generation number.
+    - `delete_store` (`store.py`) removes the manifest along with the rest of
+      the store, so the next compaction's `generation` starts back at 1 —
+      the same key a PRE-delete generation 1 could have used earlier in this
+      same process's life. `delete_store` calls `forget_src_cols_for(cfg.dir)`
+      below to evict every cache entry for that store before returning, so a
+      rebuilt store's first real generation-1 lookup can never be shadowed
+      by a stale pre-delete entry."""
+    cached = _src_cols_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    cols = _src_cols(con, src)
+    _src_cols_cache[cache_key] = cols
+    if len(_src_cols_cache) > _SRC_COLS_CACHE_MAX:
+        _src_cols_cache.pop(next(iter(_src_cols_cache)))
+    return cols
+
+
+def forget_src_cols_for(cfg_dir: str) -> None:
+    """Evict every `_cached_src_cols` entry for `cfg_dir` (an `IndexConfig.dir`).
+
+    Review finding I: `store.py`'s `delete_store` removes the manifest, so
+    the NEXT compaction's `generation` starts back at 1 — the same
+    `(cfg_dir, 1, "files"|"dirs")` key a pre-delete generation 1 could
+    already have populated earlier in this same process's life, which would
+    otherwise shadow the rebuilt store's real schema. `delete_store` calls
+    this before returning so a store's cache entries never outlive the store
+    itself. Cheap and rare (an interactive delete, not a per-query path):
+    a linear scan of a cache bounded to `_SRC_COLS_CACHE_MAX` entries."""
+    for key in [k for k in _src_cols_cache if k[0] == cfg_dir]:
+        _src_cols_cache.pop(key, None)
 
 
 def _name_col(cols: set) -> str:
@@ -393,7 +475,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
-                f"{_depth_col(_src_cols(con, fsrc), 'path')} AS depth FROM {fsrc} "
+                f"{_depth_col(_cached_src_cols(con, fsrc, (cfg.dir, m.get('generation'), 'files')), 'path')} AS depth FROM {fsrc} "
                 f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
@@ -401,7 +483,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(_src_cols(con, dsrc), 'dir')} AS depth FROM {dsrc} "
+                f"{_depth_col(_cached_src_cols(con, dsrc, (cfg.dir, m.get('generation'), 'dirs')), 'dir')} AS depth FROM {dsrc} "
                 f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
         entries, truncated = [], False
         if branches:
@@ -462,7 +544,7 @@ _DEPTH_PENALTY = 4
 _SHALLOW_FREE = 3
 
 
-def _walk_from(start: str, rest: str) -> tuple:
+def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tuple:
     """Consume `rest`'s "/"-joined segments onto `start`, one directory at a
     time, stopping at the first segment that contains a `*` or the first one
     that does not exist as a directory. Returns `(base, pattern, advanced)`:
@@ -474,26 +556,82 @@ def _walk_from(start: str, rest: str) -> tuple:
     A folder that hasn't been created yet therefore widens the search instead
     of failing it: the walk simply stops one segment early and folds the
     missing name into the pattern, which the caller matches at whatever base
-    it did reach."""
+    it did reach.
+
+    `guard`, when given, is consulted BEFORE `os.path.isdir` on every
+    candidate (SPEC-index-search-wedge.md item 1): this walk runs directly
+    against the user's raw typed string, segment by segment, and a candidate
+    that lands under a wedged NFS/rclone mount would otherwise park this
+    thread on `os.path.isdir` forever — the exact failure this repo already
+    knows that class of mount can cause (`MountGuard`'s own docstring).
+
+    The check is `guard.blocks()`, deliberately NOT `guard.blocks_root()`:
+    `blocks()` is pure string comparison against `MountGuard`'s own
+    (once-resolved-at-construction) roots, no syscall at all, whereas
+    `blocks_root()` falls through to `mounts.is_mount_backed`, which pays an
+    `os.path.realpath` — itself a readlink/lstat per path component — on
+    every miss. Calling that per SEGMENT, per KEYSTROKE, on the hot path
+    item 5 exists to shave milliseconds off would add back exactly the class
+    of blocking syscall this item exists to remove, just relocated from
+    `isdir` into the guard. `blocks()` only covers fused's OWN rclone
+    mounts/home tree — a wedge in an arbitrary system mount outside that
+    tree (an external SMB share, iCloud) cannot be detected here without a
+    syscall, and this walk deliberately does not pay one; item 2's bounded
+    permit (`ABANDON_S`, routers/index.py) is the backstop for that case,
+    not this guard.
+
+    A blocked candidate is treated exactly like one that failed `isdir` (the
+    same `break`), never raised: the walk just stops one segment early, the
+    same as a folder that doesn't exist yet. The blocked candidate's path is
+    also returned (the 4th tuple element, `None` when nothing was blocked)
+    so a caller can still answer "this typed path is mount-backed" from a
+    string alone, even though `base` itself lands short of it (see
+    `resolve_query`'s `blocked_out` parameter, SPEC-index-search-wedge.md
+    item C / D-number TBD). `guard=None` (every existing caller) preserves
+    today's behaviour unchanged."""
     base = norm(start).rstrip("/") or "/"
     if not rest:
-        return base, "", False
+        return base, "", False, None
     segs = rest.split("/")
     i = 0
+    blocked = None
     while i < len(segs) and "*" not in segs[i]:
         candidate = base + "/" + segs[i] if base != "/" else "/" + segs[i]
+        if guard is not None and guard.blocks(candidate):
+            blocked = candidate
+            break
         if not os.path.isdir(candidate):
             break
         base = candidate
         i += 1
-    return base, "/".join(segs[i:]), i > 0
+    return base, "/".join(segs[i:]), i > 0, blocked
 
 
-def resolve_query(root: str, raw: str) -> dict:
+def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
+                   blocked_out: "list | None" = None) -> dict:
     """The one place a search box's typed string becomes a `(base, pattern,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
     unstripped of anything meaningful.
+
+    `guard`, when given, is threaded straight through to every `_walk_from`
+    call below — see its docstring. `guard=None` (the default; every test in
+    this module) preserves today's unguarded behaviour; the server caller
+    (`routers/index.py`'s `_rank_body`) passes a real `MountGuard`.
+
+    `blocked_out`, when given, is a list this function APPENDS to (never
+    replaces) with the candidate path `_walk_from` refused, whenever a walk
+    actually blocked one — i.e. `resolve_query`'s return dict shape never
+    changes, so every existing caller and every `out == {...}` test in this
+    module stays exactly as it was; the extra information is opt-in, via a
+    side channel, for the one caller (`routers/index.py`'s `_rank_body`)
+    that needs it. This is what lets a typed path like
+    `~/.fused-render/branches/x/mounts/bucket/foo` still answer `reason:
+    "mount"` (SPEC-index-search-wedge.md item C): the walk stops at the last
+    unblocked ancestor, so `base` itself is never under the blocked tree and
+    a check against `base` alone would miss it — but the blocked candidate
+    is still a plain string, known without any further syscall, so a caller
+    can decide "mount" from it directly.
 
     `mode` is "glob" the moment `raw` contains a `*` anywhere, else
     "substring" — `?` and `[`/`]` are left as literal characters on purpose
@@ -535,16 +673,22 @@ def resolve_query(root: str, raw: str) -> dict:
     `~/a/b`'s own depth 1 — exactly the point of the original request this
     rule exists for. Deciding it from the post-split pattern instead would
     have widened that one, and every query like it, to any depth."""
+    def _note(blocked):
+        if blocked is not None and blocked_out is not None:
+            blocked_out.append(blocked)
+
     raw = raw or ""
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))
         rest = raw[2:] if raw.startswith("~/") else ""
-        base, pattern, _ = _walk_from(home, rest)
+        base, pattern, _, blocked = _walk_from(home, rest, guard=guard)
+        _note(blocked)
     elif _DRIVE_ABS.match(raw):
         drive_root = raw[:2] + "/"
         rest = raw[3:].replace("\\", "/")
-        base, pattern, _ = _walk_from(drive_root, rest)
+        base, pattern, _, blocked = _walk_from(drive_root, rest, guard=guard)
+        _note(blocked)
         # A bare drive letter with nothing after it (`rest == ""`) leaves
         # `_walk_from` at its own bare-root collapse, `"C:"` — the same
         # bare spelling `_root_or_bare` exists to restore to `"C:/"`
@@ -554,7 +698,8 @@ def resolve_query(root: str, raw: str) -> dict:
         base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
-        abs_base, abs_pattern, advanced = _walk_from("/", rest)
+        abs_base, abs_pattern, advanced, blocked = _walk_from("/", rest, guard=guard)
+        _note(blocked)
         if advanced:
             base, pattern = abs_base, abs_pattern
         else:
@@ -571,7 +716,8 @@ def resolve_query(root: str, raw: str) -> dict:
         # is also what keeps a run of `..` past the filesystem root pinned
         # at that root instead of growing an ever-longer trail of ".." that
         # still, harmlessly, means the same directory.
-        walked_base, pattern, _ = _walk_from(root, raw)
+        walked_base, pattern, _, blocked = _walk_from(root, raw, guard=guard)
+        _note(blocked)
         base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
         base, pattern = root, raw
@@ -976,7 +1122,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # files branch, for `_name_col`, ever calls this.
         if hit:
             fsrc = files_src(cfg, hit)
-            fcols = _src_cols(con, fsrc)
+            fcols = _cached_src_cols(con, fsrc, (cfg.dir, m.get("generation"), "files"))
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
                 f"false AS is_dir, {_name_col(fcols)} AS nm "

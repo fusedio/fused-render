@@ -90,6 +90,24 @@
   white-space: nowrap;
 }
 
+/* The heading plus its caption (Modal `titleAside`): ONE flex child of the
+   head, so `justify-content: space-between` still reads `[ title | ✕ ]` and the
+   caption cannot drift into the middle of the bar. The h2 keeps its
+   `overflow: hidden` ellipsis and gives way; the caption never shrinks. */
+.modal-head-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.modal-head-title > h2 {
+  min-width: 0;
+}
+
+.modal-head-title > :not(h2) {
+  flex: none;
+}
+
 .deploy-close {
   background: none;
   border: none;

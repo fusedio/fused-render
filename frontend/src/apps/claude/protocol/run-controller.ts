@@ -32,6 +32,7 @@
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
 import { scheduleMessage } from "@platform/lib/api";
+import { chatDraftKey } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
@@ -1687,6 +1688,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // Granted for the SESSION, not the turn (Task 6): the process this
             // starts stays up across every follow-up it sends (T:16657-16668).
             read_dirs: JSON.stringify(opts.readDirs || []),
+            // THE DRAFT THIS SEND SPENDS, and only when there is no session to
+            // send into — which is exactly the send that CREATES one. The chat
+            // has been drafting (and carrying its TASK number) under
+            // `new:<file>`, and the number has to follow the session this start
+            // mints. Nothing here can tell afterwards which id that was, so the
+            // run is tagged on the way out and the server reads the tag back off
+            // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
+            // rounds of asking the page instead are in `platform/lib/drafts.ts`).
+            // Omitted on a send into an existing session: that send creates
+            // nothing, and a tag it could not spend would be a claim on a draft
+            // still being typed.
+            ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
           },
           { key: null },
         )) as StartResponse;

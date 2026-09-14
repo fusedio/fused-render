@@ -29,12 +29,21 @@ export function cardFrameSrc(template: string, target: string, sessionId: string
 /** Site 2 — Tasks → card popup (`schedule-lib.ts:602-609 peekFrameSrc`). Not
  *  `compact`: that cut hides the composer, which is the one thing the popup
  *  exists to give back. `peek=1` instead — the popup's head carries the doors. */
-export function peekFrameSrc(template: string, target: string, sessionId: string): string {
+export function peekFrameSrc(
+  template: string,
+  target: string,
+  sessionId: string,
+  /** ONE TURN to open scrolled to — the Tasks list's expanded threads address
+   *  the very messages this names (`tasks-lib.messageHref`). Absent for an
+   *  ordinary open, which lands at the end of the conversation. */
+  msgAnchor?: string,
+): string {
   return (
     `/render?path=${encodeURIComponent(template)}` +
     `&_file=${encodeURIComponent(target)}` +
     `&chat_only=1&peek=1` +
-    `&session_id=${encodeURIComponent(sessionId)}`
+    `&session_id=${encodeURIComponent(sessionId)}` +
+    (msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : "")
   );
 }
 

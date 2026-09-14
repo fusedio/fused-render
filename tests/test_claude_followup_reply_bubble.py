@@ -189,6 +189,11 @@ let reply = null, typer = null, segBody = null, segMode = false, tailText = null
 let followupSeq = 0;
 let seenFollowupSeq = followupSeq;
 let segBase = 0, textBase = 0;
+// The `landedWindow` prefix this loop opened on (PR #1119). Empty on every
+// path this file drives — a mid-turn follow-up's base is not a landed window —
+// which is exactly what keeps the retire check inside `_segs_flat_src` from
+// firing here and undoing the reset these tests are about.
+let baseText = "";
 let lastSegLen = 0, lastTextLen = 0;
 
 // First poll of the turn: no text yet, then some streams in — the reply
@@ -232,6 +237,11 @@ def test_reply_segments_are_not_duplicated_after_a_mid_turn_followup(html):
 let followupSeq = 0;
 let seenFollowupSeq = followupSeq;
 let segBase = 0, textBase = 0;
+// The `landedWindow` prefix this loop opened on (PR #1119). Empty on every
+// path this file drives — a mid-turn follow-up's base is not a landed window —
+// which is exactly what keeps the retire check inside `_segs_flat_src` from
+// firing here and undoing the reset these tests are about.
+let baseText = "";
 let lastSegLen = 0, lastTextLen = 0;
 let reply = null, typer = null, segBody = null, segMode = false, tailText = null;
 let seenByPoll = [];
@@ -278,6 +288,11 @@ let reply = null, typer = null, segBody = null, segMode = false, tailText = null
 let followupSeq = 0;
 let seenFollowupSeq = followupSeq;
 let segBase = 0, textBase = 0;
+// The `landedWindow` prefix this loop opened on (PR #1119). Empty on every
+// path this file drives — a mid-turn follow-up's base is not a landed window —
+// which is exactly what keeps the retire check inside `_segs_flat_src` from
+// firing here and undoing the reset these tests are about.
+let baseText = "";
 let lastSegLen = 0, lastTextLen = 0;
 """ + poll + poll + poll + """
 console.log(JSON.stringify({ order: classNamesOf(log) }));

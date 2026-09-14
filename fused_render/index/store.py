@@ -629,8 +629,19 @@ def delete_store(cfg: IndexConfig) -> None:
     Runs under `store_lock`: a worker already inside its compaction finishes
     first and THEN gets deleted, and one that was still walking finds its
     cancel flag when it reaches the lock (see compact) — either way the store
-    stays deleted."""
+    stays deleted.
+
+    Also evicts `query.py`'s per-generation schema cache for this store
+    (review finding I / D880): deleting the manifest here resets the next
+    compaction's `generation` back to 1, the same cache key a pre-delete
+    generation 1 could already have populated earlier in this process's
+    life — left uncached, a rebuilt store's real schema could be shadowed by
+    a stale entry from before the delete."""
     import shutil
+
+    # Deferred import: query.py imports from this module at load time, so a
+    # top-level import here would be circular.
+    from fused_render.index.query import forget_src_cols_for
 
     with store_lock(cfg):
         shutil.rmtree(cfg.files_dir, ignore_errors=True)
@@ -640,6 +651,7 @@ def delete_store(cfg: IndexConfig) -> None:
                 os.unlink(path)
             except OSError:
                 pass
+        forget_src_cols_for(cfg.dir)
 
 
 def _write_manifest(cfg: IndexConfig, meta: dict) -> None:

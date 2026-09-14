@@ -57,6 +57,20 @@ export interface StartRequest {
   has_pane: "0" | "1" | "";
   /** JSON array of folders granted for reading (T:16617). */
   read_dirs: string;
+  /**
+   * THE DRAFT THIS SEND SPENDS — `new:<file>` — and ONLY on a send with no
+   * `session_id` (platform/lib/drafts.chatDraftKey).
+   *
+   * A chat that has never been sent keeps its half-typed message and its TASK
+   * number under that key; this send is what creates the session, and the
+   * number has to follow it. The page cannot prove afterwards WHICH session its
+   * own send made (bugbot, PR #1118 — four rounds of inference, each with a
+   * gap), so it tags the run on the way out instead: `agent._start` writes the
+   * key into `meta.json` verbatim and `routers/tasks.py::_settle_new_chats`
+   * reads it back. Absent on every other start, which is what keeps a
+   * scheduler's first fire on the same folder from claiming the draft.
+   */
+  draft_key?: string;
 }
 
 export interface PollRequest {

@@ -62,6 +62,26 @@ export interface ModalProps {
    * leave the weaker one dead in the tree).
    */
   ariaLabel?: string;
+  /**
+   * ONE MARK BESIDE THE HEADING, on the same row and at the heading's left —
+   * the New task card's `from TASK-003` chip (NewJobModal, design.md B).
+   *
+   * It looks like part of the title and it is not allowed to BE part of one: the
+   * `h2` is what `aria-labelledby` points at, so a control rendered inside it
+   * would make the dialog's own name "New task from TASK-003" and would put an
+   * interactive element inside a heading — a thing a screen reader's heading
+   * walk reads out and cannot press.
+   *
+   * OPTIONAL AND OFF BY DEFAULT, like `ariaLabel` above: with it absent the head
+   * renders the bare `h2` it always has, so every existing caller's markup is
+   * byte-identical. A caller that passes it gets the two wrapped in
+   * `.modal-head-title`, which is the flex row that keeps the old placement.
+   *
+   * NOT `headActions`, which is the other end of the same row: those sit against
+   * the ✕ (`margin-left: auto`) because they are controls that act on the
+   * dialog. This is a caption on the title.
+   */
+  titleAside?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -106,6 +126,7 @@ export interface ModalProps {
 export function Modal({
   title,
   ariaLabel,
+  titleAside,
   onClose,
   children,
   busy = false,
@@ -341,7 +362,17 @@ export function Modal({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="modal-head deploy-head">
-          <h2 id={titleId}>{title}</h2>
+          {titleAside ? (
+            // The heading and its caption as ONE flex child of the head, so the
+            // head is still `[ title | ✕ ]` and `justify-content: space-between`
+            // does not push the caption into the middle of the bar.
+            <div className="modal-head-title">
+              <h2 id={titleId}>{title}</h2>
+              {titleAside}
+            </div>
+          ) : (
+            <h2 id={titleId}>{title}</h2>
+          )}
           {/* ARMED, ON THE BUTTON ITSELF. The footer hint below says the same
               thing, and on its own it was not enough: the press happens at the
               top-right corner of the card and the hint appears at the bottom-left
