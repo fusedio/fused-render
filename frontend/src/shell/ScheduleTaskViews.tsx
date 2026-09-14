@@ -3813,8 +3813,17 @@ export function TaskBoard({
   // not that. The state exists so the cards can re-render — all it does there is
   // stop the card lifting again, which is the cheap half of saying the same
   // thing where the pointer is.
+  //
+  // AND IT IS HELD UNTIL THE BOARD HAS RE-READ (Bugbot, PR #1140): `onReload`
+  // only STARTS the listing fetch, so a lock dropped in the `finally` opened
+  // the exact window it exists to close — the sent card was still standing in
+  // its old lane, draggable, until the new rows arrived. A drop that SUCCEEDED
+  // therefore keeps its key until the next `tasks` the board is handed, which
+  // is the read that moves (or removes) the card; a drop that was REFUSED frees
+  // at once, because a refusal is exactly when the reader wants to retry.
   const inFlightRef = useRef<Set<string>>(new Set());
   const [inFlight, setInFlight] = useState<ReadonlySet<string>>(() => new Set());
+  const settledRef = useRef<Set<string>>(new Set());
   const holdDrop = (key: string): boolean => {
     if (inFlightRef.current.has(key)) return false;
     inFlightRef.current.add(key);
@@ -3823,8 +3832,21 @@ export function TaskBoard({
   };
   const freeDrop = (key: string) => {
     inFlightRef.current.delete(key);
+    settledRef.current.delete(key);
     setInFlight(new Set(inFlightRef.current));
   };
+  /** The drop landed: keep the lock, and let the next listing release it. */
+  const settleDrop = (key: string) => {
+    settledRef.current.add(key);
+  };
+  useEffect(() => {
+    // Refs and one stable setter only, so `tasks` can be the sole dependency:
+    // this is "the listing changed", nothing else.
+    if (!settledRef.current.size) return;
+    for (const key of settledRef.current) inFlightRef.current.delete(key);
+    settledRef.current.clear();
+    setInFlight(new Set(inFlightRef.current));
+  }, [tasks]);
 
   const drop = async (lane: BoardLane) => {
     const task = dragging;
@@ -3924,16 +3946,16 @@ export function TaskBoard({
         // fires tomorrow un-archives itself.
         await archiveTask(task.key);
       }
+      // LANDED: the lock outlives this handler — see `settleDrop`.
+      settleDrop(task.key);
     } catch (e) {
       // A refusal here is a real answer, not a bug — the scheduler's loop may
       // have sent the message, or claimed it, while the card was in the air —
       // so the server's own sentence is what gets shown, and the board re-reads
-      // either way.
+      // either way. And the card is FREED, because a card that stayed locked
+      // after a refusal would be a card the reader cannot retry — and a refusal
+      // is exactly when they want to.
       setNote((e as Error).message);
-    } finally {
-      // In a `finally`, because a card that stayed locked after a refusal would
-      // be a card the reader cannot retry — and a refusal is exactly when they
-      // want to.
       freeDrop(task.key);
     }
     onReload();
