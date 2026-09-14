@@ -10741,8 +10741,10 @@ One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — since D870 an OPAQUE CONTAINER (`appfile_container`:
 magic `FUSEDAPP`, versioned header, deflated JSON index carrying
 `fused_app_file: 2`, the app's name, its entry page resolved by the shared
-entry rule `app_listing.app_entry`, and every member's path/size/sha256; then
-one deflate stream per file). It is deliberately NOT a zip: v1 (D385) was a
+entry rule `app_listing.app_entry`, an `exported_at` UTC ISO-8601 stamp
+(`2026-09-14T10:05:12Z`; absent on files exported before it existed, and
+`open_app_file`/`clone_target` answer it as `exported_at`, None when missing),
+and every member's path/size/sha256; then one deflate stream per file). It is deliberately NOT a zip: v1 (D385) was a
 zip with its extension renamed, and mail scanners classify by bytes — Gmail
 walked the members and flagged the `.html`/`.py` inside as suspicious. v1
 files stay READABLE (`read_manifest`/`open_app_file` branch on the magic) so

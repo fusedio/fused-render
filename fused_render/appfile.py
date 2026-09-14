@@ -54,6 +54,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 
 from fused_render import app_listing
 from fused_render import appfile_container as container
@@ -364,7 +365,10 @@ def export_app_file(app_dir: str, out_path: str,
     try:
         try:
             manifest = container.write(
-                tmp, {"name": os.path.basename(app_dir), "entry": entry_rel}, payload)
+                tmp,
+                {"name": os.path.basename(app_dir), "entry": entry_rel,
+                 "exported_at": _utc_now()},
+                payload)
         except container.ContainerError as exc:
             raise AppFileError(str(exc))
         os.replace(tmp, out_path)
@@ -372,6 +376,22 @@ def export_app_file(app_dir: str, out_path: str,
         if os.path.exists(tmp):
             os.unlink(tmp)
     return manifest
+
+
+def _utc_now() -> str:
+    """The export stamp: UTC, ISO-8601, seconds, ``Z`` suffix — one obvious
+    shape for a consumer to read or parse (``2026-09-14T10:05:12Z``)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def exported_at(manifest: dict) -> str | None:
+    """The manifest's ``exported_at`` if it is a plausible stamp, else None.
+
+    Optional on the read side: v1 zips and v2 files exported before the field
+    existed have none. The value comes out of an untrusted file, so it is
+    forwarded only as a short string — never parsed here, never raised on."""
+    v = manifest.get("exported_at")
+    return v if isinstance(v, str) and 0 < len(v) <= 64 else None
 
 
 def _entry_problem(entry: object) -> bool:
@@ -515,7 +535,9 @@ def _make_read_only(root: str) -> None:
 def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
-    ``{"dir", "entry", "name", "reused"}`` with absolute paths.
+    ``{"dir", "entry", "name", "reused", "exported_at"}`` with absolute paths
+    (``exported_at`` is the file's UTC export stamp, None for files that
+    predate it).
 
     The extracted entry page must still carry the fused-app marker — the
     manifest names the entry, but the marker is what the /apps hub and the
@@ -548,7 +570,8 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     entry_abs = os.path.join(dest, *entry_rel.split("/"))
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
-            return {"dir": dest, "entry": entry_abs, "name": name, "reused": True}
+            return {"dir": dest, "entry": entry_abs, "name": name, "reused": True,
+                    "exported_at": exported_at(manifest)}
         if reuse_only:
             raise AppFileError("this app file has not been opened yet")
         # A half-extracted or manually-damaged cache dir: rebuild it. Files
@@ -603,7 +626,8 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
                 raise AppFileError(f"could not place the extracted app at {dest}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return {"dir": dest, "entry": entry_abs, "name": name, "reused": False}
+    return {"dir": dest, "entry": entry_abs, "name": name, "reused": False,
+            "exported_at": exported_at(manifest)}
 
 
 def _lift_read_only(root: str) -> None:
@@ -626,7 +650,7 @@ def clone_dir() -> str:
 
 def clone_target(fused_path: str) -> dict:
     """Where the ``.fused`` at ``fused_path`` would clone to, and whether that
-    is already there: ``{"name", "slug", "path", "cloned"}``.
+    is already there: ``{"name", "slug", "path", "cloned", "exported_at"}``.
 
     A read-only probe — one bounded manifest read plus one ``isdir`` — so the
     header button can pick its label without extracting anything.
@@ -657,6 +681,7 @@ def clone_target(fused_path: str) -> dict:
         "slug": slug,
         "path": dest.replace(os.sep, "/"),
         "cloned": os.path.isdir(dest),
+        "exported_at": exported_at(manifest),
     }
 
 
