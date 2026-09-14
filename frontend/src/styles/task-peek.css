@@ -160,7 +160,14 @@
    little enough that it reads as content rather than as framing.
 
    `data-tight` is the switch, written by Scheduled.tsx off the same arithmetic
-   as the floor. */
+   as the floor.
+
+   DELIBERATELY NOT REDECLARING `--tasks-page-gutter` here (Bugbot, PR #1141,
+   `styles/schedule.css`'s `.schedule-page` rule): that var is the UNTIGHT
+   44px `measureTasksBaseline` freezes the baseline's gutter from, and this
+   rule narrowing the live padding must not narrow it too, or a resize that
+   lands here after the baseline is already frozen feeds 12px back into
+   `peekGutter()` mid-visit. */
 .tasks-frame[data-tight="1"] .schedule-page {
   padding-left: 12px;
   padding-right: 12px;

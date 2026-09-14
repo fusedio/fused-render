@@ -104,6 +104,17 @@
   gap: 12px;
   overflow: hidden;
   min-height: 0;
+  /* THE UNTIGHT GUTTER, carried as a var rather than left to whatever the
+     live padding happens to be (Bugbot, PR #1141). `.prefs-page`'s own 22px
+     each side (`styles/preferences.css`) is where this page's left/right
+     padding actually comes from — this rule never restates it — but
+     `task-peek-store.ts`'s `measureTasksBaseline` needs a number that stays
+     the FULL gutter even once `task-peek.css`'s `[data-tight="1"]` rule below
+     narrows the padding to 12px either side. Declared ONLY here, on the base
+     rule, so the tight override — which redeclares `padding-left`/
+     `padding-right` and nothing else — never touches it. Update together with
+     `.prefs-page`'s padding if that ever changes. */
+  --tasks-page-gutter: 44px;
 }
 
 .schedule-page > .schedule-header h1 {

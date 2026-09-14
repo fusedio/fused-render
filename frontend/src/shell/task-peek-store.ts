@@ -655,9 +655,12 @@ let state: PeekState = {
  */
 let baselineCandidate: number | null = null;
 
-/** The page's side padding as last measured (`measureTasksBaseline`). The
- *  stylesheet's own 22px either side is the fallback, used only before anything
- *  has been on screen to read. */
+/** The page's UNTIGHT side padding as last measured (`measureTasksBaseline`),
+ *  off `--tasks-page-gutter` rather than the live padding — so a resize that
+ *  lands the frame in `data-tight` cannot feed its 12px inset back in here
+ *  after a baseline is already frozen (Bugbot, PR #1141). The stylesheet's
+ *  own 22px either side is the fallback, used only before anything has been
+ *  on screen to read. */
 let baselineGutter = TASKS_PAGE_GUTTER;
 
 /** Which side of the floor the last resize left the layout on (`planCrossing`).
@@ -782,8 +785,21 @@ export function measureTasksBaseline(): number | null {
     const host = document.querySelector<HTMLElement>(".tasks-peek-host");
     if (!main || !page || !host) return null;
     const cs = getComputedStyle(page);
+    // THE UNTIGHT GUTTER (Bugbot, PR #1141). `.tasks-frame[data-tight="1"]
+    // .schedule-page` (styles/task-peek.css) narrows the LIVE padding to 12px
+    // either side once the frame is narrow — and reading that padding here
+    // meant a resize landing on the tight side after the baseline was already
+    // frozen fed the reduced inset back into `peekGutter()`, which mixes the
+    // frozen baseline's 44px gutter with a 12px one in the floor's arithmetic
+    // (Scheduled.tsx's `contentFloor`). `--tasks-page-gutter` is declared once,
+    // on `.schedule-page` itself (styles/schedule.css), and the tight rule
+    // never redeclares it — so it reads 44px whether or not the frame is
+    // tight. The padding sum is a fallback only for a page predating the var.
+    const gutterVar = Number.parseFloat(cs.getPropertyValue("--tasks-page-gutter"));
     const gutter =
-      (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+      Number.isFinite(gutterVar) && gutterVar > 0
+        ? gutterVar
+        : (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
     const content = host.clientWidth;
     if (!(content > 0)) return null;
     const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
@@ -792,7 +808,11 @@ export function measureTasksBaseline(): number | null {
     // back to — but only the rendered box can confirm the element is laid out
     // at all, so a zero-width one is still "not yet".
     if (!Number.isFinite(cap) && !(main.getBoundingClientRect().width > 0)) return null;
-    baselineGutter = gutter;
+    // NEVER OVERWRITE ONCE FROZEN. The baseline is a fact about the visit's
+    // FIRST open, and the gutter it was measured with has to stay that same
+    // fact — a re-measure after the freeze (the observer keeps running) must
+    // not let `peekGutter()` drift mid-visit, tight or not.
+    if (state.baseline === null) baselineGutter = gutter;
     return tasksBaselineFrom(cap, gutter, content);
   } catch {
     return null; // no layout to read (a test harness, a detached document)

@@ -65,6 +65,8 @@ const {
   readPeekParam,
   applyResize,
   currentRoom,
+  measureTasksBaseline,
+  peekGutter,
   setPeekBaselineCandidate,
   refreshPeekBaseline,
   resetPeekStoreForTests,
@@ -1078,6 +1080,138 @@ describe("the sidebar, and the only thing that moves it", () => {
     setPeekBaselineCandidate(700);
     openPeek("sess-2");
     expect(getPeekState().baseline).toBe(BASELINE);
+  });
+});
+
+// ---- measureTasksBaseline: the gutter, tight or not (Bugbot, PR #1141) -----
+// No jsdom in this suite (`fit.test.ts` sets the precedent), so the `.tasks-
+// frame` section `measureTasksBaseline` reads off the real DOM is three plain
+// objects here — `document.querySelector` answers its three exact selectors,
+// and `getComputedStyle` answers each one's box. `--tasks-page-gutter` is
+// faked exactly as `styles/schedule.css` declares it on `.schedule-page`:
+// present and worth 44 whether or not `tightEachSide` (what `data-tight`,
+// `styles/task-peek.css`, would have narrowed the LIVE padding to) says
+// something smaller. `gutterVar: null` fakes a page that predates the var, to
+// prove the padding-sum fallback still works.
+function withFakeTasksDom(
+  opts: { content: number; cap?: number; gutterVar?: number | null; tightEachSide?: number },
+  fn: () => void,
+): void {
+  const cap = opts.cap ?? 1050;
+  const untightEachSide = 22; // `.prefs-page`'s own padding (styles/preferences.css)
+  const liveEachSide = opts.tightEachSide ?? untightEachSide;
+  const main = { getBoundingClientRect: () => ({ width: Math.min(cap, opts.content) }) };
+  const page = {};
+  const host = { clientWidth: opts.content };
+  const styles = new Map<unknown, Record<string, unknown>>();
+  styles.set(main, {
+    getPropertyValue: () => "",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    maxWidth: `${cap}px`,
+  });
+  styles.set(page, {
+    getPropertyValue: (name: string) =>
+      name === "--tasks-page-gutter" && opts.gutterVar != null ? `${opts.gutterVar}px` : "",
+    // The LIVE padding — 12px either side once `data-tight="1"` lands
+    // (styles/task-peek.css), 22px either side otherwise. This is exactly
+    // what the old, buggy read used, and every test below that passes a var
+    // proves the fix no longer reads it.
+    paddingLeft: `${liveEachSide}px`,
+    paddingRight: `${liveEachSide}px`,
+    maxWidth: "none",
+  });
+
+  interface FakeDoc {
+    querySelector: (sel: string) => unknown;
+  }
+  const doc = globalThis as unknown as { document: FakeDoc };
+  const realQuerySelector = doc.document.querySelector;
+  const globalWithStyle = globalThis as { getComputedStyle?: (el: unknown) => unknown };
+  const realGetComputedStyle = globalWithStyle.getComputedStyle;
+  doc.document.querySelector = (sel: string) => {
+    if (sel === ".tasks-frame .schedule-main") return main;
+    if (sel === ".tasks-frame .schedule-page") return page;
+    if (sel === ".tasks-peek-host") return host;
+    return null;
+  };
+  globalWithStyle.getComputedStyle = (el: unknown) => styles.get(el) ?? {};
+  try {
+    fn();
+  } finally {
+    doc.document.querySelector = realQuerySelector;
+    if (realGetComputedStyle === undefined) delete globalWithStyle.getComputedStyle;
+    else globalWithStyle.getComputedStyle = realGetComputedStyle;
+  }
+}
+
+describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)", () => {
+  it("measures the same gutter whether the frame is tight or not", () => {
+    // Untight: the live padding (22+22) and the var (44) agree, as they would
+    // on a wide frame that has never gone tight.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 22 }, () => {
+      expect(measureTasksBaseline()).toBe(1094); // 1050 (cap) + 44 (gutter)
+      expect(peekGutter()).toBe(44);
+    });
+    // Tight: the live padding is down to 12+12=24, but the var — which
+    // `[data-tight="1"] .schedule-page` never redeclares — still says 44, and
+    // that is the number the measurement takes. The bug read the padding sum
+    // instead and would have answered 1074 (1050 + 24) here.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 12 }, () => {
+      expect(measureTasksBaseline()).toBe(1094);
+      expect(peekGutter()).toBe(44);
+    });
+  });
+
+  it("a re-measure while tight, after the baseline is frozen, leaves peekGutter() unchanged", () => {
+    windowWidth(1600);
+    // Freeze the baseline untight, exactly as a normal first open would.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 22 }, () => {
+      refreshPeekBaseline();
+    });
+    setPeekHost(true);
+    openPeek("sess-1");
+    expect(getPeekState().baseline).toBe(1094);
+    expect(peekGutter()).toBe(44);
+    // A resize lands the frame in tight AFTER the freeze — the observer goes
+    // on running while the peek is open (`refreshPeekBaseline` is what
+    // Scheduled.tsx's own ResizeObserver calls). Before the fix this
+    // overwrote the module's `baselineGutter` with 24 on every such tick,
+    // which is exactly what fed the wrong number into `contentFloor`
+    // (Scheduled.tsx) for the rest of the visit.
+    withFakeTasksDom({ content: 900, gutterVar: 44, tightEachSide: 12 }, () => {
+      refreshPeekBaseline();
+    });
+    expect(getPeekState().baseline).toBe(1094); // already frozen, untouched
+    expect(peekGutter()).toBe(44); // and neither is the gutter it was frozen with
+  });
+
+  it("a deep link that opens already tight still freezes the full gutter", () => {
+    // The deep-link race (design.md, Widths v2 — "the store reads the DOM
+    // itself"): `useTaskPeekHost` adopts `?peek=` in a layout effect, before
+    // any passive ResizeObserver has run, so the FIRST measurement — landing
+    // with the frame already narrow enough to be tight, live padding 12px
+    // either side — is what the visit's baseline (and its gutter) freezes
+    // from. `state.baseline` is null and `baselineCandidate` is null too (no
+    // observer tick has happened yet), so `syncPeekFromUrl` reaches all the
+    // way to `measureTasksBaseline` itself for its very first reading.
+    windowWidth(1600);
+    setPeekHost(true);
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 12 }, () => {
+      syncPeekFromUrl("?peek=sess-1");
+    });
+    expect(getPeekState().key).toBe("sess-1");
+    // 1050 (cap) + 44 (the var's gutter), not + 24 (12+12, the live tight
+    // padding the old code read instead).
+    expect(getPeekState().baseline).toBe(1094);
+    expect(peekGutter()).toBe(44);
+  });
+
+  it("falls back to the padding sum on a page that predates the var", () => {
+    withFakeTasksDom({ content: 1200, gutterVar: null, tightEachSide: 22 }, () => {
+      expect(measureTasksBaseline()).toBe(1094); // 1050 + (22+22)
+      expect(peekGutter()).toBe(44);
+    });
   });
 });
 
