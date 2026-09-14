@@ -2107,23 +2107,6 @@ button.tasks-draft-pill.is-on:focus-visible {
   outline-offset: -1px;
 }
 
-/* THE SLOT IS ALWAYS HERE, the control is not (Akshil, 2026-09-14: "don't move
-   the dropdown position"). The ✕ was rendered only with something to clear,
-   which grew this group by 26px on the press — and the toolbar pays for width
-   out of the search field, so every trigger in the row slid left under a
-   popover pinned where it was placed on open. Held box, hidden ink: a press
-   changes what this half does and nothing about where anything is. The count
-   badge inside the trigger is reserved the same way (schedule.css).
-
-   `visibility`, so the inert half is out of the accessibility tree and out of
-   hit testing too — the `disabled` on the element is the belt to that brace.
-   Listed against the same two skins as the rule above, for the same reason. */
-.schedule-tv-filter-x.is-empty,
-.prefs-section .schedule-tv-filter-x.is-empty,
-.deploy-body .schedule-tv-filter-x.is-empty {
-  visibility: hidden;
-}
-
 /* ------------------------------------------------------------- the ghosts
    TasksSkeleton: the loading state, shaped like the view it stands in for. Each
    ghost reuses the real container classes for its geometry (`.tasks-row`,

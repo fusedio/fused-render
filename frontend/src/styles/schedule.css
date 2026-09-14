@@ -2718,8 +2718,10 @@ input.schedule-when-field {
 /* -- The same centre, in red: UNSENT WORDS ON A SETTLED ROW ---------------------
    Akshil, 2026-09-14. A Done or Archived row whose composer is still holding a
    sentence looks, at a glance, exactly like one that is finished — and it is the
-   one row on the page that is NOT. `tasks-lib.draftRing` is the gate and holds
-   the whole argument, including why In Progress never wears it.
+   one row on the page that is NOT. A Blocked row wears it for the neighbouring
+   reason: a reply already typed is one press from unsticking it. `tasks-lib
+   .draftRing` is the gate and holds the whole argument, including why In
+   Progress never wears it.
 
    THE SAME 8px CIRCLE, deliberately. It is not a second glyph to learn: the ring
    already means "a unit of work", its centre already means "there is something
@@ -2737,8 +2739,8 @@ input.schedule-when-field {
    both ("Done, unsent draft, 3 unread"). What it loses is the hue, on the rows
    where it has been outbid.
 
-   Not gated on `--done`/`--archived` here: the class is only ever written on
-   those two lanes, and a selector restating the rule is a second copy of it to
+   Not gated on `--done`/`--archived`/`--blocked` here: the class is only ever
+   written on those lanes, and a selector restating the rule is a second copy of it to
    go stale — the same argument the `--unread` gate above settled. */
 .schedule-ring--draft-held::after {
   content: "";
@@ -2999,20 +3001,6 @@ input.schedule-when-field {
   font-weight: 600;
   line-height: 16px;
   text-align: center;
-}
-
-/* A RESERVED BADGE (Akshil, 2026-09-14: "don't move the dropdown position").
-   The pill is drawn at every count, holding a `0` nobody sees, because the
-   toolbar buys width out of the search field (`flex: 0 1 260px` on the ladder):
-   a badge that appeared on the press made the trigger 22px wider, the search
-   22px narrower, and every trigger in the row slide left — under a popover
-   pinned where it was placed on open. The ✕ half is held the same way, in
-   tasks.css beside its own rule.
-
-   `visibility` and not `opacity`, so the unseen digit is out of the
-   accessibility tree as well as out of the ink. */
-.schedule-tv-filter-count.is-empty {
-  visibility: hidden;
 }
 
 /* Absolute, and nothing between it and the page clips: the toolbar is a plain

@@ -470,8 +470,11 @@ export function hasDraft(task: Pick<Task, "kind" | "draft">): boolean {
  * filed away — with a sentence still sitting in it, which is exactly the state
  * nothing else on a scanned page shows. An In Progress row is not finished, so
  * there is nothing to contradict and the dot would be noise on the one lane
- * that is already the busiest. Upcoming and Blocked are the same argument: both
- * already say "not over".
+ * that is already the busiest; Upcoming says "not over" the same way. BLOCKED
+ * wears it too (Akshil, 2026-09-14: "blocked rows can have red dot in middle"):
+ * a parked run with a reply already typed is a row one press from moving, and
+ * the ring is red there anyway — the dot is the "unsent" on top of the "stuck".
+ * Needs attention draws in the Blocked lane (laneOf) and is read the same way.
  *
  * NOT A SECOND UNREAD MARK, even though it lands in the same 8px circle. Unread
  * is about OUTPUT nobody has read; this is about INPUT nobody has sent, and the
@@ -484,8 +487,8 @@ export function hasDraft(task: Pick<Task, "kind" | "draft">): boolean {
  * same one the chip, the filter, the List's hoist and `rowExits` ask.
  */
 export function draftRing(task: Task): boolean {
-  const col = taskColumn(task);
-  return (col === "done" || col === "archived") && hasDraft(task);
+  const lane = laneOf(taskColumn(task));
+  return (lane === "done" || lane === "archived" || lane === "blocked") && hasDraft(task);
 }
 
 /**

@@ -1262,13 +1262,17 @@ describe("dropLanes", () => {
     // are exactly where "finished" is the thing the page is claiming.
     expect(draftRing(doneWithDraft())).toBe(true);
     expect(draftRing(doneWithDraft({ status: "archived" }))).toBe(true);
+    // …and on the Blocked lane, both statuses that draw there (Akshil,
+    // 2026-09-14: "blocked rows can have red dot in middle").
+    expect(draftRing(doneWithDraft({ status: "blocked" }))).toBe(true);
+    expect(draftRing(doneWithDraft({ status: "needs_attention" }))).toBe(true);
     // Nothing unsent, nothing to contradict.
     expect(draftRing(task({ status: "done", draft: null }))).toBe(false);
     expect(draftRing(task({ status: "archived", draft: null }))).toBe(false);
-    // And NEVER on a lane that is not claiming to be over — In Progress above
-    // all, which is the busiest ring on the page and is not finished by
-    // definition.
-    for (const status of ["in_progress", "upcoming", "blocked", "needs_attention"] as const) {
+    expect(draftRing(task({ status: "blocked", draft: null }))).toBe(false);
+    // And NEVER on a lane that is still moving — In Progress above all, which
+    // is the busiest ring on the page and is not finished by definition.
+    for (const status of ["in_progress", "upcoming"] as const) {
       expect(draftRing(doneWithDraft({ status }))).toBe(false);
     }
     // ONE 8px CENTRE, in the page's "your attention is owed" hue — not a second
@@ -7600,34 +7604,29 @@ describe("the two filter menus", () => {
   // Akshil, 2026-09-14, after a round where the Project trigger printed the
   // chosen folder's NAME and the rows carried ticks.
 
-  it("never changes the trigger's size with what is picked", () => {
-    // THE ROOT CAUSE OF A JUMPING MENU. The panel is `position: fixed` and
-    // anchored to the trigger's own rect (popStyle), so a trigger that grows on
-    // the press it is responding to slides the menu out from under the pointer
-    // mid-gesture. A count badge is a fixed pill; a folder name is not.
-    // NOR WITH WHETHER ANYTHING IS PICKED AT ALL (Akshil, 2026-09-14: "don't
-    // move the dropdown position"). Both halves are RESERVED — the badge holds a
-    // `0` nobody sees, the ✕ holds its 26px slot — because the toolbar buys
-    // width out of the search field (`flex: 0 1 260px`), so a control that grew
-    // on the press made every trigger in the row slide left under a panel
-    // pinned where it was placed on open.
+  it("shows the badge and the ✕ only with something to count, and closes on every press", () => {
+    // Akshil, 2026-09-14, twice. Round one printed the chosen folder's NAME on
+    // the trigger; round two RESERVED an empty badge and an empty ✕ slot so the
+    // trigger could not grow — which put a gap between Project, Status and
+    // + New task that read as a layout bug ("unnecessary space"). The fix that
+    // stayed is the cheap one: the menu CLOSES on the press ("if on click you
+    // close the dropdown then it solves the shifting"), so a trigger that grows
+    // does so under no menu at all, and the next open measures it fresh.
     expect(VIEWS).toContain(
-      '"schedule-tv-filter-count" + (count > 0 ? "" : " is-empty")');
-    expect(VIEWS).toContain('{count > 0 ? count : 0}');
-    expect(VIEWS).toContain(
-      '"schedule-tv-filter-x" + (splittable ? "" : " is-empty")');
-    expect(VIEWS).toContain("disabled={!splittable}");
-    // `visibility`, so the reserved halves keep their boxes and leave the
-    // accessibility tree.
-    expect(block(SCHEDULE_CSS, ".schedule-tv-filter-count.is-empty"))
-      .toContain("visibility: hidden");
-    expect(block(TASKS_CSS, ".schedule-tv-filter-x.is-empty"))
-      .toContain("visibility: hidden");
+      '{count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+    expect(VIEWS).toContain("{splittable && (");
+    expect(VIEWS).not.toContain("is-empty");
+    expect(SCHEDULE_CSS).not.toContain(".schedule-tv-filter-count.is-empty");
+    expect(TASKS_CSS).not.toContain(".schedule-tv-filter-x.is-empty");
+    // Both lists take the menu's `close` and call it on the press — Status
+    // included, multi-select or not.
+    expect(VIEWS).toContain("const statusRows = (close: () => void = () => {}) =>");
+    expect(VIEWS).toContain("toggleStatus(col.key);\n            close();");
+    expect(VIEWS).toContain("{statusRows(close)}");
+    expect(VIEWS).toContain("{projectRows(close)}");
     // Both menus, so there is one trigger shape on this page and not two.
     expect(VIEWS).not.toContain("schedule-tv-filter-value");
     expect(SCHEDULE_CSS).not.toContain("schedule-tv-filter-value");
-    // …and the ✕ half is a CONTROL only when there is something to clear, which
-    // is now about what it does and no longer about how wide the pair is.
     expect(VIEWS).toContain("const splittable = !!onClear && count > 0;");
   });
 

@@ -938,38 +938,23 @@ function FilterMenu({
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          {/* THE TRIGGER NEVER CHANGES WIDTH (Akshil, 2026-09-14). It said the
-              chosen folder's NAME for a round, which read better standing still
-              and moved the popover under it every time a row was pressed — the
-              menu is anchored to this button, so a button that resizes on the
-              press is a menu that jumps away from the pointer mid-gesture. The
-              count badge is a fixed pill and the name is on the row that is
-              lit, one press away, which is where the reader just was. */}
+          {/* THE TRIGGER'S WIDTH IS NOT THE MENU'S PROBLEM ANY MORE (Akshil,
+              2026-09-14: "if on click you close the dropdown then it solves the
+              shifting"). It said the chosen folder's NAME for a round, then held
+              an empty badge and an empty ✕ slot for another — a reserved gap
+              between Project, Status and + New task that read as a layout bug.
+              Both are gone: the badge and the ✕ appear only with something to
+              count or clear, as on main, and every press CLOSES the menu (the
+              `close` the children are handed), so the next open measures the
+              trigger where it now stands. The observers above still cover a
+              reflow under an open menu. */}
           {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>
-          {/* ALWAYS DRAWN, and merely INVISIBLE at zero (`is-empty`). It used to
-              be rendered only with something to count, which made the trigger
-              22px wider the moment a filter was picked — and the toolbar pays
-              for width out of the search field, so every trigger in the row
-              shifted left under a panel that was placed before the press. A
-              badge whose box never changes cannot do that. `visibility` and not
-              `opacity`, so the empty one is out of the accessibility tree as
-              well as out of the ink; the digit is a `0` nobody ever sees. */}
-          <span
-            className={"schedule-tv-filter-count" + (count > 0 ? "" : " is-empty")}
-          >
-            {count > 0 ? count : 0}
-          </span>
+          {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
-        {/* …AND THE SAME FOR THE ✕: one 26px slot, held whether or not there is
-            anything to clear, so picking a filter changes what this half DOES
-            and never where anything is. `disabled` is what makes the reserved
-            one inert — it is already out of the tree on `visibility: hidden`,
-            and this keeps it off the Tab walk on any engine that disagrees. */}
-        {onClear && (
+        {splittable && (
           <button
             type="button"
-            className={"schedule-tv-filter-x" + (splittable ? "" : " is-empty")}
-            disabled={!splittable}
+            className="schedule-tv-filter-x"
             /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
                this replaces, and a bare ✕ beside a label is read as belonging
                to it only if the accessible name agrees. */
@@ -1106,7 +1091,12 @@ export function TaskFilterControls({
   // THE ROWS, ONCE. Both shapes of this control — two triggers or one — draw
   // exactly these, so a press cannot mean something different at a narrow
   // width than it does at a wide one.
-  const statusRows = () =>
+  //
+  // AND EVERY PRESS CLOSES THE MENU (Akshil, 2026-09-14), Status included even
+  // though it can hold several ticks: the menu is anchored to a trigger whose
+  // badge changes width on the press, and a closed menu cannot be standing in
+  // the wrong place. One more open per extra tick is the price.
+  const statusRows = (close: () => void = () => {}) =>
     statusColumns.map((col) => {
       const on = laneOn(col.key);
       return (
@@ -1115,7 +1105,10 @@ export function TaskFilterControls({
           key={col.key}
           className={"schedule-tv-pop-item" + (on ? " is-on" : "")}
           aria-pressed={on}
-          onClick={() => toggleStatus(col.key)}
+          onClick={() => {
+            toggleStatus(col.key);
+            close();
+          }}
         >
           <StatusIcon status={col.key} />
           <span>{col.label}</span>
@@ -1224,7 +1217,7 @@ export function TaskFilterControls({
           {(close) => (
             <>
               <p className="schedule-tv-pop-head">Status</p>
-              {statusRows()}
+              {statusRows(close)}
               {projects.length > 1 && (
                 <>
                   <p className="schedule-tv-pop-head">Project</p>
