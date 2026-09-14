@@ -39,6 +39,37 @@ export const PEEK_PARAM = "peek";
  */
 export const PEEK_ITEM_ATTR = "data-peek-key";
 
+/**
+ * …AND THE MARK ON AN ITEM THE PANEL CANNOT SHOW (Akshil, 2026-09-14 —
+ * design.md, Fix batch 6 §3).
+ *
+ * Not every row on this page is a conversation. A never-started draft opens the
+ * New task FORM, and a row with no session has no transcript to put in the
+ * panel at all — press either and nothing opens here. The walk used to include
+ * them anyway, so a ↓ down the list stopped on a row the panel could not show
+ * and the reader had to press again to get past it.
+ *
+ * A SECOND ATTRIBUTE RATHER THAN A MISSING FIRST ONE, and that is the whole of
+ * the decision: `data-peek-key` is read by three rules, not one. It is the
+ * walk's order, it is `peekScrollTarget`'s handle — and it is in
+ * `PEEK_FRAME_KEEPS_OPEN`, which is what stops a click on an item from being
+ * read as a click on blank frame. Taking the key OFF a draft row would have
+ * made pressing that row close the panel, which is a second bug bought with the
+ * fix for the first. So every item still carries its key, and the ones the
+ * panel cannot open carry this as well; `peekVisibleOrder` is the one reader
+ * that cares.
+ */
+export const PEEK_SKIP_ATTR = "data-peek-skip";
+
+/** The two attributes an item stamps on itself, from one call — so a view
+ *  cannot stamp the key and forget the skip. `openable` is `peekOpenable`
+ *  (shell/tasks-lib.ts), asked of the item's own task. */
+export function peekItemProps(key: string, openable: boolean): Record<string, string> {
+  return openable
+    ? { [PEEK_ITEM_ATTR]: key }
+    : { [PEEK_ITEM_ATTR]: key, [PEEK_SKIP_ATTR]: "1" };
+}
+
 /** The class the open item wears. One rule for all four shapes, drawn inside
  *  the element's own box so nothing changes size (styles/task-peek.css). */
 export const PEEK_OPEN_CLASS = "is-peeked";
@@ -390,6 +421,31 @@ export function stepPeekKey(
 }
 
 /**
+ * THE ORDER THE WALK WALKS: every item the frame has painted, in DOM order,
+ * less the ones the panel cannot open (`PEEK_SKIP_ATTR`).
+ *
+ * TAKES THE NODES, NOT A SELECTOR, for `peekScrollTarget`'s reasons — it is
+ * then a pure function of a list, provable without a browser. The first of two
+ * nodes carrying the same key wins, because a view may paint one task twice (a
+ * board card and its drag ghost) and the walk means PLACES, not nodes.
+ *
+ * Everything downstream reads this and therefore inherits the filter: ↑/↓, the
+ * chevrons and their disabled ends, ⌃⇧J/K, and the advance after an archive or
+ * a delete (`nextAfterRemoval`).
+ */
+export function peekVisibleOrder<T extends { getAttribute(name: string): string | null }>(
+  items: readonly T[],
+): string[] {
+  const keys: string[] = [];
+  for (const item of items) {
+    if (item.getAttribute(PEEK_SKIP_ATTR) !== null) continue;
+    const key = item.getAttribute(PEEK_ITEM_ATTR);
+    if (key && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+/**
  * WHICH ELEMENT A WALK SCROLLS BACK INTO VIEW — the walked-to item itself, or
  * nothing at all when the view has not painted it.
  *
@@ -567,6 +623,72 @@ export function openTimeCollapse(input: {
   if (now - base >= PEEK_MIN_WIDTH) return false;
   const railed = Math.max(0, input.viewport - SIDEBAR_RAIL_WIDTH);
   return railed - base >= PEEK_MIN_WIDTH;
+}
+
+/**
+ * WHAT "RESIZE PANEL" CAN ACTUALLY SPEND, and whether there is anything to
+ * spend at all (Akshil, 2026-09-14 — design.md, Fix batch 6 §1).
+ *
+ * The control exists to get the reader out of cover, and it used to spend the
+ * number a fresh open would: the remainder past the middle pane's baseline,
+ * held back by `storableWidth` so the middle pane clears its cover floor. On a
+ * roomy window that is exactly right. On a SMALL one that number is itself
+ * cover — the panel takes its own minimum, the middle pane is left under 360,
+ * and the button appears to do NOTHING, which is the worst thing a control can
+ * do: nothing moves and nothing says why.
+ *
+ * So the question asked here is "is there a width that clears cover", in the
+ * two places there might be one:
+ *
+ *   1. on the content area there is now. `storableWidth`'s own ceiling IS the
+ *      widest non-cover width (`content − 360`), so this one step answers both
+ *      "the default split" and "the widest split that is not cover" — the
+ *      default when it fits under the ceiling, the ceiling itself when it does
+ *      not;
+ *   2. failing that, the same question with the sidebar's 188px spent. That is
+ *      the open-time exception's trade made by hand (`openTimeCollapse`), for
+ *      the same reason: 188px of chrome nobody is looking at, against a list
+ *      the reader asked to see. Non-persisting and marked as ours, so leaving
+ *      /tasks hands it back.
+ *
+ * And when neither clears, `null` — the window cannot hold a panel and a list
+ * at once, and the header draws the control DISABLED and says so, rather than
+ * offering a press that moves nothing.
+ */
+export interface ShowListInput {
+  viewport: number;
+  baseline: number | null;
+  /** The sidebar's width WHEN EXPANDED — what a collapse would give back. */
+  sidebarExpanded: number;
+  sidebarCollapsed: boolean;
+}
+
+export interface ShowListPlan {
+  /** The width to spend, or null when nothing on this window clears cover. */
+  width: number | null;
+  /** Collapse the sidebar first — the only way this width clears. */
+  collapse: boolean;
+}
+
+/** The widest width that leaves the middle pane its cover floor on this content
+ *  area, or null when even the panel's own minimum does not. */
+function clearsCover(content: number, baseline: number | null): number | null {
+  const width = storableWidth(defaultPeekWidth(content, baseline), content);
+  return content - width >= PEEK_COVER_FLOOR ? width : null;
+}
+
+export function planShowList(input: ShowListInput): ShowListPlan {
+  const now = Math.max(
+    0,
+    input.viewport - (input.sidebarCollapsed ? SIDEBAR_RAIL_WIDTH : input.sidebarExpanded),
+  );
+  const here = clearsCover(now, input.baseline);
+  if (here !== null) return { width: here, collapse: false };
+  // Nothing left to spend: the sidebar is already a rail.
+  if (input.sidebarCollapsed) return { width: null, collapse: false };
+  const railed = Math.max(0, input.viewport - SIDEBAR_RAIL_WIDTH);
+  const after = clearsCover(railed, input.baseline);
+  return after === null ? { width: null, collapse: false } : { width: after, collapse: true };
 }
 
 // ---- pure: the sidebar's crossing detector -----------------------------------
@@ -1202,13 +1324,46 @@ export function setPeekWidth(width: number, persist = true): void {
  */
 export function showListBesidePeek(): void {
   if (state.key === null) return;
-  const content = contentWidth();
-  const next = storableWidth(defaultPeekWidth(content, peekBaseline()), content);
-  saveWidth(next);
-  publish({ ...state, width: next });
+  const plan = planShowList(showListEnv());
+  // Nothing clears cover on this window — and the header knows it too
+  // (`canShowList`), so the press this guards against is one a disabled button
+  // should not have allowed.
+  if (plan.width === null) return;
+  if (plan.collapse) {
+    // The open-time exception's trade, made by hand: silent, non-persisting and
+    // marked as ours, so navigating off /tasks hands the rail back.
+    setSidebar(true, false);
+    heldPersisted = false;
+    markAutoCollapsed(true);
+    publish({ ...state, autoCollapsed: true });
+  }
+  saveWidth(plan.width);
+  publish({ ...state, width: plan.width });
   // A width change IS a resize, so the sidebar's crossing detector gets its say
-  // — coming out of cover is the widest upward crossing there is.
-  applyResize();
+  // — coming out of cover is the widest upward crossing there is. UNLESS we
+  // just moved the sidebar ourselves: the crossing that would be read off the
+  // new width is the one this press already decided, and acting on it again
+  // would hand back the very 188px the list is about to stand in.
+  if (plan.collapse) establishSide();
+  else applyResize();
+}
+
+function showListEnv(): ShowListInput {
+  const sidebar = getSidebarState();
+  return {
+    viewport: viewportWidth(),
+    baseline: peekBaseline(),
+    sidebarExpanded: sidebar.width,
+    sidebarCollapsed: sidebar.collapsed,
+  };
+}
+
+/** IS THERE A SPLIT TO RESTORE AT ALL — what the header asks before drawing
+ *  "Resize panel" enabled (design.md, Fix batch 6 §1). False means the window
+ *  is too narrow to hold the list and the panel at once, and a button that says
+ *  so is worth more than one that presses and does nothing. */
+export function canShowList(): boolean {
+  return state.key !== null && planShowList(showListEnv()).width !== null;
 }
 
 /** Double-click on the seam: back to NO CHOICE, which is the remainder past the

@@ -111,11 +111,15 @@ describe("the flag module", () => {
 });
 
 describe("the markup adds nothing when the feature is off", () => {
-  it("stamps the walk's attribute only behind the guard, in all four views", () => {
+  it("stamps the walk's attributes only behind the guard, in all four views", () => {
     for (const src of [VIEWS, CARDS, CALENDAR]) {
-      // Every spread of the attribute is conditional, and none is left bare.
-      expect(src).toContain("{...(peekOn ? { [PEEK_ITEM_ATTR]:");
-      expect(src).not.toContain("{...{ [PEEK_ITEM_ATTR]:");
+      // Every spread is conditional, and none is left bare. The attributes come
+      // from one helper now (`peekItemProps`), which is what stops a view from
+      // stamping the key and forgetting the skip (design.md, Fix batch 6 §3).
+      expect(src).toContain("{...(peekOn ? peekItemProps(");
+      expect(src).not.toContain("{...peekItemProps(");
+      // …and every one of them asks the same question about its own task.
+      expect(src).toContain("peekOpenable(");
     }
     // The Board's is in the same file as the List's — two call sites, both
     // guarded, which is why the file is asserted to hold no unguarded spread.
@@ -143,7 +147,9 @@ describe("the markup adds nothing when the feature is off", () => {
   });
 
   it("writes no fit attributes on the list or the toolbar", () => {
-    expect(VIEWS).toContain('{...(peekOn ? { "data-fit": fit } : {})}');
+    expect(VIEWS).toContain('{...(peekOn ? { "data-fit": fit.level } : {})}');
+    // …and the floor's own number is written on the same condition.
+    expect(VIEWS).toContain('style={peekOn ? ({ "--tasks-row-need"');
     expect(PAGE).toContain('{...(peekOn ? { "data-fit": toolbar.level } : {})}');
   });
 
@@ -152,7 +158,7 @@ describe("the markup adds nothing when the feature is off", () => {
     // ResizeObserver and a MutationObserver per list either.
     expect(FIT).toContain("if (!enabled) return;");
     expect(FIT).toContain("if (!enabled || !el) return;");
-    expect(FIT).toContain("return enabled ? level : 0;");
+    expect(FIT).toContain("return enabled ? fit : NO_FIT;");
     expect(FIT).toContain("return [enabled ? level : 0, setEl];");
     // …and the toolbar's wrapper still answers the stable OFF verdict, so a
     // disabled page does not get a fresh object every render either.
@@ -245,7 +251,12 @@ describe("the peek header", () => {
     // reader had to be taught, for an act that happens once in a visit.
     expect(HEAD).toContain('className="task-side-peek-resize"');
     expect(HEAD).toContain("Resize panel");
-    expect(HEAD).toContain('data-hint="Restore the list beside the panel"');
+    expect(HEAD).toContain('? "Restore the list beside the panel"');
+    // …and on a window that cannot hold both, it is DISABLED and says which
+    // (design.md, Fix batch 6 §1) rather than pressing and moving nothing.
+    expect(HEAD).toContain("disabled={!canList}");
+    expect(HEAD).toContain('"Window too narrow to show the list"');
+    expect(HEAD).toContain("const canList = layout.cover && canShowList();");
     expect(HEAD).not.toContain("ICON_RESET_SIZE");
     expect(HEAD).toContain("onClick={() => showListBesidePeek()}");
     // …and with a × in the corner at every width, the ⋮'s own Close row is a
@@ -306,6 +317,19 @@ describe("the peek header", () => {
     // and header.
     expect(VIEWS).not.toContain("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
     expect(HEAD).not.toContain("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
+  });
+
+  it("draws the row's and the card's doors as OUTLINES, and the card keeps its hover under them (Akshil, 2026-09-14)", () => {
+    // No fill on hover — outline brightens and ink goes near-white.
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-act--page:hover:not(:disabled),");
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-act--archive:hover:not(:disabled),");
+    const hover = PEEK_CSS.slice(PEEK_CSS.indexOf(".tasks-peek-host .tasks-act--page:hover:not(:disabled),"));
+    const body = hover.slice(hover.indexOf("{"), hover.indexOf("}"));
+    expect(body).toContain("background: transparent;");
+    expect(body).toContain("color: var(--fg);");
+    // The strip is the card's sibling, so the wrapper's hover has to carry the fill.
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled)");
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card.is-peeked");
   });
 
   it("walks with CHEVRONS, not arrows", () => {
@@ -687,6 +711,23 @@ describe("the middle pane's floor", () => {
     expect(PEEK_CSS).toContain("grid-template-columns: repeat(auto-fill, minmax(min(var(--task-card-min), 100%), 1fr));");
     expect(PEEK_CSS).toContain("overflow-x: auto;");
     expect(PEEK_CSS).toContain("min-width: var(--tasks-floor, 0px);");
+  });
+
+  it("holds the LIST at the larger of the floor and what its rows need", () => {
+    // design.md, Fix batch 6 §2: at the floor the pane scrolls, so the rows must
+    // stop folding their marks — the ladder stands down (row-fit `pickRowFit`)
+    // and the content takes the row's own need instead.
+    expect(PEEK_CSS).toContain(
+      '.tasks-frame[data-floored="1"] .tasks-list > * {\n' +
+        "  min-width: max(var(--tasks-floor, 0px), var(--tasks-row-need, 0px));",
+    );
+    // The number is written by the list itself, beside the `data-fit` it no
+    // longer spends at this width.
+    expect(VIEWS).toContain('"--tasks-row-need": `${fit.need}px`');
+    expect(VIEWS).toContain("useRowFit(listRef, peekOn, floored)");
+    // …and the page hands the pane's own state down, so the stylesheet and the
+    // ladder cannot disagree about which side of the floor it is on.
+    expect(PAGE).toContain("floored={peek.floored}");
   });
 
   it("leaves the toolbar out of it — the toolbar is exempt at every width", () => {

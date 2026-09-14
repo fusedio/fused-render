@@ -72,6 +72,7 @@ import {
   groupByColumn,
   heldMessages,
   isDraftTask,
+  peekOpenable,
   isDraggable,
   isExpandable,
   isFailedTask,
@@ -135,8 +136,8 @@ import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingF
 // module it takes the views from.
 import { useRowFit } from "./row-fit";
 import {
-  PEEK_ITEM_ATTR,
   PEEK_OPEN_CLASS,
+  peekItemProps,
   closePeek,
   openPeek,
   usePeekHost,
@@ -1537,6 +1538,7 @@ export function TaskList({
   pinnedProjects = [],
   onPickDraft,
   draftOn = false,
+  floored = false,
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -1608,6 +1610,13 @@ export function TaskList({
    *  row-level trace this filter has — it is set from the rows and there is no
    *  popover carrying a count for it. */
   draftOn?: boolean;
+  /** IS THE MIDDLE PANE AT ITS FLOOR (task-peek-store `planRoom`)? The pane has
+   *  stopped shrinking and scrolls sideways instead, so the rows stop folding
+   *  their marks and the list's content takes the width they need
+   *  (shell/row-fit.ts `pickRowFit`, design.md Fix batch 6 §2). Handed down
+   *  from the page, which is where the frame's own `data-floored` is written.
+   *  Default false, so every caller that is not the peek's host is unchanged. */
+  floored?: boolean;
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -1795,7 +1804,7 @@ export function TaskList({
   // scroller is the box that must never grow a horizontal bar, so it is the box
   // that is measured (shell/row-fit.ts states the rule and why it is not a
   // breakpoint).
-  const fit = useRowFit(listRef, peekOn);
+  const fit = useRowFit(listRef, peekOn, floored);
   // The offset still owed to the reader, or null once it has been paid (or given
   // up on). Rows grow as their fetched threads land, so the wanted offset is
   // often past the end of the list for the first few frames; it is re-applied
@@ -1978,7 +1987,14 @@ export function TaskList({
       <div
         className="tasks-list"
         ref={listRef}
-        {...(peekOn ? { "data-fit": fit } : {})}
+        {...(peekOn ? { "data-fit": fit.level } : {})}
+        // …AND WHAT THE ROWS WOULD NEED IF NOTHING FOLDED, which is what the
+        // content is held at once the pane is floored (styles/task-peek.css
+        // reads `--tasks-row-need` beside `--tasks-floor` and takes the larger).
+        // Written at every width, read only at the floor: a variable the
+        // stylesheet ignores costs nothing, and writing it only when floored
+        // would mean the first floored frame had no number yet.
+        style={peekOn ? ({ "--tasks-row-need": `${fit.need}px` } as React.CSSProperties) : undefined}
         onScroll={onScroll}
       >
       {/* THE FRAME IS INSIDE THE SCROLLER, not the scroller itself. When the
@@ -2654,7 +2670,7 @@ function TaskNode({
         // The side peek's two hooks: the halo's selector, and — in DOM order —
         // the prev/next walk, which on the List is simply the list's order
         // (shell/task-peek-store.ts). Absent entirely when the feature is off.
-        {...(peekOn ? { [PEEK_ITEM_ATTR]: task.key } : {})}
+        {...(peekOn ? peekItemProps(task.key, peekOpenable(task)) : {})}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -4518,7 +4534,7 @@ function TaskCard({
         // BOARD_COLUMNS order, each with its cards — which is exactly the walk
         // design.md asks for here (shell/task-peek-store.ts). Absent entirely
         // when the feature is off.
-        {...(peekOn ? { [PEEK_ITEM_ATTR]: task.key } : {})}
+        {...(peekOn ? peekItemProps(task.key, peekOpenable(task)) : {})}
         /* The Board card's own caption, on the same instant panel as the List's
            (hints.ts). It is the same page and the same fact; a card that waited
            four seconds while the rows beside it answered at once would read as a

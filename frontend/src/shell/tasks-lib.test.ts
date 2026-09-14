@@ -96,6 +96,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  peekOpenable,
   dayPill,
   popoverPill,
   parseLaneChoices,
@@ -5022,6 +5023,20 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
     expect(open).toContain("openChatDraft(task);");
   });
 
+  it("answers `peekOpenable` for exactly the rows whose press opens a panel", () => {
+    // design.md, Fix batch 6 §3 — the walk's own filter, and it is the two
+    // questions the List row and the Board card already ask before they route a
+    // press: a draft opens the New task form, a row with no session has no
+    // conversation to show.
+    expect(peekOpenable(task())).toBe(true);
+    expect(peekOpenable(task({ kind: "draft" }))).toBe(false);
+    expect(peekOpenable(task({ session_id: "" }))).toBe(false);
+    // …and the two together, which is every draft the server actually sends.
+    expect(peekOpenable(task({ kind: "draft", session_id: "" }))).toBe(false);
+    // The same rows `openThreadIntent` refuses: one rule, asked twice.
+    expect(openThreadIntent(task({ session_id: "" }))).toBeNull();
+  });
+
   it("routes BOTH draft kinds through the rows' one draft arm", () => {
     // The List row and the Board card ask `isDraftTask`, never
     // `isChatDraftTask`: which kind it is decides what the modal is seeded
@@ -7444,7 +7459,7 @@ describe("what the List remembers between visits", () => {
     // peek's flag is on (shell/task-peek-flag.ts), so an opted-out page renders
     // the scroller exactly as it always did.
     expect(LIST).toContain('<div\n        className="tasks-list"\n        ref={listRef}');
-    expect(LIST).toContain('{...(peekOn ? { "data-fit": fit } : {})}');
+    expect(LIST).toContain('{...(peekOn ? { "data-fit": fit.level } : {})}');
     expect(LIST).toContain("onScroll={onScroll}");
     expect(LIST).toContain("el.scrollTop = top;");
     // A row restored from memory was never toggled, so nothing fetched the rest

@@ -158,9 +158,32 @@
 
 /* WHAT ACTUALLY STOPS SHRINKING. The scroller keeps the frame's width; its
    content is held at the floor, and the difference is the scroll. */
-.tasks-frame[data-floored="1"] .tasks-list > *,
 .tasks-frame[data-floored="1"] .schedule-cal > * {
   min-width: var(--tasks-floor, 0px);
+}
+
+/* …AND THE LIST IS HELD AT THE LARGER OF TWO NUMBERS (Akshil, 2026-09-14 —
+   design.md, Fix batch 6 §2).
+
+   The floor is three quarters of the baseline, and a row wants what a row
+   wants: with the content held at the floor alone the pane stopped shrinking
+   but the ROWS did not — the fit ladder went on folding the project, the
+   message count and the time to keep each row on one line inside a box that was
+   already scrolling. Two mechanisms answering the same narrowness, and the one
+   that took the marks away won.
+
+   So at the floor the ladder stands down (shell/row-fit.ts `pickRowFit` returns
+   level 0) and this takes over: `--tasks-row-need` is the widest row's measured
+   need with nothing folded, written on the scroller by the list itself. The
+   marks stay on the row and the reader scrolls right to them.
+
+   `max()` rather than a swap, because the two are both real: a short row on a
+   narrow pane must still fill the floor (the frame's own border and the empty
+   state read off it), and a long one must be able to exceed it. The `0px`
+   fallbacks make this exactly the old rule on a page that has not written
+   either variable yet. */
+.tasks-frame[data-floored="1"] .tasks-list > * {
+  min-width: max(var(--tasks-floor, 0px), var(--tasks-row-need, 0px));
 }
 
 /* THE CARDS WALL IS NOT IN THAT LIST, and that is this batch's decision (Akshil,
@@ -850,4 +873,57 @@ body.tasks-peek-dragging .task-side-peek-preview {
 
 body.tasks-peek-dragging {
   user-select: none;
+}
+
+/* -- the row's and the card's doors, as OUTLINES (Akshil, 2026-09-14) ----------
+   Open and Archive/Unarchive on a List row and on a Board card: a visible
+   outline once the row is hovered (they arrive with the row's reveal), a
+   brighter outline and near-white ink when the pointer is on the button itself,
+   and NO fill at any point — a filled pill on a row that is itself filled read
+   as a third surface. Scoped to the peek host; the flag-off page keeps
+   tasks.css's own hover skin. */
+.tasks-peek-host .tasks-act--page,
+.tasks-peek-host .tasks-act--archive,
+.tasks-peek-host .tasks-act--unarchive,
+.tasks-peek-host .prefs-section .tasks-act--page,
+.tasks-peek-host .prefs-section .tasks-act--archive,
+.tasks-peek-host .prefs-section .tasks-act--unarchive {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-muted);
+  transition:
+    opacity 0.08s ease,
+    border-color 0.08s ease,
+    color 0.08s ease;
+}
+
+.tasks-peek-host .tasks-act--page:hover:not(:disabled),
+.tasks-peek-host .tasks-act--archive:hover:not(:disabled),
+.tasks-peek-host .tasks-act--unarchive:hover:not(:disabled),
+.tasks-peek-host .tasks-act--page:focus-visible,
+.tasks-peek-host .tasks-act--archive:focus-visible,
+.tasks-peek-host .tasks-act--unarchive:focus-visible,
+.tasks-peek-host .prefs-section .tasks-act--page:hover:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-act--archive:hover:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-act--unarchive:hover:not(:disabled) {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--fg) 55%, var(--border));
+  color: var(--fg);
+}
+
+/* THE CARD KEEPS ITS HOVER UNDER ITS OWN BUTTONS. The Board card's action strip
+   is the card's SIBLING inside `.tasks-card-wrap` (it overlays the head), so the
+   moment the pointer reached Open or Archive the card stopped matching `:hover`
+   and dropped its fill and edge — the buttons looked like they sat on a
+   different card. The wrapper's hover is the card's hover. */
+.tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled) {
+  background: var(--row-bg-hover);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* …and the open card stays at its own fill even while its buttons are hovered. */
+.tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card.is-peeked,
+.tasks-peek-host .prefs-section .tasks-card-wrap:hover > .schedule-tv-card.is-peeked {
+  background: var(--row-bg-selected);
 }
