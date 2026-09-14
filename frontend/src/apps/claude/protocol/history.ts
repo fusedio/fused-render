@@ -31,6 +31,11 @@
 //     and only when true (agent.py:5049) — it renders as the same ⏹ "Stopped."
 //     note a live stop leaves, so a conversation reads identically whether you
 //     watched the stop or came back to it (T:18040-18048).
+//   * `ts` is the transcript record's `timestamp` in epoch SECONDS (agent.py
+//     `_row_ts`), on USER rows only — the chat draws it in the left icon lane
+//     on hover. Optional on the wire and optional here: an older server, or a
+//     row whose stamp does not parse, simply has no time to show, and the key
+//     is absent rather than zero (`0` is a real instant, i.e. 1970).
 //   * `uuid` is the transcript record's own id — the value the Tasks list
 //     carries as a message `anchor`, which is what makes `?msg=` resolvable
 //     (T:18030). Optional: a payload without it simply cannot be anchored to.
@@ -63,6 +68,12 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         text: stripBlocks(t.text),
         raw: t.text,
         ...(t.uuid ? { uuid: t.uuid } : {}),
+        // WHEN they said it — carried straight through, already epoch seconds
+        // (agent.py `_row_ts` does the one ISO parse, server side). The guard
+        // is `typeof === "number"` and not truthiness: it has to survive an
+        // older server that sends nothing AND keep a legitimate 0 from a
+        // fixture, while never inventing a time for a row that has none.
+        ...(typeof t.ts === "number" ? { ts: t.ts } : {}),
       };
     }
     // BEFORE the assistant fallback, which is unconditional: a role this
@@ -89,7 +100,16 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
     }
     return {
       role: "assistant" as const,
-      key: "h:" + i,
+      // THE REPLY'S OWN RECORD ID WHEREVER THERE IS ONE, exactly as the user
+      // branch above. A positional key is not an identity: a history re-read
+      // that gained or lost a row moved every fold the reader had set (the map
+      // in `ui/Transcript` is keyed by `foldKey`, which is this key for a turn
+      // with no uuid), so a reply they had opened folded itself and its
+      // neighbour opened. `"h:" + i` remains the fallback for an older server.
+      key: t.uuid || "h:" + i,
+      // Carried as well as keyed: `foldKey` PREFERS `uuid`, so the reply's fold
+      // identity is the record id no matter what the key derivation does later.
+      ...(t.uuid ? { uuid: t.uuid } : {}),
       text: t.text || "",
       ...(Array.isArray(t.segments) ? { segments: t.segments } : {}),
       // Only ever on the last turn — guarded here too, so a payload that ever

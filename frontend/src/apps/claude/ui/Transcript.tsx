@@ -36,6 +36,7 @@ import { cn } from "@platform/lib/utils";
 import type { ChatController, ChatState, UserTurn } from "../protocol/controller-api";
 import type { PermissionMode, Segment } from "../protocol/types";
 import { CardStack, type CardActions } from "./CardStack";
+import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
 import { Turn } from "./Turn";
@@ -164,13 +165,27 @@ export const Transcript = memo(function Transcript({
     // scrollIntoView, our own writes. `lastTop`/`lastHeight` tell a reader
     // moving UP apart from the browser CLAMPING scrollTop because the content
     // got shorter; a clamp is not a gesture.
+    //
+    // …AND A SHRINK RE-ARMS NOTHING EITHER (Akshil 2026-09-15). The auto-fold
+    // makes `.chat-log` SHORTER — a new reply folds the previous one, and a
+    // wall of replies loses several screenfuls at once — and a reader parked
+    // 200px up was suddenly within `NEAR_BOTTOM_PX` of a tail that had moved
+    // up to meet them. Geometry read that as "they are at the bottom", re-armed
+    // the follow, and the very next write yanked them to the tail of a
+    // conversation they were reading the middle of. Both halves of this branch
+    // are therefore gated on `h >= lastHeight`: a shrink is not a gesture in
+    // either direction. A reader who WAS following is untouched — the flag is
+    // already true and nothing here turns it off — so the fold still carries
+    // them down with the new reply.
     let lastTop = 0;
     let lastHeight = 0;
     const onScroll = () => {
       const top = wrap.scrollTop;
       const h = wrap.scrollHeight;
-      if (h >= lastHeight && top < lastTop - 1) followTail.current = false;
-      else if (nearBottom()) followTail.current = true;
+      if (h >= lastHeight) {
+        if (top < lastTop - 1) followTail.current = false;
+        else if (nearBottom()) followTail.current = true;
+      }
       lastTop = top;
       lastHeight = h;
     };
@@ -194,6 +209,15 @@ export const Transcript = memo(function Transcript({
     const grown =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(followBottom);
     if (grown && log.current) grown.observe(log.current);
+    // AND THE SCROLLPORT ITSELF, not only the log (#10). The landing bottom-
+    // anchor fires when the turns are laid out — and on a history landing with
+    // attachment chips the COMPOSER is still growing under it, so the port lost
+    // 66px of height a frame later and the conversation came to rest that far
+    // short of the bottom. The log never changed size, so the observer above
+    // never heard about it. The port shrinking IS the growth, seen from the
+    // other side; the flag decides what to do about it exactly as before, so a
+    // reader who has scrolled up is not moved by a chip mounting.
+    if (grown) grown.observe(wrap);
     return () => {
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("touchstart", onTouchStart);
@@ -469,6 +493,119 @@ export const Transcript = memo(function Transcript({
     state.permissions,
   ]);
 
+  // ── WHICH REPLIES ARE FOLDED (design.md §B) ──────────────────────────────
+  //
+  // A finished conversation is a wall of replies the reader has already read,
+  // and the one they came back for is the last one. So every SETTLED assistant
+  // turn lands folded except the newest, and the live turn is never folded.
+  //
+  // AND A NEW RESPONSE CLOSES THE OLD ONE (Akshil 2026-09-15) — but only the
+  // one nobody asked to have open. That is the whole reason the fold is FOUR
+  // states rather than a boolean: a turn is open (or shut) either because the
+  // rule put it that way or because the reader clicked it, and only the rule's
+  // own doing is the rule's to undo. So when a new reply starts streaming the
+  // previous newest folds, while a `manual-open` turn the reader deliberately
+  // opened stays open through any number of later responses, until they click
+  // it shut. A `manual-closed` turn is never re-opened by anything.
+  //
+  // THE RULE'S HALF IS DERIVED, the reader's half is remembered. "Newest reply
+  // open, older ones folded" is read off `state.turns` every render, so a row
+  // arrives already folded rather than folding itself in an effect after a
+  // frame at full height, and a turn list that SHRINKS — a dropped chunk, a
+  // discarded `runEnding` turn — lands the right way up on its own. Only the
+  // two `manual-` states are sticky, and nothing but a click writes them.
+  //
+  // A REF PLUS A BUMP, not `useState`: the map is seeded during render, and
+  // every other turn's props have to stay identical across the click, or
+  // `Turn`'s memo — the thing that keeps a settled reply's markdown from being
+  // re-parsed on every 400 ms poll — misses for the whole log. Session-local by
+  // construction: a fresh mount is a fresh map.
+  const folds = useRef(new Map<string, FoldState>());
+  /** Turn key → the key its fold is remembered by (`foldKey`). The toggle is ONE
+   *  stable callback for the whole log — a fresh closure per row would defeat
+   *  `Turn`'s memo — so it is handed the turn's own key and resolves it here. */
+  const foldIds = useRef(new Map<string, string>());
+  const [, bumpFold] = useState(0);
+  // A DIFFERENT CONVERSATION IS A DIFFERENT MAP (review #1). This component is
+  // not remounted when the host opens another session, and a restored turn's
+  // key is POSITIONAL (`protocol/history.ts`, `"h:" + i`) — so every fold of
+  // the 20-turn history on screen a moment ago applied itself, row for row, to
+  // the 12-turn one that replaced it, and the reply the reader came back for
+  // landed folded while an older one sat open.
+  //
+  // `transcriptGen` and not `sessionId`: the id also changes when the first
+  // poll of a brand-new chat reports one, mid-run (`noteSessionId`,
+  // controller-api `transcriptGen`), and clearing there would re-fold a reply
+  // the reader had just opened. The generation is bumped by `openSession` and
+  // by nothing else — the same event `resetCardPolicy` hangs on.
+  const foldsGen = useRef(state.transcriptGen);
+  if (foldsGen.current !== state.transcriptGen) {
+    foldsGen.current = state.transcriptGen;
+    folds.current.clear();
+    foldIds.current.clear();
+  }
+  const lastAssistant = lastAssistantKey(state.turns);
+  // The open card is drawn in the tail pin, but the turn it belongs to is the
+  // one the run is blocked in — and NOT, as this read for one release, whichever
+  // reply happens to be newest (review #2): a card answered against a chip five
+  // turns back un-folded the turn at the bottom instead, which is a turn the
+  // reader had folded and nothing to do with the block.
+  //
+  // READ BEFORE THE FOLD IS DERIVED, because the derivation has to know about it
+  // (Akshil 2026-09-15). An unanswered card is the one thing on screen to do,
+  // and the next reply to start streaming made its turn "not the newest" — so
+  // the rule derived `default-closed` underneath it. `pendingCard` kept the turn
+  // DRAWN open for as long as the card stood, which meant the reply snapped shut
+  // the instant the reader pressed Allow, in the same gesture. A blocked turn is
+  // therefore open by the rule too; once its card is answered it is an ordinary
+  // reply again and the next response folds it like any other.
+  const blocked = blockedTurnKey(state.turns, state.permissions);
+  const blockedTurn = blocked ? state.turns.find((t) => t.key === blocked) : undefined;
+  const blockedFold = blockedTurn ? foldKey(blockedTurn) : null;
+  for (const t of state.turns) {
+    if (t.role !== "assistant") continue;
+    const id = foldKey(t);
+    foldIds.current.set(t.key, id);
+    // ONCE A TURN IS THE READER'S, IT IS THEIRS FOR GOOD: a reply clicked open
+    // survives any number of later responses, one clicked shut is never handed
+    // back. Everything else is the rule's, and the rule RE-DERIVES rather than
+    // latches (bugbot): the newest settled reply is open, every older one is
+    // folded, recomputed from `state.turns` on each render.
+    //
+    // A sweep that flipped `default-open` to `default-closed` when a new row
+    // appeared said the same thing for as long as rows only ever arrive — but
+    // that write had nothing to undo it, and rows DO go away (a failed poll
+    // drops a chunk, `runEnding` discards a turn). The previous reply then
+    // stayed folded while being the newest again, and the reader had to click
+    // the mark to get back the answer they were mid-way through reading.
+    // Derived, that case fixes itself: the row is last once more, so it is open
+    // once more.
+    const prev = folds.current.get(id);
+    if (prev === "manual-open" || prev === "manual-closed") continue;
+    const open = !!t.streaming || t.key === lastAssistant || id === blockedFold;
+    folds.current.set(id, open ? "default-open" : "default-closed");
+  }
+  const onToggleCollapse = useCallback((key: string) => {
+    const id = foldIds.current.get(key) ?? key;
+    // EVERY CLICK IS MANUAL, both ways: opening one pins it open past the next
+    // response, shutting one pins it shut past everything.
+    folds.current.set(id, isFolded(folds.current.get(id)) ? "manual-open" : "manual-closed");
+    // THE READER JUST CHANGED THE LOG'S HEIGHT ON PURPOSE (review #3). Folding
+    // or opening a reply resizes `.chat-log`, the ResizeObserver above answers
+    // a resize by writing `scrollTop = scrollHeight`, and the reply that was
+    // just opened went straight off the bottom of the screen. Same rule, same
+    // line as the `?msg=` anchor: a gesture that asks to READ something drops
+    // the follow first.
+    followTail.current = false;
+    bumpFold((n) => n + 1);
+  }, []);
+  // …and the same for every disclosure BELOW a turn — a run's `more`/`less`, a
+  // chip, a thinking block — which resize the log the same way from five levels
+  // down a memoized tree (ui/cardPolicy `useHoldTail`).
+  useHoldTail(useCallback(() => {
+    followTail.current = false;
+  }, []));
+
   return (
     <div className={cn("chat-logwrap", pinFull && "is-locked")} ref={port}>
       <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
@@ -504,6 +641,12 @@ export const Transcript = memo(function Transcript({
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
+                  collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
+                  onToggleCollapse={onToggleCollapse}
+                  {...(blocked === turn.key &&
+                  folds.current.get(foldIds.current.get(turn.key) ?? turn.key) !== "manual-closed"
+                    ? { pendingCard: true }
+                    : {})}
                 >
                   {/* Parked cards belong to the turn they were answered in —
                       whichever turn that was, streaming or long finished.
@@ -658,6 +801,86 @@ export function openCardIds(rows: ChatState["permissions"]): string {
     .filter((p) => p && p.id && !p.decision)
     .map((p) => p.id)
     .join(",");
+}
+
+/**
+ * HOW OPEN A REPLY IS, AND WHO SAID SO (design.md §B, Akshil 2026-09-15).
+ *
+ * Two bits, not one. "Is it folded" is what the row needs; "did the reader ask
+ * for that" is what the LOG needs, because the arrival of a new response folds
+ * the replies the rule opened and must leave alone the one the reader opened
+ * themselves. A boolean plus a side-set of manual keys said the same thing and
+ * kept drifting out of step with it — the set only ever learned about folds,
+ * never about opens, so a reply the reader had deliberately unfolded was
+ * indistinguishable from one the rule had left open.
+ */
+export type FoldState = "default-open" | "default-closed" | "manual-open" | "manual-closed";
+
+/** Is a reply in this state drawn as one line? Also the answer for a turn with
+ *  no entry at all (a row nothing has seeded yet): open, like a live one. */
+export function isFolded(state: FoldState | undefined): boolean {
+  return state === "default-closed" || state === "manual-closed";
+}
+
+/**
+ * THE KEY A REPLY'S FOLD IS REMEMBERED BY (review #1).
+ *
+ * The turn's own uuid wherever the wire carries one, because that is the only
+ * identity a reply keeps across a reload and across a switch to another
+ * conversation and back. `key` is the fallback and today it is what every
+ * restored assistant row has: `protocol/history.ts` numbers them by POSITION
+ * (`"h:" + i`), which is why the map is also cleared per transcript — a
+ * positional key means row 7 of one conversation and row 7 of the next are the
+ * same string.
+ */
+export function foldKey(turn: ChatState["turns"][number]): string {
+  return (turn as { uuid?: string }).uuid || turn.key;
+}
+
+/**
+ * THE TURN AN UNANSWERED CARD BELONGS TO, or null (review #2) — the one reply
+ * that may not be folded while the run is blocked on it (design.md §B).
+ *
+ * It is NOT "the newest reply". A card carries the id of the tool call that
+ * asked (`toolUseId`, the same field `parkPlan` files a resolved card by), so
+ * the turn that owns it is the turn holding that chip — which after a restore,
+ * or after a reply has already moved on, is not the turn at the bottom. Reading
+ * it as the newest one un-folded whichever reply happened to be last, including
+ * one the reader had just folded.
+ *
+ * With no id to go on the answer is the LIVE turn and nothing else: a streaming
+ * reply is the only turn a card can be blocking that the reader could not have
+ * folded themselves, so guessing stops there.
+ */
+export function blockedTurnKey(
+  turns: ChatState["turns"],
+  rows: ChatState["permissions"],
+): string | null {
+  const open = rows.filter((p) => p && p.id && !p.decision);
+  if (!open.length) return null;
+  for (const p of open) {
+    const wanted = (p as { toolUseId?: string }).toolUseId;
+    if (!wanted) continue;
+    for (const t of turns) {
+      if (t.role !== "assistant") continue;
+      const segs = t.segments ?? [];
+      for (const seg of segs) if (seg.kind === "tool" && seg.id === wanted) return t.key;
+    }
+  }
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.role === "assistant" && t.streaming) return t.key;
+  }
+  return null;
+}
+
+/** The newest assistant turn's key, or null — the one reply the fold rule
+ *  leaves open (design.md §B). Exported for the test: "the last ASSISTANT
+ *  turn", not "the last turn", because a note or an error row after a reply
+ *  must not make that reply fold. */
+export function lastAssistantKey(turns: ChatState["turns"]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "assistant") return turns[i].key;
+  return null;
 }
 
 /** The last `role: "error"` row's key, which is the one the trouble card at the

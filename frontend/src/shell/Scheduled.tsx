@@ -731,11 +731,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * `?draft=<id>` — AN UNFINISHED NEW TASK FORM, PRESSED SOMEWHERE ELSE
    * (Akshil, 2026-09-14).
    *
-   * The chat landing's Recent list draws this page's rows, draft rows included,
-   * and a draft row's press has always meant "reopen the card". That card is
-   * this page's modal: `apps/claude` cannot mount it without pulling the whole
-   * schedule page in behind it, so the row leaves at the form instead
-   * (`apps/claude/ui/list-rows.taskDraftUrl` builds this URL).
+   * The chat landing's Recent list draws this page's rows, draft rows included.
+   * That list no longer builds this URL — a draft row pressed there fills the
+   * landing's own composer and goes nowhere (Akshil, 2026-09-15) — but the
+   * param stays, and this arm with it: it is how THIS page's own draft rows and
+   * any link that already names one reopen the card.
    *
    * IT IS `openDraft`'S OWN ARM, reached by a param rather than by a row — same
    * id, same stored form, same `NO_HOP` and the same "no time" rule

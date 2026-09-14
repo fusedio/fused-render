@@ -113,6 +113,9 @@ function makeController(
     run: agent.run,
     sleep: () => Promise.resolve(),
     now: () => 1_000,
+    // The STAMP clock, separate from the duration clock above (review #9): a
+    // bubble's `ts` is a date, and dates do not come off a fake `now`.
+    wallClock: () => 1_000,
     model: () => "sonnet",
     effort: () => "high",
     hasPane: () => true,
@@ -213,6 +216,77 @@ describe("start → poll → done", () => {
     expect(params.get("run")).toBeUndefined();
     // One stamp at the loop's start, one at its end (T:16238, 16425).
     expect(activity.length).toBe(2);
+  });
+
+  test("the bubble a send posts is stamped with WHEN it was sent", async () => {
+    // Epoch SECONDS, the same unit a restored turn carries (agent.py
+    // `_row_ts`), so the hover clock reads identically before and after a
+    // reload. Off the injected WALL clock — `wallClock: () => 1_000` ms — which
+    // is its own dep precisely because `now` is the monotonic duration clock
+    // and a stamp read off that one lands in 1970 (review #9).
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await controller.sendMessage("hi");
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
+  });
+
+  test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
+    // Review #9. `now` is shared by every elapsed-time reader in the controller
+    // and is free to be monotonic (`performance.now`) or fake; reading a DATE
+    // off it stamped the bubble 1 Jan 1970 under exactly the injection every
+    // other test in this file uses. With no `wallClock` handed in, the default
+    // is `Date.now` — so the bubble is dated NOW even though `now()` says 1 s.
+    const before = Date.now() / 1000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      agentDir: "/tpl/claude",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("hi");
+    const ts = users(controller)[0]!.ts!;
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(Date.now() / 1000 + 1);
+    controller.dispose();
+  });
+
+  test("an adopted optimistic bubble keeps the time the user pressed send", async () => {
+    // The annotation round photographs the pane BEFORE it can call
+    // `sendMessage`; the bubble is already up. Re-stamping on adoption would
+    // date the message by however long the capture took.
+    let ms = 1_000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      agentDir: "/tpl/claude",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    const key = controller.postOptimisticUser("hi");
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
+    ms = 9_000; // the capture ran
+    await controller.sendMessage("hi", { optimisticKey: key });
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
   });
 
   test("a session already live absorbs the message instead of spawning a second run", async () => {

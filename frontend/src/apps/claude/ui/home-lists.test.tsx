@@ -33,7 +33,7 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
+const { draftTextOf, sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
   "./list-rows"
 );
 const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
@@ -912,108 +912,95 @@ function chatDraft(over: Partial<Task> = {}): Task {
   } as unknown as Task;
 }
 
-test("A CHAT DRAFT ABOUT THIS PANE picks the composer up in place", () => {
-  // No session to open and no URL to go to: the words are already on this
-  // page's own key (`new:<file>`), so the press leaves the landing and the
-  // composer there seeds itself from them.
-  let picked = 0;
+/** A draft row's press, as `Lists` reports it: the ROW, and nothing else. */
+function pressDraft(recent: Task[], over: Record<string, unknown> = {}) {
+  const pressed: Task[] = [];
+  const hops: string[] = [];
   const r = mount(
     <Lists
       {...TABBED}
-      recent={[chatDraft()]}
+      recent={recent}
       onOpen={() => {}}
-      onOpenChatDraft={() => {
-        picked += 1;
-      }}
+      onFillDraft={(t) => pressed.push(t)}
+      onNavigate={(u) => hops.push(u)}
+      {...over}
     />,
   );
+  return { r, pressed, hops };
+}
+
+test("A DRAFT ROW FILLS THE COMPOSER AND GOES NOWHERE (Akshil, 2026-09-15)", () => {
+  // The words are unsent words and the landing's own composer is directly above
+  // this list. Both draft kinds used to navigate — a chat draft about another
+  // file hopped the host, a task draft left the app for `/tasks?draft=` — and
+  // neither does now: no href, so not even a ⌘-click has anywhere to go.
+  const { r, pressed, hops } = pressDraft([chatDraft()]);
   const row = taskRow(r);
   expect(String((row.props as { className?: string }).className)).not.toContain(
     "is-inert",
   );
   act(() => (row.props as { onClick(): void }).onClick());
-  expect(picked).toBe(1);
-  // In place means IN PLACE: no stretched link, because there is nowhere for a
-  // ⌘-click to go that is not this very page.
+  expect(pressed.map((t) => t.key)).toEqual(["new:/repo/x.py"]);
+  expect(hops).toEqual([]);
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("…and a chat draft about ANOTHER file hops to that file's chat, no session named", () => {
-  const hops: string[] = [];
-  const r = mount(
-    <Lists
-      {...TABBED}
-      recent={[chatDraft({ key: "new:/repo/other.py", target: "/repo/other.py", file: "/repo/other.py" })]}
-      onOpen={() => {}}
-      onOpenChatDraft={() => {}}
-      onNavigate={(u) => hops.push(u)}
-    />,
-  );
-  const link = r.root.find((n) => n.type === "a");
-  const href = String((link.props as { href: string }).href);
-  expect(href).toContain("other.py");
-  expect(href).toContain("_side=claude");
-  // A draft has no session to wait for, so the param is omitted rather than
-  // sent empty (schedule-lib.chatPaneUrl draws the same distinction).
-  expect(href).not.toContain("session_id");
-  act(() =>
-    (link.props as { onClick(e: unknown): void }).onClick({
-      preventDefault() {},
-      button: 0,
-    }),
-  );
-  expect(hops).toEqual([href]);
+test("…and a chat draft about ANOTHER file stays here too", () => {
+  // THE ONE THAT USED TO HOP. Its words go into the box the reader is looking
+  // at; which folder they were typed in is the host's problem, not a reason to
+  // move the page (the landing's autosave then keeps them under `new:<file>`
+  // for THIS folder, which is the accepted cost of not navigating).
+  const other = chatDraft({
+    key: "new:/repo/other.py",
+    target: "/repo/other.py",
+    file: "/repo/other.py",
+  });
+  const { r, pressed, hops } = pressDraft([other]);
+  act(() => (taskRow(r).props as { onClick(): void }).onClick());
+  expect(pressed.map((t) => t.file)).toEqual(["/repo/other.py"]);
+  expect(hops).toEqual([]);
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("A TASK DRAFT leaves at the card the Tasks page reopens it on", () => {
-  // The New task modal is `shell/Scheduled`'s, not this app's — so the row
-  // navigates to the param that reopens it under the SAME draft id, rather
-  // than doing nothing.
-  const hops: string[] = [];
-  const r = mount(
-    <Lists
-      {...TABBED}
-      recent={[
-        chatDraft({
-          key: "draft:d-7",
-          draft_kind: "task",
-          draft_id: "d-7",
-          file: "/repo",
-          target: "/repo",
-          draft: null,
-        } as Partial<Task>),
-      ]}
-      onOpen={() => {}}
-      onNavigate={(u) => hops.push(u)}
-    />,
-  );
-  const link = r.root.find((n) => n.type === "a");
-  expect(String((link.props as { href: string }).href)).toBe("/tasks?draft=d-7");
-  act(() =>
-    (link.props as { onClick(e: unknown): void }).onClick({
-      preventDefault() {},
-      button: 0,
-    }),
-  );
-  expect(hops).toEqual(["/tasks?draft=d-7"]);
+test("A TASK DRAFT is the same press — it does not leave for the Tasks modal", () => {
+  const form = chatDraft({
+    key: "draft:d-7",
+    draft_kind: "task",
+    draft_id: "d-7",
+    file: "/repo",
+    target: "/repo",
+    draft: null,
+  } as Partial<Task>);
+  const { r, pressed, hops } = pressDraft([form]);
+  act(() => (taskRow(r).props as { onClick(): void }).onClick());
+  expect(pressed.map((t) => t.draft_id)).toEqual(["d-7"]);
+  expect(hops).toEqual([]);
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
 test("a LOCKED block still refuses every draft row", () => {
   // P4-23 is about the block, not about which kind of row is in it.
-  let picked = 0;
-  const r = mount(
-    <Lists
-      {...TABBED}
-      recent={[chatDraft()]}
-      onOpen={() => {}}
-      onOpenChatDraft={() => {
-        picked += 1;
-      }}
-      disabled
-    />,
-  );
+  const { r, pressed } = pressDraft([chatDraft()], { disabled: true });
   act(() => (taskRow(r).props as { onClick?(): void }).onClick?.());
-  expect(picked).toBe(0);
+  expect(pressed).toEqual([]);
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});
+
+test("a TASK draft's words come off the form already on the row", async () => {
+  // No fetch for this kind: the whole stored form rides on the row (it is what
+  // the modal used to reopen on), so the description is read straight off it
+  // and the title stands in for a title-only form.
+  const form = (f: Record<string, unknown>) =>
+    chatDraft({ draft_kind: "task", draft_id: "d-1", draft: null, form: f } as Partial<Task>);
+  expect(await draftTextOf(form({ title: "Ship it", description: "and run the tests" })))
+    .toBe("and run the tests");
+  expect(await draftTextOf(form({ title: "Ship it" }))).toBe("Ship it");
+  expect(await draftTextOf(form({ title: "Ship it", description: "   " }))).toBe("Ship it");
+});
+
+test("a host that offers no fill leaves the row inert rather than lit and dead", () => {
+  const r = mount(<Lists {...TABBED} recent={[chatDraft()]} onOpen={() => {}} />);
+  expect((taskRow(r).props as { onClick?(): void }).onClick).toBeUndefined();
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
