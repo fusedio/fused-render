@@ -700,9 +700,13 @@ def clone_target(fused_path: str) -> dict:
         "cloned": cloned,
         "exported_at": file_stamp,
         # What the clone was last built from (None: unknown — cloned before
-        # the stamp existed) and whether this file is a newer export of it.
+        # the stamp existed, or from an undated file) and whether this file is
+        # a newer export of it. NO STAMP FILE at all (a pre-D883 clone) is the
+        # "offer it once" case; a stamp with no date (built from a v1 zip or a
+        # pre-#1135 export) has been upgraded already and must not read as
+        # upgradable forever.
         "local_exported_at": local_stamp,
-        "upgradable": cloned and _newer(file_stamp, local_stamp),
+        "upgradable": cloned and (local is None or _newer(file_stamp, local_stamp)),
     }
 
 
@@ -911,12 +915,13 @@ def data_state(fused_path: str) -> dict:
     opened = open_app_file(fused_path, reuse_only=True)
     dest = opened["dir"]
     stamp = read_stamp(dest) or {}
+    decided = stamp.get("data_decision") in ("copy", "fresh")
     files, _size, _newest = _data_stats(_data_dir(dest))
-    return {
-        "has_data": files > 0,
-        "decided": stamp.get("data_decision") in ("copy", "fresh"),
-        "prior": prior_data(dest, _slug(opened["name"])),
-    }
+    has_data = files > 0
+    # The sibling walk is the only cost here; skip it when the card could not
+    # show anyway (already decided, or this extract already holds data).
+    prior = None if (decided or has_data) else prior_data(dest, _slug(opened["name"]))
+    return {"has_data": has_data, "decided": decided, "prior": prior}
 
 
 def migrate_data(fused_path: str, decision: str) -> dict:
@@ -977,13 +982,11 @@ def _payload_files(app_dir: str) -> list[str]:
 
 def _newer(file_stamp: str | None, local_stamp: str | None) -> bool:
     """Is the file's export newer than the clone's? ISO-8601 UTC ``Z`` stamps
-    compare as strings. A clone with no recorded export (cloned before the
-    stamp existed, or from a file with no ``exported_at``) is treated as
-    upgradable — the user sees both dates in the menu and can decline."""
-    if not local_stamp:
-        return True
-    if not file_stamp:
-        return False
+    compare as strings. Only two dates can answer; a missing one on either
+    side is "not known to be newer" (the no-stamp-file case is decided by the
+    caller, `clone_target`)."""
+    if not local_stamp or not file_stamp:
+        return bool(file_stamp) and not local_stamp
     return file_stamp > local_stamp
 
 
@@ -1035,6 +1038,13 @@ def upgrade_clone(fused_path: str) -> dict:
         if not parts or ".." in parts or parts[0] in ("", ".fused"):
             continue
         p = os.path.join(dest, *parts)
+        # The list comes out of a user-writable file: a `..\\x` or `C:` segment
+        # passes the split above and would escape `dest` on Windows, so the
+        # resolved path must sit inside the clone — same posture as the
+        # extractors.
+        root = os.path.abspath(dest) + os.sep
+        if not os.path.abspath(p).startswith(root):
+            continue
         if os.path.isfile(p):
             try:
                 os.unlink(p)
