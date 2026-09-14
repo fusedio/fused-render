@@ -23,6 +23,16 @@
      asked for; it was 45 for a day, borrowed from the chat's identity row back
      when the peek wore that row (design.md, Header + list state v2). */
   --peek-head-h: 44px;
+  /* ONE HEADER CONTROL'S FOOTPRINT — the × and the ⋮ are squares of this, and
+     it is also the inset the app preview is given left and right (Akshil,
+     2026-09-14 — design.md, Polish batch 4, item 7: "left/right padding around
+     the preview = one icon-button width").
+
+     ONE VAR RATHER THAN TWO NUMBERS, because the point of the measure is that
+     the preview's edge lines up with the header's: the app's frame starts where
+     the × ends. `shell/peek-preview.ts` `PREVIEW_INSET` carries the same 28 for
+     the scale arithmetic, which is the one place a stylesheet cannot reach. */
+  --peek-icon-w: 28px;
   /* THE NARROWEST A WALL CARD IS WORTH DRAWING. Below about this the card's own
      head (a ring, a number, a folder chip) stops fitting on one line and the
      conversation inside it is a column of two-word lines. The wall drops a
@@ -155,9 +165,17 @@
 
    Once the frame is narrower than that, the margins are gone and the padding is
    all that is left: two dark bands down the sides of a list that is already
-   short of room (Akshil, 2026-09-14). So below the threshold the gutters come
-   in to a 12px inset — enough that the rows are not welded to the frame's edge,
-   little enough that it reads as content rather than as framing.
+   short of room (Akshil, 2026-09-14). So below the threshold the PAGE's gutters
+   go entirely and the content runs edge to edge.
+
+   NOT a 12px inset on the page, which is what this rule held for a day (Polish
+   batch 3) and what Akshil asked to replace (Polish batch 4): an inset on the
+   page is a band down both sides of EVERYTHING, scrollers included, so the
+   list's horizontal bar and the board's lane strip each ended 12px short of the
+   frame and the dark band was still there — just narrower. The page gives its
+   gutter up completely and the 4px that keeps type off the edge is put on the
+   BLOCKS instead (the header and each section), which is where an inset belongs:
+   inside the thing being read, not around the thing being scrolled.
 
    `data-tight` is the switch, written by Scheduled.tsx off the same arithmetic
    as the floor.
@@ -166,12 +184,30 @@
    `styles/schedule.css`'s `.schedule-page` rule): that var is the UNTIGHT
    44px `measureTasksBaseline` freezes the baseline's gutter from, and this
    rule narrowing the live padding must not narrow it too, or a resize that
-   lands here after the baseline is already frozen feeds 12px back into
+   lands here after the baseline is already frozen feeds 0 back into
    `peekGutter()` mid-visit. */
 .tasks-frame[data-tight="1"] .schedule-page {
-  padding-left: 12px;
-  padding-right: 12px;
+  padding-left: 0;
+  padding-right: 0;
 }
+
+/* …and the 4px goes here. `padding`, not `padding-inline`, because neither of
+   these carries a vertical one of its own (`.prefs-section` is a bare flex
+   column and `.schedule-header` a bare block) — the shorthand states the whole
+   box rather than leaving a reader to go and check. */
+.tasks-frame[data-tight="1"] .schedule-page > .schedule-header,
+.tasks-frame[data-tight="1"] .schedule-page > .prefs-section {
+  padding: 0 4px;
+}
+
+/* THE TWO SCROLLBARS STILL STACK, and that is a deferral rather than an
+   oversight (design.md, Polish batch 4, item 2). Keeping the horizontal bar at
+   the bottom of the floor scroller while the vertical one stays on the frame
+   needs the wrapper Polish batch 3 already refused: every view is addressed as
+   `.schedule-main > .view` in four stylesheets and their tests, and a new
+   element in that chain breaks all of them for a feature this batch does not
+   own. The corner is painted and the last row clears the bar (batch 3), so what
+   is left is cosmetic. */
 
 /* -- the panel ------------------------------------------------------------- */
 .task-side-peek {
@@ -394,21 +430,49 @@ body.tasks-peek-dragging {
   flex: 0 0 auto;
 }
 
-/* THE PROJECT, AND IT IS A DOOR: folder mark and folder name as one target,
-   opening the folder in Explorer (the ⤢ beside it opens the TASK). It reads as
-   a label until the pointer is on it, which is the right weight for a
-   secondary way out — the header already has two louder ones. */
+/* THE PROJECT, AND IT IS A FACT (Akshil, 2026-09-14 — design.md, Polish batch
+   4). It was a folder mark and a name, wired to the folder's Explorer page, one
+   inch from a second door that also wore a folder and went somewhere else. Two
+   doors an inch apart cannot be told apart by their pictures, so the quieter of
+   the two stops being a door: the name is the label of the project this task
+   runs in, muted, with the full path in its tooltip — and the header keeps
+   exactly one way out, which says its act in words.
+
+   No padding, no radius, no hover: nothing here is pressable, and a label that
+   lights up under the pointer is a label promising a press. */
 .task-side-peek-project {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 180px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 6px;
-  border-radius: 5px;
   font-size: 12px;
   color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "OPEN →" — THE HEADER'S ONE DOOR, and it is a WORD (design.md, Polish batch
+   4). A glyph-only door has to be recognised; a labelled one has only to be
+   read, and this is the act a reader leaves the panel by. The arrow after the
+   word is what says they are leaving — the same grammar the app's other "go
+   somewhere" buttons use.
+
+   Sized off `.task-side-peek-btn`'s own height so it sits on the row's baseline
+   with the ⋮ beside it rather than next to it. */
+.task-side-peek-open {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--peek-icon-w);
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
   transition:
@@ -416,27 +480,14 @@ body.tasks-peek-dragging {
     color var(--dur-fast) var(--ease-out);
 }
 
-.task-side-peek-project:hover {
+.task-side-peek-open:hover {
   background: var(--row-bg-hover);
   color: var(--fg);
 }
 
-/* The mark holds its size while the NAME is what gives — a folder glyph with
-   an ellipsis in it is not a folder glyph. */
-.task-side-peek-project > svg {
-  flex: 0 0 auto;
-}
-
-.task-side-peek-project-name {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .task-side-peek-btn {
-  width: 24px;
-  height: 24px;
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -523,11 +574,19 @@ body.tasks-peek-dragging {
    thing the panel had already said, louder.
 
    The tokens are the app's own row pair, and there is no `--bg-secondary` /
-   `--bg-tertiary` in styles/tokens.css to reach for: `--row-bg-active` is the
+   `--bg-tertiary` in styles/tokens.css to reach for: `--row-bg-selected` is the
    secondary surface a row wears when it IS the current one, `--row-bg-hover`
    the lighter one it wears under the pointer. Both are opaque and
    pre-composited, for the reason tokens.css gives — a stretched-link row cannot
    stack a translucent wash over its own background.
+
+   AND THE SELECTED FILL IS GREY, NOT ACCENT (Akshil, 2026-09-14 — design.md,
+   Polish batch 4). The first cut of this reached for `--row-bg-active`, which
+   is the app's ACCENT wash: the lime tint made the open row read as a state the
+   task was in rather than as the reader's own place in the list, and beside a
+   panel showing that very task it was the ring's mistake again in a different
+   medium. `--row-bg-selected` is the hover's own neutral at twice the step —
+   one family, two weights, nothing said in colour that is not about colour.
 
    EXACTLY ONE ITEM IS EVER FILLED. The List kept a second mark — `.is-selected`,
    "where the reader just was" — and with a panel open that was two highlights
@@ -551,7 +610,7 @@ body.tasks-peek-dragging {
 .tasks-peek-host .task-card.is-peeked,
 .tasks-peek-host .task-card.is-peeked .task-card-head,
 .tasks-peek-host .task-card.is-peeked .task-card-head:hover {
-  background: var(--row-bg-active);
+  background: var(--row-bg-selected);
 }
 
 /* THE CARDS VIEW'S OWN MISS. The wall card is a box with a head and a body
@@ -633,6 +692,19 @@ body.tasks-peek-dragging {
   overflow: auto;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
+  /* A GUTTER THE WIDTH OF ONE HEADER BUTTON (Akshil, 2026-09-14 — design.md,
+     Polish batch 4). Edge to edge, the app inside read as a second window
+     jammed into the panel: a live, bordered, interactive rectangle welded to
+     both walls, with the conversation below it inset and the header above it
+     inset and only this one thing not. One icon-button of air either side puts
+     its edges on the same line as the × and the ⋮, and the app stops being a
+     hole in the panel and starts being something the panel is showing.
+
+     The SCALE is inset with it (`shell/peek-preview.ts` `PREVIEW_INSET`): the
+     frame is drawn at the width that is left, not at the panel's, or the 28px
+     would simply crop 56px of app off the right-hand side. */
+  padding-left: var(--peek-icon-w);
+  padding-right: var(--peek-icon-w);
 }
 
 body.tasks-peek-dragging .task-side-peek-preview {

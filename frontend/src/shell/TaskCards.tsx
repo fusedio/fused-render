@@ -43,6 +43,7 @@ import {
   ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
   ICON_UNARCHIVE,
+  OPEN_DOOR_LABEL,
   DraftChip,
   IdentityChip,
   StatusIcon,
@@ -777,7 +778,7 @@ function TaskCard({
             <a
               // A real link with a real href, so ⌘-click and middle-click open
               // the folder in a tab — the rule every row on this page follows.
-              className="task-card-door"
+              className={"task-card-door" + (peekOn ? " task-card-door--page" : "")}
               href={explorer}
               data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
               aria-label="Open in Explorer"
@@ -787,19 +788,21 @@ function TaskCard({
                 navigateUrl(explorer);
               }}
             >
-              {ICON_FOLDER}
+              {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
             </a>
           )}
           {gone && (
             <button
               type="button"
-              className="task-card-door is-disabled"
+              className={
+                "task-card-door is-disabled" + (peekOn ? " task-card-door--page" : "")
+              }
               aria-disabled="true"
               data-hint={MISSING_FOLDER_TOAST}
               aria-label="Open in Explorer — folder deleted"
               onClick={toastMissingFolder}
             >
-              {ICON_FOLDER}
+              {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
             </button>
           )}
         </span>
@@ -1169,7 +1172,14 @@ const ICON_PROPS = {
  *  lives in ScheduleTaskViews (`ICON_OPEN_FOLDER_PATH`), because the List row,
  *  the Board card and the peek header draw the very same door and one page must
  *  not hold two pictures of one act (design.md, Header + list state v2). Only
- *  the weight is this file's: 16px at 1.6, the card head's own. */
+ *  the weight is this file's: 16px at 1.6, the card head's own.
+ *
+ *  STILL DRAWN, and that is deliberate: the wall card's door became the words
+ *  "Open →" for readers with the side peek (design.md, Polish batch 4), and it
+ *  is `peekOn` that decides which — this file's cards also render on the app
+ *  page's Tasks tab, and off the peek host a reader gets main's glyph exactly
+ *  as they do today. The strip's other two doors are glyphs either way, so a
+ *  flag-off wall is three marks and a flag-on one is two marks and a word. */
 const ICON_FOLDER = (
   <svg {...ICON_PROPS}>
     <path d={ICON_OPEN_FOLDER_PATH} />

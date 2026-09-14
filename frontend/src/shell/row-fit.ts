@@ -442,10 +442,23 @@ export const TOOLBAR_DROPS = [
   // ---- words → marks. Nothing leaves the row; it stops being spelled out.
   ".schedule-view-seg .schedule-fit-lbl",
   ".schedule-tv-filter-btn .schedule-fit-lbl",
+  // ---- THE SEARCH FOLDS TO ITS MAGNIFIER, and it does so BEFORE "+ New task"
+  // loses its words (Akshil, 2026-09-14 — design.md, Polish batch 4). It is the
+  // widest seat on the row by a distance (140px at its floor against the New
+  // task button's 76) and the one whose question the omnibox also answers, and
+  // "+ New task" is the only control here that STARTS something — a bare "+"
+  // beside a row of glyphs is a button a newcomer has to press to learn about.
+  // The wide thing folds before the important thing.
+  //
+  // NOT a rung that HIDES it: the field keeps its place, its tab stop and its
+  // 32px square, and opens over the row on focus (styles/schedule.css). That is
+  // why the old "the search box goes too" rung further down is gone — there is
+  // no width at which this page has no search.
+  ".schedule-tv-search",
   ".schedule-new .schedule-fit-lbl",
   // ---- and then CONTROLS LEAVE, lowest priority first (design.md, Widths v2:
-  // Project filter, Status filter, search, Calendar, Cards, Board; List and
-  // New task never go).
+  // Project filter, Status filter, Calendar, Cards, Board; List, New task and
+  // the search never go).
   //
   // PROJECT GOES BY MERGING rather than by vanishing, and that is the rung's
   // whole point: the two filter triggers become ONE (TaskFilterControls
@@ -460,9 +473,6 @@ export const TOOLBAR_DROPS = [
   // merged one does not exist yet to be measured), the merged one after.
   '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="status"], ' +
     '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="all"]',
-  // The search box. It has already given up its slack by now (260 → 72, see
-  // `--fit-natural` in styles/schedule.css); this is the 72 going as well.
-  ".schedule-tv-search",
   // The three views that are not List, newest-to-oldest in how much the page
   // leans on them. LIST NEVER GOES: it is the default and the one view the page
   // must always be able to get back to.
@@ -473,7 +483,7 @@ export const TOOLBAR_DROPS = [
 
 /** The last rung at which a control is merely FOLDED rather than gone. Read by
  *  the page to decide `merged`, and by the stylesheet's comment. */
-export const TOOLBAR_MERGE_LEVEL = 4;
+export const TOOLBAR_MERGE_LEVEL = 5;
 
 /**
  * How many of `TOOLBAR_DROPS` to fold.

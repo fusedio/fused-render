@@ -8596,7 +8596,10 @@ describe("the Cards view's frame", () => {
     const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
     expect(head.indexOf('className="task-card-title"')).toBeLessThan(head.indexOf("task-card-doors"));
     expect(head).toContain('{filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}');
-    expect(head).toContain("{ICON_FOLDER}");
+    // The folder GLYPH is what a reader with the side peek off still gets; with
+    // it on the door says "Open →" in words, like the List row's and the peek
+    // header's (design.md, Polish batch 4).
+    expect(head).toContain("{peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}");
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
     expect(head).toContain("href={explorer}");
     expect(head).toContain("if (opensElsewhere(e)) return;");
@@ -8817,7 +8820,9 @@ describe("the Cards view's frame", () => {
     const doorsBlock = CARDS.slice(CARDS.indexOf('className="task-card-doors"'), CARDS.indexOf("</header>"));
     expect(doorsBlock).not.toContain("title=");
     expect(CARDS.split("onClick={toastMissingFolder}").length).toBe(3);
-    expect(CARDS).toContain('className="task-card-door is-disabled"');
+    // The disabled door's class carries the peek's text sizing the same way the
+    // live one's does, so the two never differ by more than being pressable.
+    expect(CARDS).toContain('"task-card-door is-disabled" + (peekOn ? " task-card-door--page" : "")');
     expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door.is-disabled");
     expect(CARDS_CSS).toContain('.task-peek .modal-head-act[aria-disabled="true"]');
     expect(VIEWS.split('className="tasks-row-missing"').length).toBe(3);

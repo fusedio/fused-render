@@ -11,7 +11,8 @@
 //
 // WIDTH-DRIVEN, NOT HEIGHT-DRIVEN, and that is the decision the arithmetic
 // below exists to serve: the frame lays out at a VIRTUAL 1280×720 viewport and
-// is CSS-scaled to whatever the peek is wide. So an app sees a desktop-sized
+// is CSS-scaled to whatever the peek is wide INSIDE ITS GUTTERS (see
+// `PREVIEW_INSET`). So an app sees a desktop-sized
 // window whatever the panel is doing — its own media queries and layout never
 // see a 564px browser — and widening the peek makes the preview both wider and
 // TALLER, which is what "a preview of the app" means to a reader dragging the
@@ -47,6 +48,24 @@ export const PREVIEW_CAP_FRACTION = 0.5;
  * whole height is a drag that can hide the only control in it.
  */
 export const PREVIEW_CHAT_MIN = 180;
+
+/**
+ * THE AIR EITHER SIDE OF THE PREVIEW, and the reason the scale is not simply
+ * `peekWidth / 1280` any more (Akshil, 2026-09-14 — design.md, Polish batch 4,
+ * item 7).
+ *
+ * The box is inset by one header-button width on each side (`--peek-icon-w` in
+ * styles/task-peek.css), so the app's edges line up with the × and the ⋮ above
+ * it instead of being welded to the panel's walls. The SCALE has to know about
+ * that: padding on a scroller does not shrink what is inside it, so a frame
+ * still drawn at `peekWidth / 1280` would simply push 2×28px of app out past
+ * the right-hand gutter and grow a horizontal scrollbar for it.
+ *
+ * ONE NUMBER IN TWO LANGUAGES, which is the caveat: CSS owns the gutter, this
+ * owns the arithmetic, and neither can read the other. They are named in each
+ * other's comments and pinned together by `peek-preview.test.ts`.
+ */
+export const PREVIEW_INSET = 28;
 
 /** One arrow press on the horizontal seam, matching the vertical one's. */
 export const PREVIEW_KEY_STEP = 10;
@@ -129,7 +148,17 @@ export function previewBox(
   bodyHeight: number,
   dragged: number | null,
 ): PreviewBox {
-  const scale = peekWidth > 0 ? peekWidth / PREVIEW_VW : 0;
+  // THE INNER WIDTH, not the panel's: the box is inset by `PREVIEW_INSET` on
+  // each side, and the frame is drawn to fit what is left. A panel narrower
+  // than its own two gutters has no preview at all, which `inner > 0` says.
+  const inner = peekWidth - 2 * PREVIEW_INSET;
+  const scale = inner > 0 ? inner / PREVIEW_VW : 0;
+  // NO WIDTH, NO BOX. A panel narrower than its own two gutters (and a panel
+  // that has not been laid out at all) has nothing to draw, and a box with a
+  // height but a zero scale is a band of empty background where an app should
+  // be. The width guard has to be its own: the height clamps below would
+  // happily hand such a panel the 120px floor.
+  if (!(scale > 0)) return { height: 0, scale: 0, frameHeight: PREVIEW_VH, cropped: false };
   const natural = PREVIEW_VH * scale;
   const ceiling = bodyHeight - PREVIEW_CHAT_MIN;
   if (!(ceiling > PREVIEW_MIN_H)) {
@@ -143,8 +172,9 @@ export function previewBox(
    * THE APP GETS A TALLER WINDOW RATHER THAN A TALLER LETTERBOX (Akshil,
    * 2026-09-14 — design.md, Polish batch 3).
    *
-   * The scale is the panel's and stays the panel's: `peekWidth / 1280`, so
-   * dragging the horizontal seam never changes how big the app's text is. What
+   * The scale is the panel's and stays the panel's — `(peekWidth − 2 ×
+   * PREVIEW_INSET) / 1280` — so dragging the horizontal seam never changes how
+   * big the app's text is. What
    * the vertical seam changes is how much of the app there IS. Below the 16:9
    * footprint that is a crop and the box scrolls, as it always did. Above it,
    * the old shape had nothing left to show — the frame was 720 virtual pixels

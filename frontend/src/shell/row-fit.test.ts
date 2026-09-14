@@ -557,10 +557,17 @@ describe("the search field's caption", () => {
     // this toolbar lays out.
     const at = SCHEDULE_CSS.indexOf("container: tasks-search / inline-size;");
     expect(SCHEDULE_CSS.slice(0, at)).toContain(".schedule-toolbar[data-fit] .schedule-tv-search {");
-    // …and the FLOOR is now the width that holds the caption, so the query is a
-    // backstop rather than the mechanism: the field is either reading properly
-    // or the ladder has taken it off the row (design.md, Polish batch 3).
-    expect(SCHEDULE_CSS).toContain("--fit-natural: 132px;");
+    // …and the FLOOR IS STRICTLY WIDER THAN THE QUERY (design.md, Polish batch
+    // 4). `max-width` in a container query is inclusive, so while the two were
+    // the same 132 the backstop fired the instant flex rested the field on its
+    // own floor — which is the ordinary state of this toolbar at the default
+    // panel width, and exactly the "placeholder still not visible" Akshil kept
+    // reporting. 140 against 132 leaves the caption 8px of daylight.
+    const floor = /--fit-natural: (\d+)px;/.exec(
+      SCHEDULE_CSS.slice(SCHEDULE_CSS.indexOf(".schedule-toolbar[data-fit] .schedule-tv-search {")),
+    );
+    expect(floor?.[1]).toBe("140");
+    expect(Number(floor?.[1])).toBeGreaterThan(132);
     expect(SCHEDULE_CSS).toContain("min-width: var(--fit-natural);");
   });
 });
@@ -572,15 +579,19 @@ describe("the toolbar's ladder, in order", () => {
   // were reaching for and kept the one you were not.
   it("spends words first, then controls, lowest priority first", () => {
     expect(TOOLBAR_DROPS.map((sel) => sel.split(" ").pop())).toEqual([
-      // words → marks
+      // words → marks: the view labels, then the filter labels…
       ".schedule-fit-lbl",
       ".schedule-fit-lbl",
+      // …then the SEARCH folds to its magnifier, BEFORE "+ New task" loses its
+      // words (design.md, Polish batch 4): the widest seat on the row, whose
+      // question ⌘K also answers, against the one control here that starts
+      // something.
+      ".schedule-tv-search",
       ".schedule-fit-lbl",
-      // …and then controls leave: Project (by merging), Status, search,
-      // Calendar, Cards, Board.
+      // …and then controls leave: Project (by merging), Status, Calendar,
+      // Cards, Board.
       '.schedule-tv-pop-wrap[data-filter="project"]',
       '.schedule-tv-pop-wrap[data-filter="all"]',
-      ".schedule-tv-search",
       '.schedule-view-btn[data-view="calendar"]',
       '.schedule-view-btn[data-view="cards"]',
       '.schedule-view-btn[data-view="board"]',
@@ -601,10 +612,37 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   // failure: a level named once and then overtaken puts the words back on. The
   // New task label did exactly that — folded at level 3 and BACK at level 4,
   // which is the one level it most needed to be gone (measured live).
-  it("folds the New task label at level 3 AND at every level past it", () => {
+  it("folds the New task label at level 4 AND at every level past it", () => {
+    // Level 4, not 3: the search takes rung 2 now and pushed this one down
+    // (design.md, Polish batch 4).
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-new .schedule-fit-lbl`,
+      `.schedule-toolbar:is(${levelsFrom(4).join(",")}) .schedule-new .schedule-fit-lbl`,
     );
+  });
+
+  it("folds the search to a magnifier at level 3, and never hides it", () => {
+    // A 32px square that keeps its place, its tab stop and its press — the
+    // field opens over the row on focus rather than widening the seat, which
+    // would move the toolbar the moment the reader reached for it.
+    const at = FLAT.indexOf(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search {`,
+    );
+    expect(at).toBeGreaterThan(-1);
+    const block = FLAT.slice(at).slice(0, 500);
+    expect(block).toContain("--fit-natural: 32px");
+    expect(block).toContain("flex: 0 0 32px");
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:focus-within .schedule-tv-search-input {`,
+    );
+    // NO RUNG TAKES IT OFF THE ROW — neither the field nor the group it sits
+    // in, which is no longer an empty box at any level.
+    expect(FLAT).not.toContain(
+      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-search {`,
+    );
+    expect(FLAT).not.toContain(
+      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters {`,
+    );
+    expect(TOOLBAR_DROPS.filter((sel) => sel === ".schedule-tv-search")).toHaveLength(1);
   });
 
   it("folds the filter labels from level 2 onwards", () => {
@@ -620,7 +658,7 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   });
 
   it("draws the folded New task button as a square, not a padded pill", () => {
-    const at = FLAT.indexOf(`.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-new {`);
+    const at = FLAT.indexOf(`.schedule-toolbar:is(${levelsFrom(4).join(",")}) .schedule-new {`);
     expect(at).toBeGreaterThan(-1);
     const block = FLAT.slice(at).slice(0, 400);
     expect(block).toContain("width: 32px");
@@ -628,14 +666,13 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   });
 
   it("HIDES the controls in the order Akshil set, lowest priority first", () => {
-    // Project (by merging, so its rows stay reachable), then Status, then the
-    // search, then Calendar, Cards, Board (design.md, Widths v2). Each rung's
-    // rule must hold at its own level and at every level past it.
+    // Project (by merging, so its rows stay reachable), then Status, then
+    // Calendar, Cards, Board (design.md, Widths v2 as reordered by Polish
+    // batch 4 — the search is no longer one of these; it folds at rung 2 and
+    // stays). Each rung's rule must hold at its own level and at every level
+    // past it.
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(5).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
-    );
-    expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-search`,
+      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
     );
     expect(FLAT).toContain(
       `.schedule-toolbar:is(${levelsFrom(7).join(",")}) .schedule-view-btn[data-view="calendar"]`,

@@ -282,7 +282,31 @@ const ICON_CLOCK = icon(
 export const ICON_OPEN_FOLDER_PATH =
   "M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z";
 
-const ICON_OPEN_DOOR = icon(<path d={ICON_OPEN_FOLDER_PATH} />, 12);
+/** THE DOOR IS A WORD NOW, on the row and on the card alike (Akshil,
+ *  2026-09-14 — design.md, Polish batch 4). `ICON_OPEN_FOLDER_PATH` above is
+ *  still the page's door SHAPE and is still drawn in the peek's ⋮, where a menu
+ *  row wants a mark; out here, in a strip of glyph buttons that are all verbs, a
+ *  folder was the one picture a reader had to be told the meaning of. "Open"
+ *  with an arrow after it says the act and says the reader is leaving the page
+ *  for it, in the header and on the row in the same words.
+ *
+ *  10px, and no `viewBox` gymnastics: it sits beside 11px text, not in a 22px
+ *  square with the other marks. */
+export const ICON_ARROW_RIGHT = icon(
+  <><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></>,
+  10,
+);
+/** The row's and the card's one door, in full: the label and its arrow.
+ *
+ *  EXPORTED like `ICON_OPEN_FOLDER_PATH` beside it, and for the same reason:
+ *  the Cards wall lives in TaskCards.tsx and draws this very door, so the words
+ *  are stated once here rather than typed again over there and left to drift. */
+export const OPEN_DOOR_LABEL = (
+  <>
+    Open
+    {ICON_ARROW_RIGHT}
+  </>
+);
 /** The peeked row's own close, beside `ICON_OPEN` because the two swap. */
 const ICON_CLOSE = icon(<path d="M6 6l12 12M18 6L6 18" />, 12);
 const ICON_OPEN = icon(
@@ -3057,7 +3081,7 @@ function TaskNode({
               navigateUrl(page);
             }}
           >
-            {ICON_OPEN_DOOR}
+            {OPEN_DOOR_LABEL}
           </a>
         )}
         {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
@@ -4738,7 +4762,7 @@ function TaskCard({
               is what this wrapper has always been for. */}
           {peekOn && page && !isDraftTask(task) && (
             <a
-              className="tasks-act tasks-card-act"
+              className="tasks-act tasks-card-act tasks-act--page"
               href={page}
               aria-label={`Open ${task.task_id} in Explorer`}
               data-hint="Open in Explorer · ⌘↩"
@@ -4749,7 +4773,7 @@ function TaskCard({
                 navigateUrl(page);
               }}
             >
-              {ICON_OPEN_DOOR}
+              {OPEN_DOOR_LABEL}
             </a>
           )}
           {SHOW_ROW_ACTIONS && run && (

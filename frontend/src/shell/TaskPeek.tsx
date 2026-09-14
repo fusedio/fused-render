@@ -37,7 +37,6 @@ import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
-import PanelIcon from "@platform/ui/PanelIcon";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
 import { runAgent } from "@apps/claude/protocol/agent";
@@ -95,6 +94,7 @@ import {
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
   applyResize,
+  arrowShouldWalk,
   clampPeekWidth,
   closePeek,
   currentRoom,
@@ -292,16 +292,34 @@ const ICON = {
   "aria-hidden": true,
 };
 
-/** Close, for the ⋮ — the header's own first control is a PANEL glyph in both
- *  of its states now (hide the panel; show the list), so the × has moved to the
- *  one place that still says "close" in words (design.md, Polish batch 3). */
+/** CLOSE, and it is the header's FIRST control in every mode (Akshil,
+ *  2026-09-14 — design.md, Polish batch 4, item 11). It wore a panel glyph for
+ *  a day — "hide the right panel", and in cover "show the list" — which is a
+ *  picture of a LAYOUT, and a reader who wants this task off their screen
+ *  should not have to work out which layout they are in first. One mark, one
+ *  meaning, in the corner every panel in this app puts it. */
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/** OPEN IN EXPLORER — the page's one door glyph, drawn here at the header's own
- *  weight (ScheduleTaskViews `ICON_OPEN_FOLDER_PATH` carries the shape). */
-const ICON_OPEN_DOOR = (
-  <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
+/** BACK TO THE SPLIT — the second control, and only in cover (design.md, Polish
+ *  batch 4). Four corner marks pointing inwards: the "fit" glyph, which says
+ *  "bring this back to its size" without saying which size, and reads as the
+ *  opposite of the ⤢ that means "make this bigger". */
+const ICON_RESET_SIZE = (
+  <svg {...ICON}>
+    <path d="M9 3v3a3 3 0 0 1-3 3H3" />
+    <path d="M15 3v3a3 3 0 0 0 3 3h3" />
+    <path d="M9 21v-3a3 3 0 0 0-3-3H3" />
+    <path d="M15 21v-3a3 3 0 0 1 3-3h3" />
+  </svg>
+);
+/** OPEN IN EXPLORER — a WORD with an arrow after it, not a folder (Akshil,
+ *  2026-09-14 — design.md, Polish batch 4). The folder glyph was the page's one
+ *  door mark, and in this header it sat an inch from a folder NAME and meant
+ *  something else entirely; "Open →" says the act in the act's own words and
+ *  the arrow says the reader is leaving this page for it. */
+const ICON_ARROW_RIGHT = (
+  <svg {...ICON} width={14} height={14}><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></svg>
 );
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
  *  through a list that is on screen; an arrow would promise travel. */
@@ -320,15 +338,14 @@ const ICON_DOTS = (
     <circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none" />
   </svg>
 );
-/** The PROJECT's mark — the closed folder the page already wears on its folder
- *  chips and its Project filter (ScheduleTaskViews `ICON_FOLDER`), drawn here
- *  at the header's weight. Deliberately NOT the open-folder door beside it:
- *  that one means "go to this task in Explorer" and this one means "go to the
- *  folder", and two doors an inch apart must not be the same picture. */
-const ICON_FOLDER_MARK = (
-  <svg {...ICON}>
-    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-  </svg>
+/** THE ⋮'s OWN door mark — the page's shared open-in-Explorer glyph
+ *  (ScheduleTaskViews `ICON_OPEN_FOLDER_PATH`), drawn at the header's weight.
+ *  It is no longer in the header itself: the door there is the words "Open →"
+ *  now (design.md, Polish batch 4), and this is the menu row that stands in for
+ *  it when the header has folded its door away. A MENU row is a label with a
+ *  mark beside it, so the mark stays a picture. */
+const ICON_OPEN_DOOR = (
+  <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
 );
 
 /** The terminal hand-off's mark — the prompt caret, the one picture of a shell
@@ -505,9 +522,6 @@ export function TaskPeek({
   const previewFailed = load === "failed";
   const previewReady = load === "ready";
   const page = task ? (gone ? null : (taskHref(task) ?? folderHref(task))) : null;
-  /** The task's FOLDER in Explorer — the other door, behind the project name.
-   *  Null when the folder is gone, for the same reason the task door is. */
-  const folderPage = task && !gone ? folderHref(task) : null;
 
   const openAsPage = useCallback(() => {
     if (!page) return;
@@ -520,10 +534,16 @@ export function TaskPeek({
   }, [page]);
 
   const order = useCallback(() => visibleOrder(), []);
+  /** Walk one task. ANSWERS WHETHER IT WALKED, which the bare arrow keys spend:
+   *  at the ends of the list there is nowhere to go, and a key that is
+   *  swallowed there is a key the page's own scroll never gets — the panel
+   *  would be eating ↓ at the last task to do nothing with it. */
   const step = useCallback(
-    (delta: number) => {
+    (delta: number): boolean => {
       const next = stepPeekKey(order(), getPeekState().key, delta);
-      if (next) openPeek(next);
+      if (!next) return false;
+      openPeek(next);
+      return true;
     },
     [order],
   );
@@ -605,6 +625,30 @@ export function TaskPeek({
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         openAsPage();
+        return true;
+      }
+      // ↑/↓ WALK THE LIST, and they do it BARE (Akshil, 2026-09-14 — design.md,
+      // Polish batch 4). ⌃⇧J/K above stay exactly as they were; this is the
+      // gesture a reader scanning a list with a panel open actually reaches
+      // for.
+      //
+      // TWO GUARDS, and they answer two different questions. `doc === document`
+      // is WHICH DOCUMENT: the app preview and the legacy chat attach this very
+      // listener in documents of their own, and in there the arrows belong to
+      // the app and to the conversation — a chat whose message list stopped
+      // scrolling by arrow because the panel around it had taken the key would
+      // be the worse bargain. `arrowShouldWalk` is WHAT IS FOCUSED in ours: a
+      // field, a select, a menu, or the frame element itself.
+      //
+      // AND `preventDefault` ONLY WHEN IT WALKS — which includes the ENDS of
+      // the list. `step` answers whether it moved, and at the first or last
+      // task it does not: a key eaten there is a key the page's own scroll
+      // never gets, for a walk that did nothing. An arrow this panel declines,
+      // for whatever reason, has to reach whatever would have had it.
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.metaKey && !e.ctrlKey &&
+          !e.altKey && !e.shiftKey && doc === document && arrowShouldWalk(e.target)) {
+        if (!step(e.key === "ArrowDown" ? 1 : -1)) return false;
+        e.preventDefault();
         return true;
       }
       return false;
@@ -902,6 +946,12 @@ export function TaskPeek({
    * header, and the second was a menu row nobody could find for an act the
    * address bar already does.
    *
+   * AND SO IS "Close" (design.md, Polish batch 4). It was here because the
+   * header's first control had become a panel glyph that meant "show the list"
+   * in cover mode, leaving a covered page with no × on it. The × is back, in
+   * every mode, so a "Close" row in a menu is a second way to do the thing the
+   * corner of the panel already does.
+   *
    * A FOURTH appears only when the header has had to fold its own door away
    * (`headFit`): a hidden control has to be somewhere, and the kebab is where.
    */
@@ -921,11 +971,6 @@ export function TaskPeek({
       });
       items.push("separator");
     }
-    // CLOSE LIVES HERE TOO, and in cover mode it lives here ALONE: the header's
-    // first control has become "Show list" there, so without this the only way
-    // out of a covered page would be a key (design.md, Polish batch 3).
-    items.push({ label: "Close", icon: ICON_CLOSE, onClick: () => closePeek() });
-    items.push("separator");
     items.push({
       label: "Continue this task in terminal",
       icon: ICON_TERMINAL,
@@ -1026,29 +1071,44 @@ export function TaskPeek({
             and the door reappears in the ⋮ so the act is never unreachable. */}
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
           <div className="task-side-peek-acts">
-            {/* HIDE THE PANEL, and the glyph says which panel: the app's shared
-                frame-with-one-half-filled (platform/ui/PanelIcon), `right`
-                because that is the column this is. The × is kept for COVER
-                mode alone — there the peek is not a column beside anything, it
-                IS the content area, and "hide the right panel" would be a
-                picture of a layout that is not on screen. */}
+            {/* CLOSE, IN EVERY MODE (Akshil, 2026-09-14 — design.md, Polish
+                batch 4, item 11). This was a panel glyph whose meaning changed
+                with the layout — "hide the right panel", and in cover "show the
+                list" — so the one control every reader reaches for first was
+                the one control they had to decode. A × in the panel's leading
+                corner is the same promise every other panel in this app makes,
+                and it no longer has to live in the ⋮ as well. */}
             <button
               type="button"
               className="task-side-peek-btn"
-              // IN COVER IT IS A DIFFERENT ACT, and it says so: the panel is
-              // the whole content area there, so what the reader wants back is
-              // the LIST, not the absence of the panel. Pressing it restores
-              // the split and leaves the task open; closing is Esc, and the ⋮
-              // (design.md, Polish batch 3).
-              //
-              // The glyph is the same shared frame with the other half filled —
-              // `left`, because what comes back is the column on the left.
-              aria-label={layout.cover ? "Show list" : "Hide the task panel"}
-              data-hint={layout.cover ? "Show list" : "Hide · Esc"}
-              onClick={() => (layout.cover ? showListBesidePeek() : closePeek())}
+              aria-label="Close the task panel"
+              data-hint="Close · Esc"
+              onClick={() => closePeek()}
             >
-              <PanelIcon side={layout.cover ? "left" : "right"} />
+              {ICON_CLOSE}
             </button>
+            {/* AND IN COVER, THE WAY BACK TO THE SPLIT — a second control, next
+                to the first, because the two are different acts and a control
+                that changes what it does under you is worse than two controls
+                (the reason the × above stopped being clever).
+
+                Cover is easy to fall into and hard to climb out of: the seam is
+                a 12px edge at the far left of the page, which is a thing you
+                have to know is there. This spends exactly the split a fresh
+                open would give — the remainder past the middle pane's baseline,
+                held back far enough that the answer is not cover again — and
+                leaves the task open. */}
+            {layout.cover && (
+              <button
+                type="button"
+                className="task-side-peek-btn"
+                aria-label="Reset panel size"
+                data-hint="Reset panel size"
+                onClick={() => showListBesidePeek()}
+              >
+                {ICON_RESET_SIZE}
+              </button>
+            )}
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
                 reader can see, one step at a time — the gesture a chevron means
                 everywhere else in this app. A full arrow is for travel. */}
@@ -1096,13 +1156,35 @@ export function TaskPeek({
           )}
           {task && (
             <div className="task-side-peek-marks">
-              {/* THE SAME DOOR AS THE ROW'S AND THE CARD'S — one folder glyph
-                  for "open in Explorer" everywhere (ScheduleTaskViews
-                  `ICON_OPEN_FOLDER_PATH`). A real link with a real href, so
-                  ⌘-click opens a tab, exactly like the row's. */}
+              {/* THE PROJECT IS A FACT, NOT A DOOR (Akshil, 2026-09-14 —
+                  design.md, Polish batch 4). It was a folder mark and a name
+                  wired to the folder's Explorer page, sitting an inch from a
+                  second door — with a folder glyph on it — that went somewhere
+                  else. Two doors, two folder pictures, one header: the reader
+                  had to learn which folder each one meant. So the name goes
+                  back to being what it is, the label of the project this task
+                  runs in, and the header keeps exactly ONE way out.
+
+                  The full path is still the tooltip: the basename is what fits,
+                  and two folders with the same basename are a real thing. */}
+              <span
+                className="task-side-peek-project"
+                title={tildePath(task.project, home)}
+              >
+                {basename(task.project)}
+              </span>
+              {/* "OPEN →" — a WORD, not a glyph (design.md, Polish batch 4).
+                  The folder mark it replaces was the page's one door picture,
+                  which is a good rule everywhere except beside a folder NAME,
+                  where it read as "open that folder" and did not. The label
+                  says the act, the arrow says the reader is leaving this page
+                  for it, and ⌘↩ still maps here.
+
+                  A real link with a real href, so ⌘-click opens a tab, exactly
+                  like the row's own door. */}
               {page && (
                 <a
-                  className="task-side-peek-btn task-side-peek-open"
+                  className="task-side-peek-open"
                   href={page}
                   aria-label="Open in Explorer"
                   data-hint="Open in Explorer · ⌘↩"
@@ -1112,43 +1194,8 @@ export function TaskPeek({
                     openAsPage();
                   }}
                 >
-                  {ICON_OPEN_DOOR}
-                </a>
-              )}
-              {/* THE PROJECT IS A DOOR TOO, and a different one from the
-                  ⤢ beside it (Akshil, 2026-09-14 — design.md, Polish batch 3).
-                  That one opens THIS TASK in Explorer, which is a conversation;
-                  this one opens the FOLDER the task runs in, which is files.
-                  Two things a reader wants from a task panel and only one of
-                  them had a way out of it.
-
-                  The glyph and the word are one button rather than a chip with
-                  a link in it: the whole cluster is the target, which is what a
-                  pointer expects of something that looks like a label with an
-                  icon in front of it. `folderHref` is the row's own folder
-                  door, so the two agree about where a project IS. */}
-              {folderPage && (
-                <a
-                  className="task-side-peek-project"
-                  href={folderPage}
-                  aria-label={`Open ${basename(task.project)} in Explorer`}
-                  data-hint="Open project folder"
-                  title={tildePath(task.project, home)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-                    e.preventDefault();
-                    // The panel is a view OF this page; walking to Explorer
-                    // leaves the page, so the peek goes with it and pushes no
-                    // entry of its own (`openAsPage`'s rule, for the same
-                    // reason: one Back, not two).
-                    closePeek({ push: false });
-                    navigateUrl(folderPage);
-                  }}
-                >
-                  {ICON_FOLDER_MARK}
-                  <span className="task-side-peek-project-name">
-                    {basename(task.project)}
-                  </span>
+                  Open
+                  {ICON_ARROW_RIGHT}
                 </a>
               )}
               <button

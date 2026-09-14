@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 const {
   PREVIEW_CAP_FRACTION,
   PREVIEW_CHAT_MIN,
+  PREVIEW_INSET,
   PREVIEW_MIN_H,
   PREVIEW_VH,
   PREVIEW_VW,
@@ -50,31 +51,44 @@ describe("previewBox", () => {
     // The virtual viewport is the point: the app lays out at 1280 and is drawn
     // at the panel's width, so a wider peek is a bigger picture of the same
     // desktop rather than a narrower window shown to the app.
+    //
+    // …AT THE INNER WIDTH, not the panel's (design.md, Polish batch 4): the box
+    // is inset one header-button either side, and padding on a scroller does
+    // not shrink what is inside it — a frame drawn at the panel's own width
+    // would push 56px of app out past the gutter and grow a sideways scrollbar
+    // for it.
     const narrow = previewBox(564, 2000, null);
     const wide = previewBox(900, 2000, null);
-    expect(narrow.scale).toBeCloseTo(564 / PREVIEW_VW, 6);
-    expect(wide.scale).toBeCloseTo(900 / PREVIEW_VW, 6);
+    const inner = (w: number) => w - 2 * PREVIEW_INSET;
+    expect(PREVIEW_INSET).toBe(28); // `--peek-icon-w`, styles/task-peek.css
+    expect(narrow.scale).toBeCloseTo(inner(564) / PREVIEW_VW, 6);
+    expect(wide.scale).toBeCloseTo(inner(900) / PREVIEW_VW, 6);
     // `frameHeight` is the VIRTUAL viewport, unscaled — 720 whenever the box is
     // at or under its natural footprint, which both of these are.
     expect(narrow.frameHeight).toBe(PREVIEW_VH);
     expect(wide.frameHeight).toBe(PREVIEW_VH);
     // What grows with the width is the DRAWN footprint, which is that viewport
     // at the panel's scale.
-    expect(narrow.frameHeight * narrow.scale).toBeCloseTo((564 * PREVIEW_VH) / PREVIEW_VW, 6);
+    expect(narrow.frameHeight * narrow.scale).toBeCloseTo(
+      (inner(564) * PREVIEW_VH) / PREVIEW_VW,
+      6,
+    );
     expect(wide.frameHeight * wide.scale).toBeGreaterThan(narrow.frameHeight * narrow.scale);
-    // 16:9 — 564 wide is 317.25 tall, and on a body with room it is shown whole.
-    expect(narrow.height).toBeCloseTo(564 * (9 / 16), 4);
+    // 16:9 on the INNER width — 508 wide is 285.75 tall, and on a body with
+    // room it is shown whole.
+    expect(narrow.height).toBeCloseTo(inner(564) * (9 / 16), 4);
     expect(narrow.cropped).toBe(false);
   });
 
   it("caps at half the body and crops rather than squashing", () => {
-    // A 564 peek wants 317 of height; a 400px body allows 200.
+    // A 564 peek is 508 inside its gutters and wants 285 of height; a 400px
+    // body allows 200.
     const box = previewBox(564, 400, null);
     expect(box.height).toBe(400 * PREVIEW_CAP_FRACTION);
     // The frame is still its full 16:9 self — the box simply shows less of it,
     // which is what `overflow: auto` on the box is for.
     expect(box.frameHeight).toBe(PREVIEW_VH);
-    expect(box.frameHeight * box.scale).toBeCloseTo(564 * (9 / 16), 4);
+    expect(box.frameHeight * box.scale).toBeCloseTo((564 - 2 * PREVIEW_INSET) * (9 / 16), 4);
     expect(box.cropped).toBe(true);
   });
 
@@ -85,9 +99,10 @@ describe("previewBox", () => {
     // the virtual viewport grows to `height / scale`, the app lays out into it,
     // and the box is filled at the same scale instead of showing a band of the
     // app's background under a scrollbar with nothing to scroll.
-    const natural = previewBox(640, 2000, null);
+    // 696 wide is 640 inside its gutters, so the scale is a round 0.5.
+    const natural = previewBox(696, 2000, null);
     expect(natural.frameHeight).toBe(PREVIEW_VH);
-    const taller = previewBox(640, 2000, 600);
+    const taller = previewBox(696, 2000, 600);
     expect(taller.scale).toBe(natural.scale);
     expect(taller.height).toBe(600);
     // 640 / 1280 = 0.5, so a 600px box is a 1200px window.
@@ -101,7 +116,7 @@ describe("previewBox", () => {
     // Below the natural footprint the box crops, and the app keeps its 720 —
     // a layout built for a desktop must not be asked to render into 200px
     // just because the reader dragged the seam up.
-    const short = previewBox(640, 2000, 200);
+    const short = previewBox(696, 2000, 200);
     expect(short.height).toBe(200);
     expect(short.frameHeight).toBe(PREVIEW_VH);
     expect(short.cropped).toBe(true);
@@ -140,6 +155,15 @@ describe("previewBox", () => {
     expect(box.height).toBe(0);
     expect(box.scale).toBe(0);
     expect(Number.isFinite(box.frameHeight)).toBe(true);
+  });
+
+  it("has no preview at all in a panel narrower than its own two gutters", () => {
+    // Not a negative scale and not a frame drawn backwards: `inner > 0` is the
+    // guard, and below it the answer is the same "there is nothing to show" a
+    // zero-width panel gets.
+    const box = previewBox(2 * PREVIEW_INSET, 2000, null);
+    expect(box.scale).toBe(0);
+    expect(box.height).toBe(0);
   });
 });
 

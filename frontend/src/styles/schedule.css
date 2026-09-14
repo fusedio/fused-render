@@ -4068,8 +4068,8 @@ input.schedule-when-field {
    says, so the group could not shrink below 260 + its buttons and the row
    simply overflowed instead.
 
-   72px is about six characters — the least a FILTER field can be and still be
-   one, and it is only ever this narrow on the ladder's last rung. */
+   Below its floor the field does not get narrower, it FOLDS — to the 32px
+   magnifier rung 2 gives it, further down this file. */
 .schedule-toolbar[data-fit] .schedule-tv-search {
   /* WHAT THE FIELD MUST KEEP, and it is now the width that holds its own
      caption rather than a bare six characters (Akshil, 2026-09-14). At 72 the
@@ -4079,10 +4079,23 @@ input.schedule-when-field {
      the stylesheet as the floor and by shell/row-fit.ts as the charge, and the
      two now describe the same field.
 
-     132 = "Search tasks…" (82px at this size) inside the 28px of left padding
-     the magnifier sits in and 10px of right padding, plus a couple of pixels
-     for the font that actually loads. */
-  --fit-natural: 132px;
+     THE FLOOR IS ABOVE THE BACKSTOP, and that one pixel of daylight is the
+     whole of the bug Akshil kept seeing (design.md, Polish batch 4, item 3:
+     "placeholder still not visible at the default width"). The floor and the
+     container query below were the SAME number, and a container query's
+     `max-width` is INCLUSIVE — so the instant flex squeezed the field down onto
+     its own floor, which is the ordinary state of this toolbar at the default
+     panel width, the query matched and blanked the caption the floor exists to
+     protect. The field was never too narrow to read; it was exactly wide
+     enough, and told to go transparent for it.
+
+     120 = "Search tasks…" (82px at this size) inside the 28px of left padding
+     the magnifier sits in and 10px of right padding. 132 is that plus a couple
+     of pixels for the font that actually loads — the width the query below
+     still names, because it is the width at which the caption stops fitting.
+     140 is the FLOOR: the same caption with 8px of daylight over the query, so
+     a field resting on its floor is a field reading properly. */
+  --fit-natural: 140px;
   /* Opens at 260 and gives that slack up first — everything between the basis
      and the floor is spent before any word in the row folds. */
   flex: 0 1 260px;
@@ -4094,14 +4107,19 @@ input.schedule-when-field {
 }
 
 /* THE PLACEHOLDER IS WHOLE OR IT IS GONE — never "Sea".
-   The floor above is now the width that holds the caption, so in the ordinary
-   run of things this rule never fires: the field is either ≥132 and reading
-   properly, or the ladder has taken it off the row entirely (rung 5). It stays
-   as a BACKSTOP, for the widths the floor cannot govern — a font that loads
-   wider than the one measured, a zoomed page, a future seat that squeezes the
-   group below its own minimum. A clipped word reads as a rendering fault; a
+   132 is the width at which the caption stops fitting; the floor above is 140,
+   STRICTLY WIDER, so in the ordinary run of things this rule never fires: the
+   field is either resting on its floor and reading properly, or the ladder has
+   folded it to a magnifier (rung 2) and the caption is deliberately gone. It
+   stays as a BACKSTOP, for the widths the floor cannot govern — a font that
+   loads wider than the one measured, a zoomed page, a future seat that squeezes
+   the group below its own minimum. A clipped word reads as a rendering fault; a
    magnifier over an empty box reads as a search that has run out of room,
    which is what it is.
+
+   THE TWO NUMBERS MUST NOT MEET. `max-width` in a container query is
+   inclusive, so a query set at the floor fires ON the floor — see the floor's
+   own comment for the day that cost.
    A container query, not a `[data-fit]` level: the field's width is decided by
    flex against whatever the other seats took, so no rung of the ladder names a
    width this rule could key on. */
@@ -4141,7 +4159,6 @@ input.schedule-when-field {
 }
 
 .schedule-toolbar:is(
-    [data-fit="3"],
     [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],
@@ -4154,41 +4171,157 @@ input.schedule-when-field {
   display: none;
 }
 
-/* -- and then CONTROLS GO, lowest priority first ------------------------------
-   The ladder's second half (design.md, Widths v2). Rung 4 is not here: Project
-   loses its own trigger by MERGING into the Status one (`merged` in
-   Scheduled.tsx), so its rows stay one press away rather than going off the
-   page. From rung 5 the controls are honestly gone, in the order Akshil set:
-   the filter trigger, the search, then Calendar, Cards and Board.
+/* -- rung 2: THE SEARCH BECOMES A MAGNIFIER ----------------------------------
+   Before "+ New task" folds to a bare "+", and that ORDER is the point (Akshil,
+   2026-09-14 — design.md, Polish batch 4, item 3). A search field is 140px of
+   row spent on a control the reader is not using this second, and the omnibox
+   (⌘K) answers the same question from anywhere; "+ New task" is the one thing
+   on this toolbar that STARTS something, and a button that has lost its verb is
+   a button a newcomer has to press to find out about. The wide thing folds
+   before the important thing.
 
-   LIST AND NEW TASK ARE NOT IN THIS LIST AT ANY LEVEL, and that is the rule
-   rather than an omission: the page must always be able to get back to its
-   default view and must always be able to start a task. Everything else is a
-   lens, and a lens you cannot reach at 300px is a lens you set at 1400 and
-   left on. */
+   FOLDED IT IS STILL THE FIELD, not a button that swaps one in: the input keeps
+   its place in the DOM and in the tab order and simply loses its width, with the
+   magnifier that was always sitting in its left padding now filling it. A click
+   anywhere on the 32px square lands on the input (the icon is
+   `pointer-events: none`), so the press that looks like it opens a search opens
+   the search.
+
+   AND IT DOES NOT FOLD AWAY. The old ladder hid the field outright at rung 5;
+   there is no rung that does that any more, because 32px is small enough to
+   keep at every width the toolbar can reach, and a search you cannot get to is
+   the thing this whole ladder exists to avoid. */
 .schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
     [data-fit="9"]
   )
+  .schedule-tv-search {
+  /* One square, and the fit arithmetic is charged the same 32 the flex box is
+     given — the two numbers describing the same field, exactly as they do at
+     the unfolded floor. */
+  --fit-natural: 32px;
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  /* The seat's own height, because the input inside it is about to leave the
+     flow on focus and a seat with nothing in it is a seat 0px tall — which
+     would drop the magnifier (absolutely placed at `top: 50%`) onto the row's
+     centre line and the expanded field with it. 32px is what every other
+     control on this row is. */
+  height: 32px;
+}
+
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-search
+  .schedule-tv-search-input {
+  width: 32px;
+  padding-right: 0;
+  /* It reads as a button, so it points like one. */
+  cursor: pointer;
+}
+
+/* …AND IT OPENS ON FOCUS, over the row rather than through it. Expanding the
+   SEAT would change the toolbar's width, which the fit observer would answer by
+   re-folding the row under the reader's hands — a field that moves the moment
+   you reach for it. So the input alone leaves the flow and grows leftwards from
+   its own right edge, over the filter triggers it was sitting beside; the seat
+   keeps its 32px and the ladder never hears about it.
+
+   `:focus-within` rather than `:focus` so a field the reader has typed into and
+   the browser has autofilled, or one holding a selection, stays open. */
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-search:focus-within
+  .schedule-tv-search-input {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 220px;
+  max-width: 60vw;
+  height: 32px;
+  padding-right: 10px;
+  /* Over the controls it overlaps, and over the view toggle's own pressed
+     state. Nothing on this row stacks higher. */
+  z-index: 4;
+  cursor: auto;
+}
+
+/* THE CAPTION FOLLOWS THE FIELD, and it has to be said in rules rather than
+   left to the container query above: the query measures the SEAT, and the seat
+   is 32px whether the input over it is open or shut. So folded the caption is
+   gone (a magnifier over an empty box), and the moment the field is open it is
+   back — an open 220px field with a caret and no hint in it is a box that does
+   not say what it searches. */
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-search-input::placeholder {
+  color: transparent;
+}
+
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-search:focus-within
+  .schedule-tv-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+/* -- and then CONTROLS GO, lowest priority first ------------------------------
+   The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
+   Rung 5 is not here: Project loses its own trigger by MERGING into the Status
+   one (`merged` in Scheduled.tsx), so its rows stay one press away rather than
+   going off the page. From rung 6 the controls are honestly gone, in the order
+   Akshil set: the remaining filter trigger, then Calendar, Cards and Board.
+
+   LIST, NEW TASK AND THE SEARCH ARE NOT IN THIS LIST AT ANY LEVEL, and that is
+   the rule rather than an omission: the page must always be able to get back to
+   its default view, must always be able to start a task, and must always be
+   able to find one. Everything else is a lens, and a lens you cannot reach at
+   300px is a lens you set at 1400 and left on. */
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
   .schedule-tv-filters
   .schedule-tv-pop-wrap {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
-  .schedule-tv-search {
-  display: none;
-}
-
-/* The filter group is nothing but those two seats, so once both are gone it is
-   an empty box still charging the row its gap. */
-.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
-  .schedule-tv-filters {
-  display: none;
-}
+/* NO RUNG HIDES THE SEARCH, and none hides the group around it either (design
+   .md, Polish batch 4). Both rules used to live here: the field went at rung 5
+   and the group — by then an empty box still charging the row its gap — went
+   with it. The field now folds to a 32px magnifier at rung 2 and STAYS, so the
+   group always has a seat in it and never becomes that empty box. */
 
 .schedule-toolbar:is([data-fit="7"], [data-fit="8"], [data-fit="9"])
   .schedule-view-btn[data-view="calendar"] {
@@ -4238,7 +4371,6 @@ input.schedule-when-field {
 }
 
 .schedule-toolbar:is(
-    [data-fit="3"],
     [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],

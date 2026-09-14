@@ -286,6 +286,52 @@ export function frameClickCloses(hit: Element | null): boolean {
   return !!hit && hit.closest(PEEK_FRAME_KEEPS_OPEN) === null;
 }
 
+/**
+ * WHERE ↑/↓ MEAN "the task before / the task after", and where they mean what
+ * they have always meant (Akshil, 2026-09-14 — design.md, Polish batch 4).
+ *
+ * The chevrons in the peek's header walk the visible order, and a reader
+ * scanning a list with a panel open reaches for the arrow keys for that same
+ * walk long before they reach for ⌃⇧J. So the peek answers them — but only
+ * where nothing else is entitled to.
+ *
+ * NOT ENTITLED, in the order it matters:
+ *
+ *   * a TEXT FIELD, of any shape: an ↑ in a composer moves the caret, in a
+ *     search field it walks the history, in a `contenteditable` it moves a
+ *     line. Stealing that is the composer bug this panel has already been
+ *     bitten by once (Escape, PR #1133) in a quieter medium — nothing is lost,
+ *     but the caret jumps and the reader's place goes with it;
+ *   * a SELECT, whose arrows ARE how it is operated without a pointer;
+ *   * an open MENU, where ↑/↓ walk the rows — and the kebab's menu is opened
+ *     from this very header;
+ *   * an IFRAME that holds focus: the app preview and the legacy chat are other
+ *     documents and the arrows there are the app's. The documents themselves
+ *     are handled at the call site (a press that did not happen in the top
+ *     document is not ours), and this is the case where the element holding
+ *     focus in OUR document is the frame.
+ *
+ * A PURE FUNCTION OF THE TARGET, so it can be proved without a browser. Note
+ * what it is NOT allowed to be: a list of the places arrows DO work. The peek's
+ * header, the chat's chrome, the list, the board and the cards are simply
+ * everything else, and an allow-list would have to be extended by every surface
+ * this panel ever grows — quietly failing closed, which for a shortcut means
+ * "the key did nothing" and no way to find out why.
+ */
+export function arrowShouldWalk(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  // A press with no element behind it happened on the document — nothing is
+  // focused, so nobody has a prior claim.
+  if (!el || typeof el.closest !== "function") return true;
+  if (el.isContentEditable) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "IFRAME") return false;
+  // The menus this app draws (`platform/ui/ContextMenu`) and the filter
+  // popovers on the page behind the panel, which are menus in everything but
+  // the element's name.
+  return el.closest('.context-menu, .tasks-pop, [role="menu"], [role="listbox"]') === null;
+}
+
 // ---- pure: prev / next -------------------------------------------------------
 
 /**

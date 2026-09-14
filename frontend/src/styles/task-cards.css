@@ -335,6 +335,26 @@
   text-decoration: none;
 }
 
+/* THE EXPLORER DOOR IS A WORD, under the side peek (Akshil, 2026-09-14 —
+   design.md, Polish batch 4). Same act, same wording and same arrow as the List
+   row's `.tasks-act--page` and the peek header's `.task-side-peek-open`: one
+   page cannot say "open this in Explorer" three ways. The label decides the
+   size, so the 24px square above is released — the height stays, so the strip's
+   three doors keep one baseline and the head's row of marks does not shift.
+
+   `--page` RATHER THAN THE BARE CLASS, because this file's cards also render on
+   the app page's Tasks tab, where the peek does not exist: TaskCards passes
+   `peekOn` and a reader with the feature off gets main's folder glyph. */
+.task-card-doors > .task-card-door--page {
+  width: auto;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 /* Both doors hover ALIKE — the page's `.prefs-section button:hover` fills a
    button with --bg-alt and an accent border, and the folder is an <a> it never
    touches, so without saying so here the two doors lit up differently. */

@@ -77,6 +77,7 @@ const {
   setPeekHost,
   setPeekWidth,
   showListBesidePeek,
+  arrowShouldWalk,
   stepPeekKey,
   syncPeekFromUrl,
 } = await import("./task-peek-store");
@@ -265,6 +266,54 @@ describe("stepPeekKey", () => {
     // jumping to whatever happens to be first.
     expect(stepPeekKey(order, "z", 1)).toBeNull();
     expect(stepPeekKey(order, null, 1)).toBeNull();
+  });
+});
+
+describe("arrowShouldWalk — who owns ↑/↓", () => {
+  // A pure guard over the focused element (design.md, Polish batch 4). Plain
+  // objects rather than a rendered tree: what is being checked is the rule, and
+  // the three properties it reads are the whole of its input.
+  const el = (
+    tagName: string,
+    opts: { editable?: boolean; inside?: string } = {},
+  ): EventTarget =>
+    ({
+      tagName,
+      isContentEditable: !!opts.editable,
+      closest: (sel: string) => (opts.inside && sel.includes(opts.inside) ? {} : null),
+    }) as unknown as EventTarget;
+
+  it("walks for the chrome the panel and the page are made of", () => {
+    for (const tag of ["BUTTON", "DIV", "A", "SPAN", "LI", "BODY"]) {
+      expect(arrowShouldWalk(el(tag))).toBe(true);
+    }
+    // A press with nothing focused lands on the document, which has no
+    // `closest` — nobody has a prior claim, so the panel takes it.
+    expect(arrowShouldWalk(null)).toBe(true);
+    expect(arrowShouldWalk({} as EventTarget)).toBe(true);
+  });
+
+  it("stands down inside anything that types", () => {
+    // An ↑ in a composer moves the caret and in a search field walks the
+    // history; taking it would move the reader's place without losing anything,
+    // which is the quiet version of the Escape bug this panel has already had.
+    for (const tag of ["INPUT", "TEXTAREA", "SELECT"]) {
+      expect(arrowShouldWalk(el(tag))).toBe(false);
+    }
+    expect(arrowShouldWalk(el("DIV", { editable: true }))).toBe(false);
+  });
+
+  it("stands down on a focused frame — the arrows there are the app's", () => {
+    // The app preview and the legacy chat are other documents; this is the case
+    // where the element holding focus in OURS is the frame itself.
+    expect(arrowShouldWalk(el("IFRAME"))).toBe(false);
+  });
+
+  it("stands down inside an open menu, where ↑/↓ already walk rows", () => {
+    // Including the kebab's own menu, which is opened from this very header.
+    expect(arrowShouldWalk(el("DIV", { inside: ".context-menu" }))).toBe(false);
+    expect(arrowShouldWalk(el("BUTTON", { inside: ".tasks-pop" }))).toBe(false);
+    expect(arrowShouldWalk(el("DIV", { inside: '[role="menu"]' }))).toBe(false);
   });
 });
 
@@ -1113,7 +1162,7 @@ function withFakeTasksDom(
   styles.set(page, {
     getPropertyValue: (name: string) =>
       name === "--tasks-page-gutter" && opts.gutterVar != null ? `${opts.gutterVar}px` : "",
-    // The LIVE padding — 12px either side once `data-tight="1"` lands
+    // The LIVE padding — 0 either side once `data-tight="1"` lands
     // (styles/task-peek.css), 22px either side otherwise. This is exactly
     // what the old, buggy read used, and every test below that passes a var
     // proves the fix no longer reads it.
@@ -1153,11 +1202,11 @@ describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)",
       expect(measureTasksBaseline()).toBe(1094); // 1050 (cap) + 44 (gutter)
       expect(peekGutter()).toBe(44);
     });
-    // Tight: the live padding is down to 12+12=24, but the var — which
+    // Tight: the live padding is down to 0+0, but the var — which
     // `[data-tight="1"] .schedule-page` never redeclares — still says 44, and
     // that is the number the measurement takes. The bug read the padding sum
-    // instead and would have answered 1074 (1050 + 24) here.
-    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 12 }, () => {
+    // instead and would have answered 1050 (1050 + 0) here.
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 0 }, () => {
       expect(measureTasksBaseline()).toBe(1094);
       expect(peekGutter()).toBe(44);
     });
@@ -1176,10 +1225,10 @@ describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)",
     // A resize lands the frame in tight AFTER the freeze — the observer goes
     // on running while the peek is open (`refreshPeekBaseline` is what
     // Scheduled.tsx's own ResizeObserver calls). Before the fix this
-    // overwrote the module's `baselineGutter` with 24 on every such tick,
+    // overwrote the module's `baselineGutter` with 0 on every such tick,
     // which is exactly what fed the wrong number into `contentFloor`
     // (Scheduled.tsx) for the rest of the visit.
-    withFakeTasksDom({ content: 900, gutterVar: 44, tightEachSide: 12 }, () => {
+    withFakeTasksDom({ content: 900, gutterVar: 44, tightEachSide: 0 }, () => {
       refreshPeekBaseline();
     });
     expect(getPeekState().baseline).toBe(1094); // already frozen, untouched
@@ -1190,19 +1239,19 @@ describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)",
     // The deep-link race (design.md, Widths v2 — "the store reads the DOM
     // itself"): `useTaskPeekHost` adopts `?peek=` in a layout effect, before
     // any passive ResizeObserver has run, so the FIRST measurement — landing
-    // with the frame already narrow enough to be tight, live padding 12px
+    // with the frame already narrow enough to be tight, live padding 0
     // either side — is what the visit's baseline (and its gutter) freezes
     // from. `state.baseline` is null and `baselineCandidate` is null too (no
     // observer tick has happened yet), so `syncPeekFromUrl` reaches all the
     // way to `measureTasksBaseline` itself for its very first reading.
     windowWidth(1600);
     setPeekHost(true);
-    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 12 }, () => {
+    withFakeTasksDom({ content: 1200, gutterVar: 44, tightEachSide: 0 }, () => {
       syncPeekFromUrl("?peek=sess-1");
     });
     expect(getPeekState().key).toBe("sess-1");
-    // 1050 (cap) + 44 (the var's gutter), not + 24 (12+12, the live tight
-    // padding the old code read instead).
+    // 1050 (cap) + 44 (the var's gutter), not + 0 (the live tight padding
+    // the old code read instead).
     expect(getPeekState().baseline).toBe(1094);
     expect(peekGutter()).toBe(44);
   });
