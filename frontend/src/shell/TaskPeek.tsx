@@ -362,9 +362,8 @@ const ICON_CLOSE = (
  *  used to follow the word said "forward", which is what a Next control says. */
 const ICON_OPEN_EXTERNAL = (
   <svg {...ICON} width={13} height={13}>
-    <path d="M15 3h6v6" />
-    <path d="M10 14 21 3" />
-    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+    <path d="M7 17 17 7" />
+    <path d="M8 7h9v9" />
   </svg>
 );
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
