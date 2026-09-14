@@ -356,10 +356,14 @@ export function arrowShouldWalk(target: EventTarget | null): boolean {
   // the element's name — and every dialog, by all three of the marks the shared
   // `Modal` chassis puts on one (`platform/ui/modal/Modal`), so a dialog that
   // wears only one of them is still covered.
+  // The native chat renders in THIS document (the legacy one is behind the
+  // frame guard above), and ↑/↓ over its transcript belong to the transcript's
+  // scroll, not to the task list (Bugbot, 3b720ee0b). The header keeps walking.
   return (
     el.closest(
       '.context-menu, .tasks-pop, [role="menu"], [role="listbox"], ' +
-        '.modal-dialog, [role="dialog"], [aria-modal="true"]',
+        '.modal-dialog, [role="dialog"], [aria-modal="true"], ' +
+        '.task-side-peek-chat',
     ) === null
   );
 }

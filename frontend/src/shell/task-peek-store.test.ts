@@ -366,6 +366,14 @@ describe("arrowShouldWalk — who owns ↑/↓", () => {
     expect(arrowShouldWalk(el("BUTTON", { inside: '[role="dialog"]' }))).toBe(false);
     expect(arrowShouldWalk(el("DIV", { inside: '[aria-modal="true"]' }))).toBe(false);
   });
+
+  it("stands down over the native chat transcript — those arrows scroll it (Bugbot, 3b720ee0b)", () => {
+    // The native chat lives in THIS document, so the frame guard at the call
+    // site does not see it; ↑/↓ over a turn belong to the transcript's scroll.
+    expect(arrowShouldWalk(el("DIV", { inside: ".task-side-peek-chat" }))).toBe(false);
+    // The panel's header is not the transcript: chevrons and title still walk.
+    expect(arrowShouldWalk(el("DIV", { inside: ".task-side-peek-head" }))).toBe(true);
+  });
 });
 
 describe("nextAfterRemoval", () => {
