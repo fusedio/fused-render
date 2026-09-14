@@ -245,12 +245,24 @@ def test_a_genuinely_new_turn_IS_a_seam(agent):
         "and the seam falls between the segments, never inside one")
 
 
-def test_a_wake_continued_turn_reports_no_seam(agent):
-    """Bugbot, PR #1061. A D415 wake appends more rows of the SAME displayed
-    turn after that turn's `result` — a `notice` divider and its continuation —
-    and when a genuinely new turn then opens there is no `result` adjacent to
-    the echo to cut at. Cutting at the earlier `result` anyway filed the wake's
-    own text under the turn that had not started yet."""
+def test_a_wake_continued_turn_reports_its_seam_too(agent):
+    """Bugbot, PR #1061, reopened by PR #1119. A D415 wake appends more rows of
+    the SAME displayed turn after that turn's `result` — a `notice` divider and
+    its continuation — so when a genuinely new turn then opens there is no
+    `result` adjacent to the echo.
+
+    This reported NOTHING, because a seam is only safe at a segment edge and
+    `_segments_from_rows` broke at a `result` and nowhere else: the wake's
+    continuation consumed that break, the next turn's prose grew onto the
+    continuation's own segment, and any offset would have filed the wake's text
+    under the turn that had not started yet.
+
+    Withholding it has its own cost, and it is the one a second window on a
+    conversation kept paying: with no seam the page has nothing to place the
+    new reply against, so it re-rendered the PREVIOUS reply into the new turn's
+    bubble. `_segments_from_rows` breaks at a genuine new turn now — the merge
+    that made the seam unsafe cannot happen — so the honest answer is the seam,
+    and the wake's text stays where it belongs."""
     rows = [
         _user_row("q1"), _text_row("A."), _result_row("A."),
         {"type": "system", "subtype": "task_notification",
@@ -258,16 +270,201 @@ def test_a_wake_continued_turn_reports_no_seam(agent):
         _text_row("And the task is done."),
         _user_row("q2"), _text_row("B."),
     ]
-    # NOTHING, and that is the only honest answer. A seam is safe only at a
-    # `hard_break`, which `_segments_from_rows` puts at a `result` and nowhere
-    # else — with a wake in between, its continuation and the next reply are one
-    # merged text segment, so any offset here either files the wake's text under
-    # the turn that had not started yet or swallows the new reply whole. The
-    # page's shrink test still covers this shape, as it did before genuine
-    # boundaries were reported at all.
-    assert agent._absorbed_turn_breaks(rows) == []
+    breaks = agent._absorbed_turn_breaks(rows)
     segs = agent._segments_from_rows(rows)
-    assert [sg.get("kind") for sg in segs].count("text") >= 1
+    texts = [sg["text"] for sg in segs if sg["kind"] == "text"]
+    # The new reply is a segment of its own — never grown onto the wake's.
+    assert texts == ["A.", "And the task is done.", "B."]
+    assert len(breaks) == 1
+    seam = breaks[0]
+    # AND IT FALLS BETWEEN SEGMENTS, never inside one: everything up to it is
+    # the previous displayed turn, wake continuation included, and everything
+    # after it is the reply to `q2` alone.
+    assert [sg["text"] for sg in segs[:seam["segments"]] if sg["kind"] == "text"] \
+        == ["A.", "And the task is done."]
+    assert [sg["text"] for sg in segs[seam["segments"]:] if sg["kind"] == "text"] \
+        == ["B."]
+    assert seam["text"] == len("A.") + len("And the task is done.")
+
+
+def test_an_absorbed_follow_ups_echo_does_not_split_the_reply_it_landed_in(agent):
+    """Bugbot, PR #1119. The echo of a follow-up the CLI drained MID-REPLY has
+    the same row shape as a genuine new turn's, and the reply it landed in
+    keeps streaming past it — so breaking the segment there would cut one
+    answer's prose in two, settling the first half as finished and leaving
+    markdown that spanned the echo rendering as two documents instead of one.
+
+    A `result` closing a reply since the last echo is what tells the two
+    apart, which is the same test `_absorbed_turn_breaks` and
+    `_read_current_turn` already make."""
+    rows = [
+        _user_row("q1"), _text_row("Reply A, first half. "),
+        _user_row("q2"),                       # absorbed mid-reply: no result yet
+        _text_row("Reply A, second half."),
+        _result_row("Reply A."),
+        _text_row("Reply B."),
+    ]
+    texts = [sg["text"] for sg in agent._segments_from_rows(rows)
+             if sg["kind"] == "text"]
+    assert texts == ["Reply A, first half. Reply A, second half.", "Reply B."]
+
+
+def test_any_row_between_the_result_and_the_echo_still_leaves_a_seam(agent):
+    """The shape a SECOND WINDOW on one conversation hits (PR #1119).
+
+    Every send carries `model` and `permission_mode`, and `_send` queues a
+    control request ahead of the message whenever either differs from what the
+    host was spawned with — which a second window, with its own defaults, can
+    easily make true. Whatever the CLI writes for that lands between the
+    previous turn's `result` and this send's echo, and while the seam required
+    the two to be ADJACENT, a single row in between was enough to withhold it —
+    leaving the page to render the previous reply into the new turn's bubble.
+
+    Nothing about a row in between makes the boundary less real, and nothing
+    about it makes the cut less safe: `_segments_from_rows` breaks at the echo
+    itself now, so the edge is there either way."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _user_row("q2"), _text_row("B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    segs = agent._segments_from_rows(rows)
+    assert breaks == [{"segments": 1, "text": len("A.")}]
+    assert [sg["text"] for sg in segs if sg["kind"] == "text"] == ["A.", "B."], (
+        "and the seam still falls between the segments, never inside one")
+
+
+def test_a_window_that_opens_on_the_CLI_s_plumbing_reports_no_seam_of_its_own(agent):
+    """ONE TURN IS NEVER A SEAM, however the window opens on it.
+
+    Taken from a `poll` capture of the reproduction: a send into a still-live
+    host makes the CLI write `system/init` and `system/status` before it echoes
+    the message, so the window does NOT open on its own turn's echo — the echo
+    is at index 2. The rule that skipped it was `rows[0]` and nothing else, so
+    with two rows in front of it the window's OWN opening turn was counted as a
+    follow-up absorbed into a reply that had not even started, and the `result`
+    that closed it reported a fold-in seam for a payload holding ONE turn.
+
+    The page then took the whole of that reply as the base for the turn it was
+    waiting on. See the test below for the other half of the damage."""
+    body = "A" * 483                      # the real length, from the capture
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the question"),        # index 2, not index 0
+        _text_row(body),
+        _result_row(body),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == [], (
+        "one turn in the window, so there is no boundary inside it to report")
+
+
+def test_the_captured_reopened_window_reports_the_boundary_it_actually_has(agent):
+    """THE SAME CAPTURE, ONE POLL LATER: the newer turn's echo has landed, so
+    the window really does carry two replies and really does need a seam.
+
+    THIS ONE ANSWERED THE SAME BEFORE THE FIX, and it is here to pin that,
+    because the two roads to it are not the same thing and only one of them is
+    a boundary. Miscounting the window's own opening echo as a fold-in made its
+    `result` report the seam and clear `last_result` on the way past, so the
+    genuinely new echo below reported nothing — the offsets coincide only
+    because the window opens on the very turn the fold-in branch was crediting.
+    They stop coinciding the moment the window holds ONE turn (the test above,
+    which is where the wrong road shows), and a reader is entitled to the
+    boundary being reported by the row that actually is one.
+
+    The offsets are the reply already on screen, exactly — which is what makes
+    this payload safe for a reader to slice."""
+    prev, new = "A" * 483, "Yes"
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the question"),
+        _text_row(prev),
+        {"type": "stream_event", "event": {"type": "message_stop"}},
+        _result_row(prev),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("the follow-up question"),
+        _text_row(new),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks == [{"segments": 1, "text": len(prev)}]
+    segs = agent._segments_from_rows(rows)
+    texts = [sg["text"] for sg in segs if sg["kind"] == "text"]
+    # The seam falls BETWEEN the segments, never inside one, so a reader can
+    # cut on it: everything before it is the reply already on screen.
+    assert texts[0] == prev
+    assert "".join(texts)[:breaks[0]["text"]] == prev
+
+
+def test_a_follow_up_absorbed_into_a_window_that_opens_on_plumbing_still_reports(agent):
+    """...and the opening-echo rule must not swallow a REAL fold-in.
+
+    The window opens on plumbing and its own echo, exactly as above, and then a
+    follow-up is drained into the reply while it is still streaming. That
+    second echo is a genuine fold-in — no `result` between it and the reply it
+    landed in — and its seam is the `result` that closes that reply."""
+    rows = [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("q1"), _text_row("Reply A, first half. "),
+        _user_row("q2"),                      # absorbed mid-reply
+        _text_row("Reply A, second half."),
+        _result_row("Reply A."),
+        _text_row("Reply B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks == [{"segments": 1,
+                       "text": len("Reply A, first half. Reply A, second half.")}]
+
+
+def test_the_captured_second_window_shape_reports_its_seam(agent):
+    """THE REAL ROWS, from a transcript where the duplication was reproduced.
+
+    Everything above reasons about what CAN sit between a `result` and the next
+    echo. This is what actually did, read out of `out.jsonl` on a machine that
+    had just hit the bug — the previous reply's `result`, then `system/init`
+    and `system/status`, then the echo of the message the reader sent:
+
+        111  result
+        112  system subtype=init
+        113  system subtype=status
+        114  user blocks=text <<< starts a new turn
+        119  assistant blocks=text
+
+    Two rows in between, so the old adjacency rule reported nothing and the
+    page had no boundary to place the new reply against — it rendered the
+    previous reply into the new bubble instead. Pinned with the real shape
+    rather than a one-row stand-in, because the one-row case passed a rule
+    this one still failed."""
+    prev, new = "P" * 524, "N" * 11      # the real lengths, from the capture
+    rows = [
+        _user_row("the earlier question"),
+        _text_row(prev),
+        {"type": "assistant", "message": {"role": "assistant",
+         "content": [{"type": "text", "text": prev}]}},
+        {"type": "stream_event", "event": {"type": "message_stop"}},
+        _result_row(prev),
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "status"},
+        _user_row("x" * 706),
+        _text_row(new),
+        {"type": "assistant", "message": {"role": "assistant",
+         "content": [{"type": "text", "text": new}]}},
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert len(breaks) == 1, "the boundary is real and has to be reported"
+    seam = breaks[0]
+    segs = agent._segments_from_rows(rows)
+    full = "".join(sg["text"] for sg in segs if sg["kind"] == "text")
+    # Everything up to the seam is the reply that was already on screen, and
+    # everything after it is the answer to the message just sent — which is
+    # the whole of what the page needs to keep them in separate bubbles.
+    assert set(full[:seam["text"]]) == {"P"}
+    assert set(full[seam["text"]:].strip()) == {"N"}
+    assert seam["text"] == len(prev)
 
 
 def test_a_wake_with_nothing_after_it_is_not_a_seam(agent):
