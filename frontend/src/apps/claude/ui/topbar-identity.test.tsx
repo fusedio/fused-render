@@ -23,6 +23,10 @@ import type { Task } from "@platform/lib/api";
 // module reads `location` at import time (testDomShim's own note). A static
 // import is hoisted above the shim call.
 const { Topbar } = await import("./Topbar");
+const { resetSessionSeeds, seedSessionTask, useSessionTask } = await import(
+  "./useRecentTasks"
+);
+type SubscribeTasks = import("./useRecentTasks").SubscribeTasks;
 
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
@@ -96,4 +100,90 @@ test("no row yet — the line the chat has always printed", () => {
   expect(v.has("c-tb-title").length).toBe(1);
   expect(v.has("c-session").length).toBe(1);
   expect(v.text()).toContain("TASK-042");
+});
+
+// ---- AND THE THIRD STATE: NOBODY HAS ANSWERED YET (Akshil, 2026-09-14) ------
+//
+// "We have not read `/api/tasks`" and "we read it and this session is not in
+// it" used to be one `null`, so a deep link into an old conversation wore the ✻
+// Claude line — a CLAIM that the chat has no task row — for the length of an
+// 800-row listing read, and then swapped. The claim is true of exactly one
+// thing: a chat so new the server's watcher has not seen its transcript.
+
+/** The subscription, handed in rather than module-mocked (`useRecentTasks`'s
+ *  own note says why: one process, every suite). Opens with the skeleton signal
+ *  the real one opens with. */
+function stubSubscribe() {
+  const served: Array<(rows: Task[] | null) => void> = [];
+  const subscribe = ((_file: string | null, cb: (rows: Task[] | null) => void) => {
+    served.push(cb);
+    cb(null);
+    return () => {};
+  }) as SubscribeTasks;
+  return { subscribe, serve: (rows: Task[] | null) => served[served.length - 1](rows) };
+}
+
+/** The header, drawn from the hook — which is where the three states are
+ *  decided, so this is the only honest way to pin them. */
+function mountHeader(sessionId: string | null, subscribe: SubscribeTasks) {
+  function Probe() {
+    const head = useSessionTask(sessionId, "/repo/app", subscribe);
+    return createElement(Topbar, {
+      sessionId: sessionId ?? "",
+      subtitle: "x.py",
+      task: head.task,
+      pending: head.pending,
+      running: false,
+    });
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Probe));
+  });
+  mounted.push(r);
+  const has = (cls: string) =>
+    r.root.findAll(
+      (n) => typeof n.type === "string" && String(n.props.className ?? "").split(" ").includes(cls),
+      { deep: true },
+    );
+  return { r, has, text: () => JSON.stringify(r.toJSON()) };
+}
+
+afterEach(() => resetSessionSeeds());
+
+test("a row pressed in the Recent list names the header AT ONCE — no listing round trip", () => {
+  // The list was already drawing this `Task`; `Lists.pressFor` leaves it here on
+  // the way into the chat, so the first paint of the header is the real one.
+  seedSessionTask(task({ key: "sess-9", session_id: "sess-9", task_id: "TASK-009" }));
+  const feed = stubSubscribe();
+  const v = mountHeader("sess-9", feed.subscribe);
+  expect(v.has("task-side-peek-who").length).toBe(1);
+  expect(v.text()).toContain("TASK-009");
+  // …and never the skeleton or the wordmark on the way there.
+  expect(v.has("c-tb-skel").length).toBe(0);
+  expect(v.has("c-tb-title").length).toBe(0);
+});
+
+test("a DEEP LINK with no seed draws the skeleton, not the ✻ Claude line", () => {
+  const feed = stubSubscribe();
+  const v = mountHeader("sess-deep", feed.subscribe);
+  expect(v.has("c-tb-skel").length).toBe(1);
+  expect(v.has("c-skel-dot").length).toBe(1);
+  expect(v.has("c-skel-bar").length).toBe(1);
+  // The claim is not made while the answer is unknown.
+  expect(v.has("c-tb-title").length).toBe(0);
+  expect(v.has("task-side-peek-who").length).toBe(0);
+  // …and it gives way to the row the moment the listing answers.
+  act(() => feed.serve([task({ key: "sess-deep", session_id: "sess-deep" })]));
+  expect(v.has("c-tb-skel").length).toBe(0);
+  expect(v.has("task-side-peek-who").length).toBe(1);
+});
+
+test("the ✻ Claude line is for a listing that answered and has NO row — a brand-new chat", () => {
+  const feed = stubSubscribe();
+  const v = mountHeader("sess-new", feed.subscribe);
+  act(() => feed.serve([task({ key: "someone-else", session_id: "someone-else" })]));
+  expect(v.has("c-tb-skel").length).toBe(0);
+  expect(v.has("c-tb-title").length).toBe(1);
+  expect(v.has("c-tb-file").length).toBe(1);
 });

@@ -206,7 +206,10 @@ test("a lane's DRAFTS come first, and ties keep the server's order", async () =>
 // ---- the header's own row ---------------------------------------------------
 
 async function mountHead(sessionId: string | null, file: string | null) {
-  let out: Task | null = null;
+  // THREE ANSWERS NOW (`SessionIdentity`): the row, "not read yet" (`pending`),
+  // and "read, and there is no row for this session". `task()` below asks the
+  // first; the skeleton state has a suite of its own in `topbar-identity`.
+  let out: import("./useRecentTasks").SessionIdentity = { task: null, pending: false };
   function Probe(p: { sessionId: string | null }) {
     out = useSessionTask(p.sessionId, file, subscribe);
     return null;
@@ -217,7 +220,8 @@ async function mountHead(sessionId: string | null, file: string | null) {
   });
   mounted.push(r);
   return {
-    task: () => out,
+    task: () => out.task,
+    pending: () => out.pending,
     async serve(rows: Task[] | null) {
       const sub = subs[subs.length - 1];
       await act(async () => sub.cb(rows));
@@ -227,12 +231,14 @@ async function mountHead(sessionId: string | null, file: string | null) {
 
 test("the chat header finds its own task by session id", async () => {
   const h = await mountHead("b", "/repo/x.py");
-  // Nothing until the listing answers: a chat seconds old has a session id
-  // before `/api/tasks` has a row for it, and the header prints the line it
-  // always did until one lands.
+  // No row until the listing answers — and that is `pending`, not "no row":
+  // the header owes a skeleton there, never the ✻ Claude line, which is a
+  // claim about a session the listing has actually been read for.
   expect(h.task()).toBe(null);
+  expect(h.pending()).toBe(true);
   await h.serve([row("a"), row("b"), row("c")]);
   expect(h.task()?.key).toBe("b");
+  expect(h.pending()).toBe(false);
 });
 
 test("…and is NOT narrowed to the pane — the row's identity is the test", async () => {
@@ -245,8 +251,10 @@ test("…and is NOT narrowed to the pane — the row's identity is the test", as
 });
 
 test("no session, no subscription", async () => {
-  await mountHead(null, "/repo/x.py");
+  const h = await mountHead(null, "/repo/x.py");
   expect(subs.length).toBe(0);
+  // And no skeleton either: there is no session for the header to be waiting on.
+  expect(h.pending()).toBe(false);
 });
 
 test("…and a re-read's skeleton does not drop the header back to the fallback", async () => {
@@ -259,7 +267,9 @@ test("…and a re-read's skeleton does not drop the header back to the fallback"
   expect(h.task()?.key).toBe("b");
   await h.serve(null);
   expect(h.task()?.key).toBe("b");
-  // …and a real answer still replaces it, skeleton rule or not.
+  // …and a real answer still replaces it, skeleton rule or not — and that is
+  // the ✻ Claude state, not the skeleton: the listing HAS been read.
   await h.serve([row("a")]);
   expect(h.task()).toBe(null);
+  expect(h.pending()).toBe(false);
 });

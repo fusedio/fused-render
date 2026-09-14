@@ -133,15 +133,83 @@ export function useRecentTasks(
  * whose own identity is the test. A chat reached by a `session_id` param that
  * belongs to another file would otherwise be filtered out of its own header.
  *
- * `null` while there is no session, no target, or no row yet — a brand-new chat
- * has a session id seconds before `/api/tasks` has a row for it, and the header
- * falls back to what the chat has always printed until it lands.
+ * THREE ANSWERS AND NOT TWO (Akshil, 2026-09-14). "We have not read the
+ * listing" and "we read it and this session is not in it" used to be one `null`
+ * and the header printed the ✻ Claude fallback for both — so every deep link
+ * into a chat wore the wrong identity for as long as `/api/tasks` took to
+ * answer with 800-odd rows, and then swapped. They are different news:
+ *
+ *   * a `task` — the row, from the listing or from the SEED the press left
+ *     behind (`seedSessionTask`), which is the same answer a whole round trip
+ *     earlier;
+ *   * `pending` — there is a session, nobody has told us anything about it yet,
+ *     and the header draws a skeleton rather than a name that may be wrong;
+ *   * neither — the listing HAS answered and has no row for this session, which
+ *     is a real state and the only one the ✻ Claude line is honest about: a
+ *     chat seconds old, whose transcript the server's watcher has not seen.
  */
+export interface SessionIdentity {
+  /** The listing's row for this session, or the seeded one, or null. */
+  task: Task | null;
+  /** A session whose row NOBODY HAS ANSWERED FOR YET. Never true without a
+   *  session id, and never true once a listing has been read. */
+  pending: boolean;
+}
+
+/**
+ * THE ROW A PRESS ALREADY HAD IN ITS HAND, kept for the header that is about to
+ * need it (Akshil, 2026-09-14).
+ *
+ * The Recent list opens a chat IN PLACE — no navigation, no reload — and the
+ * row it opened is a `Task` the list was already drawing. `useSessionTask` then
+ * subscribed from scratch and the header sat on its fallback for the length of
+ * one `/api/tasks` read, showing the OLD identity of a conversation the reader
+ * had just named. So the press leaves the row here and the hook reads it on its
+ * very first render.
+ *
+ * A MAP AND NOT A SINGLE SLOT, because a reader walks in and out of several
+ * chats in one page life and Back is free — the seed for the chat they are
+ * returning to must still be there. Capped, oldest-out, because nothing ever
+ * invalidates these: the listing supersedes each one within a second of the
+ * press, so the cap is about memory and not about staleness.
+ *
+ * MODULE STATE, like `lists-visibility`'s remembered tab and for the same
+ * reason: the landing unmounts on the way into the chat, so there is no
+ * component alive on both sides of the gesture to hold it.
+ */
+const SEED_CAP = 32;
+const seeds = new Map<string, Task>();
+
+export function seedSessionTask(task: Task): void {
+  const id = task.session_id || task.key;
+  if (!id) return;
+  // Re-inserted rather than updated in place, so a seed just used is also the
+  // youngest — the cap then drops the chats nobody has been near.
+  seeds.delete(id);
+  seeds.set(id, task);
+  while (seeds.size > SEED_CAP) {
+    const oldest = seeds.keys().next();
+    if (oldest.done) break;
+    seeds.delete(oldest.value);
+  }
+}
+
+/** The seeded row for a session, or null. */
+export function sessionSeed(sessionId: string | null): Task | null {
+  return (sessionId && seeds.get(sessionId)) || null;
+}
+
+/** Tests only — module state outlives every renderer in a `bun test` process,
+ *  exactly as `lists-visibility.resetRememberedTab` does. */
+export function resetSessionSeeds(): void {
+  seeds.clear();
+}
+
 export function useSessionTask(
   sessionId: string | null,
   file: string | null,
   subscribe: SubscribeTasks = subscribeTasks,
-): Task | null {
+): SessionIdentity {
   const [rows, setRows] = useState<Task[] | null>(null);
   /** THE TRANSPORT THROUGH A REF (the list above spends a lint exemption for
    *  the same fact): the identity of the subscription function is not a fact
@@ -170,11 +238,28 @@ export function useSessionTask(
     });
   }, [sessionId, file]);
   return useMemo(() => {
-    if (!sessionId || rows === null) return null;
+    if (!sessionId) return NO_IDENTITY;
+    const seeded = sessionSeed(sessionId);
+    // NOT READ YET. A seed answers it outright — the press handed us the row —
+    // and without one the header is owed a skeleton, never the fallback: the
+    // fallback is a CLAIM (this chat has no task row) and we do not know that.
+    if (rows === null) {
+      return seeded ? { task: seeded, pending: false } : PENDING;
+    }
     // `key` IS the session id for a task that has a conversation (the listing's
     // own spelling — `ui/Kebab.tsx`'s `useTaskId` asks the same question of the
     // same field); `session_id` is asked too, so a server that ever keys a row
     // by something else still answers.
-    return rows.find((t) => t.key === sessionId || t.session_id === sessionId) ?? null;
+    const found =
+      rows.find((t) => t.key === sessionId || t.session_id === sessionId) ?? null;
+    // A LISTING THAT DROPPED THE SEEDED ROW KEEPS THE SEED. The row was real a
+    // moment ago; an identity that blinks out mid-conversation is worse than one
+    // that is a poll behind, and the next read puts it right either way.
+    return { task: found ?? seeded, pending: false };
   }, [rows, sessionId]);
 }
+
+/** The two answers that carry no row, as constants: a new object every render
+ *  would make this hook's result a fresh dependency on every paint. */
+const NO_IDENTITY: SessionIdentity = { task: null, pending: false };
+const PENDING: SessionIdentity = { task: null, pending: true };

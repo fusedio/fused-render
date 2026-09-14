@@ -876,3 +876,142 @@ test("THE ROWS RENDER THE PROTOCOL'S TITLE, not a second copy of it (P4-04)", ()
     "pane screenshot",
   );
 });
+
+// ---- DRAFT ROWS ARE NOT INERT ROWS (Akshil, 2026-09-14) ---------------------
+//
+// Every `kind: "draft"` row used to fall out of `pressFor`'s first line — no
+// `session_id`, therefore no press — which drew a lit, titled, Draft-chipped row
+// that did nothing at all. A draft HAS somewhere to go; it is simply not a
+// conversation, and where it goes is what `draft_kind` is for.
+
+/** A never-sent chat, as `/api/tasks` emits it (`_new_chat_draft_row`): no
+ *  session, a `file` that is the `new:<file>` key's own half, and the unsent
+ *  line as its `draft`. */
+function chatDraft(over: Partial<Task> = {}): Task {
+  return {
+    key: "new:/repo/x.py",
+    task_id: "TASK-900",
+    kind: "draft",
+    state: "draft",
+    draft_kind: "chat",
+    draft_id: "",
+    project: "/repo",
+    target: "/repo/x.py",
+    file: "/repo/x.py",
+    session_id: "",
+    title: "ship the thing",
+    title_source: "draft",
+    description: "",
+    status: "draft",
+    unread: 0,
+    message_count: 0,
+    draft: { preview: "ship the thing", updated_at: Date.now() / 1000, kind: "chat" },
+    last_active: Date.now() / 1000,
+    ...over,
+  } as unknown as Task;
+}
+
+test("A CHAT DRAFT ABOUT THIS PANE picks the composer up in place", () => {
+  // No session to open and no URL to go to: the words are already on this
+  // page's own key (`new:<file>`), so the press leaves the landing and the
+  // composer there seeds itself from them.
+  let picked = 0;
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft()]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {
+        picked += 1;
+      }}
+    />,
+  );
+  const row = taskRow(r);
+  expect(String((row.props as { className?: string }).className)).not.toContain(
+    "is-inert",
+  );
+  act(() => (row.props as { onClick(): void }).onClick());
+  expect(picked).toBe(1);
+  // In place means IN PLACE: no stretched link, because there is nowhere for a
+  // ⌘-click to go that is not this very page.
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});
+
+test("…and a chat draft about ANOTHER file hops to that file's chat, no session named", () => {
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft({ key: "new:/repo/other.py", target: "/repo/other.py", file: "/repo/other.py" })]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  const href = String((link.props as { href: string }).href);
+  expect(href).toContain("other.py");
+  expect(href).toContain("_side=claude");
+  // A draft has no session to wait for, so the param is omitted rather than
+  // sent empty (schedule-lib.chatPaneUrl draws the same distinction).
+  expect(href).not.toContain("session_id");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops).toEqual([href]);
+});
+
+test("A TASK DRAFT leaves at the card the Tasks page reopens it on", () => {
+  // The New task modal is `shell/Scheduled`'s, not this app's — so the row
+  // navigates to the param that reopens it under the SAME draft id, rather
+  // than doing nothing.
+  const hops: string[] = [];
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[
+        chatDraft({
+          key: "draft:d-7",
+          draft_kind: "task",
+          draft_id: "d-7",
+          file: "/repo",
+          target: "/repo",
+          draft: null,
+        } as Partial<Task>),
+      ]}
+      onOpen={() => {}}
+      onNavigate={(u) => hops.push(u)}
+    />,
+  );
+  const link = r.root.find((n) => n.type === "a");
+  expect(String((link.props as { href: string }).href)).toBe("/tasks?draft=d-7");
+  act(() =>
+    (link.props as { onClick(e: unknown): void }).onClick({
+      preventDefault() {},
+      button: 0,
+    }),
+  );
+  expect(hops).toEqual(["/tasks?draft=d-7"]);
+});
+
+test("a LOCKED block still refuses every draft row", () => {
+  // P4-23 is about the block, not about which kind of row is in it.
+  let picked = 0;
+  const r = mount(
+    <Lists
+      {...TABBED}
+      recent={[chatDraft()]}
+      onOpen={() => {}}
+      onOpenChatDraft={() => {
+        picked += 1;
+      }}
+      disabled
+    />,
+  );
+  act(() => (taskRow(r).props as { onClick?(): void }).onClick?.());
+  expect(picked).toBe(0);
+  expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
+});

@@ -2133,6 +2133,28 @@ function ChatBody(props: ChatBodyProps) {
     },
     [controller, cardPolicy],
   );
+  /**
+   * A NEVER-SENT CHAT'S ROW, PRESSED (Akshil, 2026-09-14) — the `new:<file>`
+   * draft in the Recent list, which names no session because there is none.
+   *
+   * It is `onOpenSession` with the one thing it opens taken out: enter the chat
+   * view, open NOTHING, and let the composer that mounts there seed itself from
+   * the very key the row was drawn from (`chatDraftKey(null, file)` — the
+   * composer's own seed effect does the fetch). The caret lands in the box on
+   * its own, because `autoFocus` is `props.autoFocus && inChat` and this flip is
+   * what makes `inChat` true — the same transition `enterChat` is in T. So the
+   * next Enter is the send that creates the session, which is exactly what the
+   * reader was promised by a row whose whole content is an unsent sentence.
+   *
+   * NO `controller.openSession`, and no `newChat()` either: the landing's
+   * controller is already on a fresh chat, and re-cutting it here would throw
+   * away a run this page may have adopted in the background.
+   */
+  const onOpenChatDraft = useCallback(() => {
+    resetCardPolicy(cardPolicy);
+    setEntered(true);
+    setStranded(null);
+  }, [cardPolicy]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -2717,11 +2739,15 @@ function ChatBody(props: ChatBodyProps) {
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
    *
    * Asked for only while a chat is up — the same window in which the landing's
-   * list is NOT subscribed — so the two never hold the listing open at once,
-   * and `null` while a brand-new chat waits for its row means the header prints
-   * the line it always did until one lands.
+   * list is NOT subscribed — so the two never hold the listing open at once.
+   *
+   * THREE ANSWERS, not two (`SessionIdentity`): the row, "not read yet", or
+   * "read, and there is no row for this session". Only the last of those is the
+   * ✻ Claude line's own state — a brand-new chat — and the middle one draws the
+   * header's skeleton, so a deep link no longer wears the wrong identity for
+   * the length of an 800-row listing read (Akshil, 2026-09-14).
    */
-  const headTask = useSessionTask(inChat ? (state.sessionId ?? null) : null, file);
+  const head = useSessionTask(inChat ? (state.sessionId ?? null) : null, file);
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -2949,7 +2975,8 @@ function ChatBody(props: ChatBodyProps) {
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
-                task={headTask}
+                task={head.task}
+                pending={head.pending}
                 running={running}
               />
             ) : null}
@@ -3015,6 +3042,7 @@ function ChatBody(props: ChatBodyProps) {
             placeholder={homePlaceholderFor(pane.noun)}
             recent={recent}
             onOpenSession={onOpenSession}
+            onOpenChatDraft={onOpenChatDraft}
             listsDisabled={ann.locked}
           />
         )}

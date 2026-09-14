@@ -95,6 +95,40 @@ export function paneChatUrl(pane: string, sessionId: string): string {
   );
 }
 
+/**
+ * THE SAME DOOR WITH NO CONVERSATION NAMED — a never-sent chat (`draft_kind:
+ * "chat"`) has no session to attach, so the pane is opened on the FILE alone
+ * and the composer there seeds itself from the `new:<file>` draft the row was
+ * drawn from (platform/lib/drafts.chatDraftKey; apps/claude/ui/Composer's own
+ * seed effect). shell/schedule-lib.chatPaneUrl is the Tasks page's spelling of
+ * exactly this URL — restated here rather than imported because this module
+ * owns the list's one path codec (`urlForFsPath`), and two codecs for one link
+ * is how the two surfaces would come to disagree about an encoded space.
+ *
+ * `session_id` is OMITTED rather than sent empty, which is the distinction
+ * `chatPaneUrl` draws too: an empty value means "this folder's sessions, one is
+ * coming", and there is no session coming for a draft.
+ */
+export function paneChatDraftUrl(pane: string): string {
+  return urlForFsPath(paneSlashes(pane), "?_side=claude");
+}
+
+/**
+ * AND THE OTHER DRAFT KIND'S DOOR — an unfinished New task form
+ * (`draft_kind: "task"`), which is a MODAL and not a view, and a modal this app
+ * cannot open: `shell/NewJobModal` is the Tasks page's own card, hosted by
+ * `shell/Scheduled`, and hoisting it into the chat to answer one row would pull
+ * the whole schedule page in behind it.
+ *
+ * So the row leaves, and it leaves at the form: `shell/Scheduled` reads this
+ * param and reopens the card on that stored draft — the same `openForm(…,
+ * {id, form})` its own draft rows spend, so both doors land on one card under
+ * one id and neither mints a second draft.
+ */
+export function taskDraftUrl(draftId: string): string {
+  return `/tasks?draft=${encodeURIComponent(draftId)}`;
+}
+
 /** T:17947-17953. */
 export function ago(ts: number, now: number = Date.now()): string {
   const s = Math.max(0, now / 1000 - ts);

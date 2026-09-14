@@ -33,6 +33,11 @@ import type { Task } from "@platform/lib/api";
 // inside that document, so there is nothing to import here.
 import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import "../styles/composer.css";
+// The skeleton below wears the landing list's own placeholder bar
+// (`.c-skel-bar`, `home.css`), which is the one shimmer this app draws. Imported
+// here so the rule travels with the component that spends it rather than by
+// luck of what else the bundle happened to pull in.
+import "../styles/home.css";
 import { ClaudeMark } from "./ClaudeMark";
 import { knownTaskId } from "./Kebab";
 
@@ -52,6 +57,19 @@ export interface TopbarProps {
    * a moment after the transcript did would be worse than one that fills in.
    */
   task?: Task | null;
+  /**
+   * NOBODY HAS ANSWERED FOR THIS SESSION YET (`useSessionTask`'s `pending`).
+   *
+   * The line below is a CLAIM — "this conversation has no task row, so here is
+   * the tool's own name and the file" — and it is true of exactly one thing: a
+   * chat so new the server's watcher has not seen its transcript. A deep link
+   * into an old conversation is not that, and printing the claim while
+   * `/api/tasks` reads 800 rows meant every such arrival wore the wrong
+   * identity and then swapped (Akshil, 2026-09-14). While the answer is
+   * genuinely unknown the header says so, in the same placeholder bar the
+   * landing's Recent list draws.
+   */
+  pending?: boolean;
   /** For the project chip's `~` in its tooltip. Absent in the chat, which knows
    *  no home directory of its own — the tooltip then spells the path in full,
    *  which is the same path. */
@@ -61,7 +79,15 @@ export interface TopbarProps {
   running: boolean;
 }
 
-export function Topbar({ sessionId, subtitle, taskId, task, home, running }: TopbarProps) {
+export function Topbar({
+  sessionId,
+  subtitle,
+  taskId,
+  task,
+  pending,
+  home,
+  running,
+}: TopbarProps) {
   if (task) {
     return (
       // THE FULL SESSION ID STAYS REACHABLE. The peek's identity block prints
@@ -80,6 +106,30 @@ export function Topbar({ sessionId, subtitle, taskId, task, home, running }: Top
             stop square is drawn from. The two disagree for as long as a poll
             takes at both ends of a turn, and the faster of them is the one a
             reader watching their own request wants. */}
+        {running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  // …AND THE UNKNOWN, WHICH IS NEITHER (Akshil, 2026-09-14). One ring-sized dot
+  // and one bar — the shape of the identity block that is about to land, at the
+  // place it will land — so the header's height and rhythm do not move when it
+  // does. `aria-hidden`, because there is nothing here to read out: the line has
+  // no name yet, and announcing a placeholder is worse than announcing nothing.
+  //
+  // The `running` word still shows, if the page's own turn clock says so: that
+  // is THIS document's fact and owes the listing nothing.
+  if (pending) {
+    return (
+      <div className="c-topbar" title={sessionId || undefined}>
+        <span className="c-tb-skel" aria-hidden="true">
+          <span className="c-skel-dot" />
+          <span className="c-skel-bar is-title" />
+        </span>
         {running ? (
           <span className="c-tb-run" aria-live="polite">
             running

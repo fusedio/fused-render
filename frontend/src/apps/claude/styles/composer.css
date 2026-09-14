@@ -56,6 +56,34 @@
   color: var(--c-accent);
   font-size: 15px;
 }
+/* THE IDENTITY LINE BEFORE ANYONE HAS ANSWERED FOR IT (`Topbar`'s `pending`).
+   The peek's own block is a 16px ring, a number and a title; this is its
+   silhouette — one ring-sized dot and one bar — so the line does not resize when
+   the real one arrives. The bar itself is the landing list's `.c-skel-bar`
+   (home.css), shimmer, reduced-motion opt-out and all; only the two sizes the
+   header needs are stated here, because `.c-skel-dot` and `.is-title` are scoped
+   to `.c-skel-row` over there and a row is not what this is. */
+.c-tb-skel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.c-tb-skel .c-skel-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--c-border);
+  flex: 0 0 16px;
+}
+.c-tb-skel .c-skel-bar.is-title {
+  /* A title's worth of line and no more: a bar that ran the width of the header
+     would read as a loading PAGE rather than as one name still coming. */
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
 .c-tb-title {
   font-weight: 600;
   font-size: 13px;
