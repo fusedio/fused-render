@@ -60,7 +60,7 @@ describe("previewBox", () => {
     const narrow = previewBox(564, 2000, null);
     const wide = previewBox(900, 2000, null);
     const inner = (w: number) => w - 2 * PREVIEW_INSET;
-    expect(PREVIEW_INSET).toBe(28); // `--peek-icon-w`, styles/task-peek.css
+    expect(PREVIEW_INSET).toBe(38); // `--peek-preview-inset`, styles/task-peek.css
     expect(narrow.scale).toBeCloseTo(inner(564) / PREVIEW_VW, 6);
     expect(wide.scale).toBeCloseTo(inner(900) / PREVIEW_VW, 6);
     // `frameHeight` is the VIRTUAL viewport, unscaled — 720 whenever the box is
@@ -99,10 +99,10 @@ describe("previewBox", () => {
     // the virtual viewport grows to `height / scale`, the app lays out into it,
     // and the box is filled at the same scale instead of showing a band of the
     // app's background under a scrollbar with nothing to scroll.
-    // 696 wide is 640 inside its gutters, so the scale is a round 0.5.
-    const natural = previewBox(696, 2000, null);
+    // 716 wide is 640 inside its 38px gutters, so the scale is a round 0.5.
+    const natural = previewBox(716, 2000, null);
     expect(natural.frameHeight).toBe(PREVIEW_VH);
-    const taller = previewBox(696, 2000, 600);
+    const taller = previewBox(716, 2000, 600);
     expect(taller.scale).toBe(natural.scale);
     expect(taller.height).toBe(600);
     // 640 / 1280 = 0.5, so a 600px box is a 1200px window.

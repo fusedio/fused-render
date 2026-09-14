@@ -30,9 +30,14 @@
 
      ONE VAR RATHER THAN TWO NUMBERS, because the point of the measure is that
      the preview's edge lines up with the header's: the app's frame starts where
-     the × ends. `shell/peek-preview.ts` `PREVIEW_INSET` carries the same 28 for
+     the × ends. `shell/peek-preview.ts` `PREVIEW_INSET` carried 28 for
      the scale arithmetic, which is the one place a stylesheet cannot reach. */
   --peek-icon-w: 28px;
+  /* The preview's side inset: the header's 10px padding plus one icon button,
+     so the app's left edge sits where the × ends and its right edge where the
+     ⋮ begins (Akshil, 2026-09-14). `shell/peek-preview.ts` `PREVIEW_INSET`
+     carries the same 38. */
+  --peek-preview-inset: 38px;
   /* THE NARROWEST A WALL CARD IS WORTH DRAWING. Below about this the card's own
      head (a ring, a number, a folder chip) stops fitting on one line and the
      conversation inside it is a column of two-word lines. The wall drops a
@@ -651,6 +656,16 @@ body.tasks-peek-dragging {
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 
+/* THE BOARD CARD'S RING, OFF WHILE IT IS THE OPEN ONE. A click focuses the
+   card, and the page's `:focus-visible` rule then draws the accent outline on
+   top of the fill — two marks for one fact (Akshil, 2026-09-14: "keep only the
+   bg change"). The fill is the answer here; a card that is merely tabbed to
+   and not open keeps its ring. */
+.tasks-peek-host .schedule-tv-card.is-peeked:focus-visible,
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card.is-peeked:focus-visible {
+  outline: none;
+}
+
 /* THE SECOND HIGHLIGHT, GONE. `.is-selected` is the List's own memory of the
    last conversation opened from it and it exists with the feature off; here the
    peeked item is the one answer, so this paints nothing unless it IS that item
@@ -755,8 +770,8 @@ body.tasks-peek-dragging {
      The SCALE is inset with it (`shell/peek-preview.ts` `PREVIEW_INSET`): the
      frame is drawn at the width that is left, not at the panel's, or the 28px
      would simply crop 56px of app off the right-hand side. */
-  padding-left: var(--peek-icon-w);
-  padding-right: var(--peek-icon-w);
+  padding-left: var(--peek-preview-inset);
+  padding-right: var(--peek-preview-inset);
 }
 
 body.tasks-peek-dragging .task-side-peek-preview {

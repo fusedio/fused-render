@@ -298,9 +298,8 @@ export const ICON_OPEN_FOLDER_PATH =
  *  square with the other marks. */
 export const ICON_OPEN_EXTERNAL = icon(
   <>
-    <path d="M15 3h6v6" />
-    <path d="M10 14 21 3" />
-    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+    <path d="M7 17 17 7" />
+    <path d="M8 7h9v9" />
   </>,
   11,
 );

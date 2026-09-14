@@ -611,12 +611,13 @@ describe("the preview's inset, and the page's gutters at width", () => {
     // edge and the ×'s edge cannot drift apart.
     expect(PEEK_CSS).toContain("--peek-icon-w: 28px;");
     expect(PEEK_CSS).toContain("width: var(--peek-icon-w);");
-    expect(PEEK_CSS).toContain("padding-left: var(--peek-icon-w);");
-    expect(PEEK_CSS).toContain("padding-right: var(--peek-icon-w);");
+    expect(PEEK_CSS).toContain("--peek-preview-inset: 38px;");
+    expect(PEEK_CSS).toContain("padding-left: var(--peek-preview-inset);");
+    expect(PEEK_CSS).toContain("padding-right: var(--peek-preview-inset);");
     // The ARITHMETIC half of the same number — padding on a scroller does not
     // shrink what is inside it, so the frame has to be drawn at the inner
     // width or the gutter simply crops the app.
-    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 28;");
+    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 38;");
     expect(read("peek-preview.ts")).toContain("const inner = peekWidth - 2 * PREVIEW_INSET;");
   });
 

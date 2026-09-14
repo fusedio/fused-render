@@ -65,7 +65,7 @@ export const PREVIEW_CHAT_MIN = 180;
  * owns the arithmetic, and neither can read the other. They are named in each
  * other's comments and pinned together by `peek-preview.test.ts`.
  */
-export const PREVIEW_INSET = 28;
+export const PREVIEW_INSET = 38;
 
 /** One arrow press on the horizontal seam, matching the vertical one's. */
 export const PREVIEW_KEY_STEP = 10;
