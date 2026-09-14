@@ -978,12 +978,19 @@ export function HubSearchScreen({
       />
       {/* Item 12c (fix round 3): the legend explained the ranking but never
        *  named the number itself — now opens by naming it, same as the
-       *  cell's own `data-tip` popover (round 5) already does on hover. */}
-      <p className="sorthint">
-        Match score (0–100) is ranked for this Mac: memory fit first, then speed, freshness and popularity; models
-        already here get a small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will
-        not fit ? not measured yet.
-      </p>
+       *  cell's own `data-tip` popover (round 5) already does on hover.
+       *  D1300 (item 1): gated on `waitPhase === "hidden"` — it explains a
+       *  score column that has no rows under it yet on a first search, and
+       *  otherwise sat between the filters and the wait block explaining
+       *  nothing. Once rows exist (or a re-search dims them) it's correct
+       *  again, so it's still rendered unconditionally past the wait phase. */}
+      {waitPhase === "hidden" && (
+        <p className="sorthint">
+          Match score (0–100) is ranked for this Mac: memory fit first, then speed, freshness and popularity; models
+          already here get a small bonus. Bar colour is the memory verdict: ● fits comfortably ▲ fits tightly ■ will
+          not fit ? not measured yet.
+        </p>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!error && poolState === "blocked" && (
         <p className="pool-build-banner pool-build-banner-blocked">
@@ -1031,31 +1038,36 @@ export function HubSearchScreen({
        *  above are what walk `waitPhase` through hub -> size -> rank ->
        *  hidden, and skip it entirely for a response inside 400ms. */}
       {!error && waitPhase !== "hidden" && waitText && (
-        <div className="hub-wait" role="status" aria-live="polite">
-          <p className="hub-wait-line anim">{waitText.line}</p>
-          <p className="hub-wait-sub">{waitText.sub}</p>
-          <div className="hub-wait-track" aria-hidden="true">
-            <i className="hub-wait-sweep anim" />
+        // D1300 (item 2): wraps `.hub-wait` so it can be vertically centred
+        // in the free space below the filter row — see the CSS comment on
+        // `.hub-wait-region` for why this replaces D1273's fixed top margin.
+        <div className="hub-wait-region">
+          <div className="hub-wait" role="status" aria-live="polite">
+            <p className="hub-wait-line anim">{waitText.line}</p>
+            <p className="hub-wait-sub">{waitText.sub}</p>
+            <div className="hub-wait-track" aria-hidden="true">
+              <i className="hub-wait-sweep anim" />
+            </div>
+            <div className="hub-wait-steps">
+              <span className={waitPhase !== "hub" ? "done" : "now"}>{poolReady ? "Catalog" : "Hub"}</span>
+              <span className={waitPhase === "rank" ? "done" : waitPhase === "size" ? "now" : ""}>Size</span>
+              <span className={waitPhase === "rank" ? "now" : ""}>Rank</span>
+            </div>
+            {slowSeconds != null && (
+              <p className="hub-wait-slow">
+                {hubWaitSlowLabel(slowSeconds, poolReady)}{" "}
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    abortRef.current?.abort();
+                  }}
+                >
+                  Cancel
+                </a>
+              </p>
+            )}
           </div>
-          <div className="hub-wait-steps">
-            <span className={waitPhase !== "hub" ? "done" : "now"}>{poolReady ? "Catalog" : "Hub"}</span>
-            <span className={waitPhase === "rank" ? "done" : waitPhase === "size" ? "now" : ""}>Size</span>
-            <span className={waitPhase === "rank" ? "now" : ""}>Rank</span>
-          </div>
-          {slowSeconds != null && (
-            <p className="hub-wait-slow">
-              {hubWaitSlowLabel(slowSeconds, poolReady)}{" "}
-              <a
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  abortRef.current?.abort();
-                }}
-              >
-                Cancel
-              </a>
-            </p>
-          )}
         </div>
       )}
       {waitPhase === "hidden" && models !== null && models.length === 0 && !error && (

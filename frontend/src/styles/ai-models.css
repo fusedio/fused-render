@@ -3230,6 +3230,18 @@ button.am-bench-model:focus-visible {
   padding-right: 22px;
 }
 
+/* D1300 (item 2): scoped to the advanced-search pane only (not the other
+   two `.tp-pane` roots, `CapabilityPane`'s `data-part="pane"`/`"pane.off"`)
+   so `.hub-wait-region` below has a flex parent to claim free space from
+   without touching either of those panes' block layout. Every existing
+   child here already sizes itself off its own margins (no adjacent-margin
+   collapsing was doing real work — the pairs are all margin-bottom-then-0),
+   so dropping collapsing costs nothing visible. */
+.tp-pane[data-part="adv"] {
+  display: flex;
+  flex-direction: column;
+}
+
 .tp-head {
   display: flex;
   align-items: flex-start;
@@ -4100,13 +4112,24 @@ button.am-bench-model:focus-visible {
    `hub-wait-variants.html`'s own `v2` card. Replaces the plain "Asking
    {host}…" line for a FIRST search only; a re-search keeps the existing
    dimmed `.am-hub-stale` rows and gets `.hub-wait-restale` instead (below). */
-/* D1273 (item 3): anchored a fixed 40px under the legend above, never
-   vertically centred in whatever empty space is left below it — with the
-   divider now full-height (`.tp-nav`, below) a centred block read as
-   floating, detached from the rest of the pane's top-down flow. */
+/* D1300 (item 2, reverses D1273's fixed 40px top margin): the legend it was
+   anchored under (`.sorthint`) is now gated off while the wait block shows
+   (item 1), so D1273's reason for keeping it pinned near the top — a
+   centred block reading detached from that legend — no longer holds.
+   `.hub-wait-region` (below, a flex child of `.tp-pane[data-part="adv"]`)
+   claims whatever vertical space is left below the filter row and centres
+   this block inside it, rather than hardcoding a top offset. */
+.hub-wait-region {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .hub-wait {
   max-width: 420px;
-  margin: 40px auto 0;
+  width: 100%;
   text-align: center;
 }
 
