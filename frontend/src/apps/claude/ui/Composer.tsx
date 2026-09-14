@@ -16,6 +16,7 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
   deleteChatDraft,
+  onChatDraftSpent,
   fetchChatDraft,
   saveChatDraft,
   useAutosave,
@@ -490,6 +491,24 @@ export function ComposerCard({
   autosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // SOMEBODY ELSE SENT THESE WORDS. The Board can drag a Done row into In
+  // Progress and send this conversation's unsent draft from there
+  // (shell/draft-run `chatBody`), while this box is open on the same key with
+  // the same sentence in it. Left alone, the next autosave puts the sent words
+  // back on the list as a draft and Send sends them again (Bugbot, PR #1140).
+  // So the spend is heard and the box does what its own Send does: empties,
+  // and resets the autosave to the empty value so no debounced write survives.
+  // The composer's OWN send announces too and lands here as a no-op — the box
+  // is already "" by then.
+  useEffect(
+    () =>
+      onChatDraftSpent((key) => {
+        if (key !== draftKeyRef.current) return;
+        setText("");
+        autosaveRef.current.reset({ text: "", attachments: [] });
+      }),
+    [],
+  );
 
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the

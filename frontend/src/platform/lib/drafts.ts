@@ -283,6 +283,7 @@ export function saveChatDraft(
  *  draft back out from under the delete. */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
   spent.add(key);
+  for (const cb of spentListeners) cb(key);
   return write("DELETE", chatUrl(key), undefined, opts);
 }
 
@@ -301,6 +302,37 @@ export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<
  *  remounting on that conversation — hands the words back as still unsent. */
 export function markChatDraftSpent(key: string): void {
   spent.add(key);
+  for (const cb of spentListeners) cb(key);
+}
+
+/** The other sender's mistake, undone: a drop that spent the key and then
+ *  FAILED to send (a 409 from the scheduler, the server not answering) leaves
+ *  the words exactly where they were on the server — so the key must read as
+ *  unsent again, or the board's own "try another drag" invitation surfaces
+ *  "that draft is gone" until a reload empties this set (Bugbot, PR #1140).
+ *  Nobody is told: the composer that heard the spend already emptied its box,
+ *  and the next thing that mounts on the key re-seeds from the server, which
+ *  still holds the words. */
+export function unmarkChatDraftSpent(key: string): void {
+  spent.delete(key);
+}
+
+/**
+ * WHO ELSE HOLDS THESE WORDS. A key can be spent by a sender that is NOT the
+ * composer showing it — the Board's drag of a Done row into In Progress
+ * (shell/draft-run `chatBody`). That composer's box still has the sentence in
+ * it, its autosave is still armed, and the next keystroke or blur would write
+ * the sent words back as an unsent draft — or Send would send them twice
+ * (Bugbot, PR #1140). So a spend is announced, and a composer mounted on that
+ * key empties itself the way its own Send does. Module-scope for the same
+ * reason `spent` is: the composer and the board are different trees.
+ */
+const spentListeners = new Set<(key: string) => void>();
+export function onChatDraftSpent(cb: (key: string) => void): () => void {
+  spentListeners.add(cb);
+  return () => {
+    spentListeners.delete(cb);
+  };
 }
 
 /**

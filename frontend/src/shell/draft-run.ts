@@ -32,6 +32,7 @@ import {
   fetchChatDraft,
   fetchDrafts,
   markChatDraftSpent,
+  unmarkChatDraftSpent,
 } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { copyToTaskShots } from "@apps/claude/ui/SchedButton";
@@ -350,11 +351,24 @@ export async function runRowDraftNow(
   task: Task,
   action: Extract<DropAction, { kind: "send-draft" }>,
 ): Promise<string> {
-  const made = await scheduleMessage(
-    action.draftKind === "form"
-      ? await boundFormBody(action.draftId)
-      : await chatBody(task, action.sessionId),
-  );
+  let made;
+  if (action.draftKind === "form") {
+    made = await scheduleMessage(await boundFormBody(action.draftId));
+  } else {
+    const body = await chatBody(task, action.sessionId);
+    try {
+      made = await scheduleMessage(body);
+    } catch (e) {
+      // THE SPEND IS TAKEN BACK when the send fails (Bugbot, PR #1140): the
+      // words are still on the server, the board's note invites another drag,
+      // and a key left spent would answer that drag with "gone" until a
+      // reload. `chatBody` spent it before the request on purpose (see
+      // there); this is the matching undo for the one outcome where the
+      // request did not do what the spend promised.
+      unmarkChatDraftSpent(action.sessionId);
+      throw e;
+    }
+  }
   // The new entry's id, for the same reason `runDraftNow` hands one back: the
   // words were dragged into In Progress, so the caller fires this immediately
   // rather than leaving a message due "now" for the scheduler to notice.
