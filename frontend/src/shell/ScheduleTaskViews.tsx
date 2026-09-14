@@ -264,10 +264,25 @@ const ICON_CLOCK = icon(
 );
 /** Open as page — the arrows that mean "out of here and into the whole thing",
  *  the same mark the side peek's header wears for the same act. */
-const ICON_EXPAND = icon(
-  <><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" /></>,
-  12,
-);
+/**
+ * OPEN IN EXPLORER — ONE GLYPH, EVERYWHERE (design.md, Header + list state v2).
+ *
+ * It is the Cards wall's door (MenuIcons.folder's outline), and it is now also
+ * the List row's, the Board card's and the peek header's. Until 2026-09-14 the
+ * rows and cards wore an `⤢` diagonal-arrows mark while the wall wore the
+ * folder — two pictures for one act, on one page, three inches apart. The
+ * folder is the one that says WHERE the press lands; the arrows only said
+ * "bigger", which is also what a maximise button says.
+ *
+ * The PATH is exported rather than a finished element: the three surfaces draw
+ * their icons at different sizes and stroke weights (12/2 on a row, 16/1.6 in
+ * a card head), and a shared element would have to pick one and be wrong twice.
+ * One shape, stated once; each site keeps its own weight.
+ */
+export const ICON_OPEN_FOLDER_PATH =
+  "M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z";
+
+const ICON_OPEN_DOOR = icon(<path d={ICON_OPEN_FOLDER_PATH} />, 12);
 /** The peeked row's own close, beside `ICON_OPEN` because the two swap. */
 const ICON_CLOSE = icon(<path d="M6 6l12 12M18 6L6 18" />, 12);
 const ICON_OPEN = icon(
@@ -839,12 +854,22 @@ function popStyle(el: HTMLElement | null): React.CSSProperties {
  * board. */
 function FilterMenu({
   label,
+  slot,
   count,
   icon: glyph,
   onClear,
   children,
 }: {
   label: string;
+  /** WHICH FILTER THIS IS, as a `data-filter` on the trigger's wrapper —
+   *  "status", "project", or "all" for the merged one.
+   *
+   *  The toolbar's fit ladder hides the two in a stated order (Project, then
+   *  Status — shell/row-fit.ts `TOOLBAR_DROPS`), and before this the two
+   *  wrappers were the same element with the same class: the ladder could only
+   *  address them positionally (`:last-of-type`), which named whichever one
+   *  happened to be painted last rather than the one it meant. */
+  slot: string;
   count: number;
   /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
    *  mark — that is the vocabulary this page states a status in, so on that menu
@@ -929,7 +954,7 @@ function FilterMenu({
   }, [open, count, splittable]);
 
   return (
-    <div className="schedule-tv-pop-wrap" ref={wrap}>
+    <div className="schedule-tv-pop-wrap" data-filter={slot} ref={wrap}>
       <span className="schedule-tv-filter-group">
         <button
           type="button"
@@ -1210,6 +1235,7 @@ export function TaskFilterControls({
       {merged ? (
         <FilterMenu
           label="Filters"
+          slot="all"
           count={statusCount + filters.projects.length}
           icon={ICON_FILTER}
           onClear={() => onChange({ ...filters, statuses: [], projects: [] })}
@@ -1231,6 +1257,7 @@ export function TaskFilterControls({
         <>
       <FilterMenu
         label="Status"
+        slot="status"
         count={statusCount}
         onClear={() => onChange({ ...filters, statuses: [] })}
       >
@@ -1242,6 +1269,7 @@ export function TaskFilterControls({
       {projects.length > 1 && (
         <FilterMenu
           label="Project"
+          slot="project"
           count={filters.projects.length}
           /* A FOLDER, because a project on this page IS a folder — it is
              auto-detected from where each task's work happens, and the same
@@ -3023,7 +3051,7 @@ function TaskNode({
               navigateUrl(page);
             }}
           >
-            {ICON_EXPAND}
+            {ICON_OPEN_DOOR}
           </a>
         )}
         {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
@@ -4693,7 +4721,7 @@ function TaskCard({
                 navigateUrl(page);
               }}
             >
-              {ICON_EXPAND}
+              {ICON_OPEN_DOOR}
             </a>
           )}
           {SHOW_ROW_ACTIONS && run && (

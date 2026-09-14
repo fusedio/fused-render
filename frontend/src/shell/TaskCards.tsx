@@ -40,6 +40,7 @@ import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
   ICON_ARCHIVE,
+  ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
   ICON_UNARCHIVE,
   DraftChip,
@@ -1167,10 +1168,14 @@ const ICON_PROPS = {
   "aria-hidden": true,
 };
 
-/** Open in Explorer — the folder (MenuIcons.folder's outline). */
+/** Open in Explorer — the folder (MenuIcons.folder's outline). The SHAPE now
+ *  lives in ScheduleTaskViews (`ICON_OPEN_FOLDER_PATH`), because the List row,
+ *  the Board card and the peek header draw the very same door and one page must
+ *  not hold two pictures of one act (design.md, Header + list state v2). Only
+ *  the weight is this file's: 16px at 1.6, the card head's own. */
 const ICON_FOLDER = (
   <svg {...ICON_PROPS}>
-    <path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z" />
+    <path d={ICON_OPEN_FOLDER_PATH} />
   </svg>
 );
 

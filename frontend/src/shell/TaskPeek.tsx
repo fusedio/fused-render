@@ -20,8 +20,6 @@
 // keyboard. What is open, how wide, and whether the sidebar had to give way is
 // `task-peek-store.ts` — pure, and tested there.
 import {
-  Suspense,
-  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -39,31 +37,28 @@ import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
+import PanelIcon from "@platform/ui/PanelIcon";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
+import { runAgent } from "@apps/claude/protocol/agent";
 
-/**
- * THE CHAT'S OWN IDENTITY LINE, reused rather than restyled (`@apps/claude/ui/
- * Topbar`): the Claude mark, the conversation's name, TASK-nnn, and the running
- * word. The peek used to carry a 44px strip of icons with a 32px title under it
- * — two headers for one panel, and a large gap between them (Akshil,
- * 2026-09-13: "doesn't look good"). Now there is ONE row, it is the row the
- * chat already has everywhere else, and the peek's own controls sit either side
- * of it.
- *
- * LAZY, for `ChatMount`'s reason exactly (see its `ClaudeChat` import): this
- * module reaches the chat's ⋮ and through it the agent protocol, and a static
- * import would put that in the shell's entry chunk for every route that merely
- * CAN open a peek. The panel always mounts a chat anyway, so the wait is one
- * the reader is already having.
- */
-const ChatTopbar = lazy(() =>
-  import("@apps/claude/ui/Topbar").then((m) => ({ default: m.Topbar })),
-);
+// THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
+// state v2). It wore `@apps/claude/ui/Topbar` between 2026-09-13 and -09-14,
+// which bought one row instead of two and cost the row its subject: the ✻
+// Claude wordmark and the model/run cluster are facts about the TOOL, and this
+// panel is about a TASK. What is left is the task — its status, its number, its
+// title — with the panel's own controls either side.
 import { columnLabel, folderHref, peekFrameSrc } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
-import { ICON_ARCHIVE, ICON_TRASH, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";
+import {
+  ICON_ARCHIVE,
+  ICON_OPEN_FOLDER_PATH,
+  ICON_TRASH,
+  ICON_UNARCHIVE,
+  StatusIcon,
+} from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
+import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
   PREVIEW_LOAD_TIMEOUT_MS,
@@ -92,13 +87,15 @@ import {
   taskHref,
   tildePath,
 } from "./tasks-lib";
+import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import {
   PEEK_ITEM_ATTR,
   PEEK_KEY_STEP,
-  PEEK_MAX_FRACTION,
+  nextAfterRemoval,
+  refreshPeekBaseline,
   PEEK_MIN_WIDTH,
-  applyRoom,
+  applyResize,
   clampPeekWidth,
   closePeek,
   currentRoom,
@@ -126,18 +123,37 @@ const PEEK_PARK_MS = 240;
 
 // ---- the store, as React -----------------------------------------------------
 
+/** The sidebar as ONE value that changes when it does — the store publishes an
+ *  object identity that `useSyncExternalStore` can compare, and what the layout
+ *  actually cares about is "did the content area move". */
+function sidebarStamp(): number {
+  const s = getSidebarState();
+  return s.collapsed ? -1 : s.width;
+}
+
 /** Re-render on window resize: every make-room rule is about the CURRENT
- *  window, so a peek opened wide has to re-decide when the window narrows. */
-function useViewportWidth(): number {
+ *  window, so a peek opened wide has to re-decide when the window narrows.
+ *
+ *  `enabled` is the flag's, and it reaches all the way down to the listener: a
+ *  reader who has opted out of the side peek is not paying for a resize handler
+ *  on the Tasks page (shell/task-peek-flag.ts). */
+function useViewportWidth(enabled: boolean): number {
   const [w, setW] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   useEffect(() => {
+    if (!enabled) return;
     const read = () => setW(window.innerWidth);
     read();
     window.addEventListener("resize", read);
     return () => window.removeEventListener("resize", read);
-  }, []);
+  }, [enabled]);
   return w;
 }
+
+/** A subscription that subscribes to nothing — what `useSyncExternalStore` is
+ *  handed when the feature is off, so the hook count is unchanged and no
+ *  listener is registered. */
+const NO_SUBSCRIBE = () => () => {};
+const NO_STAMP = () => 0;
 
 export interface PeekLayout {
   open: boolean;
@@ -145,6 +161,12 @@ export interface PeekLayout {
    *  in cover mode. Zero when closed, so the frame is simply full width. */
   width: number;
   cover: boolean;
+  /** The width the middle pane's CONTENT stops shrinking at — ¾ of the measured
+   *  baseline (design.md, Widths v2). Written onto the frame as a CSS variable. */
+  floor: number;
+  /** The frame is under that floor: the middle pane scrolls sideways instead of
+   *  reflowing any further. */
+  floored: boolean;
   instant: boolean;
 }
 
@@ -153,24 +175,44 @@ export interface PeekLayout {
  * how much is it taking. The frame's width is `calc(100% - <this>)`, which is
  * the one number both halves of the animation are built from.
  */
-export function useTaskPeekLayout(): PeekLayout {
+export function useTaskPeekLayout(enabled = true): PeekLayout {
   const state = useSyncExternalStore(subscribePeek, getPeekState, getPeekState);
-  const viewport = useViewportWidth();
+  const viewport = useViewportWidth(enabled);
+  // THE SIDEBAR IS THE OTHER HALF OF THE CONTENT AREA, and the reader may move
+  // it themselves at any moment — the rail's chevron, a drag on its handle.
+  // Without this the frame's WIDTH still followed (it is a percentage, so CSS
+  // re-resolves it), but `floored` did not: expanding the sidebar under an open
+  // peek took the middle pane below its floor and left the views reflowing past
+  // it, with no scroller, until the next seam nudge happened to re-render.
+  const sidebar = useSyncExternalStore(
+    enabled ? subscribeSidebarState : NO_SUBSCRIBE,
+    enabled ? sidebarStamp : NO_STAMP,
+    enabled ? sidebarStamp : NO_STAMP,
+  );
   return useMemo(() => {
     const room = currentRoom();
     if (state.key === null) {
-      return { open: false, width: 0, cover: false, instant: state.instant };
+      return {
+        open: false,
+        width: 0,
+        cover: false,
+        floor: room.floor,
+        floored: false,
+        instant: state.instant,
+      };
     }
     return {
       open: true,
       width: room.peekWidth,
       cover: room.cover,
+      floor: room.contentFloor,
+      floored: room.floored,
       instant: state.instant,
     };
     // `viewport` is not read directly — `currentRoom()` reads the window — but
     // it is what makes this recompute when the window changes size, which is
     // also what RE-CLAMPS a persisted width that no longer fits (design.md).
-  }, [state.key, state.width, state.instant, viewport]);
+  }, [state.key, state.width, state.baseline, state.instant, viewport, sidebar]);
 }
 
 /**
@@ -185,6 +227,12 @@ export function useTaskPeekHost(enabled: boolean): void {
   useLayoutEffect(() => {
     if (!enabled) return;
     setPeekHost(true);
+    // MEASURE BEFORE ADOPTING THE LINK, and synchronously, in this same layout
+    // effect. The page's baseline observer is a passive effect and therefore
+    // runs AFTER this one: a `?peek=` deep link used to freeze a baseline of
+    // null, and a null that latched made the floor a moving target for the rest
+    // of the visit (shell/task-peek-store.ts `freezeBaseline`).
+    refreshPeekBaseline();
     const deep = readPeekParam(location.search);
     if (deep) syncPeekFromUrl(location.search);
     return () => setPeekHost(false);
@@ -195,12 +243,13 @@ export function useTaskPeekHost(enabled: boolean): void {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, [enabled]);
-  // Every make-room rule is re-decided on resize, including the one that puts
-  // the sidebar back when the window grows past the threshold again.
+  // A WINDOW RESIZE IS ONE OF THE THREE GESTURES that may move the sidebar
+  // (design.md, Widths v2 — the seam's drag and its arrows are the other two),
+  // and it moves it only when the middle pane crosses its floor.
   useEffect(() => {
     if (!enabled) return;
     const onResize = () => {
-      if (getPeekState().key !== null) applyRoom();
+      if (getPeekState().key !== null) applyResize();
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -240,32 +289,33 @@ const ICON = {
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-const ICON_EXPAND = (
-  <svg {...ICON}><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" /></svg>
+/** OPEN IN EXPLORER — the page's one door glyph, drawn here at the header's own
+ *  weight (ScheduleTaskViews `ICON_OPEN_FOLDER_PATH` carries the shape). */
+const ICON_OPEN_DOOR = (
+  <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
 );
+/** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
+ *  through a list that is on screen; an arrow would promise travel. */
 const ICON_UP = (
-  <svg {...ICON}><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+  <svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>
 );
 const ICON_DOWN = (
-  <svg {...ICON}><path d="M12 5v14M19 12l-7 7-7-7" /></svg>
+  <svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>
 );
+/** VERTICAL, because it sits at the end of a row rather than in one: the kebab
+ *  every list in this app wears (design.md). */
 const ICON_DOTS = (
   <svg {...ICON}>
-    <circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="5" r="1.4" fill="currentColor" stroke="none" />
     <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
-    <circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none" />
   </svg>
 );
-const ICON_LINK = (
-  <svg {...ICON}>
-    <path d="M10 13a5 5 0 0 0 7.1.1l2.9-2.9a5 5 0 0 0-7.1-7.1L11 4.9" />
-    <path d="M14 11a5 5 0 0 0-7.1-.1L4 13.8a5 5 0 0 0 7.1 7.1l1.8-1.8" />
-  </svg>
+/** The terminal hand-off's mark — the prompt caret, the one picture of a shell
+ *  this app already uses for it. */
+const ICON_TERMINAL = (
+  <svg {...ICON}><polyline points="5 7 9 11 5 15" /><path d="M12 16h7" /></svg>
 );
-const ICON_PAGE = (
-  <svg {...ICON}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>
-);
-
 // ---- the panel ---------------------------------------------------------------
 
 export function TaskPeek({
@@ -344,6 +394,11 @@ export function TaskPeek({
   }, [layout.open]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const [erasing, setErasing] = useState(false);
+  // THE ORDER TO ADVANCE ALONG, read when the delete is asked for, not when it
+  // has happened: by `onDone` the poll may already have dropped the row, and
+  // `nextAfterRemoval` on a list that no longer holds the task closes the panel
+  // instead of moving on (same rule as the archive path below).
+  const eraseOrder = useRef<readonly string[]>([]);
   const [acting, setActing] = useState(false);
   // The last task we HELD, kept for the closing animation: the panel stays in
   // the DOM while it slides out, and an empty panel sliding away reads as a
@@ -457,6 +512,10 @@ export function TaskPeek({
       next: stepPeekKey(list, key, 1) !== null,
     });
   }, [key, tasks]);
+
+  // THE HEADER'S OWN FIT LADDER (shell/row-fit.ts `PEEK_HEAD_DROPS`): measured,
+  // never a breakpoint, and armed only while the panel is actually up.
+  const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
 
   // ---- the keyboard ----------------------------------------------------------
   /**
@@ -619,8 +678,15 @@ export function TaskPeek({
     // arrow key fires several times between paints, and every press after the
     // first would otherwise start again from the same stale number and the
     // panel would move ten pixels however long the key was held.
-    setPeekWidth(clampPeekWidth(currentRoom().peekWidth + delta, content));
-    applyRoom();
+    //
+    // THE DRAGGED NUMBER, not the RENDERED one, and in cover mode they differ:
+    // the panel renders at the whole content area there, so stepping down from
+    // what is on screen took ten pixels off the AREA every press and never off
+    // the panel — a seam that did nothing (Bugbot, PR #1138). `state.width` is
+    // the number the reader actually built.
+    const from = getPeekState().width ?? currentRoom().peekWidth;
+    setPeekWidth(clampPeekWidth(from + delta, content));
+    applyResize();
   };
   const onSeamPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -638,6 +704,12 @@ export function TaskPeek({
       const rect = host.getBoundingClientRect();
       settled = clampPeekWidth(rect.right - ev.clientX, rect.width);
       setPeekWidth(settled, false);
+      // THE CROSSING IS CHECKED ON EVERY MOVE, not only on the drop: the
+      // sidebar has to get out of the way WHILE the seam is travelling, which
+      // is the whole gesture Akshil described (drag wider → the sidebar tucks
+      // away). `planCrossing` fires only on a change of side, so the several
+      // hundred calls a drag makes cost one decision between them.
+      applyResize();
     };
     const onUp = () => {
       seam.classList.remove("dragging");
@@ -648,7 +720,7 @@ export function TaskPeek({
       // Only a drag that MOVED records a width — a bare click on the seam
       // leaves the panel exactly where it was (usePreviewPane's own rule).
       if (settled) setPeekWidth(settled);
-      applyRoom();
+      applyResize();
     };
     seam.addEventListener("pointermove", onMove);
     seam.addEventListener("pointerup", onUp);
@@ -725,64 +797,133 @@ export function TaskPeek({
     seam.addEventListener("pointercancel", onUp);
   };
 
-  // ---- the ⋯ menu ------------------------------------------------------------
+  // ---- the ⋮ menu ------------------------------------------------------------
+  /**
+   * WHERE THE PANEL GOES AFTER THE TASK IN IT IS FILED OR DELETED.
+   *
+   * Read the visible order BEFORE the act (shell/task-peek-store.ts
+   * `nextAfterRemoval` states why), then move: next down, previous if this was
+   * the last, close only if there is nothing else on the page at all. Filing is
+   * a SWEEP — you work down a column clearing it — and a panel that closed on
+   * every archive made the reader re-open the next one by hand (design.md,
+   * Header + list state v2).
+   *
+   * The halo comes along by itself: it is `openPeek`'s, not this function's.
+   */
+  const advancePast = (removed: string, visible: readonly string[]) => {
+    const next = nextAfterRemoval(visible, removed);
+    if (next) openPeek(next);
+    else closePeek();
+  };
+
   const filing = task ? filingIntent(task) : null;
   const refile = async () => {
     if (!filing || !task || acting) return;
+    const from = task.key;
     setActing(true);
+    // Captured before the await: the poll that follows `onReload` is what takes
+    // the row away, and by then the order has already moved on.
+    const visible = order();
     try {
       if (filing.kind === "archive") await archiveTask(task.key);
       else await unarchiveTask(task.key);
       onReload?.();
+      advancePast(from, visible);
     } catch (e) {
       notify({ title: (e as Error).message, tone: "error" });
     } finally {
       setActing(false);
     }
   };
+
+  /**
+   * CONTINUE THIS TASK IN A REAL TERMINAL — the chat's own door, not a new one
+   * (`@apps/claude/ui/Kebab`'s `onTerminal`): ask the folder's `agent.py` for
+   * the exact `claude --resume …` line and put it on the clipboard. There is no
+   * API here for launching a terminal — the app cannot open one — so what the
+   * act actually does is hand the reader the command, which is what it does
+   * everywhere else it is offered.
+   *
+   * Needs the template's folder, which this panel has already resolved for the
+   * chat it is framing (`template`), so no second stat.
+   */
+  const agentDir = template ? template.slice(0, template.lastIndexOf("/")) : null;
+  const toTerminal = async () => {
+    if (!task || !agentDir) return;
+    try {
+      const out = await runAgent(
+        agentDir,
+        "terminal_command",
+        { file: task.target || task.project, session_id: task.session_id ?? "" },
+        { key: null },
+      );
+      if ("error" in out && out.error) throw new Error(out.error);
+      if (!("command" in out)) throw new Error("agent.py returned no command");
+      const ok = await copyToClipboard(out.command);
+      notify({
+        title: ok ? "Command copied — paste it in your terminal" : "Could not copy the command",
+        tone: ok ? "info" : "error",
+      });
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    }
+  };
+
+  /**
+   * THREE ITEMS, and the list is the whole menu (design.md, Header + list state
+   * v2): continue in a terminal, file it, delete it. "Open as page" and "Copy
+   * link" are gone from here — the first is now a control of its own in the
+   * header, and the second was a menu row nobody could find for an act the
+   * address bar already does.
+   *
+   * A FOURTH appears only when the header has had to fold its own door away
+   * (`headFit`): a hidden control has to be somewhere, and the kebab is where.
+   */
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
-    if (page) {
-      items.push({ label: "Open as page", icon: ICON_PAGE, onClick: openAsPage });
-      items.push({
-        label: "Copy link",
-        icon: ICON_LINK,
-        onClick: () => {
-          void copyToClipboard(location.origin + page).then((ok) =>
-            notify({ title: ok ? "Link copied" : "Could not copy the link", tone: ok ? "info" : "error" }),
-          );
-        },
-      });
+    if (page && headFit >= PEEK_HEAD_DROPS.length) {
+      items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
+      items.push("separator");
     }
     if (gone) {
       items.push({
         label: "Open in Explorer",
-        icon: ICON_PAGE,
+        icon: ICON_OPEN_DOOR,
         disabled: true,
         onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
       });
+      items.push("separator");
     }
+    items.push({
+      label: "Continue this task in terminal",
+      icon: ICON_TERMINAL,
+      // No session and no template means there is no command to hand over —
+      // said by the row rather than by a toast after the press.
+      disabled: !agentDir || !task.session_id,
+      onClick: () => void toTerminal(),
+    });
     if (filing) {
-      if (items.length) items.push("separator");
       items.push({
-        label: filing.label,
+        label: filing.kind === "archive" ? "Archive task" : "Unarchive task",
         icon: filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE,
         disabled: acting,
         onClick: () => void refile(),
       });
     }
-    items.push("separator");
     // A menu row cannot carry a hint, so the DISABLED one says why in its own
     // words — nobody should meet the server's refusal for the first time inside
     // a confirmation (the card door's rule, tasks-lib.eraseBlocked).
     const blocked = eraseBlocked(task);
     items.push({
-      label: blocked ? `Delete forever — ${ERASE_BLOCKED_HINT.toLowerCase()}` : "Delete forever",
+      label: blocked ? `Delete task — ${ERASE_BLOCKED_HINT.toLowerCase()}` : "Delete task",
       icon: ICON_TRASH,
       danger: true,
       disabled: blocked,
-      onClick: () => setErasing(true),
+      onClick: () => {
+        eraseOrder.current = order();
+        setErasing(true);
+      },
     });
     return items;
   };
@@ -821,7 +962,11 @@ export function TaskPeek({
           // resize). The values are the same clamp the drag spends.
           aria-valuenow={Math.round(layout.width)}
           aria-valuemin={PEEK_MIN_WIDTH}
-          aria-valuemax={Math.round(contentWidth() * PEEK_MAX_FRACTION) || undefined}
+          // NO MAXIMUM BUT THE AREA ITSELF (design.md, Widths v2): past the
+          // cover threshold the panel simply is the content area, and a slider
+          // that claimed a smaller ceiling would be describing a stop that is
+          // not there.
+          aria-valuemax={Math.round(contentWidth()) || undefined}
           onPointerDown={onSeamPointerDown}
           onKeyDown={(e) => {
             // LEFT WIDENS: the panel's leading edge moves left, which is what
@@ -836,31 +981,38 @@ export function TaskPeek({
           }}
           onDoubleClick={() => {
             resetPeekWidth();
-            applyRoom();
+            applyResize();
           }}
         />
-        <header className="task-side-peek-head">
+        {/* ONE LINE, LEFT TO RIGHT: the panel's own controls, then WHOSE
+            panel it is (status · number · title), then what can be done with
+            it (design.md, Header + list state v2). The middle is the only part
+            that flexes, so the title is what gives first — everything either
+            side is a fixed mark and a mark that ellipsises is a mark that lies.
+
+            `data-fit` is measured, never a breakpoint (shell/row-fit.ts): at
+            the narrowest widths the project name goes, then the Open door —
+            and the door reappears in the ⋮ so the act is never unreachable. */}
+        <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
           <div className="task-side-peek-acts">
+            {/* HIDE THE PANEL, and the glyph says which panel: the app's shared
+                frame-with-one-half-filled (platform/ui/PanelIcon), `right`
+                because that is the column this is. The × is kept for COVER
+                mode alone — there the peek is not a column beside anything, it
+                IS the content area, and "hide the right panel" would be a
+                picture of a layout that is not on screen. */}
             <button
               type="button"
               className="task-side-peek-btn"
-              aria-label="Close"
-              data-hint="Close · Esc"
+              aria-label={layout.cover ? "Close" : "Hide the task panel"}
+              data-hint={layout.cover ? "Close · Esc" : "Hide · Esc"}
               onClick={() => closePeek()}
             >
-              {ICON_CLOSE}
+              {layout.cover ? ICON_CLOSE : <PanelIcon side="right" />}
             </button>
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Open as page"
-              data-hint="Open as page · ⌘↩"
-              disabled={!page}
-              onClick={openAsPage}
-            >
-              {ICON_EXPAND}
-            </button>
-            <span className="task-side-peek-gap" aria-hidden />
+            {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
+                reader can see, one step at a time — the gesture a chevron means
+                everywhere else in this app. A full arrow is for travel. */}
             <button
               type="button"
               className="task-side-peek-btn"
@@ -882,41 +1034,65 @@ export function TaskPeek({
               {ICON_DOWN}
             </button>
           </div>
-          {/* The chat's own line, carrying the TASK TITLE as its name — the
-              header's title IS the task's, so there is no second title row
-              under it and the conversation starts directly below. The fallback
-              is an empty box of the same width, so the row does not jump when
-              the chunk lands. */}
-          <Suspense fallback={<span className="task-side-peek-idle" aria-hidden />}>
-            {task ? (
-              <ChatTopbar
-                sessionId={task.session_id}
-                subtitle={title}
-                taskId={task.task_id}
-                running={taskColumn(task) === "in_progress"}
-              />
-            ) : (
-              <span className="task-side-peek-idle" aria-hidden />
-            )}
-          </Suspense>
+          {task ? (
+            <div className="task-side-peek-who">
+              {/* The ROW's ring, the same component and the same vocabulary —
+                  a reader who learned the mark in the list does not learn it
+                  twice. The word is the ring's tooltip rather than ink: it is
+                  the one fact here that repeats on every row of the list
+                  behind the panel. */}
+              <span
+                className="task-side-peek-status"
+                title={column ? columnLabel(column) : undefined}
+              >
+                <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+              </span>
+              <span className="task-side-peek-id">{task.task_id}</span>
+              <span className="task-side-peek-title" title={title}>
+                {title}
+              </span>
+            </div>
+          ) : (
+            <span className="task-side-peek-idle" aria-hidden />
+          )}
           {task && (
             <div className="task-side-peek-marks">
-              <span className="task-side-peek-status">
-                <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
-                {column ? columnLabel(column) : ""}
-              </span>
-              <IdentityChip
-                name={basename(task.project)}
+              {/* THE SAME DOOR AS THE ROW'S AND THE CARD'S — one folder glyph
+                  for "open in Explorer" everywhere (ScheduleTaskViews
+                  `ICON_OPEN_FOLDER_PATH`). A real link with a real href, so
+                  ⌘-click opens a tab, exactly like the row's. */}
+              {page && (
+                <a
+                  className="task-side-peek-btn task-side-peek-open"
+                  href={page}
+                  aria-label="Open in Explorer"
+                  data-hint="Open in Explorer · ⌘↩"
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    openAsPage();
+                  }}
+                >
+                  {ICON_OPEN_DOOR}
+                </a>
+              )}
+              {/* The project as a WORD, not a chip: a chip is a control, and
+                  there is nothing to press here — the folder is where the door
+                  beside it leads. */}
+              <span
+                className="task-side-peek-project"
                 title={tildePath(task.project, home)}
-              />
+              >
+                {basename(task.project)}
+              </span>
               <button
                 type="button"
-                className="task-side-peek-btn"
+                className="task-side-peek-btn task-side-peek-kebab"
                 aria-label="More actions"
                 data-hint="More actions"
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
-                  setMenuAt({ x: r.left, y: r.bottom + 4 });
+                  setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
                 }}
               >
                 {ICON_DOTS}
@@ -1050,7 +1226,10 @@ export function TaskPeek({
             setErasing(false);
             notify({ title: `Deleted ${task.task_id}`, tone: "info" });
             onReload?.();
-            closePeek();
+            // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
+            // the task is gone, the panel is not — it moves on to the next one
+            // down, and only closes when there is nothing left to move to.
+            advancePast(task.key, eraseOrder.current);
           }}
         />
       )}

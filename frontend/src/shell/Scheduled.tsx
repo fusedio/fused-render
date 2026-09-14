@@ -50,6 +50,7 @@
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   getConfig,
   getSchedule,
@@ -115,10 +116,16 @@ import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
-import { useToolbarFit } from "./row-fit";
+import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
 import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
-import { closePeek, frameClickCloses, openPeek } from "./task-peek-store";
+import {
+  closePeek,
+  frameClickCloses,
+  openPeek,
+  peekGutter,
+  refreshPeekBaseline,
+} from "./task-peek-store";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -952,7 +959,33 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [toolbar, toolbarRef] = useToolbarFit(peekOn);
   const peekable = !scope && peekOn;
   useTaskPeekHost(peekable);
-  const peek = useTaskPeekLayout();
+  const peek = useTaskPeekLayout(peekable);
+  // THE MIDDLE PANE'S BASELINE (design.md, Widths v2). What is kept here is the
+  // WATCH; the measurement itself is the store's (`measureTasksBaseline`), for
+  // a reason worth stating where a reader would come looking for it: this
+  // effect is passive, and `useTaskPeekHost`'s adoption of a `?peek=` deep link
+  // is a LAYOUT effect — it runs first, so a link-opened visit would freeze a
+  // baseline this observer had never had a chance to take. The store reads the
+  // page itself when it is asked for a number it does not have, and this watch
+  // is only the cheap path for the ordinary case.
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!peekable) return;
+    const frame = frameRef.current;
+    if (!frame) return;
+    const read = () => refreshPeekBaseline();
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(frame);
+    // The page's own sections arrive after the first fetch, so the element the
+    // measurement needs may not exist on the first tick.
+    const mo = new MutationObserver(read);
+    mo.observe(frame, { childList: true, subtree: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [peekable]);
   // ONE sentence for "there is nothing here", handed to all four views, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -1083,7 +1116,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             className="schedule-toolbar"
             ref={toolbarRef}
             {...(peekOn ? { "data-fit": toolbar.level } : {})}
-            data-wrap={toolbar.wrap ? "1" : undefined}
           >
             {/* The view toggle leads, at the far left of every view — it is the
                 one control that must never change address, and anchoring it to
@@ -1166,9 +1198,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
-              // The toolbar's last rung: one trigger instead of two, same rows
-              // inside it (shell/row-fit.ts TOOLBAR_DROPS).
-              merged={toolbar.level >= 4}
+              // The ladder's Project rung: one trigger instead of two, same rows
+              // inside it, each under its own heading (shell/row-fit.ts
+              // TOOLBAR_DROPS). Project loses its own control here and stays
+              // REACHABLE, which is the difference between folding a filter and
+              // taking it away.
+              merged={toolbar.level >= TOOLBAR_MERGE_LEVEL}
             />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
@@ -1396,11 +1431,28 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // usable frame left at that size, so the panel is laid over it whole rather
   // than squeezing the view to a sliver.
   const taken = peek.open && !peek.cover ? peek.width : 0;
+  // THE FLOOR, handed to the stylesheet as a length (design.md, Widths v2).
+  // `peek.floor` is a FRAME width — three quarters of a baseline that counts
+  // the page's gutters — and what the views need is the width of the content
+  // inside those gutters, so the gutters come back off here rather than being
+  // guessed at in CSS.
+  const contentFloor = Math.max(0, Math.round(peek.floor - peekGutter()));
   return (
     <div className="tasks-peek-host">
       <div
+        ref={frameRef}
         className={"tasks-frame" + (peek.instant ? " is-instant" : "")}
-        style={{ width: `calc(100% - ${taken}px)` }}
+        // `data-floored` is the switch and `--tasks-floor` the number: below the
+        // floor the views stop reflowing and scroll sideways inside the frame
+        // instead (styles/task-peek.css). The toolbar is deliberately NOT under
+        // it — it stays one line at every width and folds its own way.
+        data-floored={peek.floored ? "1" : undefined}
+        style={
+          {
+            width: `calc(100% - ${taken}px)`,
+            "--tasks-floor": `${contentFloor}px`,
+          } as CSSProperties
+        }
         // CLICKING BLANK FRAME CLOSES (design.md, Close triggers — and Akshil's
         // decision to keep Notion's behaviour). Everything that is a control or
         // an item does its own thing: rows and cards carry the walk's own

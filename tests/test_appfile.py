@@ -48,6 +48,7 @@ def test_export_then_open_round_trip(tmp_path, monkeypatch):
     assert manifest["fused_app_file"] == 2
     assert manifest["entry"] == "index.html"
     assert manifest["name"] == "demo"
+    assert manifest["exported_at"].endswith("Z") and len(manifest["exported_at"]) == 20
 
     # v2 is an opaque container, not a zip: no PK magic anywhere a scanner
     # sniffs, and the member names live in the deflated index only.
