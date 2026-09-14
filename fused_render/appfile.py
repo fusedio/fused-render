@@ -698,13 +698,13 @@ def clone_target(fused_path: str) -> dict:
     cloned = os.path.isdir(dest)
     file_stamp = exported_at(manifest)
     local = read_stamp(dest) if cloned else None
-    if cloned and local is None and _folder_matches_payload(dest, manifest):
-        # An unstamped folder whose payload IS this file's — the app this
-        # very file was exported from (exports before the source stamp
-        # existed), or a pre-D883 clone of it. Byte-equal means current, so
-        # record that and never offer the file as an upgrade of itself.
-        local = write_stamp(dest, exported_at=file_stamp,
-                            files=[f["path"] for f in manifest.get("files", [])])
+    # An unstamped folder whose payload IS this file's — the app this very
+    # file was exported from (exports before the source stamp existed), or a
+    # pre-D883 clone of it — is current, never an upgrade of itself. Decided
+    # by content on each probe and NOT recorded here: this runs behind the
+    # unguarded GET, which stays a read-only probe (D3/D397); the stamp lands
+    # on the next write path (clone, upgrade, export).
+    same = cloned and local is None and _folder_matches_payload(dest, manifest)
     local_stamp = (local.get("exported_at")
                    if local and isinstance(local.get("exported_at"), str) else None)
     return {
@@ -720,7 +720,7 @@ def clone_target(fused_path: str) -> dict:
         # pre-#1135 export) has been upgraded already and must not read as
         # upgradable forever.
         "local_exported_at": local_stamp,
-        "upgradable": cloned and (local is None or _newer(file_stamp, local_stamp)),
+        "upgradable": cloned and not same and (local is None or _newer(file_stamp, local_stamp)),
     }
 
 
@@ -1005,10 +1005,15 @@ _MATCH_MAX_BYTES = 64 * 1024 * 1024
 
 
 def _folder_matches_payload(folder: str, manifest: dict) -> bool:
-    """True when ``folder``'s payload (everything outside `.fused/`) is
-    byte-for-byte the file's: same relative paths, same sha256 per file, per
-    the v2 index. False for a v1 zip (no hashes), any extra or missing file,
-    any differing hash, or a payload over the size cap."""
+    """True when ``folder`` would export to this file's payload: the same
+    relative paths, same sha256 per file, per the v2 index. The folder side is
+    the EXPORTER'S OWN WALK (`_iter_app_files`: hidden names, `node_modules`,
+    `__pycache__`, gitignored files and `CLAUDE.md` dropped), not a raw
+    listing — a source folder always holds things its export does not. A
+    `preview.png` the index has and the folder lacks is the card capture the
+    export route baked in (D396), not a difference. False for a v1 zip (no
+    hashes), any other extra or missing file, any differing hash, a payload
+    over the size cap, or a folder the exporter's walk cannot read."""
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
         return False
@@ -1023,8 +1028,14 @@ def _folder_matches_payload(folder: str, manifest: dict) -> bool:
     if len(expected) != len(files):
         return False
     try:
-        if set(_payload_files(folder)) != set(expected):
-            return False
+        on_disk = {rel for _, rel in _iter_app_files(folder)}
+    except (AppFileError, OSError):
+        return False
+    if "preview.png" in expected and "preview.png" not in on_disk:
+        expected.pop("preview.png")
+    if on_disk != set(expected):
+        return False
+    try:
         for rel, digest in expected.items():
             h = hashlib.sha256()
             with open(os.path.join(folder, *rel.split("/")), "rb") as fh:

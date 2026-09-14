@@ -10933,7 +10933,9 @@ else: no editor, no Claude, no explorer chrome.
   `local_exported_at`, `upgradable` (string-compared ISO stamps; a stamp with
   no date is not upgradable — an undated v1 export must not read as newer
   forever; a folder with no stamp FILE is compared byte-for-byte against the
-  file's per-file sha256 index, capped at 64 MB — equal is stamped as current,
+  file's per-file sha256 index, the folder walked by the exporter's own rules
+  and a capture-only `preview.png` tolerated, capped at 64 MB — equal reads as
+  current on every probe and the GET writes nothing (it stays read-only),
   only a differing one is offered the upgrade; export stamps its SOURCE folder
   too, so an app living at `local/<slug>` never sees its own export as an
   upgrade); X-Fused `POST /api/appfile/upgrade` snapshots the
