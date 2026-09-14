@@ -78,6 +78,19 @@ export interface Attachments {
   take(lead?: readonly Attachment[]): OutgoingAttachments;
   /** The send never landed: put them back, prepended. */
   giveBack(items: readonly Attachment[]): void;
+  /**
+   * THE WORDS WENT OUT WITHOUT US. Somebody else sent this conversation's draft
+   * (the Board's drag of a Done row into In Progress — platform/lib/drafts
+   * `onChatDraftSpent`), files included, straight off the server's copy. The
+   * tray is now holding handles to a message that has already been sent, so it
+   * empties itself the way an unmount does: every ready chip revoked, and a
+   * chip whose bytes are still on their way revoked the moment they land
+   * instead of becoming a chip — otherwise that late arrival autosaves an
+   * attachments-only draft under the key and un-spends it (Bugbot, PR #1140).
+   * Not `take()`: that is the send primitive, keeps its pictures alive for a
+   * `giveBack`, and leaves pending chips in place by design.
+   */
+  discard(): void;
 }
 
 function errText(err: unknown): string {
@@ -238,6 +251,12 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
             api.revoke(att);
             break;
           }
+          if (disowned.current.delete(id)) {
+            // `discard()` ran while these bytes were on their way: the message
+            // they were for has been sent, so they are revoked, not seated.
+            api.revoke(att);
+            continue;
+          }
           commit((prev) => prev.map((s) => (s.id === id ? att : s)));
         }
       } catch (err) {
@@ -250,7 +269,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // a hole: a placeholder must not sit in the tray claiming a file is
         // still on its way, and removing it outright — what stood here — is the
         // dropped picture vanishing with no answer at all (Bugbot, PR #1064).
-        const unspent = ids.slice(i);
+        const unspent = ids.slice(i).filter((id) => !disowned.current.delete(id));
         if (unspent.length && alive.current) {
           const why = broke ? " (" + errText(broke) + ")" : "";
           const refused = new Map<string, Attachment>(
@@ -294,6 +313,17 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [api, commit],
   );
 
+  // Placeholder ids whose bytes were disowned by `discard()` while still in
+  // flight: when they land they are revoked, not seated (see `discard`).
+  const disowned = useRef<Set<string>>(new Set());
+  const discard = useCallback(() => {
+    for (const att of live.current) {
+      if (att.pending) disowned.current.add(att.id);
+      else api.revoke(att);
+    }
+    commit(() => []);
+  }, [api, commit]);
+
   const take = useCallback(
     (lead: readonly Attachment[] = []): OutgoingAttachments => {
       const mine = live.current.filter((s) => !s.pending);
@@ -333,5 +363,5 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [commit],
   );
 
-  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack };
+  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack, discard };
 }

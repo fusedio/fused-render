@@ -2532,9 +2532,9 @@ function ChatBody(props: ChatBodyProps) {
       attachments: () => attach.items,
       onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
       // A spend heard from the Board (the row's draft dragged into In Progress)
-      // empties the tray the way Send does — `take()` is the one call that
-      // does that, and its receipts are simply not used.
-      onDiscardAttachments: () => void attach.take(),
+      // empties the tray for good: the files already went with the message,
+      // off the server's copy (`useAttachments.discard`).
+      onDiscardAttachments: attach.discard,
       hasAttachments:
         attach.items.length > 0 ||
         ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),
