@@ -1126,7 +1126,12 @@
    here is the pane's floor, not the list's; see .listing-main. */
 .listing-pane-slot {
   flex: 0 0 auto;
-  min-width: 220px;
+  /* THE COMPOSER'S OWN FLOOR, shared with the Tasks side peek so the same chat
+     stops at the same width in both panes (styles/tokens.css, and
+     platform/lib/pane-metrics.ts for the derivation). It was 220 — this pane's
+     own number, from before the composer row carried three selects, at which
+     width the row is already tightening its pills and about to break. */
+  min-width: var(--side-pane-min);
   min-height: 0;
   display: flex;
   /* Anchors the seam below. */

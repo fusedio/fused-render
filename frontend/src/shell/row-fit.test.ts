@@ -25,6 +25,27 @@ import {
 } from "./row-fit";
 
 // age, count, project chip, Draft chip — plausible measured costs.
+/** Every level at or past `from`, as the `:is()` list the stylesheet spells
+ *  out — the ladder runs to 9 rungs now (design.md, Widths v2), and writing
+ *  them out is what keeps a level from being named once and then overtaken. */
+const levelsFrom = (from: number) =>
+  Array.from({ length: TOOLBAR_DROPS.length + 1 - from }, (_, i) => `[data-fit="${from + i}"]`);
+
+/**
+ * The stylesheet with its comments gone, every run of whitespace collapsed
+ * and the padding inside `(…)` and around commas removed — so a selector
+ * prettier has broken over eight lines and one it has left on a single line
+ * read as the same string here.
+ *
+ * The alternative is pinning prettier's line-breaking decisions, which is a
+ * test that fails on a rename three rungs away.
+ */
+const FLAT = SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, " ")
+  .replace(/\s+/g, " ")
+  .replace(/\(\s+/g, "(")
+  .replace(/\s+\)/g, ")")
+  .replace(/\s*,\s*/g, ",");
+
 const COSTS = [60, 40, 90, 70];
 
 describe("pickRowLevel", () => {
@@ -480,6 +501,40 @@ describe("pickLevelFromNeeds — the toolbar's fixed point", () => {
     expect(pickLevelFromNeeds(716, [NEED_AT_0, NEED_AT_1], 9)).toBe(1);
   });
 
+  it("folds New task to a + before the row can overflow, filter active", () => {
+    // A SELECTED filter is the widest the toolbar ever gets: the trigger
+    // becomes a split control — glyph, word, count badge, ✕ — so the row asks
+    // for ~80px more than it does at rest, exactly when the panel has taken
+    // most of the width. The ladder has to reach the rung that folds "+ New
+    // task" (3) before anything pokes out of the box.
+    //
+    // Needs measured with a chip on: 795 unfolded, then the view labels (−219),
+    // the filter word (−66), and the New task caption (−72).
+    const withChip = [795, 576, 510, 438];
+    // A 500px toolbar — about a 544px frame, mid-drag — has to get to 3.
+    expect(pickLevelFromNeeds(500, withChip, 9)).toBe(3);
+    // …and every level it passes through is one it MEASURED, so no level can
+    // report itself as fitting while a control hangs outside the row.
+    for (let l = 0; l < withChip.length; l += 1) {
+      const need = withChip[l] as number;
+      expect(pickLevelFromNeeds(need, withChip, 9)).toBeLessThanOrEqual(l);
+      expect(pickLevelFromNeeds(need - 1, withChip, 9)).toBeGreaterThan(l - 1);
+    }
+  });
+
+  it("keeps the count and the ✕ on a folded filter chip", () => {
+    // The badge is the only thing on a folded trigger that says a filter is ON,
+    // and the ✕ is the one way to turn it off without opening the menu — so the
+    // ladder folds the WORD and the pill's padding, and nothing else.
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(2).join(",")}) .schedule-tv-filter-btn {`,
+    );
+    for (const kept of [".schedule-tv-filter-count", ".schedule-tv-filter-x"]) {
+      expect(SCHEDULE_CSS).not.toContain(`${kept} {\n  display: none;`);
+      expect(TOOLBAR_DROPS.some((sel) => sel.includes(kept))).toBe(false);
+    }
+  });
+
   it("answers 0 for a row that has not been laid out", () => {
     expect(pickLevelFromNeeds(0, [NEED_AT_0], 9)).toBe(0);
   });
@@ -501,9 +556,12 @@ describe("the search field's caption", () => {
     // Scoped to the flag's attribute like every other rule that changes how
     // this toolbar lays out.
     const at = SCHEDULE_CSS.indexOf("container: tasks-search / inline-size;");
-    expect(SCHEDULE_CSS.slice(Math.max(0, at - 400), at)).toContain(
-      ".schedule-toolbar[data-fit] .schedule-tv-search {",
-    );
+    expect(SCHEDULE_CSS.slice(0, at)).toContain(".schedule-toolbar[data-fit] .schedule-tv-search {");
+    // …and the FLOOR is now the width that holds the caption, so the query is a
+    // backstop rather than the mechanism: the field is either reading properly
+    // or the ladder has taken it off the row (design.md, Polish batch 3).
+    expect(SCHEDULE_CSS).toContain("--fit-natural: 132px;");
+    expect(SCHEDULE_CSS).toContain("min-width: var(--fit-natural);");
   });
 });
 
@@ -543,27 +601,6 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   // failure: a level named once and then overtaken puts the words back on. The
   // New task label did exactly that — folded at level 3 and BACK at level 4,
   // which is the one level it most needed to be gone (measured live).
-  /** Every level at or past `from`, as the `:is()` list the stylesheet spells
-   *  out — the ladder runs to 9 rungs now (design.md, Widths v2), and writing
-   *  them out is what keeps a level from being named once and then overtaken. */
-  const levelsFrom = (from: number) =>
-    Array.from({ length: TOOLBAR_DROPS.length + 1 - from }, (_, i) => `[data-fit="${from + i}"]`);
-
-  /**
-   * The stylesheet with its comments gone, every run of whitespace collapsed
-   * and the padding inside `(…)` and around commas removed — so a selector
-   * prettier has broken over eight lines and one it has left on a single line
-   * read as the same string here.
-   *
-   * The alternative is pinning prettier's line-breaking decisions, which is a
-   * test that fails on a rename three rungs away.
-   */
-  const FLAT = SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\(\s+/g, "(")
-    .replace(/\s+\)/g, ")")
-    .replace(/\s*,\s*/g, ",");
-
   it("folds the New task label at level 3 AND at every level past it", () => {
     expect(FLAT).toContain(
       `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-new .schedule-fit-lbl`,

@@ -2404,6 +2404,20 @@ function TaskNode({
     onRead(task.key, m);
     const to = messageHref(task, m);
     if (!to) return;
+    // THE PEEK TAKES IT, WITH THE TURN NAMED. A message row addresses something
+    // smaller than a task — one turn of the conversation — and the panel can
+    // show exactly that: the same `msg=` anchor the Explorer route carries,
+    // handed to the chat instead of to the router (design.md, Polish batch 3).
+    // The thread the reader has expanded stays on screen beside it, which is
+    // the whole point of a peek and was the one thing this press could not do.
+    //
+    // `openPeek` answers false anywhere the page is not hosting one (the app
+    // page's Tasks tab, the flag off), and then this is the navigation it has
+    // always been.
+    if (openPeek(task.key, { anchor: m.anchor || null })) {
+      onSelect();
+      return;
+    }
     // Leaving the page, so this is the row to come back to — the thread row
     // belongs to this task, and the task's row is what is still on screen when
     // the reader returns.

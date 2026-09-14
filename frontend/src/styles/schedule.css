@@ -4060,7 +4060,20 @@ input.schedule-when-field {
    72px is about six characters — the least a FILTER field can be and still be
    one, and it is only ever this narrow on the ladder's last rung. */
 .schedule-toolbar[data-fit] .schedule-tv-search {
-  --fit-natural: 72px;
+  /* WHAT THE FIELD MUST KEEP, and it is now the width that holds its own
+     caption rather than a bare six characters (Akshil, 2026-09-14). At 72 the
+     placeholder was cut to "Sea" at the default panel width — and worse, the
+     fit arithmetic charged the field 72 while flex stopped it well above that,
+     so the toolbar's need was understated at every level. One number, read by
+     the stylesheet as the floor and by shell/row-fit.ts as the charge, and the
+     two now describe the same field.
+
+     132 = "Search tasks…" (82px at this size) inside the 28px of left padding
+     the magnifier sits in and 10px of right padding, plus a couple of pixels
+     for the font that actually loads. */
+  --fit-natural: 132px;
+  /* Opens at 260 and gives that slack up first — everything between the basis
+     and the floor is spent before any word in the row folds. */
   flex: 0 1 260px;
   width: auto;
   min-width: var(--fit-natural);
@@ -4070,15 +4083,14 @@ input.schedule-when-field {
 }
 
 /* THE PLACEHOLDER IS WHOLE OR IT IS GONE — never "Sea".
-   At the ladder's lower rungs the field is squeezed towards its 72px floor, and
-   "Search tasks…" wants 82px of text inside 38px of padding, so somewhere
-   around 120px the caption starts being cut mid-word (measured live,
-   2026-09-14, at fit 1). A clipped word reads as a rendering fault; a field
-   that is a magnifier and an empty box reads as a search box that has run out
-   of room, which is what it is.
-   132 rather than 121: the exact figure moves with the font that actually
-   loads, and the failure on the wrong side of it is visible. Between the two
-   the caption is merely absent, which is the state it is heading for anyway.
+   The floor above is now the width that holds the caption, so in the ordinary
+   run of things this rule never fires: the field is either ≥132 and reading
+   properly, or the ladder has taken it off the row entirely (rung 5). It stays
+   as a BACKSTOP, for the widths the floor cannot govern — a font that loads
+   wider than the one measured, a zoomed page, a future seat that squeezes the
+   group below its own minimum. A clipped word reads as a rendering fault; a
+   magnifier over an empty box reads as a search that has run out of room,
+   which is what it is.
    A container query, not a `[data-fit]` level: the field's width is decided by
    flex against whatever the other seats took, so no rung of the ladder names a
    width this rule could key on. */
@@ -4185,6 +4197,31 @@ input.schedule-when-field {
    height as its neighbours. The caption moves to the tooltip the button already
    carries (`title`), which is where a label goes when it cannot be ink. */
 .schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-view-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* THE SAME FOR A FILTER TRIGGER, and it matters most on an ACTIVE one (Akshil,
+   2026-09-14): with a selection it is a split control — glyph, word, count,
+   and a ✕ in its own half — so it is the widest seat on the row exactly when
+   the row has least to spare. Folding took the word and left the pill's
+   padding, which is a lot of nothing between a glyph and a badge.
+
+   THE COUNT AND THE ✕ STAY. The badge is the only thing on a folded trigger
+   that says a filter is ON at all, and the ✕ is the one gesture that turns it
+   off without opening the menu first; hiding either would make a narrow page a
+   page you cannot get your own filter off. */
+.schedule-toolbar:is(
+    [data-fit="2"],
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-filter-btn {
   padding-left: 8px;
   padding-right: 8px;
 }

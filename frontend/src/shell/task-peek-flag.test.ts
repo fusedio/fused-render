@@ -35,6 +35,18 @@ const SCHEDULE_CSS = read("../styles/schedule.css");
 const PEEK_CSS = read("../styles/task-peek.css");
 const TASKS_CSS = read("../styles/tasks.css");
 const CARDS_CSS = read("../styles/task-cards.css");
+
+/** One rule, as its selector list and its declarations together — the shape the
+ *  assertions below want, since several of them are about WHICH surfaces share
+ *  one declaration block. Comments are stripped first, so prose that names a
+ *  selector cannot be mistaken for the rule that states it. */
+function block(css: string, selector: string): string {
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const [whole, list] of bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (list.split(",").some((one) => one.trim() === selector)) return whole;
+  }
+  throw new Error(`no rule whose selector list holds exactly "${selector}"`);
+}
 const SIDEBAR = read("../platform/ui/sidebar/SidebarFrame.tsx");
 
 const store = await import("./task-peek-store");
@@ -193,26 +205,36 @@ describe("the peek header", () => {
       return i;
     };
     const order = [
-      'aria-label={layout.cover ? "Close" : "Hide the task panel"}',
+      'aria-label={layout.cover ? "Show list" : "Hide the task panel"}',
       'aria-label="Previous task"',
       'aria-label="Next task"',
       "<StatusIcon",
       "task-side-peek-id",
       "task-side-peek-title",
       "task-side-peek-open",
+      // The project name is a DOOR now: folder mark plus folder name as one
+      // target, opening the folder in Explorer (design.md, Polish batch 3).
       "task-side-peek-project",
+      'data-hint="Open project folder"',
       'aria-label="More actions"',
     ].map(at);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(head).not.toContain("tabIndex");
   });
 
-  it("hides the panel with the app's shared panel glyph, and × only in cover", () => {
-    // `PanelIcon side="right"` is the frame-with-one-half-filled the Explorer's
-    // own companion column wears — this IS that column. In cover mode there is
-    // no column beside anything, so the × comes back.
-    expect(HEAD).toContain('{layout.cover ? ICON_CLOSE : <PanelIcon side="right" />}');
+  it("is a PANEL glyph in both states — right to hide, left to show the list", () => {
+    // `PanelIcon` is the frame-with-one-half-filled the Explorer's own
+    // companion column wears, and which half is filled names the column. In
+    // cover the panel IS the content area, so the act is not "hide me" but
+    // "bring the list back", and the glyph points at the list (design.md,
+    // Polish batch 3 — Akshil's option b).
+    expect(HEAD).toContain('<PanelIcon side={layout.cover ? "left" : "right"} />');
     expect(HEAD).toContain('import PanelIcon from "@platform/ui/PanelIcon"');
+    expect(HEAD).toContain("layout.cover ? showListBesidePeek() : closePeek()");
+    // …and because the header's first control is no longer a close in cover,
+    // Close moves into the ⋮ so a covered page is never a page with no way out
+    // but a key.
+    expect(HEAD).toContain('items.push({ label: "Close", icon: ICON_CLOSE');
   });
 
   it("uses the page's ONE open-in-Explorer glyph", () => {
@@ -250,12 +272,12 @@ describe("the peek header", () => {
       HEAD.indexOf('<header className="task-side-peek-head"'),
       HEAD.indexOf("</header>"),
     );
-    // One `data-hint` per icon control — the app's own tooltip contract. Five
-    // controls: hide, prev, next, open, kebab.
-    expect(head.match(/data-hint=/g)?.length).toBe(5);
+    // One `data-hint` per icon control — the app's own tooltip contract. Six
+    // controls now: hide/show-list, prev, next, open, the project door, kebab.
+    expect(head.match(/data-hint=/g)?.length).toBe(6);
   });
 
-  it("stays ONE LINE at 220px by folding, in a stated order", () => {
+  it("stays ONE LINE at the pane minimum by folding, in a stated order", () => {
     // The title ellipsises all the way down first; then the project name goes,
     // then the door — and the door reappears in the ⋮, because a hidden control
     // has to be somewhere (design.md, Header + list state v2).
@@ -270,6 +292,38 @@ describe("the peek header", () => {
     for (const kept of ["task-side-peek-title", "task-side-peek-id", "task-side-peek-kebab"]) {
       expect(PEEK_CSS).not.toContain(`[data-fit] .${kept} {\n  display: none`);
     }
+  });
+
+  it("sends a MESSAGE row to the panel, at that turn", () => {
+    // The press used to leave the page for Explorer; now the thread the reader
+    // has expanded stays on screen beside the conversation, which is the whole
+    // point of a peek and the one thing this press could not do (design.md,
+    // Polish batch 3). `openPeek` answers false off /tasks, and then it is the
+    // navigation it has always been.
+    expect(VIEWS).toContain("if (openPeek(task.key, { anchor: m.anchor || null })) {");
+    expect(VIEWS).toContain("navigateUrl(to);");
+    // The anchor reaches BOTH chats: the legacy template takes it on its URL,
+    // the native one as a seeded param.
+    expect(read("../apps/claude/legacy-src.ts")).toContain(
+      'msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : ""',
+    );
+    expect(HEAD).toContain("{...(anchor ? { msgAnchor: anchor } : {})}");
+    expect(read("../apps/claude/ChatMount.tsx")).toContain(
+      'if (msgAnchor && memory.get("msg") !== msgAnchor) memory.set({ msg: msgAnchor });',
+    );
+  });
+
+  it("makes the project a door of its own — the FOLDER, not the task", () => {
+    // Two ways out of a task panel, and they are different places: the ⤢ opens
+    // this task in Explorer (a conversation), the project opens the folder it
+    // runs in (files). `folderHref` is the row's own folder door, so the two
+    // agree about where a project is.
+    expect(HEAD).toContain("const folderPage = task && !gone ? folderHref(task) : null;");
+    expect(HEAD).toContain('data-hint="Open project folder"');
+    expect(HEAD).toContain("navigateUrl(folderPage);");
+    // Mark and name are ONE target, not a chip with a link in it.
+    expect(HEAD).toContain('<span className="task-side-peek-project-name">');
+    expect(PEEK_CSS).toContain(".task-side-peek-project:hover");
   });
 
   it("advances rather than closing when the task is filed or deleted", () => {
@@ -331,26 +385,42 @@ describe("the one selected style, and the flag that gates it", () => {
   });
 
   it("is ONE look on all three surfaces once the flag is on", () => {
-    // Same ring width, same tint, same radius rule (the element's own — a
-    // `box-shadow` follows whatever `border-radius` the component already has).
-    const ring = "box-shadow: inset 0 0 0 1.5px var(--peek-halo)";
-    const tint = "background: color-mix(in srgb, var(--peek-halo) 8%, transparent)";
-    expect(PEEK_CSS).toContain(ring);
-    expect(PEEK_CSS).toContain(tint);
+    // A FILL, not a ring (design.md, Polish batch 3). The tokens are the app's
+    // own row pair — tokens.css has no `--bg-secondary`/`--bg-tertiary`, and
+    // `--row-bg-active` / `--row-bg-hover` are exactly the secondary and
+    // tertiary row surfaces it does have.
+    const active = block(PEEK_CSS, ".tasks-peek-host .tasks-row.is-peeked");
+    expect(active).toContain("background: var(--row-bg-active)");
+    // The same declaration block names every surface, which is the only way
+    // "identical" survives the next tuning.
     for (const surface of [
-      ".tasks-row.is-peeked",
-      ".tasks-row.is-selected",
-      ".schedule-tv-card.is-peeked",
-      ".task-card.is-peeked",
+      ".tasks-peek-host .tasks-row.is-peeked",
+      ".tasks-peek-host .schedule-tv-card.is-peeked",
+      ".tasks-peek-host .task-card.is-peeked",
+      // …and the wall card's HEAD, which is painted over the card itself: a
+      // fill on the card alone showed nothing, which is the Cards-view miss
+      // this batch was asked to fix.
+      ".tasks-peek-host .task-card.is-peeked .task-card-head",
     ]) {
-      expect(PEEK_CSS).toContain(`.tasks-peek-host ${surface}`);
+      expect(active).toContain(surface);
     }
-    // Neither card may keep its 1px border under the ring, or the mark is 2.5px
-    // on a card and 1.5px on a row.
-    expect(PEEK_CSS).toContain("border-color: transparent;");
-    // Hover is the same colour, lighter, on all three.
-    expect(PEEK_CSS).toContain("color-mix(in srgb, var(--peek-halo) 4%, transparent)");
-    expect(PEEK_CSS).toContain("color-mix(in srgb, var(--peek-halo) 4%, var(--tasks-card-bg))");
+    const hover = block(PEEK_CSS, ".tasks-peek-host .tasks-row:hover");
+    expect(hover).toContain("background: var(--row-bg-hover)");
+    expect(hover).toContain(".tasks-peek-host .task-card-head:hover");
+    expect(hover).toContain(".tasks-peek-host .schedule-tv-board .schedule-tv-card:hover");
+    // NO ACCENT RING left on any of the three.
+    expect(active).not.toContain("--peek-halo");
+    expect(hover).not.toContain("--peek-halo");
+  });
+
+  it("fills exactly ONE item — the second highlight is gone", () => {
+    // `.is-selected` is the List's own memory of where the reader was, and with
+    // a panel open it was a second answer to one question.
+    const quiet = block(PEEK_CSS, ".tasks-peek-host .tasks-row.is-selected:not(.is-peeked)");
+    expect(quiet).toContain("background: transparent");
+    // …and it keeps the ordinary hover, so a row does not go dead under the
+    // pointer just because it used to be the one you opened.
+    expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-row.is-selected:not(.is-peeked):hover,");
   });
 });
 
@@ -384,15 +454,22 @@ describe("the middle pane's floor", () => {
   });
 
   it("scrolls each view sideways at the floor instead of reflowing it", () => {
-    for (const view of [".tasks-list", ".task-cards-scroll", ".schedule-cal"]) {
+    for (const view of [".tasks-list", ".schedule-cal"]) {
       // Each view is named twice: once as a scroller, once for the content
       // inside it that stops shrinking.
       expect(PEEK_CSS).toContain(`.tasks-frame[data-floored="1"] ${view} > *`);
       const scrollers = PEEK_CSS.slice(
         PEEK_CSS.indexOf('.tasks-frame[data-floored="1"] .tasks-list,'),
-      ).slice(0, 220);
+      ).slice(0, 160);
       expect(scrollers).toContain(`.tasks-frame[data-floored="1"] ${view}`);
     }
+    // THE CARDS WALL IS DELIBERATELY NOT ONE OF THEM (design.md, Polish batch
+    // 3): a grid of conversations answers a narrower pane by dropping a column,
+    // which a list of rows cannot do. It is pinned closed rather than left
+    // unmentioned, because "no rule" and "a rule that says never" read the same
+    // in a diff and only one of them survives a refactor.
+    expect(PEEK_CSS).toContain('.tasks-frame[data-floored="1"] .task-cards-scroll {\n  overflow-x: hidden;');
+    expect(PEEK_CSS).toContain("grid-template-columns: repeat(auto-fill, minmax(min(var(--task-card-min), 100%), 1fr));");
     expect(PEEK_CSS).toContain("overflow-x: auto;");
     expect(PEEK_CSS).toContain("min-width: var(--tasks-floor, 0px);");
   });

@@ -64,7 +64,6 @@ import {
   PREVIEW_LOAD_TIMEOUT_MS,
   PREVIEW_MIN_H,
   PREVIEW_CHAT_MIN,
-  PREVIEW_VH,
   PREVIEW_VW,
   getPreviewHeight,
   previewBox,
@@ -106,9 +105,11 @@ import {
   setPeekHost,
   setPeekWidth,
   settlePeek,
+  showListBesidePeek,
   stepPeekKey,
   subscribePeek,
   syncPeekFromUrl,
+  usePeekAnchor,
   usePeekedKey,
 } from "./task-peek-store";
 
@@ -167,6 +168,9 @@ export interface PeekLayout {
   /** The frame is under that floor: the middle pane scrolls sideways instead of
    *  reflowing any further. */
   floored: boolean;
+  /** The frame is narrower than the column plus its gutters — there are no
+   *  centred margins left to absorb anything, so the gutters come in. */
+  tight: boolean;
   instant: boolean;
 }
 
@@ -198,6 +202,7 @@ export function useTaskPeekLayout(enabled = true): PeekLayout {
         cover: false,
         floor: room.floor,
         floored: false,
+        tight: false,
         instant: state.instant,
       };
     }
@@ -207,6 +212,7 @@ export function useTaskPeekLayout(enabled = true): PeekLayout {
       cover: room.cover,
       floor: room.contentFloor,
       floored: room.floored,
+      tight: room.tight,
       instant: state.instant,
     };
     // `viewport` is not read directly — `currentRoom()` reads the window — but
@@ -286,6 +292,9 @@ const ICON = {
   "aria-hidden": true,
 };
 
+/** Close, for the ⋮ — the header's own first control is a PANEL glyph in both
+ *  of its states now (hide the panel; show the list), so the × has moved to the
+ *  one place that still says "close" in words (design.md, Polish batch 3). */
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
@@ -311,6 +320,17 @@ const ICON_DOTS = (
     <circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none" />
   </svg>
 );
+/** The PROJECT's mark — the closed folder the page already wears on its folder
+ *  chips and its Project filter (ScheduleTaskViews `ICON_FOLDER`), drawn here
+ *  at the header's weight. Deliberately NOT the open-folder door beside it:
+ *  that one means "go to this task in Explorer" and this one means "go to the
+ *  folder", and two doors an inch apart must not be the same picture. */
+const ICON_FOLDER_MARK = (
+  <svg {...ICON}>
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  </svg>
+);
+
 /** The terminal hand-off's mark — the prompt caret, the one picture of a shell
  *  this app already uses for it. */
 const ICON_TERMINAL = (
@@ -339,6 +359,7 @@ export function TaskPeek({
 }) {
   const layout = useTaskPeekLayout();
   const key = usePeekedKey();
+  const anchor = usePeekAnchor();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -427,7 +448,9 @@ export function TaskPeek({
       // page and takes ⌃⇧J / ⌃⇧K / ⌘↩ with it. A wrapper at the HOST, which is
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
-      ? withNoFocus(peekFrameSrc(template, task.target || task.project, task.session_id))
+      ? withNoFocus(
+          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
+        )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
 
@@ -482,6 +505,9 @@ export function TaskPeek({
   const previewFailed = load === "failed";
   const previewReady = load === "ready";
   const page = task ? (gone ? null : (taskHref(task) ?? folderHref(task))) : null;
+  /** The task's FOLDER in Explorer — the other door, behind the project name.
+   *  Null when the folder is gone, for the same reason the task door is. */
+  const folderPage = task && !gone ? folderHref(task) : null;
 
   const openAsPage = useCallback(() => {
     if (!page) return;
@@ -895,6 +921,11 @@ export function TaskPeek({
       });
       items.push("separator");
     }
+    // CLOSE LIVES HERE TOO, and in cover mode it lives here ALONE: the header's
+    // first control has become "Show list" there, so without this the only way
+    // out of a covered page would be a key (design.md, Polish batch 3).
+    items.push({ label: "Close", icon: ICON_CLOSE, onClick: () => closePeek() });
+    items.push("separator");
     items.push({
       label: "Continue this task in terminal",
       icon: ICON_TERMINAL,
@@ -1004,11 +1035,19 @@ export function TaskPeek({
             <button
               type="button"
               className="task-side-peek-btn"
-              aria-label={layout.cover ? "Close" : "Hide the task panel"}
-              data-hint={layout.cover ? "Close · Esc" : "Hide · Esc"}
-              onClick={() => closePeek()}
+              // IN COVER IT IS A DIFFERENT ACT, and it says so: the panel is
+              // the whole content area there, so what the reader wants back is
+              // the LIST, not the absence of the panel. Pressing it restores
+              // the split and leaves the task open; closing is Esc, and the ⋮
+              // (design.md, Polish batch 3).
+              //
+              // The glyph is the same shared frame with the other half filled —
+              // `left`, because what comes back is the column on the left.
+              aria-label={layout.cover ? "Show list" : "Hide the task panel"}
+              data-hint={layout.cover ? "Show list" : "Hide · Esc"}
+              onClick={() => (layout.cover ? showListBesidePeek() : closePeek())}
             >
-              {layout.cover ? ICON_CLOSE : <PanelIcon side="right" />}
+              <PanelIcon side={layout.cover ? "left" : "right"} />
             </button>
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
                 reader can see, one step at a time — the gesture a chevron means
@@ -1076,15 +1115,42 @@ export function TaskPeek({
                   {ICON_OPEN_DOOR}
                 </a>
               )}
-              {/* The project as a WORD, not a chip: a chip is a control, and
-                  there is nothing to press here — the folder is where the door
-                  beside it leads. */}
-              <span
-                className="task-side-peek-project"
-                title={tildePath(task.project, home)}
-              >
-                {basename(task.project)}
-              </span>
+              {/* THE PROJECT IS A DOOR TOO, and a different one from the
+                  ⤢ beside it (Akshil, 2026-09-14 — design.md, Polish batch 3).
+                  That one opens THIS TASK in Explorer, which is a conversation;
+                  this one opens the FOLDER the task runs in, which is files.
+                  Two things a reader wants from a task panel and only one of
+                  them had a way out of it.
+
+                  The glyph and the word are one button rather than a chip with
+                  a link in it: the whole cluster is the target, which is what a
+                  pointer expects of something that looks like a label with an
+                  icon in front of it. `folderHref` is the row's own folder
+                  door, so the two agree about where a project IS. */}
+              {folderPage && (
+                <a
+                  className="task-side-peek-project"
+                  href={folderPage}
+                  aria-label={`Open ${basename(task.project)} in Explorer`}
+                  data-hint="Open project folder"
+                  title={tildePath(task.project, home)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    // The panel is a view OF this page; walking to Explorer
+                    // leaves the page, so the peek goes with it and pushes no
+                    // entry of its own (`openAsPage`'s rule, for the same
+                    // reason: one Back, not two).
+                    closePeek({ push: false });
+                    navigateUrl(folderPage);
+                  }}
+                >
+                  {ICON_FOLDER_MARK}
+                  <span className="task-side-peek-project-name">
+                    {basename(task.project)}
+                  </span>
+                </a>
+              )}
               <button
                 type="button"
                 className="task-side-peek-btn task-side-peek-kebab"
@@ -1120,9 +1186,15 @@ export function TaskPeek({
                   <>
                     <div
                       className="task-side-peek-preview-scale"
+                      // The scaled frame's real footprint, and it tracks the
+                      // FRAME's height rather than a constant 720 now: past its
+                      // natural size the box gives the app a taller viewport
+                      // instead of cropping it (shell/peek-preview.ts
+                      // `previewBox`), and the wrapper is what tells the
+                      // scroller how much there is.
                       style={{
                         width: PREVIEW_VW * box.scale,
-                        height: PREVIEW_VH * box.scale,
+                        height: box.frameHeight * box.scale,
                       }}
                     >
                       <iframe
@@ -1132,7 +1204,7 @@ export function TaskPeek({
                         title={app ? `${app.name} preview` : "App preview"}
                         style={{
                           width: PREVIEW_VW,
-                          height: PREVIEW_VH,
+                          height: box.frameHeight,
                           transform: `scale(${box.scale})`,
                         }}
                         onLoad={() => stepLoad("load")}
@@ -1186,6 +1258,11 @@ export function TaskPeek({
                 title={`${task.task_id} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
+                // ONE TURN TO LAND ON, when the press that opened this was a
+                // message row rather than a task row (task-peek-store
+                // `PeekState.anchor`). Absent, the conversation opens where a
+                // conversation opens: at the end.
+                {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
                 paramsSource="memory"

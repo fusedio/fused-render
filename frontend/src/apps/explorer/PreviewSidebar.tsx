@@ -215,9 +215,10 @@ export default function PreviewSidebar({
   //
   // Since D460 there is a SECOND writer too — the folder listing's pane
   // (`listing/pane.ts`) drags this same store — and the value it writes is
-  // clamped into ITS OWN (narrower, 220px) floor, not this sidebar's 380px
-  // one. Applying it unclamped here would let a folder-pane drag open this
-  // column below `MIN_W`, so the value is re-clamped against THIS container
+  // clamped into ITS OWN floor (`--side-pane-min`, platform/lib/pane-metrics.ts),
+  // not this sidebar's 380px one. The two are close now and were not always:
+  // the pane's was 220 until 2026-09-14. Applying it unclamped here would let a
+  // folder-pane drag open this column below `MIN_W`, so it is re-clamped here
   // before it lands in `width`, exactly as the mount-time seed and the
   // resize observer below already do. Unmeasurable (no split element yet) is
   // the one case left alone — nothing here to clamp against.

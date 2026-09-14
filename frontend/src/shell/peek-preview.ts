@@ -91,8 +91,17 @@ export interface PreviewBox {
   height: number;
   /** `transform: scale()` on the 1280-wide frame. */
   scale: number;
-  /** The scaled frame's full height. Taller than `height` means the box
-   *  scrolls: the preview is cropped, never squashed. */
+  /**
+   * THE VIRTUAL VIEWPORT HEIGHT to give the frame — an UNSCALED length, the
+   * vertical twin of `PREVIEW_VW`'s 1280.
+   *
+   * It is 720 while the box is at or under its natural 16:9 footprint, where a
+   * taller box than frame means the box CROPS and scrolls. Past that it is
+   * `height / scale`, so a box dragged taller hands the app a taller window
+   * instead of a band of its background (`previewBox` carries the argument).
+   * The drawn footprint is therefore `frameHeight * scale`, which is what the
+   * sized wrapper under the frame has to be.
+   */
   frameHeight: number;
   /** Is the box showing less than the whole frame? (The caller turns on
    *  `overflow: auto` either way; this is for the tests to name.) */
@@ -121,16 +130,34 @@ export function previewBox(
   dragged: number | null,
 ): PreviewBox {
   const scale = peekWidth > 0 ? peekWidth / PREVIEW_VW : 0;
-  const frameHeight = PREVIEW_VH * scale;
+  const natural = PREVIEW_VH * scale;
   const ceiling = bodyHeight - PREVIEW_CHAT_MIN;
   if (!(ceiling > PREVIEW_MIN_H)) {
-    return { height: 0, scale, frameHeight, cropped: frameHeight > 0 };
+    return { height: 0, scale, frameHeight: natural, cropped: natural > 0 };
   }
   const height =
     dragged === null
-      ? clamp(Math.min(frameHeight, bodyHeight * PREVIEW_CAP_FRACTION), PREVIEW_MIN_H, ceiling)
+      ? clamp(Math.min(natural, bodyHeight * PREVIEW_CAP_FRACTION), PREVIEW_MIN_H, ceiling)
       : clamp(dragged, PREVIEW_MIN_H, ceiling);
-  return { height, scale, frameHeight, cropped: frameHeight - height > 0.5 };
+  /**
+   * THE APP GETS A TALLER WINDOW RATHER THAN A TALLER LETTERBOX (Akshil,
+   * 2026-09-14 — design.md, Polish batch 3).
+   *
+   * The scale is the panel's and stays the panel's: `peekWidth / 1280`, so
+   * dragging the horizontal seam never changes how big the app's text is. What
+   * the vertical seam changes is how much of the app there IS. Below the 16:9
+   * footprint that is a crop and the box scrolls, as it always did. Above it,
+   * the old shape had nothing left to show — the frame was 720 virtual pixels
+   * tall however far the seam went, so the drag bought a band of the app's
+   * background and a scrollbar with nothing to scroll.
+   *
+   * So past its natural height the FRAME grows instead: the virtual viewport
+   * becomes `height / scale`, the app lays out into a taller window, and the
+   * box is filled with more of the app at the same size. Floored at 720 so a
+   * short panel never hands the app a viewport no desktop layout expects.
+   */
+  const frameHeight = Math.max(PREVIEW_VH, height / (scale || 1));
+  return { height, scale, frameHeight, cropped: frameHeight * scale - height > 0.5 };
 }
 
 // ---- the dragged height, in memory only --------------------------------------

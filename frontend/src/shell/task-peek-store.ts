@@ -16,6 +16,7 @@
 // the window, writes history and pokes the sidebar.
 import { useSyncExternalStore } from "react";
 import { forgetAppsCache, resetPreviewHeight } from "./peek-preview";
+import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
 import {
   SIDEBAR_RAIL_WIDTH,
   getSidebarState,
@@ -66,21 +67,24 @@ export const PEEK_AUTOCOLLAPSE_KEY = "tasks.peek.autocollapsed";
 export const PEEK_WIDTH_KEY = "tasks.peek.width";
 
 /**
- * THE PEEK'S MINIMUM, and it is the Explorer Claude pane's (220px,
- * `.listing-pane-slot` in styles/explorer.css) rather than a number of this
- * panel's own — the two are the same chat in the same shell, and a reader who
- * has dragged one down to a column of message bubbles expects the other to go
- * there too (design.md, Widths v2).
+ * THE PEEK'S MINIMUM, and it is the Explorer Claude pane's — literally, now:
+ * one constant (platform/lib/pane-metrics.ts) for the two panes that are the
+ * same chat in the same shell, so a reader who has learned how narrow one goes
+ * has learned the other.
  *
- * 564 until 2026-09-14, with a ⅔ ceiling above it. Both are gone: the ceiling
- * because the middle pane now has a floor of its own to stop at (below), and
- * the 564 because a panel that cannot be made narrow is a panel you close
- * instead of narrowing.
+ * WHAT THE NUMBER IS ABOUT has changed twice. It was 564 with a ⅔ ceiling until
+ * 2026-09-14; both went, the ceiling because the middle pane now has a floor of
+ * its own to stop at and the 564 because a panel that cannot be made narrow is
+ * a panel you close instead of narrowing. It was then 220 — the Explorer pane's
+ * own long-standing figure — until Akshil pointed out what 220 actually looks
+ * like: the composer's control row tightened to nothing with the send button
+ * wrapped onto a second line. It is now the width that row needs, which is the
+ * width below which this stops being a chat pane at all.
  *
- * There is NO MAXIMUM. The peek may take everything the middle pane's own floor
- * and the cover threshold below have not claimed.
+ * There is still NO MAXIMUM. The peek may take everything the middle pane's own
+ * floor and the cover threshold below have not claimed.
  */
-export const PEEK_MIN_WIDTH = 220;
+export const PEEK_MIN_WIDTH = SIDE_PANE_MIN_WIDTH;
 
 /**
  * WHAT SHARE OF ITS BASELINE THE MIDDLE PANE KEEPS BEFORE IT STOPS SHRINKING —
@@ -361,6 +365,10 @@ export interface RoomPlan {
   contentFloor: number;
   /** The frame is narrower than the floor: the middle pane scrolls sideways. */
   floored: boolean;
+  /** The frame is narrower than the column plus its gutters: the centred
+   *  margins are spent, and the page's side padding is all that is left to
+   *  give (design.md, Polish batch 3). */
+  tight: boolean;
   /** The peek takes the whole content area and the middle pane is hidden. */
   cover: boolean;
 }
@@ -391,6 +399,7 @@ export function planRoom(input: RoomInput): RoomPlan {
       floor,
       contentFloor: floor,
       floored: false,
+      tight: false,
       cover: false,
     };
   }
@@ -404,6 +413,7 @@ export function planRoom(input: RoomInput): RoomPlan {
     contentFloor: floor,
     // Cover is not "floored": there is no middle pane on screen to scroll.
     floored: !cover && frameAfter < floor,
+    tight: !cover && frameAfter < baselineOr(baseline, content),
     cover,
   };
 }
@@ -548,6 +558,17 @@ export interface PeekState {
    * it changing would go on drawing the peek at the width it had a frame ago.
    */
   baseline: number | null;
+  /**
+   * ONE TURN inside the open conversation to scroll to, or null for "the end",
+   * which is where a conversation ordinarily opens.
+   *
+   * Set by the List's MESSAGE rows (shell/ScheduleTaskViews `openMessage`),
+   * which are the only place on this page that addresses something smaller than
+   * a task. Cleared by every other way in, because they all mean the thread
+   * rather than a turn of it — and a stale anchor would send the next open
+   * scrolling backwards for no reason the reader could see.
+   */
+  anchor: string | null;
   /** Opened by a deep link / a Back: no slide, the panel is simply there. */
   instant: boolean;
 }
@@ -618,6 +639,7 @@ let state: PeekState = {
   width: loadWidth(),
   autoCollapsed: seedAutoCollapsed(),
   baseline: null,
+  anchor: null,
   instant: true,
 };
 
@@ -878,7 +900,7 @@ function replacePeekUrl(key: string | null): void {
  * still hands it back (`setPeekHost`).
  */
 function dropPeek(instant: boolean): void {
-  publish({ ...state, key: null, instant });
+  publish({ ...state, key: null, anchor: null, instant });
 }
 
 /**
@@ -916,9 +938,19 @@ export function settlePeek(tasks: readonly PeekNamed[]): void {
  * signal to do what it always did (navigate). That answer is the ONLY thing
  * separating the four views' presses from every other way into a task.
  */
-export function openPeek(key: string, opts?: { push?: boolean }): boolean {
+export function openPeek(
+  key: string,
+  opts?: { push?: boolean; anchor?: string | null },
+): boolean {
   if (!host || !key) return false;
-  if (state.key === key) return true;
+  const anchor = opts?.anchor ?? null;
+  // RE-PRESSING THE OPEN TASK IS ORDINARILY A NO-OP — except from a message
+  // row, which is asking for somewhere ELSE in the conversation already on
+  // screen, and that is a real request rather than a repeat.
+  if (state.key === key) {
+    if (anchor && anchor !== state.anchor) publish({ ...state, anchor });
+    return true;
+  }
   // A fresh OPENING freezes the middle pane's baseline — the width the column
   // is being read at, RIGHT NOW, before the panel takes anything (design.md,
   // Widths v2). It also re-reads the desk's table (shell/peek-preview.ts): the
@@ -941,7 +973,14 @@ export function openPeek(key: string, opts?: { push?: boolean }): boolean {
   // panel that opens in cover has hidden the only control that would get it out
   // (`storableWidth`).
   const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
-  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: false });
+  publish({
+    ...state,
+    key,
+    width,
+    anchor,
+    baseline: state.baseline ?? freezeBaseline(),
+    instant: false,
+  });
   // AN OPEN IS NOT A RESIZE (design.md, Widths v2): it moves no sidebar — with
   // the ONE exception below, which is a first open on a window too narrow to
   // give the panel its minimum without eating into the column.
@@ -989,7 +1028,14 @@ export function syncPeekFromUrl(search: string): void {
   }
   const fresh = state.key === null;
   const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
-  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: true });
+  publish({
+    ...state,
+    key,
+    width,
+    anchor: null,
+    baseline: state.baseline ?? freezeBaseline(),
+    instant: true,
+  });
   // A traversal that ARRIVES at a peek is a first open too (a deep link is the
   // commonest way in), so it gets the same one exception.
   if (fresh) spendOpenTimeCollapse();
@@ -1006,6 +1052,31 @@ export function setPeekWidth(width: number, persist = true): void {
   if (persist) saveWidth(storableWidth(next, contentWidth()));
   if (next === state.width) return;
   publish({ ...state, width: next });
+}
+
+/**
+ * OUT OF COVER, WITHOUT CLOSING THE TASK — what the header's first control does
+ * while the panel is covering the page (Akshil, 2026-09-14 — design.md, Polish
+ * batch 3, option b).
+ *
+ * Cover is easy to get into and was hard to get out of: the seam is a 12px
+ * edge at the far left of the page, which is a thing you have to know is there.
+ * So the panel grows a control that says what it does — "Show list" — and
+ * spends exactly the split the reader would get from a fresh open: the
+ * remainder past the middle pane's baseline, held back far enough that the
+ * middle pane clears its cover floor and the answer is not cover again.
+ *
+ * The peek stays open on the same task. Closing is still Esc, and the kebab.
+ */
+export function showListBesidePeek(): void {
+  if (state.key === null) return;
+  const content = contentWidth();
+  const next = storableWidth(defaultPeekWidth(content, peekBaseline()), content);
+  saveWidth(next);
+  publish({ ...state, width: next });
+  // A width change IS a resize, so the sidebar's crossing detector gets its say
+  // — coming out of cover is the widest upward crossing there is.
+  applyResize();
 }
 
 /** Double-click on the seam: back to NO CHOICE, which is the remainder past the
@@ -1199,6 +1270,16 @@ export function usePeekedKey(): string | null {
   return useSyncExternalStore(subscribePeek, peekKey, peekKey);
 }
 
+function peekAnchor(): string | null {
+  return state.anchor;
+}
+
+/** Which TURN of it to land on, when the press that opened the panel addressed
+ *  one (`PeekState.anchor`). */
+export function usePeekAnchor(): string | null {
+  return useSyncExternalStore(subscribePeek, peekAnchor, peekAnchor);
+}
+
 function peekHost(): boolean {
   return state.host;
 }
@@ -1234,6 +1315,7 @@ export function resetPeekStoreForTests(): void {
     width: null,
     autoCollapsed: false,
     baseline: null,
+    anchor: null,
     instant: true,
   };
   listeners.clear();

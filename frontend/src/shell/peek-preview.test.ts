@@ -54,8 +54,14 @@ describe("previewBox", () => {
     const wide = previewBox(900, 2000, null);
     expect(narrow.scale).toBeCloseTo(564 / PREVIEW_VW, 6);
     expect(wide.scale).toBeCloseTo(900 / PREVIEW_VW, 6);
-    expect(narrow.frameHeight).toBeCloseTo((564 * PREVIEW_VH) / PREVIEW_VW, 6);
-    expect(wide.frameHeight).toBeGreaterThan(narrow.frameHeight);
+    // `frameHeight` is the VIRTUAL viewport, unscaled — 720 whenever the box is
+    // at or under its natural footprint, which both of these are.
+    expect(narrow.frameHeight).toBe(PREVIEW_VH);
+    expect(wide.frameHeight).toBe(PREVIEW_VH);
+    // What grows with the width is the DRAWN footprint, which is that viewport
+    // at the panel's scale.
+    expect(narrow.frameHeight * narrow.scale).toBeCloseTo((564 * PREVIEW_VH) / PREVIEW_VW, 6);
+    expect(wide.frameHeight * wide.scale).toBeGreaterThan(narrow.frameHeight * narrow.scale);
     // 16:9 — 564 wide is 317.25 tall, and on a body with room it is shown whole.
     expect(narrow.height).toBeCloseTo(564 * (9 / 16), 4);
     expect(narrow.cropped).toBe(false);
@@ -67,8 +73,38 @@ describe("previewBox", () => {
     expect(box.height).toBe(400 * PREVIEW_CAP_FRACTION);
     // The frame is still its full 16:9 self — the box simply shows less of it,
     // which is what `overflow: auto` on the box is for.
-    expect(box.frameHeight).toBeCloseTo(564 * (9 / 16), 4);
+    expect(box.frameHeight).toBe(PREVIEW_VH);
+    expect(box.frameHeight * box.scale).toBeCloseTo(564 * (9 / 16), 4);
     expect(box.cropped).toBe(true);
+  });
+
+  it("gives the APP a taller window when the box is dragged past 16:9", () => {
+    // Akshil, 2026-09-14 (design.md, Polish batch 3). The scale is the panel's
+    // and does not move — dragging the horizontal seam is the only thing that
+    // changes how big the app's text is. What a taller box buys is MORE APP:
+    // the virtual viewport grows to `height / scale`, the app lays out into it,
+    // and the box is filled at the same scale instead of showing a band of the
+    // app's background under a scrollbar with nothing to scroll.
+    const natural = previewBox(640, 2000, null);
+    expect(natural.frameHeight).toBe(PREVIEW_VH);
+    const taller = previewBox(640, 2000, 600);
+    expect(taller.scale).toBe(natural.scale);
+    expect(taller.height).toBe(600);
+    // 640 / 1280 = 0.5, so a 600px box is a 1200px window.
+    expect(taller.frameHeight).toBe(1200);
+    // …and it is not "cropped": the drawn frame is exactly the box.
+    expect(taller.frameHeight * taller.scale).toBeCloseTo(600, 6);
+    expect(taller.cropped).toBe(false);
+  });
+
+  it("never hands the app a viewport shorter than a desktop's", () => {
+    // Below the natural footprint the box crops, and the app keeps its 720 —
+    // a layout built for a desktop must not be asked to render into 200px
+    // just because the reader dragged the seam up.
+    const short = previewBox(640, 2000, 200);
+    expect(short.height).toBe(200);
+    expect(short.frameHeight).toBe(PREVIEW_VH);
+    expect(short.cropped).toBe(true);
   });
 
   it("never takes the composer's room, however hard the seam is dragged", () => {
