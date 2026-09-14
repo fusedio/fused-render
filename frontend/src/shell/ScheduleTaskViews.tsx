@@ -649,15 +649,9 @@ export function IdentityChip({ name, title, onPick, active = false }: {
 /** TASK-002 / MSG-003. These are DESIGNED identifiers (§3) — allocated once,
  * never renumbered — so unlike a session uuid they are meant to be read, said
  * out loud and searched for. Monospaced, because a column of them is scanned. */
-function IdChip({ id, kind, lead = false }: {
+function IdChip({ id, kind }: {
   id: string;
   kind: "task" | "message";
-  /** The line beside this id is the conversation's last MESSAGE rather than the
-   *  task's name (task-card-title-flag.cardTitleLine), so the id is the only
-   *  thing left on the row that names the task and comes out of the muted grey.
-   *  Weight and colour only, at the same size (tasks.css `.tasks-id--lead`) —
-   *  the same lift the Cards wall gives it for the same reason. */
-  lead?: boolean;
 }) {
   // NOTHING AT ALL FOR AN EMPTY ID. A draft row carries no TASK-NNN — the
   // number is allocated when it becomes a scheduled task, exactly as for a
@@ -665,9 +659,7 @@ function IdChip({ id, kind, lead = false }: {
   // where every other row says its name.
   if (!id) return null;
   return (
-    <span className={`tasks-id tasks-id--${kind}` + (lead ? " tasks-id--lead" : "")}>
-      {id}
-    </span>
+    <span className={`tasks-id tasks-id--${kind}`}>{id}</span>
   );
 }
 
@@ -2821,7 +2813,7 @@ function TaskNode({
             </button>
           )}
         </span>
-        <IdChip id={task.task_id} kind="task" lead={line.said} />
+        <IdChip id={task.task_id} kind="task" />
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
@@ -4544,7 +4536,7 @@ function TaskCard({
           {waiting
             ? <StatusIcon status="needs_attention" />
             : failedOffLane && <StatusIcon status={lane} failed />}
-          <IdChip id={task.task_id} kind="task" lead={line.said} />
+          <IdChip id={task.task_id} kind="task" />
           {outcome && <OutcomePill outcome={outcome} />}
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the

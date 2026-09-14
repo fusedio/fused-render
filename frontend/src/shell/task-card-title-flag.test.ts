@@ -107,8 +107,12 @@ describe("the card adds nothing when the experiment is off", () => {
     expect(CARDS).toContain('const title = line.text || "(untitled)";');
   });
 
-  it("lifts the id only when the line is a message", () => {
-    expect(CARDS).toContain('(line.said ? " task-card-id--lead" : "")');
+  it("leaves the id in the List's muted skin whatever the line is", () => {
+    // Akshil, 2026-09-14: the bold + full-fg lift the message line used to
+    // bring with it is gone — one weight for the id everywhere.
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    expect(CARDS).not.toContain("task-card-id--lead");
+    expect(CARDS_CSS).not.toContain("task-card-id--lead");
     expect(CARDS).toContain("data-hint={line.said ? task.last_message?.text : task.title}");
   });
 });
@@ -172,19 +176,12 @@ describe("EVERY view is titled by the same rule (Akshil, 2026-09-14)", () => {
     expect(VIEWS).not.toContain('firstLine(task.title) || "(untitled)"');
   });
 
-  it("lifts the id only when the line is a message, in both views", () => {
-    expect((VIEWS.match(/<IdChip id=\{task\.task_id\} kind="task" lead=\{line\.said\} \/>/g) ?? [])
-      .length).toBe(2);
-    // One chip decides what "leading" looks like, so the row and the card
-    // cannot lift it by different amounts.
-    expect(VIEWS).toContain('(lead ? " tasks-id--lead" : "")');
-    // …and it is the CARDS wall's lift, to the character: weight and colour
-    // only, at the same size.
-    const lead = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-id--lead {"));
-    expect(lead).toContain("font-weight: 600;");
-    expect(lead).toContain("color: var(--fg);");
-    expect(CARDS_CSS.slice(CARDS_CSS.indexOf(".task-card-id--lead {")))
-      .toContain("font-weight: 600;");
+  it("leaves the id alone in both views", () => {
+    // Akshil, 2026-09-14: no lift on the id when the line is a message.
+    expect((VIEWS.match(/<IdChip id=\{task\.task_id\} kind="task" \/>/g) ?? []).length).toBe(2);
+    expect(VIEWS).not.toContain("tasks-id--lead");
+    expect(TASKS_CSS).not.toContain("tasks-id--lead");
+    expect(CARDS_CSS).not.toContain("task-card-id--lead");
   });
 
   it("captions whatever the line is one line OF", () => {

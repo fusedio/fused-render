@@ -662,14 +662,11 @@ function TaskCard({
             failed={ringFailed(task)}
             draftHeld={draftRing(task)}
           />
-          {/* …and it LEADS when the title row below is a message instead of the
-              task's name (design.md §A): the id is then the only thing on the
-              card that names the task, so it comes out of the muted grey the
-              List row keeps it in. Same size, same mono — weight and colour
-              only (task-cards.css `.task-card-id--lead`). */}
-          <span className={"tasks-id tasks-id--task" + (line.said ? " task-card-id--lead" : "")}>
-            {task.task_id}
-          </span>
+          {/* The id keeps the List row's muted skin whatever the title row below
+              shows. It was lifted to bold + full fg while that row was the
+              conversation's last message (design.md §A); Akshil (2026-09-14)
+              took the emphasis back out — one weight for the id everywhere. */}
+          <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}

@@ -8521,11 +8521,8 @@ describe("the Cards view's frame", () => {
     // (Akshil, 2026-09-05).
     expect(CARDS).not.toContain("task-card-open");
     expect(CARDS_CSS).not.toContain("task-card-open");
-    // The id keeps the List's own muted skin, plus the one class the last-
-    // message experiment lifts it with when the title row is a message.
-    expect(CARDS).toContain(
-      '<span className={"tasks-id tasks-id--task" + (line.said ? " task-card-id--lead" : "")}>',
-    );
+    // The id keeps the List's own muted skin, whatever the title row shows.
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
     const head = CARDS.slice(CARDS.indexOf('<header\n        className="task-card-head"'), CARDS.indexOf("</header>"));
     expect(head.length).toBeGreaterThan(0);
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
@@ -9007,9 +9004,9 @@ describe("the outcome pill, beside the id in both views", () => {
     expect((VIEWS.match(/<OutcomePill outcome=\{outcome\} \/>/g) ?? []).length).toBe(2);
     // Directly after the task id, in both.
     expect(ROW).toMatch(
-      /<IdChip id=\{task\.task_id\} kind="task" lead=\{line\.said\} \/>[\s\S]{0,400}?<OutcomePill/);
+      /<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,400}?<OutcomePill/);
     expect(CARD).toMatch(
-      /<IdChip id=\{task\.task_id\} kind="task" lead=\{line\.said\} \/>\s*\{outcome && <OutcomePill/);
+      /<IdChip id=\{task\.task_id\} kind="task" \/>\s*\{outcome && <OutcomePill/);
     // ...and nowhere near the foot, which is the arrangement that failed.
     expect(CARD).not.toMatch(/schedule-tv-card-foot"[\s\S]*?<OutcomePill/);
   });

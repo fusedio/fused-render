@@ -106,10 +106,9 @@ export interface CardTitle {
    *  which is the card's own cue to print its "(untitled)" — one place decides
    *  those words, and it is not this one. */
   text: string;
-  /** It is the conversation's newest message rather than the task's title —
-   *  which is also what lifts the id out of the muted grey (task-cards.css
-   *  `.task-card-id--lead`): with the title gone from the card, the id is the
-   *  only thing left on it that names the task. */
+  /** It is the conversation's newest message rather than the task's title.
+   *  The caption follows it (the message, not the title, is what the one-line
+   *  clamp is hiding); nothing else on the row changes with it. */
   said: boolean;
 }
 

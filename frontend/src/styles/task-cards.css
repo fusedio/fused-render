@@ -255,17 +255,6 @@
   color: var(--fg);
 }
 
-/* THE ID, LEADING (design.md §A, `task_card_last_message`). With the title row
-   below showing the conversation's last message, the id is the only thing left
-   on the card that names the task — so it steps out of the muted grey the List
-   row keeps it in and takes the head's weight. Weight and colour ONLY: the size
-   and the mono are `.tasks-id`'s, and a card whose id also grew would be a
-   second id to learn for the same fact. */
-.task-card-id--lead {
-  font-weight: 600;
-  color: var(--fg);
-}
-
 /* THE DOORS, ON HOVER, OVER THE TITLE'S RIGHT END (Akshil, 2026-09-06: "archive
    and explorer button right side of the title … don't cover or shift, make
    extra space, just show them on hover … overlap"). The popup's two doors —

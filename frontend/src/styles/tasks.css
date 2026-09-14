@@ -398,22 +398,6 @@ button.tasks-caret,
   font-weight: 400;
 }
 
-/* …UNLESS THE LINE BESIDE IT IS NOT THE TASK'S NAME. With
-   `task_card_last_message` on, a row's title line shows the conversation's
-   newest message, and the id is then the only thing on the row that names the
-   task — so the reading priority the rule above protects is inverted and the id
-   is what the eye should land on. Weight and colour only, at the same size and
-   the same mono: the column of ids stays a column.
-
-   The Cards wall's own `.task-card-id--lead` (task-cards.css) says exactly this
-   in exactly these two properties. Two classes rather than one because the two
-   ids are two different elements with two different base rules; the VALUES are
-   deliberately identical, so a card and its row lift the id the same amount. */
-.tasks-id--lead {
-  font-weight: 600;
-  color: var(--fg);
-}
-
 /* -- Said, not shown ------------------------------------------------------------
    Text that exists for the accessibility tree and not for the eye. This page has
    one user of it and it is the reason the class exists: a board card says unread
