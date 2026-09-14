@@ -678,7 +678,14 @@ export function TaskPeek({
     // arrow key fires several times between paints, and every press after the
     // first would otherwise start again from the same stale number and the
     // panel would move ten pixels however long the key was held.
-    setPeekWidth(clampPeekWidth(currentRoom().peekWidth + delta, content));
+    //
+    // THE DRAGGED NUMBER, not the RENDERED one, and in cover mode they differ:
+    // the panel renders at the whole content area there, so stepping down from
+    // what is on screen took ten pixels off the AREA every press and never off
+    // the panel — a seam that did nothing (Bugbot, PR #1138). `state.width` is
+    // the number the reader actually built.
+    const from = getPeekState().width ?? currentRoom().peekWidth;
+    setPeekWidth(clampPeekWidth(from + delta, content));
     applyResize();
   };
   const onSeamPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {

@@ -205,8 +205,18 @@ body.tasks-peek-dragging {
   z-index: 1;
 }
 
+/* THE SEAM STAYS IN COVER MODE, and that is a fix rather than an oversight
+   (Bugbot, PR #1138). It used to be hidden here, on the reasoning that a panel
+   filling the content area has no edge worth dragging — but it is the ONLY
+   control that makes the panel narrower, so hiding it left the reader with a
+   covered page and no way back to their list except closing the task. In cover
+   the panel's leading edge is the content area's own, so the seam rides the far
+   left of the page and a drag to the right brings the middle pane straight
+   back. */
 .task-side-peek.is-cover .task-side-peek-seam {
-  display: none;
+  /* A touch wider than the ordinary seam: in cover it is the one thing to aim
+     at, and there is no row behind it whose first 6px it could be stealing. */
+  width: calc(var(--peek-seam-w) + 4px);
 }
 
 .task-side-peek-seam::after {

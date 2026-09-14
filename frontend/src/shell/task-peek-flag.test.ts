@@ -365,6 +365,21 @@ describe("the middle pane's floor", () => {
     expect(PAGE).toContain("peek.floor - peekGutter()");
   });
 
+  it("keeps the seam reachable in cover mode — it is the only way back", () => {
+    // Bugbot, PR #1138: hiding it left a covered page with no control that
+    // makes the panel narrower, so the reader's only exit was closing the task.
+    const block = PEEK_CSS.slice(
+      PEEK_CSS.indexOf(".task-side-peek.is-cover .task-side-peek-seam {"),
+    ).slice(0, 400);
+    expect(block).not.toContain("display: none");
+    expect(block).toContain("width: calc(var(--peek-seam-w)");
+    // …and the arrows step the DRAGGED width, not the rendered one, which in
+    // cover is the whole content area and never gets smaller.
+    expect(read("TaskPeek.tsx")).toContain(
+      "const from = getPeekState().width ?? currentRoom().peekWidth;",
+    );
+  });
+
   it("scrolls each view sideways at the floor instead of reflowing it", () => {
     for (const view of [".tasks-list", ".task-cards-scroll", ".schedule-cal"]) {
       // Each view is named twice: once as a scroller, once for the content

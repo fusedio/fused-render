@@ -440,6 +440,25 @@ describe("pickLevelFromNeeds — the toolbar's fixed point", () => {
     expect(pickLevelFromNeeds(732, [NEED_AT_0, NEED_AT_1], 9)).toBe(0);
   });
 
+  it("TRIES an unknown level rather than stopping at it", () => {
+    // Bugbot, PR #1138. A cache dropped while the row was folded leaves nothing
+    // known below the current level; stopping at the hole answered "the level
+    // you are already on" and the row could never unfold again.
+    expect(pickLevelFromNeeds(900, [undefined, 600, 500], 9)).toBe(0);
+    expect(pickLevelFromNeeds(900, [700, undefined, 500], 9)).toBe(0);
+    expect(pickLevelFromNeeds(650, [700, undefined, 500], 9)).toBe(1);
+  });
+
+  it("converges to 0 from a fold once the content shrinks", () => {
+    // Folded at 2 because the row needed more than it had; then a filter count
+    // goes away and every level costs 300 less. The next read must land on 0,
+    // not sit at 2 with room to spare.
+    const before = [900, 800, 700];
+    expect(pickLevelFromNeeds(750, before, 9)).toBe(2);
+    const after = before.map((n) => n - 300);
+    expect(pickLevelFromNeeds(750, after, 9)).toBe(0);
+  });
+
   it("walks one rung at a time into levels it has never measured", () => {
     // Unknown levels are unknown, and the only way to learn one is to render
     // it. Each read steps once; the walk is bounded by the ladder's length.

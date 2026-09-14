@@ -164,15 +164,26 @@ export function pickLevelFromNeeds(
   rungs: number,
 ): number {
   if (!(available > 0)) return 0;
-  let deepest = 0;
+  let deepest = -1;
   for (let level = 0; level <= rungs; level += 1) {
     const need = needAt[level];
-    if (need === undefined) break;
+    // AN UNKNOWN LEVEL IS A LEVEL WORTH TRYING, and this is the whole of the
+    // walk. Returning it renders it, which measures it, which answers the
+    // question for good. Because the scan runs from 0 UPWARD, the one returned
+    // is always the shallowest thing still worth trying — the least-folded row
+    // that might fit — so the walk moves towards showing more, never less.
+    //
+    // Stopping at the first hole instead was a trap (Bugbot, PR #1138): a cache
+    // dropped while the row was folded left nothing known below the current
+    // level, the scan broke at level 0 and answered "one past the deepest known"
+    // — which was the level it was already on. The toolbar's labels, and the
+    // peek header's project and Open door, then stayed folded for ever however
+    // much room came back.
+    if (need === undefined) return level;
     if (need <= available + FIT_HYSTERESIS) return level;
     deepest = level;
   }
-  // Nothing measured fits. One rung past the deepest thing we know about, so
-  // the next frame has something new to measure.
+  // Every level is known and none of them fits: the last rung is all there is.
   return Math.min(deepest + 1, rungs);
 }
 
@@ -551,11 +562,27 @@ export function useStripFit(
       const at = levelRef.current;
       const need = rowNeed(el);
       const known = needAt.current[at];
-      // CONTENT CHANGED UNDER US — a poll landed a longer folder name, a Draft
-      // chip appeared — so what we remember about the OTHER levels was taken of
-      // a different row. Forget it and let the walk re-measure; keeping it is
-      // how a ladder ends up answering about a row that no longer exists.
-      if (known !== undefined && Math.abs(known - need) > 1) needAt.current = [];
+      // CONTENT CHANGED UNDER US — a poll landed a longer folder name, a filter
+      // count appeared, the panel swapped to another task — so what we remember
+      // about the OTHER levels was taken of a different row.
+      //
+      // SHIFTED, NOT DROPPED. Whatever the change was, it costs about the same
+      // at every level: a folder chip three characters wider is three
+      // characters wider whether the view labels are folded or not. So the
+      // delta observed here is applied to every level we know, which keeps them
+      // all answerable and lets the row unfold in the very next frame. Dropping
+      // them instead left a hole under the current level, and a hole is a frame
+      // of the row snapping fully open before it folds back — for a poll that
+      // lands every twenty seconds.
+      //
+      // Each entry is corrected for real the next time its own level is
+      // rendered, so an estimate that drifts is an estimate with a short life.
+      if (known !== undefined && Math.abs(known - need) > 1) {
+        const delta = need - known;
+        needAt.current = needAt.current.map((v) =>
+          v === undefined ? undefined : Math.max(0, v + delta),
+        );
+      }
       needAt.current[at] = need;
       const next = pickLevelFromNeeds(el.clientWidth, needAt.current, drops.length);
       setLevel((cur) => (cur === next ? cur : next));

@@ -167,6 +167,26 @@ export function clampPeekWidth(width: number, content: number): number {
   return Math.round(Math.max(PEEK_MIN_WIDTH, Math.min(wanted, ceiling)));
 }
 
+/**
+ * A WIDTH THAT IS SAFE TO COME BACK TO.
+ *
+ * Dragging INTO cover is allowed and useful — the panel takes the whole area
+ * and the middle pane steps out of the way. Reopening into it is not, and that
+ * is the trap this closes (Bugbot, PR #1138): the seam is the only control that
+ * makes the panel narrower, the width the drag ended on is what gets written
+ * down, and a stored cover width means every future open is cover again.
+ *
+ * So the RENDERED width may reach the content area and what is REMEMBERED may
+ * not: it is held far enough back to leave the middle pane its cover floor, so
+ * the next open has a view to come back to. On a window so narrow that even
+ * that is impossible the panel's own minimum wins — there the page is in cover
+ * because of the window, not because of a number.
+ */
+export function storableWidth(width: number, content: number): number {
+  const ceiling = Math.max(PEEK_MIN_WIDTH, content - PEEK_COVER_FLOOR);
+  return Math.round(Math.min(clampPeekWidth(width, content), ceiling));
+}
+
 /** The rendered width for a content area: the reader's own number if they have
  *  dragged one, else the remainder past the baseline — clamped either way,
  *  which is what "re-clamp the persisted width on resize" means in practice. */
@@ -708,19 +728,50 @@ export function setPeekHost(on: boolean): void {
  * cold load, where the skeleton stands in for the views) — and null is a
  * RETRY, never a latch: see `freezeBaseline`.
  */
+/**
+ * THE COLUMN'S WIDTH AS ARITHMETIC, not as a rect — pure, so the rule can be
+ * proved without a page.
+ *
+ * `cap` is the stylesheet's own `max-width` on the page column (1050), `gutter`
+ * the page's side padding, `content` the area the frame and the peek share. The
+ * answer is the width the FRAME has to keep for that column to go on being
+ * drawn exactly where it is.
+ *
+ * MEASURED FROM THE CAP RATHER THAN FROM THE RENDERED BOX, and that is what
+ * makes the number safe to take at ANY moment (Bugbot, PR #1138). The rendered
+ * column is narrowed by an open peek, so reading it with the panel up gave a
+ * baseline smaller than the truth — which is why the read used to refuse to run
+ * while the peek was open, which in turn meant a `?peek=` deep link (where the
+ * page's section does not exist until the tasks land, a tick AFTER the panel
+ * opens) could never take a measurement at all and sat on the fallback for the
+ * whole visit. The cap and the gutters do not move when the panel does.
+ */
+export function tasksBaselineFrom(cap: number, gutter: number, content: number): number {
+  const room = Math.max(0, content - gutter);
+  const column = Number.isFinite(cap) && cap > 0 ? Math.min(cap, room) : room;
+  return Math.round(column + gutter);
+}
+
 export function measureTasksBaseline(): number | null {
   if (typeof document === "undefined") return null;
   try {
     const main = document.querySelector<HTMLElement>(".tasks-frame .schedule-main");
     const page = document.querySelector<HTMLElement>(".tasks-frame .schedule-page");
-    if (!main || !page) return null;
+    const host = document.querySelector<HTMLElement>(".tasks-peek-host");
+    if (!main || !page || !host) return null;
     const cs = getComputedStyle(page);
     const gutter =
       (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
-    const column = main.getBoundingClientRect().width;
-    if (!(column > 0)) return null;
+    const content = host.clientWidth;
+    if (!(content > 0)) return null;
+    const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
+    // A page with no cap at all (`max-width: none` parses to NaN) is one whose
+    // column IS the room it is given, which is what `tasksBaselineFrom` falls
+    // back to — but only the rendered box can confirm the element is laid out
+    // at all, so a zero-width one is still "not yet".
+    if (!Number.isFinite(cap) && !(main.getBoundingClientRect().width > 0)) return null;
     baselineGutter = gutter;
-    return Math.round(column + gutter);
+    return tasksBaselineFrom(cap, gutter, content);
   } catch {
     return null; // no layout to read (a test harness, a detached document)
   }
@@ -740,15 +791,24 @@ export function peekGutter(): number {
 export function setPeekBaselineCandidate(width: number): void {
   if (!Number.isFinite(width) || width <= 0) return;
   baselineCandidate = Math.round(width);
+  // A PEEK THAT OPENED BEFORE ANYTHING COULD BE MEASURED is still waiting, and
+  // the first real number is the one it takes (Bugbot, PR #1138). That is the
+  // whole of the deep-link case: the panel opens in a layout effect, the page's
+  // section arrives a tick later with the tasks, and without this the visit ran
+  // on the fallback baseline for good. Only ever fills a NULL — a baseline that
+  // has been frozen is the column as it was before the panel took its share and
+  // nothing later may move it.
+  if (state.key !== null && state.baseline === null) {
+    publish({ ...state, baseline: baselineCandidate });
+  }
 }
 
-/** The observer's whole job: keep the candidate current while the panel is
- *  away. With it open the column has already given its share up, and
- *  re-reading would ratchet the baseline down a notch on every press. */
+/** The observer's whole job: keep the candidate current. It may run with the
+ *  panel open, because what it measures is the column's CAP and not its
+ *  rendered box (`tasksBaselineFrom` says why that distinction is the fix). */
 export function refreshPeekBaseline(): void {
-  if (state.key !== null) return;
   const measured = measureTasksBaseline();
-  if (measured !== null) baselineCandidate = measured;
+  if (measured !== null) setPeekBaselineCandidate(measured);
 }
 
 /**
@@ -875,7 +935,13 @@ export function openPeek(key: string, opts?: { push?: boolean }): boolean {
   // `state.baseline ?? …` on EVERY open, not just a fresh one: a freeze that
   // could not measure leaves null, and null has to be retried rather than
   // latched (`freezeBaseline` carries the incident).
-  publish({ ...state, key, baseline: state.baseline ?? freezeBaseline(), instant: false });
+  //
+  // …and a FRESH open re-reads the remembered width against the window it is
+  // actually in. It was written safe, but windows shrink between visits, and a
+  // panel that opens in cover has hidden the only control that would get it out
+  // (`storableWidth`).
+  const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
+  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: false });
   // AN OPEN IS NOT A RESIZE (design.md, Widths v2): it moves no sidebar — with
   // the ONE exception below, which is a first open on a window too narrow to
   // give the panel its minimum without eating into the column.
@@ -922,7 +988,8 @@ export function syncPeekFromUrl(search: string): void {
     return;
   }
   const fresh = state.key === null;
-  publish({ ...state, key, baseline: state.baseline ?? freezeBaseline(), instant: true });
+  const width = fresh && state.width !== null ? storableWidth(state.width, contentWidth()) : state.width;
+  publish({ ...state, key, width, baseline: state.baseline ?? freezeBaseline(), instant: true });
   // A traversal that ARRIVES at a peek is a first open too (a deep link is the
   // commonest way in), so it gets the same one exception.
   if (fresh) spendOpenTimeCollapse();
@@ -933,7 +1000,10 @@ export function syncPeekFromUrl(search: string): void {
  *  updates (usePreviewPane's own rule) — the settled width is written once. */
 export function setPeekWidth(width: number, persist = true): void {
   const next = Math.round(width);
-  if (persist) saveWidth(next);
+  // WHAT IS DRAWN AND WHAT IS REMEMBERED PART COMPANY HERE, and only here: the
+  // drag may end in cover, and the number written down may not (`storableWidth`
+  // carries the argument).
+  if (persist) saveWidth(storableWidth(next, contentWidth()));
   if (next === state.width) return;
   publish({ ...state, width: next });
 }
@@ -951,6 +1021,12 @@ export function resetPeekWidth(): void {
 
 function viewportWidth(): number {
   return typeof window === "undefined" ? 0 : window.innerWidth || 0;
+}
+
+/** The area the frame and the peek share, right now. */
+function contentWidth(): number {
+  const sidebar = getSidebarState();
+  return Math.max(0, viewportWidth() - (sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width));
 }
 
 function roomEnv(): RoomInput {

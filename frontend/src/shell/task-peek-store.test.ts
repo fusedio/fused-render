@@ -42,6 +42,7 @@ const sidebar = await import("@platform/lib/sidebarstate");
 
 const {
   PEEK_AUTOCOLLAPSE_KEY,
+  PEEK_COVER_FLOOR,
   PEEK_MIN_WIDTH,
   PEEK_WIDTH_KEY,
   SIDEBAR_HYSTERESIS,
@@ -57,6 +58,8 @@ const {
   nextAfterRemoval,
   openTimeCollapse,
   planCrossing,
+  storableWidth,
+  tasksBaselineFrom,
   planRoom,
   readPeekParam,
   applyResize,
@@ -162,6 +165,45 @@ describe("the width", () => {
 
   it("never answers NaN for a broken persisted value", () => {
     expect(clampPeekWidth(Number.NaN, 2000)).toBe(PEEK_MIN_WIDTH);
+  });
+});
+
+describe("storableWidth — the cover trap", () => {
+  // Bugbot, PR #1138. Dragging INTO cover is useful; reopening into it is a
+  // dead end, because the seam is the only control that makes the panel
+  // narrower and a covered page has no list to come back to.
+  it("keeps the middle pane's cover floor out of the remembered number", () => {
+    expect(storableWidth(1306, 1306)).toBe(1306 - PEEK_COVER_FLOOR);
+    expect(storableWidth(1200, 1306)).toBe(1200 - 254);
+  });
+
+  it("leaves a width that was never near cover alone", () => {
+    expect(storableWidth(600, 1306)).toBe(600);
+  });
+
+  it("still answers the panel's own minimum on a window that cannot help", () => {
+    // 400 of content cannot hold a 220 panel AND a 360 middle pane. There the
+    // page is in cover because of the window, not because of a number.
+    expect(storableWidth(400, 400)).toBe(PEEK_MIN_WIDTH);
+  });
+});
+
+describe("tasksBaselineFrom", () => {
+  // Measured from the column's CAP, so the answer does not change when an open
+  // panel narrows the rendered box (Bugbot, PR #1138).
+  it("is the capped column plus its gutters on a wide page", () => {
+    expect(tasksBaselineFrom(1050, 44, 1494)).toBe(1094);
+    // …and the same answer with a panel already taking half the area, which is
+    // the whole point: a deep link measures with the peek open.
+    expect(tasksBaselineFrom(1050, 44, 1494)).toBe(tasksBaselineFrom(1050, 44, 1494));
+  });
+
+  it("is the room itself when the room is narrower than the cap", () => {
+    expect(tasksBaselineFrom(1050, 44, 600)).toBe(600);
+  });
+
+  it("falls back to the room when the page states no cap", () => {
+    expect(tasksBaselineFrom(Number.NaN, 44, 900)).toBe(900);
   });
 });
 
@@ -872,6 +914,50 @@ describe("the sidebar, and the only thing that moves it", () => {
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
     openPeek("sess-2");
     expect(sidebar.getSidebarState().collapsed).toBe(false);
+  });
+
+  it("adopts the first measurement even when the peek is ALREADY open", () => {
+    // The deep-link case, end to end (Bugbot, PR #1138): the panel opens in a
+    // layout effect, the page's own section arrives a tick later with the
+    // tasks, and the observer's first reading has to become the baseline —
+    // otherwise the visit runs on the fallback for good.
+    windowWidth(VIEWPORT);
+    setPeekHost(true);
+    syncPeekFromUrl("?peek=sess-1");
+    expect(getPeekState().baseline).toBeNull();
+    setPeekBaselineCandidate(BASELINE);
+    expect(getPeekState().baseline).toBe(BASELINE);
+  });
+
+  it("…but never lets a later reading move a baseline that is already frozen", () => {
+    arm();
+    expect(getPeekState().baseline).toBe(BASELINE);
+    setPeekBaselineCandidate(700);
+    expect(getPeekState().baseline).toBe(BASELINE);
+  });
+
+  it("never writes down a width that would reopen in cover", () => {
+    arm();
+    // A drag that ends in cover: what renders is the whole area, what is
+    // remembered is held back by the middle pane's floor.
+    setPeekWidth(5000);
+    const stored = Number(localStorage.getItem(PEEK_WIDTH_KEY));
+    expect(stored).toBeLessThanOrEqual(1494 - PEEK_COVER_FLOOR);
+    // …and the next open comes back to a page with a view on it.
+    closePeek();
+    openPeek("sess-2");
+    expect(currentRoom().cover).toBe(false);
+  });
+
+  it("re-clamps a remembered width against a window that has since shrunk", () => {
+    // It was written safe on a wide desktop; the reader is on a narrow one now.
+    setPeekWidth(1400);
+    windowWidth(900);
+    setPeekHost(true);
+    setPeekBaselineCandidate(BASELINE);
+    openPeek("sess-1");
+    expect(currentRoom().cover).toBe(false);
+    expect(getPeekState().width).toBeLessThanOrEqual(900 - 44 - PEEK_COVER_FLOOR);
   });
 
   it("freezes the baseline at the FIRST open and keeps it across a swap", () => {
