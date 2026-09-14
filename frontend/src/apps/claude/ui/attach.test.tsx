@@ -596,6 +596,41 @@ test("discard() empties the tray for good: ready chips revoked, late bytes revok
   expect(spy.revoked.map((a) => a.view)).toContain("/shots/late.csv");
 });
 
+test("discard() also disowns a capture and a path registration still in flight", async () => {
+  // Bugbot, PR #1140: `addFiles` was the only path that checked, so a camera
+  // shot or an `addPaths` (the peek's draft re-seed) past its await still seated
+  // into the emptied tray and autosaved the sent files back. `attachPaths` is
+  // synchronous, so its window is the one microtask between the hook's `await`
+  // and its commit — which is exactly where a discard fired in the same tick
+  // lands.
+  let releasePane!: () => void;
+  const { api, spy } = fakeApi({
+    attachPane: () =>
+      new Promise((r) => {
+        releasePane = () => r(att({ kind: "pane", seat: "pane", thumb: "blob:late-pane" }));
+      }),
+    attachPaths: (_dir, paths) =>
+      paths.map((p) => att({ kind: "file", view: p, name: p, brought: true })),
+  });
+  const tray = mountTray(api);
+  let capturing!: Promise<void>;
+  let adding!: Promise<void>;
+  await act(async () => {
+    capturing = tray.get().capture();
+    await Promise.resolve();
+    adding = tray.get().addPaths(["/late/a.csv"]);
+    // Same tick as the registration, before its continuation runs.
+    tray.get().discard();
+    await adding;
+    releasePane();
+    await capturing;
+  });
+  expect(tray.get().items).toEqual([]);
+  expect(spy.revoked.map((a) => a.thumb ?? a.view)).toEqual(
+    expect.arrayContaining(["blob:late-pane", "/late/a.csv"]),
+  );
+});
+
 // ---- D8: the picture an OPEN viewer is showing ----------------------------
 
 /** The `<img>` the viewer's body is drawing, which is the whole of what the
