@@ -396,9 +396,9 @@ def test_a_cancel_landing_between_the_sweep_and_the_claim_wins(target, spawned,
     entry = schedule.create(str(target), "never mind", _in(-5))
     real_claim = schedule._claim
 
-    def cancel_then_claim(entry_id, now):
+    def cancel_then_claim(entry_id, now, session_id=""):
         schedule.cancel(entry_id)
-        return real_claim(entry_id, now)
+        return real_claim(entry_id, now, session_id)
 
     monkeypatch.setattr(schedule, "_claim", cancel_then_claim)
 

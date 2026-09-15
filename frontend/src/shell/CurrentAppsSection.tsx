@@ -42,7 +42,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { inFlight, opensElsewhere, statusColumn } from "@shell/tasks-lib";
+import { inFlight, isQueued, opensElsewhere, queuedLabel, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -266,7 +266,8 @@ function CurrentAppRow({
     app.path +
     (app.kind === "linked" ? " — linked app" : "") +
     (app.exists ? "" : " — folder missing") +
-    (app.running ? " — running" : "");
+    (app.running ? " — running" : "") +
+    (app.queued > 0 ? " — " + queuedLabel(app.queued) : "");
   return (
     <div
       className={
@@ -344,6 +345,17 @@ function CurrentAppRow({
           aria-hidden="true"
         />
       )}
+      {/* "· 2 queued" — work asked for in this folder that is waiting on the run
+          in it (the project queue). WORDS AND NOT A DOT, which is the whole
+          difference from the two marks above: a dot says "something is true
+          here" and one is already spoken for by the running state, while what a
+          reader wants from a queue is the NUMBER. It is drawn beside the running
+          dot rather than instead of it — the two are different facts about one
+          folder, and a folder with a run and a line behind it should say both.
+          Nothing at all at 0, so a machine with the queue off grows no ink. */}
+      {app.queued > 0 && (
+        <span className="current-app-queued">{"· " + queuedLabel(app.queued)}</span>
+      )}
       <span className="bookmark-actions">
         <button
           className="icon-btn delete-btn current-app-archive"
@@ -382,6 +394,21 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
     [rows],
   );
+  // The same pulse rows read for the other half of the sentence: tasks WAITING
+  // on their folder (the project queue). A separate memo rather than one pass
+  // producing both, for the reason `runningProjects` beside it is its own memo:
+  // one list, one question, and neither has to know the other's filter.
+  //
+  // IT DOES NOT PRESERVE ARRAY IDENTITY and never claimed to be able to. The
+  // pulse publishes a fresh `tasks` array on every poll (`tasksPulse.ts`), so
+  // this memo and its neighbour both rebuild four times a minute whatever they
+  // return — which is why the thing the desk's refetch is keyed on is
+  // `pulseSignal`, a STRING digest, and not either of these arrays. (An earlier
+  // comment here asserted the opposite; nothing was ever built on it.)
+  const queuedProjects = useMemo(
+    () => rows.filter((r) => isQueued(r)).map((r) => r.project || ""),
+    [rows],
+  );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const { entries, adopt } = useCurrentApps(pulseSignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
@@ -406,14 +433,14 @@ export default function CurrentAppsSection() {
     [],
   );
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, clearedHere);
+    const found = currentApps(entries, runningProjects, clearedHere, queuedProjects);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, clearedHere, orderEpoch]);
+  }, [entries, runningProjects, queuedProjects, clearedHere, orderEpoch]);
   // The user opened `path`: clear the dot here at once, tell the server (POST
   // /api/current-apps/open — the row's `opened_at` and `unread` are its to
   // keep), then read the table back and hand the row to the server's flag.

@@ -19,6 +19,7 @@ import {
   TabsTrigger,
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
+import { chatUrl, pendingEntryId } from "@platform/lib/queue";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { isDraftTask, isUpcomingLane } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
@@ -273,6 +274,17 @@ export function Lists({
     if (isDraftTask(task)) {
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
+    }
+    // A CHAT THAT HAS NEVER RUN (the project queue). It has no session id, so
+    // neither door below can open it: it is opened by the ENTRY it is waiting
+    // as, through `chatUrl`'s `queued` param, and always as a navigation — there
+    // is no transcript to swap into place, and the pane has to mount knowing its
+    // leader (`ClaudeChat`'s `QUEUED_PARAM`). Its row is the ordinary row: same
+    // height, same columns, same place in the sort, with `queued` on its ring.
+    const waitingEntry = task.session_id ? "" : pendingEntryId(task.key);
+    if (waitingEntry) {
+      const href = chatUrl(task.target || task.project || "", "", waitingEntry);
+      return { href, onPress: () => onNavigate?.(href) };
     }
     if (!task.session_id) return { href: null };
     const pane = taskPane(task, file);

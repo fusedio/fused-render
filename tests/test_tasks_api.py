@@ -391,6 +391,13 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         "key", "status", "unread", "last_active", "project",
         "task_id", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
+        # ...and where the row stands in its folder's line (2026-09-12): the
+        # sidebar's Current apps section prints "n queued" beside "n running",
+        # and a queued row has to be able to say whether it runs next — plus the
+        # session that "behind TASK-041" opens, and how many of this row's own
+        # messages are waiting behind it.
+        "queue_position", "queue_ahead", "queue_priority",
+        "queue_ahead_session", "queue_waiting",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -713,7 +720,10 @@ def test_an_api_error_is_not_the_last_message_either(
     ])
 
     task = _tasks(client)[0]
-    assert task["blocked_reason"] == "failed"
+    # "session limit" is the plan's usage limit, which the row names as its own
+    # kind of failure (`_LIMIT_HINTS`, the project queue's Blocked-with-a-clock);
+    # still a failure, and still not something Claude SAID.
+    assert task["blocked_reason"] == "usage_limit"
     assert task["last_message"]["role"] == "user"
     assert task["last_message"]["text"] == "run the migration"
 
@@ -1457,7 +1467,7 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
         "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
-        "unread", "entry_id", "template_id", "turn", "anchor", "immediate"}
+        "unread", "limited", "entry_id", "template_id", "turn", "anchor", "immediate"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -2230,9 +2240,127 @@ def test_a_chat_turn_that_died_on_an_api_error_is_blocked(client,
     task = _by_key(client)["sess-a"]
     assert task["messages"][0]["turn"] == "error"
     assert task["status"] == "blocked"
-    # The lane holds two different things and the row has to say which; a
-    # broken run is the "failed" one, whatever put it there.
-    assert task["blocked_reason"] == "failed"
+    # …AND THE LANE HOLDS MORE THAN ONE KIND OF NOT-MOVING. This one is the
+    # plan's usage limit, which is not a fault and has no Retry: the word says
+    # so, and `resumes_at` is 0.0 because nothing has been scheduled to pick it
+    # back up. See the comeback test below for the other half.
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == 0.0
+    assert task["messages"][0]["limited"] is True
+
+
+def test_a_usage_limit_is_blocked_and_not_in_progress(client, projects_dir):
+    """AKSHIL'S SCREENSHOT, 2026-09-12: a chat that hit the plan's usage limit
+    showed `in_progress` with the failed-red ring on it, and the board put it in
+    In Progress.
+
+    The failure row is itself a write, so the 45-second liveness window read the
+    corpse as a pulse — while the ring, which reads `failed`, read the failure.
+    One run, two answers, and the one the lane went with is the one that hides
+    the fact that nothing will happen until the window resets."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429)])
+    task = _by_key(client)["sess-a"]
+
+    assert task["status"] == "blocked"
+    assert task["live"] is False
+    assert task["failed"] is True
+    assert task["blocked_reason"] == "usage_limit"
+
+
+def test_a_usage_limit_with_a_comeback_scheduled_says_when_it_resumes(
+        client, projects_dir, tmp_path):
+    """PR #1107's comeback, read from the row. The chat schedules a
+    continuation on this session at the reset the CLI reported, and the row's
+    job is to say so: `usage_limit` is why it is not moving and `resumes_at` is
+    when it stops not moving."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(time.time() + 3600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", fresh,
+                   status=429)])
+    _seed_schedule([_entry("e1", "Your usage limit has reset. Continue.", later,
+                           target=str(tmp_path), session_id="sess-a",
+                           claude_session_id="sess-a",
+                           title="Continue after usage limit")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "blocked"
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == task["next_run"] > 0
+
+
+def test_resumes_at_is_the_comeback_entry_and_not_whatever_runs_next(
+        client, projects_dir, tmp_path):
+    """🟡 review, 2026-09-12. `resumes_at` was the task's next pending run of
+    ANY kind, so a nightly repeat due before the window reopened made this row
+    promise the plan resets at 6pm — a sentence about the plan's clock built out
+    of somebody's calendar. The comeback PR #1107 scheduled is the only entry
+    that answers it, and its title is the mark it carries."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(time.time() + 3600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", fresh,
+                   status=429)])
+    _seed_schedule([
+        # An unrelated message of this task's, due FIRST.
+        _entry("e0", "post the digest", soon, target=str(tmp_path),
+               session_id="sess-a", claude_session_id="sess-a",
+               title="Nightly digest"),
+        _entry("e1", "Your usage limit has reset. Continue.", later,
+               target=str(tmp_path), session_id="sess-a",
+               claude_session_id="sess-a",
+               title="Continue after usage limit"),
+    ])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    # The next run is the digest; the row does not say the plan resets then.
+    assert task["next_run_entry"] == "e0"
+    assert task["resumes_at"] > task["next_run"] > 0
+
+
+def test_resumes_at_is_0_when_the_comeback_is_gone(client, projects_dir,
+                                                    tmp_path):
+    """The comeback was cancelled, or the POST that made it failed. A pending
+    message that is not the comeback is not a reset time, so the row says
+    nothing rather than the wrong thing."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429)])
+    _seed_schedule([_entry("e0", "post the digest", soon, target=str(tmp_path),
+                           session_id="sess-a", claude_session_id="sess-a",
+                           title="Nightly digest")])
+
+    task = _by_key(client)["sess-a"]
+    assert task["blocked_reason"] == "usage_limit"
+    assert task["resumes_at"] == 0.0
+
+
+def test_an_ordinary_reply_after_the_limit_takes_the_row_back(client,
+                                                              projects_dir):
+    """The mark is on the LAST answer, not on any answer: the window reopened,
+    the comeback ran, and the conversation is ordinary again with nothing to
+    undo."""
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", fresh, uuid="a1"),
+        _api_error("Claude usage limit reached", fresh, status=429),
+        _assistant("here it is", fresh)])
+    task = _by_key(client)["sess-a"]
+
+    assert task["blocked_reason"] == ""
+    assert task["resumes_at"] == 0.0
+    assert task["messages"][0]["limited"] is False
 
 
 def test_a_chat_turn_the_api_killed_reports_failed_on_the_row_too(client,
@@ -3550,3 +3678,43 @@ def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
 
     r = client.post("/api/tasks/delete", json={"key": "sess-a"})
     assert r.status_code == 409, r.text
+
+
+# ---- a number is never minted from a GUESSED project ---------------------------
+# `_place` falls back to decoding the transcript's directory name when the file
+# has not recorded its cwd yet — and the decode is lossy: every hyphen becomes a
+# separator, so `-private-tmp-pqueue-qa-alpha` reads as `/private/tmp/pqueue/qa/alpha`.
+# A number allocated against THAT project lives in a counter of its own, and the
+# folder's real counter hands the same number out again a second later: two
+# TASK-002s in one folder (browser QA, 2026-09-16, after #1163 started listing a
+# row the instant a send is made, before the CLI's first row lands).
+
+
+def test_a_transcript_with_no_cwd_yet_gets_no_number_until_it_has_one(
+        client, projects_dir):
+    encoded = "-private-tmp-pqueue-qa-alpha"
+    real = "/private/tmp/pqueue-qa/alpha"
+    # A sibling in the same folder that has said where it is.
+    _write_transcript(projects_dir, "sess-old", real, [_user("earlier", T9)],
+                      encoded=encoded)
+    # …and a brand-new one whose only row so far carries no cwd at all.
+    _write_transcript(projects_dir, "sess-new", None, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-old"]["task_id"] == "TASK-001"
+    # The guessed project is still what the row is filed under for display…
+    assert rows["sess-new"]["project"].startswith("/private/tmp/pqueue")
+    # …but it is a GUESS, and a guess mints nothing.
+    assert rows["sess-new"]["task_id"] == ""
+
+    # The first real row lands, with the cwd, and the number follows from the
+    # folder's own counter — the next free one, not a second TASK-001.
+    _write_transcript(projects_dir, "sess-new", real, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+        _user("hello", T11),
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-new"]["project"] == real
+    assert rows["sess-new"]["task_id"] == "TASK-002"
+    assert rows["sess-old"]["task_id"] == "TASK-001"

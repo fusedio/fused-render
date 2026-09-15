@@ -35,6 +35,7 @@ export {
 export { Topbar } from "./Topbar";
 export type { TopbarProps } from "./Topbar";
 export { Kebab, forgetTaskCaches, knownTaskId, useTaskId } from "./Kebab";
+export { useLimitWord, LIMIT_REFRESH_MS } from "./useLimitWord";
 export { ClaudeMark, CLAUDE_MARK_PATH } from "./ClaudeMark";
 export type { ClaudeMarkProps } from "./ClaudeMark";
 export { SentPop } from "./SentPop";
