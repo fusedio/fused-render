@@ -1802,3 +1802,48 @@ Verification: `bun test` scoped runs (`hubSearchView.test.ts`, `capabilityMeta.t
 Tests added: `tests/test_index_query.py` (`test_resolve_an_uncancelled_token_changes_nothing`, `test_resolve_a_token_cancelled_before_the_call_raises_promptly`, `test_walk_from_a_token_cancelled_before_the_call_raises_promptly`, `test_resolve_cancels_between_segments_not_mid_segment`, `test_resolve_with_no_token_behaves_exactly_as_before`); `tests/test_index_api.py` (`test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot` parametrized over stats/search, `test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency`).
 
 Verified: `.venv/bin/python -m pytest tests/test_index_query.py tests/test_index_api.py -q` → 174 passed, no failures, no changes to any pre-existing test's behavior. File:line references in the original brief (`_walk_from` 547-607, `resolve_query` 610-727, `_rank_body`/`_rank_worker`/`_rank_reason` in routers/index.py, `_bounded_index_read` 244-289, wedge test 448-551) all matched the actual worktree contents at build time — no drift found.
+
+### walk-from-cancel-token build — review fixes (2026-09-15)
+
+A code review of the above build found `fused_render/index/query.py` and
+`fused_render/server/routers/index.py` (the production changes) correct as
+written — no production logic was changed in this round. Every finding was
+about the TESTS added by the original build being largely inert; this round
+made them able to actually fail.
+
+**Correction to the build entry above**: the claim "only `rank` had a test
+proving a wedged worker's abandonment releases the lane permit" is **false**.
+`test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot`
+already existed on `origin/main` (added by #1131), parametrized over
+`stats`/`search` via `_make_fake_index_stats`/`_make_fake_index_search`. The
+build added a SECOND function with the exact same name earlier in the file;
+Python binds the later (pre-existing) definition, so pytest only ever
+collected the original — the ~70 new lines were dead code that could never
+fail (`pytest --collect-only -k wedged_stats_or_search` showed 2/117
+collected, both ids from the original parametrization, before and after this
+fix). The duplicate has been deleted; nothing of substance was lost, since
+the original already covers the exact same abandon-then-release contract for
+both routes.
+
+| D-new | Deleted the shadowed duplicate `test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot` (the build's own copy, not the pre-existing one) | Confirmed via `pytest --collect-only` that Python's later-definition-wins rule meant pytest only ever ran the pre-existing (origin/main) version; the build's copy was unreachable dead code and tested nothing beyond what already existed. Kept the original, corrected the false "only `rank` had this test" claim above. |
+| D-new | Burst test (`test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency`): keyed the wedge decision (`n % 4 == 0`) on the request's own `q` value (`q{N}`) instead of a shared call counter incremented in call-arrival order | The counter's increment order depended on how many client-cancelled requests got cancelled before vs. after the route's pre-submission `if token.cancelled` check — a split that moves with machine load (reproduced by the reviewer: 6/12 runs failed under 16 background CPU spinners). Keying on `q` fixes the wedge assignment regardless of arrival order, and also means the unrelated final "clean" request (`q == "final-clean-request"`, never matching the `q{N}` shape) can never accidentally land on the wedge branch — making its outcome deterministic. |
+| D-new | Burst test: shortened the non-wedged worker's poll loop from 15×0.01s (= `ABANDON_S`, exactly tied) to 5×0.01s (materially shorter) | At the old value every non-wedged call always lost the abandon race, so zero burst responses could ever be 200 (instrumented: `[499, 503, 499, 503, ...]`, never 200) — the wedge mechanic and "answered normally" were indistinguishable, and a regression that time-out-ed every overlapping request would not have been caught. Added `assert 200 in statuses`. |
+| D-new | Burst test: replaced the misleading `assert 499 in statuses` (which the old comment claimed proved cancellation reached the worker thread) with a dedicated, event-synchronised sub-request (`q == "cancel-proof"`) plus a `worker_cancelled` set recorded from INSIDE the worker's poll loop | Instrumentation showed most 499s in the racy 20-request burst come from the route's pre-submission `if token.cancelled` check, firing before `_rank_worker` is ever called — `499 in statuses` would still pass even if `Cancelled` never propagated out of a worker thread at all. Tying the proof to a real wall-clock race against 19 other requests and lane contention (which the reviewer showed is itself load-dependent — 11-13 of 20 requests reach the worker at all, varying by run) was rejected as still flaky; instead one dedicated request's worker signals (`threading.Event`) that it has genuinely entered `_rank_worker` before the test flips its `is_disconnected` response, so any `Cancelled` recorded into `worker_cancelled` can only have come from inside an already-in-flight worker thread — deterministic regardless of load. `ABANDON_S` is raised to 1.0s only for this sub-request (ample margin over the real, unpatched `DISCONNECT_POLL_S` of 0.1s). |
+| D-new | `fused_render/index/query.py`: added `CancelToken` to the existing `from fused_render.index.cancel import Cancelled` line | Pyright's `reportUndefinedVariable` flagged the `"CancelToken | None"` string annotations on `_walk_from` and `resolve_query` as unresolvable — `CancelToken` was never imported, only used in forward-ref strings (no runtime effect, static-analysis-only). `Cancelled` was already imported from the same module (`fused_render.index.cancel`), which imports nothing from `query.py`, so there is no import cycle; added `CancelToken` to the same line rather than a `TYPE_CHECKING` guard. |
+
+Demonstrated each fix can actually fail: reverted `token=token` → `None` in
+`api_index_rank`'s call into `_rank_worker` (routers/index.py ~line 1901) —
+the dedicated `cancel-proof` sub-request's assertions failed as expected
+(`cancel_proof_resp.status_code == 499` and `"cancel-proof" in
+worker_cancelled`), since the worker never saw a live token to check.
+Separately, commented out `_abandoned_reads.discard(fut)` in `_reap_abandoned`
+(routers/index.py ~line 241) to simulate a leaked lane/pool permit — both
+parametrizations of the retained stats/search wedge test and the burst test
+failed on `assert not index_router._abandoned_reads`, as expected. Both
+changes were reverted immediately after (routers/index.py has no diff from
+`origin/main` in this round).
+
+Verified: `.venv/bin/python -m pytest tests/test_index_api.py
+tests/test_index_query.py -q` → 174 passed. The burst test alone run 10x in a
+row (all green) and 12x more under sustained CPU load (16 background `yes`
+spinners) — all green, no flakes observed in either condition.

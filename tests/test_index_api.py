@@ -582,26 +582,76 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
     monkeypatch.setattr(index_router, "ABANDON_S", 0.15)
 
     lock = threading.Lock()
-    calls = {"n": 0}
     never = threading.Event()
+    # Finding 4: record every `q` for which the worker THREAD itself observed
+    # `token.cancelled` and raised `Cancelled` — not merely "got a 499",
+    # which a request can also get pre-submission (the route's own
+    # `if token.cancelled: return Response(status_code=499)`, before
+    # `_rank_worker` is ever called). Asserting on this set instead of on
+    # `499 in statuses` is what actually proves cancellation reached the
+    # worker thread. `cancel_proof_entered` is the synchronisation for the
+    # dedicated, non-racy proof request below (`q == "cancel-proof"`).
+    worker_cancelled: set = set()
+    cancel_proof_entered = threading.Event()
 
     def fake_rank_worker(cfg, root, q, limit, token, ranked):
-        with lock:
-            calls["n"] += 1
-            n = calls["n"]
         empty = {"covered": True, "reason": "", "scanned_partitions": 0,
                  "of_partitions": 0, "base": root, "mode": "substring",
                  "hits": [], "truncated": False, "total": 0}
-        if n % 4 == 0:
+
+        if q == "cancel-proof":
+            # Finding 4's fix: proving `Cancelled` propagates out of a
+            # worker thread ALREADY IN FLIGHT (not merely a pre-submission
+            # queue check) needs to not depend on winning a wall-clock race
+            # against 19 other overlapping requests and the lane's own
+            # contention — that dependency is exactly what made the old
+            # `499 in statuses` assertion unable to prove what its comment
+            # claimed (see the docstring for `test`, review finding 4). This
+            # branch is reached by ONE dedicated, otherwise-ordinary
+            # request, fired only after the racy burst below has fully
+            # settled: `cancel_proof_entered` tells `run()` this thread is
+            # now inside the worker (so the client-cancel signal that
+            # follows can only be observed here, from inside, never
+            # pre-submission), and the generous poll window (up to 0.8s,
+            # against the 1.0s `ABANDON_S` `run()` raises just for this
+            # request) leaves comfortable headroom over `DISCONNECT_POLL_S`
+            # (0.1s) even on a loaded machine.
+            cancel_proof_entered.set()
+            for _ in range(80):
+                if token is not None and token.cancelled:
+                    with lock:
+                        worker_cancelled.add(q)
+                    raise Cancelled()
+                time.sleep(0.01)
+            return empty
+
+        # Finding 2: which calls are "truly wedged" is keyed on the `q`
+        # value itself (`q0`, `q4`, `q8`, ... every 4th burst request), not
+        # on a shared call counter incremented in whatever order requests
+        # happen to reach this function. A counter's order depends on how
+        # many client-cancelled requests got cancelled before vs. after the
+        # route's pre-submission check — which moves with machine load — so
+        # it could silently shift which call (including the unrelated final
+        # "clean" request below, which never reaches this function under
+        # its own `q`) landed on the wedge branch. Keying on `q` makes the
+        # wedge assignment fixed regardless of arrival order or load.
+        n = int(q[1:]) if q.startswith("q") and q[1:].isdigit() else -1
+        if n >= 0 and n % 4 == 0:
             never.wait()  # the un-killable, permanently-parked worker thread
             return empty
-        # A short poll loop, not an instant return: gives the disconnect
-        # watcher (polling every DISCONNECT_POLL_S) a real chance to have
-        # already cancelled this token by the time the worker would
-        # otherwise finish, so a client-cancelled request actually exercises
-        # `Cancelled`, not a race it usually loses.
-        for _ in range(15):
+        # Finding 3: this poll loop must stay MATERIALLY shorter than
+        # `ABANDON_S` (0.15s above) — 5 * 0.01s = 0.05s, not the old
+        # 15 * 0.01s = 0.15s, which tied it and made every non-cancelled
+        # call lose the abandon race, so no burst request could ever answer
+        # 200. It still gives the disconnect watcher (polling every
+        # `DISCONNECT_POLL_S`) a real chance to have already cancelled this
+        # token by the time the worker would otherwise finish, but (per
+        # finding 4 above) landing inside this window is now a bonus, not
+        # the thing being asserted on.
+        for _ in range(5):
             if token is not None and token.cancelled:
+                with lock:
+                    worker_cancelled.add(q)
                 raise Cancelled()
             time.sleep(0.01)
         return empty
@@ -644,6 +694,27 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
             while index_router._abandoned_reads and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
 
+            # Finding 4's dedicated, deterministic proof: fire ONE more
+            # request, wait (via a real thread Event, not a wall-clock
+            # guess) until its worker thread has actually entered
+            # `_rank_worker`, and only THEN flip `is_disconnected` for it.
+            # The watcher can only observe that after this point, so any
+            # `Cancelled` it raises can only have come from inside the
+            # worker — never the pre-submission `if token.cancelled` check,
+            # which already ran (and passed) before this request's worker
+            # thread could possibly have started.
+            monkeypatch.setattr(index_router, "ABANDON_S", 1.0)
+            cancel_proof_task = asyncio.create_task(client.get(
+                "/api/index/rank",
+                params={"root": str(tmp_path), "q": "cancel-proof"}))
+            for _ in range(200):
+                if cancel_proof_entered.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            assert cancel_proof_entered.is_set()
+            to_cancel.add("cancel-proof")
+            cancel_proof_resp = await cancel_proof_task
+
             t0 = time.monotonic()
             final_resp = await client.get(
                 "/api/index/rank",
@@ -654,11 +725,17 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
             sem = index_router._interactive_lane_loops.get(loop)
             sem_value = sem._value if sem is not None else None
 
-            return responses, final_resp, final_elapsed, sem_value
+            return (responses, final_resp, final_elapsed, sem_value,
+                    cancel_proof_resp)
 
-    (responses, final_resp, final_elapsed,
-     sem_value) = asyncio.run(run())
+    (responses, final_resp, final_elapsed, sem_value,
+     cancel_proof_resp) = asyncio.run(run())
 
+    # Finding 2's fix made this deterministic: "final-clean-request" never
+    # matches the `q{N}` shape `fake_rank_worker` keys its wedge decision on,
+    # so it always takes the short (0.05s) poll branch and always answers
+    # 200 — regardless of how many burst calls actually reached the worker
+    # or in what order, which is what made this flake under load before.
     assert final_resp.status_code == 200, final_resp.text
     assert final_elapsed < 0.5, final_elapsed
     assert not index_router._abandoned_reads
@@ -667,14 +744,28 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
     # width again.
     assert sem_value == 2
 
+    # Finding 4: the dedicated, event-synchronised proof — not a race
+    # against the burst — that cancellation reaches a worker thread already
+    # in flight.
+    assert cancel_proof_resp.status_code == 499, cancel_proof_resp.text
+    assert "cancel-proof" in worker_cancelled, worker_cancelled
+
     statuses = [r.status_code for r in responses if not isinstance(r, Exception)]
     # Every response is one of: answered normally, abandoned by the client
     # (499), or hit the abandon-timeout backstop (503) for one of the truly
     # wedged (n % 4 == 0) calls — nothing else is a legitimate outcome here.
     assert all(s in (200, 499, 503) for s in statuses), statuses
-    # The whole point of client-cancelling half the burst: at least one of
-    # them actually took the quiet-499 path, proving cancellation reached
-    # the worker thread, not merely the queue.
+    # Finding 3: with the poll loop now materially shorter than ABANDON_S, a
+    # non-cancelled, non-wedged burst request must actually be able to
+    # answer normally — this was structurally impossible before (every
+    # burst response was 499 or 503, never 200).
+    assert 200 in statuses, statuses
+    # The client-cancel path is also exercised within the racy burst itself
+    # (a bonus, not the proof — see the dedicated `cancel-proof` assertions
+    # above for that): most of these 499s come from the route's
+    # pre-submission `if token.cancelled` check, before `_rank_worker` is
+    # ever called, which is exactly why this alone cannot prove the
+    # worker-thread path (finding 4).
     assert 499 in statuses, statuses
 
 
