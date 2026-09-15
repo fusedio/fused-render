@@ -76,6 +76,27 @@ _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
+# session_id -> when history.jsonl last named it. A chat sent from this app
+# runs `claude -p`, which writes history.jsonl and the transcript but NEVER a
+# sessions/<pid>.json — so the registry alone would watch none of our own
+# chats, and a row stayed "done" for the whole turn (Akshil, 2026-09-15). A
+# prompt is the one signal every kind of session gives, so a session is
+# watched for PROMPTED_WATCH_SEC after each one, registry or not.
+_prompted: dict[str, float] = {}
+PROMPTED_WATCH_SEC = 600.0
+# session_id -> the transcript mtime whose "window closed" bump was already
+# announced. A `-p` run leaves no registry departure to notice, so the only way
+# its row ever goes idle without a later write is the tail rule's 45s window
+# running out — a change no byte on disk marks. One bump per settled mtime, at
+# the moment the window closes, is what lets the poll see it (Bugbot, PR #1153).
+_tr_settled: dict[str, float] = {}
+# session_id -> when to look again for a transcript that was not there. A
+# prompted session's transcript is found by a glob across every project bucket
+# (`session_liveness.transcript_path`); a session with none yet — history.jsonl
+# names every project's prompts, not only this app's — must not pay that glob
+# once a second for the whole watch window.
+_tr_missing: dict[str, float] = {}
+MISSING_RETRY_SEC = 5.0
 _started = False
 
 
@@ -348,14 +369,35 @@ def _read_live_transcripts() -> set[str]:
     """Session ids whose transcript grew — checked only for sessions a running
     `claude` holds, which is the only kind that can grow."""
     keys: set[str] = set()
+    now = time.time()
     with _cond:
-        sids = list(_registry)
-    for sid in sids:
+        registered = set(_registry)
+    for sid, at in list(_prompted.items()):
+        if now - at > PROMPTED_WATCH_SEC:
+            del _prompted[sid]
+            if sid not in registered:
+                # Nobody else is watching it: its bookkeeping goes too, the
+                # way `_read_registry` drops a departed session's, or every
+                # `-p` chat ever sent grows three dicts for the process's life.
+                _tr_paths.pop(sid, None)
+                _tr_sizes.pop(sid, None)
+                _tr_settled.pop(sid, None)
+                _tr_missing.pop(sid, None)
+    sids = registered | set(_prompted)
+    for sid in sorted(sids):
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
+            if _tr_missing.get(sid, 0.0) > now:
+                continue
             path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
             if not path:
+                # Only a PROMPTED-only session backs off: a registered one
+                # writes its transcript within a second of appearing, and its
+                # first row is news this tick must not miss.
+                if sid not in registered:
+                    _tr_missing[sid] = now + MISSING_RETRY_SEC
                 continue
+            _tr_missing.pop(sid, None)
             _tr_paths[sid] = path
         try:
             size = os.path.getsize(path)
@@ -363,6 +405,27 @@ def _read_live_transcripts() -> set[str]:
             continue
         last = _tr_sizes.get(sid)
         _tr_sizes[sid] = size
+        if last == size and sid in _prompted and sid not in registered:
+            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The listing's
+            # tail rule (`session_liveness.transcript_running`, the same call
+            # routers/tasks.py `_live` falls back to) stops calling this
+            # session running a while after its last REAL message — the
+            # instant no byte on disk marks. Announce it once per settled
+            # file, so a listing is not left wearing an in-progress ring until
+            # some unrelated poke. The very rule, not an mtime arithmetic of
+            # our own: housekeeping rows push the mtime past the last message,
+            # and a bump timed off the mtime would land late.
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if _tr_settled.get(sid) == mtime:
+                continue
+            running, _active = session_liveness.transcript_running(path, now)
+            if not running:
+                _tr_settled[sid] = mtime
+                keys.add(sid)
+            continue
         if last is None:
             # First sight of this transcript. News if it was born under a
             # session we are already watching (the first prompt just landed);
@@ -372,6 +435,11 @@ def _read_live_transcripts() -> set[str]:
             continue
         if size != last:
             keys.add(sid)
+            # A turn is still writing: the watch window follows the WRITES, not
+            # only the prompt that opened it, or a turn longer than the window
+            # (an agent run) would stop being watched half-way through.
+            if sid in _prompted:
+                _prompted[sid] = now
     return keys
 
 
@@ -381,6 +449,9 @@ def tick() -> set[str]:
     announces nothing — the page's first full listing already has it all."""
     global _primed
     keys = _read_history_tail()
+    now = time.time()
+    for sid in keys:
+        _prompted[sid] = now
     keys |= _read_registry()
     keys |= _read_live_transcripts()
     if not _primed:
@@ -431,3 +502,6 @@ def reset() -> None:
     _sess_sids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
+    _prompted.clear()
+    _tr_settled.clear()
+    _tr_missing.clear()

@@ -21,6 +21,7 @@
 import type { Task } from "@platform/lib/api";
 import { columnLabel } from "./schedule-lib";
 import { StatusIcon } from "./ScheduleTaskViews";
+import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { basename, firstLine, ringFailed, taskColumn, tildePath } from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
@@ -28,6 +29,20 @@ import { basename, firstLine, ringFailed, taskColumn, tildePath } from "./tasks-
  *  its captions name the same string. */
 export function peekTitle(task: Task): string {
   return firstLine(task.title) || "(untitled)";
+}
+
+/**
+ * THE ONE LINE EVERY SURFACE NAMES A TASK BY — the list row, the chat header,
+ * the peek panel, the cards popup (Akshil, 2026-09-15: "show the same title
+ * everywhere"). `cardTitleLine`'s rule, subscribed to the pref: the newest
+ * message while "Title a task by its last message" is on, else the task's own
+ * title, and the card's "(untitled)" word for a task that has neither.
+ * Takes `null` so a panel with no task yet can still call it unconditionally.
+ */
+export function useTaskHeadline(task: Task | null | undefined): string {
+  const titleMode = useTaskCardTitleMode();
+  if (!task) return "";
+  return cardTitleLine(task, titleMode).text || peekTitle(task);
 }
 
 /**
@@ -41,16 +56,36 @@ export function peekTitle(task: Task): string {
  * The title is the only part that may be cut short (task-peek.css): a clipped
  * sentence still reads, a clipped number is a different number.
  */
-export function TaskPeekWho({ task }: { task: Task }) {
+export function TaskPeekWho({ task, running = false }: {
+  task: Task;
+  /**
+   * THE PAGE KNOWS A TURN IS LIVE before the listing does. A chat sent from
+   * this app runs `claude -p`, which the server's watcher learns about from
+   * the transcript — a poll or two behind the send — so the ring read "done"
+   * for the first seconds of every turn, and for a short turn for all of it
+   * (Akshil, 2026-09-15). The controller's own clock outranks the row here;
+   * the row catches up and agrees.
+   */
+  running?: boolean;
+}) {
+  // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by its last message"
+  // on, the row under this header shows the newest thing said; a header still
+  // showing the task's name was two surfaces naming one chat two ways
+  // (Akshil, 2026-09-15: "header also shows last message").
+  const title = useTaskHeadline(task);
+  // …EXCEPT A ROW PARKED ON A CARD. `running` stays true while a permission
+  // or plan card is open — the run clock has no waiting state — and the list
+  // row says needs-attention for exactly that; the header must not spin over
+  // a question the reader is being asked (StatusIcon's own note on `failed`).
   const column = taskColumn(task);
-  const title = peekTitle(task);
+  const status = running && column !== "needs_attention" ? "in_progress" : column;
   return (
     <div className="task-side-peek-who">
       <span
         className="task-side-peek-status"
-        title={column ? columnLabel(column) : undefined}
+        title={status ? columnLabel(status) : undefined}
       >
-        <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+        <StatusIcon status={status} failed={running ? false : ringFailed(task)} />
       </span>
       <span className="task-side-peek-id">{task.task_id}</span>
       <span className="task-side-peek-title" title={title}>

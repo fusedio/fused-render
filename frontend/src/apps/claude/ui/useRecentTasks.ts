@@ -212,6 +212,22 @@ export function seedSessionTask(task: Task): void {
   stashSeed(id, task);
 }
 
+/** The seed for one session GOES — the erase gesture's share. `useSessionTask`
+ *  keeps a seeded row over a listing that dropped it, on purpose (a row that
+ *  blinks out mid-conversation is worse than one a poll behind), and that is
+ *  exactly wrong for a row the reader just deleted. */
+export function forgetSessionSeed(sessionId: string): void {
+  seeds.delete(sessionId);
+  try {
+    const raw = sessionStorage.getItem(SEED_STASH);
+    if (raw && (JSON.parse(raw) as { id?: string }).id === sessionId) {
+      sessionStorage.removeItem(SEED_STASH);
+    }
+  } catch {
+    // No storage — nothing stashed to forget.
+  }
+}
+
 /** The seeded row for a session, or null. */
 export function sessionSeed(sessionId: string | null): Task | null {
   if (!sessionId) return null;

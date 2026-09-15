@@ -37,6 +37,7 @@ import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { runAgent } from "../protocol/agent";
 import type { TerminalCommandResponse } from "../protocol/types";
+import { forgetSessionSeed } from "./useRecentTasks";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -581,6 +582,7 @@ export function Kebab({
             setErasing(false);
             // Every cache keyed by this session is now a lie (T:13348-13366).
             forgetTaskCaches(sessionId);
+            forgetSessionSeed(sessionId);
             onErased?.(sessionId);
           }}
         />
