@@ -296,7 +296,28 @@ export const Turn = memo(function Turn({
               scanning for; a turn that was all tool calls says what the first
               call was instead, muted, so the row is never blank. */}
           {folded ? (
-            <span className={cn("turn-collapsed", line && line.muted && "is-muted")}>
+            /* AND THE LINE ITSELF OPENS IT (Akshil, 2026-09-15). The mark is a
+               12px glyph in the gutter; the row a reader is pointing at is the
+               words. Same handler, so there is one action and one state — this
+               is not a second control, it is a bigger target for the one that
+               is already there. ONE WAY ONLY: the open body is not a control,
+               or every click inside a reply — a selection, a code block's copy
+               button — would be a click that shuts it. */
+            <span
+              className={cn("turn-collapsed", line && line.muted && "is-muted")}
+              role="button"
+              tabIndex={0}
+              aria-expanded={false}
+              onClick={() => onToggleCollapse!(turn.key)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                // SPACE WOULD SCROLL THE LOG, and Enter inside a form would
+                // submit it: a `role="button"` owes the keyboard what a real
+                // `<button>` gives it for free.
+                e.preventDefault();
+                onToggleCollapse!(turn.key);
+              }}
+            >
               {line ? line.text : ""}
             </span>
           ) : segments.length ? (

@@ -491,6 +491,34 @@ describe("the toggle", () => {
     expect("data-hint" in (marks(live)[0]!.props as Record<string, unknown>)).toBe(false);
   });
 
+  test("THE FOLDED LINE ITSELF OPENS THE REPLY (Akshil 2026-09-15)", () => {
+    // The mark is a 12px glyph in the gutter; the row a reader aims at is the
+    // words. Same handler, same state — a bigger target for the one control.
+    const turn = assistant("a:1", { segments: [text("The answer."), tool("t1", "Read")] });
+    const hit: string[] = [];
+    const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={(k) => hit.push(k)} />);
+    const line = byClass(shut, "turn-collapsed")[0]!.props as Record<string, unknown>;
+    expect(line["role"]).toBe("button");
+    expect(line["tabIndex"]).toBe(0);
+    act(() => (line["onClick"] as () => void)());
+    expect(hit).toEqual(["a:1"]);
+    // Enter and Space work it too, and neither scrolls the log.
+    for (const key of ["Enter", " "]) {
+      let prevented = 0;
+      act(() =>
+        (line["onKeyDown"] as (e: unknown) => void)({ key, preventDefault: () => prevented++ }),
+      );
+      expect(prevented).toBe(1);
+    }
+    expect(hit).toEqual(["a:1", "a:1", "a:1"]);
+    act(() => (line["onKeyDown"] as (e: unknown) => void)({ key: "a", preventDefault() {} }));
+    expect(hit).toHaveLength(3);
+    // ONE WAY ONLY: the open body is not a control — only the mark folds.
+    const open = mount(<Turn turn={turn} onToggleCollapse={(k) => hit.push(k)} />);
+    expect((byClass(open, "body")[0]!.props as Record<string, unknown>)["onClick"]).toBe(undefined);
+    expect(byClass(open, "turn-collapsed")).toHaveLength(0);
+  });
+
   test("with no handler at all the mark is inert — the fold is the log's to offer", () => {
     const r = mount(<Turn turn={assistant("a:1")} collapsed />);
     expect((marks(r)[0]!.props as { disabled?: boolean }).disabled).toBe(true);

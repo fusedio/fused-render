@@ -215,6 +215,87 @@ export function groupCollapsibles(
   return out;
 }
 
+/* ── where a run's trigger sits (design.md §A, Q1 revised 2026-09-15) ───────
+ *
+ * The trigger belongs in the bottom-right corner of a PROSE block, never on a
+ * line of its own — a bare right-aligned word above the first paragraph is the
+ * machinery row §A exists to delete, wearing a smaller hat.
+ *
+ * So a run seats itself on the prose it is adjacent to:
+ *
+ *   * the prose BEFORE it, wherever there is one (the original rule);
+ *   * failing that — the turn OPENS on tool calls — the prose that FOLLOWS it,
+ *     which gets the same corner seat. Only the run before the turn's FIRST
+ *     prose looks forward: anywhere else "no prose before me" means a card or a
+ *     bare stretch broke the chain, and reaching over that is reaching over
+ *     something the reader is owed.
+ *
+ * A prose block can therefore hold TWO runs, one either side. It does NOT grow
+ * two words in one corner: they MERGE onto one trigger, which opens both — and
+ * the members of each render at their own chronological position, the leading
+ * run's above the prose and the trailing run's below it.
+ *
+ * A prose block is not a seat when it is the STREAMING TAIL (the typer rewrites
+ * that element every frame) or, looking BACKWARD, when it has a card filed
+ * after it (the card is between the prose and the run). Those runs keep the
+ * bare own-line trigger, as does a turn with no prose in it at all.
+ */
+export interface TriggerSeats {
+  /** prose ROW index → the run ROW indices whose trigger it carries, earliest
+   *  first (a leading run before a trailing one). */
+  seats: Map<number, number[]>;
+  /** Run ROW indices with no prose to sit on: their own right-aligned line. */
+  bare: Set<number>;
+}
+
+/**
+ * Seat every run in `rows` — see the note above. Pure, and over ROW indices,
+ * so the paint side does not have to decide placement while it is also
+ * building elements (and so this is testable without a renderer).
+ */
+export function seatTriggers(
+  rows: readonly GroupedRow[],
+  opts?: {
+    /** The growing segment's index in the RAW list, or -1. */
+    tailIndex?: number;
+    /** Filed cards by raw index — read for its keys only. */
+    cardsAfter?: Map<number, unknown> | null;
+  },
+): TriggerSeats {
+  const tailAt = opts?.tailIndex ?? -1;
+  const cards = opts?.cardsAfter ?? null;
+  const seats = new Map<number, number[]>();
+  const bare = new Set<number>();
+  /** Is row `r` a settled prose block — a seat a trigger can be drawn in? */
+  const seat = (r: number): boolean => {
+    const row = rows[r];
+    return !!row && !isRun(row) && viewKind(row.seg) === "text" && row.index !== tailAt;
+  };
+  const sit = (at: number, run: number) => {
+    const held = seats.get(at);
+    if (held) held.push(run);
+    else seats.set(at, [run]);
+  };
+  let sawProse = false;
+  rows.forEach((row, r) => {
+    if (!isRun(row)) {
+      if (viewKind(row.seg) === "text") sawProse = true;
+      return;
+    }
+    const before = rows[r - 1];
+    if (seat(r - 1) && !cards?.has((before as GroupedSeg).index)) {
+      sit(r - 1, r);
+      return;
+    }
+    if (!sawProse && seat(r + 1)) {
+      sit(r + 1, r);
+      return;
+    }
+    bare.add(r);
+  });
+  return { seats, bare };
+}
+
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last
  *  row is not prose (it ended on a tool call, or has no rows at all). */
 export function tailIndex(list: Segment[]): number {

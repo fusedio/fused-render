@@ -103,20 +103,49 @@ describe("the trigger's seat", () => {
     // The prose and the trigger are ONE element: the word is drawn in the last
     // line's own box, not on a row of its own under it.
     expect(proses(blocks[0]!)).toEqual(["Here goes."]);
-    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("more▸");
+    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("show more▸");
     expect((blocks[0]!.props as { className: string }).className).not.toContain("is-bare");
     // Collapsed: not one chip is mounted.
     expect(chips(json)).toHaveLength(0);
   });
 
-  test("no prose before the run → the trigger takes its own right-aligned line", () => {
-    // A turn that opens on a tool call (design.md §A, Q1).
-    const json = view([tool("a", "Read"), text("Done.")]).toJSON() as Json | Json[];
+  test("A TURN THAT OPENS ON TOOL CALLS SEATS THE WORD ON THE PROSE THAT FOLLOWS (Akshil 2026-09-15)", () => {
+    // Q1 revised: the leading run used to take a bare right-aligned line ABOVE
+    // the first paragraph — the machinery row §A exists to delete, in a smaller
+    // hat. It attaches FORWARD instead, same corner seat as a run after prose,
+    // and its members open ABOVE that paragraph (chronological).
+    const policy = createCardPolicy();
+    const segs = [tool("a", "Read"), text("Done."), tool("b", "Bash")];
+    const shut = view(segs, {}, policy).toJSON() as Json | Json[];
+    expect(byClass(shut, "is-bare")).toHaveLength(0);
+    // ONE word for BOTH runs (before and after the paragraph), in the prose's
+    // own block — never two triggers stacked in one corner.
+    const blocks = byClass(shut, "seg-block");
+    expect(blocks).toHaveLength(1);
+    expect(proses(blocks[0]!)).toEqual(["Done."]);
+    const trigger = byClass(shut, "run-trigger");
+    expect(trigger).toHaveLength(1);
+    expect(words(trigger[0]!)).toBe("show more▸");
+    expect((blocks[0]!.props as { className: string }).className).toContain("has-trigger");
+
+    // One click opens both runs, each at its own chronological position: the
+    // leading chip above the paragraph, the trailing one below it.
+    act(() => (trigger[0]!.props as { onClick: () => void }).onClick());
+    const open = view(segs, {}, policy).toJSON() as Json | Json[];
+    expect(chips(open)).toHaveLength(2);
+    const order = (Array.isArray(open) ? open : [open]).map((n) =>
+      byClass(n, "toolchip").length ? "chip" : byClass(n, "seg-block").length ? "prose" : "?",
+    );
+    expect(order).toEqual(["chip", "prose", "chip"]);
+    expect(byClass(open, "run-trigger")).toHaveLength(1);
+  });
+
+  test("a turn with NO prose at all keeps the bare own-line trigger", () => {
+    const json = view([tool("a", "Read"), tool("b", "Bash")]).toJSON() as Json | Json[];
     const block = byClass(json, "seg-block")[0]!;
     expect((block.props as { className: string }).className).toContain("is-bare");
     expect(proses(block)).toEqual([]);
-    // The prose AFTER the run is untouched — it is not the trigger's seat.
-    expect(proses(json)).toEqual(["Done."]);
+    expect(byClass(json, "run-trigger")).toHaveLength(1);
   });
 
   test("the growing tail never carries a trigger", () => {
@@ -206,7 +235,7 @@ describe("which stretches get a trigger", () => {
     expect(chips(shut)).toHaveLength(0);
     // One trigger for three members of three different kinds — the run is
     // "these steps happened together", not "these tool calls did".
-    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("more▸");
+    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("show more▸");
   });
 
   test("a live turn's trailing stretch renders member by member, with no trigger", () => {
@@ -286,7 +315,7 @@ describe("opening a run", () => {
     policy.overrides.set("run:tool:a", true);
     const segs = [text("lead"), tool("a", "Read"), think("why"), notice("done"), tool("b", "Bash")];
     const json = view(segs, {}, policy).toJSON() as Json | Json[];
-    expect(words(byClass(json, "run-trigger")[0]!)).toBe("less▾");
+    expect(words(byClass(json, "run-trigger")[0]!)).toBe("show less▾");
     expect(chips(json)).toHaveLength(2);
     expect(byClass(json, "thinking")).toHaveLength(1);
     expect(byClass(json, "seg-notice")).toHaveLength(1);
@@ -335,6 +364,17 @@ describe("the trigger's column", () => {
     const trigger = ruleFor(".chat-root .seg-block > .run-trigger");
     expect(trigger).toContain("right: 0");
     expect(trigger).toContain("bottom: 0");
+  });
+
+  test("the word is set in the PROSE's type, and the last line reserves room for it", () => {
+    const trigger = ruleFor(".chat-root .run-trigger");
+    // Same size AND same line-height as `.seg-text`, both inherited from the
+    // block — that is what puts the word on the last line's baseline.
+    expect(trigger).toContain("font: inherit");
+    expect(trigger).toContain("line-height: inherit");
+    expect(trigger).not.toContain("font-size:");
+    // …and the reservation grew with the label (`show more ▸` at 14px).
+    expect(ruleFor(".chat-root .seg-block")).toContain("--c-run-trigger-w: 96px");
   });
 
   test("the BARE case lands on the same edge, by the same box", () => {
