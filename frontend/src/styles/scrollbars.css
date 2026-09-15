@@ -1,183 +1,75 @@
-/* HOVER-ONLY SCROLLBARS (Akshil, 2026-09-15: "show the scrollbar only when we
-   are hovering over the element" — Tasks, the side peek, Home and AI Models).
+/* HOVER-ONLY SCROLLBARS, EVERYWHERE IN THE SHELL (Akshil, 2026-09-15: "show the
+   scrollbar only when we are hovering over the element" — Tasks and the side
+   peek first, then Home, AI Models, the Claude chat and the Explorer: "it should
+   be there … as well"). A hand-kept list of scrollers was the first cut and it
+   missed boxes on every page it named, so the rule is universal: every element
+   that scrolls wears the same quiet bar, painted out until the pointer is over
+   that element.
 
-   ONE LIST, ONE RULE. Every scroller that should hide its bar at rest is named
-   below, so the pages cannot drift into three different fades. The bar keeps
-   its track and its layout space — nothing moves when the pointer arrives — and
-   only the thumb's ink comes and goes.
+   THE BAR IS CLASSIC, NOT OVERLAY. A `::-webkit-scrollbar` rule is what opts an
+   element out of macOS overlay scrollbars (schedule.css, 2026-08-18: the Board's
+   overlay thumb drew over the right edge of every card); an overlay bar also
+   shows itself on scroll and fades on its own timer, which is exactly the
+   behaviour asked away here. So the bar takes its own 10px column and the
+   thumb — 4px of ink inside a transparent border, `background-clip` — is the
+   only thing that comes and goes. Strips that hide their bar outright
+   (`::-webkit-scrollbar { display: none }`, `scrollbar-width: none`) outrank
+   these `*` rules by specificity and stay hidden; an element with a non-`auto`
+   `scrollbar-width` makes Chromium ignore the pseudo rules and is left alone.
 
-   IT IS DONE WITH `::-webkit-scrollbar-thumb`, AND IT HAS TO BE. The first cut
-   of this file reached for `scrollbar-color`, on the argument that a real
-   property on the scroller repaints more reliably than a pseudo-element. It
-   does — and it also throws away the only thing keeping these bars off the
-   content. Measured in this app's own engine (Akshil, 2026-09-15), a 200px
-   scroller on macOS, reading `offsetWidth - clientWidth`:
+   THROUGH A CUSTOM PROPERTY, NOT `:hover` IN THE SCROLLBAR SELECTOR. Inside a
+   `::-webkit-scrollbar*` selector Chromium reads `:hover` — even in the compound
+   BEFORE the pseudo-element — as "this scrollbar part is under the pointer",
+   not "the element is" (that is the scrollbar pseudo-class contract, and the
+   same resolver runs the whole selector), so `.x:not(:hover)::-webkit-…` lit the
+   thumb only when the pointer found the 10px track ("sometimes it shows").
+   Here `:hover` is evaluated on the element by an ordinary rule, the thumb
+   pseudo reads the element's custom property, and a change to the element's
+   style re-resolves its scrollbar parts.
 
-       nothing set ......................................  0px  (overlay)
-       scrollbar-gutter: stable .........................  0px  (overlay)
-       ::-webkit-scrollbar { width: 10px } .............. 10px  (classic)
-       scrollbar-width: thin + scrollbar-color ..........  0px  (overlay)
-       BOTH of the last two together ....................  0px  (overlay)
+   `* { --sb-thumb: transparent }` IS NOT REDUNDANT: custom properties inherit,
+   and every ancestor of the pointer is `:hover` at once — without a value of
+   its own on every element, hovering the page would ink every bar under it.
+   With one, only the elements actually under the pointer flip, and of those
+   only the ones that scroll have a bar to show it. */
+* {
+  --sb-thumb: transparent;
+}
 
-   The last line is the bug. macOS gives a webview OVERLAY scrollbars, a
-   `::-webkit-scrollbar` rule is what opts an element out of them (schedule.css,
-   2026-08-18: the Board's thumb drew straight over the right edge of every card
-   under it), and Chromium drops every `::-webkit-scrollbar*` rule for an element
-   the moment `scrollbar-color` or a non-`auto` `scrollbar-width` is set on it.
-   So `scrollbar-color` does not sit BESIDE the opt-out, it CANCELS it: the four
-   Tasks scrollers and the chat log would have gone back to a floating thumb over
-   their content, and `scrollbar-gutter: stable` cannot save them — the spec
-   gives an overlay scrollbar a zero gutter by definition, which is the second
-   line above. `scrollbar-width: thin` does not switch overlay to classic either;
-   only styling the pseudo-element does.
+*:hover {
+  --sb-thumb: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+}
 
-   WHAT THAT COSTS: Firefox, which has no `::-webkit-scrollbar`, keeps its
-   ordinary bars at rest. That is what it had before this file existed, and it
-   is not a surface this app ships on — the app is a macOS webview. Losing the
-   cards behind the thumb is not a trade worth a fade in a browser we do not
-   ship.
-
-   THE FLICKER THE FIRST CUT SAW is, on the evidence, the one rule that is now
-   gone: schedule.css used to brighten the thumb under `::-webkit-scrollbar-
-   thumb:hover` — hover state on the THUMB, which Chromium is known to leave
-   stuck after the pointer leaves. Every rule here keys off `:hover` on the
-   SCROLLER instead, which is an ordinary element hover, and nothing keys off
-   the thumb's own. If it ever does flicker again, the answer is a fade on the
-   thumb's `background`, not a property that undoes the overlay opt-out.
-
-   `--fg-muted` mixed to a weight, as schedule.css did, so the ink lands the
-   same over both themes' fills. */
-
-/* THE SCROLLERS THIS FILE HAD TO STYLE ITSELF — Home, the pickers, AI Models,
-   the Tasks tree and board, the peek's preview. Same shape as schedule.css's
-   bar, stated again here because these boxes had no bar rule at all before and
-   so were still wearing the macOS overlay one. Declaring the pseudo-element is
-   the opt-out (see the head of this file); the ink is handled below.
-
-   The other five — `.tasks-list`, `.task-cards-scroll`,
-   `.schedule-tv-lane-body`, `.schedule-cal-thread` and the chat log — are NOT
-   repeated here. They already carry a `::-webkit-scrollbar` width from
-   schedule.css and transcript.css, and a second width would be this file
-   quietly resizing bars it only meant to fade. */
-.home-page::-webkit-scrollbar,
-.home-composer-input::-webkit-scrollbar,
-.tp-pane::-webkit-scrollbar,
-.tp .dd::-webkit-scrollbar,
-.am-engine-popup::-webkit-scrollbar,
-.pg-side::-webkit-scrollbar,
-.pg-stage::-webkit-scrollbar,
-.pg-segments::-webkit-scrollbar,
-.schedule-tv-tree::-webkit-scrollbar,
-.schedule-tv-board::-webkit-scrollbar,
-.task-side-peek-preview::-webkit-scrollbar {
+*::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-.home-page::-webkit-scrollbar-track,
-.home-composer-input::-webkit-scrollbar-track,
-.tp-pane::-webkit-scrollbar-track,
-.tp .dd::-webkit-scrollbar-track,
-.am-engine-popup::-webkit-scrollbar-track,
-.pg-side::-webkit-scrollbar-track,
-.pg-stage::-webkit-scrollbar-track,
-.pg-segments::-webkit-scrollbar-track,
-.schedule-tv-tree::-webkit-scrollbar-track,
-.schedule-tv-board::-webkit-scrollbar-track,
-.task-side-peek-preview::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.home-page::-webkit-scrollbar-thumb,
-.home-composer-input::-webkit-scrollbar-thumb,
-.tp-pane::-webkit-scrollbar-thumb,
-.tp .dd::-webkit-scrollbar-thumb,
-.am-engine-popup::-webkit-scrollbar-thumb,
-.pg-side::-webkit-scrollbar-thumb,
-.pg-stage::-webkit-scrollbar-thumb,
-.pg-segments::-webkit-scrollbar-thumb,
-.schedule-tv-tree::-webkit-scrollbar-thumb,
-.schedule-tv-board::-webkit-scrollbar-thumb,
-.task-side-peek-preview::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
   background-clip: padding-box;
   border: 3px solid transparent;
   border-radius: 999px;
 }
 
-/* THE FADE ITSELF, and the whole of it: at rest the thumb paints nothing, and
-   it inks while the pointer is anywhere over the scroller.
-
-   THROUGH A CUSTOM PROPERTY, NOT `:hover` IN THE SCROLLBAR SELECTOR. The first
-   two cuts wrote `.x:not(:hover)::-webkit-scrollbar-thumb` and it "sometimes
-   worked" (Akshil, 2026-09-15): inside a `::-webkit-scrollbar*` selector
-   Chromium reads `:hover` — even in the compound BEFORE the pseudo-element — as
-   "this scrollbar part is under the pointer", not "the element is"; that is the
-   scrollbar pseudo-class contract (`::-webkit-scrollbar-thumb:hover`, and the
-   same resolver runs the whole selector). So the thumb lit only when the pointer
-   found the 10px track. A custom property sidesteps it: `:hover` is evaluated on
-   the element by an ordinary rule, the scrollbar parts inherit the element's
-   custom properties, and a change to the element's style re-resolves its
-   scrollbar parts. Stated once, for every scroller, so the two halves of the
-   fade cannot go out of step. */
-.tasks-list,
-.task-cards-scroll,
-.schedule-tv-lane-body,
-.schedule-tv-tree,
-.schedule-tv-board,
-.schedule-cal-thread,
-.task-side-peek-preview,
-.task-side-peek-chat .chat-root .chat-logwrap,
-.home-page,
-.home-composer-input,
-.tp-pane,
-.tp .dd,
-.am-engine-popup,
-.pg-side,
-.pg-stage,
-.pg-segments {
-  --sb-thumb: transparent;
-}
-
-.tasks-list:hover,
-.task-cards-scroll:hover,
-.schedule-tv-lane-body:hover,
-.schedule-tv-tree:hover,
-.schedule-tv-board:hover,
-.schedule-cal-thread:hover,
-.task-side-peek-preview:hover,
-.task-side-peek-chat .chat-root .chat-logwrap:hover,
-.home-page:hover,
-.home-composer-input:hover,
-.tp-pane:hover,
-.tp .dd:hover,
-.am-engine-popup:hover,
-.pg-side:hover,
-.pg-stage:hover,
-.pg-segments:hover {
-  --sb-thumb: color-mix(in srgb, var(--fg-muted) 26%, transparent);
-}
-
-/* Sits after schedule.css's and transcript.css's own thumb rules (shell.css
-   imports this file last; the peek's chat selector carries `.chat-root` to
-   outrank transcript.css at three classes), so the variable is what paints.
-   `background-clip` is restated because `background` shorthand resets it. */
-.tasks-list::-webkit-scrollbar-thumb,
-.task-cards-scroll::-webkit-scrollbar-thumb,
-.schedule-tv-lane-body::-webkit-scrollbar-thumb,
-.schedule-tv-tree::-webkit-scrollbar-thumb,
-.schedule-tv-board::-webkit-scrollbar-thumb,
-.schedule-cal-thread::-webkit-scrollbar-thumb,
-.task-side-peek-preview::-webkit-scrollbar-thumb,
-.task-side-peek-chat .chat-root .chat-logwrap::-webkit-scrollbar-thumb,
-.home-page::-webkit-scrollbar-thumb,
-.home-composer-input::-webkit-scrollbar-thumb,
-.tp-pane::-webkit-scrollbar-thumb,
-.tp .dd::-webkit-scrollbar-thumb,
-.am-engine-popup::-webkit-scrollbar-thumb,
-.pg-side::-webkit-scrollbar-thumb,
-.pg-stage::-webkit-scrollbar-thumb,
-.pg-segments::-webkit-scrollbar-thumb {
+/* Scrollers that already carry a thumb rule of their own at class specificity
+   (schedule.css's Tasks bars, transcript.css's chat log) would beat the `*`
+   thumb above and paint their ink at rest. They take the fade too — restated
+   here at a specificity above theirs; `body` is the one extra type selector
+   that does it without inventing a class. */
+body .schedule-tv-lane-body::-webkit-scrollbar-thumb,
+body .schedule-cal-thread::-webkit-scrollbar-thumb,
+body .tasks-list::-webkit-scrollbar-thumb,
+body .task-cards-scroll::-webkit-scrollbar-thumb,
+body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
   background: var(--sb-thumb);
   background-clip: padding-box;
 }
