@@ -544,7 +544,8 @@ _DEPTH_PENALTY = 4
 _SHALLOW_FREE = 3
 
 
-def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tuple:
+def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
+                token: "CancelToken | None" = None) -> tuple:
     """Consume `rest`'s "/"-joined segments onto `start`, one directory at a
     time, stopping at the first segment that contains a `*` or the first one
     that does not exist as a directory. Returns `(base, pattern, advanced)`:
@@ -588,6 +589,20 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tupl
     string alone, even though `base` itself lands short of it (see
     `resolve_query`'s `blocked_out` parameter, SPEC-index-search-wedge.md
     item C / D-number TBD). `guard=None` (every existing caller) preserves
+    today's behaviour unchanged.
+
+    `token`, when given, is checked (`token.check()`, the same
+    cooperative-cancellation contract `search_ranked`/`stats`/`search_under`
+    already use) once BETWEEN each segment, before that segment's
+    `os.path.isdir` call — never during one. `os.path.isdir` itself is an
+    ordinary blocking syscall with no way to interrupt it once it has
+    started (no threads-within-threads, no signal tricks: this repo already
+    accepts that constraint for duckdb's `con.interrupt()`, and a raw
+    `isdir` has no equivalent escape hatch at all). So a cancelled token
+    only ever stops the walk BEFORE the next segment's `isdir`, bounding the
+    damage a wedged mount can do to at most one slow segment instead of the
+    remaining N — it cannot make an already-in-flight `isdir` on a hung
+    mount return any faster. `token=None` (every existing caller) preserves
     today's behaviour unchanged."""
     base = norm(start).rstrip("/") or "/"
     if not rest:
@@ -596,6 +611,8 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tupl
     i = 0
     blocked = None
     while i < len(segs) and "*" not in segs[i]:
+        if token is not None:
+            token.check()
         candidate = base + "/" + segs[i] if base != "/" else "/" + segs[i]
         if guard is not None and guard.blocks(candidate):
             blocked = candidate
@@ -608,7 +625,8 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None) -> tupl
 
 
 def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
-                   blocked_out: "list | None" = None) -> dict:
+                   blocked_out: "list | None" = None,
+                   token: "CancelToken | None" = None) -> dict:
     """The one place a search box's typed string becomes a `(base, pattern,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
@@ -618,6 +636,14 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     call below — see its docstring. `guard=None` (the default; every test in
     this module) preserves today's unguarded behaviour; the server caller
     (`routers/index.py`'s `_rank_body`) passes a real `MountGuard`.
+
+    `token`, when given, is threaded straight through to every `_walk_from`
+    call below the same way — see its docstring for the cancellation
+    contract and its honest limit (bounds damage to one in-flight segment,
+    cannot interrupt it). `token=None` (the default; every test in this
+    module) preserves today's behaviour; the server caller
+    (`routers/index.py`'s `_rank_body`) passes the request's real
+    `CancelToken`.
 
     `blocked_out`, when given, is a list this function APPENDS to (never
     replaces) with the candidate path `_walk_from` refused, whenever a walk
@@ -682,12 +708,12 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))
         rest = raw[2:] if raw.startswith("~/") else ""
-        base, pattern, _, blocked = _walk_from(home, rest, guard=guard)
+        base, pattern, _, blocked = _walk_from(home, rest, guard=guard, token=token)
         _note(blocked)
     elif _DRIVE_ABS.match(raw):
         drive_root = raw[:2] + "/"
         rest = raw[3:].replace("\\", "/")
-        base, pattern, _, blocked = _walk_from(drive_root, rest, guard=guard)
+        base, pattern, _, blocked = _walk_from(drive_root, rest, guard=guard, token=token)
         _note(blocked)
         # A bare drive letter with nothing after it (`rest == ""`) leaves
         # `_walk_from` at its own bare-root collapse, `"C:"` — the same
@@ -698,7 +724,7 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
-        abs_base, abs_pattern, advanced, blocked = _walk_from("/", rest, guard=guard)
+        abs_base, abs_pattern, advanced, blocked = _walk_from("/", rest, guard=guard, token=token)
         _note(blocked)
         if advanced:
             base, pattern = abs_base, abs_pattern
@@ -716,7 +742,7 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         # is also what keeps a run of `..` past the filesystem root pinned
         # at that root instead of growing an ever-longer trail of ".." that
         # still, harmlessly, means the same directory.
-        walked_base, pattern, _, blocked = _walk_from(root, raw, guard=guard)
+        walked_base, pattern, _, blocked = _walk_from(root, raw, guard=guard, token=token)
         _note(blocked)
         base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
