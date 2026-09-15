@@ -180,6 +180,89 @@ describe("Enter on the zero-match glob-broadening offer", () => {
   });
 });
 
+// The breadcrumb (Breadcrumb.tsx) and Mod+Up "go to parent" shortcut
+// (useListingShortcuts) both land an upward hop by writing `?sel=<child>` onto
+// the destination's url (cameFromSelParam + navigate) and relying on THIS hook
+// to read it back for the folder being arrived at. `Listing` renders unkeyed
+// across a folder navigation (App.tsx, D443 — a remount would respawn any
+// iframe an open app hosts), so the hook never remounts either: these tests
+// drive it across an `fsPath` CHANGE on an already-mounted instance, which is
+// the one case the old `useState` lazy initializer never ran for again.
+describe("arrival seeding across an fsPath change", () => {
+  function mountSel(args: { fsPath: string; navRows: string[]; globalKeys?: boolean }) {
+    const ctx = new Map<string, RowCtx>();
+    // A distinct sentinel, not null: with it null, `document.activeElement`
+    // (also null, per installDocument) would satisfy `el === searchInputRef.current`
+    // by coincidence and read as "focused in the search box" (see the Escape
+    // test below for the same gotcha).
+    const searchInputRef = { current: {} as HTMLInputElement };
+    return renderHook(
+      (a: typeof args) =>
+        useListingSelection({
+          fsPath: a.fsPath,
+          navRows: a.navRows,
+          listingLoaded: true,
+          rowsAnswerQuery: true,
+          searchInputRef,
+          rowCtxByPathRef: { current: ctx },
+          overlayOpenRef: { current: false },
+          globalKeys: a.globalKeys,
+        }),
+      args,
+    );
+  }
+  function setSearch(qs: string) {
+    (globalThis.location as { search: string }).search = qs;
+  }
+
+  test("a breadcrumb hop up reseeds the lead from ?sel=, not the old row index", async () => {
+    // This is the regression test: it must fail before the fix, because the
+    // per-folder seeding only ever ran once, at the hook's first mount.
+    const box = mountSel({ fsPath: "/a/b/c", navRows: ["/a/b/c/x", "/a/b/c/y"] });
+    expect(box.current().selectedPath).toBe(null);
+    setSearch("?sel=b"); // what navigate({ sel: cameFromSelParam(...) }) wrote
+    await flush(() => box.rerender({ fsPath: "/a", navRows: ["/a/b", "/a/other"] }));
+    expect(box.current().selectedPath).toBe("/a/b");
+    box.unmount();
+  });
+
+  test("arriving with no recall and no ?sel selects nothing — no folder auto-select", async () => {
+    const box = mountSel({ fsPath: "/p", navRows: ["/p/a", "/p/b"] });
+    setSearch("");
+    await flush(() => box.rerender({ fsPath: "/q", navRows: ["/q/a", "/q/b"] }));
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+
+  test("a ?sel= naming a row this folder does not have selects nothing, not row one (D279)", async () => {
+    const box = mountSel({ fsPath: "/p", navRows: ["/p/a"] });
+    setSearch("?sel=nonexistent");
+    await flush(() => box.rerender({ fsPath: "/q", navRows: ["/q/a", "/q/b"] }));
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+
+  test("leaving a folder from a deep row does not carry that row's index into the next folder", async () => {
+    const box = mountSel({ fsPath: "/p", navRows: ["/p/a", "/p/b", "/p/c"] });
+    await flush(() => press("End")); // selects the last row, index 2
+    expect(box.current().selectedPath).toBe("/p/c");
+    setSearch(""); // arriving with no seed
+    // A single-row destination: if the old index (2) leaked through the vanish
+    // clamp, it would land here on the only row instead of nothing.
+    await flush(() => box.rerender({ fsPath: "/q", navRows: ["/q/a"] }));
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+
+  test("an embedded listing (globalKeys=false) never reads ?sel= for the folder it arrives at", async () => {
+    const box = mountSel({ fsPath: "/a/b/c", navRows: ["/a/b/c/x"], globalKeys: false });
+    setSearch("?sel=b");
+    await flush(() => box.rerender({ fsPath: "/a", navRows: ["/a/b"], globalKeys: false }));
+    expect(box.current().selectedPath).toBe(null);
+    box.unmount();
+  });
+});
+
 describe("Escape", () => {
   test("clears the selection even when a clipboard op would have been pending", async () => {
     // A pending copy/cut no longer has a say here: nothing outside this hook
