@@ -5,21 +5,25 @@
 // through `appIconUrl`.
 import type { IconPick } from "@platform/ui/IconPicker";
 import { removeAppIcon, setAppIcon } from "@platform/lib/api";
+import { iconPlateRect, iconStyleBlock } from "@platform/lib/icon-color";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
- *  fixed size, transparent ground (a colour emoji carries its own colours, so
- *  it reads on both themes; see skills/fused-render-app-icon). The same file
- *  a hand-authored icon.svg would be, just generated. */
+ *  fixed size, on the same rounded plate a lucide pick gets (white on light,
+ *  black on dark; icon-color.ts). `data-fused-color="default"` is there so
+ *  the shell's theme swap (themeIconSvg) resolves the plate; the emoji has no
+ *  currentColor strokes, so the glyph itself is untouched. */
 export function emojiIconSvg(emoji: string): string {
   const safe = emoji
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
   return (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" data-fused-color="default">' +
+    iconStyleBlock("default") +
+    iconPlateRect(64) +
     '<text x="32" y="32" text-anchor="middle" dominant-baseline="central" ' +
-    `font-size="52">${safe}</text></svg>`
+    `font-size="44">${safe}</text></svg>`
   );
 }
 
