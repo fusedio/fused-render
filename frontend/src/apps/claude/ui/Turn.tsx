@@ -231,7 +231,9 @@ export const Turn = memo(function Turn({
   // meaning changes under the pointer — and not while it holds a card the
   // reader has not answered: the run is blocked on that card and it is the one
   // thing on screen to do (design.md §B).
-  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard;
+  // …and NOT a one-line reply (`isOneLiner` below): folding "Done." to "Done."
+  // is a control that does nothing, on the row where it is least wanted.
+  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard && !isOneLiner(turn);
   // The body the mark opens and shuts, for `aria-controls`. `useId` and not the
   // turn's key: six compact chat mounts share one document on the cards wall and
   // the same conversation is replayed in several of them, so a key-derived id
@@ -355,6 +357,53 @@ export const Turn = memo(function Turn({
     </>
   );
 });
+
+/** How long a reply may be and still be "one line" (`isOneLiner`). 80 chars is
+ *  the fragment that fits the folded row at the narrowest width the transcript
+ *  is drawn at, so anything under it is a reply the fold could not shorten. */
+const ONE_LINER_MAX = 80;
+
+/**
+ * IS THIS REPLY ALREADY AS SHORT AS ITS OWN FOLD (Akshil 2026-09-15)?
+ *
+ * "Done." / "Yes — the test passes." / "Fixed in `agent.py`." are most of a
+ * working conversation, and folding one hides NOTHING: the collapsed row is the
+ * reply's first line, which for these turns is the reply. So the log gained a
+ * toggle per row that swapped a sentence for the same sentence, and the
+ * auto-fold greyed out answers the reader could already read in full.
+ *
+ * Such a turn is therefore never foldable: always drawn open, its ✻ mark a
+ * plain seat rather than a disclosure (no `aria-expanded`, no hint, no pointer)
+ * and `Transcript`'s rule skips it entirely, so a new response streaming in
+ * cannot fold it either.
+ *
+ * ONE `text` SEGMENT, OR NONE AT ALL. A turn with a tool call, a thought or a
+ * notice in it has something under the fold by definition, whatever its prose
+ * says; a turn with no `segments` key is the plain text-only reply history
+ * restores (`protocol/history.ts`: "an assistant turn carries `segments` only
+ * when it had any"), which is exactly the shape a one-line answer arrives in.
+ * The body is trimmed before it is measured — a trailing newline off markdown
+ * is not a second line.
+ */
+export function isOneLiner(turn: TurnRow): boolean {
+  if (turn.role !== "assistant") return false;
+  const segs = (turn as AssistantTurn).segments ?? [];
+  let body: string;
+  if (segs.length) {
+    if (segs.length > 1) return false;
+    const only = segs[0];
+    if (!only || viewKind(only) !== "text") return false;
+    body = String((only as { text?: string }).text ?? "");
+  } else {
+    body = String(turn.text ?? "");
+  }
+  const line = body.trim();
+  // A turn with NO prose at all is not a one-line reply — it is a reply whose
+  // fold shows machinery (`collapsedLine`'s muted fallbacks), and that is still
+  // worth folding away.
+  if (!line) return false;
+  return !line.includes("\n") && line.length <= ONE_LINER_MAX;
+}
 
 /** THE ONE LINE A FOLDED REPLY SHOWS (design.md §B). */
 export interface CollapsedLine {

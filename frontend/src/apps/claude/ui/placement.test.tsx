@@ -186,7 +186,10 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   const first = {
     role: "assistant" as const,
     key: "a:1",
-    text: "Reply A, all of it.",
+    // TWO PARAGRAPHS: a one-line reply is never foldable (`Turn`'s
+    // `isOneLiner`), and the fold is what this test is watching. The folded row
+    // shows the first line, so every assertion below is unchanged.
+    text: "Reply A, all of it.\n\nEvery word.",
   };
   const asked = { role: "user" as const, key: "u:2", text: "now say done" };
   const second = {

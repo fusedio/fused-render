@@ -1,4 +1,4 @@
-// The `more ▸` trigger and the run it opens (design.md §A) — where the word
+// The `show more` trigger and the run it opens (design.md §A) — where the word
 // sits, which stretches get one, and what comes out when it is clicked.
 //
 // `react-test-renderer`, the `chip-copy.test.tsx` pattern: no real DOM, so a
@@ -128,7 +128,7 @@ describe("the trigger's seat", () => {
     // The prose and the trigger are ONE element: the word is drawn in the last
     // line's own box, not on a row of its own under it.
     expect(proses(blocks[0]!)).toEqual(["Here goes."]);
-    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("show more▸");
+    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("show more");
     expect((blocks[0]!.props as { className: string }).className).not.toContain("is-bare");
     // Collapsed: not one chip is mounted.
     expect(chips(json)).toHaveLength(0);
@@ -151,7 +151,7 @@ describe("the trigger's seat", () => {
     expect(proses(blocks[0]!)).toEqual(["Done."]);
     const trigger = byClass(shut, "run-trigger");
     expect(trigger).toHaveLength(1);
-    expect(words(trigger[0]!)).toBe("show more▸");
+    expect(words(trigger[0]!)).toBe("show more");
     expect((blocks[0]!.props as { className: string }).className).toContain("has-trigger");
 
     // One click opens both runs, each at its own chronological position: the
@@ -223,7 +223,7 @@ describe("the trigger's seat", () => {
     const r = view(segs, {}, policy);
     press(r.toJSON() as Json | Json[]);
     const open = r.toJSON() as Json | Json[];
-    expect(words(byClass(open, "run-trigger")[0]!)).toBe("show less▾");
+    expect(words(byClass(open, "run-trigger")[0]!)).toBe("show less");
     expect(chips(open)).toHaveLength(2);
 
     // The card lands and splits the stretch: `a` is now its own bare run, `b`
@@ -236,7 +236,7 @@ describe("the trigger's seat", () => {
       (t) => !byClass(split, "is-bare").some((b) => byClass(b, "run-trigger").includes(t)),
     );
     expect(seated).toHaveLength(1);
-    expect(words(seated[0]!)).toBe("show less▾");
+    expect(words(seated[0]!)).toBe("show less");
     expect(byClass(split, "filed-card")).toHaveLength(1);
   });
 
@@ -309,7 +309,7 @@ describe("which stretches get a trigger", () => {
     expect(chips(shut)).toHaveLength(0);
     // One trigger for three members of three different kinds — the run is
     // "these steps happened together", not "these tool calls did".
-    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("show more▸");
+    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("show more");
   });
 
   test("a live turn's trailing stretch renders member by member, with no trigger", () => {
@@ -398,7 +398,7 @@ describe("opening a run", () => {
     const r = view(segs, {}, policy);
     press(r.toJSON() as Json | Json[]);
     const json = again(r, segs, {}, policy);
-    expect(words(byClass(json, "run-trigger")[0]!)).toBe("show less▾");
+    expect(words(byClass(json, "run-trigger")[0]!)).toBe("show less");
     expect(chips(json)).toHaveLength(2);
     expect(byClass(json, "thinking")).toHaveLength(1);
     expect(byClass(json, "seg-notice")).toHaveLength(1);
@@ -418,7 +418,7 @@ describe("opening a run", () => {
 // `right: 0` only means "the right edge of the transcript" if the positioned
 // box reaches that edge. `.turn.assistant` is a flex row and `.body` had no
 // `flex`, so it shrink-wrapped to its content: a turn ending in a short line
-// put its `more ▸` hundreds of px in from the column while the next turn's sat
+// put its `show more` hundreds of px in from the column while the next turn's sat
 // at the margin. A corner affordance at a different x per row is not a corner.
 //
 // Geometry, so it is the SHEET that is asserted — this renderer lays nothing
@@ -466,8 +466,25 @@ describe("the trigger's column", () => {
     expect(trigger).toContain("font: inherit");
     expect(trigger).toContain("line-height: inherit");
     expect(trigger).not.toContain("font-size:");
-    // …and the reservation grew with the label (`show more ▸` at 14px).
-    expect(ruleFor(".chat-root .seg-block")).toContain("--c-run-trigger-w: 96px");
+    // …and the reservation matches the label (`show more` at 14px, ~70px of
+    // glyphs plus the 8px standoff).
+    expect(ruleFor(".chat-root .seg-block")).toContain("--c-run-trigger-w: 78px");
+  });
+
+  test("THE WORDS ARE THE WHOLE CONTROL — no chevron (Akshil 2026-09-15)", () => {
+    // The state is already in the words (`more` vs `less`), so the glyph said it
+    // twice — and it was the one part of the trigger that is not prose.
+    const r = view([text("Here goes."), tool("a", "Read"), tool("b", "Bash")]);
+    const draw = () => r.toJSON() as Json | Json[];
+    const shut = byClass(draw(), "run-trigger")[0]!;
+    expect(words(shut)).toBe("show more");
+    expect(byClass(shut, "run-chev")).toHaveLength(0);
+    press(draw());
+    const open = byClass(draw(), "run-trigger")[0]!;
+    expect(words(open)).toBe("show less");
+    expect(byClass(open, "run-chev")).toHaveLength(0);
+    // …and the stylesheet has nothing left to style.
+    expect(sheet).not.toContain("run-chev");
   });
 
   test("THE ROOM COMES OUT OF THE LAST LINE, not every line of the paragraph (review #2)", () => {
@@ -483,7 +500,7 @@ describe("the trigger's column", () => {
   });
 
   test("the row a code block drops the word into is ONE LINE OF THE READING TYPE", () => {
-    // 18px was the height of the old 11px `more ▸`; the word is prose type now
+    // 18px was the height of the old 11px `more`; the word is prose type now
     // (14px × 1.65 ≈ 23px), so the literal left it overhanging the block.
     expect(ruleFor(".chat-root .seg-block")).toContain(
       "--c-run-trigger-h: calc(var(--c-fs-read) * var(--c-lh-read))",
@@ -493,10 +510,10 @@ describe("the trigger's column", () => {
   });
 
   test("the compact wall's reservation is derived, not shaved to the glyph", () => {
-    // 70px cleared `show more ▸` at 10px by ~0.6px: the glyphs scale with the
-    // reading size but the 8px standoff does not, so the ratio alone is a
-    // reservation one font metric away from clipping the `▸`.
-    expect(ruleFor(".chat-root.chat-compact .seg-block")).toContain("--c-run-trigger-w: 78px");
+    // A straight ratio of the 78px clears `show more` at 10px by under a px:
+    // the glyphs scale with the reading size but the 8px standoff does not, so
+    // the ratio alone is a reservation one font metric away from clipping.
+    expect(ruleFor(".chat-root.chat-compact .seg-block")).toContain("--c-run-trigger-w: 64px");
   });
 
   test("the BARE case lands on the same edge, by the same box", () => {

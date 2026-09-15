@@ -10,10 +10,16 @@
 //
 // `show more` / `show less`, never a count (design.md §A vocabulary). Two words
 // rather than one (Akshil, 2026-09-15): `more` alone in a paragraph's corner
-// reads as the end of the sentence it is sitting on. The chevron follows the
-// word and turns with the state, because the words alone in a muted colour are
-// not obviously a control; it is `aria-hidden` and the button's own text is its
-// name.
+// reads as the end of the sentence it is sitting on.
+//
+// AND THE WORDS ARE THE WHOLE CONTROL (Akshil, 2026-09-15). A chevron followed
+// the word for one release, on the theory that muted words are not obviously
+// pressable — but the state is already IN the words (`more` vs `less`), so the
+// glyph said the same thing twice, in the one piece of the trigger that is not
+// prose: a geometric shape at the end of a sentence, at a different weight to
+// every character around it, in the corner the eye lands on last. Removing it
+// leaves two words in the reading type and a colour that lifts on hover, which
+// is how every other inline affordance in this transcript reads.
 //
 // AND IT IS SET IN THE PROSE'S OWN TYPE (Akshil, 2026-09-15): same font-size,
 // same line-height, inherited from the block (`styles/transcript.css`), so the
@@ -39,9 +45,6 @@ export function RunTrigger({ open, onToggle, className }: RunTriggerProps) {
       onClick={onToggle}
     >
       {open ? "show less" : "show more"}
-      <span className="run-chev" aria-hidden="true">
-        {open ? "▾" : "▸"}
-      </span>
     </button>
   );
 }

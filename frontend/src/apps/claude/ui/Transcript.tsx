@@ -39,7 +39,7 @@ import { CardStack, type CardActions } from "./CardStack";
 import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
-import { Turn } from "./Turn";
+import { isOneLiner, Turn } from "./Turn";
 import { WorkingLine } from "./WorkingLine";
 import "../styles/transcript.css";
 
@@ -564,6 +564,13 @@ export const Transcript = memo(function Transcript({
   const blockedFold = blockedTurn ? foldKey(blockedTurn) : null;
   for (const t of state.turns) {
     if (t.role !== "assistant") continue;
+    // A ONE-LINE REPLY IS NOT THE RULE'S BUSINESS (Akshil 2026-09-15). It can
+    // never be folded (`Turn`'s `isOneLiner`), so seeding a state for it would
+    // be the log remembering a fold that is not drawn — and the `default-closed`
+    // the next response writes underneath it would come back the moment the
+    // turn grew a second segment. Nothing is written, and `isFolded(undefined)`
+    // is open.
+    if (isOneLiner(t)) continue;
     const id = foldKey(t);
     foldIds.current.set(t.key, id);
     // ONCE A TURN IS THE READER'S, IT IS THEIRS FOR GOOD: a reply clicked open

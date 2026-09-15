@@ -54,7 +54,7 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
  * wall the prose either side of them disappears into. v1 folded them under an
  * `N tool calls` header; that traded fifteen rows for one row, and one row is
  * still a row the reader did not ask for. v2 takes the row away entirely: the
- * stretch collapses behind a `more ▸` trigger that sits on the RIGHT EDGE of
+ * stretch collapses behind a `show more` trigger that sits on the RIGHT EDGE of
  * the sentence before it (ui/RunTrigger), so a settled turn is prose and
  * nothing else until the reader asks.
  *

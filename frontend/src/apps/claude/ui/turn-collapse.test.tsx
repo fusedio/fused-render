@@ -21,7 +21,7 @@ import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 // `location` at module init — static imports are hoisted above the
 // `installDomShim()` call above.
 const { Transcript } = await import("./Transcript");
-const { collapsedLine, INTERRUPT_MARK, Turn } = await import("./Turn");
+const { collapsedLine, INTERRUPT_MARK, isOneLiner, Turn } = await import("./Turn");
 const { historyToTurns } = await import("../protocol/history");
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -82,8 +82,11 @@ const tool = (id: string, name: string): ToolSegment => ({
 });
 const text = (t: string): Segment => ({ kind: "text", text: t });
 
+// TWO LINES, because a ONE-line reply is never foldable (`Turn`'s
+// `isOneLiner`) and every test below is about the fold. The folded row shows
+// the FIRST line, so every `folded(...)` expectation is still `reply <key>`.
 const assistant = (key: string, over: Partial<TurnRow> = {}): TurnRow =>
-  ({ role: "assistant", key, text: "reply " + key, ...over }) as TurnRow;
+  ({ role: "assistant", key, text: "reply " + key + "\nand the rest of it", ...over }) as TurnRow;
 
 function state(over: Partial<ChatState> = {}): ChatState {
   return {
@@ -354,9 +357,12 @@ describe("which replies land folded", () => {
     // opened folded itself and its neighbour opened instead. agent.py now sends
     // the reply's own record id and `historyToTurns` keys by it.
     const stat = { path: "/t.jsonl", mtime: 1, size: 2 };
+    // Two lines apiece, for the reason the `assistant` helper has two: a
+    // one-line reply is never foldable, and this test is about folds.
+    const body = (uuid: string) => "reply " + uuid + "\nand the rest of it";
     const rows = ["r1", "r2", "r3", "r4"].map((uuid) => ({
       role: "assistant" as const,
-      text: "reply " + uuid,
+      text: body(uuid),
       uuid,
     }));
     const read = (extra: typeof rows) =>
@@ -373,7 +379,7 @@ describe("which replies land folded", () => {
       r.update(
         <Transcript
           state={state({
-            turns: read([{ role: "assistant" as const, text: "reply r0", uuid: "r0" }]),
+            turns: read([{ role: "assistant" as const, text: body("r0"), uuid: "r0" }]),
           })}
           actions={actions}
         />,
@@ -437,7 +443,7 @@ describe("the toggle", () => {
   });
 
   test("the mark says what it controls, and says nothing when it controls nothing (#7)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const live = mount(<Turn turn={assistant("a:2", { streaming: true })} />);
     const dead = marks(live)[0]!.props as Record<string, unknown>;
     expect(dead.disabled).toBe(true);
@@ -471,7 +477,7 @@ describe("the toggle", () => {
   });
 
   test("the folded mark greys and says what a click will do (Akshil 2026-09-15)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={() => {}} />);
     // GREY IS CSS, off `.turn.is-folded` — what the row owes the stylesheet is
     // the class.
@@ -535,6 +541,69 @@ describe("the toggle", () => {
     const r = mount(<Turn turn={assistant("a:1")} collapsed />);
     expect((marks(r)[0]!.props as { disabled?: boolean }).disabled).toBe(true);
     expect(folded(r)).toEqual([]);
+  });
+});
+
+describe("A ONE-LINE REPLY NEVER FOLDS (Akshil 2026-09-15)", () => {
+  /** The shape a one-line answer actually arrives in: history gives a text-only
+   *  turn no `segments` key at all (`protocol/history.ts`). */
+  const oneLiner = (key: string, body = "Done.") =>
+    ({ role: "assistant", key, text: body }) as TurnRow;
+
+  test("what counts as one line", () => {
+    expect(isOneLiner(oneLiner("a:1"))).toBe(true);
+    // A single `text` SEGMENT is the same reply, differently delivered.
+    expect(isOneLiner(assistant("a:1", { segments: [text("Yes — it passes.")] }))).toBe(true);
+    // A trailing newline off markdown is not a second line.
+    expect(isOneLiner(oneLiner("a:1", "Done.\n"))).toBe(true);
+    // Two lines, too many characters, or anything else in the turn — all of
+    // which have something under the fold.
+    expect(isOneLiner(oneLiner("a:1", "Done.\nAnd here is why."))).toBe(false);
+    expect(isOneLiner(oneLiner("a:1", "x".repeat(81)))).toBe(false);
+    expect(isOneLiner(assistant("a:1", { segments: [text("Done."), tool("t1", "Read")] }))).toBe(
+      false,
+    );
+    expect(
+      isOneLiner(assistant("a:1", { text: "", segments: [{ kind: "thinking", text: "hm" } as Segment] })),
+    ).toBe(false);
+    // A turn with no words at all is not a one-line reply — its fold shows
+    // machinery, and that is still worth folding away.
+    expect(isOneLiner(oneLiner("a:1", ""))).toBe(false);
+    // Nothing else in the log is one.
+    expect(isOneLiner({ role: "user", key: "u:1", text: "hi" } as TurnRow)).toBe(false);
+  });
+
+  test("the mark is a plain seat, not a disclosure", () => {
+    const r = mount(<Turn turn={oneLiner("a:1")} onToggleCollapse={() => {}} />);
+    const mark = marks(r)[0]!.props as Record<string, unknown>;
+    expect(mark.disabled).toBe(true);
+    expect("aria-expanded" in mark).toBe(false);
+    expect("aria-controls" in mark).toBe(false);
+    expect("data-hint" in mark).toBe(false);
+    // Never greyed, because it is never folded — `collapsed` is ignored.
+    const shut = mount(<Turn turn={oneLiner("a:1")} collapsed onToggleCollapse={() => {}} />);
+    expect((byClass(shut, "turn")[0]!.props as { className: string }).className).not.toContain(
+      "is-folded",
+    );
+    expect(folded(shut)).toEqual([]);
+  });
+
+  test("IT STAYS OPEN WHEN THE NEXT RESPONSE STREAMS IN", () => {
+    const r = log([oneLiner("a:1"), assistant("a:2")]);
+    // `a:2` is the newest and open; `a:1` is older and would ordinarily fold.
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [oneLiner("a:1"), assistant("a:2"), assistant("a:3", { streaming: true })],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    // The two-paragraph reply folds. The one-liner does not.
+    expect(folded(r)).toEqual(["reply a:2"]);
   });
 });
 
