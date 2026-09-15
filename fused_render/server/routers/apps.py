@@ -989,7 +989,7 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     THEN SENT, HERE, AND WAITED FOR. The loop would send it on its own — the
     store write rings it awake — but the caller is about to land the user on
     the new page with the Claude pane open, and that pane can only show a turn
-    whose run id it has (template.html's boot: a `run` param re-attaches, a
+    whose run id it has (the native chat's boot: a `run` param re-attaches, a
     bare `_side=claude` with no session shows the landing page). So the entry
     is run now (`schedule.run_now`, the Board's own drag path — the ordinary
     send brought forward, not a second spawn path) and the stored entry is

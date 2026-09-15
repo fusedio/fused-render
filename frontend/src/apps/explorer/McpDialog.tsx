@@ -12,8 +12,9 @@
 // through /render with `_file` aimed at the FOLDER (the manifest covers the app,
 // not the previewed page — lib/dir-mode's whole argument). Preview.tsx builds the
 // `src` because it owns the URL shape (`_noopen`, thumb flags); this component
-// is the box. A plain iframe, not ChatFrame: only the chat template stamps
-// `data-chat-ready`, and a cover revealed by the 8s fallback would be a new wait.
+// is the box. A plain iframe with no cover over it: the mcp template paints its
+// own first frame, and a skeleton revealed only by a timeout would be a new
+// wait rather than a fix.
 //
 // The folder listing's pane still lists MCP as a pane mode — that surface kept
 // its dropdown and its three companions — so the template is framed two ways.

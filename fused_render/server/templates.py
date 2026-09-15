@@ -33,6 +33,20 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # directory key (D81).
 KNOWN_SENTINELS = {"_render", "_listing"}
 
+# Shell-rendered templates: the UI is the shell's own React surface, so the
+# folder ships NO template.html — but it is still a real template folder with
+# real files behind it (agent.py, app.py, artifacts.py, condition.py,
+# icon.svg). `claude` is the native chat (frontend/src/apps/claude); its whole
+# transport is POST /api/run against `templates/claude/agent.py`.
+#
+# name -> the named backend file the registry entry's `path` points at. `path`
+# is a real file rather than the sentinel `None` precisely so hosts can keep
+# locating the folder the way they always have: dirname(path) -> the template
+# dir -> agent.py / app.py / artifacts.py / condition.py / icon.svg. Everything
+# downstream (_icon_for, _condition_file, the native chat's resolveAgentDir)
+# therefore keeps working unchanged.
+SHELL_RENDERED = {"claude": "agent.py"}
+
 
 # /api/fs/conditions evaluates template condition.py gates, which over a remote
 # mount costs ~6.8s and was recomputed on every call. A small check-on-read TTL
@@ -74,7 +88,17 @@ def _resolve_name(name):
     core template `<TEMPLATES_DIR>/<name>/template.html` (core_templates), else
     unusable. A user
     folder shadows a built-in of the same name — the deliberate override
-    channel. Returns (abs template.html path | None, error | None).
+    channel. Returns (abs path | None, error | None).
+
+    SHELL_RENDERED names are the one exception, on both counts. Their folder
+    ships no template.html (the shell renders the UI natively), so the name
+    resolves to the CORE folder's named backend file instead — `claude` ->
+    `<TEMPLATES_DIR>/claude/agent.py`. And they are resolved against the core
+    dir ONLY: a user folder cannot shadow a natively rendered surface, because
+    a `~/.fused-render/templates/claude/template.html` would not be loaded by
+    anything (the shell never frames these) while silently re-pointing every
+    host's dirname() at a folder with no agent.py in it. The override channel
+    stays open for every ordinary template name.
     """
     # The name is joined into a filesystem path, so it must be one plain
     # segment — a stray "../x" must not stat arbitrary locations. Correctness
@@ -95,6 +119,14 @@ def _resolve_name(name):
             "for shell sentinel modes (SPEC PT-12); the only referenceable "
             "sentinel is '_render'"
         )
+    if name in SHELL_RENDERED:
+        backend = os.path.join(TEMPLATES_DIR, name, SHELL_RENDERED[name])
+        if os.path.isfile(backend):
+            return backend, None
+        return None, (
+            f"no {SHELL_RENDERED[name]} for shell-rendered template {name!r} "
+            f"(looked in core {TEMPLATES_DIR}/{name}/)"
+        )
     user = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(user):
         return user, None
@@ -105,7 +137,11 @@ def _resolve_name(name):
 
 
 def _icon_for(template_path: str):
-    """abs icon.svg beside the resolved template.html, or None (SPEC PT-11)."""
+    """abs icon.svg beside the resolved template path, or None (SPEC PT-11).
+
+    Keyed on the folder (dirname), not on template.html specifically, so a
+    SHELL_RENDERED name whose path is its backend file still finds its glyph.
+    """
     icon = os.path.join(os.path.dirname(template_path), "icon.svg")
     return icon if os.path.isfile(icon) else None
 
@@ -117,7 +153,8 @@ def _condition_file(template_path: str):
     bool` — the gate that decides whether the template shows for a given file
     (SPEC CT-12). No file -> the template is unconditional (the common case).
     Split from evaluation so `_apply_conditions` can cheaply tell which entries
-    need running before paying to load any code.
+    need running before paying to load any code. Keyed on the folder (dirname)
+    like `_icon_for`, so a SHELL_RENDERED name keeps its gate.
     """
     condition_file = os.path.join(os.path.dirname(template_path), "condition.py")
     return condition_file if os.path.isfile(condition_file) else None
@@ -544,6 +581,11 @@ def _resolve_mode_list(names):
     (D73). Any other `_`-prefixed name falls through to `_resolve_name`,
     which rejects it: the rest of the sentinel namespace stays shell-owned
     (CT-6).
+
+    A SHELL_RENDERED name (`claude`) is NOT a sentinel: it is an ordinary
+    entry with a real `path`, just one pointing at the folder's backend file
+    rather than a template.html, because the shell renders its UI natively but
+    hosts still resolve the folder through `dirname(path)`.
     """
     entries = []
     error = None

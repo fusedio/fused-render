@@ -1,4 +1,4 @@
-"""What the split view's poll makes of the CLI's stream beyond the reply text.
+"""What the chat's poll makes of the CLI's stream beyond the reply text.
 
 Two things the page needs and `_poll` used to throw away, because it only ever
 looked at `system`, `stream_event` and `result` rows:
@@ -14,19 +14,17 @@ looked at `system`, `stream_event` and `result` rows:
     indistinguishable from a hang.
 
 `_poll` re-reads the whole file every 400 ms, so everything here is about what
-one pass over a given file yields — the page owns not rendering the same skill
-note twice (that is what the `tool_use` id is for).
+one pass over a given file yields — the chat owns not rendering the same skill
+note twice (that is what the `tool_use` id is for), and its own status-line
+wording lives in `apps/claude` with its own tests.
 """
 import importlib.util
 import json
 import os
-import shutil
-import subprocess
 
 import pytest
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
-TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
 
 
 def _load(name):
@@ -333,60 +331,7 @@ def test_a_retry_row_still_carries_the_session_id(agent, run_dir):
     assert _poll(agent, run_dir, rows)["session_id"] == "sess-abc"
 
 
-# ------------------------------------------------ the page's own wording, in node
-
-@pytest.fixture
-def html():
-    return open(TEMPLATE, encoding="utf-8").read()
-
-
-def _retry_verb(source, retry):
-    """Run the page's real `retryVerb` over one live retry payload. Pure, so it
-    lifts out on its own — same siting for the node guard as the sibling
-    modules'."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the page's own status-line wording")
-    start = source.index("function retryVerb(")
-    fn = source[start:source.index("\nfunction addWorking(", start)]
-    script = fn + "\nconsole.log(retryVerb(%s));" % json.dumps(retry)
-    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
-    # child's stdout with locale.getpreferredencoding(False), and node always
-    # writes its UTF-8 source glyphs (the em dash in "Overloaded — retrying")
-    # as UTF-8 bytes regardless of platform. On Windows that locale default is
-    # commonly cp1252, which decodes those bytes into mojibake without ever
-    # raising — a silent corruption, not a crash, so it slipped past every
-    # POSIX run where the locale default already happens to be UTF-8.
-    out = subprocess.run(["node", "-e", script], capture_output=True,
-                          text=True, encoding="utf-8")
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
-
-
-def test_an_overload_says_overloaded_and_counts_the_attempts(html):
-    assert _retry_verb(html, {"attempt": 3, "max_retries": 10, "status": 529}) \
-        == "Claude's servers are busy — retrying (3/10)"
-
-
-def test_a_throttle_is_worded_as_a_throttle(html):
-    """Different news, different place to look: 529 clears on its own, 429 is
-    about this account's usage."""
-    assert _retry_verb(html, {"attempt": 1, "max_retries": 10, "status": 429}) \
-        == "Claude is busy — retrying (1/10)"
-
-
-def test_an_unrecognised_status_still_says_something_true(html):
-    verb = _retry_verb(html, {"attempt": 2, "max_retries": 10, "status": 503})
-    assert "retrying (2/10)" in verb
-    assert "Overloaded" not in verb and "Rate limited" not in verb
-
-
-def test_no_budget_means_no_invented_denominator(html):
-    """`max_retries` is the CLI's to report. "(2/0)" would be worse than "(2)"."""
-    assert _retry_verb(html, {"attempt": 2, "max_retries": 0, "status": 529}) \
-        == "Claude's servers are busy — retrying (2)"
-
-
-# ------------------------------------------------------------ the page's wiring
+# ------------------------------------------------------------ the prompt
 
 def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp_path):
     """appStateFile falls back to an inline `dom` when the write fails, so a
@@ -403,34 +348,6 @@ def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp
     (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
     prompt = agent._split_system_prompt(str(app), True)
     assert "inline" in prompt and "dom_path" in prompt
-
-
-def test_the_page_hands_the_live_retry_to_the_status_line(html):
-    """Without the third argument the status line can only say "Thinking…",
-    which is the bug this feature exists to fix."""
-    assert "w.setStats(tokens, data.phase || \"thinking\", data.retry, data.activity)" in html
-
-
-def test_the_page_announces_the_skills_the_poll_reports(html):
-    assert "noteSkills(data.skills, w)" in html
-
-
-def test_a_skill_row_is_keyed_on_the_tool_use_id(html):
-    """Poll replays every call each tick, so the id is the only thing standing
-    between one invocation and a row per 400 ms."""
-    start = html.index("function noteSkills(")
-    body = html[start:html.index("\nasync function answerAppState(", start)]
-    assert "notedSkills.has(call.id)" in body
-    assert "notedSkills.add(call.id)" in body
-
-
-def test_a_skill_name_never_reaches_the_log_as_markup(html):
-    """Model-authored text. `addNote` sets textContent; this pins that the skill
-    row goes through it rather than growing an innerHTML of its own."""
-    start = html.index("function noteSkills(")
-    body = html[start:html.index("\nasync function answerAppState(", start)]
-    assert "addNote(" in body
-    assert "innerHTML" not in body
 
 
 # ------------------------------------------------ login / plan-limit errors
@@ -559,29 +476,6 @@ def test_a_delta_less_turn_shows_its_text_before_the_process_exits(agent, run_di
 
 # ------------------------------------------------ which models the picker offers
 
-def test_the_picker_offers_a_pinned_fable_51_beside_the_floating_alias(html):
-    """`claude --model` takes two shapes — a moving alias ("fable", whatever
-    Fable is today) and a pinned full id ("claude-fable-5-1", that exact model)
-    — and the picker has to offer both.
-
-    The alias alone is what a long chat cannot be held still on: it advances
-    under the user the day the CLI's default does, mid-project, with nothing on
-    screen saying so. The pinned entry is the fix, and it leads the list because
-    someone opening this menu is usually after a specific model. Pinned first,
-    then the alias, is the ORDER asserted here — the value list is what
-    `curModel()` validates against, so a value dropped from it is a URL param
-    that silently falls back to the default and a pill that blanks."""
-    line = next(ln for ln in html.splitlines() if ln.startswith("const MODELS ="))
-    assert line == ('const MODELS = ["claude-fable-5-1", "fable", "opus", '
-                    '"sonnet", "haiku"];')
-    # …and the raw id is never what the user reads. The pill and the menu take
-    # their words from MODEL_LABELS, which is only needed for the pinned entry
-    # but is written out in full so no value can ever print itself for want of
-    # a line there.
-    assert '"claude-fable-5-1": "Fable 5.1",' in html
-    assert 'fillSelect(el, MODELS, "Model", MODEL_LABELS)' in html
-
-
 def test_a_pinned_model_round_trips_from_a_transcript_to_the_picker(agent):
     """Detection reads the model off the project's newest transcripts so the
     pill can preselect what the user is actually working in. The page then
@@ -608,41 +502,3 @@ def test_a_pinned_model_round_trips_from_a_transcript_to_the_picker(agent):
     assert agent._short_model("haiku") == "haiku"
     assert agent._short_model("") == ""
     assert agent._short_model("gpt-4") == ""
-
-
-# ---------------------------------------- two rules about what the page may do
-#                                          to a run the user is watching stream
-#
-# Both pinned as strings, right here beside the stream the page renders, because
-# both are one edit away from coming back and neither has a symptom a stream test
-# would notice: the first cost the user the whole turn, the second cost them
-# sight of it.
-
-
-def test_no_key_binding_stops_a_run(html):
-    """Escape used to kill a live turn whenever nothing else claimed the key —
-    so a reader who reached for it out of habit lost the run to a keystroke never
-    aimed at it (Akshil, 2026-09-03). Work in progress is not something a bare
-    keypress may throw away. The behavioural half is in
-    tests/test_claude_app_state.py; this is the pin that survives that file being
-    refactored."""
-    assert "stop-run" not in html
-    handler = html[html.index("function onEscape(e) {"):]
-    assert "stopRun" not in handler[:handler.index("\n}\n")]
-    # the stop button itself is untouched — there IS still a way to stop a turn
-    assert "async function stopRun() {" in html
-    assert "if (activeRun) { stopRun(); return; }" in html
-
-
-def test_the_transcript_follows_growth_it_was_not_told_about(html):
-    """A live turn reaches its final height long after the append that scrolled:
-    tool cards expand when their output lands, code blocks grow under the
-    highlighter, pictures and artifact iframes take up room only once they load,
-    the bubble re-renders as markdown at message end. So growth is OBSERVED
-    rather than announced — one ResizeObserver on the scrollport's child,
-    answering with the same follow flag every write site uses. Behaviour in
-    tests/test_claude_scroll_follow.py."""
-    assert "const followGrowth = new ResizeObserver(followBottom);" in html
-    assert "followGrowth.observe(log);" in html
-    # `load` does not bubble, so the picture/iframe backstop must be in capture
-    assert 'logwrap.addEventListener("load", followBottom, true);' in html

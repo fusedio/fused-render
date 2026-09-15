@@ -1,159 +1,155 @@
-"""The shell and the chat template both classify Claude failures (SPEC §42).
+"""Claude failure copy: how many copies of it exist, and what pins them (SPEC §42).
 
-They have to: `frontend/src/platform/lib/trouble.ts` runs in the React shell and
-the copy inside `templates/claude/template.html` runs in a page served
-standalone, which shares no module with it. Duplication is the price of that,
-and this file is what stops it being paid twice — silently.
+This file used to guard a DUPLICATION. The chat template was served standalone
+and shared no module with the React shell, so the classifier, the copy blocks,
+the deep links and the install command all existed twice — once in
+`platform/lib/trouble.ts`, once inline in `templates/claude/template.html` — and
+these tests were what stopped the second copy drifting.
 
-What is pinned is the part a user would notice drifting: the words on the card,
-the install command, and the patterns that decide WHICH card. A wording change
-in one file and not the other means the same failure is described two ways by
-one app; a pattern change in one and not the other means the chat and the
-Preferences tab disagree about what went wrong.
+The template is gone. The native chat (`apps/claude`) is a React app in the same
+bundle as the shell, so it IMPORTS that module instead of restating it:
+`apps/claude/protocol/trouble.ts` maps the platform verdict onto the chat's own
+kinds, and `apps/claude/ui/TroubleView.tsx` is a thin wrapper over
+`platform/ui/TroubleCard.tsx`. The parity assertions that compared two TS copies
+of one string therefore have nothing left to compare.
+
+What survives is the parity that still crosses a language boundary or a module
+boundary:
+
+  * PYTHON → TS. `claude_health.INSTALL_COMMAND_POSIX` is what the app RUNS when
+    the user presses Install; `CLAUDE_INSTALL_COMMAND` is what it SHOWS. A drift
+    is worse than a wrong command, because the user would be shown one line and
+    have a different one run on their behalf.
+  * THE SINGLE COPY ITSELF. The tests that say the chat has NOT grown a second
+    classifier, a second install command or a second set of deep links — which
+    is the property that made everything above deletable, and the one a future
+    "just inline it here" would quietly undo.
+  * THE ONE OVERRIDE LEFT. `TroubleView` restates the `cli-missing` title over
+    the card's own, so that one string does still exist twice.
 """
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SHELL = ROOT / "frontend" / "src" / "platform" / "lib" / "trouble.ts"
-CARD = ROOT / "frontend" / "src" / "platform" / "ui" / "TroubleCard.tsx"
-TEMPLATE = ROOT / "fused_render" / "templates" / "claude" / "template.html"
-
-# The three cases the chat template renders richly. `raw` is deliberately NOT
-# among them — it keeps the plain red row there (see addError), because dressing
-# every failed turn as a troubleshooting card buries the ones a user can act on.
-KINDS = ("notfound", "login", "limit")
+FRONTEND = ROOT / "frontend" / "src"
+SHELL = FRONTEND / "platform" / "lib" / "trouble.ts"
+CARD = FRONTEND / "platform" / "ui" / "TroubleCard.tsx"
+CHAT_TROUBLE = FRONTEND / "apps" / "claude" / "protocol" / "trouble.ts"
+CHAT_VIEW = FRONTEND / "apps" / "claude" / "ui" / "TroubleView.tsx"
 
 
-def _shell() -> str:
-    return SHELL.read_text(encoding="utf-8")
-
-
-def _template() -> str:
-    return TEMPLATE.read_text(encoding="utf-8")
-
-
-def test_the_install_command_is_identical_in_both():
-    """Shown as a thing to copy into a terminal in both places. Two different
-    commands would be worse than one wrong one, because only one gets fixed."""
-    command = "curl -fsSL https://claude.ai/install.sh | bash"
-    assert command in _shell()
-    assert command in _template()
-
-
-def test_both_deep_link_to_the_same_troubleshooting_tabs():
-    assert "#troubleshooting-" in _template()
-    assert "troubleshooting-${kind}" in _shell()
-    for kind in KINDS:
-        # The template builds the URL by concatenation, so the kind has to exist
-        # as a classification in both.
-        assert f'"{kind}"' in _template()
-        assert f'"{kind}"' in _shell()
-
-
-def test_the_card_titles_match_word_for_word():
-    """The same failure must not be described two ways by one app."""
-    card = CARD.read_text(encoding="utf-8")
-    template = _template()
-    for title in ("The app can't find Claude Code",
-                  "Claude Code isn't signed in",
-                  "Your Claude usage limit was reached"):
-        assert title in card, f"{title!r} missing from the shell's card"
-        assert title in template, f"{title!r} missing from the chat template"
-
-
-def test_the_classification_patterns_match():
-    """The rules themselves, not just the words.
-
-    Extracted rather than eyeballed: a pattern that exists in one file and not
-    the other means the chat and the Preferences tab reach different verdicts
-    about the same message, which is the disagreement this whole section exists
-    to prevent.
-    """
-    def patterns(text: str, name: str) -> set:
-        # The shell's declaration carries a type annotation containing `][`, so
-        # the array is found by its closing line rather than the first `];`.
-        block = re.search(rf"\b{name}\b[^=]*=\s*\[\n(.*?)\n\];", text, re.S)
-        assert block, f"could not find {name}"
-        return set(re.findall(r"/(.+?)/i", block.group(1)))
-
-    shell, template = _shell(), _template()
-    assert patterns(shell, "NAMED") == patterns(template, "TROUBLE_NAMED")
-    assert patterns(shell, "SHAPES") == patterns(template, "TROUBLE_SHAPES")
-
-
-def test_the_agent_instructions_match_step_for_step():
-    """The "Copy Claude Code instructions" brief. Two copies of a prompt that
-    tells an agent what to run is exactly the kind of thing that drifts — one
-    gets a better first command and the other quietly keeps the worse one."""
-    shell, template = _shell(), _template()
-    steps = re.findall(r'"((?:Check whether|Confirm|Sign in|Work out|If it|If the|Do not|Tell me)[^"]+)"', shell)
-    assert len(steps) >= 11, f"expected the four step lists, found {len(steps)}"
-    for step in steps:
-        assert step in template, f"step missing from the chat template: {step[:60]!r}"
-
-
-def test_both_tell_an_agent_where_to_find_the_installation():
-    """The brief is useless without a directory (TR-11).
-
-    An agent handed "something around Fused Render is broken" and no path has
-    nowhere to start — and the boot failure, which is the case most likely to
-    produce this brief, is precisely the one that cannot state a path, because
-    `/api/config` is what failed. Both copies therefore carry the same way to
-    FIND it, and a find command that exists in one copy only means the chat and
-    the shell send agents looking in different places."""
-    shell, template = _shell(), _template()
-    for command in (
-        # /Applications first: the DMG is how this is actually installed, and a
-        # probe that answers with some other python's site-packages sends an
-        # agent to edit a copy the app does not run.
-        "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
-        "/Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
-        "brew list --cask fused-render",
-        "FusedRenderPy",
-    ):
-        assert command in shell, f"missing from the shell: {command[:50]!r}"
-        assert command in template, f"missing from the chat template: {command[:50]!r}"
-    # The user-data dir is a DIFFERENT place from the install, and the brief
-    # says so in both — a reinstall replaces one and never touches the other.
-    for text in ("~/.fused-render", 'fused-render-*.log'):
-        assert text in shell and text in template
-    # And NEITHER may reintroduce the probes that name an unsupported install
-    # method — a bare `python3` on PATH is not the bundle's interpreter.
-    for banned in ("pip show fused-render", "import fused_render, os"):
-        assert banned not in shell, f"unsupported install probe is back: {banned!r}"
-        assert banned not in template, f"unsupported install probe is back: {banned!r}"
-
-
-def test_both_gate_the_shapes_on_the_message_being_about_claude():
-    """The fix for the ENOENT misclassification (TR-2a). If one copy loses the
-    gate, that copy starts telling users to install Claude Code because a file
-    was missing."""
-    assert "ABOUT_CLAUDE" in _shell()
-    assert "TROUBLE_ABOUT_CLAUDE" in _template()
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def test_the_install_command_matches_the_server_s_own_constant():
-    """THREE copies of this line now, not two: the shell, the chat template, and
-    `claude_health.INSTALL_COMMAND_POSIX` — which is what the app itself RUNS
-    when the user presses Install, and what it discloses beside that button.
+    """What the app SHOWS and what the app RUNS, pinned to each other.
 
-    A drift here is worse than the two-copy version it replaces: the user would
-    be shown one command and have a different one run on their behalf."""
+    `claude_health.INSTALL_COMMAND_POSIX` is piped into a shell when the user
+    presses Install and is disclosed beside that button;
+    `CLAUDE_INSTALL_COMMAND` is the line the trouble card puts in a copy box.
+    Two different commands would be worse than one wrong one, because only one
+    gets fixed."""
     from fused_render import claude_health
 
     command = "curl -fsSL https://claude.ai/install.sh | bash"
     assert claude_health.INSTALL_COMMAND_POSIX == command
-    assert command in _shell()
-    assert command in _template()
+    shell = _read(SHELL)
+    assert f'export const CLAUDE_INSTALL_COMMAND = "{command}";' in shell
+    # …and the agent brief tells the agent to run that same line, verbatim.
+    assert f"install it: `{command}`." in shell
 
 
 def test_the_windows_install_command_is_pinned_too():
     """It is shown to Windows users and piped into PowerShell on their behalf,
-    which is exactly the reason TR-10 pins the POSIX one. Absent this, the
-    Windows half of D517's platform fix could be silently reworded — and the one
-    platform that had the wrong command for longest is the one nobody developing
-    this runs."""
+    which is exactly the reason the POSIX one is pinned. Absent this, the
+    Windows half could be silently reworded — and the one platform that had the
+    wrong command for longest is the one nobody developing this runs."""
     from fused_render import claude_health
 
     assert claude_health.INSTALL_COMMAND_WINDOWS == "irm https://claude.ai/install.ps1 | iex"
+
+
+def test_the_chat_keeps_no_install_command_of_its_own():
+    """The reason the three-way parity above is now a two-way one.
+
+    The chat re-exports the platform constant rather than restating it, and
+    draws no install box of its own — `TroubleCard` draws exactly one, complete
+    with the "run it in a terminal, then quit and reopen" hint. A second literal
+    here is the drift this file exists to prevent, arriving by the one route
+    still open to it."""
+    chat = _read(CHAT_TROUBLE)
+    assert "CLAUDE_INSTALL_COMMAND" in chat
+    assert 'from "@platform/lib/trouble"' in chat
+    for source in (chat, _read(CHAT_VIEW)):
+        assert "claude.ai/install" not in source, \
+            "the chat has grown its own copy of the install command"
+
+
+def test_the_chat_does_not_reimplement_the_classifier():
+    """`platform/lib/trouble.ts` holds the two-tier matcher — unconditional
+    NAMED phrases, plus SHAPE patterns that only count when the message is ABOUT
+    Claude. A second matcher is how the chat and the Preferences tab start
+    reaching different verdicts about the same message."""
+    shell, chat = _read(SHELL), _read(CHAT_TROUBLE)
+    # The gate that fixed the ENOENT misclassification lives with the patterns:
+    # lose it and a missing file starts telling users to install Claude Code.
+    assert "ABOUT_CLAUDE" in shell
+    assert "troubleKind as platformTroubleKind" in chat
+    assert "platformTroubleKind(text)" in chat
+    for owned in ("NAMED", "SHAPES", "ABOUT_CLAUDE"):
+        assert not re.search(rf"^const {owned}\b", chat, re.M), \
+            f"{owned} is the platform module's to own, not the chat's"
+
+
+def test_the_chat_deep_links_through_the_platform_helper():
+    """One spelling of `#troubleshooting-<kind>`, so the chat and the
+    Preferences tab cannot send a reader to different tabs for one failure."""
+    shell, chat = _read(SHELL), _read(CHAT_TROUBLE)
+    assert "troubleshooting-${kind}" in shell
+    assert "troubleHelpUrl" in chat
+    assert "troubleHelpUrl(platformKindOf(t.kind))" in chat
+    # The chat builds no URL of its own — comments here NAME the spelling they
+    # describe, so they are stripped before the search.
+    body = re.sub(r"/\*.*?\*/", "", chat, flags=re.S)
+    body = re.sub(r"//.*$", "", body, flags=re.M)
+    assert "#troubleshooting-" not in body
+
+
+def test_every_chat_kind_renders_as_a_card_the_platform_knows():
+    """`platformKindOf` is the whole translation layer, and the card takes only
+    the four platform kinds. A chat kind added without a seat here would reach
+    `TroubleCard` as a name it has no copy for."""
+    shell, chat = _read(SHELL), _read(CHAT_TROUBLE)
+    declared = re.search(r"export type TroubleKind =([^;]+);", shell)
+    assert declared, "the platform kinds moved"
+    kinds = set(re.findall(r'"([a-z-]+)"', declared.group(1)))
+    assert kinds == {"notfound", "login", "limit", "raw"}
+    body = chat[chat.index("export function platformKindOf("):]
+    body = body[:body.index("\n}")]
+    returned = set(re.findall(r'return "([a-z-]+)"', body))
+    assert returned <= kinds, f"{returned - kinds} is not a card the platform draws"
+    assert 'return "raw"' in body, "an unmapped chat kind must still land somewhere"
+
+
+def test_the_cli_missing_title_is_the_same_in_the_card_and_the_chat():
+    """The one string that DOES still exist twice.
+
+    `TroubleView` passes its own title for `cli-missing`, overriding the card's
+    — everything else falls through to the card's copy. The same failure must
+    not be described two ways by one app, so this is pinned the way all three
+    titles used to be."""
+    title = "The app can't find Claude Code"
+    assert title in _read(CARD), "the shell's card lost the title"
+    assert title in _read(CHAT_VIEW), "the chat's override drifted from it"
+
+
+def test_the_chat_restates_no_other_card_title():
+    """…and the reason the other two need no test: `login` and `limit` have no
+    override, so there is exactly one copy of their words. An override added
+    here quietly recreates the duplication this file was written for."""
+    card, view = _read(CARD), _read(CHAT_VIEW)
+    for title in ("Claude Code isn't signed in", "Your Claude usage limit was reached"):
+        assert title in card, f"{title!r} missing from the shell's card"
+        assert title not in view, \
+            f"{title!r} is now stated twice — pin it, or drop the override"

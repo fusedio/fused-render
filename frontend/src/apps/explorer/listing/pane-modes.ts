@@ -15,7 +15,7 @@
 // rather than kept pinning behaviour nothing exercises any more.
 //
 // `paneChatOnly` is the one function still wired into the running app
-// (ListingPreviewPane's companion-iframe branch).
+// (ListingPreviewPane's companion branch).
 import type { TemplateEntry } from "@platform/lib/api";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 
@@ -70,20 +70,19 @@ export function paneModeList(input: PaneModeInput): string[] {
 // Does this mode's template need `chat_only=1` — i.e. must the pane take away
 // the template's OWN preview pane?
 //
-// One mode does: `claude`. In a column this narrow the chat template's copy of
-// the target would be a second, differently run preview of the same thing beside
-// the host's (see Preview's sideSrcFor, and CHAT_ONLY in
-// templates/claude/template.html).
+// One mode does: `claude`. In a column this narrow the chat's own copy of the
+// target would be a second, differently run preview of the same thing beside
+// the host's (the file sidebar takes it away for the same reason).
 //
-// **It used to matter for a second reason, now historical.** The chat template
-// fills its own pane by resolving the folder's ENTRY PAGE and rendering it
-// (templates/shared/app_entry.py), and while `ListingPreviewPane` still had a
+// **It used to matter for a second reason, now historical.** The chat fills its
+// own pane by resolving the folder's ENTRY PAGE and rendering it, and while
+// `ListingPreviewPane` still had a
 // row MODE that could resolve to `claude` (a selected folder's default view,
 // D280), the flag was what stopped that folder's app page reappearing nested
 // one level deeper for the same mere selection D280 exists to refuse. D460
 // deleted that row mode along with the rest of the selection-driven pane, so
-// the ONE caller left is the `claude` COMPANION iframe (always about the open
-// folder) — the flag still matters there for the plain layout reason above.
+// the ONE caller left is the `claude` COMPANION (always about the open folder)
+// — the flag still matters there for the plain layout reason above.
 export function paneChatOnly(mode: string): boolean {
   return mode === "claude";
 }

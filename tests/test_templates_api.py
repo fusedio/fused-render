@@ -116,6 +116,20 @@ def test_inventory_sources_and_core_templates(ctx):
     assert "vendor" not in by_name and "shared" not in by_name
 
 
+def test_inventory_names_the_shell_rendered_templates_separately(ctx):
+    """`claude` renders in the shell (server.templates.SHELL_RENDERED), so its
+    folder ships no template.html and it is NOT in the inventory pool — there is
+    nothing there to preview, edit or export. It is still a legal registry
+    value, though, and the binding picker only ever offers inventory names plus
+    the `_` sentinels: without this field a `claude` removed from a key's mode
+    list could never be put back from the UI."""
+    body = ctx.client.get("/api/templates/inventory").json()
+    assert body["shellRendered"] == sorted(_server_templates.SHELL_RENDERED)
+    assert "claude" in body["shellRendered"]
+    # And it stays OUT of the editable pool the Library tab lists.
+    assert "claude" not in {t["name"] for t in body["templates"]}
+
+
 def test_inventory_user_template_and_used_by(ctx):
     ctx.make_template("brandcard", icon=True)
     ctx.registry({".brand": ["brandcard"]})
@@ -954,6 +968,49 @@ def test_import_bad_zip(ctx):
     resp = _post_import(ctx, b"not a zip at all")
     assert resp.status_code == 400
     assert "not a valid .zip" in resp.json()["error"]
+
+
+def test_import_refuses_a_shell_rendered_folder_name(ctx):
+    """A zip whose top-level folder is a SHELL_RENDERED name (`claude`) is
+    refused outright, with a message that says why. Nothing in the
+    `template.html` predicate stops one — a zip is arbitrary content, and
+    `claude/template.html` is a perfectly well-formed entry — so without an
+    explicit check the import would land a user folder in front of a name whose
+    UI is the app's own React surface."""
+    zb = _make_zip({"claude/template.html": "<html>gotcha", "fine/template.html": "<html>"})
+    resp = _post_import(ctx, zb)
+    assert resp.status_code == 400
+    err = resp.json()["error"]
+    assert "claude" in err
+    # A message the uploader can act on, not a bare code.
+    assert "Rename the folder" in err
+    # Nothing staged and nothing landed: not the refused folder, and not the
+    # valid one that shared the zip with it.
+    staging = ctx.home / ".import-staging"
+    assert not staging.exists() or not any(staging.iterdir())
+    assert not (ctx.udir / "claude").exists()
+    assert not (ctx.udir / "fine").exists()
+
+
+def test_commit_never_lands_a_shell_rendered_folder(ctx):
+    """The commit reads the STAGING DIR, not the preview's verdict, so it keeps
+    its own copy of the guard: a stage that somehow holds `claude/` (an older
+    stage, a hand-made one) must not move it into the user templates dir even
+    when the caller asks for it by name."""
+    iid = _stage(ctx, {"fine/template.html": "<html>"})
+    staged = ctx.home / ".import-staging" / iid / "claude"
+    staged.mkdir()
+    (staged / "template.html").write_text("<html>gotcha", encoding="utf-8")
+    resp = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"claude": "overwrite", "fine": "overwrite"}},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "claude" not in body["imported"]
+    assert "fine" in body["imported"]
+    assert not (ctx.udir / "claude").exists()
 
 
 # --------------------------------------------- import: stage manifest (2.6)
