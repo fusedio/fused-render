@@ -61,7 +61,6 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
-  firstLine,
   opensElsewhere,
   peekOpenable,
   spansProjects,
@@ -80,6 +79,7 @@ import {
   usePeekedKey,
 } from "./task-peek-store";
 import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
+import { useTaskHeadline } from "./TaskPeekWho";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -899,7 +899,8 @@ function TaskPeek({
   onClose: () => void;
   onReload?: () => void;
 }) {
-  const title = firstLine(task.title) || "(untitled)";
+  // The same line the card and every other task header print (TaskPeekWho).
+  const title = useTaskHeadline(task);
   const src = task.session_id && template && !folderMissing
     ? peekFrameSrc(template, task.target || task.project, task.session_id)
     : null;
@@ -996,7 +997,7 @@ function TaskPeek({
           <span className="tasks-id tasks-id--task">{task.task_id}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
-          <span className="task-peek-name" data-hint={task.title}>
+          <span className="task-peek-name" data-hint={task.last_message?.text || task.title}>
             {title}
           </span>
         </span>

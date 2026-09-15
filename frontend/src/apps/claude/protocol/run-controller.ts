@@ -2254,6 +2254,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * `fromCache` keeps `historyLoading` up: the fetch is still out.
    */
+  /**
+   * A PRESS ON A ROW THAT NO LONGER EXISTS (Akshil, 2026-09-15). The server
+   * used to answer an erased session with the same empty payload a chat that
+   * has not written its first row gets, and the page opened a blank
+   * conversation with nothing to say why; it marks the erased case `deleted`
+   * now, and this is the one place both history roads (`openSession`,
+   * `refreshHistory`) turn that into words.
+   *
+   * ONLY WHEN NOTHING IS LIVE. A run can be in flight for a tombstoned key
+   * (erase, then send again), and the answer says so in `live_run`; that run
+   * is this chat's and gets adopted like any other, not shouted down.
+   *
+   * NOT CACHED, and the cached copy GOES: the answer is about a task that is
+   * gone, and a warm paint of the destroyed transcript on the next open — this
+   * chat was open before it was erased — would show it as if it stood.
+   *
+   * Returns whether it took the answer.
+   */
+  function landDeleted(res: HistoryResponse): boolean {
+    if (!res.deleted || res.live_run) return false;
+    const sid = restoredSid || "";
+    deps.historyCache?.delete?.(FILE || "", sid);
+    landHistory(res, false);
+    addError("This task was deleted. Its conversation is gone; pick another chat or start a new one.");
+    return true;
+  }
+
   function landHistory(res: HistoryResponse, fromCache: boolean): void {
     const live = typeof res.live_run === "string";
     if (live) {
@@ -2356,6 +2383,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       if (res.error) throw new Error(res.error);
+      if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       landHistory(res, false);
     } catch (err) {
@@ -2967,6 +2995,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (activeRun || sending) return;
       if (state.ownRunEndedAt !== endBefore || state.transcriptGen !== tGen) return;
       if (res.error) throw new Error(res.error);
+      // ERASED WHILE OPEN: the same words `openSession` prints, and no cache
+      // write — this refresh used to store the empty answer and blank the
+      // conversation in silence.
+      if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a

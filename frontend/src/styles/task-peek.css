@@ -38,6 +38,10 @@
      ⋮ begins (Akshil, 2026-09-14). `shell/peek-preview.ts` `PREVIEW_INSET`
      carries the same 38. */
   --peek-preview-inset: 38px;
+  /* Air above and below the preview card. `shell/peek-preview.ts`
+     `PREVIEW_PAD_Y` carries the same 12 — the box's height includes it, so the
+     app's viewport is sized to the card, not the box. */
+  --peek-preview-pad-y: 12px;
   /* THE NARROWEST A WALL CARD IS WORTH DRAWING. Below about this the card's own
      head (a ring, a number, a folder chip) stops fitting on one line and the
      conversation inside it is a column of two-word lines. The wall drops a
@@ -498,7 +502,8 @@ body.tasks-peek-dragging {
   text-overflow: ellipsis;
 }
 
-/* THE HEADER'S TWO LABELLED BUTTONS — the Open door, and (in cover) the way
+/* THE HEADER'S LABELLED BUTTON — the Open door. (Its twin, "Resize panel",
+   went 2026-09-15: expanding the sidebar is the way out of cover now.) The way
    back to the split. One skin, because they are the same kind of thing: a word
    you press, in a row that is otherwise glyph squares and ink.
 
@@ -512,8 +517,7 @@ body.tasks-peek-dragging {
 
    Sized off `.task-side-peek-btn`'s own height so they sit on the row's
    baseline with the ⋮ beside them rather than next to them. */
-.task-side-peek-open,
-.task-side-peek-resize {
+.task-side-peek-open {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -535,8 +539,7 @@ body.tasks-peek-dragging {
     border-color var(--dur-fast) var(--ease-out);
 }
 
-.task-side-peek-open:hover,
-.task-side-peek-resize:hover {
+.task-side-peek-open:hover {
   background: var(--row-bg-hover);
   border-color: var(--fg-muted);
   color: var(--fg);
@@ -766,11 +769,11 @@ body.tasks-peek-dragging {
    interactive, above the conversation (.claude-design/task-side-peek/design.md,
    "App preview in the peek"; the geometry is shell/peek-preview.ts).
 
-   THE BOX CROPS, IT DOES NOT SQUASH. The frame inside lays out at a virtual
-   1280×720 and is drawn at `scale(peekWidth / 1280)`, so the app sees a desktop
-   window however narrow the panel is — and the wrapper around it is that
-   scaled size, which is what gives this box something real to scroll when the
-   50% cap (or the reader's own drag) is shorter than 16:9. */
+   THE BOX NEITHER CROPS NOR SQUASHES. The frame inside lays out at a virtual
+   1280-wide viewport and is drawn at `scale(inner / 1280)`, so the app sees a
+   desktop-width window however narrow the panel is — and its virtual height is
+   whatever fills the card at that scale, so the app scrolls itself and nothing
+   around it grows a scrollbar. */
 .task-side-peek-preview {
   position: relative;
   flex: 0 0 auto;
@@ -795,10 +798,65 @@ body.tasks-peek-dragging {
      would simply crop 56px of app off the right-hand side. */
   padding-left: var(--peek-preview-inset);
   padding-right: var(--peek-preview-inset);
+  /* The card below is rounded, so it needs air above and below too, or its
+     corners sit on the header's hairline and on the seam. The box's height
+     (`previewBox`) includes this padding; the scroller is the card. */
+  padding-top: var(--peek-preview-pad-y);
+  padding-bottom: var(--peek-preview-pad-y);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 body.tasks-peek-dragging .task-side-peek-preview {
   transition: none;
+}
+
+/* THE CARD (Akshil, 2026-09-15). The Home grid's app card (`.app-pcard`,
+   styles/apps.css) is a bordered 12px-radius well that firms its border and
+   lifts a shadow on hover; this is that well without the head row. It is the
+   scroller now (the box above only pads), so the crop happens inside the
+   rounded corners. The border is an overlay, not a box border: the frame is
+   scaled to fill exactly `peekWidth − 2·inset` (`shell/peek-preview.ts`), and
+   a real 1px border either side would leave the frame 2px too wide and put a
+   horizontal scrollbar under every preview. */
+.task-side-peek-preview-card {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--bg);
+  transition: box-shadow 0.12s ease;
+}
+
+/* NOT A SCROLLER ANY MORE (Akshil, 2026-09-15). The frame is sized to the card
+   (`shell/peek-preview.ts` `previewBox`, `frameHeight = card / scale`), so
+   there is nothing here to scroll; the app scrolls itself inside the iframe.
+   `overflow: auto` on this box drew a second pair of scrollbars — x from the
+   scaled frame landing a sub-pixel wide, y from the crop — around a frame that
+   already had its own. The wrapper stays so the border overlay on the card
+   never has content moving under it. */
+.task-side-peek-preview-scroll {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.task-side-peek-preview-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: inherit;
+  pointer-events: none;
+  transition: border-color 0.12s ease;
+}
+
+.task-side-peek-preview-card:hover {
+  box-shadow: 0 4px 18px var(--shadow-sm);
+}
+
+.task-side-peek-preview-card:hover::after {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 
 /* The scaled frame's real footprint — a plain box of the drawn size, so the
@@ -831,9 +889,8 @@ body.tasks-peek-dragging .task-side-peek-preview {
   position: absolute;
   inset: 0;
   padding: 12px 16px;
-  /* `inset: 0` covers the gutters too, so the cover has to be the same ground
-     they are or the inset appears and disappears with the app's load. */
-  background: var(--peek-chat-bg);
+  /* Inside the card now, so its ground is the card's, not the gutters'. */
+  background: var(--bg);
 }
 
 /* The horizontal twin of the panel's own seam: same 12px hit area, same 1px of

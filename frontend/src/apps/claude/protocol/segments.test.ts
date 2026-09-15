@@ -5,6 +5,8 @@ import {
   cardKey,
   groupCollapsibles,
   isRun,
+  leadSplit,
+  seatTriggers,
   type GroupedRow,
   finishedTailText,
   parseTailKey,
@@ -479,5 +481,137 @@ describe("groupCollapsibles (design.md §A)", () => {
     expect(
       groupCollapsibles([named("t1", "Read"), named("t2", "Bash", "error")]).filter(isRun),
     ).toHaveLength(1);
+  });
+});
+
+describe("seatTriggers (design.md §A, Q1 revised 2026-09-15)", () => {
+  const named = (id: string): Segment => ({
+    kind: "tool",
+    id,
+    name: "Read",
+    input: {},
+    status: "ok",
+    output: "",
+    images: [],
+  });
+  const seat = (segs: Segment[], opts?: Parameters<typeof seatTriggers>[1]) =>
+    seatTriggers(groupCollapsibles(segs), opts);
+
+  test("a run BEFORE the turn's first prose seats on the prose that FOLLOWS it", () => {
+    // rows: [run(0), text(1)] — the word goes in row 1's corner, not on a bare
+    // line above it.
+    const s = seat([named("t1"), text("Done.")]);
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0]]]);
+  });
+
+  test("a leading and a trailing run MERGE onto one trigger, the leading one's", () => {
+    // rows: [run(0), text(1), run(2)] — one seat, both runs, leading first so
+    // the pair's key does not change when the trailing run lands.
+    const s = seat([named("t1"), text("Done."), named("t2")]);
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0, 2]]]);
+  });
+
+  test("A LEADING RUN SEATS ON THE TAIL WHILE IT STREAMS (review #5)", () => {
+    // rows: [run(0), text(1)] with row 1 still growing. Looking FORWARD the
+    // tail is a seat — the word belongs in that paragraph's corner from its
+    // first frame, not parked on a bare line above it until the turn settles.
+    const s = seat([named("t1"), text("Done so f")], { tailIndex: 1 });
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0]]]);
+  });
+
+  test("no prose in the turn at all → the bare own-line trigger stays", () => {
+    expect([...seat([named("t1"), named("t2")]).bare]).toEqual([0]);
+    // …as does a run that can only look BACKWARD onto the streaming tail: the
+    // forward reach is off (prose has been seen), and a word in the corner of a
+    // paragraph still being written rides its last line down the screen.
+    const live = seat([text("a"), named("t1")], { tailIndex: 0 });
+    expect([...live.bare]).toEqual([1]);
+    expect(live.seats.size).toBe(0);
+    // A card filed after the prose is between it and the run behind it.
+    const carded = seat([text("a"), named("t1")], {
+      cardsAfter: new Map<number, unknown>([[0, "card"]]),
+    });
+    expect([...carded.bare]).toEqual([1]);
+  });
+});
+
+describe("leadSplit — where a leading run's trigger sits (Akshil, 2026-09-15)", () => {
+  test("cuts a paragraph after its first sentence", () => {
+    expect(leadSplit("Fixed the bug. It was in auth.\n\nMore here.")).toEqual({
+      lead: "Fixed the bug.",
+      rest: "It was in auth.\n\nMore here.",
+    });
+    expect(leadSplit("Really? Yes! Done.")).toEqual({ lead: "Really?", rest: "Yes! Done." });
+  });
+
+  test("keeps closing quotes and brackets with the sentence", () => {
+    expect(leadSplit('He said "go." Then left.')).toEqual({
+      lead: 'He said "go."',
+      rest: "Then left.",
+    });
+    expect(leadSplit("See (above). Next.")).toEqual({ lead: "See (above).", rest: "Next." });
+  });
+
+  test("a dot before a lowercase word, a digit or inside code is not an end", () => {
+    expect(leadSplit("Edit e.g. the file. Then run.")).toEqual({
+      lead: "Edit e.g. the file.",
+      rest: "Then run.",
+    });
+    expect(leadSplit("Took 3.5 seconds. Fine.")).toEqual({ lead: "Took 3.5 seconds.", rest: "Fine." });
+    expect(leadSplit("Open `a.b. c` now. Then go.")).toEqual({
+      lead: "Open `a.b. c` now.",
+      rest: "Then go.",
+    });
+  });
+
+  test("a single-sentence paragraph is the lead; the next paragraph is the rest", () => {
+    expect(leadSplit("One line without a stop\n\nSecond para.")).toEqual({
+      lead: "One line without a stop",
+      rest: "Second para.",
+    });
+  });
+
+  test("a heading, list item or quote cuts after its first line", () => {
+    expect(leadSplit("## Title\nBody. More.")).toEqual({ lead: "## Title", rest: "Body. More." });
+    expect(leadSplit("- first. item\n- second")).toEqual({ lead: "- first. item", rest: "- second" });
+    // An indented continuation belongs to the item above it (Bugbot on d7458fe).
+    expect(leadSplit("- first\n  more of first\n- second")).toEqual({
+      lead: "- first\n  more of first",
+      rest: "- second",
+    });
+    expect(leadSplit("- only item\n  continued")).toBeNull();
+    expect(leadSplit("1. one\n2. two")).toEqual({ lead: "1. one", rest: "2. two" });
+    expect(leadSplit("> quoted. words\n> more")).toEqual({ lead: "> quoted. words", rest: "> more" });
+  });
+
+  test("a fence or a table is not a sentence: no split", () => {
+    expect(leadSplit("```js\nx. y\n```\n\nAfter.")).toBeNull();
+    expect(leadSplit("| a | b |\n|---|---|\n\nAfter.")).toBeNull();
+  });
+
+  test("leading blank lines are nobody's lead (Bugbot on d7458fe)", () => {
+    expect(leadSplit("\n\nFirst. Second.")).toEqual({ lead: "\n\nFirst.", rest: "Second." });
+    expect(leadSplit("\n\n")).toBeNull();
+    expect(leadSplit("   \nOnly.")).toBeNull();
+  });
+
+  test("nothing left after the lead means no split", () => {
+    expect(leadSplit("")).toBeNull();
+    expect(leadSplit("Just one sentence.")).toBeNull();
+    expect(leadSplit("One sentence.   ")).toBeNull();
+    expect(leadSplit("# Heading only")).toBeNull();
+  });
+
+  test("while the tail streams, the cut lands when the boundary's whitespace does", () => {
+    // Mid-word: whole text is the lead, nothing to split.
+    expect(leadSplit("Fixed the bu")).toBeNull();
+    // The stop has arrived but not what follows it — still no split.
+    expect(leadSplit("Fixed the bug.")).toBeNull();
+    expect(leadSplit("Fixed the bug. ")).toBeNull();
+    // The next word's first glyph decides.
+    expect(leadSplit("Fixed the bug. I")).toEqual({ lead: "Fixed the bug.", rest: "I" });
   });
 });

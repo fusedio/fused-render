@@ -97,7 +97,7 @@ export function Topbar({
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
       <div className="c-topbar" title={sessionId || undefined}>
-        <TaskPeekWho task={task} />
+        <TaskPeekWho task={task} running={running} />
         <TaskPeekProject task={task} {...(home ? { home } : {})} />
         {/* NO "running" WORD HERE (Akshil, 2026-09-14): the ring at the left
             already says it, and one line saying one thing twice spends the

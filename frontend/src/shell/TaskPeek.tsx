@@ -59,7 +59,7 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekProject, TaskPeekWho, peekTitle } from "./TaskPeekWho";
+import { TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -91,7 +91,6 @@ import {
   PEEK_WALK_ATTR,
   peekScrollTarget,
   peekVisibleOrder,
-  canShowList,
   nextAfterRemoval,
   refreshPeekBaseline,
   PEEK_MIN_WIDTH,
@@ -107,7 +106,6 @@ import {
   setPeekHost,
   setPeekWidth,
   settlePeek,
-  showListBesidePeek,
   stepPeekKey,
   subscribePeek,
   syncPeekFromUrl,
@@ -348,12 +346,6 @@ const ICON = {
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/* THE WAY BACK TO THE SPLIT IS A WORD NOW, not a glyph (Akshil, 2026-09-14 —
-   design.md, Polish batch 5): "Resize panel", in the same outline skin the Open
-   door wears. The four inward corner marks it replaces were the "fit" glyph,
-   which is a picture a reader has to be told the meaning of for an act that
-   happens once in a visit — and a header with two labelled buttons and a ×
-   needs no legend at all. The glyph is gone, not folded away. */
 /** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
  *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
  *  mark the whole web uses for "this leaves the page you are on", which is
@@ -420,11 +412,6 @@ export function TaskPeek({
   onReload?: () => void;
 }) {
   const layout = useTaskPeekLayout();
-  // IS THERE A SPLIT TO GO BACK TO — asked of the store, on every render that
-  // `layout` changes on (the window, the sidebar, the seam), which is every
-  // render that could change the answer. Only in cover, because that is the one
-  // state the control is drawn in (design.md, Fix batch 6 §1).
-  const canList = layout.cover && canShowList();
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
@@ -1073,7 +1060,8 @@ export function TaskPeek({
     return items;
   };
 
-  const title = task ? peekTitle(task) : "";
+  // The same line the row and the chat header print (TaskPeekWho).
+  const title = useTaskHeadline(task);
 
   return (
     <>
@@ -1155,38 +1143,11 @@ export function TaskPeek({
             >
               {ICON_CLOSE}
             </button>
-            {/* AND IN COVER, THE WAY BACK TO THE SPLIT — a second control, next
-                to the first, because the two are different acts and a control
-                that changes what it does under you is worse than two controls
-                (the reason the × above stopped being clever).
-
-                Cover is easy to fall into and hard to climb out of: the seam is
-                a 12px edge at the far left of the page, which is a thing you
-                have to know is there. This spends exactly the split a fresh
-                open would give — the remainder past the middle pane's baseline,
-                held back far enough that the answer is not cover again — and
-                leaves the task open. */}
-            {layout.cover && (
-              <button
-                type="button"
-                className="task-side-peek-resize"
-                /* …AND ON A WINDOW THAT CANNOT HOLD BOTH, it says so rather than
-                   pressing and moving nothing (Akshil, 2026-09-14 — design.md,
-                   Fix batch 6 §1). `canShowList` asks the store whether ANY
-                   width clears the middle pane's cover floor, the sidebar's own
-                   188px included; below that the control is a label for a state
-                   of the window, which is worth more than a dead press. */
-                disabled={!canList}
-                data-hint={
-                  canList
-                    ? "Restore the list beside the panel"
-                    : "Window too narrow to show the list"
-                }
-                onClick={() => showListBesidePeek()}
-              >
-                Resize panel
-              </button>
-            )}
+            {/* NO "RESIZE PANEL" ANY MORE (Akshil, 2026-09-15). The way out of
+                cover is the sidebar: expanding it by hand hands the panel back
+                to its default split (task-peek-store `expandUncovers`), and the
+                × closes. A third control for a state two others already leave
+                was one more thing to read. */}
             {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
                 reader can see, one step at a time — the gesture a chevron means
                 everywhere else in this app. A full arrow is for travel. */}
@@ -1290,7 +1251,14 @@ export function TaskPeek({
                     Preview unavailable
                   </p>
                 ) : (
-                  <>
+                  // THE CARD (Akshil, 2026-09-15): the same bordered, rounded
+                  // well the Home grid's app cards use for their thumbs, minus
+                  // the card's head row — the app is framed as something the
+                  // panel is showing, and the frame answers a hover the way
+                  // those cards do (styles/task-peek.css). The scroller is the
+                  // card's child so the border never scrolls with the crop.
+                  <div className="task-side-peek-preview-card">
+                    <div className="task-side-peek-preview-scroll">
                     <div
                       className="task-side-peek-preview-scale"
                       // The scaled frame's real footprint, and it tracks the
@@ -1323,7 +1291,8 @@ export function TaskPeek({
                         <SkeletonLines rows={2} label="Loading the app" />
                       </div>
                     )}
-                  </>
+                    </div>
+                  </div>
                 )}
               </div>
               <div

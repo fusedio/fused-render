@@ -3364,3 +3364,72 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     expect(cached.live_run).toBe("r9");
   });
 });
+
+describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
+  const gone = () => ({ turns: [], transcript: null, deleted: true });
+
+  test("says the task was deleted instead of opening a blank chat, and caches nothing", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    const st = made.controller.getState();
+    const errors = st.turns.filter((t) => t.role === "error");
+    expect(errors.length).toBe(1);
+    expect((errors[0] as { text: string }).text).toContain("deleted");
+    expect(st.trouble?.message).toContain("deleted");
+    expect(st.historyLoading).toBe(false);
+    // An answer about a task that no longer exists is not worth remembering.
+    expect(store.size).toBe(0);
+  });
+
+  test("a conversation cached BEFORE the erase is evicted, not painted warm again", async () => {
+    // The cache answers for whatever key the controller asks by, and records
+    // what it is asked to forget: the eviction must name the same entry.
+    const asked: string[] = [];
+    const deleted: string[] = [];
+    let stale: HistoryResponse | undefined = {
+      turns: [{ role: "user", text: "old words", uuid: "u1" }],
+      transcript: null,
+    } as unknown as HistoryResponse;
+    const historyCache = {
+      get: (f: string, s: string) => {
+        asked.push(f + "|" + s);
+        return stale;
+      },
+      set: () => {},
+      delete: (f: string, s: string) => {
+        deleted.push(f + "|" + s);
+        stale = undefined;
+      },
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    expect(deleted).toEqual([asked[0]]);
+    const st = made.controller.getState();
+    // The warm paint of the destroyed transcript is gone with the fetch.
+    expect(st.turns.some((t) => t.role === "user")).toBe(false);
+    expect(st.turns.filter((t) => t.role === "error").length).toBe(1);
+  });
+
+  test("an EMPTY answer without the mark is a chat not written yet — no error", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.openSession("s-new");
+    expect(made.controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});

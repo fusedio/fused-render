@@ -54,7 +54,7 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
  * wall the prose either side of them disappears into. v1 folded them under an
  * `N tool calls` header; that traded fifteen rows for one row, and one row is
  * still a row the reader did not ask for. v2 takes the row away entirely: the
- * stretch collapses behind a `more ▸` trigger that sits on the RIGHT EDGE of
+ * stretch collapses behind a `show more` trigger that sits on the RIGHT EDGE of
  * the sentence before it (ui/RunTrigger), so a settled turn is prose and
  * nothing else until the reader asks.
  *
@@ -213,6 +213,190 @@ export function groupCollapsibles(
     i = end;
   }
   return out;
+}
+
+/* ── where a run's trigger sits (design.md §A, Q1 revised 2026-09-15) ───────
+ *
+ * The trigger belongs in the bottom-right corner of a PROSE block, never on a
+ * line of its own — a bare right-aligned word above the first paragraph is the
+ * machinery row §A exists to delete, wearing a smaller hat.
+ *
+ * So a run seats itself on the prose it is adjacent to:
+ *
+ *   * the prose BEFORE it, wherever there is one (the original rule);
+ *   * failing that — the turn OPENS on tool calls — the prose that FOLLOWS it,
+ *     which gets the same corner seat. Only the run before the turn's FIRST
+ *     prose looks forward: anywhere else "no prose before me" means a card or a
+ *     bare stretch broke the chain, and reaching over that is reaching over
+ *     something the reader is owed.
+ *
+ * A prose block can therefore hold TWO runs, one either side. It does NOT grow
+ * two words in one corner: they MERGE onto one trigger, which opens both — and
+ * the members of each render at their own chronological position, the leading
+ * run's above the prose and the trailing run's below it.
+ *
+ * Looking BACKWARD, a prose block is not a seat when it is the STREAMING TAIL
+ * (the corner of a paragraph still being written) or when it has a card filed
+ * after it (the card is between the prose and the run). Those runs keep the
+ * bare own-line trigger, as does a turn with no prose in it at all. Looking
+ * FORWARD the tail IS a seat — see `seat()` below.
+ */
+export interface TriggerSeats {
+  /** prose ROW index → the run ROW indices whose trigger it carries, earliest
+   *  first (a leading run before a trailing one). */
+  seats: Map<number, number[]>;
+  /** Run ROW indices with no prose to sit on: their own right-aligned line. */
+  bare: Set<number>;
+}
+
+/**
+ * Seat every run in `rows` — see the note above. Pure, and over ROW indices,
+ * so the paint side does not have to decide placement while it is also
+ * building elements (and so this is testable without a renderer).
+ */
+export function seatTriggers(
+  rows: readonly GroupedRow[],
+  opts?: {
+    /** The growing segment's index in the RAW list, or -1. */
+    tailIndex?: number;
+    /** Filed cards by raw index — read for its keys only. */
+    cardsAfter?: Map<number, unknown> | null;
+  },
+): TriggerSeats {
+  const tailAt = opts?.tailIndex ?? -1;
+  const cards = opts?.cardsAfter ?? null;
+  const seats = new Map<number, number[]>();
+  const bare = new Set<number>();
+  /** Is row `r` a prose block a trigger can be drawn in?
+   *
+   *  `forward` is the leading run reaching DOWN to the paragraph after it, and
+   *  that paragraph is allowed to be the STREAMING TAIL (PR5 review #5). The
+   *  tail is rewritten per frame, but only its PROSE slot is: the block around
+   *  it is the same keyed element with the trigger in slot 1 beside the caret
+   *  (`SegmentView.segBlock`), so seating there costs nothing — while refusing
+   *  it cost the reader a word parked on a bare line above the answer for as
+   *  long as it streamed, teleporting into the corner when the turn settled.
+   *
+   *  Looking BACKWARD it still refuses: a run behind the tail means the tail is
+   *  not the turn's last row — the shape `tailIndex` never produces — and a
+   *  word in the corner of a paragraph that is still growing would ride its
+   *  last line down the screen. */
+  const seat = (r: number, forward = false): boolean => {
+    const row = rows[r];
+    if (!row || isRun(row) || viewKind(row.seg) !== "text") return false;
+    return forward || row.index !== tailAt;
+  };
+  const sit = (at: number, run: number) => {
+    const held = seats.get(at);
+    if (held) held.push(run);
+    else seats.set(at, [run]);
+  };
+  let sawProse = false;
+  rows.forEach((row, r) => {
+    if (!isRun(row)) {
+      if (viewKind(row.seg) === "text") sawProse = true;
+      return;
+    }
+    const before = rows[r - 1];
+    if (seat(r - 1) && !cards?.has((before as GroupedSeg).index)) {
+      sit(r - 1, r);
+      return;
+    }
+    if (!sawProse && seat(r + 1, true)) {
+      sit(r + 1, r);
+      return;
+    }
+    bare.add(r);
+  });
+  return { seats, bare };
+}
+
+/* ── the lead sentence a leading run's trigger sits on (Akshil, 2026-09-15) ──
+ *
+ * A run BEFORE the turn's first prose seats its `show more` on that prose —
+ * but on its FIRST SENTENCE, not its last line. The reader's eye is on the
+ * opening sentence when they want to know what the machinery above it did;
+ * a word in the corner of a five-line paragraph is a screen away from that.
+ *
+ * So the paint side splits the first prose segment into the lead sentence,
+ * drawn as its own block carrying the trigger, and the rest. This is the pure
+ * half: WHERE to cut.
+ *
+ *   * The cut is inside the FIRST PARAGRAPH only (up to the first blank line).
+ *   * A paragraph that is a fenced block or a table is not a sentence: no
+ *     split, the whole block keeps the corner seat it had.
+ *   * A heading's line is the lead; a list's or quote's first ITEM is — up to
+ *     the next marker at column 0, so an indented continuation stays with it.
+ *   * Prose cuts at the first `.`, `!` or `?` (closing quotes/brackets kept)
+ *     that is followed by whitespace and then something that is not a
+ *     lowercase letter — `e.g. the`, `file.ts is` and `3.5 seconds` are not
+ *     sentence ends — and that is not inside backticks.
+ *   * No boundary in the paragraph → the whole paragraph is the lead.
+ *   * Nothing left after the lead → null: there is nothing to split off, and
+ *     the block is drawn once, whole, as before.
+ *
+ * While the tail streams the text is cut per frame: until the boundary's
+ * trailing whitespace arrives the whole text is the lead, so the word sits at
+ * the end of what has been typed and settles onto the first sentence the
+ * moment there is one.
+ */
+export interface LeadSplit {
+  /** The lead sentence (or line) — markdown, untrimmed of its inline marks. */
+  lead: string;
+  /** Everything after it, leading whitespace dropped. Never empty. */
+  rest: string;
+}
+
+const LEAD_NOT_PROSE = /^(```|~~~|\|)/;
+const LEAD_HEADING = /^#{1,6}\s/;
+const LEAD_ONE_LINE = /^([-*+]\s|\d+[.)]\s|>)/;
+const SENTENCE_END = /[.!?]["'\u2019\u201d)\]]*(?=\s)/g;
+
+export function leadSplit(text: string): LeadSplit | null {
+  // Leading blank lines belong to nobody: skipped, so a text that opens on
+  // `\n\n` does not hand the trigger an empty lead (Bugbot on d7458fe).
+  const start = text.length - text.trimStart().length;
+  if (start >= text.length) return null;
+  const body = text.slice(start);
+  const blank = body.search(/\r?\n[ \t]*\r?\n/);
+  const para = blank === -1 ? body : body.slice(0, blank);
+  if (LEAD_NOT_PROSE.test(para)) return null;
+  const cut = (at: number): LeadSplit | null => {
+    const lead = text.slice(0, start + at);
+    const rest = text.slice(start + at).replace(/^\s+/, "");
+    return lead.trim() && rest ? { lead, rest } : null;
+  };
+  if (LEAD_HEADING.test(para)) {
+    const nl = para.indexOf("\n");
+    return cut(nl === -1 ? para.length : nl);
+  }
+  if (LEAD_ONE_LINE.test(para)) {
+    // The first ITEM, not the first line: an indented continuation (or a
+    // quote's lazy continuation) belongs to the item above it, and parsed on
+    // its own it would come out as a paragraph (Bugbot on d7458fe). The cut is
+    // at the first line that opens a SIBLING — another marker at column 0.
+    let at = para.indexOf("\n");
+    while (at !== -1) {
+      if (LEAD_ONE_LINE.test(para.slice(at + 1))) return cut(at);
+      at = para.indexOf("\n", at + 1);
+    }
+    return cut(para.length);
+  }
+  SENTENCE_END.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SENTENCE_END.exec(para))) {
+    const end = m.index + m[0].length;
+    // Inside inline code: an odd number of backticks before the mark.
+    const ticks = (para.slice(0, m.index).match(/`/g) ?? []).length;
+    if (ticks % 2 === 1) continue;
+    // What follows the whitespace decides: a lowercase letter means the mark
+    // was an abbreviation or a dotted name, not a full stop.
+    const next = para.slice(end).match(/^\s+(\S)/);
+    if (!next) continue;
+    if (/[a-z]/.test(next[1]!)) continue;
+    return cut(end);
+  }
+  return cut(para.length);
 }
 
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last

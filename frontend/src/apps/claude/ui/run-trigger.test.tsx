@@ -1,4 +1,4 @@
-// The `more ▸` trigger and the run it opens (design.md §A) — where the word
+// The `show more` trigger and the run it opens (design.md §A) — where the word
 // sits, which stretches get one, and what comes out when it is clicked.
 //
 // `react-test-renderer`, the `chip-copy.test.tsx` pattern: no real DOM, so a
@@ -12,7 +12,7 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
+import { CardPolicyProvider, createCardPolicy, type CardPolicy } from "./cardPolicy";
 import { SegmentView } from "./SegmentView";
 import type { Segment, ToolSegment } from "../protocol/types";
 
@@ -92,6 +92,31 @@ const view = (segs: Segment[], props: Record<string, unknown> = {}, policy = cre
     </CardPolicyProvider>,
   );
 
+/** The SAME transcript, re-rendered — never a second `view()`. A trigger is
+ *  keyed by its SEAT (review #6) and a seat by its position inside a NUMBERED
+ *  container (`cardKey`); a fresh mount takes a fresh number, so only an update
+ *  is the same reader looking at the same reply. */
+const again = (
+  r: ReturnType<typeof create>,
+  segs: Segment[],
+  props: Record<string, unknown>,
+  policy: CardPolicy,
+): Json | Json[] => {
+  act(() =>
+    r.update(
+      <CardPolicyProvider value={policy}>
+        <SegmentView segments={segs} {...props} />
+      </CardPolicyProvider>,
+    ),
+  );
+  return r.toJSON() as Json | Json[];
+};
+
+/** Open a run the way a reader does. Nothing outside `SegmentView` can spell
+ *  the key any more, which is the point of review #6. */
+const press = (json: Json | Json[] | null, cls = "run-trigger") =>
+  act(() => (byClass(json, cls)[0]!.props as { onClick: () => void }).onClick());
+
 /** Chips that are NOT nested inside anything else — the members on screen. */
 const chips = (json: Json | Json[] | null) => byClass(json, "toolchip");
 
@@ -103,26 +128,57 @@ describe("the trigger's seat", () => {
     // The prose and the trigger are ONE element: the word is drawn in the last
     // line's own box, not on a row of its own under it.
     expect(proses(blocks[0]!)).toEqual(["Here goes."]);
-    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("more▸");
+    expect(words(byClass(blocks[0]!, "run-trigger")[0]!)).toBe("show more");
     expect((blocks[0]!.props as { className: string }).className).not.toContain("is-bare");
     // Collapsed: not one chip is mounted.
     expect(chips(json)).toHaveLength(0);
   });
 
-  test("no prose before the run → the trigger takes its own right-aligned line", () => {
-    // A turn that opens on a tool call (design.md §A, Q1).
-    const json = view([tool("a", "Read"), text("Done.")]).toJSON() as Json | Json[];
+  test("A TURN THAT OPENS ON TOOL CALLS SEATS THE WORD ON THE PROSE THAT FOLLOWS (Akshil 2026-09-15)", () => {
+    // Q1 revised: the leading run used to take a bare right-aligned line ABOVE
+    // the first paragraph — the machinery row §A exists to delete, in a smaller
+    // hat. It attaches FORWARD instead, same corner seat as a run after prose,
+    // and its members open ABOVE that paragraph (chronological).
+    const policy = createCardPolicy();
+    const segs = [tool("a", "Read"), text("Done."), tool("b", "Bash")];
+    const r = view(segs, {}, policy);
+    const shut = r.toJSON() as Json | Json[];
+    expect(byClass(shut, "is-bare")).toHaveLength(0);
+    // ONE word for BOTH runs (before and after the paragraph), in the prose's
+    // own block — never two triggers stacked in one corner.
+    const blocks = byClass(shut, "seg-block");
+    expect(blocks).toHaveLength(1);
+    expect(proses(blocks[0]!)).toEqual(["Done."]);
+    const trigger = byClass(shut, "run-trigger");
+    expect(trigger).toHaveLength(1);
+    expect(words(trigger[0]!)).toBe("show more");
+    expect((blocks[0]!.props as { className: string }).className).toContain("has-trigger");
+
+    // One click opens both runs, each at its own chronological position: the
+    // leading chip above the paragraph, the trailing one below it.
+    press(shut);
+    const open = again(r, segs, {}, policy);
+    expect(chips(open)).toHaveLength(2);
+    const order = (Array.isArray(open) ? open : [open]).map((n) =>
+      byClass(n, "toolchip").length ? "chip" : byClass(n, "seg-block").length ? "prose" : "?",
+    );
+    expect(order).toEqual(["chip", "prose", "chip"]);
+    expect(byClass(open, "run-trigger")).toHaveLength(1);
+  });
+
+  test("a turn with NO prose at all keeps the bare own-line trigger", () => {
+    const json = view([tool("a", "Read"), tool("b", "Bash")]).toJSON() as Json | Json[];
     const block = byClass(json, "seg-block")[0]!;
     expect((block.props as { className: string }).className).toContain("is-bare");
     expect(proses(block)).toEqual([]);
-    // The prose AFTER the run is untouched — it is not the trigger's seat.
-    expect(proses(json)).toEqual(["Done."]);
+    expect(byClass(json, "run-trigger")).toHaveLength(1);
   });
 
-  test("the growing tail never carries a trigger", () => {
-    // The typer rewrites that element per frame; a control inside it would be
-    // inside what is being rewritten. (Reachable only for a turn whose tail is
-    // followed by a closed stretch — the tail is prose, so it is never a run.)
+  test("a run BEHIND the growing tail still takes a bare line", () => {
+    // Looking backward the tail is not a seat: a word in the corner of a
+    // paragraph that is still being written rides its last line down the
+    // screen. (Reachable only for a turn whose tail is followed by a closed
+    // stretch — the tail is prose, so it is never a run.)
     const segs = [text("streaming…"), tool("a", "Read")];
     const json = view(segs, { tail: { index: 0, text: "stre", cursor: true } }).toJSON() as
       | Json
@@ -135,6 +191,53 @@ describe("the trigger's seat", () => {
     expect(byClass(blocks[0]!, "run-trigger")).toHaveLength(0);
     expect((blocks[1]!.props as { className: string }).className).toContain("is-bare");
     expect(byClass(blocks[1]!, "run-trigger")).toHaveLength(1);
+  });
+
+  test("A LEADING RUN SEATS ON THE TAIL WHILE IT IS STILL STREAMING (review #5)", () => {
+    // The tail used to be refused as a seat outright, so a turn that opened on
+    // tool calls showed its word on a bare line above the answer for the whole
+    // of the answer — and then teleported it into the corner the moment the
+    // turn settled. The block around the tail is the same keyed element either
+    // way (`segBlock`); only its prose slot is rewritten per frame.
+    const segs = [tool("a", "Read"), text("Done so f")];
+    const json = view(segs, { tail: { index: 1, text: "Done so f", cursor: true } }).toJSON() as
+      | Json
+      | Json[];
+    expect(byClass(json, "is-bare")).toHaveLength(0);
+    const blocks = byClass(json, "seg-block");
+    expect(blocks).toHaveLength(1);
+    expect((blocks[0]!.props as { className: string }).className).toContain("has-trigger");
+    // AND THE CARET IS STILL THERE: the trigger and the caret share slot 1, so
+    // the word cannot be won at the cost of the thing that says it is typing.
+    expect(byClass(blocks[0]!, "run-trigger")).toHaveLength(1);
+    expect(byClass(blocks[0]!, "cursor")).toHaveLength(1);
+  });
+
+  test("THE TRIGGER'S KEY IS THE SEAT'S, so a split run keeps the reader's word open (review #6)", () => {
+    // Keyed off the leading run's first chip, the pair's identity changed the
+    // moment a filed card split that run in two — chip `a` left on a bare line,
+    // chip `b` inheriting the seat — and the run the reader had opened shut
+    // itself under them. The seat cannot change: it is the paragraph.
+    const policy = createCardPolicy();
+    const segs = [tool("a", "Read"), tool("b", "Bash"), text("Done.")];
+    const r = view(segs, {}, policy);
+    press(r.toJSON() as Json | Json[]);
+    const open = r.toJSON() as Json | Json[];
+    expect(words(byClass(open, "run-trigger")[0]!)).toBe("show less");
+    expect(chips(open)).toHaveLength(2);
+
+    // The card lands and splits the stretch: `a` is now its own bare run, `b`
+    // holds the seat. Same key, so the paragraph's word is still open.
+    const cardsAfter = new Map<number, React.ReactNode>([
+      [0, <div key="card" className="filed-card" />],
+    ]);
+    const split = again(r, segs, { cardsAfter }, policy);
+    const seated = byClass(split, "run-trigger").filter(
+      (t) => !byClass(split, "is-bare").some((b) => byClass(b, "run-trigger").includes(t)),
+    );
+    expect(seated).toHaveLength(1);
+    expect(words(seated[0]!)).toBe("show less");
+    expect(byClass(split, "filed-card")).toHaveLength(1);
   });
 
   test("THE PROSE ELEMENT SURVIVES THE RUN UN-SUPPRESSING (review #4)", () => {
@@ -206,7 +309,7 @@ describe("which stretches get a trigger", () => {
     expect(chips(shut)).toHaveLength(0);
     // One trigger for three members of three different kinds — the run is
     // "these steps happened together", not "these tool calls did".
-    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("more▸");
+    expect(words(byClass(shut, "run-trigger")[0]!)).toBe("show more");
   });
 
   test("a live turn's trailing stretch renders member by member, with no trigger", () => {
@@ -254,10 +357,16 @@ describe("opening a run", () => {
     let held = 0;
     policy.holdTail = () => held++;
     const json = view([text("lead"), tool("a", "Read")], {}, policy).toJSON() as Json | Json[];
-    const press = (byClass(json, "run-trigger")[0]!.props as { onClick: () => void }).onClick;
-    act(() => press());
+    press(json);
     expect(held).toBe(1);
-    expect(policy.overrides.get("run:tool:a")).toBe(true);
+    // THE SEAT'S KEY (review #6): the paragraph the word is drawn in, not the
+    // first chip behind it — the run that is "first" changes when a card splits
+    // the stretch or a live turn suppresses half of it, and the reader's open
+    // word must not change with it.
+    const opened = [...policy.overrides];
+    expect(opened).toHaveLength(1);
+    expect(opened[0]![0]).toMatch(/^run:seat:\d+:0$/);
+    expect(opened[0]![1]).toBe(true);
   });
 
   test("a MEMBER opened inside the run drops the follow too (bugbot)", () => {
@@ -266,14 +375,16 @@ describe("opening a run", () => {
     // where members render individually, opening one grew `.chat-log` and the
     // ResizeObserver scrolled the body that was just opened off screen.
     const policy = createCardPolicy();
-    policy.overrides.set("run:tool:a", true);
+    const segs = [text("lead"), tool("a", "Read")];
+    const r = view(segs, {}, policy);
+    press(r.toJSON() as Json | Json[]);
     let held = 0;
     policy.holdTail = () => held++;
-    const json = view([text("lead"), tool("a", "Read")], {}, policy).toJSON() as Json | Json[];
+    const json = again(r, segs, {}, policy);
     // The chip's summary is a Radix trigger, so its handler reads the event.
-    const press = (byClass(json, "chip-summary")[0]!.props as { onClick: (e: unknown) => void })
+    const open = (byClass(json, "chip-summary")[0]!.props as { onClick: (e: unknown) => void })
       .onClick;
-    act(() => press({ nativeEvent: {}, defaultPrevented: false, preventDefault() {} }));
+    act(() => open({ nativeEvent: {}, defaultPrevented: false, preventDefault() {} }));
     expect(held).toBe(1);
     expect(policy.overrides.get("tool:a")).toBe(true);
   });
@@ -281,21 +392,24 @@ describe("opening a run", () => {
 
   test("the members render exactly as they do outside one, under their own keys", () => {
     const policy = createCardPolicy();
-    // `run:` over the first member's key — never the member's own key, or
-    // opening the run would open its first chip too.
-    policy.overrides.set("run:tool:a", true);
     const segs = [text("lead"), tool("a", "Read"), think("why"), notice("done"), tool("b", "Bash")];
-    const json = view(segs, {}, policy).toJSON() as Json | Json[];
-    expect(words(byClass(json, "run-trigger")[0]!)).toBe("less▾");
+    // `run:seat:` over the SEAT's key — never a member's own key, or opening
+    // the run would open its first chip too.
+    const r = view(segs, {}, policy);
+    press(r.toJSON() as Json | Json[]);
+    const json = again(r, segs, {}, policy);
+    expect(words(byClass(json, "run-trigger")[0]!)).toBe("show less");
     expect(chips(json)).toHaveLength(2);
     expect(byClass(json, "thinking")).toHaveLength(1);
     expect(byClass(json, "seg-notice")).toHaveLength(1);
     // Each member is still folded under the key it had before the run existed,
     // so a chip the reader opens stays open.
     expect(byClass(json, "chip-body")).toHaveLength(0);
-    policy.overrides.set("tool:b", true);
-    const again = view(segs, {}, policy).toJSON() as Json | Json[];
-    expect(byClass(again, "chip-body")).toHaveLength(1);
+    const chipB = (byClass(json, "chip-summary")[1]!.props as { onClick: (e: unknown) => void })
+      .onClick;
+    act(() => chipB({ nativeEvent: {}, defaultPrevented: false, preventDefault() {} }));
+    expect(policy.overrides.get("tool:b")).toBe(true);
+    expect(byClass(r.toJSON() as Json | Json[], "chip-body")).toHaveLength(1);
   });
 });
 
@@ -304,7 +418,7 @@ describe("opening a run", () => {
 // `right: 0` only means "the right edge of the transcript" if the positioned
 // box reaches that edge. `.turn.assistant` is a flex row and `.body` had no
 // `flex`, so it shrink-wrapped to its content: a turn ending in a short line
-// put its `more ▸` hundreds of px in from the column while the next turn's sat
+// put its `show more` hundreds of px in from the column while the next turn's sat
 // at the margin. A corner affordance at a different x per row is not a corner.
 //
 // Geometry, so it is the SHEET that is asserted — this renderer lays nothing
@@ -331,10 +445,75 @@ describe("the trigger's column", () => {
     const block = ruleFor(".chat-root .seg-block");
     expect(block).toContain("width: 100%");
     expect(block).toContain("display: block");
-    // The trigger itself is unmoved: bottom-right of the block it belongs to.
+    // The trigger is ANCHORED TO THE PROSE BOX, not to the block (Bugbot on
+    // c20a913): the block also holds the streaming caret, which opens a row
+    // of its own under `.seg-text`, and a `bottom: 0` against the block sat
+    // the word on the caret's row. Grid: prose and trigger share cell (1,1),
+    // end-aligned both ways; the caret takes row 2.
+    expect(ruleFor(".chat-root .seg-block.has-trigger")).toContain("display: grid");
     const trigger = ruleFor(".chat-root .seg-block > .run-trigger");
-    expect(trigger).toContain("right: 0");
-    expect(trigger).toContain("bottom: 0");
+    expect(trigger).toContain("grid-row: 1");
+    expect(trigger).toContain("align-self: end");
+    expect(trigger).toContain("justify-self: end");
+    expect(trigger).not.toContain("position: absolute");
+    expect(ruleFor(".chat-root .seg-block.has-trigger > .cursor")).toContain("grid-row: 2");
+  });
+
+  test("the word is set in the PROSE's type, and the last line reserves room for it", () => {
+    const trigger = ruleFor(".chat-root .run-trigger");
+    // Same size AND same line-height as `.seg-text`, both inherited from the
+    // block — that is what puts the word on the last line's baseline.
+    expect(trigger).toContain("font: inherit");
+    expect(trigger).toContain("line-height: inherit");
+    expect(trigger).not.toContain("font-size:");
+    // …and the reservation matches the label (`show more` at 14px, ~70px of
+    // glyphs plus the 8px standoff).
+    expect(ruleFor(".chat-root .seg-block")).toContain("--c-run-trigger-w: 78px");
+  });
+
+  test("THE WORDS ARE THE WHOLE CONTROL — no chevron (Akshil 2026-09-15)", () => {
+    // The state is already in the words (`more` vs `less`), so the glyph said it
+    // twice — and it was the one part of the trigger that is not prose.
+    const r = view([text("Here goes."), tool("a", "Read"), tool("b", "Bash")]);
+    const draw = () => r.toJSON() as Json | Json[];
+    const shut = byClass(draw(), "run-trigger")[0]!;
+    expect(words(shut)).toBe("show more");
+    expect(byClass(shut, "run-chev")).toHaveLength(0);
+    press(draw());
+    const open = byClass(draw(), "run-trigger")[0]!;
+    expect(words(open)).toBe("show less");
+    expect(byClass(open, "run-chev")).toHaveLength(0);
+    // …and the stylesheet has nothing left to style.
+    expect(sheet).not.toContain("run-chev");
+  });
+
+  test("THE ROOM COMES OUT OF THE LAST LINE, not every line of the paragraph (review #2)", () => {
+    // `padding-right` on the last block was a measure change for the WHOLE
+    // paragraph — 96px is ~27% of the column at 430px — to make room for a word
+    // that only ever sits on one line of it. A zero-height inline-block at the
+    // end takes it out of that line alone.
+    const spacer = ruleFor(".chat-root .seg-block.has-trigger > .seg-text > :last-child::after");
+    expect(spacer).toContain("display: inline-block");
+    expect(spacer).toContain("width: var(--c-run-trigger-w)");
+    expect(spacer).toContain("height: 0");
+    expect(sheet).not.toContain("padding-right: var(--c-run-trigger-w)");
+  });
+
+  test("the row a code block drops the word into is ONE LINE OF THE READING TYPE", () => {
+    // 18px was the height of the old 11px `more`; the word is prose type now
+    // (14px × 1.65 ≈ 23px), so the literal left it overhanging the block.
+    expect(ruleFor(".chat-root .seg-block")).toContain(
+      "--c-run-trigger-h: calc(var(--c-fs-read) * var(--c-lh-read))",
+    );
+    expect(sheet).toContain("padding-bottom: var(--c-run-trigger-h)");
+    expect(sheet).not.toContain("padding-bottom: 18px");
+  });
+
+  test("the compact wall's reservation is derived, not shaved to the glyph", () => {
+    // A straight ratio of the 78px clears `show more` at 10px by under a px:
+    // the glyphs scale with the reading size but the 8px standoff does not, so
+    // the ratio alone is a reservation one font metric away from clipping.
+    expect(ruleFor(".chat-root.chat-compact .seg-block")).toContain("--c-run-trigger-w: 64px");
   });
 
   test("the BARE case lands on the same edge, by the same box", () => {
@@ -343,7 +522,7 @@ describe("the trigger's column", () => {
     // exactly where the positioned one does.
     expect(ruleFor(".chat-root .seg-block.is-bare")).toContain("text-align: right");
     expect(ruleFor(".chat-root .seg-block.is-bare > .run-trigger")).toContain(
-      "position: static",
+      "justify-self: end",
     );
   });
 });
