@@ -513,7 +513,13 @@ export function hasDraft(task: Pick<Task, "kind" | "draft">): boolean {
  * same one the chip, the filter, the List's hoist and `rowExits` ask.
  */
 export function draftRing(task: Task): boolean {
-  const lane = laneOf(taskColumn(task));
+  const column = taskColumn(task);
+  // A DRAFT ROW WEARS IT TOO (Akshil, 2026-09-15): a `kind: "draft"` row has no
+  // task id and sits in the Upcoming lane looking like a scheduled task, when it
+  // is really a sentence nobody has sent — the same fact the settled lanes mark.
+  // Only the draft kind: a real Upcoming task (scheduled, no draft) stays bare.
+  if (column === "draft") return true;
+  const lane = laneOf(column);
   return (lane === "done" || lane === "archived" || lane === "blocked") && hasDraft(task);
 }
 

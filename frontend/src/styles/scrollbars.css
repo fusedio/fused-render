@@ -1,0 +1,90 @@
+/* HOVER-ONLY SCROLLBARS, EVERYWHERE IN THE SHELL (Akshil, 2026-09-15: "show the
+   scrollbar only when we are hovering over the element" — Tasks and the side
+   peek first, then Home, AI Models, the Claude chat and the Explorer: "it should
+   be there … as well"). A hand-kept list of scrollers was the first cut and it
+   missed boxes on every page it named, so the rule is universal: every element
+   that scrolls wears the same quiet bar, painted out until the pointer is over
+   that element.
+
+   THE BAR IS CLASSIC, NOT OVERLAY. A `::-webkit-scrollbar` rule is what opts an
+   element out of macOS overlay scrollbars (schedule.css, 2026-08-18: the Board's
+   overlay thumb drew over the right edge of every card); an overlay bar also
+   shows itself on scroll and fades on its own timer, which is exactly the
+   behaviour asked away here. So the bar takes its own 10px column and the
+   thumb — 4px of ink inside a transparent border, `background-clip` — is the
+   only thing that comes and goes. Strips that hide their bar outright
+   (`::-webkit-scrollbar { display: none }`, `scrollbar-width: none`) outrank
+   these `*` rules by specificity and stay hidden; an element with a non-`auto`
+   `scrollbar-width` makes Chromium ignore the pseudo rules and is left alone.
+
+   THROUGH A CUSTOM PROPERTY, NOT `:hover` IN THE SCROLLBAR SELECTOR. Inside a
+   `::-webkit-scrollbar*` selector Chromium reads `:hover` — even in the compound
+   BEFORE the pseudo-element — as "this scrollbar part is under the pointer",
+   not "the element is" (that is the scrollbar pseudo-class contract, and the
+   same resolver runs the whole selector), so `.x:not(:hover)::-webkit-…` lit the
+   thumb only when the pointer found the 10px track ("sometimes it shows").
+   Here `:hover` is evaluated on the element by an ordinary rule, the thumb
+   pseudo reads the element's custom property, and a change to the element's
+   style re-resolves its scrollbar parts.
+
+   `* { --sb-thumb: transparent }` IS NOT REDUNDANT: custom properties inherit,
+   and every ancestor of the pointer is `:hover` at once — without a value of
+   its own on every element, hovering the page would ink every bar under it.
+   With one, only the elements actually under the pointer flip, and of those
+   only the ones that scroll have a bar to show it. */
+* {
+  --sb-thumb: transparent;
+}
+
+*:hover {
+  --sb-thumb: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+/* Scrollers that already carry a thumb rule of their own at class specificity
+   (schedule.css's Tasks bars, transcript.css's chat log) would beat the `*`
+   thumb above and paint their ink at rest. They take the fade too — restated
+   here at a specificity above theirs; `body` is the one extra type selector
+   that does it without inventing a class. */
+body .schedule-tv-lane-body::-webkit-scrollbar-thumb,
+body .schedule-cal-thread::-webkit-scrollbar-thumb,
+body .tasks-list::-webkit-scrollbar-thumb,
+body .task-cards-scroll::-webkit-scrollbar-thumb,
+body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  background-clip: padding-box;
+}
+
+/* ONE WIDTH, ONE THUMB SHAPE (Akshil, 2026-09-15: "the thumb width is different
+   at different places, make sure it is consistent"). transcript.css gave the
+   chat log an 8px bar with a 4px-radius thumb and no inset border — the one
+   scroller in the shell whose bar read differently. Restated to the shared
+   shape at the same `body` specificity as the fade above. */
+body .chat-root .chat-logwrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+}

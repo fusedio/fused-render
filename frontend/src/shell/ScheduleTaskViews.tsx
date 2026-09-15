@@ -733,13 +733,13 @@ function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
  * the chip that says "there are drafts here" is the natural place to ask for
  * only those.
  *
- * WHERE IT SITS: at the right end of the row, immediately before the project
- * chip (Akshil, 2026-09-11). It moved there from beside the id, and the move is
- * the point — the right end is where this page keeps its TAGS (the folder chip
- * is already one, and presses the same way), while the id end is where the row
- * says what it IS. Two clickable chips side by side read as one group of
- * controls; the same chip four hundred pixels from the other read as two
- * unrelated marks.
+ * WHERE IT SITS: at the right end of the row (Akshil, 2026-09-11). It moved
+ * there from beside the id, and the move is the point — the right end is where
+ * this page keeps its TAGS, while the id end is where the row says what it IS.
+ * The folder chip kept it company there until 2026-09-15, when Akshil moved
+ * that one LEFT, between the id and the title: a folder is part of what the
+ * row is, a draft is a state it is in, and the two ends now say those two
+ * different things.
  *
  * `onPick` is what makes it a control, exactly as on `IdentityChip`: without one
  * it is the plain badge the Cards wall wants, with one it is a real button
@@ -2378,7 +2378,12 @@ function TaskNode({
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
-  const ahead = isUpcomingTask(task);
+  // …AND A DRAFT ROW READS THE SAME (Akshil, 2026-09-15: "title of drafts
+  // should be the same color as title of upcoming"). A draft is words nobody
+  // has sent yet — work even further ahead than a scheduled run — and it sits
+  // in the Upcoming lane; a full-strength title there made it the loudest row
+  // in a section whose whole point is to recede.
+  const ahead = isUpcomingTask(task) || isDraftTask(task);
   // The file this task is about, or "" for a task about its folder — the mark
   // after the title. tasks-lib.taskFile owns the test.
   const taskFile_ = taskFile(task);
@@ -3084,6 +3089,27 @@ function TaskNode({
             or carried to the Tasks page. The title is the element that gives
             way, which is what it is for. */}
         <IdChip id={task.task_id} kind="task" />
+        {/* THE FOLDER CHIP SITS HERE, between the id and the title (Akshil,
+            2026-09-15): the row's left end is where it says what it IS — the id,
+            then the folder it belongs to, then the words. It lived at the right
+            end among the tags until then; DraftChip stays there alone. Same
+            component, same press, same shield — only the slot moved. */}
+        {showProject && (
+          <IdentityChip
+            name={basename(task.project)}
+            title={tildePath(task.project, home)}
+            // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
+            // page to this folder, and pressing it again lets it go. Only on
+            // the List — the Board card's foot keeps the plain chip, because a
+            // card is a drag target first and a button inside one competes with
+            // the gesture that moves it.
+            onPick={onPickProject && (() => onPickProject(task.project))}
+            // …and while the filter is on, the chip SAYS SO. Without this the
+            // one row-level trace of an active filter was the toolbar's little
+            // "1", four hundred pixels away from the rows it was acting on.
+            active={pinned}
+          />
+        )}
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
@@ -3417,22 +3443,6 @@ function TaskNode({
             // the same split `IdentityChip` draws one line below.
             onPick={onPickDraft}
             active={draftOn}
-          />
-        )}
-        {showProject && (
-          <IdentityChip
-            name={basename(task.project)}
-            title={tildePath(task.project, home)}
-            // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
-            // page to this folder, and pressing it again lets it go. Only on
-            // the List — the Board card's foot keeps the plain chip, because a
-            // card is a drag target first and a button inside one competes with
-            // the gesture that moves it.
-            onPick={onPickProject && (() => onPickProject(task.project))}
-            // …and while the filter is on, the chip SAYS SO. Without this the
-            // one row-level trace of an active filter was the toolbar's little
-            // "1", four hundred pixels away from the rows it was acting on.
-            active={pinned}
           />
         )}
         {/* HOW MANY MESSAGES this task holds, between the folder and the time

@@ -1276,6 +1276,10 @@ describe("dropLanes", () => {
     for (const status of ["in_progress", "upcoming"] as const) {
       expect(draftRing(doneWithDraft({ status }))).toBe(false);
     }
+    // A DRAFT ROW WEARS IT (Akshil, 2026-09-15): `kind: "draft"` has no task id
+    // and sits in the Upcoming lane looking scheduled when it is only unsent
+    // words. A real Upcoming task with nothing unsent stays bare (above).
+    expect(draftRing(task({ status: "upcoming", kind: "draft", draft: null }))).toBe(true);
     // ONE 8px CENTRE, in the page's "your attention is owed" hue — not a second
     // glyph to learn, and it outranks the unread fill by sitting after it.
     const dot = block(SCHEDULE_CSS, ".schedule-ring--draft-held::after");
@@ -2507,7 +2511,9 @@ describe("the unread mark", () => {
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
     expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "")}');
-    expect(VIEWS).toContain("const ahead = isUpcomingTask(task);");
+    // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
+    // work further ahead than a scheduled run, in the same lane.
+    expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
     // A colour TOKEN, not an opacity: opacity blends the words into whatever is
     // behind them and shifts with the row's hover fill, where the token is one
     // themed value and the one every other quiet thing on this page already uses.
@@ -4572,15 +4578,19 @@ describe("the Draft chip", () => {
     expect(VIEWS).toContain("const ICON_PENCIL = icon(");
   });
 
-  it("sits at the RIGHT of a List row, immediately before the folder chip", () => {
+  it("sits at the RIGHT of a List row; the folder chip sits LEFT, after the id", () => {
     const chip = ROW.indexOf("<DraftChip");
     const folder = ROW.indexOf("<IdentityChip");
     const id = ROW.indexOf("<IdChip id={task.task_id}");
+    const title = ROW.indexOf('className={"tasks-title"');
     expect(chip).toBeGreaterThan(-1);
-    expect(chip).toBeLessThan(folder);
     // …and no longer beside the id, which is where it lived for a round.
     expect(chip).toBeGreaterThan(id);
     expect(ROW.indexOf('className="tasks-grow"')).toBeLessThan(chip);
+    // The folder chip moved to the row's left end (Akshil, 2026-09-15): after
+    // the id, before the title — where the row says what it IS.
+    expect(folder).toBeGreaterThan(id);
+    expect(folder).toBeLessThan(title);
   });
 
   it("sits in the same seat on a Board card — the foot, before the folder", () => {
@@ -9039,8 +9049,9 @@ describe("the outcome pill, beside the id in both views", () => {
     expect(VIEWS).toContain("function OutcomePill(");
     expect((VIEWS.match(/<OutcomePill outcome=\{outcome\} \/>/g) ?? []).length).toBe(2);
     // Directly after the task id, in both.
+    // (the folder chip sits between them on the List since 2026-09-15)
     expect(ROW).toMatch(
-      /<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,400}?<OutcomePill/);
+      /<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,1600}?<OutcomePill/);
     expect(CARD).toMatch(
       /<IdChip id=\{task\.task_id\} kind="task" \/>\s*\{outcome && <OutcomePill/);
     // ...and nowhere near the foot, which is the arrangement that failed.

@@ -3442,13 +3442,18 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
-.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
-.tasks-list::-webkit-scrollbar-thumb:hover,
-.task-cards-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
-  background-clip: padding-box;
-}
+/* HOVER-ONLY INK for these bars lives in styles/scrollbars.css (Akshil,
+   2026-09-15) — one list for every scroller on Tasks, the side peek, Home and
+   AI Models, so the pages cannot drift into three different fades. The rules
+   above are unchanged and still own the bar's shape, width and colour; that
+   file only paints the thumb out while the scroller is unhovered, which is why
+   it must stay on `::-webkit-scrollbar-thumb` — anything set through
+   `scrollbar-color` would make Chromium drop the width rule above, and with it
+   the overlay opt-out this whole block exists for.
+
+   The thumb's own `:hover` brightening (48%) went with it: hover state on the
+   thumb is the one Chromium leaves stuck after the pointer leaves, and a bar
+   that only appears on hover has nothing to brighten from. */
 
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
