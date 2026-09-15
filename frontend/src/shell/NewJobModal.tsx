@@ -56,6 +56,7 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { onGone } from "./tasksPulse";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -3418,6 +3419,32 @@ export default function NewJobModal({
   }, { writeInitial: hopSeeded });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
+  /**
+   * THE DRAFT THIS CARD SAVES INTO WAS DISCARDED SOMEWHERE ELSE (design.md,
+   * PR C).
+   *
+   * The draft row now carries a trash, and it can be pressed while this card is
+   * open on the very same form — from the List behind it, from the Board, from
+   * another window entirely. The autosave knew nothing about that: the next
+   * keystroke, or merely closing the card (the unmount flush), PUT the form
+   * straight back under its old id, and the row the reader had just discarded
+   * reappeared.
+   *
+   * So the card hears the row leave and stands its writer down. `stop` is
+   * permanent and covers every path in one — the pending debounce, the next
+   * keystroke, the unload flushes and the unmount — so nothing this card does
+   * from here on can re-mint what was thrown away. The CARD is left alone: it
+   * still holds the words, Schedule still works (that path mints a real task and
+   * never needs the draft), and closing a modal out from under somebody over
+   * news from another window would be the worse failure.
+   *
+   * `draft:<id>` is the key a task draft's row is listed under
+   * (`fused_render/drafts.task_key`).
+   */
+  useEffect(() => onGone((keys) => {
+    const id = draftIdRef.current;
+    if (id && keys.includes(`draft:${id}`)) autosaveRef.current.stop();
+  }), []);
   // Discard: the draft goes, and so does the card. `stop` first — a write still
   // in the debounce would otherwise land after the DELETE and put it back.
   // `stop` alone only disarms the NEXT write, though: a PUT already sent to

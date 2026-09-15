@@ -158,6 +158,26 @@ export function chatDraftKey(sessionId: string | null, file: string | null): str
  *  spells it `NEW_CHAT_PREFIX` for the same reason, and the two must agree. */
 export const NEW_CHAT_PREFIX = "new:";
 
+/**
+ * IS THIS LISTING KEY ONE A CHAT DRAFT IS FILED UNDER?
+ *
+ * The Tasks listing files rows under four shapes and a chat draft answers to
+ * two of them: a bare SESSION id once the conversation exists, and
+ * `new:<file>` before it does — which is exactly `chatDraftKey`'s two answers,
+ * read backwards. The other two carry a prefix and a colon (`draft:<id>` for a
+ * task draft's row, `pending:<entry>` for a scheduled message with no session
+ * yet), and a session id can hold no colon at all (`drafts._SESSION_KEY`
+ * server-side), so the absence of one is the whole test.
+ *
+ * Asked by the shell when the listing says a key is GONE, to decide whether
+ * there are unsent words behind it to clean up (App.tsx).
+ */
+export function isChatDraftKey(key: string): boolean {
+  if (!key) return false;
+  if (key.startsWith(NEW_CHAT_PREFIX)) return true;
+  return !key.includes(":");
+}
+
 /** The file (or folder) a `new:<file>` key was opened on, or `""` for a key
  *  that is a session id. The twin of `drafts.new_chat_file` server-side, and it
  *  exists for the same one reason: a reader who has to get BACK to that chat

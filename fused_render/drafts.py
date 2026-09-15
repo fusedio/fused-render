@@ -127,6 +127,12 @@ _CHAT_KEY_MAX = 512
 #: composer where the user left it.
 PREVIEW_MAX = 120
 
+#: How long an unsent chat with no session yet may sit in the store before
+#: `_prune` forgets it. A fortnight, which is long enough to cover a holiday and
+#: short enough that the Upcoming lane is not a museum. Only `new:<file>` keys
+#: age — see `_prune` for why the other two kinds never do.
+CHAT_TTL_SEC = 14 * 24 * 60 * 60
+
 #: Every field a task draft stores, in the order the form reads them. A key the
 #: client sends that is not in here is DROPPED rather than refused (the modal
 #: gains fields over time and an older server must not start 400ing a newer
@@ -259,7 +265,9 @@ def task_key(ident: str) -> str:
 
 def load() -> dict:
     """The whole store, `{"chat": {}, "task": {}}` — missing or corrupt is not
-    an error. Both sections always present, so no caller has to test for them."""
+    an error. Both sections always present, so no caller has to test for them.
+
+    Stale `new:<file>` chat drafts are dropped on the way out — see `_prune`."""
     data = None
     try:
         with open(os.path.join(STATE_DIR, DRAFTS_FILE), "r", encoding="utf-8") as f:
@@ -271,7 +279,40 @@ def load() -> dict:
     for section in (CHAT, TASK):
         if not isinstance(data.get(section), dict):
             data[section] = {}
+    _prune(data)
     return data
+
+
+def _prune(data: dict) -> None:
+    """Forget the `new:<file>` chat drafts nobody has touched in a fortnight.
+
+    ONLY THAT ONE SHAPE (design.md, PR C, "TTL"). A `new:` key is a folder
+    somebody opened a chat on and typed half a sentence into; it is a ROW on the
+    Tasks page with a TASK number of its own, and a machine in daily use grows
+    one per folder ever opened — a permanent list of month-old fragments nobody
+    will finish, each holding a number. A chat draft on a REAL session is the
+    next message of a conversation that is still there, and a task draft is a
+    form somebody is filling in: both are things a reader can still find their
+    way back to from the row they are attached to, so neither ages out.
+
+    IN `load()` RATHER THAN IN A SWEEP, and so with no write of its own. Every
+    read comes through here, `_update` reads through here INSIDE its lock, and
+    `_update` writes back the dict it was handed — so the prune is observed by
+    every reader at once and is persisted by the next write that changes
+    anything else. A timer that took the lock to delete text nobody had asked
+    about would be a risk run on nobody's behalf.
+
+    A RECORD WITH NO READABLE STAMP IS KEPT. `_epoch` answers 0.0 for one, which
+    is literally older than any cutoff — and this store's whole job is not to
+    lose what somebody typed, so an unreadable clock buys a draft its life
+    rather than costing it."""
+    cutoff = time.time() - CHAT_TTL_SEC
+    chat = data[CHAT]
+    for key in [k for k in chat if isinstance(k, str) and is_new_chat_key(k)]:
+        record = chat.get(key)
+        stamp = _epoch(record.get("updated_at")) if isinstance(record, dict) else 0.0
+        if 0.0 < stamp < cutoff:
+            chat.pop(key, None)
 
 
 def _update(mutate):
@@ -496,13 +537,25 @@ def chat_view(chat: dict, task: dict) -> dict:
     of the split the hop made), the form's attachments, the form's clock — plus
     `bound_draft`, the form's id, so a client that cares can tell the two apart.
     Nothing here writes: this is a projection of one read, and the write that
-    goes back through the same door is `put_chat`'s half of the bargain."""
+    goes back through the same door is `put_chat`'s half of the bargain.
+
+    A WORDLESS FORM IS NOT A DRAFT HERE, even though its record survives. Since
+    `_put_bound` stopped deleting the whole form when the composer empties (the
+    settings the reader spent a minute choosing are not theirs to throw away),
+    a bound record can legitimately hold a time, a repeat rule and a model with
+    nothing typed in it — and that is not something anybody is still writing. It
+    is skipped, so `get_chat` answers None, the session's row wears no `✎ Draft`
+    chip, and a composer seeding off this key gets the empty box it should."""
     out = dict(chat)
     for session, ident in bound_chats(chat, task).items():
         record = task[ident]
+        text = join_draft(record.get("title"), record.get("description"))
+        rows = _attachments(record.get("attachments"))
+        if not text.strip() and not rows:
+            continue
         out[session] = {
-            "text": join_draft(record.get("title"), record.get("description")),
-            "attachments": _attachments(record.get("attachments")),
+            "text": text,
+            "attachments": rows,
             "updated_at": _epoch(record.get("updated_at")),
             "bound_draft": ident,
         }
@@ -556,15 +609,41 @@ def _put_bound(data: dict, ident: str, body: str, rows: list[dict]):
     from "did not ask"; this door always shows the whole tray, so a file
     missing from the write is a file the reader took out.
 
-    EMPTY IS A DELETE, the same bargain the chat half has always made: the
-    composer's autosave fires after the send has cleared the box, and the words
-    it is clearing are the ones that were just sent. What goes is the whole
-    form — there is no half of a draft left to keep."""
+    EMPTY CLEARS THE WORDS AND KEEPS THE FORM (Akshil, 2026-09-15; design.md,
+    PR C). It used to delete the whole record, on the chat half's reasoning that
+    there is no half of a draft to keep — true of a chat draft, which IS its
+    text, and false of a form. This door is the COMPOSER, and the composer's
+    autosave fires after every send; the other door is a card holding a folder, a
+    time, a repeat rule, a model, an effort, a permission mode and a tray that
+    somebody spent a minute choosing. Sending a message into the conversation
+    threw all of that away, and the person who had been setting it up had no way
+    to know that pressing Enter was the gesture that did it.
+
+    So an emptying write clears exactly what this door can see — title,
+    description, attachments — and leaves every setting where it was. The record
+    is then wordless, which every reader already treats as no draft: `chat_view`
+    skips it, `_bound_chips` draws no chip, and `_empty_task` says a form with no
+    words and no files is nothing anybody is writing. Deleting the RECORD is
+    still possible and is still what the reader's own gesture does — Discard in
+    the modal, the trash on the row, `DELETE /api/drafts/chat/<key>` on the
+    composer's send — all of which go through an explicit delete rather than
+    through here.
+
+    `None` is answered either way, because the question this door was asked is
+    "what does the composer hold now" and the answer is still nothing."""
     title, description = split_draft(body)
     if not title and not description and not rows:
-        if ident not in data[TASK]:
+        record = _task_record(data[TASK].get(ident))
+        if record is None:
             return None, False
-        data[TASK].pop(ident, None)
+        if not (record["title"] or record["description"] or record["attachments"]):
+            return None, False  # already wordless: nothing to write
+        record["title"] = ""
+        record["description"] = ""
+        record["attachments"] = []
+        record["created_at"] = record["created_at"] or time.time()
+        record["updated_at"] = time.time()
+        data[TASK][ident] = record
         return None, True
     record = _task_record(data[TASK].get(ident)) or {}
     now = time.time()
@@ -632,9 +711,11 @@ def put_chat(session_id, text=None, attachments=None) -> dict | None:
 
 def delete_chat(session_id) -> bool:
     """Drop one chat draft; True if there was one. Called on send, on an
-    explicit clear, and by every verb that takes the task away —
-    archive/delete/erase — because a draft for a conversation nobody can reach
-    any more is a badge on a row that is gone."""
+    explicit clear, and by the two verbs that take the task away for good —
+    delete and erase — because a draft for a conversation nobody can reach any
+    more is a badge on a row that is gone. NOT by archive, which is the
+    reversible verb: its drafts hide with the row and come back with it
+    (Akshil, 2026-09-15)."""
     key = chat_key(session_id)
     if not key:
         return False
@@ -885,31 +966,38 @@ def put_task(ident, fields) -> tuple[dict | None, str]:
     return _update(mutate)
 
 
-def unbind_session(session_id) -> list[str]:
-    """Cut every task draft loose from one session; the LISTING KEYS of the ones
-    that were cut (`draft:<id>`), newest-store order, and `[]` when none were.
+def delete_bound(session_id) -> list[str]:
+    """Discard every task draft bound to one session; the LISTING KEYS of the
+    ones that went (`draft:<id>`), and `[]` when there were none.
 
-    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just changed —
-    a different number, a different folder, no session — and the caller has to
-    announce them (`tasks_watch.notify`) or the page goes on showing the erased
-    session's number on a draft whose Schedule would send the message back into
-    a conversation that no longer exists. A count cannot be announced.
+    THE VERB THE TASK'S OWN DELETE AND ERASE SPEND (Akshil, 2026-09-15;
+    design.md, PR C). A session-bound draft is the NEXT MESSAGE of one
+    conversation — it stands in for no row of its own, it borrows that
+    conversation's number, and the only way back into it is the composer of the
+    chat it is a message to. Take the task away and the draft is bytes nothing
+    can show and nobody can reach, which is precisely what the chat draft beside
+    it has always been treated as.
 
-    The erase gesture's share of this store (`POST /api/tasks/erase`). The words
-    are NOT deleted — a draft is a task somebody is still writing, and the
-    conversation it was going to be sent into is only where it was going to go.
-    What goes is the binding, and with it everything the binding stood for: the
-    draft stops borrowing a number that is now a reservation nobody may reissue
-    (`tasks_store.forget_session` stamps the record `erased` and keeps it), stops
-    standing in for a row that no longer exists, and is numbered as the ordinary
-    `draft:<id>` it has become on the next listing.
+    THIS REPLACES THE UNBINDING THAT USED TO HAPPEN ON ERASE. That rule kept the
+    words and cut only the binding, so the form came back as an ordinary
+    `draft:<id>` row in its own folder — defensible in the abstract and wrong in
+    practice, because what came back was half a message addressed to a
+    conversation that no longer exists, in a lane the reader had just cleared.
+    Delete and erase now do the same thing to both halves of "this session's
+    unsent text", which is also the one thing they could never previously agree
+    on (design.md, PR C: "Delete + erase drop BOTH").
 
-    Without this the draft showed the dead TASK-nnn for ever and could never be
-    allocated one of its own, because the binding was the very thing telling
-    `_draft_numbers` that its task already had a number (review, 2026-09-12).
+    THE KEYS AND NOT A COUNT (bugbot, PR #1126): those rows have just left the
+    listing and the caller has to announce them (`tasks_watch.notify`), or a
+    page holding one goes on drawing a draft whose Schedule would send its
+    message into a conversation that is gone. A count cannot be announced.
+
+    ARCHIVE DOES NOT CALL THIS, and that is the decision this verb exists
+    alongside (Akshil, 2026-09-15): filing a task away is reversible, so its
+    drafts simply hide with it and come back on unarchive.
 
     One pass under one lock, and `[]` — no write at all — for the overwhelmingly
-    common erase where nothing was bound to that session."""
+    common case where nothing was bound to that session."""
     target = bound_session(session_id)
     if not target:
         return []
@@ -920,10 +1008,7 @@ def unbind_session(session_id) -> list[str]:
             record = _task_record(rec)
             if record is None or record["session_id"] != target:
                 continue
-            # `updated_at` is NOT touched: it is the clock the row prints
-            # ("drafted 5m ago") and sorts on, and nobody typed anything here.
-            record["session_id"] = ""
-            data[TASK][ident] = record
+            data[TASK].pop(ident, None)
             cut.append(task_key(ident))
         return cut, bool(cut)
 

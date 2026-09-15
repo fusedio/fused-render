@@ -59,7 +59,8 @@ import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
-import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { onGone, pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { fetchDrafts, isChatDraftKey, markChatDraftSpent } from "@platform/lib/drafts";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -585,6 +586,54 @@ export default function App({ config }: { config: Config }) {
     window.addEventListener(TASKS_CHANGED_EVENT, pokeTasks);
     return () => window.removeEventListener(TASKS_CHANGED_EVENT, pokeTasks);
   }, []);
+
+  // THE OTHER DIRECTION: a row that LEFT, and the composer still holding its
+  // words (design.md, PR C).
+  //
+  // A chat draft is filed under the very key its row is listed under — a session
+  // id, or `new:<file>` — so "this key is gone" and "those unsent words are
+  // gone" are one fact. The listing feed already hears it, from its own long
+  // poll (another window discarded the draft, or a send spent it) and from the
+  // optimistic drop the trash makes locally. What was missing was anybody
+  // telling the COMPOSER, which is mounted somewhere else on the page with that
+  // sentence in its box and its autosave armed: without this, going back to it
+  // wrote the words straight back and the row the reader had just discarded
+  // reappeared.
+  //
+  // `markChatDraftSpent` is the call that reaches it — the key goes spent so
+  // nothing re-reads it, and every composer mounted on it empties itself the way
+  // its own Send does (Composer's `onChatDraftSpent` listener).
+  //
+  // HERE rather than in the store, because this is a WIRING fact: tasksPulse is
+  // a transport and knows nothing about drafts, and platform/lib/drafts may not
+  // import up into shell. App is the one place that may hold both.
+  //
+  // AND IT IS VERIFIED BEFORE ANYTHING IS CLEARED, which is not optional.
+  // `gone` means "this key is not a row", and since the content floor
+  // (`routers/tasks._listable_chat_draft`) that is ALSO what a two-character
+  // draft looks like: type "ru", the PUT announces the key, the changes
+  // endpoint has no row to rebuild and reports it gone. Spending on that alone
+  // would empty a box while somebody was typing in it — the one thing this
+  // store may never do. So the drafts are read back, and only a key the server
+  // no longer holds is spent. A read that FAILS spends nothing: "could not find
+  // out" is not "it is gone" (`fetchDrafts`, which answers null for exactly
+  // this distinction).
+  //
+  // One read for the whole burst, and `gone` is empty on almost every poll.
+  //
+  // Only the two CHAT shapes are asked. `draft:<id>` is a task draft, whose
+  // only writer is the New task modal, and that modal stands its own autosave
+  // down when it hears its own id leave (NewJobModal).
+  useEffect(() => onGone((keys) => {
+    const chats = keys.filter(isChatDraftKey);
+    if (!chats.length) return;
+    void fetchDrafts().then((snapshot) => {
+      if (!snapshot) return;
+      for (const key of chats) {
+        if (!snapshot.chat[key]) void markChatDraftSpent(key);
+      }
+    });
+  }), []);
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the

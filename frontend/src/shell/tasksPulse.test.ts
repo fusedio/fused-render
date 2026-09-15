@@ -7,6 +7,7 @@ import type { Task } from "@platform/lib/api";
 import {
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
+  dropListingKeys,
   listingFeedLive,
   onGone,
   readListing,
@@ -302,4 +303,72 @@ describe("subscribeListing", () => {
     off();
     expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["a"]);
   });
+});
+
+describe("dropListingKeys", () => {
+  test("takes the row off the held listing and announces it as gone", async () => {
+    const e = env([], [{ tasks: [row("a"), row("b")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+
+    dropListingKeys(["a"]);
+    const last = seen[seen.length - 1];
+    expect(last.rows.map((t) => t.key)).toEqual(["b"]);
+    // Announced as the long-poll would have announced it, so the cleanup behind
+    // a vanished draft runs whoever pressed the button.
+    expect(last.delta).toEqual({ rows: [], gone: ["a"] });
+    expect(gone[gone.length - 1]).toEqual(["a"]);
+    expect(readListing()?.map((t) => t.key)).toEqual(["b"]);
+    off();
+    offGone();
+  });
+
+  test("a key nothing is holding still reaches onGone, and repaints nobody", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    const painted = seen.length;
+
+    dropListingKeys(["new:/somewhere/else"]);
+    expect(gone[gone.length - 1]).toEqual(["new:/somewhere/else"]);
+    expect(seen.length).toBe(painted);
+    off();
+    offGone();
+  });
+
+  test("nothing at all for an empty list", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    dropListingKeys([]);
+    dropListingKeys([""]);
+    expect(gone).toEqual([]);
+    off();
+    offGone();
+  });
+
+  test("the drop does NOT age the generation the server's next answer is judged by",
+    async () => {
+      // A local removal is not news from the server, so a full read that left
+      // before it must still land — otherwise the row would be stuck gone until
+      // something else moved.
+      const e = env([], [{ tasks: [row("a"), row("b")], generation: 5 },
+                         { tasks: [row("b")], generation: 5 }]);
+      const seen: ListingEvent[] = [];
+      const off = subscribeListing((ev) => seen.push(ev), e);
+      await settle();
+      dropListingKeys(["a"]);
+      refreshListing();
+      await settle();
+      expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["b"]);
+      off();
+    });
 });

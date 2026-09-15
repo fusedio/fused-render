@@ -690,6 +690,50 @@ export function onGone(cb: (keys: string[]) => void): () => void {
   };
 }
 
+/**
+ * THESE ROWS ARE GONE — say so NOW, before the server has been asked.
+ *
+ * The optimistic half of a discard (PR C: the trash on a draft row). The row
+ * the reader just pressed has to leave under the pointer, not after a DELETE
+ * and a re-read; and it has to leave EVERYWHERE, because the same draft is a
+ * row in the List, a card on the Board and a line in the chat's Recent list,
+ * and three surfaces dropping it at three different moments is the flicker the
+ * one feed exists to prevent.
+ *
+ * The held listing is the one place all three read from, so the drop happens
+ * there and every subscriber hears one event. It is announced as a `gone`
+ * DELTA, exactly as the long-poll would have announced it — so `onGone` fires
+ * and the cleanup behind a vanished draft (a composer still holding its words)
+ * runs the same way whoever pressed the button.
+ *
+ * NOT A SUBSTITUTE FOR THE REQUEST. The caller still deletes and still pokes;
+ * this only decides what the page shows in between. If the delete fails, the
+ * next read puts the row back, which is the right answer — the draft is still
+ * there.
+ *
+ * `listingGen` is deliberately NOT bumped: this is not news from the server and
+ * must not make the server's next answer look stale.
+ */
+export function dropListingKeys(keys: readonly string[]): void {
+  const gone = keys.filter((key) => !!key);
+  if (!gone.length) return;
+  const held = readListing();
+  if (held === null) {
+    // Nothing on screen to take it off. The cleanup behind the key still has to
+    // run, so the event goes out with no rows of its own.
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  const merged = mergeTaskChanges(held, [], [...gone]);
+  if (merged.length === held.length) {
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [], gone: [...gone] } });
+}
+
 /** "Something just changed — re-read the listing NOW." Collapsed to one read
  *  per tick and one per DOCUMENT; a no-op when nobody is following. */
 export function refreshListing() {

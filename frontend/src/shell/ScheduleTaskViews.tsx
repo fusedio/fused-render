@@ -48,6 +48,13 @@ import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
 import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
+import {
+  deleteChatDraft,
+  deleteTaskDraft,
+  markChatDraftSpent,
+} from "@platform/lib/drafts";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { dropListingKeys } from "./tasksPulse";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
@@ -72,6 +79,7 @@ import {
   firstLine,
   groupByColumn,
   heldMessages,
+  isChatDraftTask,
   isDraftTask,
   peekOpenable,
   isDraggable,
@@ -1413,6 +1421,49 @@ async function performRun(intent: Pick<TaskRunIntent, "kind" | "entryId">): Prom
 }
 
 /**
+ * DISCARD ONE DRAFT — the trash on a draft row, in every view.
+ *
+ * A draft is text nobody has sent, so there is no confirm step: the New task
+ * modal's own Discard has never had one either, and a dialog over an unfinished
+ * sentence is a ceremony about nothing (design.md, PR C).
+ *
+ * THE ORDER IS NewJobModal's DISCARD ORDER (`discard`, NewJobModal.tsx), for its
+ * reason: a write still in the air lands AFTER the DELETE and puts the draft
+ * back. There the writer to stop is the card's own autosave; here it is a
+ * COMPOSER somewhere else on the page, mounted on the same key, holding the same
+ * sentence with its debounce armed. `markChatDraftSpent` is the call that reaches
+ * it — the key goes spent so nothing re-reads those words, the composer empties
+ * itself the way its own Send does, and the promise it hands back is its
+ * in-flight PUT settling. Only then may the DELETE go out.
+ *
+ * A TASK draft has no second door of that shape: its only writer is the New task
+ * modal, which hears the row leave through `tasksPulse.onGone` and stands its own
+ * autosave down. So the delete goes straight out.
+ *
+ * `dropListingKeys` takes the row off every surface at once — the List, the Board
+ * and the chat's Recent list all read one held listing — and
+ * `announceTasksChanged` afterwards is the reconciliation: the server is re-read,
+ * and a DELETE that failed puts the row back, which is the honest answer.
+ *
+ * EXPORTED for the chat's landing list, where pressing a `new:<file>` draft row
+ * MOVES its words into the composer (`ClaudeChat.onFillDraft`) — and a move is
+ * this same gesture on the source. One function, so "the draft is gone" cannot
+ * come to mean two different sequences.
+ */
+export async function discardDraft(task: Task): Promise<void> {
+  if (isChatDraftTask(task)) {
+    // A chat draft's row key IS the key it is filed under (`new:<file>`).
+    await markChatDraftSpent(task.key);
+    dropListingKeys([task.key]);
+    await deleteChatDraft(task.key);
+  } else {
+    dropListingKeys([task.key]);
+    if (task.draft_id) await deleteTaskDraft(task.draft_id);
+  }
+  announceTasksChanged();
+}
+
+/**
  * Take one task back out of Archive, and return the sentence to show for it.
  *
  * THE SENTENCE IS THE POINT, and it is why this is a function rather than a call.
@@ -2489,6 +2540,10 @@ function TaskNode({
   // holds that task, and lifting the state to the List would hand every row a
   // prop it spends once.
   const [erasing, setErasing] = useState(false);
+  // The discard in flight. Only to disarm a second press — the row itself is
+  // already off the page by then (`dropListingKeys`), so there is nothing here
+  // to spin or grey out for longer than the press.
+  const [discarding, setDiscarding] = useState(false);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -3414,6 +3469,41 @@ function TaskNode({
             at and reachable by keyboard (tasks.css), and `--delete` is the only
             thing that reddens it. The press stops here: the row's own activate
             would raise the missing-folder toast over the dialog. */}
+        {/* DISCARD — the one action a draft row has (design.md, PR C).
+            Until now an Upcoming draft could only be got rid of by opening the
+            form it stands for and pressing Discard inside it, which is a modal
+            round trip to throw away a sentence; and a never-sent chat could not
+            be got rid of at all, because its row opens a composer rather than a
+            form. So the row grows the gesture it was missing.
+
+            THE SAME BUTTON AS THE MISSING-FOLDER TRASH BELOW, deliberately and
+            to the class: same glyph, same size, same silence until the row is
+            pointed at, same red family (`.tasks-act--delete`, tasks.css). Two
+            trashes on one page that looked even slightly different would be two
+            things to learn; they are one thing — "this row goes" — under two
+            conditions that cannot both be true at once, which is why this one
+            stands down when the folder is gone (that row's trash is the
+            stronger claim, and it opens a dialog).
+
+            NO CONFIRM. A draft is unsent text and the modal's own Discard has
+            never asked either; see `discardDraft`. */}
+        {isDraftTask(task) && !folderMissing && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--delete"
+            aria-label={`Discard draft ${task.task_id}`}
+            title="Discard draft"
+            data-hint="Discard draft"
+            disabled={discarding}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDiscarding(true);
+              void discardDraft(task).finally(() => setDiscarding(false));
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+        )}
         {folderMissing && (
           <button
             type="button"
@@ -4729,6 +4819,8 @@ function TaskCard({
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
+  // …and of its discard, for the same reason: one press, not two.
+  const [discarding, setDiscarding] = useState(false);
   const refile = async (intent: FilingIntent) => {
     setBusy(true);
     try {
@@ -4991,8 +5083,30 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || file || folderMissing || isDraftTask(task)
+        || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
+          {/* DISCARD, the List row's own act in the card's hover strip — same
+              glyph, same class, same caption, same silence at rest (design.md,
+              PR C; §1 — one element, one behaviour in every view). Stands down
+              on a card whose folder is gone, where the trash beside it is the
+              stronger claim. */}
+          {isDraftTask(task) && !folderMissing && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--delete"
+              aria-label={`Discard draft ${task.task_id}`}
+              title="Discard draft"
+              data-hint="Discard draft"
+              disabled={busy || discarding}
+              onClick={() => {
+                setDiscarding(true);
+                void discardDraft(task).finally(() => setDiscarding(false));
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {/* DELETE FOR GOOD, only on a card whose folder is gone, and LEFT of
               Archive (Akshil, 2026-09-07: a trash in the foot "looks odd here …
               move the delete icon to the top right, leftside of archive"). Same

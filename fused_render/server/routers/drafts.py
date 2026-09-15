@@ -152,13 +152,15 @@ def api_draft_chat_delete(key: str):
     words were living in a task draft bound to the session ("one record, two
     doors"), that draft is what the send spent and leaving it behind would put
     the sentence back on the row as unsent the moment the listing repainted.
-    The whole form goes, the same way an emptied composer takes it
-    (`drafts.put_chat`): there is no half of a draft to keep once the message
-    it was is in the transcript (Akshil, 2026-09-12).
+    The whole form goes — and it is THIS door that takes it. Emptying the
+    composer no longer does (`drafts._put_bound`, 2026-09-15): a blank box
+    clears the form's WORDS and leaves the folder, time, repeat rule, model and
+    tray somebody chose standing. A send is the gesture that says those words
+    are spent, so the record goes with them (Akshil, 2026-09-12).
 
-    Only from HERE, and never from `drafts.delete_chat` itself: archive, delete
-    and erase all call that one, and erase in particular is documented to keep
-    a bound draft's words and cut only the binding (`drafts.unbind_session`)."""
+    Only from HERE, and never from `drafts.delete_chat` itself, which archive no
+    longer calls at all and which delete and erase pair with
+    `drafts.delete_bound` for the other half (`routers/tasks.py`)."""
     chat = _chat_key(key)
     bound = drafts.bound_chat_draft(chat)
     removed = drafts.delete_chat(chat)

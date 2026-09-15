@@ -100,6 +100,7 @@ import {
   CardPolicyProvider,
   Composer,
   createCardPolicy,
+  draftMovesOut,
   draftTextOf,
   Home,
   openCardIds,
@@ -135,6 +136,7 @@ import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness, type Task } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
+import { discardDraft } from "@shell/ScheduleTaskViews";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -2222,6 +2224,20 @@ function ChatBody(props: ChatBodyProps) {
         fillSeq.current += 1;
         setLandingFill({ text, seq: fillSeq.current });
       }
+      // …AND IT IS A MOVE, NOT A COPY (design.md, PR C).
+      //
+      // The words are now in this box, and this box has a draft key of its own
+      // — the folder it is mounted on — which its next autosave writes them
+      // under. Leaving the source draft where it was would make one sentence two
+      // rows, under two folders, with two TASK numbers, and whichever the reader
+      // finished the other would still be sitting there unsent.
+      //
+      // ONLY A CHAT DRAFT, and only somebody else's. A TASK draft is a FORM —
+      // a folder, a time, a repeat rule, a model — and reading its words into a
+      // composer is not the same as throwing the form away, so it stands. And
+      // this folder's OWN draft is the one this composer is already the door
+      // onto: pressing that row is a request for the box, not a move out of it.
+      if (draftMovesOut(task, file)) void discardDraft(task);
       // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
       // That prop is ambient policy — "may this composer take the keyboard merely
       // by appearing" — and the explorer's folder pane says no on purpose
@@ -2232,7 +2248,7 @@ function ChatBody(props: ChatBodyProps) {
       // is one the reader has to click to collect (Akshil QA, 2026-09-14).
       setFocusReq((n) => n + 1);
     });
-  }, [boxRef]);
+  }, [boxRef, file]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.

@@ -28,6 +28,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
 import {
   chatDraftKey,
+  isChatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
   markChatDraftSpent,
@@ -429,6 +430,19 @@ describe("the two shapes of a chat key", () => {
     expect(newChatFile("")).toBe("");
     // Nothing is trimmed or normalised — chatDraftKey's rule, held here too.
     expect(newChatFile("new:/Users/me/news/")).toBe("/Users/me/news/");
+  });
+
+  test("and tells a chat draft's listing key from every other row's", () => {
+    // The shell asks this of every key the listing says is GONE, to decide
+    // whether there are unsent words behind it to clean up (App.tsx). The two
+    // chat shapes are a bare session id and `new:<file>`; the other two rows
+    // carry a prefix, and a session id can hold no colon at all.
+    expect(isChatDraftKey(chatDraftKey("sess-9", null))).toBe(true);
+    expect(isChatDraftKey(chatDraftKey(null, "/Users/me/news"))).toBe(true);
+    expect(isChatDraftKey("new:")).toBe(true);
+    expect(isChatDraftKey("draft:d-7")).toBe(false);
+    expect(isChatDraftKey("pending:e-3")).toBe(false);
+    expect(isChatDraftKey("")).toBe(false);
   });
 });
 

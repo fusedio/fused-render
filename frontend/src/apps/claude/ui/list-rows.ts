@@ -133,6 +133,29 @@ export async function draftTextOf(task: Task): Promise<string> {
   return String(form.title ?? task.title ?? "").trim();
 }
 
+/**
+ * IS PRESSING THIS DRAFT ROW A MOVE, OR A REQUEST FOR THE BOX? (design.md,
+ * PR C.)
+ *
+ * A press puts the row's words in the composer, and the composer has a draft key
+ * of its own — the folder it is mounted on — which its next autosave writes them
+ * under. So for every row but ONE the press is a MOVE: leaving the source where
+ * it was would make one sentence two rows, in two folders, with two TASK
+ * numbers, and whichever the reader finished the other would still be sitting
+ * there unsent.
+ *
+ * The one exception is THIS composer's own draft. That row is not a source to
+ * move from — it is the box already on screen, drawn as a row — so its press is
+ * a focus request and nothing else.
+ *
+ * A TASK draft is never moved either. It is a FORM — a folder, a time, a repeat
+ * rule, a model, a tray — and reading its words into a composer is not the same
+ * gesture as throwing the form away.
+ */
+export function draftMovesOut(task: Task, file: string | null): boolean {
+  return isChatDraftTask(task) && task.key !== chatDraftKey(null, file);
+}
+
 /** T:17947-17953. */
 export function ago(ts: number, now: number = Date.now()): string {
   const s = Math.max(0, now / 1000 - ts);
