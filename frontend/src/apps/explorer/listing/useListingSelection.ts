@@ -88,11 +88,19 @@ export function useListingSelection({
   //     provisional Listing survives the swap to the resolved one
   //     (recallSelection) — it is the LIVE selection, and always outranks;
   //   • otherwise `?sel=` from the URL, which is how a reload or a shared link
-  //     comes back to the row it was on, with the pane already showing it.
+  //     comes back to the row it was on, with the pane already showing it —
+  //     and also how an upward hop (breadcrumb crumb, Mod+Up) lands with the
+  //     folder just left highlighted (cameFromSelParam, router.ts navigate).
   // A `?sel=` naming a row this folder does not have — a bookmark or a link to a
   // file since deleted or renamed — seeds a lead that the reconcile effect then
   // finds among no rows, and it resolves that to NOTHING SELECTED rather than to
   // a row (selectionAfterVanish, D279). A link that misses is a link that missed.
+  //
+  // This initializer runs once per MOUNT, which is every folder navigation:
+  // `StatView` keys its subtree on `epoch + ":" + fsPath` (App.tsx), so the
+  // `Listing` that hosts this hook hard-remounts on every `fsPath` change and
+  // this seed runs fresh each time, reading the URL `navigate()` just wrote
+  // (including the `sel` an upward hop set — cameFromSelParam, above).
   const [sel, setSel] = useState<Selection>(() => {
     const recalled = recallSelection(fsPath);
     if (recalled.paths.length || !globalKeys) return recalled;
