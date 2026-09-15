@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.index import runner
+from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.server import create_app
 from fused_render.server.routers import index as index_router
@@ -548,6 +549,222 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     assert not index_router._abandoned_reads, (
         "the wedged worker's thread never drained; a later test in this "
         "process would inherit a poisoned _abandoned_reads")
+
+
+@pytest.mark.parametrize("kind", ["stats", "search"])
+def test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot(
+        kind, home, tmp_path, monkeypatch):
+    """`stats` and `search` submit to the exact same `_INDEX_READ_POOL` and
+    share the exact same width-2 interactive lane as `rank`
+    (`test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot`
+    above), through the identical `_bounded_index_read` abandon-on-timeout
+    path — but until now nothing proved the abandon-then-release contract
+    for either of them directly; only `rank` had a regression test for it.
+    Same shape as the rank version: stub the worker so the FIRST call blocks
+    forever on a `threading.Event` nothing ever sets, every later call
+    answers immediately, and prove a second request does not queue behind
+    the wedged one, both lane permits come back, and `_abandoned_reads`
+    eventually drains."""
+    import threading
+
+    import httpx
+
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    lock = threading.Lock()
+    calls = {"n": 0}
+    first_entered = threading.Event()
+    never = threading.Event()
+
+    def _make_fake(empty_out):
+        def fake(*args, **kwargs):
+            with lock:
+                calls["n"] += 1
+                is_first = calls["n"] == 1
+            if is_first:
+                first_entered.set()
+                never.wait()  # the un-killable, permanently-parked worker thread
+            return dict(empty_out)
+        return fake
+
+    if kind == "stats":
+        path = "/api/index/stats"
+        params = {"root": str(tmp_path)}
+        monkeypatch.setattr(index_router, "index_stats", _make_fake(
+            {"empty": True, "location": "", "rows": 0, "dirs": 0,
+             "total_size": 0, "types": [], "partitions": []}))
+    else:
+        path = "/api/index/search"
+        params = {"root": str(tmp_path), "q": "x"}
+        monkeypatch.setattr(index_router, "index_search", _make_fake(
+            {"covered": True, "fresh": True, "entries": []}))
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            first_task = asyncio.create_task(client.get(path, params=params))
+            for _ in range(50):
+                if first_entered.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert first_entered.is_set()
+
+            t0 = time.monotonic()
+            second_resp = await client.get(path, params=params)
+            second_elapsed = time.monotonic() - t0
+
+            t0 = time.monotonic()
+            more = await asyncio.gather(*[
+                client.get(path, params=params) for _ in range(2)])
+            more_elapsed = time.monotonic() - t0
+
+            first_resp = await first_task
+
+            # See the rank version's review-finding-F comment: draining
+            # `_abandoned_reads` must happen HERE, inside `run()`, while
+            # this event loop is still alive.
+            never.set()
+            deadline = time.monotonic() + 2.0
+            while index_router._abandoned_reads and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return second_resp, second_elapsed, more, more_elapsed, first_resp
+
+    (second_resp, second_elapsed, more, more_elapsed,
+     first_resp) = asyncio.run(run())
+    assert second_resp.status_code == 200, second_resp.text
+    assert second_elapsed < 0.3, second_elapsed
+    assert all(r.status_code == 200 for r in more)
+    assert more_elapsed < 0.3, more_elapsed
+    assert first_resp.status_code == 503
+    assert first_resp.json() == {"error": "index read timed out"}
+    assert not index_router._abandoned_reads
+
+
+def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
+        home, tmp_path, monkeypatch):
+    """The path a fast typist actually takes, and which nothing above tests
+    under real concurrency: a stream of overlapping `/api/index/rank`
+    requests, roughly half abandoned by the client shortly after being
+    fired (exactly what a fast typist's per-keystroke search does — each
+    request superseded by the next before it finishes), plus a periodic
+    truly-wedged worker (one un-killable thread every 4th call, reachable
+    only via `ABANDON_S`). None of that may leave the interactive lane
+    (width 2) short a permit, or `_abandoned_reads` non-empty, once the
+    dust settles — and a final, ordinary request fired afterwards must come
+    back fast, not queued behind any of it.
+
+    Cancelling a client is driven by monkeypatching
+    `starlette.requests.Request.is_disconnected` (keyed on the request's own
+    `q` value) rather than `task.cancel()` on the httpx call: a throwaway
+    experiment (this session, not checked in) proved that cancelling the
+    asyncio task wrapping an in-process `ASGITransport` call propagates
+    `asyncio.CancelledError` straight through the whole call chain instead
+    of ever making `request.is_disconnected()` observe anything — so
+    `task.cancel()` cannot exercise the real `cancellable()`/
+    `_watch_disconnect()` code path this route depends on in production.
+    Monkeypatching `is_disconnected` does exercise that real path."""
+    import threading
+
+    import httpx
+    import starlette.requests as starlette_requests
+
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.15)
+
+    lock = threading.Lock()
+    calls = {"n": 0}
+    never = threading.Event()
+
+    def fake_rank_worker(cfg, root, q, limit, token, ranked):
+        with lock:
+            calls["n"] += 1
+            n = calls["n"]
+        empty = {"covered": True, "reason": "", "scanned_partitions": 0,
+                 "of_partitions": 0, "base": root, "mode": "substring",
+                 "hits": [], "truncated": False, "total": 0}
+        if n % 4 == 0:
+            never.wait()  # the un-killable, permanently-parked worker thread
+            return empty
+        # A short poll loop, not an instant return: gives the disconnect
+        # watcher (polling every DISCONNECT_POLL_S) a real chance to have
+        # already cancelled this token by the time the worker would
+        # otherwise finish, so a client-cancelled request actually exercises
+        # `Cancelled`, not a race it usually loses.
+        for _ in range(15):
+            if token is not None and token.cancelled:
+                raise Cancelled()
+            time.sleep(0.01)
+        return empty
+
+    monkeypatch.setattr(index_router, "_rank_worker", fake_rank_worker)
+
+    to_cancel: set = set()
+
+    async def fake_is_disconnected(self):
+        return self.query_params.get("q") in to_cancel
+
+    monkeypatch.setattr(starlette_requests.Request, "is_disconnected",
+                        fake_is_disconnected)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = []
+            for i in range(20):
+                qval = f"q{i}"
+                if i % 2 == 0:
+                    to_cancel.add(qval)
+                tasks.append(asyncio.create_task(
+                    client.get("/api/index/rank",
+                              params={"root": str(tmp_path), "q": qval})))
+                # Staggered starts, not one big gather: this is what a burst
+                # of real keystrokes looks like, and it is what lets the
+                # is_disconnected patch (checked every DISCONNECT_POLL_S)
+                # actually catch some of these mid-flight.
+                await asyncio.sleep(0.007)
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Let every wedged (n % 4 == 0) worker thread finally return, and
+            # drain `_abandoned_reads` HERE, inside `run()` — see the wedge
+            # test above for why this must happen before `asyncio.run`
+            # returns and tears the loop down.
+            never.set()
+            deadline = time.monotonic() + 2.0
+            while index_router._abandoned_reads and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+
+            t0 = time.monotonic()
+            final_resp = await client.get(
+                "/api/index/rank",
+                params={"root": str(tmp_path), "q": "final-clean-request"})
+            final_elapsed = time.monotonic() - t0
+
+            loop = asyncio.get_running_loop()
+            sem = index_router._interactive_lane_loops.get(loop)
+            sem_value = sem._value if sem is not None else None
+
+            return responses, final_resp, final_elapsed, sem_value
+
+    (responses, final_resp, final_elapsed,
+     sem_value) = asyncio.run(run())
+
+    assert final_resp.status_code == 200, final_resp.text
+    assert final_elapsed < 0.5, final_elapsed
+    assert not index_router._abandoned_reads
+    # Direct, non-timing proof the lane gave every permit back: not merely
+    # "requests eventually returned" but the semaphore itself is at full
+    # width again.
+    assert sem_value == 2
+
+    statuses = [r.status_code for r in responses if not isinstance(r, Exception)]
+    # Every response is one of: answered normally, abandoned by the client
+    # (499), or hit the abandon-timeout backstop (503) for one of the truly
+    # wedged (n % 4 == 0) calls — nothing else is a legitimate outcome here.
+    assert all(s in (200, 499, 503) for s in statuses), statuses
+    # The whole point of client-cancelling half the burst: at least one of
+    # them actually took the quiet-499 path, proving cancellation reached
+    # the worker thread, not merely the queue.
+    assert 499 in statuses, statuses
 
 
 def test_reap_abandoned_retrieves_the_exception():
