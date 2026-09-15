@@ -2378,7 +2378,12 @@ function TaskNode({
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
-  const ahead = isUpcomingTask(task);
+  // …AND A DRAFT ROW READS THE SAME (Akshil, 2026-09-15: "title of drafts
+  // should be the same color as title of upcoming"). A draft is words nobody
+  // has sent yet — work even further ahead than a scheduled run — and it sits
+  // in the Upcoming lane; a full-strength title there made it the loudest row
+  // in a section whose whole point is to recede.
+  const ahead = isUpcomingTask(task) || isDraftTask(task);
   // The file this task is about, or "" for a task about its folder — the mark
   // after the title. tasks-lib.taskFile owns the test.
   const taskFile_ = taskFile(task);

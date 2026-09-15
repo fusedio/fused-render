@@ -106,26 +106,78 @@
 }
 
 /* THE FADE ITSELF, and the whole of it: at rest the thumb paints nothing, and
-   the base rules above (and schedule.css's, and transcript.css's) are what it
-   returns to under the pointer. Keyed on `:hover` on the SCROLLER — never on
-   the thumb — for the reason in the head of this file. The track, the width and
-   the layout column all stay put, so arriving with the pointer costs no reflow
-   and the content under it never moves. */
-.tasks-list:not(:hover)::-webkit-scrollbar-thumb,
-.task-cards-scroll:not(:hover)::-webkit-scrollbar-thumb,
-.schedule-tv-lane-body:not(:hover)::-webkit-scrollbar-thumb,
-.schedule-tv-tree:not(:hover)::-webkit-scrollbar-thumb,
-.schedule-tv-board:not(:hover)::-webkit-scrollbar-thumb,
-.schedule-cal-thread:not(:hover)::-webkit-scrollbar-thumb,
-.task-side-peek-preview:not(:hover)::-webkit-scrollbar-thumb,
-.task-side-peek-chat .chat-logwrap:not(:hover)::-webkit-scrollbar-thumb,
-.home-page:not(:hover)::-webkit-scrollbar-thumb,
-.home-composer-input:not(:hover)::-webkit-scrollbar-thumb,
-.tp-pane:not(:hover)::-webkit-scrollbar-thumb,
-.tp .dd:not(:hover)::-webkit-scrollbar-thumb,
-.am-engine-popup:not(:hover)::-webkit-scrollbar-thumb,
-.pg-side:not(:hover)::-webkit-scrollbar-thumb,
-.pg-stage:not(:hover)::-webkit-scrollbar-thumb,
-.pg-segments:not(:hover)::-webkit-scrollbar-thumb {
-  background: transparent;
+   it inks while the pointer is anywhere over the scroller.
+
+   THROUGH A CUSTOM PROPERTY, NOT `:hover` IN THE SCROLLBAR SELECTOR. The first
+   two cuts wrote `.x:not(:hover)::-webkit-scrollbar-thumb` and it "sometimes
+   worked" (Akshil, 2026-09-15): inside a `::-webkit-scrollbar*` selector
+   Chromium reads `:hover` — even in the compound BEFORE the pseudo-element — as
+   "this scrollbar part is under the pointer", not "the element is"; that is the
+   scrollbar pseudo-class contract (`::-webkit-scrollbar-thumb:hover`, and the
+   same resolver runs the whole selector). So the thumb lit only when the pointer
+   found the 10px track. A custom property sidesteps it: `:hover` is evaluated on
+   the element by an ordinary rule, the scrollbar parts inherit the element's
+   custom properties, and a change to the element's style re-resolves its
+   scrollbar parts. Stated once, for every scroller, so the two halves of the
+   fade cannot go out of step. */
+.tasks-list,
+.task-cards-scroll,
+.schedule-tv-lane-body,
+.schedule-tv-tree,
+.schedule-tv-board,
+.schedule-cal-thread,
+.task-side-peek-preview,
+.task-side-peek-chat .chat-root .chat-logwrap,
+.home-page,
+.home-composer-input,
+.tp-pane,
+.tp .dd,
+.am-engine-popup,
+.pg-side,
+.pg-stage,
+.pg-segments {
+  --sb-thumb: transparent;
+}
+
+.tasks-list:hover,
+.task-cards-scroll:hover,
+.schedule-tv-lane-body:hover,
+.schedule-tv-tree:hover,
+.schedule-tv-board:hover,
+.schedule-cal-thread:hover,
+.task-side-peek-preview:hover,
+.task-side-peek-chat .chat-root .chat-logwrap:hover,
+.home-page:hover,
+.home-composer-input:hover,
+.tp-pane:hover,
+.tp .dd:hover,
+.am-engine-popup:hover,
+.pg-side:hover,
+.pg-stage:hover,
+.pg-segments:hover {
+  --sb-thumb: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+}
+
+/* Sits after schedule.css's and transcript.css's own thumb rules (shell.css
+   imports this file last; the peek's chat selector carries `.chat-root` to
+   outrank transcript.css at three classes), so the variable is what paints.
+   `background-clip` is restated because `background` shorthand resets it. */
+.tasks-list::-webkit-scrollbar-thumb,
+.task-cards-scroll::-webkit-scrollbar-thumb,
+.schedule-tv-lane-body::-webkit-scrollbar-thumb,
+.schedule-tv-tree::-webkit-scrollbar-thumb,
+.schedule-tv-board::-webkit-scrollbar-thumb,
+.schedule-cal-thread::-webkit-scrollbar-thumb,
+.task-side-peek-preview::-webkit-scrollbar-thumb,
+.task-side-peek-chat .chat-root .chat-logwrap::-webkit-scrollbar-thumb,
+.home-page::-webkit-scrollbar-thumb,
+.home-composer-input::-webkit-scrollbar-thumb,
+.tp-pane::-webkit-scrollbar-thumb,
+.tp .dd::-webkit-scrollbar-thumb,
+.am-engine-popup::-webkit-scrollbar-thumb,
+.pg-side::-webkit-scrollbar-thumb,
+.pg-stage::-webkit-scrollbar-thumb,
+.pg-segments::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  background-clip: padding-box;
 }

@@ -2511,7 +2511,9 @@ describe("the unread mark", () => {
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
     expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "")}');
-    expect(VIEWS).toContain("const ahead = isUpcomingTask(task);");
+    // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
+    // work further ahead than a scheduled run, in the same lane.
+    expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
     // A colour TOKEN, not an opacity: opacity blends the words into whatever is
     // behind them and shifts with the row's hover fill, where the token is one
     // themed value and the one every other quiet thing on this page already uses.
