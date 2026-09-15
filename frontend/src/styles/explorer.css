@@ -2645,11 +2645,26 @@ table.listing-table td.mtime {
   font-variant-numeric: tabular-nums;
 }
 
-/* Enough for "1023.9 KB" and "12/31/25, 11:59 PM" plus the 16px cell padding
-   each side. Both columns disappear entirely before the list is narrow enough
-   for these to matter (see the container queries). */
+/* SIZE: formatSize (platform/lib/format.ts) never emits "1023.9 KB" — that
+   string mixes the two branches it never mixes in practice. The one-decimal
+   branch only fires for v < 10 ("9.9 KB", 6 chars); everything from 10 up
+   uses toFixed(0), and because the loop divides by 1024 while v >= 1024, v
+   sits under 1024 going in — except toFixed(0) itself can round 1023.5+ up
+   to "1024", so the true widest output is "1024 KB"/"1024 MB"/"1024 GB" (7
+   chars; TB is the final unit and isn't re-divided, but reaching a 4-digit
+   TB value needs a single ~1000+ TB file, not a realistic listing entry).
+   96px was sized for the unreachable 9-char string; 84px covers the real
+   7-char one plus the 16px cell padding each side with a few px to spare.
+
+   MODIFIED: formatMtime's "12/31/25, 11:59 PM" IS the genuine widest case —
+   checked against every common 12-hour-clock English locale (en-US, en-IN,
+   en-AU all top out at that 18-char shape; 24-hour-clock and CJK locales
+   render shorter) — so its 172px stays as-is.
+
+   Both columns disappear entirely before the list is narrow enough for
+   these to matter (see the container queries). */
 table.listing-table th.col-size {
-  width: 96px;
+  width: 84px;
 }
 
 table.listing-table th.col-mtime {
