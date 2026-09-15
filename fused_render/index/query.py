@@ -16,7 +16,7 @@ import logging
 import os
 import re
 
-from fused_render.index.cancel import Cancelled
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import (
     MountGuard,
