@@ -1708,6 +1708,10 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
     return {"cancelled": cancelled, "refused": refused, "reasons": reasons}
 
 
+# The newest `priority_at` this process has written — see `set_priority`.
+_last_priority_stamp = 0.0
+
+
 def set_priority(entry_ids: list[str], value: bool) -> dict:
     """Run next (or un-promote): `{"updated": [id...], "refused": [id...]}`.
 
@@ -1757,8 +1761,18 @@ def set_priority(entry_ids: list[str], value: bool) -> dict:
     # press, and the task's own two messages came out backwards. One instant
     # stamped on all of them makes them tie, and a tie falls through to `due`,
     # which is the order they were typed in.
+    #
+    # …AND STRICTLY LATER THAN THE PREVIOUS PRESS. Two presses are two gestures,
+    # and the newer must sort in front even when the clock cannot tell them
+    # apart: Windows' `time.time()` ticks at ~15 ms, so B, C, D pressed in one
+    # tick all read the same stamp and fell through to `due` — B, C, D again
+    # (Windows CI, PR #1124). One microsecond over the last stamp is enough.
+    global _last_priority_stamp
     now = time.time()
     with _lock:
+        if now <= _last_priority_stamp:
+            now = _last_priority_stamp + 1e-6
+        _last_priority_stamp = now
         entries = _read()
         by_id = {str(e.get("id") or ""): e for e in entries}
         changed = False

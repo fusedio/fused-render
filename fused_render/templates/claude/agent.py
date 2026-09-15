@@ -74,6 +74,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -2308,6 +2309,29 @@ def _inbox_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "inbox")
 
 
+_INBOX_STAMP_LOCK = threading.Lock()
+_last_inbox_stamp_ns = 0
+
+
+def _inbox_stamp_ns() -> int:
+    """`time.time_ns()`, but STRICTLY INCREASING across calls in this process.
+
+    The inbox name IS the order: the host drains oldest name first and
+    `_drained_unechoed` matches the CLI's echoes against the drained entries as a
+    prefix, in name order. On Windows `time.time_ns()` ticks at ~15 ms, so two
+    follow-ups typed (or two tests written) inside one tick drew the same stamp
+    and sorted by the random suffix — the second message could be drained, and
+    matched, before the first (Windows CI, PR #1124). One extra nanosecond per
+    tie keeps the clock honest and the order the order things were written in."""
+    global _last_inbox_stamp_ns
+    with _INBOX_STAMP_LOCK:
+        now = time.time_ns()
+        if now <= _last_inbox_stamp_ns:
+            now = _last_inbox_stamp_ns + 1
+        _last_inbox_stamp_ns = now
+        return now
+
+
 def _write_inbox_row(run_dir: str, row: dict) -> None:
     """Queue one raw stream-json row into `run_dir/inbox/` for the session
     host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
@@ -2327,7 +2351,7 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         # (`_send`, `_cancel`) — the inbox is written to repeatedly for the
         # life of the session, not created once and never touched again.
         _private_dir(inbox)
-    name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
+    name = "%020d-%s.json" % (_inbox_stamp_ns(), os.urandom(3).hex())
     final_path = os.path.join(inbox, name)
     # `session_host._drain_inbox` runs every `_DRAIN_INTERVAL_SECONDS` against
     # THIS SAME directory, listing whatever `*.json` names are present and
