@@ -156,7 +156,7 @@ import type {
   TaskRunIntent,
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
-import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { useProjectQueueEnabled } from "@apps/claude/chat-prefs";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same

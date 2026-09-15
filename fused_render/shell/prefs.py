@@ -79,8 +79,9 @@ VALID_CALLS_PARAMS = ("full", "keys", "off")
 # The default-model preference's value set. SHORT NAMES, not API model ids, and
 # `""` — unset — is a first-class member rather than an absence: it is what the
 # page's "Automatic" option writes, and it means "let each consumer keep its own
-# default" (see default_model). The names are the claude template's own selector
-# list (templates/claude/template.html MODELS) — the pref has to speak the same
+# default" (see default_model). The names are the native chat's own model
+# selector list (frontend/src/apps/claude/ui/ModelSelect.tsx, whose `MODELS`
+# come from ui/composer-defaults.ts) — the pref has to speak the same
 # vocabulary as the control it presets, and the CLI those names reach accepts
 # them as aliases. The relay (server/ai.py) wants a full API id instead, so the
 # short→id mapping lives THERE, in one place, next to the caller that needs it.
@@ -187,39 +188,6 @@ def app_sharing_enabled() -> bool:
     return read_prefs().get("app_sharing_enabled") is True
 
 
-NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
-
-
-def native_chat_enabled() -> bool:
-    """Whether chat embeds render the native React chat instead of the legacy
-    `templates/claude` iframe (default ON — Akshil, 2026-09-17: the port is what
-    the app ships, the iframe is the fallback).
-
-    THE DEFAULT TURNED OVER, so the idiom did too: only a stored `false` is off,
-    and missing/legacy/junk all read as on. An install that has never opened
-    Preferences — which is most of them — gets the native chat, and the switch is
-    now an escape hatch rather than an opt-in. The legacy iframe is still built,
-    still served and still what `ChatChunkBoundary` falls back to; nothing about
-    it was deleted, it just stopped being what a fresh install runs.
-
-    `FUSED_RENDER_NATIVE_CHAT=1|0` is still the process-level override that BEATS
-    the pref, so a dev server or a test run can pick a side without touching
-    prefs.json; any other env value is ignored and the stored switch decides.
-    That strictness is the one thing unchanged here and is pinned by
-    `test_native_chat_env_override_beats_pref`: a typo
-    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the pref rather than
-    quietly decide which implementation a user's chat runs on, and an ignored
-    value is ignored all the way through — `_chat_forced_by` reports it as no
-    override at all, because the stored switch really is still what decides.
-    """
-    raw = os.environ.get(NATIVE_CHAT_ENV)
-    if raw == "1":
-        return True
-    if raw == "0":
-        return False
-    return read_prefs().get("native_chat_enabled") is not False
-
-
 def task_peek_enabled() -> bool:
     """Whether the Tasks page opens a task in a SIDE PANEL beside the list
     instead of navigating to the Explorer — ALWAYS, since 2026-09-20 (Akshil:
@@ -268,33 +236,19 @@ def notify_terminal_sessions_enabled() -> bool:
     return read_prefs().get("task_notify_terminal_sessions") is True
 
 
-def _chat_forced_by() -> str | None:
-    """The env string where it DECIDES `native_chat_enabled`, else `None`.
-
-    Only "1"/"0" beat the pref, so only those are an override; a missing var and
-    a malformed one ("ture") are alike here, because in both cases the stored
-    switch is what the value came from and the Preferences control is live.
-    """
-    raw = os.environ.get(NATIVE_CHAT_ENV)
-    return raw if raw in ("0", "1") else None
-
-
 def project_queue_enabled() -> bool:
     """Whether one folder runs one task at a time — everything else queues
     (default off — opt-in while the queue is in beta).
 
-    Same idiom as `canvases_enabled` and `native_chat_enabled`: only a stored
-    `true` is on, any other value (missing/legacy/junk) reads as off. Off, every
+    Same idiom as `canvases_enabled`: only a stored `true` is on, any other
+    value (missing/legacy/junk) reads as off. Off, every
     path behaves exactly as it did before the queue existed — chat sends spawn,
     run-now runs, the scheduler holds per SESSION and not per folder, and the
     `queued` status never appears on a row.
 
-    NO ENV OVERRIDE, deliberately, and the difference from `native_chat_enabled`
-    is this: `FUSED_RENDER_NATIVE_CHAT` exists because it decides which of two whole implementations a chat runs on,
-    and a dev server has to be able to pick a side without touching prefs.json.
-    This is a gate in front of work that already runs; a second env var nobody
-    remembers setting is how a machine ends up serialising its tasks for a
-    reason its owner cannot find.
+    NO ENV OVERRIDE, deliberately. This is a gate in front of work that already
+    runs; an env var nobody remembers setting is how a machine ends up
+    serialising its tasks for a reason its owner cannot find.
     """
     return read_prefs().get("project_queue_enabled") is True
 
@@ -578,25 +532,6 @@ def _prefs_response() -> dict:
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
         "app_sharing": {"enabled": app_sharing_enabled()},
-        # Whether chat embeds render the native React chat (beta) instead of the
-        # legacy template iframe. The EFFECTIVE value, plus `forced_by` — the
-        # same shape `engine_state()` above uses for the same problem: with the
-        # env override in force the stored switch cannot win, and a checkbox
-        # bound to the effective value alone is a control that silently snaps
-        # back.
-        #
-        # `forced_by` IS EXACTLY "WHAT IS DECIDING THIS VALUE", and so it is the
-        # env string only where that string decides: `None` when the var is
-        # unset AND when it holds anything other than "1"/"0", because
-        # `native_chat_enabled` ignores such a value outright and the stored
-        # switch is then still the thing in charge. Reporting a malformed
-        # `FUSED_RENDER_NATIVE_CHAT=ture` here would disable a switch that does
-        # in fact work and blame an override that is not in force — a worse lie
-        # than saying nothing.
-        "chat": {
-            "native": native_chat_enabled(),
-            "forced_by": _chat_forced_by(),
-        },
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -781,12 +716,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'app_sharing_enabled' must be a boolean"}, status_code=400)
         prefs["app_sharing_enabled"] = value
         changed = True
-    if "native_chat_enabled" in body:
-        value = body.get("native_chat_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
-        prefs["native_chat_enabled"] = value
-        changed = True
     if "task_notify_terminal_sessions" in body:
         value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
@@ -902,7 +831,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', "
                       "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "

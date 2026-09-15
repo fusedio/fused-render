@@ -65,7 +65,7 @@ function stubFetch(): void {
       return jsonRes({
         path: "/w/p",
         is_dir: true,
-        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+        templates: [{ mode: "claude", path: "/w/p/.claude/agent.py" }],
       });
     }
     // THE LANDING'S LONG POLL, and it has to be a LONG poll here. `sessions.ts`
@@ -483,13 +483,11 @@ function troubleText(r: ReturnType<typeof create>, klass: string): string[] {
 
 test("the template lookup shows the SKELETON, not an empty box", async () => {
   // This branch used to return a bare `.chat-root` on the argument that "the
-  // host is still holding its own cover over this box (ChatFrame's skeleton)".
-  // True flag-OFF, where the host frames a booting document — but flag-on there
-  // is no frame: `ChatMount`'s `Suspense` fallback covers the CHUNK LOAD and has
-  // already resolved by the time this component runs its own stat. So a first
-  // mount drew an empty box on the host background for the length of one
-  // `/api/fs/stat`, and a cold wall of six cards drew six empty tiles where
-  // legacy drew six skeletons.
+  // host is still holding its own cover over this box". It is not: `ChatMount`'s
+  // `Suspense` fallback covers the CHUNK LOAD and has already resolved by the
+  // time this component runs its own stat. So a first mount drew an empty box on
+  // the host background for the length of one `/api/fs/stat`, and a cold wall of
+  // six cards drew six empty tiles.
   let release!: (r: Response) => void;
   (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
     const url = String(typeof input === "string" ? input : (input as { url: string }).url);
@@ -509,9 +507,9 @@ test("the template lookup shows the SKELETON, not an empty box", async () => {
   });
   mounted.push(r);
 
-  // The SAME node `Suspense` shows and `ChatFrame` holds over a booting frame,
-  // so the two waits read as one wait rather than a skeleton flashing to an
-  // empty box.
+  // The SAME node `Suspense` shows over the chunk load (ui/ChatPlaceholder), so
+  // the two waits read as one wait rather than a skeleton flashing to an empty
+  // box.
   const roots = r.root.findAll(
     (n) => typeof n.type === "string" && String((n.props as { className?: string }).className ?? "").includes("chat-frame"),
   );
@@ -530,21 +528,22 @@ test("the template lookup shows the SKELETON, not an empty box", async () => {
       jsonRes({
         path: "/w/p",
         is_dir: true,
-        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+        templates: [{ mode: "claude", path: "/w/p/.claude/agent.py" }],
       }),
     );
   });
 });
 
 test("a stat that never settles gets an 8 s backstop to the TroubleView", async () => {
-  // Legacy revealed at `CHAT_FRAME_FALLBACK_MS`; without a backstop a stalled
-  // server — or a request the browser never answers — left the box covered for
-  // ever, with no road to the branch that exists to explain exactly this.
+  // The same backstop every chat wait has had (`CHAT_FRAME_FALLBACK_MS`):
+  // without it a stalled server — or a request the browser never answers — left
+  // the box covered for ever, with no road to the branch that exists to explain
+  // exactly this.
   //
   // The TIMER is asserted rather than waited out: the real duration is 8 s, and
   // a suite that actually sleeps it pays that on every run. The firing is then
   // driven by hand, which also proves the branch it lands on.
-  const { CHAT_FRAME_FALLBACK_MS } = await import("@platform/ui/ChatFrame");
+  const { CHAT_FRAME_FALLBACK_MS } = await import("./ui/ChatPlaceholder");
 
   (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
     const url = String(typeof input === "string" ? input : (input as { url: string }).url);
@@ -619,7 +618,7 @@ test("a stat that never settles gets an 8 s backstop to the TroubleView", async 
   ).toHaveLength(0);
   // …and nothing in the card names the app's insides.
   const words = JSON.stringify(r.toJSON());
-  for (const term of ["agentDir", "template.html", "claude template", "stat", "controller"]) {
+  for (const term of ["agentDir", "agent.py", "claude template", "stat", "controller"]) {
     expect(words).not.toContain(term);
   }
 

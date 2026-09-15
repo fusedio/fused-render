@@ -22,7 +22,7 @@ import { act, create } from "react-test-renderer";
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
-const { publishProjectQueueEnabled } = await import("./feature-flag");
+const { publishProjectQueueEnabled } = await import("./chat-prefs");
 
 // ---- the server, cut down to what a queued chat touches ---------------------
 

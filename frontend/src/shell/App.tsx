@@ -581,10 +581,17 @@ export default function App({ config }: { config: Config }) {
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above
   // fires — the Tasks page and the sidebar sat on stale unread until their next
-  // slow poll (Akshil, 2026-08-19). The chat template stamps CHAT_ACTIVITY_KEY
-  // in localStorage when a turn starts or ends; the chat is its own iframe
-  // document, so THIS document receives the `storage` event and pokes the
-  // shared store (which forwards to the mounted Tasks page's own reload).
+  // slow poll (Akshil, 2026-08-19). The chat stamps CHAT_ACTIVITY_KEY in
+  // localStorage when a turn starts or ends, and this listens for it.
+  //
+  // FOR THE OTHER WINDOWS ONLY, now that the chat renders in this document
+  // rather than in an iframe of its own: `storage` never fires in the window
+  // that wrote the key, so a chat running HERE reaches this document by the
+  // window event instead (`announceTasksChanged`, called from
+  // apps/claude/protocol/run-controller.ts, handled by the TASKS_CHANGED_EVENT
+  // listener below). This one is what makes a turn running in a SECOND window
+  // — a detached tab, another shell window on the same home dir — poke this
+  // one's store (which forwards to the mounted Tasks page's own reload).
   useEffect(() => {
     const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
     window.addEventListener("storage", onStorage);

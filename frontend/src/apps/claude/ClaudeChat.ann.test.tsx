@@ -36,7 +36,7 @@ const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
-const { publishProjectQueueEnabled } = await import("./feature-flag");
+const { publishProjectQueueEnabled } = await import("./chat-prefs");
 const { isMac } = await import("@platform/lib/platform");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
@@ -83,7 +83,7 @@ function stubFetch(): void {
       return jsonRes({
         path: "/w/p",
         is_dir: true,
-        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+        templates: [{ mode: "claude", path: "/w/p/.claude/agent.py" }],
       });
     }
     if (url === "/api/prefs") return jsonRes(prefsBody);

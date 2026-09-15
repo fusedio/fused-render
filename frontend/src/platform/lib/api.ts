@@ -1197,18 +1197,6 @@ export interface Prefs {
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
   app_sharing: { enabled: boolean };
-  // Whether chat embeds render the native React chat (default ON) instead of the
-  // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
-  // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
-  // switch cannot win then, so the UI disables itself and says so
-  // (shell/prefs.py `native_chat_enabled`, same shape as `engine.forced_by`).
-  //
-  // OPTIONAL, because the readers treat it as optional: `feature-flag.ts` reads
-  // `p.chat?.native`, and an older server (or a test fixture built before this
-  // field existed) answers without it. A required field here would only make
-  // every `Prefs` literal in the suites over-constrained while the runtime read
-  // stayed defensive anyway.
-  chat?: { native: boolean; forced_by?: string | null };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1460,10 +1448,6 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
-}
-
-export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -2094,6 +2078,16 @@ export interface InventoryTemplate {
 export interface TemplateInventory {
   sources: TemplateSource[];
   templates: InventoryTemplate[];
+  /**
+   * Names the SHELL renders itself (server.templates.SHELL_RENDERED, today
+   * `claude`). They back no template folder the management UI can preview,
+   * edit or export — so they are deliberately absent from `templates` — but
+   * they ARE legal registry values, and the binding picker has to be able to
+   * name one or a `claude` removed from a key's mode list could never be put
+   * back from the UI. Optional only so an older server (or a fixture written
+   * before the field existed) still parses.
+   */
+  shellRendered?: string[];
 }
 
 export function getTemplateInventory(): Promise<TemplateInventory> {

@@ -29,7 +29,7 @@
 // shows.
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { ChatMount, listingPaneSrc } from "@apps/claude";
+import { ChatMount } from "@apps/claude";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, SideTabs, paneSideIcon } from "@apps/explorer/SideChrome";
 import { paneChatOnly } from "@apps/explorer/listing/pane-modes";
@@ -39,11 +39,6 @@ import {
   type PaneSideChoice,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
-
-// The query the chat template reads to give up its own preview pane (see
-// paneChatOnly, which decides WHEN it is sent). Spelled once: both places that
-// send it build a different URL around it.
-const CHAT_ONLY_PARAM = "&chat_only=1";
 
 export default function ListingPreviewPane({
   undecided = false,
@@ -72,9 +67,8 @@ export default function ListingPreviewPane({
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
-  // The "Fix with AI" prompt, already pulled-and-cleared by Listing (which owns
-  // `window._fusedClaudeAskTake`), and only when the NATIVE chat is what renders
-  // — flag off, the template pulls it at its own boot and this is null.
+  // The "Fix with AI" prompt, already read-and-cleared by Listing (which owns
+  // `window._fusedClaudeAsk`) so it reaches exactly one chat.
   initialAsk?: string | null;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
@@ -143,50 +137,36 @@ export default function ListingPreviewPane({
   // longer needs to).
   const sideEntry = side === "preview" ? null : sideEntries[side];
   if (sideEntry && sideEntry.path !== null) {
-    // `chat_only=1` takes away the chat template's OWN left preview pane — the
-    // rule and its two reasons are on paneChatOnly. `_remote` never applied
-    // here: git/mcp's gates refuse a mount-backed directory outright, and
-    // claude reads through the server either way.
-    const chatOnly = paneChatOnly(side) ? CHAT_ONLY_PARAM : "";
-    // No mention of the git companion's "Fix with AI" prompt here any more
-    // (review #804 round 2): it is not a param this src carries at all — the
-    // claude template PULLS it at its own boot instead (Listing.tsx's
-    // `_fusedClaudeAskTake`), and this component's `key` (Listing.tsx, folded
-    // with `claudeAskInstance` for exactly the claude case) is what makes sure
-    // a fresh ask gets a fresh mount to pull it into.
+    // Whether the chat gives up its OWN left preview pane — the rule and its two
+    // reasons are on `paneChatOnly`. Asked once, here, for the one mode it can
+    // be true of (pane-modes.test pins that: one call).
+    const chatOnly = paneChatOnly(side);
     // `_noopen=1`, not `_preview=1` (D622): this pane is fully interactive —
     // you type in it — so it must not carry the display-only stamp
     // `runtime.js`'s `IS_THUMBNAIL` reads off `_preview`, which would silently
-    // disable `fused.daemon.*` for every app it frames (its own left preview
-    // pane included, two levels down). `_noopen=1` says only the one thing this
-    // call site actually wants: don't record this render as an app open.
-    // The URL shape itself lives in `apps/claude/legacy-src.ts` with the other
-    // five and the byte-for-byte parity test that pins all six; `withNoFocus`
-    // stays here because it is a fact about this HOST, not about the address.
-    const src = withNoFocus(listingPaneSrc(sideEntry.path, folder, chatOnly));
-    // The claude companion is the one whose document restores a transcript
-    // before it has anything to show, so it is the one framed behind a cover
-    // that waits for `data-chat-ready` (platform/ui/ChatFrame — same as the
-    // Cards wall and its popup). git and mcp paint their own first frame and
-    // stamp nothing, so they stay plain: a cover revealed only by the 8s
-    // fallback would be a new wait, not a fix.
+    // disable `fused.daemon.*` for every app it frames. `_noopen=1` says only
+    // the one thing this call site actually wants: don't record this render as
+    // an app open. `withNoFocus` is a fact about this HOST — a companion column
+    // must not take the keyboard off the listing — not about the address.
+    //
+    // `_remote` never applied here: git/mcp's gates refuse a mount-backed
+    // directory outright, and the chat reads through the server either way.
+    const src = withNoFocus(
+      `/render?path=${encodeURIComponent(sideEntry.path)}` +
+        `&_file=${encodeURIComponent(folder)}&_noopen=1`,
+    );
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
         {side === "claude" ? (
-          // FLAG ON the native chat renders here instead, `chat_only` for the
-          // reason `paneChatOnly` gives, and its params live on the SHELL URL
-          // (this pane is the page, not a card). `_nofocus` rides the legacy src
-          // via `withNoFocus`; natively it is `noFocus`, which is what stops the
-          // pane taking the keyboard off the listing.
+          // THE CHAT IS NOT FRAMED: it is part of this document, so the pane's
+          // facts are props rather than params — `noOpen` for the render this
+          // pane must not record, and `noFocus` for the keyboard staying on the
+          // listing. Its params live on the SHELL URL (this pane is the page,
+          // not a card).
           <ChatMount
-            legacySrc={src}
-            className="pane-frame"
-            title={modeTitle(side)}
             file={folder}
-            // The same one answer the src fragment is built from — asked once
-            // (pane-modes.test pins that: one literal, one call).
-            chatOnly={!!chatOnly}
+            chatOnly={chatOnly}
             noFocus
             noOpen
             paramsSource="url"
