@@ -894,7 +894,13 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # this from overruling a card that was right: a genuine img2img repo with no
     # such evidence keeps its label, and so does a VLM whose label already
     # resolves to text generation.
-    if not _tasks.classify(meta.task).supported:
+    # D1235: `image-to-image` is checked by name, not only `.supported` — it
+    # became a SUPPORTED tag (tasks.py D1235) while still being the family
+    # label FLUX.2-klein ships under regardless of which conversion this
+    # snapshot actually is. Format evidence is still the more precise answer
+    # (mlx vs diffusers vs "genuinely nothing else known"), so it still gets
+    # first refusal even though the task itself is no longer unsupported.
+    if not _tasks.classify(meta.task).supported or meta.task == "image-to-image":
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found

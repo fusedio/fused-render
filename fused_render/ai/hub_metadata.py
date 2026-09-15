@@ -1,5 +1,7 @@
-"""Hub `config.json` harvest, cached at ~/.fused-render/ai_hub_metadata.json
-(SPEC AI-17, D518).
+"""Hub `config.json` harvest, cached in the hub-catalog store's own parquet
+table (`hub_catalog_config.HubCatalogConfig.metadata_dir`), keyed by repo id
+(SPEC AI-17, D518; migrated off a single JSON file per docs/HUB_CATALOG_SPEC.md
+item 5).
 
 **Why this exists.** `hub_cache.has_vision_tower` and every KV-cache/fit
 computation in `fit.py` need a model's architecture facts — layer count,
@@ -13,21 +15,36 @@ no weights — so fetching it ahead of a decision to download is cheap enough to
 do for every row a search returns, unlike a `HEAD` on the weight files
 themselves.
 
-**One HTTP GET, cached with a TTL, following the `bench_store.py` /
-`footprints.py` idiom**: a private `_path()` over `storage.home_dir()`,
-`storage.read_json`/`storage.write_json` and nothing else, a corrupt or
-missing file reads as "nothing cached" and never raises. Unlike those two
-modules this store is NOT machine-scoped — a repo's `config.json` describes
-the MODEL, not the machine that asked for it, so there is no
-`_same_machine`-style identity check and a home directory carried onto a new
-laptop keeps a warm cache rather than discarding it.
+**One HTTP GET, cached in a small repo-keyed parquet table + append log**
+(item 5): `_table_path()`/`_log_path()` under the catalog's `metadata_dir`,
+read with a fresh DuckDB connection per call (the same "never a long-lived
+connection" rule `hub_catalog.py` documents) and written under that module's
+`store_lock`. A single repo's `get()` writes one row to the LOG rather than
+rewriting the whole table — `_upsert` — and the log is folded back into the
+table (`_compact`) once it grows past `_LOG_COMPACT_THRESHOLD` rows, so a
+store with thousands of harvested repos still costs one small append per
+write instead of a full rewrite. Unlike `bench_store.py`/`footprints.py` this
+store is NOT machine-scoped — a repo's `config.json` describes the MODEL, not
+the machine that asked for it, so there is no `_same_machine`-style identity
+check and a home directory carried onto a new laptop keeps a warm cache
+rather than discarding it. A corrupt or missing table/log file reads as
+"nothing cached" and never raises. **One-time import**: if the old
+`~/.fused-render/ai_hub_metadata.json` (D518's original store) is still
+present, its `repos` are folded into the new table on first access and the
+old file is renamed `.imported` so this only happens once.
 
-**13-day TTL**, matching the analogous cache in the comparative study this
-build was derived from (`llmfit`, read-only reference, not vendored) — a
-`config.json` changes when a repo is re-published under the same id, which
-happens on the order of weeks, not minutes; a shorter TTL would re-fetch on
-every page load for no benefit, and a much longer one risks serving a stale
-architecture across a repo's occasional in-place edit.
+**13-day TTL, now a FALLBACK rather than the only freshness signal**
+(item 5). The primary freshness signal is `invalidate(repo_id)`, called by
+`hub_catalog_builder.refresh_capability_pool_delta` (item 4) for every repo
+its daily `lastModified` delta actually saw change — a repo tracked by some
+capability's pool is re-harvested the day its Hub metadata actually moves,
+not up to 13 days later. `TTL_SECONDS` still matters for a repo NO pool
+tracks at all (an id the on-device catalog has simply never indexed), where
+there is no delta signal to lean on; 13 days matches the analogous cache in
+the comparative study this build was derived from (`llmfit`, read-only
+reference, not vendored) — a `config.json` changes when a repo is
+re-published under the same id, which happens on the order of weeks, not
+minutes.
 
 **A stale entry is served rather than discarded when the refetch itself
 fails.** Network failure "degrades silently to no metadata" per spec, but that
@@ -58,6 +75,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from fused_render.ai import hub_catalog
 from fused_render.shell import storage
 
 #: `huggingface.co/{repo}/resolve/main/config.json` — the same URL shape a
@@ -102,11 +120,12 @@ MAX_BYTES = 1024 * 1024
 #: mirrors `mirror.MANIFEST_TIMEOUT_S`'s reasoning for the same kind of call.
 _TIMEOUT_S = 8.0
 
-#: How many repos' harvested metadata are kept — the same reasoning
-#: `footprints.MAX_MODELS` gives: a row is a few dozen bytes, and the bound
-#: exists so a machine that has searched thousands of repos over its lifetime
-#: does not grow this file without limit.
-MAX_REPOS = 500
+#: How many rows the append log may hold before `_upsert` folds it back into
+#: the table (`_compact`). A parquet-per-repo-row read is cheap even at a few
+#: hundred rows, so this is sized for "rewrite the table now and then", not
+#: for correctness — a log left uncompacted is still fully readable, just
+#: progressively more rows to merge on every read.
+_LOG_COMPACT_THRESHOLD = 50
 
 VERSION = 1
 
@@ -140,22 +159,212 @@ _LAYER_TYPE_KEYS = ("layer_types", "layers_block_type")
 
 
 def _path() -> str:
+    """The OLD (pre-item-5) single-JSON-file store location — kept only as
+    the one-time import source, `_maybe_import_legacy`'s read target."""
     return os.path.join(storage.home_dir(), "ai_hub_metadata.json")
+
+
+def _table_path(cfg: hub_catalog.HubCatalogConfig) -> str:
+    return os.path.join(cfg.metadata_dir, "repos.parquet")
+
+
+def _log_path(cfg: hub_catalog.HubCatalogConfig) -> str:
+    return os.path.join(cfg.metadata_dir, "repos_log.parquet")
+
+
+def _read_repo_rows(path: str) -> dict[str, dict]:
+    """`{repoId: entry}` from a `(repoId, payload)` parquet file, or `{}` for
+    a missing or unreadable one — a truncated/corrupt file must degrade to
+    "nothing cached" exactly like the old JSON store's corrupt-file case,
+    never raise into `get()`/`cached()`."""
+    if not os.path.exists(path):
+        return {}
+    import duckdb
+
+    try:
+        con = duckdb.connect()
+        try:
+            rows = con.execute(
+                f"SELECT repoId, payload FROM read_parquet('{path}')").fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - any duckdb read failure over a
+        # corrupt/truncated file reads as "nothing cached", not a raise.
+        return {}
+    result: dict[str, dict] = {}
+    for repo_id, payload in rows:
+        try:
+            entry = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            result[repo_id] = entry
+    return result
+
+
+def _read_log_rows(path: str) -> list[tuple[str, str, int]]:
+    """`[(repoId, payload, seq)]`, oldest first — `seq` (not file row order,
+    which DuckDB does not promise to preserve) is what makes a later write to
+    the same `repoId` win when the log is folded."""
+    if not os.path.exists(path):
+        return []
+    import duckdb
+
+    try:
+        con = duckdb.connect()
+        try:
+            rows = con.execute(
+                f"SELECT repoId, payload, seq FROM read_parquet('{path}') "
+                "ORDER BY seq").fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - same tolerance as `_read_repo_rows`.
+        return []
+    return [(r[0], r[1], int(r[2])) for r in rows]
+
+
+def _write_table(cfg: hub_catalog.HubCatalogConfig, repos: dict) -> None:
+    """Replace the WHOLE table with `repos` and clear the log — the
+    full-replace path used by `_write`/`clear()`/the legacy import, always
+    called with `store_lock` already held."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    os.makedirs(cfg.metadata_dir, exist_ok=True)
+    ids = [repo_id for repo_id, entry in repos.items() if isinstance(entry, dict)]
+    table = pa.table({
+        "repoId": ids,
+        "payload": [json.dumps(repos[i]) for i in ids],
+    })
+    tmp = _table_path(cfg) + ".new"
+    pq.write_table(table, tmp)
+    os.replace(tmp, _table_path(cfg))
+    try:
+        os.unlink(_log_path(cfg))
+    except OSError:
+        pass
+
+
+def _write_log_rows(cfg: hub_catalog.HubCatalogConfig,
+                     rows: list[tuple[str, str, int]]) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    os.makedirs(cfg.metadata_dir, exist_ok=True)
+    table = pa.table({
+        "repoId": [r[0] for r in rows],
+        "payload": [r[1] for r in rows],
+        "seq": [r[2] for r in rows],
+    })
+    tmp = _log_path(cfg) + ".new"
+    pq.write_table(table, tmp)
+    os.replace(tmp, _log_path(cfg))
+
+
+def _merge_all_nolegacy(cfg: hub_catalog.HubCatalogConfig) -> dict:
+    repos = _read_repo_rows(_table_path(cfg))
+    for repo_id, payload, _seq in _read_log_rows(_log_path(cfg)):
+        try:
+            entry = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            repos[repo_id] = entry
+    return repos
+
+
+def _maybe_import_legacy(cfg: hub_catalog.HubCatalogConfig) -> None:
+    """Fold the old single-JSON store into the new table, once. Cheap no-op
+    on every call after the first: the legacy file is renamed away as soon
+    as it's imported, so the `os.path.exists` check below is the entire cost
+    for the rest of this process's life (and any other process's)."""
+    legacy = _path()
+    if not os.path.exists(legacy):
+        return
+    with hub_catalog.store_lock(cfg):
+        if not os.path.exists(legacy):
+            return  # another writer imported it first
+        data = storage.read_json(legacy)
+        legacy_repos = data.get("repos") if isinstance(data, dict) else None
+        if isinstance(legacy_repos, dict):
+            current = _merge_all_nolegacy(cfg)
+            current.update({k: v for k, v in legacy_repos.items() if isinstance(v, dict)})
+            _write_table(cfg, current)
+        try:
+            os.replace(legacy, legacy + ".imported")
+        except OSError:
+            pass
+
+
+def _merge_all(cfg: hub_catalog.HubCatalogConfig) -> dict:
+    _maybe_import_legacy(cfg)
+    return _merge_all_nolegacy(cfg)
 
 
 def _load() -> dict:
     """The store, always a usable shape — `{"repos": {...}}` — never raising
-    and never `None`: unlike `footprints`, a missing file and a corrupt one
+    and never `None`: unlike `footprints`, a missing table and a corrupt one
     are not meaningfully different outcomes for THIS store (there is no
     machine-identity question to fail), so both simply start empty."""
-    data = storage.read_json(_path())
-    if not isinstance(data, dict) or not isinstance(data.get("repos"), dict):
-        return {"repos": {}}
-    return {"repos": data["repos"]}
+    cfg = hub_catalog.load_config()
+    return {"repos": _merge_all(cfg)}
 
 
 def _write(store: dict) -> None:
-    storage.write_json(_path(), {"version": VERSION, "repos": store["repos"]})
+    """Full replace: `store["repos"]` becomes the WHOLE store, table and log
+    both — the shape every existing test already assumes (`_load()`, mutate
+    one key, `_write(store)` back). Production's hot path (`get()`'s own
+    single-repo write) uses `_upsert` instead, which appends to the log
+    rather than paying this full rewrite on every call."""
+    cfg = hub_catalog.load_config()
+    with hub_catalog.store_lock(cfg):
+        _write_table(cfg, store["repos"])
+
+
+def _upsert(repo_id: str, entry: dict) -> None:
+    """Append one row to the log for `repo_id` — the efficient single-repo
+    write path `get()` uses instead of `_write`'s full-table rewrite.
+    Compacts the log into the table once it passes `_LOG_COMPACT_THRESHOLD`
+    rows, so a long-running process doing many individual harvests never
+    grows the log without bound."""
+    cfg = hub_catalog.load_config()
+    with hub_catalog.store_lock(cfg):
+        rows = _read_log_rows(_log_path(cfg))
+        next_seq = (rows[-1][2] + 1) if rows else 0
+        rows.append((repo_id, json.dumps(entry), next_seq))
+        _write_log_rows(cfg, rows)
+        if len(rows) >= _LOG_COMPACT_THRESHOLD:
+            merged = _read_repo_rows(_table_path(cfg))
+            for rid, payload, _seq in rows:
+                try:
+                    merged_entry = json.loads(payload)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(merged_entry, dict):
+                    merged[rid] = merged_entry
+            _write_table(cfg, merged)
+
+
+def invalidate(repo_id: str) -> None:
+    """Force the next `get()` call for `repo_id` to refetch, regardless of
+    how much of `TTL_SECONDS` remains — the item 4/5 delta-refresh hook:
+    `hub_catalog_builder.refresh_capability_pool_delta` calls this for every
+    repo its daily `lastModified` delta actually saw change, so a tracked
+    repo's harvested metadata goes stale on the day the Hub says it changed,
+    not up to 13 days later.
+
+    Resets `fetchedAt` to `0.0` rather than deleting the entry, so `get()`'s
+    existing stale-cache-fallback behaviour (a failed refetch still serves
+    the last known-good `meta`) is unaffected — this is a freshness signal,
+    not a forget. A repo with no entry yet is a no-op: there is nothing to
+    invalidate, and `get()` will fetch it fresh on first ask regardless."""
+    cfg = hub_catalog.load_config()
+    entry = _merge_all(cfg).get(repo_id)
+    if not isinstance(entry, dict):
+        return
+    updated = dict(entry)
+    updated["fetchedAt"] = 0.0
+    _upsert(repo_id, updated)
 
 
 def _fetched_at(entry) -> float:
@@ -175,13 +384,6 @@ def _fetched_at(entry) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return float(value)
-
-
-def _bounded(repos: dict) -> dict:
-    if len(repos) <= MAX_REPOS:
-        return repos
-    ordered = sorted(repos.items(), key=lambda kv: _fetched_at(kv[1]))
-    return dict(ordered[len(ordered) - MAX_REPOS:])
 
 
 def _fetch_raw(repo_id: str) -> bytes | None:
@@ -285,9 +487,7 @@ def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
 
     if config is not None:
         meta = _harvest(config)
-        store["repos"][repo_id] = {"meta": meta, "fetchedAt": time.time()}
-        store["repos"] = _bounded(store["repos"])
-        _write(store)
+        _upsert(repo_id, {"meta": meta, "fetchedAt": time.time()})
         return meta
 
     # The fetch failed, or the body was not a JSON object.
@@ -297,9 +497,7 @@ def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
         # negative over what may be a transient blip.
         return entry.get("meta")
 
-    store["repos"][repo_id] = {"meta": None, "fetchedAt": time.time(), "negative": True}
-    store["repos"] = _bounded(store["repos"])
-    _write(store)
+    _upsert(repo_id, {"meta": None, "fetchedAt": time.time(), "negative": True})
     return None
 
 

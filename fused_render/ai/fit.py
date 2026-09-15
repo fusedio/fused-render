@@ -115,13 +115,27 @@ QUANT_BYTES_PER_PARAM: dict[str, float] = {
     "f32": 4.0,
     "f16": 2.0,
     "bf16": 2.0,
+    "fp8": 1.0,
     "q8_0": 1.05,
+    "q8_k_xl": 1.06,
     "q6_k": 0.80,
+    "q6_k_l": 0.82,
     "q5_k_m": 0.68,
+    "q5_k_s": 0.69,
+    "q5_1": 0.75,
+    "q5_0": 0.69,
     "q4_k_m": 0.58,
+    "q4_k_s": 0.57,
+    "iq4_xs": 0.53,
+    "iq4_nl": 0.56,
+    "q4_1": 0.63,
     "q4_0": 0.58,
     "q3_k_m": 0.48,
+    "q3_k_s": 0.44,
+    "iq3_m": 0.46,
     "q2_k": 0.37,
+    "iq2_m": 0.34,
+    "iq1_m": 0.22,
     "mlx_8bit": 1.0,
     "mlx_4bit": 0.55,
     "awq_4bit": 0.5,
@@ -146,17 +160,53 @@ DEFAULT_BYTES_PER_PARAM = 0.58
 #: `awq`/`gptq` are checked together (both are integer-quantization schemes
 #: this codebase does not currently distinguish a byte cost for) rather than
 #: given four separate table rows for the same two numbers.
+#: SPEC item 4 (round 2): `formats.gguf_quant_token`'s own regex resolves
+#: real llama.cpp suffixes (`GGUF_SUFFIX_PRIORITY`, `GGUF_QUALITY_ORDER`)
+#: this table had no row for — `Q4_K_S`/`Q5_K_S`/`Q6_K_L`, unsloth's
+#: dynamic `Q8_K_XL`, the `IQ*` family, and the plain `Q4_1`/`Q5_0`/`Q5_1`
+#: legacy suffixes — every one previously fell through to
+#: `DEFAULT_BYTES_PER_PARAM` (0.58, "4-bit-ish"), silently wrong for an
+#: 8-bit or 6-bit token. Figures are real-world bytes/param (bits-per-weight
+#: / 8, PLUS the block-scale overhead each format actually spends — the
+#: same "not the naive bits/8 reading" rule the module docstring above
+#: already gives for the pre-existing rows), taken from llama.cpp's own
+#: published per-quant size tables, most-specific pattern first so e.g.
+#: `Q4_K_S` cannot be shadowed by a looser `Q4_?K` alternative. `FP8` (a
+#: catalog display label some FP8-quantized checkpoints carry) is added as
+#: a plain 1.0 byte/param row alongside the pre-existing `F16`/`BF16` rows,
+#: not a GGUF suffix.
+#:
+#: Deliberately UNCHANGED: `"OptiQ 4-bit"`/`"Ternary 2-bit"`/`"int8
+#: (torchao)"` (D522) still resolve to `None` here — those are catalog
+#: display labels with NO evidence-backed per-format bpp figure behind
+#: them yet, not real llama.cpp suffixes this codebase already ranks
+#: elsewhere, and `test_quant_key_is_none_for_an_unrecognised_or_absent_
+#: string` continues to pin that.
 _QUANT_TOKEN_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"fp32|f32"), "f32"),
     (re.compile(r"bf16"), "bf16"),
     (re.compile(r"fp16|f16"), "f16"),
+    (re.compile(r"fp8"), "fp8"),
+    (re.compile(r"q8_?k_?xl|q8kxl"), "q8_k_xl"),
     (re.compile(r"q8_?0|q80"), "q8_0"),
+    (re.compile(r"q6_?k_?l|q6kl"), "q6_k_l"),
     (re.compile(r"q6_?k|q6k"), "q6_k"),
     (re.compile(r"q5_?k_?m|q5km"), "q5_k_m"),
+    (re.compile(r"q5_?k_?s|q5ks"), "q5_k_s"),
+    (re.compile(r"q5_?1|q51"), "q5_1"),
+    (re.compile(r"q5_?0|q50"), "q5_0"),
     (re.compile(r"q4_?k_?m|q4km"), "q4_k_m"),
+    (re.compile(r"q4_?k_?s|q4ks"), "q4_k_s"),
+    (re.compile(r"iq4_?xs|iq4xs"), "iq4_xs"),
+    (re.compile(r"iq4_?nl|iq4nl"), "iq4_nl"),
+    (re.compile(r"q4_?1|q41"), "q4_1"),
     (re.compile(r"q4_?0|q40"), "q4_0"),
     (re.compile(r"q3_?k_?m|q3km"), "q3_k_m"),
+    (re.compile(r"q3_?k_?s|q3ks"), "q3_k_s"),
+    (re.compile(r"iq3_?m|iq3m"), "iq3_m"),
     (re.compile(r"q2_?k|q2k"), "q2_k"),
+    (re.compile(r"iq2_?m|iq2m"), "iq2_m"),
+    (re.compile(r"iq1_?m|iq1m"), "iq1_m"),
     (re.compile(r"mlx.*8[- _]?bit|8[- _]?bit.*mlx"), "mlx_8bit"),
     (re.compile(r"mlx.*4[- _]?bit|4[- _]?bit.*mlx"), "mlx_4bit"),
     (re.compile(r"(awq|gptq).*4[- _]?bit|4[- _]?bit.*(awq|gptq)"), "awq_4bit"),
@@ -935,8 +985,16 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
         result = "tight"
     else:
         result = "no"
+    # C4: the pool `_select_pool` actually judged this footprint against —
+    # VRAM alone, a combined VRAM+RAM offload budget, or plain system RAM —
+    # exposed alongside the verdict so a caller building a per-row "how much
+    # room is left" tooltip (`_score_breakdown`'s `poolGb`) reports the SAME
+    # pool the verdict itself used, rather than the machine's overall
+    # `available_budget_bytes()` ceiling, which can disagree whenever this
+    # row was actually judged against a smaller VRAM-only pool.
     return {"verdict": result, "basis": basis, "footprintBytes": footprint,
-            "score": score, "runMode": run_mode}
+            "score": score, "runMode": run_mode,
+            "poolBytes": pool, "poolName": run_mode}
 
 
 # ---------------------------------------------------------- item 14 wiring

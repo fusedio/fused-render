@@ -565,6 +565,69 @@ def test_pick_gguf_file_excludes_auxiliary_weights_by_name():
     assert formats.pick_gguf_file(names) is None
 
 
+def test_gguf_candidate_files_accepts_sibling_dicts_or_bare_names():
+    """Item 5: `hub_models._count_variants` reads `raw["siblings"]`, which is
+    a list of `{"rfilename": ...}` dicts — either shape must work with no
+    caller-side unwrapping."""
+    dicts = [{"rfilename": "m-Q4_K_M.gguf"}, {"rfilename": "m-Q8_0.gguf"}]
+    assert formats.gguf_candidate_files(dicts) == ["m-Q4_K_M.gguf", "m-Q8_0.gguf"]
+    names = ["m-Q4_K_M.gguf", "m-Q8_0.gguf"]
+    assert formats.gguf_candidate_files(names) == names
+
+
+def test_gguf_candidate_files_excludes_the_same_auxiliary_files_pick_gguf_file_does():
+    """`GGUF_AUXILIARY_RE` is shared with `pick_gguf_file` — a helper weight
+    can never count as a variant here while still being excluded from that
+    picker's own candidacy, or vice versa. (Split shards are handled
+    separately — see the collapsing test below — since a shard set IS a
+    real, downloadable-in-principle quantization for a variant count, even
+    though `pick_gguf_file` refuses it outright for a different reason: its
+    single-file download path cannot assemble one.)"""
+    names = [
+        "m-Q4_K_M.gguf", "m-mmproj-Q8_0.gguf", "m-draft-Q8_0.gguf",
+        "vision_f16_projector.gguf",
+    ]
+    assert formats.gguf_candidate_files(names) == ["m-Q4_K_M.gguf"]
+
+
+def test_gguf_candidate_files_collapses_a_shard_set_to_its_first_part():
+    """A multi-part shard set is ONE quantization, not one entry per shard —
+    the caller wants a variant count, not a file count."""
+    names = [
+        "m-Q8_0-00001-of-00003.gguf",
+        "m-Q8_0-00002-of-00003.gguf",
+        "m-Q8_0-00003-of-00003.gguf",
+        "m-Q4_K_M.gguf",
+    ]
+    assert formats.gguf_candidate_files(names) == [
+        "m-Q8_0-00001-of-00003.gguf", "m-Q4_K_M.gguf",
+    ]
+
+
+def test_gguf_candidate_files_ignores_subdirectory_entries():
+    names = ["BF16/m-BF16.gguf", "m-Q4_K_M.gguf"]
+    assert formats.gguf_candidate_files(names) == ["m-Q4_K_M.gguf"]
+
+
+def test_gguf_file_is_downloadable_refuses_a_shard_part_but_allows_a_whole_file():
+    """Item 3 (code review): `gguf_candidate_files` keeps shard part 1 to
+    COUNT a multi-part quant as one variant, but that single file is not
+    fetchable on its own — `gguf_file_is_downloadable` is the one-line test
+    every caller that turns a candidate into an offered download must run."""
+    assert formats.gguf_file_is_downloadable("m-Q8_0-00001-of-00003.gguf") is False
+    assert formats.gguf_file_is_downloadable("m-Q4_K_M.gguf") is True
+
+
+def test_gguf_repo_for_resolves_a_curated_key_and_passes_through_a_bare_repo():
+    """Item 1 (code review): `gguf_repo_for` is the one shared mapping both
+    `llama_text.download` and `ai_runtime._repo_gguf_siblings` must use so a
+    curated `GGUF_RECIPES` filename key and an uncurated bare repo id cannot
+    resolve to different answers in the two call sites."""
+    entry_id, recipe = next(iter(formats.GGUF_RECIPES.items()))
+    assert formats.gguf_repo_for(entry_id) == recipe["repo"]
+    assert formats.gguf_repo_for("some/uncurated-repo") == "some/uncurated-repo"
+
+
 def test_pick_gguf_file_ranks_unsloth_dynamic_quants_below_plain_quants():
     """Eligible, per the branch's own curated `UD-Q3_K_XL` entry — but ranked
     below every plain quant of a named family, since a plain quant needs no

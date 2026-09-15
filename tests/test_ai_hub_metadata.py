@@ -9,6 +9,7 @@ way `test_ai_model_mirror.py` drives `mirror.fetch_json` — network failure and
 cache-store behaviour are what is under test, not `urllib` itself.
 """
 import json
+import os
 import time
 
 import pytest
@@ -333,3 +334,107 @@ def test_cached_never_raises_over_socket_use_source_grep():
 
     source = inspect.getsource(hub_metadata.cached)
     assert "_fetch_raw" not in source
+
+
+# -- item 5: parquet table + log, invalidate() hook, legacy import ----------
+
+
+def test_the_store_is_now_a_parquet_table_not_the_old_json_file():
+    """Item 5's whole point: the JSON file is no longer where this data
+    lives — a fresh store's first write must land in the new table/log under
+    the hub-catalog metadata dir, never in the legacy path."""
+    from fused_render.ai import hub_catalog
+
+    monkeypatch_free_cfg = hub_catalog.load_config()
+    hub_metadata._write({"repos": {"org/m": {"meta": {"modelType": "x"}, "fetchedAt": 1.0}}})
+    assert os.path.exists(hub_metadata._table_path(monkeypatch_free_cfg))
+    assert not os.path.exists(hub_metadata._path())
+
+
+def test_get_upserts_via_the_log_not_a_full_table_rewrite(monkeypatch):
+    """`get()`'s hot path must not rewrite the whole table on every call —
+    it appends to the log (`_upsert`), which `_load()` still merges over the
+    table transparently."""
+    from fused_render.ai import hub_catalog
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    hub_metadata.get("org/m")
+
+    cfg = hub_catalog.load_config()
+    assert os.path.exists(hub_metadata._log_path(cfg))
+    # The log holds the write; the table itself may not exist yet (nothing
+    # has forced a compaction), but a plain _load() still sees the entry.
+    assert hub_metadata._load()["repos"]["org/m"]["meta"]["modelType"] == "qwen3"
+
+
+def test_the_log_compacts_into_the_table_past_the_threshold(monkeypatch):
+    from fused_render.ai import hub_catalog
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    for i in range(hub_metadata._LOG_COMPACT_THRESHOLD):
+        hub_metadata.get(f"org/m{i}", force=True)
+
+    cfg = hub_catalog.load_config()
+    table_repos = hub_metadata._read_repo_rows(hub_metadata._table_path(cfg))
+    # Compaction folds the log into the table at least once past the
+    # threshold — every repo written so far must be readable straight off
+    # the table, not only via the (now much shorter) log.
+    assert len(table_repos) >= 1
+    assert hub_metadata._load()["repos"]["org/m0"]["meta"]["modelType"] == "qwen3"
+
+
+def test_invalidate_forces_a_refetch_even_within_the_ttl(monkeypatch):
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    hub_metadata.get("org/m")
+
+    hub_metadata.invalidate("org/m")
+
+    calls = []
+
+    def _fetch(repo_id):
+        calls.append(repo_id)
+        return _raw({**CONFIG, "model_type": "qwen3-v2"})
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _fetch)
+    meta = _meta("org/m")
+    assert calls == ["org/m"]
+    assert meta["modelType"] == "qwen3-v2"
+
+
+def test_invalidate_is_a_no_op_for_a_repo_never_asked_about():
+    hub_metadata.invalidate("org/never-asked")  # must not raise
+    assert "org/never-asked" not in hub_metadata._load()["repos"]
+
+
+def test_invalidate_preserves_the_stale_meta_as_a_fallback(monkeypatch):
+    """`invalidate()` resets freshness only — a subsequent failed refetch
+    must still serve the last known-good reading, the same stale-fallback
+    contract `get()` already keeps for a plain TTL expiry."""
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    hub_metadata.get("org/m")
+    hub_metadata.invalidate("org/m")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: (_ for _ in ()).throw(OSError("down")))
+    meta = _meta("org/m")
+    assert meta["modelType"] == "qwen3"
+
+
+def test_a_legacy_json_store_is_imported_once(monkeypatch):
+    """The pre-item-5 single JSON file, if present, is folded into the new
+    table on first access and then renamed so it is never re-imported."""
+    from fused_render.shell import storage
+
+    legacy_path = hub_metadata._path()
+    os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
+    storage.write_json(legacy_path, {
+        "version": 1,
+        "repos": {"org/legacy": {"meta": {"modelType": "legacy-type"}, "fetchedAt": time.time()}},
+    })
+
+    def _boom(repo_id):
+        raise AssertionError("a repo already imported from the legacy store must not be refetched")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
+    assert hub_metadata.cached("org/legacy")["modelType"] == "legacy-type"
+    assert not os.path.exists(legacy_path)
+    assert os.path.exists(legacy_path + ".imported")

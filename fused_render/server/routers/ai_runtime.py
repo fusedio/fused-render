@@ -1478,6 +1478,95 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"stopped": stopped, **supervisor.describe()}
 
 
+def _repo_gguf_siblings(model_id: str) -> list[str] | None:
+    """Root-level GGUF filenames `model_id` actually publishes, or None when
+    nothing could be learned without a network call this route is not
+    otherwise going to make.
+
+    A (item A, per-variant download): the ONLY caller of this is the `file`
+    override's own validation below, so it runs at most once per download
+    request that actually names a variant — not on every plain download,
+    which stays exactly as cheap as before. Deliberately a single source
+    (one `huggingface_hub.list_repo_files` call) rather than threading
+    through `hub_metadata.cached()` (which harvests `config.json`, never a
+    file listing) or the live search route's own 90s `_cache` (keyed by
+    query/sort/filters, not by repo id — there is no cache key here to look
+    up even if this route imported that module's private cache): both would
+    have needed a second, parallel "did we already see this repo's siblings
+    somewhere" plumbing for a call this rare, for no accuracy this simple
+    version lacks. Returns None (never raises) on any failure — the caller
+    then refuses the override rather than guessing.
+
+    Item 4 (code review): threaded through the SAME `_token()`/`hub_endpoint()`
+    helpers every other Hub call in `hub_models.py` uses — a bare call here
+    silently went out anonymous, against the real Hub only, ignoring both a
+    logged-in user's token and an `HF_ENDPOINT` mirror override every OTHER
+    Hub request already honours. A failure is logged at WARNING with the
+    repo id (previously swallowed with no trace at all) rather than raised.
+
+    Item 1 (code review): `model_id` is resolved through
+    `formats.gguf_repo_for` before being listed — a curated `GGUF_RECIPES`
+    key (e.g. `"Qwen3.5-4B-Q4_K_M.gguf"`) is never itself a Hub repo id, so
+    listing it verbatim always 400'd here, making a curated key + a `file`
+    override structurally unable to validate even though
+    `llama_text.download` resolves the very same key to a real repo just
+    fine. This is the same mapping `download` uses, so the two cannot
+    disagree about which repo a curated key means."""
+    import logging
+
+    import huggingface_hub
+
+    from fused_render.ai.runners import formats
+    from fused_render.server.routers.hub_models import _token, hub_endpoint
+
+    repo = formats.gguf_repo_for(model_id)
+    try:
+        return list(huggingface_hub.list_repo_files(
+            repo, token=_token(), endpoint=hub_endpoint()))
+    except Exception:  # noqa: BLE001 - a Hub lookup failure here must refuse
+        # the override, not 500 the whole download request.
+        logging.getLogger(__name__).warning(
+            "could not list %s's files for a download 'file' override", model_id,
+            exc_info=True)
+        return None
+
+
+def _validate_download_file(model_id: str, file: object) -> tuple[str | None, JSONResponse | None]:
+    """`(file, refusal)` for the optional per-variant `file` a download
+    request named — `file` is None and `refusal` is None when the request
+    named none at all (the ordinary, unchanged, row-level download).
+
+    Three checks, all must pass: a `.gguf` name (never any other extension —
+    this is a GGUF-only override, matching `pick_gguf_file`'s own domain), no
+    path separator or `..` (a bare filename within the repo root, never a
+    traversal), and it must be one of `model_id`'s own real candidate files
+    (`formats.gguf_candidate_files`) — never an arbitrary caller-supplied
+    string threaded into a download the way `pick_gguf_file`'s result always
+    was."""
+    if file is None:
+        return None, None
+    if not isinstance(file, str) or not file:
+        return None, _error("'file' must be a non-empty string", status=400)
+    if "/" in file or "\\" in file or ".." in file:
+        return None, _error("'file' must be a bare filename, not a path", status=400)
+    if not file.lower().endswith(formats.GGUF_EXTENSION):
+        return None, _error("'file' must be a .gguf file", status=400)
+    siblings = _repo_gguf_siblings(model_id)
+    if siblings is None:
+        return None, _error(f"could not verify {model_id}'s files", status=400)
+    candidates = set(formats.gguf_candidate_files(siblings))
+    if file not in candidates:
+        return None, _error(f"{file!r} is not one of {model_id}'s GGUF files", status=400)
+    # Item 3 (code review): `gguf_candidate_files` keeps shard part 1 of a
+    # multi-part `-00001-of-0000N.gguf` set (correct for counting distinct
+    # weight variants), but that single file is not on its own servable —
+    # `pick_gguf_file` refuses every shard. Reject here too, so a sharded
+    # quant can never be fetched as if it were a whole download.
+    if not formats.gguf_file_is_downloadable(file):
+        return None, _error(f"{file!r} is a multi-part file and cannot be downloaded on its own", status=400)
+    return file, None
+
+
 @router.post("/api/ai/runtime/download")
 def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Fetch a model's weights without loading them.
@@ -1487,6 +1576,14 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     is not `huggingface_hub.snapshot_download` called from here: a GGUF image
     model and an MLX text model do not download the same set of files, and the
     runner is where that knowledge already lives.
+
+    Item A (per-variant download): an optional `file` names a SPECIFIC GGUF
+    variant to fetch instead of whatever `pick_gguf_file` would otherwise
+    choose for this repo — validated against the repo's own real file list
+    (`_validate_download_file`) before it ever reaches a runner. Non-GGUF
+    runners never see it: `supervisor.load` only threads `file` as far as the
+    llama-cpp runner's own `download`, which is the only one that knows what
+    to do with a specific filename.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -1504,8 +1601,11 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
+    file, refusal = _validate_download_file(model, body.get("file"))
+    if refusal is not None:
+        return refusal
     try:
-        return supervisor.load(model, capability, weights_only=True)
+        return supervisor.load(model, capability, weights_only=True, file=file)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
 

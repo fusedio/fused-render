@@ -189,7 +189,17 @@ _TASKS: tuple[Task, ...] = (
        "Describes an image in words — captioning, OCR.",
        "The vision-language models here load as chat models (image + text to text); "
        "a caption-only checkpoint has no runner."),
-    _t("image-to-image", "image to image", "cv", None,
+    # D1235: was `None` ("no runner takes a base image") — the sole reason
+    # `classify_repo`'s tags-widening fallback existed. The FLUX.2-klein
+    # family, and the mflux edit path generally, DO take a base image
+    # (`mflux_image/worker.py`'s `image`/`image_strength` kwargs, gated by
+    # format/variant detection, not by this tag), so the hub_catalog spec
+    # maps this tag to IMAGE_GENERATION directly. A repo that genuinely has
+    # no recognisable diffusion/mlx format still gets no Load: `_engine`
+    # (hub_cache.py) and `for_capability`'s format checks are what gate the
+    # button, not this table entry — this table only says the CLAIM is one
+    # the app can act on. See DECISIONS.md D1235.
+    _t("image-to-image", "image to image", "cv", IMAGE_GENERATION,
        "Turns one picture into another — upscaling, restyling, inpainting."),
     _t("image-text-to-image", "image + text to image", "multimodal", None,
        "Edits a picture from a written instruction."),

@@ -346,11 +346,11 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     if (spokenFor) setStarting(null);
   }, [spokenFor]);
 
-  const runDownload = async (model: string, capability: string) => {
+  const runDownload = async (model: string, capability: string, file?: string) => {
     setRuntimeError(null);
     setStarting(model);
     try {
-      await downloadAiModel(model, capability);
+      await downloadAiModel(model, capability, file);
       refreshAiRuntime();
     } catch (e) {
       setRuntimeError((e as Error).message);

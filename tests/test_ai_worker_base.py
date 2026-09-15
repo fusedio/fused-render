@@ -3378,6 +3378,19 @@ def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
     assert "STANDARD LIBRARY" in error
 
 
+#: Follow-up review finding 3: `job_marker` is the ONE narrow exception to the
+#: stdlib-only rule below. It is not a third-party dependency and not another
+#: piece of runner machinery — it is a single string constant
+#: (`JOB_ERROR_MARKER`), in a module with no imports and no side effects at
+#: all, created for exactly this purpose: so `worker_base.py` and
+#: `fused_render.ai.supervisor` can share one literal without either one
+#: depending on the OTHER's module-scope work (importing `worker_base` used
+#: to start a permanent daemon thread — see `job_marker.py`'s own docstring).
+#: Importing it costs every runner interpreter nothing a stdlib import
+#: wouldn't; nothing else from `fused_render` gets this exemption.
+_STDLIB_EXEMPT_IMPORTS = frozenset({"fused_render.ai.runners.job_marker"})
+
+
 def test_worker_base_imports_nothing_but_the_stdlib():
     """`worker_base` is stdlib-only at module scope, and this is what enforces it.
 
@@ -3386,7 +3399,8 @@ def test_worker_base_imports_nothing_but_the_stdlib():
     rule would rot silently. And the rule has not changed — every runner's
     interpreter imports this module, so anything imported here becomes a
     dependency of every backend forever, and the contract has to stay importable
-    by tests that cannot install mlx or torch.
+    by tests that cannot install mlx or torch. `job_marker` (see
+    `_STDLIB_EXEMPT_IMPORTS` above) is the sole, deliberate exception.
 
     Read out of the SOURCE rather than by importing under a blocked meta-path
     hook: the question is what the file declares at module scope, and the lazy
@@ -3396,15 +3410,22 @@ def test_worker_base_imports_nothing_but_the_stdlib():
     import ast
 
     tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
-    imported = set()
+    outside: list[str] = []
     for node in tree.body:  # module scope ONLY — function-level imports are the design
         if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top not in sys.stdlib_module_names and alias.name not in _STDLIB_EXEMPT_IMPORTS:
+                    outside.append(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            imported.add(node.module.split(".")[0])
-    assert imported, "the file surely imports something — did BASE_PATH stop resolving?"
-    outside = sorted(name for name in imported if name not in sys.stdlib_module_names)
-    assert outside == [], f"worker_base gained a non-stdlib module-scope import: {outside}"
+            top = node.module.split(".")[0]
+            if top in sys.stdlib_module_names:
+                continue
+            for alias in node.names:
+                full = f"{node.module}.{alias.name}"
+                if full not in _STDLIB_EXEMPT_IMPORTS:
+                    outside.append(full)
+    assert outside == [], f"worker_base gained a non-stdlib module-scope import: {sorted(outside)}"
 
 
 def test_every_os_open_in_worker_base_asks_for_BINARY_mode():
@@ -3446,3 +3467,134 @@ def test_every_os_open_in_worker_base_asks_for_BINARY_mode():
     assert missing == [], (
         f"os.open without _BINARY at {missing}: on Windows that fd translates "
         f"every 0x0a it writes, and no test on this platform can see it")
+
+
+# -- item A: per-variant download's --file plumbing through serve() -------------
+
+
+def test_serve_download_only_passes_file_when_download_declares_it(base):
+    """A runner whose `download(model_id, file=None)` declares the parameter
+    gets `file=` threaded straight through from `--file`."""
+    calls = []
+
+    def download(model_id, file=None):
+        calls.append((model_id, file))
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only",
+                         "--file", "model-Q4_K_M.gguf"])
+    assert excinfo.value.code == 0
+    assert calls == [("org/model", "model-Q4_K_M.gguf")]
+
+
+def test_serve_download_only_omits_file_kwarg_when_absent(base):
+    """No `--file` at all: `download` is called with exactly the one
+    positional argument it always got before item A — byte-identical."""
+    calls = []
+
+    def download(model_id, file=None):
+        calls.append((model_id, file))
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only"])
+    assert excinfo.value.code == 0
+    assert calls == [("org/model", None)]
+
+
+def test_serve_download_only_ignores_file_for_a_runner_without_the_param(base, caplog):
+    """A runner whose `download(model_id)` has no `file` parameter (every
+    runner but llama_text, today) is called with just the model id — its
+    signature has no place to put `--file`, so it is dropped with a debug
+    log rather than raising a TypeError."""
+    calls = []
+
+    def download(model_id):
+        calls.append(model_id)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(SystemExit) as excinfo:
+            base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                       argv=["--model", "org/model", "--download-only",
+                             "--file", "model-Q4_K_M.gguf"])
+    assert excinfo.value.code == 0
+    assert calls == ["org/model"]
+    assert any("ignores --file" in r.message for r in caplog.records)
+
+
+# -- item 6: JOB_ERROR_MARKER, so a written sentence outlives the traceback -----
+
+
+def test_serve_download_only_marks_the_final_sentence_after_the_traceback(base, capsys):
+    """A deliberately-raised `RuntimeError` on the `--download-only` path must
+    still print the FULL traceback to stderr (a human reading the raw log
+    file needs it) — but `JOB_ERROR_MARKER` prefixes the last line, so
+    `supervisor._download_failure_text` can extract just the sentence for
+    the job row (item 6 of the architecture-detection brief).
+
+    Follow-up review finding 6: the marker line for a `RuntimeError`
+    specifically is now the BARE sentence, with no `"RuntimeError: "`
+    prefix — a runner writes `RuntimeError("some written sentence")`
+    precisely so that sentence, alone, reaches the job row; the class-name
+    prefix defeated half of that intent."""
+    def download(model_id):
+        raise RuntimeError("this model needs the Diffusers engine")
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only"])
+    assert excinfo.value.code == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert base.JOB_ERROR_MARKER in err
+    after_marker = err.rsplit(base.JOB_ERROR_MARKER, 1)[-1].strip()
+    assert after_marker == "this model needs the Diffusers engine"
+
+
+def test_serve_download_only_keeps_the_class_name_for_an_unexpected_exception(base, capsys):
+    """A non-`RuntimeError` exception is not one this codebase deliberately
+    raises as a row-facing sentence — its bare `str(e)` alone (e.g. a
+    `KeyError`'s repr of just the missing key) is often unreadable, so the
+    class name prefix stays for anything that is not a `RuntimeError`."""
+    def download(model_id):
+        raise KeyError("weights")
+
+    with pytest.raises(SystemExit) as excinfo:
+        base.serve(download, lambda *a, **k: None, lambda *a, **k: None,
+                   argv=["--model", "org/model", "--download-only"])
+    assert excinfo.value.code == 1
+
+    err = capsys.readouterr().err
+    after_marker = err.rsplit(base.JOB_ERROR_MARKER, 1)[-1].strip()
+    assert after_marker == "KeyError: 'weights'"
+
+
+def test_importing_supervisor_does_not_import_worker_base():
+    """Follow-up review finding 3: `fused_render.ai.supervisor` used to read
+    `JOB_ERROR_MARKER` via `from fused_render.ai.runners import worker_base`
+    — importing that module runs its own module-scope
+    `_GENERATE_TASKS = _start_generate_thread()`, starting a permanent daemon
+    thread merely to read one string constant. The supervisor process spawns
+    children (subprocess/fork); a background thread alive across a fork is
+    exactly the SIGSEGV risk this repo has hit before (see MEMORY.md's
+    PROJ-atfork entries). `supervisor.py` now imports the constant from the
+    dependency-free `job_marker` module instead, so importing
+    `fused_render.ai.supervisor` alone must never pull `worker_base` into
+    `sys.modules`. This has to run in a fresh subprocess: within the test
+    session some other test module may have already imported `worker_base`
+    for its own reasons, which would make an in-process `sys.modules` check
+    meaningless."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys\n"
+         "import fused_render.ai.supervisor\n"
+         "print(any('worker_base' in k for k in sys.modules))\n"],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False", out.stderr

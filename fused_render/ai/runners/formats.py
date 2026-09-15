@@ -28,6 +28,7 @@ invite.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import struct
@@ -223,6 +224,18 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
 
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
+
+#: A diffusers MODULAR pipeline's own manifest — the layout `DiffusersPipeline.
+#: from_pretrained` reads via `ModularPipeline` when the repo has no single
+#: flat `model_index.json` at all (component-level sub-pipelines instead,
+#: e.g. `MiniMax_H3_sdnq_4bit_pruned`'s `transformer/`, `transformer_ref/`,
+#: `vae/`, `scheduler/` beside this file). First-class Diffusers evidence in
+#: its own right, not a weaker cousin of `DIFFUSERS_INDEX` above — a repo
+#: that ships ONLY this manifest is exactly as much a Diffusers pipeline as
+#: one that ships the flat index, and treating it as "no engine recognised"
+#: is the bug `hub_architecture.py` exists to fix (see its own module
+#: docstring for the MiniMax H3 repo this constant was added for).
+DIFFUSERS_MODULAR_INDEX = "modular_model_index.json"
 
 #: The `model_type`s of the DUAL ENCODERS the embedding runners read — one
 #: checkpoint holding a text tower and a vision tower that project into one
@@ -1038,6 +1051,26 @@ GGUF_RECIPES = {
 }
 
 
+def gguf_repo_for(model_id: str) -> str:
+    """The Hub repo id `model_id` actually names, resolving a curated
+    filename key (a `GGUF_RECIPES` key such as `"Qwen3.5-4B-Q4_K_M.gguf"`) to
+    its `repo`; any other `model_id` is already a bare repo id and is
+    returned unchanged.
+
+    Item 1 (code review): `llama_text.download`'s `file`-override branch
+    inlined exactly this `model_id in GGUF_RECIPES` check to find the repo a
+    curated key means, but the route that VALIDATES `file` before ever
+    calling `download`
+    (`ai_runtime._validate_download_file` -> `_repo_gguf_siblings`) passed
+    `model_id` to `huggingface_hub.list_repo_files` verbatim — a curated key
+    is never a real Hub repo id, so that lookup 400'd before `download` was
+    ever reached, and a curated key + a valid `file` could never actually
+    work end to end. Both call sites now share this one mapping so they
+    cannot drift apart again."""
+    recipe = GGUF_RECIPES.get(model_id)
+    return recipe["repo"] if recipe is not None else model_id
+
+
 # ---------------------------------------------------------------------------
 # Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
@@ -1257,6 +1290,64 @@ def pick_gguf_file(filenames) -> str | None:
     if len(candidates) == 1:
         return candidates[0]
     return None
+
+
+def gguf_candidate_files(siblings) -> list[str]:
+    """Root-level, non-auxiliary GGUF filenames out of a repo's own
+    `siblings` listing (dicts with `rfilename`, or bare filename strings —
+    either shape a caller's own `raw["siblings"]` might already be in), with
+    a multi-part shard set (`GGUF_SPLIT_RE`) COLLAPSED to its first part —
+    one entry per distinct WEIGHT VARIANT the repo ships, not one per file
+    on disk.
+
+    Item 5 (SPEC AI-19 round 2): `hub_models._count_variants` used to
+    exclude helper files with its own narrower `("mmproj", "vision")`
+    substring list, so a `mtp-`/`draft-`/`projector`-named auxiliary file
+    `pick_gguf_file` already knows to refuse could still inflate a repo's
+    variant count by one, AND a sharded quant (`-00001-of-00005.gguf`)
+    counted once per shard rather than once per quantization. Reusing
+    `pick_gguf_file`'s own `GGUF_SPLIT_RE`/`GGUF_AUXILIARY_RE` here means
+    the two can never quietly disagree about what counts as a real,
+    downloadable quantization again — one filter, two callers.
+    """
+    names = []
+    for entry in siblings or []:
+        name = entry.get("rfilename") if isinstance(entry, dict) else entry
+        if isinstance(name, str):
+            names.append(name)
+    candidates: list[str] = []
+    seen_shard_bases: set[str] = set()
+    for name in names:
+        if "/" in name or not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_AUXILIARY_RE.search(name):
+            continue
+        split_match = GGUF_SPLIT_RE.search(name)
+        if split_match:
+            base = name[:split_match.start()]
+            if base in seen_shard_bases:
+                continue
+            seen_shard_bases.add(base)
+        candidates.append(name)
+    return candidates
+
+
+def gguf_file_is_downloadable(filename: str) -> bool:
+    """Whether `filename` (one entry out of `gguf_candidate_files`) names a
+    file a per-variant download can actually fetch and use on its own.
+
+    `gguf_candidate_files` deliberately keeps ONE entry — shard part 1 —
+    per multi-part `-00001-of-0000N.gguf` set, because that is correct for
+    COUNTING distinct weight variants a repo ships. But shard part 1 alone
+    is not a servable model: `pick_gguf_file` itself refuses every shard
+    (`GGUF_SPLIT_RE`), so a download of just that file leaves a runner
+    unable to load anything. This is the one-line test every caller that
+    turns a candidate into an offered Download action must run first —
+    `hub_models._model_row`'s `variants` array, and `ai_runtime.
+    _validate_download_file`'s server-side gate — so the two can never
+    quietly disagree about which files are actually fetchable.
+    """
+    return not GGUF_SPLIT_RE.search(filename)
 
 
 def gguf_quant_token(filename: str) -> str | None:
@@ -1675,6 +1766,41 @@ def has_ltx_split_layout(names) -> bool:
         return False
     return any(name.startswith("transformer-") and name.endswith(".safetensors")
                for name in names)
+
+
+def resolve_versioned_name(names, stem: str) -> str | None:
+    """Mirrors `ltx_pipelines_mlx/_base.py::_resolve_safetensors`'s own
+    rule — prefer a versioned `{stem}-*.safetensors`, alphabetically latest;
+    else the plain `{stem}.safetensors` — against a Hub file LISTING rather
+    than a local directory, so a caller (`ltx_video/worker.py::download`) can
+    ask for the one file the loader will actually open instead of every name
+    that could conceivably match. Returns `None` when neither form is
+    present in `names`.
+
+    Moved here from `ltx_video/worker.py` (item 2, D1287+) so `hub_loadable`
+    can judge the same repo-shape rule the worker downloads against, without
+    either copy drifting from the other — the worker runs in its own venv
+    and cannot import `hub_loadable`, but both already import this module.
+    """
+    versioned = sorted(name for name in names
+                       if fnmatch.fnmatch(name, f"{stem}-*.safetensors"))
+    if versioned:
+        return versioned[-1]
+    plain = f"{stem}.safetensors"
+    return plain if plain in names else None
+
+
+def distilled_transformer_filename(names) -> str | None:
+    """The one transformer file `DistilledPipeline.load()` would actually
+    open: `transformer.safetensors` if present (no curated repo ships this
+    name today, but upstream tries it FIRST), else the versioned-preferred
+    `transformer-distilled*` — `resolve_versioned_name`'s own rule. `None`
+    when the repo has neither, which both `ltx_video/worker.py::download`
+    (a download-time refusal) and `hub_loadable` (a search-time "won't run
+    here" chip) treat as "this repo is not ltx-2-mlx's curated layout"."""
+    if "transformer.safetensors" in names:
+        return "transformer.safetensors"
+    return resolve_versioned_name(names, "transformer-distilled")
 
 
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
