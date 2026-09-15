@@ -30,6 +30,8 @@ Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
 Don't push, don't add remotes, don't rewrite history, don't touch paths
 outside this folder — the repo is purely local undo history for the apps.
 
+Any CSS/UI work: app opens in whatever browser the user has (Chrome, Firefox, Safari) and in WKWebView — invoke **`fused-render-cross-browser`** before styling: Baseline-only features, hand-written `-webkit-` prefixes, paste-in reset, per-engine trap table, two-engine check.
+
 App reads machine-wide **file index** (search box, disk-usage/file-type breakdown, repos list, SQL over filesystem)? Invoke **`fused-render-index`**: `fused.fileIndex.search/query`, readiness envelope, direct-parquet reader for bulk Python.
 
 fused-render supplies these skills (plus `fused-render-usage`, `fused-render-custom-templates`) to every chat it launches as session plugin — available by name, no install. Also keeps copy in Claude Code user-level skills dir for sessions fused-render didn't start (plain `claude` here). Skill missing from both → start/restart fused-render once; refreshes both on startup.

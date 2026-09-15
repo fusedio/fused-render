@@ -37,7 +37,7 @@ Why each line: Safari buttons/inputs don't inherit font or colour; Firefox dims 
 
 | Area | Trap | Fix |
 |---|---|---|
-| Scrollbars | `::-webkit-scrollbar` invisible in Firefox; standard props reached Safari last (Baseline only Dec 2025). Chrome **ignores** `::-webkit-scrollbar` on any element whose `scrollbar-color` ≠ `auto` (inherits!). | Write BOTH, never mix on one subtree: `scrollbar-width: thin; scrollbar-color: var(--line) transparent;` plus `::-webkit-scrollbar { width: 8px } ::-webkit-scrollbar-thumb { background: var(--line) }`. Set the standard pair on `:root`, and `scrollbar-color: auto` where you want webkit pseudo-elements to apply. |
+| Scrollbars | `::-webkit-scrollbar` invisible in Firefox; standard props reached Safari last (Baseline only Dec 2025). Any engine that supports `scrollbar-color` **ignores** `::-webkit-scrollbar` once it is set (inherits!). | Write both pairs on the same element: `scrollbar-width: thin; scrollbar-color: var(--line) transparent;` plus `::-webkit-scrollbar { width: 8px } ::-webkit-scrollbar-thumb { background: var(--line) }`. Firefox, Chrome and new Safari take the standard pair; older Safari/WKWebView takes the pseudo-elements. Same colours in both so no engine looks different. |
 | Selection | `user-select` still needs `-webkit-user-select` in Safari (not Baseline). | Always both, prefix first. |
 | Line clamp | Needs the legacy trio. | `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;` |
 | Blur panels | `backdrop-filter` unprefixed only Safari ≥ 18 (Baseline Sep 2024). | `-webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);` and a solid-ish `background` fallback — blur is decoration, never the only thing making text readable. |
@@ -46,18 +46,18 @@ Why each line: Safari buttons/inputs don't inherit font or colour; Firefox dims 
 | `<details>` | Marker differs; Safari keeps its own. | `summary { list-style: none } summary::-webkit-details-marker { display: none }` then draw your own. |
 | Date/number/file/color inputs | Chrome is different by design (Firefox has no number spinner styling, Safari's date picker is a wheel on iOS). | Don't depend on native chrome. Style the box only; assume the picker looks native. `inputmode="decimal"` for numeric text when you need full control. |
 | iOS zoom on focus | Input `font-size` < 16px → viewport zooms in on tap. | Inputs ≥ 16px on touch: `@media (pointer: coarse) { input, select, textarea { font-size: 16px } }`. |
-| `position: fixed` | Broken under a transformed/filtered ancestor (all engines) and jittery in iOS scroll. | Portal fixed elements to `<body>`; never `transform` on a layout ancestor of a fixed child. |
-| Sticky headers | `position: sticky` needs an `overflow` ancestor that's the actual scroller; `overflow: hidden` on a parent kills it in Safari. | Use `overflow: clip` for clipping, keep `sticky` directly in the scroller. |
+| `position: fixed` | Broken under a transformed/filtered ancestor (all engines). | Portal fixed elements to `<body>`; never `transform` on a layout ancestor of a fixed child. |
+| Sticky headers | `position: sticky` needs an `overflow` ancestor that's the actual scroller; `overflow: hidden` on an ancestor between sticky and scroller kills it (all engines). | Use `overflow: clip` for clipping, keep `sticky` directly in the scroller. |
 | Smooth scroll | `scroll-behavior: smooth` fine; `scrollIntoView({behavior:"smooth"})` OK; scroll-driven animations (`animation-timeline: scroll()`) Chrome-only. | Gate scroll-driven animations behind `@supports (animation-timeline: scroll())` — plain, no fallback needed, it's decoration. |
 | Fonts | System stack renders differently per OS; intermediate weights (500) fall back to 400 or 700 depending on the installed face. | Stack: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`; mono: `ui-monospace, Menlo, Consolas, monospace`. Use weights 400/600/700 only unless loading a font. |
 | Flex/grid gaps | `gap` in flex — Baseline, fine. `min-height: 0`/`min-width: 0` on flex children: Safari overflows harder than Chrome. | Add `min-width: 0` to any flex child that holds text/`overflow`. |
-| `aspect-ratio`, `inset`, `:has()`, `:is()/:where()`, container queries, nesting, `dvh`, `color-mix()`, `@layer`, `text-wrap: balance`, `scrollbar-gutter`, `overflow: clip` | Widely available. | Use freely. |
-| `light-dark()`, `field-sizing`, `text-wrap: pretty` in Firefox, anchor positioning, `@starting-style`, `popover` attr w/ anchors, `:user-valid` | Newly available or partial as of 2026-09. | `@supports` + fallback, or skip. `light-dark()` is not a substitute for the two token blocks in `fused-render-theming`. |
+| `aspect-ratio`, `inset`, `:has()`, `:is()/:where()`, container queries, nesting, `dvh`, `color-mix()`, `@layer`, `text-wrap: balance`, `overflow: clip` | Widely available. | Use freely. |
+| `scrollbar-gutter` (Baseline Dec 2024), `light-dark()`, `field-sizing`, `text-wrap: pretty` in Firefox, anchor positioning, `@starting-style`, `popover` attr w/ anchors, `:user-valid` | Newly available or partial as of 2026-09. | `@supports` + fallback, or skip. `scrollbar-gutter: stable` may go bare — absence only costs a layout shift. `light-dark()` is not a substitute for the two token blocks in `fused-render-theming`. |
 
 ### JS
 
 - `Date.parse("2025-01-02 10:00")` → NaN in Safari (space separator). Always ISO `T`, or build from parts.
-- `showOpenFilePicker`/`showSaveFilePicker`, `navigator.userAgentData`, `scheduler.postTask`, `CSS.anchor()` → Chrome-only. Files come via `fused.readFile`/`writeFile` anyway.
+- `showOpenFilePicker`/`showSaveFilePicker`, `navigator.userAgentData` → Chrome-only; `scheduler.postTask` not in Safari. Files come via `fused.readFile`/`writeFile` anyway.
 - `structuredClone`, `Array.prototype.at`, `Object.hasOwn`, `??=`, top-level `await`, regex lookbehind → fine (Safari ≥ 16.4). Don't go past ES2022 syntax; `using`, decorators, `Iterator.prototype.*` are not Baseline widely.
 - `ResizeObserver`/`IntersectionObserver` fine. `element.scrollIntoViewIfNeeded` is WebKit/Chrome only — use `scrollIntoView({block:"nearest"})`.
 - `requestIdleCallback` missing in Safari → `window.requestIdleCallback ?? (cb => setTimeout(cb, 1))`.
