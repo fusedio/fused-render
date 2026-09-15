@@ -502,7 +502,8 @@ body.tasks-peek-dragging {
   text-overflow: ellipsis;
 }
 
-/* THE HEADER'S TWO LABELLED BUTTONS — the Open door, and (in cover) the way
+/* THE HEADER'S LABELLED BUTTON — the Open door. (Its twin, "Resize panel",
+   went 2026-09-15: expanding the sidebar is the way out of cover now.) The way
    back to the split. One skin, because they are the same kind of thing: a word
    you press, in a row that is otherwise glyph squares and ink.
 
@@ -516,8 +517,7 @@ body.tasks-peek-dragging {
 
    Sized off `.task-side-peek-btn`'s own height so they sit on the row's
    baseline with the ⋮ beside them rather than next to them. */
-.task-side-peek-open,
-.task-side-peek-resize {
+.task-side-peek-open {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -539,8 +539,7 @@ body.tasks-peek-dragging {
     border-color var(--dur-fast) var(--ease-out);
 }
 
-.task-side-peek-open:hover,
-.task-side-peek-resize:hover {
+.task-side-peek-open:hover {
   background: var(--row-bg-hover);
   border-color: var(--fg-muted);
   color: var(--fg);

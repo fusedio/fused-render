@@ -219,9 +219,6 @@ describe("the peek header", () => {
     };
     const order = [
       'aria-label="Close the task panel"',
-      // Only in cover, and directly after the ×: two acts, two controls
-      // (design.md, Polish batch 4, item 11).
-      "task-side-peek-resize",
       'aria-label="Previous task"',
       'aria-label="Next task"',
       // The identity block, in one element (TaskPeekWho.tsx) — its own three
@@ -247,36 +244,18 @@ describe("the peek header", () => {
     expect(WHO).not.toContain("tabIndex");
   });
 
-  it("leads with a plain × in EVERY mode, and adds Resize panel only in cover", () => {
-    // It was a `PanelIcon` whose meaning changed with the layout — "hide the
-    // right panel", and in cover "show the list" (Polish batch 3, option b).
-    // The one control every reader reaches for first was the one they had to
-    // decode first, so it is a × now and it always closes (design.md, Polish
-    // batch 4, item 11).
+  it("leads with a plain × in EVERY mode, and has NO Resize panel (2026-09-15)", () => {
+    // The × always closes (design.md, Polish batch 4, item 11). The way out of
+    // cover is now the sidebar itself — expanding it resets the panel to its
+    // default split (task-peek-store `expandUncovers`) — so the "Resize panel"
+    // button that stood beside the × is gone, not folded away.
     expect(HEAD).toContain('aria-label="Close the task panel"');
     expect(HEAD).toContain('data-hint="Close · Esc"');
     expect(HEAD).not.toContain("<PanelIcon");
-    expect(HEAD).not.toContain('from "@platform/ui/PanelIcon"');
-    expect(HEAD).not.toContain("layout.cover ? showListBesidePeek() : closePeek()");
-    // The way back to the split is a SECOND control beside it, shown only where
-    // there is a split to go back to — a control that changes what it does
-    // under the reader is worse than two controls.
-    expect(HEAD).toContain("{layout.cover && (");
-    // …and it says what it does IN WORDS, with no glyph at all (design.md,
-    // Polish batch 5): the four inward corner marks it wore were a picture a
-    // reader had to be taught, for an act that happens once in a visit.
-    expect(HEAD).toContain('className="task-side-peek-resize"');
-    expect(HEAD).toContain("Resize panel");
-    expect(HEAD).toContain('? "Restore the list beside the panel"');
-    // …and on a window that cannot hold both, it is DISABLED and says which
-    // (design.md, Fix batch 6 §1) rather than pressing and moving nothing.
-    expect(HEAD).toContain("disabled={!canList}");
-    expect(HEAD).toContain('"Window too narrow to show the list"');
-    expect(HEAD).toContain("const canList = layout.cover && canShowList();");
-    expect(HEAD).not.toContain("ICON_RESET_SIZE");
-    expect(HEAD).toContain("onClick={() => showListBesidePeek()}");
-    // …and with a × in the corner at every width, the ⋮'s own Close row is a
-    // second way to do what the corner already does.
+    expect(HEAD).not.toContain('className="task-side-peek-resize"');
+    expect(HEAD).not.toContain("Resize panel");
+    expect(HEAD).not.toContain("showListBesidePeek");
+    expect(HEAD).not.toContain("canShowList");
     expect(HEAD).not.toContain('items.push({ label: "Close", icon: ICON_CLOSE');
   });
 
@@ -318,8 +297,8 @@ describe("the peek header", () => {
     // …and all three doors wear an OUTLINE at rest (design.md, Polish batch 5).
     // The wall's already did; the other two were bare words in a run of ink,
     // with only a hover wash to say they could be pressed.
-    expect(PEEK_CSS).toContain(".task-side-peek-open,\n.task-side-peek-resize {");
-    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open,"))).toContain(
+    expect(PEEK_CSS).toContain(".task-side-peek-open {");
+    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open {"))).toContain(
       "border: 1px solid var(--border);",
     );
     expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
@@ -429,11 +408,11 @@ describe("the peek header", () => {
       HEAD.indexOf('<header className="task-side-peek-head"'),
       HEAD.indexOf("</header>"),
     );
-    // One `data-hint` per control — the app's own tooltip contract. Six now:
-    // close, Resize panel (cover only), prev, next, Open, kebab. The project name
-    // is not in the count any more: it is a label, and its full path is a
+    // One `data-hint` per control — the app's own tooltip contract. Five now:
+    // close, prev, next, Open, kebab (Resize panel went 2026-09-15). The
+    // project name is not in the count: it is a label, and its full path is a
     // `title` rather than a hint (design.md, Polish batch 4).
-    expect(head.match(/data-hint=/g)?.length).toBe(6);
+    expect(head.match(/data-hint=/g)?.length).toBe(5);
   });
 
   it("stays ONE LINE at the pane minimum by folding, in a stated order", () => {
