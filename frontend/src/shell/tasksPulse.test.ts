@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import type { Task } from "@platform/lib/api";
 import {
+  CATCH_UP_SETTLE_MS,
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
   listingFeedLive,
@@ -251,6 +252,78 @@ describe("subscribeListing", () => {
     await settle();
     off();
     expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["c"]);
+  });
+
+  test("A RESTART'S CATCH-UP LISTING WINS OVER A DELTA THAT BEAT IT HOME", async () => {
+    // BUGBOT, 2026-09-15. `full` forgot the generation and asked for a whole new
+    // listing, but kept long-polling — so a delta arriving in the window BEHIND
+    // that read was merged into the rows still held (the PRE-restart listing)
+    // and wrote `listingGen` from the new server's counter. The catch-up listing
+    // then looked older than what was on screen, was dropped, and the page kept
+    // a mixture of pre-restart rows and post-restart deltas until somebody
+    // reloaded.
+    //
+    // The listing here is deliberately SLOW: it is handed over only after the
+    // delta has been offered, which is the whole shape of the bug.
+    // A HOLDER rather than a bare `let`: TS's control flow cannot see the
+    // Promise executor run, so a plain variable narrows to `never` at the call
+    // below even though it is assigned before we get there.
+    const catchUp: { release: (() => void) | null } = { release: null };
+    let listingNo = 0;
+    const e = env(
+      [
+        { generation: 1 },
+        { generation: 2, full: true },
+        // The restarted server's first real change, home before the listing.
+        { generation: 1, rows: [row("delta", 5)] },
+      ],
+      [],
+    );
+    e.tasks = () => {
+      listingNo += 1;
+      if (listingNo === 1) return Promise.resolve({ tasks: [row("pre", 9)], generation: 40 });
+      // The catch-up read, from a server counting from zero again.
+      return new Promise((resolve) => {
+        catchUp.release = () => resolve({ tasks: [row("post", 1)], generation: 2 });
+      });
+    };
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    // The delta was offered while the catch-up was still in the air and must NOT
+    // have been folded into the pre-restart rows.
+    expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["pre"]);
+    catchUp.release?.();
+    await settle();
+    off();
+    // …and the catch-up listing is what the page ends on — whole, not mixed.
+    expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["post"]);
+    expect(readListing()?.map((t) => t.key)).toEqual(["post"]);
+    // The watcher sat out after `full`, as the Tasks page's own loop did.
+    expect(e.waits).toContain(CATCH_UP_SETTLE_MS);
+  });
+
+  test("a FAILED read does not leave its verdict behind for the next feed", async () => {
+    // BUGBOT, 2026-09-15. A failed read forgets the rows, so the replay at the
+    // top of `subscribeListing` fell through to `{rows: [], failed: true}` — and
+    // the next mount drew "could not be loaded" over an empty list before it had
+    // asked anything, throwing away the provisional rows the Tasks page seeds
+    // from the pulse store. That verdict was about a server we had stopped
+    // asking.
+    const bad = env([], ["boom"]);
+    const off = subscribeListing(() => {}, bad);
+    await settle();
+    off();
+
+    const good = env([], [{ tasks: [row("a")] }]);
+    const seen: ListingEvent[] = [];
+    const off2 = subscribeListing((ev) => seen.push(ev), good);
+    // The very first thing the new subscriber hears must not be a failure.
+    expect(seen.map((ev) => ev.failed)).not.toContain(true);
+    await settle();
+    off2();
+    expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["a"]);
+    expect(seen[seen.length - 1].failed).toBe(false);
   });
 
   test("a burst of pokes is ONE read", async () => {

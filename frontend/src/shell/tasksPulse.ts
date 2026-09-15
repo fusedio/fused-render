@@ -405,6 +405,10 @@ export const CHANGES_BACKOFF_MS = 3000;
  */
 export const LISTING_FLOOR_MS = 20_000;
 
+/** How long the watcher sits out after a `full` answer, so the catch-up listing
+ *  has the field to itself. The Tasks page's own loop waited exactly this. */
+export const CATCH_UP_SETTLE_MS = 1000;
+
 /** What `/api/tasks/changes` answers (fused_render/tasks_watch.py). */
 interface ChangesResponse {
   generation: number;
@@ -536,6 +540,10 @@ function startFeed(env: ListingEnv) {
   let abort: AbortController | null = null;
   let waking: { cancel(): void } | null = null;
   let seat = 0;
+  /** A `full` answer has asked for a whole new listing and it has not landed
+   *  yet, so the rows in hand describe a server this session has stopped
+   *  believing. See the `r.full` branch below. */
+  let catchingUp = false;
   const read = env.tasks || getTasks;
 
   const load = async () => {
@@ -543,6 +551,8 @@ function startFeed(env: ListingEnv) {
     try {
       const res = await read();
       if (stopped || seat !== mine) return;
+      // The catch-up has landed (or this read superseded it): deltas count again.
+      catchingUp = false;
       const rows = (Array.isArray(res?.tasks) ? res.tasks : []).filter(
         (t): t is Task => !!t && !!t.key,
       );
@@ -559,6 +569,10 @@ function startFeed(env: ListingEnv) {
       emitListing({ rows, failed: false, delta: null });
     } catch {
       if (stopped || seat !== mine) return;
+      // A FAILED catch-up still ends it: holding deltas for ever behind a read
+      // that will never land is worse than folding them into whatever comes next,
+      // and the failure below forgets the rows anyway.
+      catchingUp = false;
       // A listing that cannot be read is "no rows" to the chat's list and a
       // quiet line on the Tasks page — never an error page, and never rows kept
       // over a server that has since gone away (#1079).
@@ -605,13 +619,34 @@ function startFeed(env: ListingEnv) {
         // "Reload everything" includes a server that restarted and counts from
         // zero again: forget our generation FIRST, or the stale-listing guard in
         // `load` would refuse the very read that catches us up, forever.
+        //
+        // AND NOTHING IS FOLDED IN UNTIL THAT READ LANDS (bugbot, 2026-09-15).
+        // The rows still held are the PRE-restart listing, and a delta arriving
+        // in the window behind the catch-up GET used to be merged into them AND
+        // to write `listingGen` — which then made the catch-up listing itself
+        // look older than what was on screen, so it was dropped and the page
+        // kept a mixture of pre-restart rows and post-restart deltas until
+        // somebody reloaded. The old Tasks-page loop did not have this hole: it
+        // refused to merge at all while its generation was `-1`. `catchingUp` is
+        // that rule, restored.
+        //
+        // The pause is the old loop's too. It is not what makes this correct —
+        // `catchingUp` is — but it keeps the watcher from spinning a round trip
+        // against a server that is still handing out changes while it restarts.
         listingGen = -1;
+        catchingUp = true;
         void load();
+        await env.sleep(CATCH_UP_SETTLE_MS);
         continue;
       }
       const rows = r.rows || [];
       const gone = r.gone || [];
       if (!rows.length && !gone.length) continue;
+      // A DELTA IS ABOUT ROWS WE NO LONGER TRUST. Dropped rather than queued: the
+      // listing on its way is read AFTER this change was recorded, so it already
+      // contains it, and the floor refresh plus every poke cover the sliver a
+      // change can land in between the server's snapshot and its arrival here.
+      if (catchingUp) continue;
       if (typeof r.generation === "number") listingGen = r.generation;
       const held = readListing();
       if (held === null) {
@@ -707,6 +742,15 @@ export function subscribeListing(
       // (`rememberListing`) because they are still the best answer we have; the
       // number does not, because nothing is left to race it.
       listingGen = -1;
+      // AND SO DOES THE FAILURE (bugbot, 2026-09-15). A failed read forgets the
+      // rows, so `readListing()` is null and the replay at the top of
+      // `subscribeListing` falls through to `{rows: [], failed: true}` — which
+      // the Tasks page draws as "could not be loaded" over an empty list,
+      // throwing away the provisional rows it had just seeded from the pulse
+      // store. That verdict was about a server we have since stopped asking; the
+      // new feed's own first read answers for the server as it is NOW, one round
+      // trip from here.
+      listingFailed = false;
       schedule();
     }
   };

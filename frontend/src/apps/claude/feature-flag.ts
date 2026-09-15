@@ -78,20 +78,31 @@ function setRecap(next: boolean) {
  * pref itself has — and `reading` is cleared either way, so the next mount asks
  * again rather than inheriting a verdict taken while the server was away.
  */
-function readPrefsWithin(ms: number): Promise<Awaited<ReturnType<typeof getPrefs>>> {
-  return new Promise((resolve, reject) => {
+/** The budget itself, as a variable only so a test can make it small: eight
+ *  seconds of real time per case is not a test anyone runs. Production never
+ *  moves it — `setPrefsDeadlineForTests` is the only writer, and
+ *  `resetNativeChatFlagForTests` puts it back. */
+let prefsDeadlineMs: number = GATE_FALLBACK_MS;
+
+/** Test seam — see `prefsDeadlineMs`. Pass nothing to restore the real budget. */
+export function setPrefsDeadlineForTests(ms: number = GATE_FALLBACK_MS) {
+  prefsDeadlineMs = ms;
+}
+
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       reject(new Error("prefs read timed out"));
     }, ms);
-    getPrefs().then(
-      (p) => {
+    work.then(
+      (value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(p);
+        resolve(value);
       },
       (e) => {
         if (settled) return;
@@ -106,11 +117,28 @@ function readPrefsWithin(ms: number): Promise<Awaited<ReturnType<typeof getPrefs
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = readPrefsWithin(GATE_FALLBACK_MS)
-    // ONE BOUNDED RETRY, then a real answer either way. A prefs GET that fails
-    // is usually a single dropped request (a reload racing the server's start),
-    // so asking twice is worth one round trip.
-    .catch(() => readPrefsWithin(GATE_FALLBACK_MS))
+  // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
+  //
+  // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
+  // told it had failed, and was asked a second time for another 8 s: sixteen
+  // seconds of placeholder over every chat embed on the page, twice the number
+  // this constant names and twice what `ChatFrame` gives the frame beside it.
+  // Worse, the first attempt was ABANDONED at 8 s, so a GET that landed at 8.1 s
+  // — which is exactly what a slow cold start looks like — was thrown away in
+  // favour of a fresh request, and if that one also ran out the answer settled
+  // on `false` and every embed on the page mounted legacy over a server whose
+  // real answer had already arrived.
+  //
+  // So the budget goes around BOTH attempts. The retry is still there and still
+  // worth one round trip — a prefs GET that REJECTS is usually a single dropped
+  // request racing the server's start, and that rejection is fast — but it now
+  // spends what is left of the eight seconds rather than opening a second
+  // eight-second window, and a read that is merely slow is never given up on in
+  // favour of asking again.
+  reading = withDeadline(
+    getPrefs().catch(() => getPrefs()),
+    prefsDeadlineMs,
+  )
     .then((p) => {
       if (generation !== departed) return;
       set(p.chat?.native === true);
@@ -181,6 +209,7 @@ export function nativeChatEnabledNow(): boolean | null {
 export function resetNativeChatFlagForTests() {
   reading = null;
   generation += 1;
+  prefsDeadlineMs = GATE_FALLBACK_MS;
   set(null);
   setRecap(true);
 }
