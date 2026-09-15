@@ -1,8 +1,22 @@
 // The recent list's `null` vs `[]` semantics and the change-poll's loop.
-import { describe, expect, test } from "bun:test";
+//
+// The loop itself moved to `shell/tasksPulse` (one read and one long-poll for
+// the whole document), so these drive it through `subscribeTasks` exactly as the
+// list does — the `env` seam is the same one, and every assertion below is about
+// the contract this module still owns: what a subscription emits, and which
+// changes are worth emitting for.
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import type { Task } from "@platform/lib/api";
+import { resetListingFeedForTests } from "@shell/tasksPulse";
 import { changeIsHere, CHANGES_BACKOFF_MS, subscribeTasks, type RecentEnv } from "./sessions";
+
+// The feed is MODULE state — one per document in the app, and so one per `bun
+// test` process here. A case that hands over its own scripted `env` needs the
+// last one's rows and generation gone, or it would be replayed them on subscribe.
+beforeEach(() => {
+  resetListingFeedForTests();
+});
 
 const row = (key: string): Task =>
   ({

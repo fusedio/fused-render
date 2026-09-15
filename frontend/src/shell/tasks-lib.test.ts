@@ -7566,15 +7566,18 @@ describe("what the List remembers between visits", () => {
     // It is the failure flag that is wired in, and only for the List — the Board
     // and the Calendar keep no scroll memory to lose.
     expect(SCHEDULED).toMatch(/<TaskList[\s\S]*?stale=\{tasksFailed\}/);
-    // And tasksFailed really is the failed-poll arm of getTasks.
-    const poll = SCHEDULED.slice(SCHEDULED.indexOf("getTasks().then("));
-    const arms = poll.slice(0, poll.indexOf("getScheduleQueue()"));
-    expect(arms).toContain("setTasksFailed(false);");
-    expect(arms).toContain("setTasks([]);");
-    expect(arms).toContain("setTasksFailed(true);");
-    expect(arms.indexOf("setTasksFailed(false);")).toBeLessThan(
-      arms.indexOf("setTasksFailed(true);"),
+    // And `tasksFailed` really is the listing feed's own failed-read flag. The
+    // read itself moved to `tasksPulse.subscribeListing` (one poll for the whole
+    // document), which raises `failed` on exactly the arm that used to live here
+    // — and forgets the rows it was holding, so a remount does not paint them
+    // over a server that has gone away.
+    expect(SCHEDULED).toMatch(
+      /subscribeListing\(\(ev\) => \{\s*\n\s*setTasks\(ev\.rows\);\s*\n\s*setTasksFailed\(ev\.failed\);/,
     );
+    const store = readFileSync(join(SHELL, "tasksPulse.ts"), "utf8");
+    const fail = store.slice(store.indexOf("listingFailed = true;"));
+    expect(fail).toContain("forgetListing();");
+    expect(fail).toContain("emitListing({ rows: [], failed: true, delta: null });");
   });
 
   it("pays the preserved offset back when the rows return from a failed poll", () => {
@@ -8034,7 +8037,11 @@ describe("sortForList: the page's one order", () => {
     expect(TASKS_CSS).not.toContain(".tasks-section");
     // And the rows are drawn straight off the sorted list — `sortForList`, which
     // is the board's own order flattened (design.md §5).
-    expect(VIEWS).toContain("const rows = useMemo(() => sortForList(tasks), [tasks]);");
+    // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
+    // this scheduled for LATER", which goes stale with the clock and nothing else.
+    expect(VIEWS).toContain(
+      "const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+    );
     expect(VIEWS).toContain("{rows.map((task) => (");
   });
 });
