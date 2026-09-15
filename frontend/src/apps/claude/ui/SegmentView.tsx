@@ -14,7 +14,12 @@ import { Fragment, memo, useMemo, useRef } from "react";
 
 import { cn } from "@platform/lib/utils";
 
-import { groupCollapsibles, isRun, viewKind } from "../protocol/segments";
+import {
+  groupCollapsibles,
+  isRun,
+  seatTriggers,
+  type CollapsibleRun,
+} from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
 import { Caret } from "./Caret";
@@ -87,8 +92,13 @@ export const SegmentView = memo(function SegmentView({
   // members it opens are two positions in the list below, and a hook per run
   // cannot be called from the loop that builds it (`useCardOpens`).
   const [isRunOpen, toggleRun] = useCardOpens();
-  // THE TRIGGER IS NOT A ROW. It is drawn inside the prose block immediately
-  // before the run, so the run and that block read as ONE element.
+  // WHERE EVERY TRIGGER SITS, decided BEFORE anything is built (design.md §A,
+  // Q1 revised 2026-09-15): in the bottom-right corner of the prose before the
+  // run, or — for the run a turn OPENS on — the corner of the prose that
+  // FOLLOWS it, or, failing both, on a bare line of its own.
+  //
+  // THE TRIGGER IS NOT A ROW. It is drawn inside a prose block, so the run and
+  // that block read as ONE element.
   //
   // AND THE BLOCK IS NOT THE TRIGGER'S (PR4 review #4). It used to be: the
   // prose was emitted bare, and a run that followed it POPPED the node back off
@@ -98,60 +108,56 @@ export const SegmentView = memo(function SegmentView({
   // away the reader's selection and the copy button's "copied" state.
   //
   // So EVERY prose segment gets its own `.seg-block`, streaming or settled,
-  // trigger or no trigger. The block's key is the segment's own `cardKey` and
-  // its first child is the prose, in both states; the trigger is a SIBLING
-  // inside it, rewritten into the slot the caret (or nothing) held. React
-  // matches the div by key and the prose by position, so the element survives
-  // the transition untouched.
+  // trigger or no trigger — the same keyed div with the prose in slot 0 and the
+  // trigger, the caret, or nothing in slot 1. Deciding the seats up front is
+  // what lets the block be built ONCE, in its final shape, instead of being
+  // written and then rewritten.
+  const { seats, bare } = useMemo(
+    () => seatTriggers(rows, { tailIndex: tail ? tail.index : -1, cardsAfter }),
+    [rows, tail, cardsAfter],
+  );
+  // THE KEY A TRIGGER TOGGLES. Two runs seated on one prose block (the turn
+  // opened on tool calls and made more after the paragraph) share ONE word and
+  // therefore one state: the LEADING run's key, so the pair's identity does not
+  // change on the poll the trailing run lands in.
+  const runKeys = useMemo(() => {
+    const keys = new Map<number, string>();
+    for (const held of seats.values()) {
+      const first = rows[held[0]!] as CollapsibleRun;
+      const key = runKey(seq, first.segs[0], first.start);
+      for (const at of held) keys.set(at, key);
+    }
+    return keys;
+  }, [rows, seats, seq]);
   const nodes: React.ReactNode[] = [];
-  /** The prose block the NEXT row may put its trigger in: where it sits in
-   *  `nodes`, the key it was built under, and the prose element itself. Null
-   *  after anything that is not a plain settled prose block — which is exactly
-   *  the set `carries` refuses below. */
-  let slot: { at: number; key: string; prose: React.ReactNode } | null = null;
   rows.forEach((row, r) => {
     if (isRun(row)) {
-      const key = runKey(seq, row.segs[0], row.start);
-      const shown = isRunOpen(key);
-      const trigger = <RunTrigger open={shown} onToggle={() => toggleRun(key)} />;
-      const before = rows[r - 1];
-      // Only settled prose carries a trigger: the growing tail is being
-      // rewritten per frame (the trigger would be inside what the typer owns)
-      // and a block with a card filed after it has the card between it and the
-      // run. Either way the trigger takes its own right-aligned line.
-      const carries =
-        !!slot &&
-        !!before &&
-        !isRun(before) &&
-        viewKind(before.seg) === "text" &&
-        !(tail && tail.index === before.index) &&
-        !cardsAfter?.has(before.index);
-      // …and it is REWRITTEN IN PLACE, same index, same key, same prose element.
-      if (carries && slot) nodes[slot.at] = segBlock(slot.key, slot.prose, trigger, true);
-      else
+      const key = runKeys.get(r) ?? runKey(seq, row.segs[0], row.start);
+      // NO PROSE EITHER SIDE (design.md §A) — a turn that is nothing but tool
+      // calls, or a run that follows a card. Only then does the word take a
+      // line; everywhere else it is already drawn in a prose block and this row
+      // contributes its MEMBERS alone, at the run's own chronological position:
+      // above the paragraph for a leading run, below it for a trailing one.
+      if (bare.has(r))
         nodes.push(
-          // NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a
-          // tool call, or a run that follows a card.
           <div key={"bare:" + key} className="seg-block is-bare has-trigger">
-            {trigger}
+            <RunTrigger open={isRunOpen(key)} onToggle={() => toggleRun(key)} />
           </div>,
         );
-      slot = null;
-      if (shown)
-        for (let j = 0; j < row.segs.length; j++) {
-          const seg = row.segs[j]!;
-          // THE ORIGINAL INDEX, not `j`: the key is the member's identity in
-          // the collapse map, and a chip that changed key on being folded into
-          // a run would close itself every time the run was opened.
-          const mk = cardKey(seq, seg, row.start + j);
-          if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} />);
-          else if (seg.kind === "thinking")
-            nodes.push(<ThinkingView key={mk} cardKey={mk} text={seg.text} />);
-          else nodes.push(<NoticeView key={mk} text={segText(seg)} />);
-        }
+      if (!isRunOpen(key)) return;
+      for (let j = 0; j < row.segs.length; j++) {
+        const seg = row.segs[j]!;
+        // THE ORIGINAL INDEX, not `j`: the key is the member's identity in
+        // the collapse map, and a chip that changed key on being folded into
+        // a run would close itself every time the run was opened.
+        const mk = cardKey(seq, seg, row.start + j);
+        if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} />);
+        else if (seg.kind === "thinking")
+          nodes.push(<ThinkingView key={mk} cardKey={mk} text={seg.text} />);
+        else nodes.push(<NoticeView key={mk} text={segText(seg)} />);
+      }
       return;
     }
-    slot = null;
     const { seg, index: i } = row;
     const key = cardKey(seq, seg, i);
     // Whatever is filed at this position, wrapped WITH the segment rather
@@ -197,13 +203,15 @@ export const SegmentView = memo(function SegmentView({
       );
       return;
     }
-    const prose = <MarkdownView className="seg-text" text={segText(seg)} enhance />;
-    if (filed) {
-      nodes.push(withFiled(segBlock(key, prose, null)));
-      return;
-    }
-    slot = { at: nodes.length, key, prose };
-    nodes.push(segBlock(key, prose, null));
+    const held = seats.get(r);
+    const seated = held ? (runKeys.get(held[0]!) ?? null) : null;
+    const block = segBlock(
+      key,
+      <MarkdownView className="seg-text" text={segText(seg)} enhance />,
+      seated ? <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} /> : null,
+      !!seated,
+    );
+    nodes.push(filed ? withFiled(block) : block);
   });
   return (
     <>

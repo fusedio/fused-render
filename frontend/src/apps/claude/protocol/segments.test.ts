@@ -5,6 +5,7 @@ import {
   cardKey,
   groupCollapsibles,
   isRun,
+  seatTriggers,
   type GroupedRow,
   finishedTailText,
   parseTailKey,
@@ -479,5 +480,49 @@ describe("groupCollapsibles (design.md §A)", () => {
     expect(
       groupCollapsibles([named("t1", "Read"), named("t2", "Bash", "error")]).filter(isRun),
     ).toHaveLength(1);
+  });
+});
+
+describe("seatTriggers (design.md §A, Q1 revised 2026-09-15)", () => {
+  const named = (id: string): Segment => ({
+    kind: "tool",
+    id,
+    name: "Read",
+    input: {},
+    status: "ok",
+    output: "",
+    images: [],
+  });
+  const seat = (segs: Segment[], opts?: Parameters<typeof seatTriggers>[1]) =>
+    seatTriggers(groupCollapsibles(segs), opts);
+
+  test("a run BEFORE the turn's first prose seats on the prose that FOLLOWS it", () => {
+    // rows: [run(0), text(1)] — the word goes in row 1's corner, not on a bare
+    // line above it.
+    const s = seat([named("t1"), text("Done.")]);
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0]]]);
+  });
+
+  test("a leading and a trailing run MERGE onto one trigger, the leading one's", () => {
+    // rows: [run(0), text(1), run(2)] — one seat, both runs, leading first so
+    // the pair's key does not change when the trailing run lands.
+    const s = seat([named("t1"), text("Done."), named("t2")]);
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0, 2]]]);
+  });
+
+  test("no prose in the turn at all → the bare own-line trigger stays", () => {
+    expect([...seat([named("t1"), named("t2")]).bare]).toEqual([0]);
+    // …as does a run that can only look BACKWARD: prose has been seen, so the
+    // forward reach is off, and the prose before it is the streaming tail.
+    const live = seat([text("a"), named("t1")], { tailIndex: 0 });
+    expect([...live.bare]).toEqual([1]);
+    expect(live.seats.size).toBe(0);
+    // A card filed after the prose is between it and the run behind it.
+    const carded = seat([text("a"), named("t1")], {
+      cardsAfter: new Map<number, unknown>([[0, "card"]]),
+    });
+    expect([...carded.bare]).toEqual([1]);
   });
 });

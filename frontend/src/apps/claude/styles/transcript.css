@@ -237,6 +237,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--c-dim);
+  /* THE WHOLE LINE OPENS IT (Akshil, 2026-09-15). A folded reply is a one-line
+     row whose only visible control is a 12px glyph in the gutter: the reader
+     aims at the words. Expanding only — the open body is never a control, so
+     nothing a reader selects or clicks inside a reply can shut it. */
+  cursor: pointer;
+}
+.chat-root .turn.assistant .turn-collapsed:hover {
+  color: var(--c-fg);
+}
+.chat-root .turn.assistant .turn-collapsed:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 /* The reply was nothing but tool calls and this is the first call standing in
    for a sentence — machinery, so it is drawn as machinery. */
@@ -270,7 +283,14 @@
   position: relative;
   display: block;
   width: 100%;
-  --c-run-trigger-w: 46px;
+  /* ROOM ON THE LAST LINE for the whole word at PROSE size — `show more ▸` at
+     14px is ~86px of glyphs plus the 8px it stands off the sentence (it was
+     46px while the trigger was 11px `more ▸`). The compact wall restates it
+     under its own 10px reading token below. */
+  --c-run-trigger-w: 96px;
+}
+.chat-root.chat-compact .seg-block {
+  --c-run-trigger-w: 70px;
 }
 .chat-root .seg-block.has-trigger > .seg-text > :last-child {
   padding-right: var(--c-run-trigger-w);
@@ -303,14 +323,19 @@
 .chat-root .seg-block.is-bare > .run-trigger {
   position: static;
 }
+/* THE PROSE'S OWN TYPE (Akshil, 2026-09-15). `font: inherit` takes the block's
+   family, size AND weight — and `line-height: inherit` is restated because the
+   shorthand is one browser bug away from resetting it to `normal`. The two
+   numbers are the whole alignment: the trigger's line box is the prose's line
+   box, so `bottom: 0` puts its baseline on the last line's baseline rather than
+   a few px under it. It stays OUT of the reading by COLOUR, not by size. */
 .chat-root .run-trigger {
   appearance: none;
   background: none;
   border: 0;
   padding: 0 0 0 8px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 18px;
+  font: inherit;
+  line-height: inherit;
   color: var(--c-faint);
   cursor: pointer;
   white-space: nowrap;

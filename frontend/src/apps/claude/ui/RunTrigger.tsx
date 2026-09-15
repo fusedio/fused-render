@@ -8,10 +8,17 @@
 // EDGE of the sentence the run follows, in the last line's own box, so the
 // transcript's left rail stays prose from top to bottom.
 //
-// `more` / `less`, never a count (design.md §A vocabulary). The chevron follows
-// the word and turns with the state, because the word alone at 11px muted is not
-// obviously a control; it is `aria-hidden` and the button's own text is its
+// `show more` / `show less`, never a count (design.md §A vocabulary). Two words
+// rather than one (Akshil, 2026-09-15): `more` alone in a paragraph's corner
+// reads as the end of the sentence it is sitting on. The chevron follows the
+// word and turns with the state, because the words alone in a muted colour are
+// not obviously a control; it is `aria-hidden` and the button's own text is its
 // name.
+//
+// AND IT IS SET IN THE PROSE'S OWN TYPE (Akshil, 2026-09-15): same font-size,
+// same line-height, inherited from the block (`styles/transcript.css`), so the
+// word sits ON the last line's baseline instead of floating in a smaller box
+// beside it. Muted colour is what keeps it out of the reading, not small type.
 import { cn } from "@platform/lib/utils";
 
 export interface RunTriggerProps {
@@ -31,7 +38,7 @@ export function RunTrigger({ open, onToggle, className }: RunTriggerProps) {
       aria-expanded={open}
       onClick={onToggle}
     >
-      {open ? "less" : "more"}
+      {open ? "show less" : "show more"}
       <span className="run-chev" aria-hidden="true">
         {open ? "▾" : "▸"}
       </span>
