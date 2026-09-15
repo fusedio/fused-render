@@ -227,14 +227,9 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
       {open && (
         <div className="update-badge-panel" id={panelId}>
           {status.state === "available" && !status.check_only && (
-            <>
-              <div className="update-badge-text">
-                Downloads and installs the new version.
-              </div>
-              <button type="button" className="update-badge-action" onClick={install}>
-                Update to v{status.latest_version}
-              </button>
-            </>
+            <button type="button" className="update-badge-action" onClick={install}>
+              Update to v{status.latest_version}
+            </button>
           )}
           {status.state === "available" && status.check_only && (
             // The dev-run manager (mac.DEV_MANAGER_ENV) can look but not swap:
