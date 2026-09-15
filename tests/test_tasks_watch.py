@@ -454,3 +454,33 @@ def test_a_running_mark_that_loses_the_race_to_its_own_idle_is_ignored(claude_ho
     # stale, and marks running exactly as it would have with no `turn` at all.
     tasks_watch.mark_running(SID, ttl_sec=60, turn=201)
     assert tasks_watch.is_marked_running(SID)
+
+
+def test_stale_idle_does_not_retire_a_newer_turns_mark(claude_home):
+    """The reverse shape of the race above (bugbot #1163, round two):
+    `noteTurnIdle` now AWAITS its own seat's running POST before firing, which
+    delays the stand-down rather than ordering it — a FOLLOW-UP turn's
+    `mark_running` can still land first. Without the `_mark_turns` check,
+    turn 1's late idle would retire turn 2's mark, and a row a NEWER turn is
+    still driving would read `done` until the registry caught up."""
+    _transcript(claude_home, SID)  # rows stamped 2026: the tail rule says idle
+    tasks_watch.tick()
+    with TestClient(create_app(str(claude_home))) as client:
+        tasks_watch.mark_running(SID, ttl_sec=60, turn=1)
+        tasks_watch.mark_running(SID, ttl_sec=60, turn=2)
+        assert tasks_watch.is_marked_running(SID)
+
+        # Turn 1's idle finally lands, having lost the race to turn 2's own
+        # running POST. It must not touch turn 2's still-live mark.
+        gen = tasks_watch.generation()
+        tasks_watch.mark_idle(SID, turn=1)
+        assert tasks_watch.is_marked_running(SID), "turn 2's mark must outlive turn 1's idle"
+        assert tasks_watch.generation() == gen, "a stale idle must not bump"
+        row = client.get("/api/tasks").json()["tasks"][0]
+        assert (row["live"], row["status"]) == (True, "in_progress")
+
+        # Turn 2's own idle is not stale against itself and retires the mark.
+        tasks_watch.mark_idle(SID, turn=2)
+        assert not tasks_watch.is_marked_running(SID)
+        row = client.get("/api/tasks").json()["tasks"][0]
+        assert (row["live"], row["status"]) == (False, "done")

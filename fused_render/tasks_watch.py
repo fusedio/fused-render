@@ -85,6 +85,15 @@ _tr_sizes: dict[str, int] = {}        # session_id -> size
 # session_id -> when its "a turn just started here" mark runs out. See
 # `mark_running`.
 _marks: dict[str, float] = {}
+# session_id -> the client `turn` its CURRENT mark was set with, or absent if
+# that mark was set with `turn=None`. `mark_idle`'s side of the running/idle
+# race (bugbot #1163, round two): `mark_running` already refuses a `turn` that
+# is not newer than the last `mark_idle` saw, but nothing stopped the reverse
+# — a `mark_idle` for an OLDER turn arriving after a NEWER turn's
+# `mark_running` already landed, retiring a mark that has nothing to do with
+# it. Compared against an incoming `mark_idle`'s `turn`; cleared whenever the
+# mark it names is (a fresh `mark_running`, an expiry, a stand-down).
+_mark_turns: dict[str, float] = {}
 # How long a mark stands on its own. Long enough to cover the two to four
 # seconds a `claude -p` takes to write its registry row (measured), short
 # enough that a send whose run died on the spot — a bad model id, a refused
@@ -261,7 +270,11 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | N
     orders their arrival here) — a stale echo, not a new send, and it is
     dropped whole: no mark, no bump, no touching `_mark_busy_seen` / `_idle`.
     `turn=None` (a caller with nothing to compare, or a test) always proceeds,
-    exactly as if `_last_idle_turn` had nothing on file for it."""
+    exactly as if `_last_idle_turn` had nothing on file for it.
+
+    Records `turn` in `_mark_turns` — the floor `mark_idle` measures a LATER
+    idle call against, so a follow-up turn's mark cannot be retired by an
+    idle that names the turn before it."""
     if not session_id:
         return
     with _cond:
@@ -270,6 +283,10 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | N
             if last_idle_turn is not None and turn <= last_idle_turn:
                 return
         _marks[session_id] = time.time() + max(0.0, ttl_sec)
+        if turn is not None:
+            _mark_turns[session_id] = turn
+        else:
+            _mark_turns.pop(session_id, None)
         _mark_busy_seen.discard(session_id)
         _idle.pop(session_id, None)
     _bump({session_id})
@@ -295,11 +312,32 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     a stale idle call ever arrives out of order itself) so a `mark_running`
     that shows up afterward claiming that turn or an earlier one is recognized
     as the late half of the turn THIS call already closed, not a new one —
-    see `mark_running`."""
+    see `mark_running`.
+
+    `turn` is ALSO compared against `_mark_turns`, the reverse of that same
+    race: `noteTurnIdle` awaits its seat's `mark_running` POST before firing,
+    which delays the stand-down rather than ordering it, so a FOLLOW-UP turn's
+    `mark_running` can still land first. Without this check, this call would
+    retire that newer mark — a stale idle standing down a turn that has not
+    happened yet — and the row would read `done` until the registry (or that
+    turn's own eventual `mark_idle`) caught up. A `turn` that is older than the
+    mark currently standing is dropped whole for `_marks`/`_mark_busy_seen`/
+    `_idle` (the live mark is left exactly as it was); it still updates
+    `_last_idle_turn` when it is the newer value there, so a `mark_running`
+    later claiming that same stale turn is refused by `mark_running`'s own
+    check, and it does not bump — nothing observable changed."""
     if not session_id:
         return
     with _cond:
+        if turn is not None:
+            mark_turn = _mark_turns.get(session_id)
+            if mark_turn is not None and turn < mark_turn:
+                prev = _last_idle_turn.get(session_id)
+                if prev is None or turn > prev:
+                    _last_idle_turn[session_id] = turn
+                return
         _marks.pop(session_id, None)
+        _mark_turns.pop(session_id, None)
         _mark_busy_seen.discard(session_id)
         _idle[session_id] = time.time()
         if turn is not None:
@@ -336,6 +374,7 @@ def _expire_marks(now: float) -> set[str]:
         gone = {sid for sid, until in _marks.items() if until <= now}
         for sid in gone:
             del _marks[sid]
+            _mark_turns.pop(sid, None)
             _mark_busy_seen.discard(sid)
     return gone
 
@@ -363,6 +402,7 @@ def _note_registry_status(sid: str, status: object) -> None:
         if sid in _mark_busy_seen:
             _mark_busy_seen.discard(sid)
             _marks.pop(sid, None)
+            _mark_turns.pop(sid, None)
 
 
 # --------------------------------------------------------------- one tick
@@ -598,6 +638,7 @@ def reset() -> None:
         _registry.clear()
         _departed.clear()
         _marks.clear()
+        _mark_turns.clear()
         _mark_busy_seen.clear()
         _idle.clear()
         _last_idle_turn.clear()
