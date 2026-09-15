@@ -231,7 +231,9 @@ export const Turn = memo(function Turn({
   // meaning changes under the pointer — and not while it holds a card the
   // reader has not answered: the run is blocked on that card and it is the one
   // thing on screen to do (design.md §B).
-  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard;
+  // …and NOT a one-line reply (`isOneLiner` below): folding "Done." to "Done."
+  // is a control that does nothing, on the row where it is least wanted.
+  const foldable = !!onToggleCollapse && !turn.streaming && !pendingCard && !isOneLiner(turn);
   // The body the mark opens and shuts, for `aria-controls`. `useId` and not the
   // turn's key: six compact chat mounts share one document on the cards wall and
   // the same conversation is replayed in several of them, so a key-derived id
@@ -296,8 +298,47 @@ export const Turn = memo(function Turn({
               scanning for; a turn that was all tool calls says what the first
               call was instead, muted, so the row is never blank. */}
           {folded ? (
-            <span className={cn("turn-collapsed", line && line.muted && "is-muted")}>
-              {line ? line.text : ""}
+            /* AND THE LINE ITSELF OPENS IT (Akshil, 2026-09-15). The mark is a
+               12px glyph in the gutter; the row a reader is pointing at is the
+               words. Same handler, so there is one action and one state — this
+               is not a second control, it is a bigger target for the one that
+               is already there. ONE WAY ONLY: the open body is not a control,
+               or every click inside a reply — a selection, a code block's copy
+               button — would be a click that shuts it.
+
+               A POINTER TARGET, AND NOTHING MORE (PR5 review #7). It carried
+               `role="button"`, a tab stop and `aria-expanded` — a SECOND
+               announced control for the one action, so a keyboard reader met
+               "collapsed, button" twice per reply and a screen reader read the
+               reply's own first sentence as a control's label. The keyboard
+               already has this: the mark beside it, which is a real `<button>`
+               with the state on it. This span only widens where the MOUSE may
+               land. */
+            <span
+              className={cn("turn-collapsed", line && line.muted && "is-muted")}
+              onClick={() => onToggleCollapse!(turn.key)}
+            >
+              {/* THE FIRST LINE IN ITS OWN TYPE (Akshil, 2026-09-15): a reply
+                  that opens on "**Done.** Two files…" folds to bold "Done.",
+                  not to a row of asterisks. Same renderer as the open body, no
+                  enhance pass (no code blocks on one line, and hljs per fold
+                  would be the per-frame cost MarkdownView exists to avoid); the
+                  stylesheet flattens whatever block it parses to one inline
+                  run. A MUTED line is a summary we wrote, never markdown. */}
+              {line ? (
+                line.muted ? (
+                  line.text
+                ) : (
+                  <MarkdownView
+                    className="turn-collapsed-md"
+                    text={line.text}
+                    enhance={false}
+                    links={false}
+                  />
+                )
+              ) : (
+                ""
+              )}
             </span>
           ) : segments.length ? (
             <SegmentView
@@ -336,6 +377,53 @@ export const Turn = memo(function Turn({
     </>
   );
 });
+
+/** How long a reply may be and still be "one line" (`isOneLiner`). 80 chars is
+ *  the fragment that fits the folded row at the narrowest width the transcript
+ *  is drawn at, so anything under it is a reply the fold could not shorten. */
+const ONE_LINER_MAX = 80;
+
+/**
+ * IS THIS REPLY ALREADY AS SHORT AS ITS OWN FOLD (Akshil 2026-09-15)?
+ *
+ * "Done." / "Yes — the test passes." / "Fixed in `agent.py`." are most of a
+ * working conversation, and folding one hides NOTHING: the collapsed row is the
+ * reply's first line, which for these turns is the reply. So the log gained a
+ * toggle per row that swapped a sentence for the same sentence, and the
+ * auto-fold greyed out answers the reader could already read in full.
+ *
+ * Such a turn is therefore never foldable: always drawn open, its ✻ mark a
+ * plain seat rather than a disclosure (no `aria-expanded`, no hint, no pointer)
+ * and `Transcript`'s rule skips it entirely, so a new response streaming in
+ * cannot fold it either.
+ *
+ * ONE `text` SEGMENT, OR NONE AT ALL. A turn with a tool call, a thought or a
+ * notice in it has something under the fold by definition, whatever its prose
+ * says; a turn with no `segments` key is the plain text-only reply history
+ * restores (`protocol/history.ts`: "an assistant turn carries `segments` only
+ * when it had any"), which is exactly the shape a one-line answer arrives in.
+ * The body is trimmed before it is measured — a trailing newline off markdown
+ * is not a second line.
+ */
+export function isOneLiner(turn: TurnRow): boolean {
+  if (turn.role !== "assistant") return false;
+  const segs = (turn as AssistantTurn).segments ?? [];
+  let body: string;
+  if (segs.length) {
+    if (segs.length > 1) return false;
+    const only = segs[0];
+    if (!only || viewKind(only) !== "text") return false;
+    body = String((only as { text?: string }).text ?? "");
+  } else {
+    body = String(turn.text ?? "");
+  }
+  const line = body.trim();
+  // A turn with NO prose at all is not a one-line reply — it is a reply whose
+  // fold shows machinery (`collapsedLine`'s muted fallbacks), and that is still
+  // worth folding away.
+  if (!line) return false;
+  return !line.includes("\n") && line.length <= ONE_LINER_MAX;
+}
 
 /** THE ONE LINE A FOLDED REPLY SHOWS (design.md §B). */
 export interface CollapsedLine {
@@ -398,10 +486,27 @@ export function collapsedLine(turn: TurnRow): CollapsedLine {
 }
 
 /** The first line with anything on it, trimmed. */
-function firstLine(text: string): string {
+/** Markdown that is SCAFFOLDING, not words: a fence opener/closer, a thematic
+ *  break, a bare heading/list marker, a table rule. A folded row built from one
+ *  of these renders as an empty <pre>/<hr> — a blank line (Bugbot on 69cdcb9). */
+const SCAFFOLD = /^(`{3,}|~{3,})[^`]*$|^([-*_]\s*){3,}$|^#{1,6}$|^[-*+]$|^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
+
+/** A markdown link's text with its target dropped, an image's alt text, a bare
+ *  autolink's address. The folded row is one pointer target that OPENS the
+ *  reply; a live <a> inside it would navigate AND bubble to the expand, and be
+ *  a second tab stop (Bugbot on 69cdcb9; PR5 review #7). */
+function delink(line: string): string {
+  return line
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1");
+}
+
+export function firstLine(text: string): string {
   for (const raw of String(text ?? "").split("\n")) {
     const line = raw.trim();
-    if (line) return line;
+    if (!line || SCAFFOLD.test(line)) continue;
+    return delink(line);
   }
   return "";
 }

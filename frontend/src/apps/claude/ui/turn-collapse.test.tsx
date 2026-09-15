@@ -10,6 +10,9 @@ installDomShim();
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { ChatState, Turn as TurnRow } from "../protocol/controller-api";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
@@ -18,7 +21,7 @@ import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 // `location` at module init — static imports are hoisted above the
 // `installDomShim()` call above.
 const { Transcript } = await import("./Transcript");
-const { collapsedLine, INTERRUPT_MARK, Turn } = await import("./Turn");
+const { collapsedLine, firstLine, INTERRUPT_MARK, isOneLiner, Turn } = await import("./Turn");
 const { historyToTurns } = await import("../protocol/history");
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -58,6 +61,12 @@ function words(node: Json | null): string {
       out.push(n);
       return;
     }
+    // The folded line is RENDERED MARKDOWN now (Akshil, 2026-09-15): the text
+    // sits in `dangerouslySetInnerHTML`, so read it back with the tags
+    // stripped — the assertions below are about the words, not the markup.
+    const h = (n.props as { dangerouslySetInnerHTML?: { __html: string } } | undefined)
+      ?.dangerouslySetInnerHTML;
+    if (h) out.push(h.__html.replace(/<[^>]+>/g, "").trim());
     for (const k of n.children ?? []) go(k as Json | string);
   };
   go(node);
@@ -79,8 +88,11 @@ const tool = (id: string, name: string): ToolSegment => ({
 });
 const text = (t: string): Segment => ({ kind: "text", text: t });
 
+// TWO LINES, because a ONE-line reply is never foldable (`Turn`'s
+// `isOneLiner`) and every test below is about the fold. The folded row shows
+// the FIRST line, so every `folded(...)` expectation is still `reply <key>`.
 const assistant = (key: string, over: Partial<TurnRow> = {}): TurnRow =>
-  ({ role: "assistant", key, text: "reply " + key, ...over }) as TurnRow;
+  ({ role: "assistant", key, text: "reply " + key + "\nand the rest of it", ...over }) as TurnRow;
 
 function state(over: Partial<ChatState> = {}): ChatState {
   return {
@@ -351,9 +363,12 @@ describe("which replies land folded", () => {
     // opened folded itself and its neighbour opened instead. agent.py now sends
     // the reply's own record id and `historyToTurns` keys by it.
     const stat = { path: "/t.jsonl", mtime: 1, size: 2 };
+    // Two lines apiece, for the reason the `assistant` helper has two: a
+    // one-line reply is never foldable, and this test is about folds.
+    const body = (uuid: string) => "reply " + uuid + "\nand the rest of it";
     const rows = ["r1", "r2", "r3", "r4"].map((uuid) => ({
       role: "assistant" as const,
-      text: "reply " + uuid,
+      text: body(uuid),
       uuid,
     }));
     const read = (extra: typeof rows) =>
@@ -370,7 +385,7 @@ describe("which replies land folded", () => {
       r.update(
         <Transcript
           state={state({
-            turns: read([{ role: "assistant" as const, text: "reply r0", uuid: "r0" }]),
+            turns: read([{ role: "assistant" as const, text: body("r0"), uuid: "r0" }]),
           })}
           actions={actions}
         />,
@@ -434,7 +449,7 @@ describe("the toggle", () => {
   });
 
   test("the mark says what it controls, and says nothing when it controls nothing (#7)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const live = mount(<Turn turn={assistant("a:2", { streaming: true })} />);
     const dead = marks(live)[0]!.props as Record<string, unknown>;
     expect(dead.disabled).toBe(true);
@@ -468,7 +483,7 @@ describe("the toggle", () => {
   });
 
   test("the folded mark greys and says what a click will do (Akshil 2026-09-15)", () => {
-    const turn = assistant("a:1", { segments: [text("The answer.")] });
+    const turn = assistant("a:1", { segments: [text("The answer.\nAnd the rest.")] });
     const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={() => {}} />);
     // GREY IS CSS, off `.turn.is-folded` — what the row owes the stylesheet is
     // the class.
@@ -491,10 +506,110 @@ describe("the toggle", () => {
     expect("data-hint" in (marks(live)[0]!.props as Record<string, unknown>)).toBe(false);
   });
 
+  test("THE FOLDED LINE ITSELF OPENS THE REPLY (Akshil 2026-09-15)", () => {
+    // The mark is a 12px glyph in the gutter; the row a reader aims at is the
+    // words. Same handler, same state — a bigger target for the one control.
+    const turn = assistant("a:1", { segments: [text("The answer."), tool("t1", "Read")] });
+    const hit: string[] = [];
+    const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={(k) => hit.push(k)} />);
+    const line = byClass(shut, "turn-collapsed")[0]!.props as Record<string, unknown>;
+    act(() => (line["onClick"] as () => void)());
+    expect(hit).toEqual(["a:1"]);
+    // A POINTER TARGET AND NOTHING MORE (PR5 review #7). The mark beside it is
+    // a real `<button>` carrying the state; announcing the words as a SECOND
+    // button gave a keyboard reader two stops for one action and read the
+    // reply's own first sentence out as a control's label.
+    expect("role" in line).toBe(false);
+    expect("tabIndex" in line).toBe(false);
+    expect("aria-expanded" in line).toBe(false);
+    expect("onKeyDown" in line).toBe(false);
+    // ONE WAY ONLY: the open body is not a control — only the mark folds.
+    const open = mount(<Turn turn={turn} onToggleCollapse={(k) => hit.push(k)} />);
+    expect((byClass(open, "body")[0]!.props as Record<string, unknown>)["onClick"]).toBe(undefined);
+    expect(byClass(open, "turn-collapsed")).toHaveLength(0);
+  });
+
+  test("the muted line still answers the pointer (review #4)", () => {
+    // `.is-muted` outranked `.turn-collapsed:hover`, so the one row whose words
+    // are its only affordance was the one row that looked dead under the
+    // cursor — an all-tool-calls reply.
+    const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
+    const at = sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted:hover {");
+    expect(at).toBeGreaterThan(-1);
+    expect(sheet.slice(at, sheet.indexOf("}", at))).toContain("color: var(--c-dim)");
+    // …and it comes AFTER the rule it has to beat.
+    expect(at).toBeGreaterThan(
+      sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted {"),
+    );
+  });
+
   test("with no handler at all the mark is inert — the fold is the log's to offer", () => {
     const r = mount(<Turn turn={assistant("a:1")} collapsed />);
     expect((marks(r)[0]!.props as { disabled?: boolean }).disabled).toBe(true);
     expect(folded(r)).toEqual([]);
+  });
+});
+
+describe("A ONE-LINE REPLY NEVER FOLDS (Akshil 2026-09-15)", () => {
+  /** The shape a one-line answer actually arrives in: history gives a text-only
+   *  turn no `segments` key at all (`protocol/history.ts`). */
+  const oneLiner = (key: string, body = "Done.") =>
+    ({ role: "assistant", key, text: body }) as TurnRow;
+
+  test("what counts as one line", () => {
+    expect(isOneLiner(oneLiner("a:1"))).toBe(true);
+    // A single `text` SEGMENT is the same reply, differently delivered.
+    expect(isOneLiner(assistant("a:1", { segments: [text("Yes — it passes.")] }))).toBe(true);
+    // A trailing newline off markdown is not a second line.
+    expect(isOneLiner(oneLiner("a:1", "Done.\n"))).toBe(true);
+    // Two lines, too many characters, or anything else in the turn — all of
+    // which have something under the fold.
+    expect(isOneLiner(oneLiner("a:1", "Done.\nAnd here is why."))).toBe(false);
+    expect(isOneLiner(oneLiner("a:1", "x".repeat(81)))).toBe(false);
+    expect(isOneLiner(assistant("a:1", { segments: [text("Done."), tool("t1", "Read")] }))).toBe(
+      false,
+    );
+    expect(
+      isOneLiner(assistant("a:1", { text: "", segments: [{ kind: "thinking", text: "hm" } as Segment] })),
+    ).toBe(false);
+    // A turn with no words at all is not a one-line reply — its fold shows
+    // machinery, and that is still worth folding away.
+    expect(isOneLiner(oneLiner("a:1", ""))).toBe(false);
+    // Nothing else in the log is one.
+    expect(isOneLiner({ role: "user", key: "u:1", text: "hi" } as TurnRow)).toBe(false);
+  });
+
+  test("the mark is a plain seat, not a disclosure", () => {
+    const r = mount(<Turn turn={oneLiner("a:1")} onToggleCollapse={() => {}} />);
+    const mark = marks(r)[0]!.props as Record<string, unknown>;
+    expect(mark.disabled).toBe(true);
+    expect("aria-expanded" in mark).toBe(false);
+    expect("aria-controls" in mark).toBe(false);
+    expect("data-hint" in mark).toBe(false);
+    // Never greyed, because it is never folded — `collapsed` is ignored.
+    const shut = mount(<Turn turn={oneLiner("a:1")} collapsed onToggleCollapse={() => {}} />);
+    expect((byClass(shut, "turn")[0]!.props as { className: string }).className).not.toContain(
+      "is-folded",
+    );
+    expect(folded(shut)).toEqual([]);
+  });
+
+  test("IT STAYS OPEN WHEN THE NEXT RESPONSE STREAMS IN", () => {
+    const r = log([oneLiner("a:1"), assistant("a:2")]);
+    // `a:2` is the newest and open; `a:1` is older and would ordinarily fold.
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [oneLiner("a:1"), assistant("a:2"), assistant("a:3", { streaming: true })],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    // The two-paragraph reply folds. The one-liner does not.
+    expect(folded(r)).toEqual(["reply a:2"]);
   });
 });
 
@@ -556,4 +671,43 @@ describe("the line a folded reply shows", () => {
     const r = mount(<Turn turn={assistant("a:1", { text: "" })} collapsed onToggleCollapse={() => {}} />);
     expect(folded(r)).toEqual([empty.text]);
   });
+});
+
+test("the folded line is the first line RENDERED, not its markdown source", () => {
+  // "**Done.** two files" folds to bold "Done." — never a row of asterisks.
+  const r = log([
+    assistant("a:1", { text: "**Done.** two files\nmore below" }),
+    assistant("a:2"),
+  ]);
+  const md = byClass(r, "turn-collapsed-md")[0]!;
+  const html = (md.props as { dangerouslySetInnerHTML: { __html: string } })
+    .dangerouslySetInnerHTML.__html;
+  // The test shim's `renderMd` wraps its input in <pre> rather than parsing
+  // it, so the check here is the wiring — the first line, and only the first
+  // line, goes through the renderer the open body uses. Bold-not-asterisks is
+  // that renderer's job, exercised by MarkdownView's own tests.
+  expect(html).toContain("**Done.** two files");
+  expect(html).not.toContain("more below");
+  expect(byClass(r, "turn-collapsed")[0]!.children).toHaveLength(1);
+});
+
+test("the folded line skips scaffolding and drops link targets (bugbot on 69cdcb9)", () => {
+  // A reply that opens on a fence folds to the first WORDS, not to an empty
+  // <pre>; a thematic break likewise.
+  expect(firstLine("```python\nprint(1)\n```\nDone.")).toBe("print(1)");
+  expect(firstLine("---\n\nSummary here")).toBe("Summary here");
+  // Links keep their words and lose the <a>: the row is one pointer target.
+  expect(firstLine("See [the docs](https://x.y/z) now")).toBe("See the docs now");
+  expect(firstLine("```c++\nint x;")).toBe("int x;");
+  expect(firstLine("![alt text](img.png) after")).toBe("alt text after");
+  // Bold survives — it is words, not scaffolding.
+  expect(firstLine("**Done.** two files")).toBe("**Done.** two files");
+});
+
+test("the folded line carries no <a> even for GFM autolinks (bugbot on d4233e8)", async () => {
+  const { renderMdInert } = await import("../protocol/markdown");
+  const html = renderMdInert("see https://x.com and www.example.com or bob@example.com **now**");
+  expect(html).not.toContain("<a");
+  expect(html).not.toContain("<img");
+  expect(html).toContain("https://x.com");
 });

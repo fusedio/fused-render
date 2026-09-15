@@ -54,7 +54,7 @@ export function cardKey(seq: number, seg: Segment | undefined | null, i: number)
  * wall the prose either side of them disappears into. v1 folded them under an
  * `N tool calls` header; that traded fifteen rows for one row, and one row is
  * still a row the reader did not ask for. v2 takes the row away entirely: the
- * stretch collapses behind a `more ▸` trigger that sits on the RIGHT EDGE of
+ * stretch collapses behind a `show more` trigger that sits on the RIGHT EDGE of
  * the sentence before it (ui/RunTrigger), so a settled turn is prose and
  * nothing else until the reader asks.
  *
@@ -213,6 +213,102 @@ export function groupCollapsibles(
     i = end;
   }
   return out;
+}
+
+/* ── where a run's trigger sits (design.md §A, Q1 revised 2026-09-15) ───────
+ *
+ * The trigger belongs in the bottom-right corner of a PROSE block, never on a
+ * line of its own — a bare right-aligned word above the first paragraph is the
+ * machinery row §A exists to delete, wearing a smaller hat.
+ *
+ * So a run seats itself on the prose it is adjacent to:
+ *
+ *   * the prose BEFORE it, wherever there is one (the original rule);
+ *   * failing that — the turn OPENS on tool calls — the prose that FOLLOWS it,
+ *     which gets the same corner seat. Only the run before the turn's FIRST
+ *     prose looks forward: anywhere else "no prose before me" means a card or a
+ *     bare stretch broke the chain, and reaching over that is reaching over
+ *     something the reader is owed.
+ *
+ * A prose block can therefore hold TWO runs, one either side. It does NOT grow
+ * two words in one corner: they MERGE onto one trigger, which opens both — and
+ * the members of each render at their own chronological position, the leading
+ * run's above the prose and the trailing run's below it.
+ *
+ * Looking BACKWARD, a prose block is not a seat when it is the STREAMING TAIL
+ * (the corner of a paragraph still being written) or when it has a card filed
+ * after it (the card is between the prose and the run). Those runs keep the
+ * bare own-line trigger, as does a turn with no prose in it at all. Looking
+ * FORWARD the tail IS a seat — see `seat()` below.
+ */
+export interface TriggerSeats {
+  /** prose ROW index → the run ROW indices whose trigger it carries, earliest
+   *  first (a leading run before a trailing one). */
+  seats: Map<number, number[]>;
+  /** Run ROW indices with no prose to sit on: their own right-aligned line. */
+  bare: Set<number>;
+}
+
+/**
+ * Seat every run in `rows` — see the note above. Pure, and over ROW indices,
+ * so the paint side does not have to decide placement while it is also
+ * building elements (and so this is testable without a renderer).
+ */
+export function seatTriggers(
+  rows: readonly GroupedRow[],
+  opts?: {
+    /** The growing segment's index in the RAW list, or -1. */
+    tailIndex?: number;
+    /** Filed cards by raw index — read for its keys only. */
+    cardsAfter?: Map<number, unknown> | null;
+  },
+): TriggerSeats {
+  const tailAt = opts?.tailIndex ?? -1;
+  const cards = opts?.cardsAfter ?? null;
+  const seats = new Map<number, number[]>();
+  const bare = new Set<number>();
+  /** Is row `r` a prose block a trigger can be drawn in?
+   *
+   *  `forward` is the leading run reaching DOWN to the paragraph after it, and
+   *  that paragraph is allowed to be the STREAMING TAIL (PR5 review #5). The
+   *  tail is rewritten per frame, but only its PROSE slot is: the block around
+   *  it is the same keyed element with the trigger in slot 1 beside the caret
+   *  (`SegmentView.segBlock`), so seating there costs nothing — while refusing
+   *  it cost the reader a word parked on a bare line above the answer for as
+   *  long as it streamed, teleporting into the corner when the turn settled.
+   *
+   *  Looking BACKWARD it still refuses: a run behind the tail means the tail is
+   *  not the turn's last row — the shape `tailIndex` never produces — and a
+   *  word in the corner of a paragraph that is still growing would ride its
+   *  last line down the screen. */
+  const seat = (r: number, forward = false): boolean => {
+    const row = rows[r];
+    if (!row || isRun(row) || viewKind(row.seg) !== "text") return false;
+    return forward || row.index !== tailAt;
+  };
+  const sit = (at: number, run: number) => {
+    const held = seats.get(at);
+    if (held) held.push(run);
+    else seats.set(at, [run]);
+  };
+  let sawProse = false;
+  rows.forEach((row, r) => {
+    if (!isRun(row)) {
+      if (viewKind(row.seg) === "text") sawProse = true;
+      return;
+    }
+    const before = rows[r - 1];
+    if (seat(r - 1) && !cards?.has((before as GroupedSeg).index)) {
+      sit(r - 1, r);
+      return;
+    }
+    if (!sawProse && seat(r + 1, true)) {
+      sit(r + 1, r);
+      return;
+    }
+    bare.add(r);
+  });
+  return { seats, bare };
 }
 
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last
