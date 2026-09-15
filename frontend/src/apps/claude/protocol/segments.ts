@@ -311,6 +311,94 @@ export function seatTriggers(
   return { seats, bare };
 }
 
+/* ── the lead sentence a leading run's trigger sits on (Akshil, 2026-09-15) ──
+ *
+ * A run BEFORE the turn's first prose seats its `show more` on that prose —
+ * but on its FIRST SENTENCE, not its last line. The reader's eye is on the
+ * opening sentence when they want to know what the machinery above it did;
+ * a word in the corner of a five-line paragraph is a screen away from that.
+ *
+ * So the paint side splits the first prose segment into the lead sentence,
+ * drawn as its own block carrying the trigger, and the rest. This is the pure
+ * half: WHERE to cut.
+ *
+ *   * The cut is inside the FIRST PARAGRAPH only (up to the first blank line).
+ *   * A paragraph that is a fenced block or a table is not a sentence: no
+ *     split, the whole block keeps the corner seat it had.
+ *   * A heading's line is the lead; a list's or quote's first ITEM is — up to
+ *     the next marker at column 0, so an indented continuation stays with it.
+ *   * Prose cuts at the first `.`, `!` or `?` (closing quotes/brackets kept)
+ *     that is followed by whitespace and then something that is not a
+ *     lowercase letter — `e.g. the`, `file.ts is` and `3.5 seconds` are not
+ *     sentence ends — and that is not inside backticks.
+ *   * No boundary in the paragraph → the whole paragraph is the lead.
+ *   * Nothing left after the lead → null: there is nothing to split off, and
+ *     the block is drawn once, whole, as before.
+ *
+ * While the tail streams the text is cut per frame: until the boundary's
+ * trailing whitespace arrives the whole text is the lead, so the word sits at
+ * the end of what has been typed and settles onto the first sentence the
+ * moment there is one.
+ */
+export interface LeadSplit {
+  /** The lead sentence (or line) — markdown, untrimmed of its inline marks. */
+  lead: string;
+  /** Everything after it, leading whitespace dropped. Never empty. */
+  rest: string;
+}
+
+const LEAD_NOT_PROSE = /^(```|~~~|\|)/;
+const LEAD_HEADING = /^#{1,6}\s/;
+const LEAD_ONE_LINE = /^([-*+]\s|\d+[.)]\s|>)/;
+const SENTENCE_END = /[.!?]["'\u2019\u201d)\]]*(?=\s)/g;
+
+export function leadSplit(text: string): LeadSplit | null {
+  // Leading blank lines belong to nobody: skipped, so a text that opens on
+  // `\n\n` does not hand the trigger an empty lead (Bugbot on d7458fe).
+  const start = text.length - text.trimStart().length;
+  if (start >= text.length) return null;
+  const body = text.slice(start);
+  const blank = body.search(/\r?\n[ \t]*\r?\n/);
+  const para = blank === -1 ? body : body.slice(0, blank);
+  if (LEAD_NOT_PROSE.test(para)) return null;
+  const cut = (at: number): LeadSplit | null => {
+    const lead = text.slice(0, start + at);
+    const rest = text.slice(start + at).replace(/^\s+/, "");
+    return lead.trim() && rest ? { lead, rest } : null;
+  };
+  if (LEAD_HEADING.test(para)) {
+    const nl = para.indexOf("\n");
+    return cut(nl === -1 ? para.length : nl);
+  }
+  if (LEAD_ONE_LINE.test(para)) {
+    // The first ITEM, not the first line: an indented continuation (or a
+    // quote's lazy continuation) belongs to the item above it, and parsed on
+    // its own it would come out as a paragraph (Bugbot on d7458fe). The cut is
+    // at the first line that opens a SIBLING — another marker at column 0.
+    let at = para.indexOf("\n");
+    while (at !== -1) {
+      if (LEAD_ONE_LINE.test(para.slice(at + 1))) return cut(at);
+      at = para.indexOf("\n", at + 1);
+    }
+    return cut(para.length);
+  }
+  SENTENCE_END.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SENTENCE_END.exec(para))) {
+    const end = m.index + m[0].length;
+    // Inside inline code: an odd number of backticks before the mark.
+    const ticks = (para.slice(0, m.index).match(/`/g) ?? []).length;
+    if (ticks % 2 === 1) continue;
+    // What follows the whitespace decides: a lowercase letter means the mark
+    // was an abbreviation or a dotted name, not a full stop.
+    const next = para.slice(end).match(/^\s+(\S)/);
+    if (!next) continue;
+    if (/[a-z]/.test(next[1]!)) continue;
+    return cut(end);
+  }
+  return cut(para.length);
+}
+
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last
  *  row is not prose (it ended on a tool call, or has no rows at all). */
 export function tailIndex(list: Segment[]): number {
