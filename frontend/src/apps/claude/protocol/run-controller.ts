@@ -31,7 +31,7 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
-import { scheduleMessage } from "@platform/lib/api";
+import { markTaskRunning, scheduleMessage } from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
@@ -442,11 +442,40 @@ export function createChatController(deps: ControllerDeps): ChatController {
     history: "push" | "replace" = "push",
   ) => deps.params.set(patch, { history });
 
+  /**
+   * TELL THE SERVER A TURN IS OPEN ON THIS SESSION, so every OTHER surface's
+   * ring says so within a poll instead of within a file write.
+   *
+   * `announceTasksChanged` below is a message between documents on this origin;
+   * this is the other half, and it is needed because the turn does not start in
+   * the server at all — a chat here runs `claude -p` through `/api/run`, out of
+   * process, and the CLI publishes the fact two to four seconds later. Until
+   * then the listing read the row as done, so every turn sent from this app
+   * wore a done ring for its first seconds and a short turn for all of it
+   * (Akshil, 2026-09-15). See `tasks_watch.mark_running`.
+   *
+   * BEST-EFFORT, like everything else on this boundary: the server-side mark
+   * expires by itself and the registry overrides it, so a rejected call costs
+   * the first seconds of one ring. A session id we do not have yet — the first
+   * turn of a brand-new chat — is simply not marked here; `noteSessionId` marks
+   * it the moment the poll names it.
+   */
+  const noteTurnRunning = (id: string) => {
+    if (!id) return;
+    void markTaskRunning(id).catch(() => {
+      // The 20-30 s polls, and the registry behind them, remain the fallback.
+    });
+  };
+
   /** T:16245 — a session id arrived on the poll. */
   const noteSessionId = (id: string) => {
     if (!id || state.sessionId === id) return;
     setParam({ session_id: id });
     emit({ sessionId: id });
+    // A NEW CHAT LEARNS ITS OWN NAME MID-TURN, and this is the first moment the
+    // mark above can name it. Guarded on a live run, so re-opening a finished
+    // conversation does not announce a turn that is not happening.
+    if (activeRun) noteTurnRunning(id);
   };
 
   /** T:16333 / T:17793 / T:13036 — `run` is in-flight bookkeeping and is
@@ -974,6 +1003,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
+    // …AND THE SERVER HEARS IT TOO (see `noteTurnRunning`). Here rather than
+    // inside `noteChatActivity`, which fires at BOTH turn boundaries: this one
+    // means "a turn is open", and saying it again in the `finally` would mark a
+    // row running for fifteen seconds after it finished.
+    noteTurnRunning(state.sessionId ?? "");
 
     /**
      * ONE BUBBLE PER REPLY IN THE PAYLOAD, keyed by SLOT.

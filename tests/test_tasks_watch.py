@@ -1,9 +1,9 @@
 """tasks_watch: the Tasks page's change signal, and the endpoint that serves it.
 
 Everything runs against a tmp `~/.claude`: `tick()` is called by hand with files
-this test writes, never the thread. The three signals are exercised one at a
-time — a history line, a registry file, a live transcript growing — and then
-the long-poll endpoint over them.
+this test writes, never the thread. The signals are exercised one at a time — a
+registry file, a live transcript growing, a send's own "a turn started here"
+mark — and then the long-poll endpoint over them.
 """
 import json
 import os
@@ -28,7 +28,6 @@ def claude_home(tmp_path, monkeypatch):
     root = tmp_path / "claude"
     (root / "projects" / "-proj").mkdir(parents=True)
     (root / "sessions").mkdir()
-    monkeypatch.setattr(tasks_watch, "HISTORY_PATH", str(root / "history.jsonl"))
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(root / "sessions"))
     monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(root / "projects"))
     state = tmp_path / "state"
@@ -52,12 +51,6 @@ def _transcript(root, sid, lines=1, cwd="/proj"):
     return path
 
 
-def _history(root, sid):
-    with open(root / "history.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({"display": "x", "timestamp": 1, "project": "/proj",
-                            "sessionId": sid}) + "\n")
-
-
 _STAMP = [time.time() + 10]
 
 
@@ -77,29 +70,9 @@ def _registry(root, sid, pid=None, status="busy", name="p"):
 # ------------------------------------------------------------------ the tick
 
 def test_first_tick_is_a_baseline(claude_home):
-    _history(claude_home, SID)
     _registry(claude_home, SID)
     assert tasks_watch.tick() == set()
     assert tasks_watch.generation() == 0
-
-
-def test_history_line_names_the_session(claude_home):
-    tasks_watch.tick()
-    _history(claude_home, SID)
-    assert tasks_watch.tick() == {SID}
-    assert tasks_watch.generation() == 1
-    assert tasks_watch.tick() == set()  # nothing new: no bump
-    assert tasks_watch.generation() == 1
-
-
-def test_half_written_history_line_waits_for_its_newline(claude_home):
-    tasks_watch.tick()
-    with open(claude_home / "history.jsonl", "a") as f:
-        f.write('{"sessionId": "' + SID)
-    assert tasks_watch.tick() == set()
-    with open(claude_home / "history.jsonl", "a") as f:
-        f.write('"}\n')
-    assert tasks_watch.tick() == {SID}
 
 
 def test_registry_file_appearing_changing_and_going(claude_home):
@@ -274,9 +247,7 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         full = client.get("/api/tasks").json()
         assert {t["key"] for t in full["tasks"]} == {SID, SID2}
         gen = full["generation"]
-        tasks_watch.tick()
-        _history(claude_home, SID)
-        tasks_watch.tick()
+        tasks_watch.notify({SID})
         r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
         assert r["generation"] == gen + 1
         assert [t["key"] for t in r["rows"]] == [SID]
@@ -312,69 +283,70 @@ def test_registry_status_decides_the_running_badge(claude_home):
         assert row["live"] is False
 
 
-def test_a_prompted_session_is_watched_without_a_registry_row(claude_home):
-    """A chat sent from this app runs `claude -p`, which writes history.jsonl
-    and the transcript but never a sessions/<pid>.json. The transcript still
-    has to be watched, or the row reads "done" for the whole turn (Akshil,
-    2026-09-15): a history line puts the session under watch for a while."""
-    path = _transcript(claude_home, SID)
+# ------------------------------------------------- the send's own running mark
+
+def test_mark_running_announces_at_once_and_expires_by_itself(claude_home):
     tasks_watch.tick()
-    _history(claude_home, SID)
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    assert tasks_watch.is_marked_running(SID)
+    # The send is news the instant it is made: no tick in between.
+    assert tasks_watch.wait(0, 0) == (1, frozenset({SID}))
+    assert tasks_watch.tick() == set()  # nothing on disk moved
+    # The window closing is news too — no byte on disk records it — and it is
+    # said exactly once.
+    tasks_watch._marks[SID] = time.time() - 1
     assert tasks_watch.tick() == {SID}
-    gen = tasks_watch.generation()
-    # The transcript grows — the assistant's reply — with no registry row.
-    _transcript(claude_home, SID, lines=1)
-    assert tasks_watch.tick() == {SID}
-    assert tasks_watch.generation() == gen + 1
-    # ...and once the watch window has passed, it is no longer watched.
-    tasks_watch._prompted[SID] -= tasks_watch.PROMPTED_WATCH_SEC + 1
-    _transcript(claude_home, SID, lines=1)
+    assert not tasks_watch.is_marked_running(SID)
     assert tasks_watch.tick() == set()
-    assert path.exists()
+    assert tasks_watch.is_marked_running("") is False
+    tasks_watch.mark_running("")  # no id, no mark, no bump
+    assert tasks_watch.wait(2, 0) == (2, frozenset())
 
 
-def _fresh_transcript(root, sid, lines=1):
-    """A transcript whose rows are stamped NOW — the tail rule reads message
-    timestamps, so `_transcript`'s 2026-08-27 rows already read as idle."""
-    import datetime as _dt
-    path = root / "projects" / "-proj" / f"{sid}.jsonl"
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    with open(path, "a", encoding="utf-8") as f:
-        for i in range(lines):
-            f.write(json.dumps({
-                "type": "user", "cwd": "/proj", "timestamp": stamp,
-                "message": {"role": "user", "content": f"prompt {i}"},
-            }) + "\n")
-    return path
-
-
-def test_a_prompted_session_going_quiet_is_announced_once(claude_home, monkeypatch):
-    """A `-p` run never registers, so nothing marks it idle: the row leaves
-    in-progress only when the tail rule's window closes, which no byte on disk
-    records. The watcher announces that instant — once per settled transcript
-    (Bugbot, PR #1153)."""
-    path = _fresh_transcript(claude_home, SID)
+def test_a_marked_send_reads_live_until_the_registry_disagrees(claude_home):
+    """`claude -p` publishes its registry row two to four seconds after the
+    send, so the listing called our own turns done for their first seconds
+    (Akshil, 2026-09-15). The send's mark is the floor under that window; only
+    a registry that says `busy` outranks it."""
+    _transcript(claude_home, SID)  # rows stamped 2026: the tail rule says idle
     tasks_watch.tick()
-    _history(claude_home, SID)
-    tasks_watch.tick()
-    # Fresh, unchanged: quiet.
-    assert tasks_watch.tick() == set()
-    # The window closes on that write: one bump… The tail rule reads the
-    # newest MESSAGE's timestamp, so the rows are aged, not only the mtime.
-    old = time.time() - tasks_watch.session_liveness.RUNNING_WINDOW_SEC - 1
-    aged = json.loads(path.read_text().splitlines()[0])
-    aged["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(old))
-    path.write_text(json.dumps(aged) + "\n")
-    os.utime(path, (old, old))
-    tasks_watch._tr_sizes[SID] = os.path.getsize(path)  # same size: no growth vote
-    assert tasks_watch.tick() == {SID}
-    # …and only one.
-    assert tasks_watch.tick() == set()
-    assert tasks_watch.tick() == set()
-    # A registered session is the registry's to call idle — not announced here.
-    _registry(claude_home, SID2, status="busy")
-    path2 = _transcript(claude_home, SID2)  # rows already old: idle by the tail rule
-    _history(claude_home, SID2)
-    tasks_watch.tick()
-    os.utime(path2, (old, old))
-    assert tasks_watch.tick() == set()
+    with TestClient(create_app(str(claude_home))) as client:
+        was = client.get("/api/tasks").json()["tasks"][0]
+        assert (was["live"], was["status"]) == (False, "done")
+
+        tasks_watch.mark_running(SID, ttl_sec=60)
+        now = client.get("/api/tasks").json()["tasks"][0]
+        assert (now["live"], now["status"]) == (True, "in_progress")
+
+        # A stale `idle` row from the turn before does NOT settle the row while
+        # the mark is alive — that is the exact shape the bug wore.
+        _registry(claude_home, SID, status="idle")
+        tasks_watch.tick()
+        assert client.get("/api/tasks").json()["tasks"][0]["live"] is True
+
+        # `busy` is the same answer from a better source, and it outlives the
+        # mark: the row stays live once the window closes.
+        _registry(claude_home, SID, status="busy")
+        tasks_watch.tick()
+        tasks_watch._marks.pop(SID, None)
+        assert client.get("/api/tasks").json()["tasks"][0]["live"] is True
+
+        # …and with the mark gone, `idle` is authoritative again.
+        _registry(claude_home, SID, status="idle")
+        tasks_watch.tick()
+        assert client.get("/api/tasks").json()["tasks"][0]["live"] is False
+
+
+def test_running_endpoint_marks_the_session_and_wakes_the_long_poll(claude_home):
+    _transcript(claude_home, SID)
+    with TestClient(create_app(str(claude_home))) as client:
+        gen = client.get("/api/tasks").json()["generation"]
+        assert client.post("/api/tasks/running", json={"session_id": SID}).json() == {
+            "ok": True, "session_id": SID}
+        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        assert [t["key"] for t in r["rows"]] == [SID]
+        # THE WHOLE POINT: the row the poll hands back already wears the lane,
+        # not just the flag under it.
+        assert r["rows"][0]["live"] is True
+        assert r["rows"][0]["status"] == "in_progress"
+        assert client.post("/api/tasks/running", json={"session_id": "  "}).status_code == 400

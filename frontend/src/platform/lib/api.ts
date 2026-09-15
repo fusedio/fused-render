@@ -3277,6 +3277,27 @@ export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
   return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
 }
 
+/**
+ * "A TURN JUST STARTED ON THIS SESSION" — told to the server at the moment of
+ * the send, because nothing on disk says it in time.
+ *
+ * A chat here runs `claude -p` out of process, and the CLI writes its registry
+ * row two to four seconds later; until then the listing read every one of this
+ * app's own turns as done (fused_render/tasks_watch.py `mark_running`). The
+ * sender is the only party that knows sooner, so it says so — once, from
+ * `run-controller.ts`, beside the `announceTasksChanged` that already marks
+ * both turn boundaries.
+ *
+ * BEST-EFFORT BY CONTRACT: the mark is a short-lived floor the registry
+ * overrides, so a failed call costs the first seconds of one ring and nothing
+ * else. Callers swallow the rejection rather than surfacing it.
+ */
+export function markTaskRunning(sessionId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/running", {
+    session_id: sessionId,
+  });
+}
+
 // "Show more": the whole thread, newest first. Deliberately a separate call —
 // this one is allowed to parse the full transcript because it is one task, on
 // demand, and never on the listing path.

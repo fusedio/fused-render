@@ -7,26 +7,34 @@ moved. What it never had was a *signal*. The page asked every 20 seconds, and a
 session started (or resumed) in a terminal outside the app surfaced up to a poll
 later. This module is that signal.
 
-Claude Code writes three things this can watch, all verified on a real
+Claude Code writes two things this can watch, both verified on a real
 machine (2026-08-27):
 
 * ``~/.claude/sessions/<pid>.json`` — one file per RUNNING ``claude`` process:
   ``sessionId``, ``cwd``, ``status`` (busy / shell / waiting / idle),
-  ``updatedAt``. Appears before the transcript exists, is rewritten on every
-  status change, and is deleted when the process exits. A resumed two-week-old
-  session gets a file under its OLD session id.
-* ``~/.claude/history.jsonl`` — one line appended per user prompt, across every
-  project, carrying ``sessionId``. Lands the same second the prompt is sent;
-  the transcript's assistant append follows seconds later.
+  ``updatedAt``. Rewritten on every status change and deleted when the process
+  exits. A resumed two-week-old session gets a file under its OLD session id.
 * the transcripts themselves — but only the ones the registry says are live
   are watched here (a couple of dozen files, not the machine's whole history).
   A session nobody is running cannot grow.
+
+`~/.claude/history.jsonl` is NOT one of them, though it was for a round: a
+chat sent from this app runs ``claude -p``, and ``-p`` never appends to it.
 
 Stat-poll on a daemon thread, once a second, rather than FSEvents/inotify:
 cross-platform, no ctypes, no dropped-event semantics to reason about, and
 ~25 ``stat`` calls per second is nothing. A real filesystem stream can replace
 ``_loop`` later behind the same two exports — ``generation()`` and ``wait()`` —
 without the router or the page noticing.
+
+What no file can say in time is that a turn has JUST started. A ``claude -p``
+run writes its registry row two to four seconds after the process starts, so
+the listing called every one of this app's own turns "done" for its first
+seconds — and a short turn for the whole of it (Akshil, 2026-09-15). The send
+is the earliest signal there is, and the page that made it says so directly:
+``mark_running`` (``POST /api/tasks/running``). It is a short-fused FLOOR under
+the liveness reading, not a status of its own — the registry takes over the
+moment it appears, and the mark expires by itself either way.
 
 Everything here degrades to "no news": an unreadable directory, a half-written
 registry file, a vanished transcript all produce no keys and no exception. The
@@ -46,7 +54,6 @@ from fused_render import session_liveness, tasks_store
 # session_liveness.py and tasks_store.py. Module-level so tests can point them
 # at a tmp dir.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-HISTORY_PATH = os.path.join(CLAUDE_DIR, "history.jsonl")
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 
 TICK_SEC = 1.0
@@ -71,32 +78,18 @@ _registry: dict[str, dict] = {}   # session_id -> parsed sessions/<pid>.json
 # four seconds paints a running badge for the 45s tail window after it exits.
 _departed: dict[str, float] = {}
 _primed = False
-_hist_size = -1
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
-# session_id -> when history.jsonl last named it. A chat sent from this app
-# runs `claude -p`, which writes history.jsonl and the transcript but NEVER a
-# sessions/<pid>.json — so the registry alone would watch none of our own
-# chats, and a row stayed "done" for the whole turn (Akshil, 2026-09-15). A
-# prompt is the one signal every kind of session gives, so a session is
-# watched for PROMPTED_WATCH_SEC after each one, registry or not.
-_prompted: dict[str, float] = {}
-PROMPTED_WATCH_SEC = 600.0
-# session_id -> the transcript mtime whose "window closed" bump was already
-# announced. A `-p` run leaves no registry departure to notice, so the only way
-# its row ever goes idle without a later write is the tail rule's 45s window
-# running out — a change no byte on disk marks. One bump per settled mtime, at
-# the moment the window closes, is what lets the poll see it (Bugbot, PR #1153).
-_tr_settled: dict[str, float] = {}
-# session_id -> when to look again for a transcript that was not there. A
-# prompted session's transcript is found by a glob across every project bucket
-# (`session_liveness.transcript_path`); a session with none yet — history.jsonl
-# names every project's prompts, not only this app's — must not pay that glob
-# once a second for the whole watch window.
-_tr_missing: dict[str, float] = {}
-MISSING_RETRY_SEC = 5.0
+# session_id -> when its "a turn just started here" mark runs out. See
+# `mark_running`.
+_marks: dict[str, float] = {}
+# How long a mark stands on its own. Long enough to cover the two to four
+# seconds a `claude -p` takes to write its registry row (measured), short
+# enough that a send whose run died on the spot — a bad model id, a refused
+# permission — is not left spinning for a noticeable time.
+MARK_TTL_SEC = 15.0
 _started = False
 
 
@@ -142,6 +135,21 @@ def live_from_registry(session_id: str,
     updated = row.get("updatedAt")
     active = float(updated) / 1000.0 if isinstance(updated, (int, float)) else 0.0
     return status in RUNNING_STATUSES, active
+
+
+def is_marked_running(session_id: str) -> bool:
+    """Is there a live "a turn just started here" mark on this session?
+
+    A floor under the liveness reading (`routers/tasks.py _live`), never a
+    status: a registry that says `busy` is saying the same thing louder, and one
+    that says `idle` is not yet entitled to be believed — the row it would flip
+    to done belongs to a turn whose process has not finished announcing itself.
+    """
+    if not session_id:
+        return False
+    with _cond:
+        until = _marks.get(session_id)
+    return until is not None and until > time.time()
 
 
 def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | None]:
@@ -196,48 +204,37 @@ def notify(keys: set[str] | None = None) -> None:
     _bump(set(keys or ()))
 
 
+def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC) -> None:
+    """Say that a turn just started on this session, and announce it.
+
+    The client calls this the moment it sends (`POST /api/tasks/running`),
+    which is earlier than anything Claude Code writes — see the module note. The
+    bump is what makes the change-poll wake: without it the ring would be right
+    and still a listing behind.
+
+    Re-marking an already-marked session just moves the expiry, so a client that
+    says it twice costs one extra bump and nothing else."""
+    if not session_id:
+        return
+    with _cond:
+        _marks[session_id] = time.time() + max(0.0, ttl_sec)
+    _bump({session_id})
+
+
+def _expire_marks(now: float) -> set[str]:
+    """Session ids whose mark has just run out — CHANGED KEYS, because they are.
+
+    A mark going away is the moment a row stops being running on our say-so, and
+    no byte on disk marks it. Announced once: the id is dropped here, so the
+    next tick has nothing left to expire."""
+    with _cond:
+        gone = {sid for sid, until in _marks.items() if until <= now}
+        for sid in gone:
+            del _marks[sid]
+    return gone
+
+
 # --------------------------------------------------------------- one tick
-
-def _read_history_tail() -> set[str]:
-    """Session ids named by history lines appended since the last tick."""
-    global _hist_size
-    try:
-        size = os.path.getsize(HISTORY_PATH)
-    except OSError:
-        # No history yet (a fresh ~/.claude): the file's first line, when it
-        # comes, is news — so the baseline is "read from byte 0", not "unseen".
-        _hist_size = 0
-        return set()
-    if _hist_size < 0 or size < _hist_size:
-        # First sight, or the file was rotated/rewritten: baseline, no news.
-        _hist_size = size
-        return set()
-    if size == _hist_size:
-        return set()
-    keys: set[str] = set()
-    try:
-        with open(HISTORY_PATH, "rb") as f:
-            f.seek(_hist_size)
-            chunk = f.read(size - _hist_size)
-    except OSError:
-        return set()
-    cut = chunk.rfind(b"\n")
-    if cut < 0:
-        return set()  # a line still being written: read it whole next tick
-    _hist_size += cut + 1
-    for line in chunk[:cut + 1].decode("utf-8", "replace").split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        sid = obj.get("sessionId") if isinstance(obj, dict) else None
-        if isinstance(sid, str) and sid:
-            keys.add(sid)
-    return keys
-
 
 def _pid_alive(pid) -> bool:
     """Is there a process with this pid? Asked once a second per live session,
@@ -369,35 +366,14 @@ def _read_live_transcripts() -> set[str]:
     """Session ids whose transcript grew — checked only for sessions a running
     `claude` holds, which is the only kind that can grow."""
     keys: set[str] = set()
-    now = time.time()
     with _cond:
-        registered = set(_registry)
-    for sid, at in list(_prompted.items()):
-        if now - at > PROMPTED_WATCH_SEC:
-            del _prompted[sid]
-            if sid not in registered:
-                # Nobody else is watching it: its bookkeeping goes too, the
-                # way `_read_registry` drops a departed session's, or every
-                # `-p` chat ever sent grows three dicts for the process's life.
-                _tr_paths.pop(sid, None)
-                _tr_sizes.pop(sid, None)
-                _tr_settled.pop(sid, None)
-                _tr_missing.pop(sid, None)
-    sids = registered | set(_prompted)
-    for sid in sorted(sids):
+        registered = sorted(_registry)
+    for sid in registered:
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
-            if _tr_missing.get(sid, 0.0) > now:
-                continue
             path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
             if not path:
-                # Only a PROMPTED-only session backs off: a registered one
-                # writes its transcript within a second of appearing, and its
-                # first row is news this tick must not miss.
-                if sid not in registered:
-                    _tr_missing[sid] = now + MISSING_RETRY_SEC
                 continue
-            _tr_missing.pop(sid, None)
             _tr_paths[sid] = path
         try:
             size = os.path.getsize(path)
@@ -405,55 +381,31 @@ def _read_live_transcripts() -> set[str]:
             continue
         last = _tr_sizes.get(sid)
         _tr_sizes[sid] = size
-        if last == size and sid in _prompted and sid not in registered:
-            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The listing's
-            # tail rule (`session_liveness.transcript_running`, the same call
-            # routers/tasks.py `_live` falls back to) stops calling this
-            # session running a while after its last REAL message — the
-            # instant no byte on disk marks. Announce it once per settled
-            # file, so a listing is not left wearing an in-progress ring until
-            # some unrelated poke. The very rule, not an mtime arithmetic of
-            # our own: housekeeping rows push the mtime past the last message,
-            # and a bump timed off the mtime would land late.
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if _tr_settled.get(sid) == mtime:
-                continue
-            running, _active = session_liveness.transcript_running(path, now)
-            if not running:
-                _tr_settled[sid] = mtime
-                keys.add(sid)
-            continue
         if last is None:
             # First sight of this transcript. News if it was born under a
-            # session we are already watching (the first prompt just landed);
-            # a baseline otherwise.
+            # session we are already watching (the first turn just landed); a
+            # baseline otherwise.
             if _primed:
                 keys.add(sid)
             continue
         if size != last:
             keys.add(sid)
-            # A turn is still writing: the watch window follows the WRITES, not
-            # only the prompt that opened it, or a turn longer than the window
-            # (an agent run) would stop being watched half-way through.
-            if sid in _prompted:
-                _prompted[sid] = now
     return keys
 
 
 def tick() -> set[str]:
-    """One pass over the three signals. Bumps the generation if anything moved
-    and returns the affected task keys. The first call is a baseline and
-    announces nothing — the page's first full listing already has it all."""
+    """One pass over the registry, the transcripts it names, and the marks that
+    have run out. Bumps the generation if anything moved and returns the
+    affected task keys. The first call is a baseline and announces nothing —
+    the page's first full listing already has it all."""
     global _primed
-    keys = _read_history_tail()
-    now = time.time()
-    for sid in keys:
-        _prompted[sid] = now
-    keys |= _read_registry()
+    keys = _read_registry()
     keys |= _read_live_transcripts()
+    # LAST, so a mark whose registry row arrived in the same tick is retired
+    # against a listing that already knows better. The row does not flicker
+    # either way — `_live` reads `busy` over a mark — but the announcement
+    # belongs after the fact that replaces it.
+    keys |= _expire_marks(time.time())
     if not _primed:
         _primed = True
         return set()
@@ -490,18 +442,15 @@ def start() -> None:
 
 def reset() -> None:
     """Forget everything. For tests."""
-    global _generation, _primed, _hist_size
+    global _generation, _primed
     with _cond:
         _generation = 0
         _changed.clear()
         _registry.clear()
         _departed.clear()
+        _marks.clear()
     _primed = False
-    _hist_size = -1
     _sess_mtimes.clear()
     _sess_sids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
-    _prompted.clear()
-    _tr_settled.clear()
-    _tr_missing.clear()

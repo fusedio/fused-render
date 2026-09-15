@@ -1824,14 +1824,29 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
         mtime = os.path.getmtime(path)
     except OSError:
         return False, 0.0
+    session_id = os.path.splitext(os.path.basename(path))[0]
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
     # the tail's timestamps add up to, and `idle` is not, even if housekeeping
     # touched the file a second ago. Its last-active stamp is used only when it
     # is newer than the transcript's — a registry row is rewritten on status
     # changes, not on every message, so the file can know the later moment.
-    from_registry = tasks_watch.live_from_registry(
-        os.path.splitext(os.path.basename(path))[0], mtime)
+    from_registry = tasks_watch.live_from_registry(session_id, mtime)
+    # …EXCEPT IN THE FIRST SECONDS OF A TURN THIS APP SENT (tasks_watch
+    # `mark_running`). A chat here runs `claude -p`, whose registry row lands two
+    # to four seconds after the process starts — so both "no row at all" and "the
+    # previous turn's idle row" read as done, and every turn sent from this app
+    # wore a done ring for its first seconds; a short turn for the whole of it
+    # (Akshil, 2026-09-15).
+    #
+    # While the send's mark is alive, ONLY `busy` outranks it: a registry saying
+    # the turn is running is the same answer from a better source, and every
+    # other answer is a file that has not caught up. `now` is the honest
+    # last-active — the turn is happening as this is read — and the mark expires
+    # on its own, so a run that died on the spot settles without a write.
+    if tasks_watch.is_marked_running(session_id) and not (
+            from_registry and from_registry[0]):
+        return True, now
     if from_registry is not None:
         running, active = from_registry
         if now - mtime <= sessions._STALE_TAIL_SEC:
@@ -3129,6 +3144,38 @@ def api_tasks_pulse():
             if row.get("kind") != "draft"
         ]
     }
+
+
+class RunningPatch(BaseModel):
+    session_id: str
+
+
+@router.post("/api/tasks/running")
+def api_task_running(patch: RunningPatch):
+    """A turn just started on this session — said by the page that sent it.
+
+    THE ONE FACT NO FILE CARRIES IN TIME. A chat sent from this app runs
+    `claude -p` through `/api/run`, which means the turn begins in another
+    process entirely: this server has no route it could hang the news on, and
+    the CLI's own registry row lands two to four seconds later. So the sender
+    says it, once, at the moment it sends — `run-controller.ts`, beside the
+    `announceTasksChanged` it already fires on both turn boundaries.
+
+    A FLOOR WITH A FUSE, not a status (tasks_watch.mark_running): it expires by
+    itself, and a registry that says `busy` replaces it the moment it appears.
+    Nothing here can pin a row open — the worst a wrong or malicious call can do
+    is spin one ring for fifteen seconds.
+
+    A session id with no task row yet is not an error: a brand-new chat's
+    transcript may not exist when its first turn starts, and the mark is simply
+    waiting for it. Hence no 404 and no lookup — this endpoint does not read the
+    listing at all.
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_running(session_id)
+    return {"ok": True, "session_id": session_id}
 
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:

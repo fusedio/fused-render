@@ -3433,3 +3433,64 @@ describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
     expect(made.controller.getState().trouble).toBeNull();
   });
 });
+
+describe("the server hears that a turn started (Akshil, 2026-09-15)", () => {
+  /** Every POST this turn made, by URL, with the body it carried. */
+  function captureFetch() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      posts.push({
+        url: String(typeof input === "string" ? input : (input as { url: string }).url),
+        body: init?.body ? JSON.parse(init.body) : null,
+      });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return { posts, restore: () => { globalThis.fetch = real; } };
+  }
+
+  const marks = (posts: { url: string; body: unknown }[]) =>
+    posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
+
+  test("a fresh chat is marked as soon as the poll names its session", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => poll({ done: n > 0, text: "ok", segments: [text("ok")] }),
+      });
+      await controller.sendMessage("hi");
+      // ONCE, and only for the turn's START. `noteChatActivity` fires at both
+      // boundaries; this must not, or a finished row would spin out the mark's
+      // whole TTL.
+      expect(marks(posts)).toEqual([{ session_id: "s1" }]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a chat that already has a session is marked at the send itself", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      // The first poll has not answered yet when this goes out — that is the
+      // whole point: it is the earliest anything can say the turn is open.
+      expect(marks(posts)).toEqual([{ session_id: "s1" }]);
+    } finally {
+      restore();
+    }
+  });
+});
