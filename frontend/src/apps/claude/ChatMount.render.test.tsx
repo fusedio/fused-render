@@ -69,9 +69,11 @@ test("the mount is the native box and NO iframe, with the mount class on it", as
   expect(nodes(r).filter((n) => n.type === "iframe")).toEqual([]);
   expect(classes(r)).toContain("chat-mount preview-frame is-shown");
   // The chat's own root is inside it — i.e. the chunk really landed, and this
-  // is not the cover.
+  // is not the Suspense cover. NOT asserted: that no `.chat-frame-placeholder`
+  // remains — the loaded chat draws its OWN boot cover (same class) while its
+  // first history read is in flight, and whether that read has settled by now
+  // depends on what other test files warmed, which is not this test's claim.
   expect(classes(r).some((c) => c.includes("chat-root"))).toBe(true);
-  expect(classes(r).some((c) => c.includes("chat-frame-placeholder"))).toBe(false);
 });
 
 test("the chunk's cover never wears a host's FRAME geometry class", async () => {
