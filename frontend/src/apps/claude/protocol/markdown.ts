@@ -82,6 +82,18 @@ export function renderMd(text: string): string {
   }
 }
 
+/** The same markup with every link UNWRAPPED to its text and every image
+ *  dropped — for a row that is itself one pointer target (the folded reply,
+ *  Bugbot on d4233e8). Done on the SANITIZED output rather than on the input:
+ *  GFM makes `<a>`s out of bare `https://…`, `www.…` and `user@host` at parse
+ *  time, so no pre-render filter can be total, and DOMPurify has already made
+ *  the string safe to edit with a tag-shaped regex. */
+export function renderMdInert(text: string): string {
+  return renderMd(text)
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
+    .replace(/<img\b[^>]*>/gi, "");
+}
+
 /** What a `<pre>` puts on the clipboard (T:15015-15023): its `<code>`, else
  *  its per-line `<span>`s joined (an Edit chip's diff), else its text. */
 function copyText(pre: HTMLElement): string {

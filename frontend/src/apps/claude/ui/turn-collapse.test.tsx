@@ -697,10 +697,17 @@ test("the folded line skips scaffolding and drops link targets (bugbot on 69cdcb
   expect(firstLine("```python\nprint(1)\n```\nDone.")).toBe("print(1)");
   expect(firstLine("---\n\nSummary here")).toBe("Summary here");
   // Links keep their words and lose the <a>: the row is one pointer target.
-  expect(firstLine("See [the docs](https://x.y/z) and <https://a.b>")).toBe(
-    "See the docs and https://a.b",
-  );
+  expect(firstLine("See [the docs](https://x.y/z) now")).toBe("See the docs now");
+  expect(firstLine("```c++\nint x;")).toBe("int x;");
   expect(firstLine("![alt text](img.png) after")).toBe("alt text after");
   // Bold survives — it is words, not scaffolding.
   expect(firstLine("**Done.** two files")).toBe("**Done.** two files");
+});
+
+test("the folded line carries no <a> even for GFM autolinks (bugbot on d4233e8)", async () => {
+  const { renderMdInert } = await import("../protocol/markdown");
+  const html = renderMdInert("see https://x.com and www.example.com or bob@example.com **now**");
+  expect(html).not.toContain("<a");
+  expect(html).not.toContain("<img");
+  expect(html).toContain("https://x.com");
 });

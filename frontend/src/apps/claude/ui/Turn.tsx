@@ -329,7 +329,12 @@ export const Turn = memo(function Turn({
                 line.muted ? (
                   line.text
                 ) : (
-                  <MarkdownView className="turn-collapsed-md" text={line.text} enhance={false} />
+                  <MarkdownView
+                    className="turn-collapsed-md"
+                    text={line.text}
+                    enhance={false}
+                    links={false}
+                  />
                 )
               ) : (
                 ""
@@ -484,7 +489,7 @@ export function collapsedLine(turn: TurnRow): CollapsedLine {
 /** Markdown that is SCAFFOLDING, not words: a fence opener/closer, a thematic
  *  break, a bare heading/list marker, a table rule. A folded row built from one
  *  of these renders as an empty <pre>/<hr> — a blank line (Bugbot on 69cdcb9). */
-const SCAFFOLD = /^(`{3,}|~{3,})[\w-]*$|^([-*_]\s*){3,}$|^#{1,6}$|^[-*+]$|^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
+const SCAFFOLD = /^(`{3,}|~{3,})[^`]*$|^([-*_]\s*){3,}$|^#{1,6}$|^[-*+]$|^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
 
 /** A markdown link's text with its target dropped, an image's alt text, a bare
  *  autolink's address. The folded row is one pointer target that OPENS the
@@ -494,8 +499,7 @@ function delink(line: string): string {
   return line
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-    .replace(/<(https?:\/\/[^>\s]+)>/g, "$1");
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1");
 }
 
 export function firstLine(text: string): string {
