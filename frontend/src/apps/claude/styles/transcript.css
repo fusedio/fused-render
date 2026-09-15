@@ -255,6 +255,13 @@
   font-size: inherit;
   line-height: inherit;
   white-space: nowrap;
+  /* GREY WINS OVER THE MARKDOWN'S OWN COLOURS (Akshil, 2026-09-15): bold and
+     italic keep their weight and slant, but a folded row is one muted line —
+     a link's blue, a heading's foreground or inline code's tint would make
+     the summary louder than the open body. `inherit` from `.turn-collapsed`,
+     which also carries the hover lift and `.is-muted`. */
+  color: inherit;
+  background: none;
 }
 .chat-root .turn.assistant .turn-collapsed-md ul,
 .chat-root .turn.assistant .turn-collapsed-md ol {
