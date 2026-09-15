@@ -95,13 +95,14 @@ test("a chunk that fails to load leaves an error card with a way out, not a blan
   // React to the root and the reader loses the whole shell — and with nothing to
   // degrade to, what is owed instead is the fact and the one press that fixes it.
   const Gone = lazy(() => Promise.reject(new Error("chunk 404")));
+  let ready = 0;
   const quiet = console.error;
   console.error = () => {};
   let r!: ReturnType<typeof create>;
   try {
     await act(async () => {
       r = create(
-        <ChatChunkBoundary fallback={<ChatLoadFailed />}>
+        <ChatChunkBoundary fallback={<ChatLoadFailed onReady={() => ready++} />}>
           <Suspense fallback={<div className="chat-frame-placeholder" />}>
             <Gone />
           </Suspense>
@@ -121,6 +122,10 @@ test("a chunk that fails to load leaves an error card with a way out, not a blan
   const buttons = nodes(r).filter((n) => n.type === "button");
   expect(buttons.length).toBe(1);
   expect(JSON.stringify(buttons[0].children)).toContain("Reload");
+  // And it completes the host's swap (Bugbot on #1149): a content pane that
+  // holds the previous frame until `onReady` would otherwise keep this card
+  // at opacity 0 — Reload hidden — until its own timeout gave up.
+  expect(ready).toBe(1);
 });
 
 test("a host id that arrives later pushes only its own key", async () => {

@@ -13,6 +13,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useRef,
   useState,
   type MutableRefObject,
   type ReactNode,
@@ -130,10 +131,24 @@ export function useHostIds(
  * would be a stylesheet inside the very chunk that just failed to arrive: this
  * card would then be shown unstyled in exactly the one case it is ever shown.
  *
+ * IT REPORTS READY. A host that holds the previous pane on screen until the
+ * chat says `onReady` (the explorer content pane's held-frame swap) would
+ * otherwise keep this card at opacity 0 until its swap timeout — Reload hidden
+ * for exactly the wait it exists to shorten. The card IS the chat's final
+ * state for this mount, so it completes the swap the way a loaded chat would.
+ *
  * Exported for its own test: the boundary is only reachable from a chunk that
  * fails to load, which no host can stage.
  */
-export function ChatLoadFailed() {
+export function ChatLoadFailed({ onReady }: { onReady?: () => void }) {
+  // Once per mount, through a ref: the card never changes after it appears,
+  // and a host's `onReady` is a swap trigger, not a subscription — a host that
+  // hands a fresh closure every render must not re-trigger the swap.
+  const readyRef = useRef(onReady);
+  readyRef.current = onReady;
+  useEffect(() => {
+    readyRef.current?.();
+  }, []);
   return (
     <div className="chat-mount-failed">
       <div className="trouble-card" role="alert">
@@ -277,7 +292,7 @@ export function ChatMount(props: ChatMountProps) {
   // it away.
   return (
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
-     <ChatChunkBoundary fallback={<ChatLoadFailed />}>
+     <ChatChunkBoundary fallback={<ChatLoadFailed {...(props.onReady ? { onReady: props.onReady } : {})} />}>
       <Suspense fallback={placeholderFor()}>
         <ClaudeChat
           file={props.file}
