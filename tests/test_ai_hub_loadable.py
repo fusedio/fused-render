@@ -10,6 +10,15 @@ from fused_render.ai import hub_loadable
 from fused_render.ai.hub_architecture import Architecture
 from fused_render.ai.runners import formats
 
+#: Captured before the autouse `_force_mflux_registry` fixture below ever
+#: monkeypatches `hub_loadable.mflux_loadable_repos` — a reference to the
+#: REAL implementation, for the one test that exercises it directly
+#: (`test_mflux_loadable_repos_a_repo_id_shared_by_two_registry_entries_
+#: dedupes_cleanly`). `monkeypatch.setattr` rebinds the module attribute,
+#: not this already-bound reference, so calling it here always runs the
+#: real function regardless of what the autouse fixture did to the name.
+_real_mflux_loadable_repos = hub_loadable.mflux_loadable_repos
+
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
@@ -18,10 +27,41 @@ def _clear_cache():
     hub_loadable.reset_cache()
 
 
-def test_mflux_image_is_an_allowlist_of_its_two_klein_repos():
-    kind, data = hub_loadable.loadable_kind("mflux-image")
-    assert kind == "allowlist"
-    assert data == frozenset(formats.MFLUX_VARIANTS)
+#: A forced stand-in for `mflux_loadable_repos()`'s real return — the two
+#: CANONICAL repo ids the old hand-typed `MFLUX_VARIANTS` allowlist's two
+#: entries actually resolve to under mflux's own `AVAILABLE_MODELS`
+#: (`black-forest-labs/FLUX.2-klein-4B` / `-9B`, not the `mlx-community`
+#: quantized ids `MFLUX_VARIANTS` was keyed by — see
+#: `test_flux2_klein_mlx_community_ids_stay_loadable_via_their_base_model_tag`
+#: below for why those need their `base_model:` tag instead).
+_DEFAULT_MFLUX_REPOS = frozenset({
+    "black-forest-labs/FLUX.2-klein-4B",
+    "black-forest-labs/FLUX.2-klein-9B",
+})
+
+
+@pytest.fixture(autouse=True)
+def _force_mflux_registry(monkeypatch):
+    """Per `tests-inherit-dev-machine-runner-resolution`: every test below
+    that touches `mflux-image` must judge admission against an EXPLICITLY
+    forced reading of mflux's registry, never this dev machine's real
+    installed one. Without this, a CI box with no mflux venv installed
+    would get `mflux_loadable_repos() is None` (the venv-absent "admit
+    everything" reading) and silently invert every refusal assertion in
+    this file. A test that needs the venv-absent behavior itself, or a
+    different registry, overrides this with its own `monkeypatch.setattr`
+    call."""
+    monkeypatch.setattr(hub_loadable, "mflux_loadable_repos", lambda: _DEFAULT_MFLUX_REPOS)
+
+
+def test_mflux_image_is_a_mflux_kind_backed_by_the_derived_registry(monkeypatch):
+    """Round "derive mflux admission from the installed engine": `mflux-
+    image` no longer reports the old two-entry hand-typed allowlist —
+    `loadable_kind` now delegates to `mflux_loadable_repos()`, whatever it
+    returns."""
+    monkeypatch.setattr(hub_loadable, "mflux_loadable_repos",
+                         lambda: frozenset({"org/base-model"}))
+    assert hub_loadable.loadable_kind("mflux-image") == ("mflux", frozenset({"org/base-model"}))
 
 
 def test_mlx_text_is_a_model_types_kind():
@@ -67,11 +107,111 @@ def test_admission_flags_when_the_sole_available_runner_refuses():
     assert runs_on is None
 
 
-def test_admission_allowlist_kind_admits_a_listed_variant():
-    variant_id = next(iter(formats.MFLUX_VARIANTS))
+def test_admission_mflux_kind_admits_when_the_rows_own_id_is_in_the_registry():
+    """mflux's own `exact_match` rule: the row's own id names a registry
+    entry directly (a straight browse of the canonical, un-quantized
+    repo)."""
+    variant_id = next(iter(_DEFAULT_MFLUX_REPOS))
     loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",), model_id=variant_id, model_type=None)
     assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_admission_mflux_kind_admits_via_base_model_tag_explicit_base_rule():
+    """mflux's own `explicit_base` rule, and the case the brief calls out as
+    the one that matters in practice: the row's OWN id is a quantized
+    conversion the registry has never heard of, but its `base_model:` tag
+    names the canonical repo the registry DOES carry."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",),
+        model_id="mlx-community/FLUX.2-Klein-4B-4bit", model_type=None,
+        base_model="black-forest-labs/FLUX.2-klein-4B")
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_admission_mflux_kind_refuses_when_neither_id_nor_base_model_resolves():
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",),
+        model_id="some-org/unrelated-repo", model_type=None,
+        base_model="some-org/also-unrelated")
+    assert loadable is False
+    assert reason == "no engine here loads this"
+    assert runs_on is None
+
+
+def test_admission_mflux_kind_venv_absent_admits_everything(monkeypatch):
+    """The critical case from the brief: when the mflux venv is not
+    installed yet, `mflux-image` must NOT refuse every row — that would
+    flag the entire image capability on a machine that has simply not
+    installed the engine yet, mirroring `mlx_vlm_model_types`'s own
+    venv-absent convention exactly."""
+    monkeypatch.setattr(hub_loadable, "mflux_loadable_repos", lambda: None)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",),
+        model_id="literally-anything/at-all", model_type=None)
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_mflux_loadable_repos_a_repo_id_shared_by_two_registry_entries_dedupes_cleanly(
+        tmp_path, monkeypatch):
+    """`resolve_key`'s own docstring in mflux's `config_resolution.py` warns
+    that several registry entries SHARE a repo id (the FLUX.1-dev
+    ControlNets; z-image-turbo and its ControlNet) and are matched by
+    object IDENTITY, not by name — a flat `repo_id -> variant` dict cannot
+    represent that. This module never builds one: `mflux_loadable_repos`
+    only collects a SET of ids, so two entries sharing `model_name` simply
+    de-duplicate into one set entry, never crash, and admission never has
+    to pick which registry entry "won" — there is nothing to pick."""
+    import types as _types
+
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    venv_dir = tmp_path / "venv"
+    config_dir = (venv_dir / "lib" / "python3.12" / "site-packages" / "mflux"
+                  / "models" / "common" / "config")
+    config_dir.mkdir(parents=True)
+    (config_dir / "model_config.py").write_text('''
+AVAILABLE_MODELS = {
+    "dev": ModelConfig(
+        priority=0,
+        aliases=["dev"],
+        model_name="black-forest-labs/FLUX.1-dev",
+        base_model=None,
+    ),
+    "dev-controlnet-canny": ModelConfig(
+        priority=6,
+        aliases=["dev-controlnet-canny"],
+        model_name="black-forest-labs/FLUX.1-dev",
+        base_model=None,
+        controlnet_model="InstantX/FLUX.1-dev-Controlnet-Canny",
+    ),
+    "flux2-klein-4b": ModelConfig(
+        priority=11,
+        aliases=["flux2-klein-4b", "klein-4b"],
+        model_name="black-forest-labs/FLUX.2-klein-4B",
+        base_model=None,
+    ),
+}
+''')
+    runner = _types.SimpleNamespace(folder=str(tmp_path / "project"))
+    monkeypatch.setattr(registry, "by_code", lambda code: runner)
+    monkeypatch.setattr(envinstall, "venv_dir_for", lambda folder: str(venv_dir))
+
+    result = _real_mflux_loadable_repos()
+    assert result == frozenset({
+        "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-klein-4B",
+    })
+
+    # And feeding that derived set through admission() for either of the two
+    # entries sharing "black-forest-labs/FLUX.1-dev" never raises and always
+    # admits — membership, not identity, is all admission ever asks.
+    monkeypatch.setattr(hub_loadable, "mflux_loadable_repos", lambda: result)
+    for model_id in ("black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.2-klein-4B"):
+        loadable, reason, runs_on = hub_loadable.admission(
+            runner_codes=("mflux-image",), model_id=model_id, model_type=None)
+        assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_admission_names_the_architecture_that_would_load_it():
@@ -312,14 +452,22 @@ def test_caller_with_neither_names_nor_library_name_never_flags_a_diffusers_row(
     assert (loadable, reason, runs_on) == (True, None, None)
 
 
-def test_both_flux2_klein_variants_stay_loadable_with_no_chip_via_mflux():
-    """Both FLUX.2 Klein ids in `MFLUX_VARIANTS` — unchanged by this round:
-    `mflux-image` admits them directly via its own allowlist, so no chip,
-    regardless of what `diffusers-image` would say about them."""
-    for variant_id in formats.MFLUX_VARIANTS:
+def test_flux2_klein_mlx_community_ids_stay_loadable_via_their_base_model_tag():
+    """The two `mlx-community` ids the OLD hand-typed `MFLUX_VARIANTS`
+    allowlist named directly are themselves quantized conversions — neither
+    is a `model_name` mflux's own registry carries (that's
+    `black-forest-labs/FLUX.2-klein-4B`/`-9B`). They stay loadable, no chip,
+    via their own `base_model:` tag instead — the same fact `hub_models.py`
+    already parses to show "from black-forest-labs/FLUX.2-klein-*B" under
+    each row, now also threaded into admission."""
+    cases = (
+        ("mlx-community/FLUX.2-Klein-4B-4bit", "black-forest-labs/FLUX.2-klein-4B"),
+        ("mlx-community/flux2-klein-9b-4bit", "black-forest-labs/FLUX.2-klein-9B"),
+    )
+    for variant_id, canonical_base in cases:
         loadable, reason, runs_on = hub_loadable.admission(
             runner_codes=("mflux-image", "diffusers-image"),
-            model_id=variant_id, model_type=None,
+            model_id=variant_id, model_type=None, base_model=canonical_base,
             active_runner_code="mflux-image")
         assert (loadable, reason, runs_on) == (True, None, None)
 
@@ -346,7 +494,7 @@ def test_admission_with_no_available_runners_at_all_stays_loadable():
 def test_admission_silent_when_the_active_runner_itself_admits():
     """Active runner admits -> nothing new: no reason, no `runs_on` info,
     exactly like today."""
-    variant_id = next(iter(formats.MFLUX_VARIANTS))
+    variant_id = next(iter(_DEFAULT_MFLUX_REPOS))
     loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image", "diffusers-image"),
         model_id=variant_id, model_type=None,
@@ -386,7 +534,7 @@ def test_admission_no_runs_on_when_active_runner_code_is_unknown():
 def test_admission_no_runs_on_when_only_one_runner_available_at_all(monkeypatch):
     """A single available runner that itself is active and admits: no
     `runs_on` — there is no "another" runner to name."""
-    variant_id = next(iter(formats.MFLUX_VARIANTS))
+    variant_id = next(iter(_DEFAULT_MFLUX_REPOS))
     loadable, reason, runs_on = hub_loadable.admission(
         runner_codes=("mflux-image",),
         model_id=variant_id, model_type=None,

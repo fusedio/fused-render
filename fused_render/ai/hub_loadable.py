@@ -6,9 +6,20 @@ right KIND of thing", never "will SOMETHING here actually open it once
 downloaded". Three runners narrow further, after their own download-and-load
 step, in ways this module's own facts describe:
 
-* `mflux-image` only builds the exact repo ids in
-  `runners.formats.MFLUX_VARIANTS` — everything else refuses at load,
-  after the download (`mflux_image/worker.py`'s own variant lookup).
+* `mflux-image` only builds a repo id mflux's OWN installed registry
+  recognises — derived at search time from mflux's `AVAILABLE_MODELS`
+  (statically parsed, never imported; see `mflux_loadable_repos`'s own
+  docstring for why), admitting a row when either its own id names a
+  registry entry directly, or its `base_model:` tag does (mflux's own
+  `explicit_base` resolution rule — the case that matters for every
+  `mlx-community` quantized conversion, none of which name themselves
+  after the canonical repo). Before this (round: "derive mflux admission
+  from the installed engine"), this was a two-entry hand-typed dict
+  (`runners.formats.MFLUX_VARIANTS`) that refused every image repo on the
+  Hub except the two it happened to name — mflux 0.19.0 ships fifteen
+  model families. `MFLUX_VARIANTS` itself is untouched: it is still read
+  at LOAD time, by `mflux_image/worker.py`, for the `variant`/`module`/
+  `config`/`vae` payload admission has no opinion on.
 * `mlx-text` (mlx-vlm) refuses at load any config whose `model_type` has no
   module in its own installed `mlx_vlm.models` package
   (`mlx_text/worker.py:_unsupported_architecture`).
@@ -66,12 +77,13 @@ here" chip over a repo someone already has would be redundant, not helpful.
 """
 from __future__ import annotations
 
+import ast
 import glob
 import os
 
 from fused_render.ai.hub_architecture import Architecture, is_diffusers_repo
 from fused_render.ai.runners import formats
-from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS, MFLUX_VARIANTS
+from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS
 
 #: runner venv dir -> the `model_type`s its installed `mlx_vlm.models`
 #: package can open, or `None` if that venv is not installed yet. Cached
@@ -79,11 +91,17 @@ from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS, MFLUX_VARIANTS
 #: once per row batch, not once per row.
 _MLX_VLM_TYPES_CACHE: dict[str, frozenset | None] = {}
 
+#: runner venv dir -> the repo ids mflux's own installed `AVAILABLE_MODELS`
+#: registry recognises, or `None` if that venv is not installed yet. Same
+#: cache shape and same reason as `_MLX_VLM_TYPES_CACHE` above.
+_MFLUX_REPOS_CACHE: dict[str, frozenset | None] = {}
+
 
 def reset_cache() -> None:
     """Test hook — a real install/uninstall between test cases must not leak
     a stale reading across them."""
     _MLX_VLM_TYPES_CACHE.clear()
+    _MFLUX_REPOS_CACHE.clear()
 
 
 def mlx_vlm_model_types() -> frozenset | None:
@@ -131,17 +149,107 @@ def mlx_vlm_model_types() -> frozenset | None:
     return result
 
 
+def _repo_ids_from_available_models(source: str) -> frozenset[str]:
+    """Statically parse mflux's `AVAILABLE_MODELS` dict literal out of its
+    OWN `model_config.py` source text — every entry's `model_name` keyword
+    (the HF repo id each `ModelConfig` loads), plus any `aliases` entry that
+    is itself repo-shaped (contains `/`; none currently are, but the brief
+    calls for it defensively).
+
+    **Parsed with `ast`, never imported.** Importing `mflux.models.common.
+    config.model_config` pulls in `mlx.core` (Metal/Accelerate init) — a
+    runner-venv dependency this server process must not carry, per the
+    brief's own instruction and mirroring `mlx_vlm_model_types`'s choice to
+    read the filesystem rather than import `mlx_vlm`.
+
+    Deliberately a SET, not a `repo_id -> variant` dict: `resolve_key`'s own
+    docstring in `config_resolution.py` warns that several registry entries
+    SHARE a repo id (the FLUX.1-dev ControlNets; z-image-turbo and its
+    ControlNet) and are matched by object identity, not by name — a flat
+    dict keyed by repo id cannot represent that, and would have to silently
+    pick one entry over another. Admission only asks "would ANY entry with
+    this id resolve", never "which one", so a de-duplicating set answers it
+    exactly and the identity ambiguity never arises here.
+
+    Returns an empty set on anything unparsable (syntax error, no
+    `AVAILABLE_MODELS` assignment found) — the caller reads that the same
+    way as "nothing found", i.e. still `None` overall, never "matches
+    nothing" for an installed-but-unreadable venv."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    repos: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS" for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for value_node in node.value.values:
+            if not isinstance(value_node, ast.Call):
+                continue
+            for kw in value_node.keywords:
+                if kw.arg == "model_name":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        repos.add(kw.value.value)
+                elif kw.arg == "aliases":
+                    if isinstance(kw.value, ast.List):
+                        for elt in kw.value.elts:
+                            if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                                    and "/" in elt.value):
+                                repos.add(elt.value)
+    return frozenset(repos)
+
+
+def mflux_loadable_repos() -> frozenset[str] | None:
+    """The repo ids mflux's own installed `AVAILABLE_MODELS` registry
+    recognises — read off its `model_config.py` source (see
+    `_repo_ids_from_available_models` for why statically, never imported).
+
+    Returns `None` — "unknown", meaning no filtering — when the mflux venv
+    has not been installed yet, NEVER an empty set, for the same reason as
+    `mlx_vlm_model_types`: an uninstalled venv must not read as "this
+    runner can load nothing", which would flag the entire image capability
+    on a machine that has not installed mflux yet."""
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    runner = registry.by_code("mflux-image")
+    if runner is None:
+        return None
+    venv_dir = envinstall.venv_dir_for(runner.folder)
+    if venv_dir in _MFLUX_REPOS_CACHE:
+        return _MFLUX_REPOS_CACHE[venv_dir]
+    pattern = os.path.join(venv_dir, "lib", "python3.*", "site-packages", "mflux",
+                            "models", "common", "config", "model_config.py")
+    matches = glob.glob(pattern)
+    result: frozenset[str] | None = None
+    if matches:
+        try:
+            with open(matches[0], encoding="utf-8") as fh:
+                source = fh.read()
+        except OSError:
+            source = ""
+        repos = _repo_ids_from_available_models(source)
+        if repos:
+            result = repos
+    _MFLUX_REPOS_CACHE[venv_dir] = result
+    return result
+
+
 def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
-    """`("allowlist", frozenset[str])` | `("model_types", frozenset[str] | None)`
-    | `("file_layout", None)` | `("diffusers", None)` | `("any", None)` for
-    runner `code` — the one fact `admission()` checks a row against.
-    Declared here rather than
+    """`("mflux", frozenset[str] | None)` | `("model_types", frozenset[str] |
+    None)` | `("file_layout", None)` | `("diffusers", None)` | `("any",
+    None)` for runner `code` — the one fact `admission()` checks a row
+    against. Declared here rather than
     hard-coded per capability in `hub_models.py`, for `Runner.hub_filter_
     tags`'s own reason: a future runner with its own narrower loadable set
     should not require editing the search module, only this function.
     """
     if code == "mflux-image":
-        return ("allowlist", frozenset(MFLUX_VARIANTS))
+        return ("mflux", mflux_loadable_repos())
     if code == "mlx-text":
         return ("model_types", mlx_vlm_model_types())
     if code == "ltx-video":
@@ -153,14 +261,40 @@ def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
 
 def _admits(kind: str, data, *, model_id: str, model_type: str | None,
             names: frozenset[str],
-            library_name: str | None = None) -> tuple[bool, str | None]:
+            library_name: str | None = None,
+            base_model: str | None = None) -> tuple[bool, str | None]:
     """Whether ONE runner (already reduced to its `loadable_kind`) would open
     this row, and the bespoke reason to use IF this turns out to be the only
     available runner and it refuses (see `admission`'s own handling of the
     single-runner case) — `None` when no bespoke wording applies and the
     generic architecture-shaped reason should win instead."""
     if kind == "allowlist":
+        # Kept as a generic, general-purpose kind (plain id-set membership,
+        # no `base_model` fallback) even though no runner's `loadable_kind`
+        # currently produces it — `mflux-image` moved to the more capable
+        # `"mflux"` kind below this round, but hub_models.py's own
+        # integration tests still use `"allowlist"` as a reusable stand-in
+        # for "some restrictive membership test" via a direct
+        # `loadable_kind` monkeypatch, independent of any specific runner.
         if isinstance(data, frozenset) and model_id in data:
+            return True, None
+        return False, None
+    if kind == "mflux":
+        # `data` is `None` — "mflux venv not installed yet, unknown" — the
+        # same "unknown means don't filter" convention as `model_types`
+        # below: an uninstalled venv must not flag every image row.
+        if not isinstance(data, frozenset):
+            return True, None
+        # Rule 1, mflux's own `exact_match`: the row's own id names a
+        # registry entry directly (a straight browse of a canonical repo,
+        # e.g. `black-forest-labs/FLUX.2-klein-4B` itself).
+        if model_id in data:
+            return True, None
+        # Rule 2, mflux's own `explicit_base`: the row's `base_model:` tag
+        # names a registry entry — the case that matters for every
+        # `mlx-community` quantized conversion, none of which are named
+        # after the canonical repo mflux actually knows.
+        if base_model and base_model in data:
             return True, None
         return False, None
     if kind == "model_types":
@@ -251,6 +385,7 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
               model_type: str | None,
               names: frozenset[str] = frozenset(),
               library_name: str | None = None,
+              base_model: str | None = None,
               architecture: Architecture | None = None,
               active_runner_code: str | None = None,
               ) -> tuple[bool, str | None, str | None]:
@@ -292,6 +427,15 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
     `names` nor `library_name` being absent flags a row; see `_admits`'s
     own `"diffusers"` branch for the explicit never-drops-a-row guard.
 
+    `base_model`: the row's own `base_model:<relation>:<id>` tag, already
+    parsed by the caller (`hub_architecture.parse_base_model_tag`) — needed
+    ONLY by `mflux-image`'s `"mflux"` kind, mirroring mflux's own
+    `explicit_base` resolution rule: a quantized `mlx-community` conversion
+    is never itself a registry entry, but the canonical repo it was
+    converted from usually is. `None` for a caller that has not parsed it
+    (every pre-existing caller), which the `"mflux"` branch simply skips —
+    the row's own id can still admit it via the `exact_match` rule alone.
+
     `architecture`: `hub_architecture.resolve(raw)`'s own reading of the
     row, used ONLY to build the reason when every available runner refused
     and no bespoke per-runner wording applies (see `_generic_reason`).
@@ -312,7 +456,7 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
         kind, data = loadable_kind(code)
         loadable, bespoke_reason = _admits(
             kind, data, model_id=model_id, model_type=model_type, names=names,
-            library_name=library_name)
+            library_name=library_name, base_model=base_model)
         if loadable:
             admitting.append(code)
         else:

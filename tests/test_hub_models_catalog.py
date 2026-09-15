@@ -578,6 +578,13 @@ def test_catalog_path_names_the_engine_when_active_refuses_but_another_admits(
     other = types.SimpleNamespace(hub_filter_tags=(), code="diffusers-image")
     monkeypatch.setattr(hub, "for_capability", lambda capability: active)
     monkeypatch.setattr(hub, "available_runners", lambda capability: (active, other))
+    # `tests-inherit-dev-machine-runner-resolution`: force mflux-image's own
+    # admission set explicitly rather than reading whatever mflux happens to
+    # be installed on the machine running this test — the row below
+    # ("stabilityai/sd-xl") must refuse via `mflux-image` and admit via
+    # `diffusers-image`'s real `library_name: "diffusers"` signal,
+    # regardless of what mflux's own registry contains here.
+    monkeypatch.setattr(hub.hub_loadable, "mflux_loadable_repos", lambda: frozenset())
 
     resp = _search(client, {"capability": registry.IMAGE_GENERATION, "sort": "downloads", "limit": 24})
     assert resp.status_code == 200

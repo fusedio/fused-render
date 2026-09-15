@@ -1614,9 +1614,15 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # `hub_architecture.resolve`, no new fact, no extra Hub request.
         library_name = raw.get("library_name")
         library_name = library_name if isinstance(library_name, str) else None
+        # Round "derive mflux admission from the installed engine": `base_model`
+        # is ALSO threaded through now, for `mflux-image`'s own `"mflux"` kind
+        # (mflux's `explicit_base` rule) — the exact same `base_model` this
+        # function already computed above (from the row's own `base_model:`
+        # tag) for the "from <org>/<Base>" display line; no new fact, no
+        # extra Hub request.
         loadable, loadable_reason, runs_on = hub_loadable.admission(
             runner_codes=runner_codes, model_id=model_id, model_type=model_type,
-            names=sibling_names, library_name=library_name,
+            names=sibling_names, library_name=library_name, base_model=base_model,
             architecture=architecture, active_runner_code=runner.code)
     else:
         loadable, loadable_reason, runs_on = True, None, None
