@@ -108,15 +108,6 @@ MARK_TTL_SEC = 15.0
 # `mark_running` on the same session starts this over, `_expire_marks` drops
 # it with the mark it timed out on, and a stood-down mark takes it along too.
 _mark_busy_seen: set[str] = set()
-# session_id -> when the SENDER said a turn on it had ended (`mark_idle`,
-# `POST /api/tasks/idle`). The other half of `_marks`: the mark is retired the
-# instant this is set (see `mark_idle`), so nothing here changes what
-# `is_marked_running` answers — it exists so a caller that wants to know "did
-# the page itself just tell us this turn is over" can ask, and so a mark that
-# was never placed (a turn a NEWER mark preempted, or one this session never
-# got) still returns None rather than looking like a stand-down that never
-# happened.
-_idle: dict[str, float] = {}
 # session_id -> the newest client `turn` a `mark_idle` call carried. Running
 # and idle are two independent POSTs (`run-controller.ts` `noteTurnRunning` /
 # `noteTurnIdle`), and nothing serializes their arrival at this process — a
@@ -129,11 +120,18 @@ _idle: dict[str, float] = {}
 # ended. Client-side awaiting closes the ordinary case; this is the net under
 # it, and under the one running ping that is never awaited (`resumeAttach`'s
 # untracked seat `0` — see `noteSessionId`).
+#
+# Nothing ever pops an entry outright — a session can always send one more
+# `mark_running` to race against — so `_expire_marks` drops any entry older
+# than `_LAST_IDLE_TURN_TTL_SEC` on every tick; otherwise this would keep one
+# float per session ever seen for the server's whole lifetime (bugbot
+# #4019069906).
 _last_idle_turn: dict[str, float] = {}
-# A stand-down is news once. Kept only long enough that a caller reading it a
-# beat later still finds it — well past any poll interval, short enough that a
-# session's whole history is not remembered in a dict that only ever grows.
-IDLE_TTL_SEC = 60.0
+# `turn` is the client's `Date.now()` — epoch milliseconds — and client and
+# server share a clock: this is one local desktop app. A few multiples of
+# `MARK_TTL_SEC`, comfortably longer than the running/idle race this guards,
+# short enough the dict cannot grow across the server's whole lifetime.
+_LAST_IDLE_TURN_TTL_SEC = MARK_TTL_SEC * 4
 _started = False
 
 
@@ -259,16 +257,16 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | N
     Re-marking an already-marked session just moves the expiry, so a client that
     says it twice costs one extra bump and nothing else. A NEW mark is a new
     turn, so any stand-down bookkeeping the last one left behind — a
-    corroborating `busy` sighting, an `idle_at` stamp — goes with it; nothing
-    about how the previous turn ended is entitled to an opinion about this
-    one (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark).
+    corroborating `busy` sighting — goes with it; nothing about how the
+    previous turn ended is entitled to an opinion about this one
+    (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark).
 
     `turn` (the client's `Date.now()` at send) is compared against
     `_last_idle_turn`: a value that is not strictly newer than the last
     `mark_idle` this session saw is a running POST that lost the race to its
     OWN turn's idle POST (running and idle are independent fetches; nothing
     orders their arrival here) — a stale echo, not a new send, and it is
-    dropped whole: no mark, no bump, no touching `_mark_busy_seen` / `_idle`.
+    dropped whole: no mark, no bump, no touching `_mark_busy_seen`.
     `turn=None` (a caller with nothing to compare, or a test) always proceeds,
     exactly as if `_last_idle_turn` had nothing on file for it.
 
@@ -288,7 +286,6 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | N
         else:
             _mark_turns.pop(session_id, None)
         _mark_busy_seen.discard(session_id)
-        _idle.pop(session_id, None)
     _bump({session_id})
 
 
@@ -321,8 +318,8 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     retire that newer mark — a stale idle standing down a turn that has not
     happened yet — and the row would read `done` until the registry (or that
     turn's own eventual `mark_idle`) caught up. A `turn` that is older than the
-    mark currently standing is dropped whole for `_marks`/`_mark_busy_seen`/
-    `_idle` (the live mark is left exactly as it was); it still updates
+    mark currently standing is dropped whole for `_marks`/`_mark_busy_seen`
+    (the live mark is left exactly as it was); it still updates
     `_last_idle_turn` when it is the newer value there, so a `mark_running`
     later claiming that same stale turn is refused by `mark_running`'s own
     check, and it does not bump — nothing observable changed."""
@@ -339,7 +336,6 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
         _marks.pop(session_id, None)
         _mark_turns.pop(session_id, None)
         _mark_busy_seen.discard(session_id)
-        _idle[session_id] = time.time()
         if turn is not None:
             prev = _last_idle_turn.get(session_id)
             if prev is None or turn > prev:
@@ -347,35 +343,28 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     _bump({session_id})
 
 
-def idle_at(session_id: str) -> float | None:
-    """When `mark_idle` last retired this session's mark, or None if it never
-    has — or if it did, long enough ago (`IDLE_TTL_SEC`) that the stamp is not
-    worth keeping around. Not consulted by `is_marked_running`, which already
-    reflects a stand-down the moment `mark_idle` makes one; this is for a
-    caller that wants to know the stand-down itself happened."""
-    if not session_id:
-        return None
-    with _cond:
-        at = _idle.get(session_id)
-    if at is None:
-        return None
-    if time.time() - at > IDLE_TTL_SEC:
-        return None
-    return at
-
-
 def _expire_marks(now: float) -> set[str]:
     """Session ids whose mark has just run out — CHANGED KEYS, because they are.
 
     A mark going away is the moment a row stops being running on our say-so, and
     no byte on disk marks it. Announced once: the id is dropped here, so the
-    next tick has nothing left to expire."""
+    next tick has nothing left to expire.
+
+    Also evicts any `_last_idle_turn` entry old enough
+    (`_LAST_IDLE_TURN_TTL_SEC`) that nothing still racing against it could
+    plausibly arrive — that dict has no other way to shrink (bugbot
+    #4019069906): nothing pops an entry outright, since a session can always
+    send one more `mark_running` to compare against."""
     with _cond:
         gone = {sid for sid, until in _marks.items() if until <= now}
         for sid in gone:
             del _marks[sid]
             _mark_turns.pop(sid, None)
             _mark_busy_seen.discard(sid)
+        stale_cutoff = (now * 1000.0) - (_LAST_IDLE_TURN_TTL_SEC * 1000.0)
+        stale = [sid for sid, turn in _last_idle_turn.items() if turn < stale_cutoff]
+        for sid in stale:
+            del _last_idle_turn[sid]
     return gone
 
 
@@ -640,7 +629,6 @@ def reset() -> None:
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()
-        _idle.clear()
         _last_idle_turn.clear()
     _primed = False
     _sess_mtimes.clear()

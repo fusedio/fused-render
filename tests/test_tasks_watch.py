@@ -366,26 +366,41 @@ def test_mark_idle_retires_the_mark_and_announces_it(claude_home):
 
     tasks_watch.mark_idle(SID)
     assert not tasks_watch.is_marked_running(SID)
-    assert tasks_watch.idle_at(SID) is not None
     # News at once, like the mark: no tick in between, and nothing left for the
     # next tick to expire.
     assert tasks_watch.wait(gen, 0) == (gen + 1, frozenset({SID}))
     assert tasks_watch.tick() == set()
 
-    # A send after a stand-down is a new turn; the stand-down goes with it.
+    # A send after a stand-down is a new turn.
     tasks_watch.mark_running(SID, ttl_sec=60)
-    assert tasks_watch.idle_at(SID) is None
     assert tasks_watch.is_marked_running(SID)
 
+    gen2 = tasks_watch.generation()
     tasks_watch.mark_idle("")  # no id, no stand-down, no bump
-    assert tasks_watch.idle_at("") is None
+    assert tasks_watch.generation() == gen2
 
 
-def test_a_stand_down_runs_out_once_the_tail_is_stale_anyway(claude_home):
-    tasks_watch.mark_idle(SID)
-    assert tasks_watch.idle_at(SID) is not None
-    tasks_watch._idle[SID] = time.time() - tasks_watch.IDLE_TTL_SEC - 1
-    assert tasks_watch.idle_at(SID) is None
+def test_last_idle_turn_is_capped_so_it_cannot_grow_forever(claude_home):
+    """Nothing ever pops a `_last_idle_turn` entry outright — a session can
+    always send one more `mark_running` to race against it — so without a cap
+    it would keep one float per session ever seen for the server's whole
+    lifetime (bugbot #4019069906). `_expire_marks` (run every `tick`) evicts
+    anything old enough that nothing could still plausibly be racing against
+    it."""
+    now_ms = time.time() * 1000.0
+    tasks_watch.mark_idle(SID, turn=now_ms)
+    assert SID in tasks_watch._last_idle_turn
+
+    # Still fresh: an expire pass leaves it alone.
+    tasks_watch._expire_marks(time.time())
+    assert SID in tasks_watch._last_idle_turn
+
+    # Old enough that nothing could still be racing against it.
+    tasks_watch._last_idle_turn[SID] = (
+        now_ms - tasks_watch._LAST_IDLE_TURN_TTL_SEC * 1000.0 - 1000.0
+    )
+    tasks_watch._expire_marks(time.time())
+    assert SID not in tasks_watch._last_idle_turn
 
 
 def test_the_registry_going_idle_after_busy_retires_the_mark(claude_home):
