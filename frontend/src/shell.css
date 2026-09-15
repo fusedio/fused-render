@@ -55,6 +55,12 @@
    wall it lays them out on and the live pane inside one — so it must come after
    both files whose vocabulary it is layering over. */
 @import "./styles/task-cards.css";
+/* LAST of the tasks family, and the order is the whole reason: the side peek's
+   halo has to beat the row/card/chip rules the four files above declare for the
+   same elements (`.tasks-row:hover`, `.tasks-row.is-selected`, the board card's
+   own fill), and it beats them by being later — not by being more specific and
+   not with `!important`. */
+@import "./styles/task-peek.css";
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
 @import "./styles/app-page.css";

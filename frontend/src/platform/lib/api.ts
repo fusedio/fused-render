@@ -1175,6 +1175,17 @@ export interface Prefs {
   // reader asks `chat?.recap !== false` rather than `=== true`: an older
   // server answers without the field and that server's chat still shows it.
   chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  /** Whether a task on the Tasks page opens in a side panel beside the list
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
+   *  experimental, default off). Optional because a server that predates the
+   *  switch sends nothing — which reads as off, the same as the default. */
+  task_peek?: { enabled: boolean };
+  /** Whether a card on the Tasks page's Cards wall is titled by the newest
+   *  message in its conversation instead of by the task's own title
+   *  (shell/prefs.py `task_card_last_message`, experimental, default off).
+   *  Optional for the same reason `task_peek` is: a server that predates the
+   *  switch sends nothing, and nothing reads as off. */
+  task_cards?: { last_message: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1394,6 +1405,17 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
+/** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
+export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_peek_enabled: enabled });
+}
+
+/** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
+ *  the conversation's newest message, or the task's own title. */
+export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
 }
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
@@ -3093,6 +3115,20 @@ export interface Task {
   // server that predates the field; read as `"chat"`, which is what every draft
   // joined onto a session row was before a form could be bound to one.
   draft?: { preview: string; updated_at: number; kind?: "chat" | "form" } | null;
+  /**
+   * THE LAST TURN OF THIS CONVERSATION, whoever took it — one line of it, with
+   * `role` saying which — or null for a task nothing has been said in yet.
+   *
+   * `messages` below carries PROMPTS only, so this is the one field on the row
+   * that can carry Claude's own words. It is what the Cards wall titles a card
+   * by while the `task_card_last_message` pref is on (shell/task-card-title-
+   * flag.ts); nothing reads it while the pref is off.
+   *
+   * Optional: a server that predates the field sends nothing, which reads the
+   * same as "nothing said yet" — the card falls back to the task's title, the
+   * behaviour it has always had.
+   */
+  last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.

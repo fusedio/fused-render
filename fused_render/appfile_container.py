@@ -19,7 +19,8 @@ Layout (all integers little-endian)::
     20+index_csize  ...         data section: one zlib stream per file
 
 The index carries what v1's ``manifest.json`` did (``fused_app_file: 2``,
-``name``, ``entry``) plus ``files``: a list of ``{path, offset, size, csize,
+``name``, ``entry``), the UTC ``exported_at`` stamp the writer adds so a
+consumer can see when the app was exported, plus ``files``: a list of ``{path, offset, size, csize,
 sha256}`` where ``offset`` is relative to the START OF THE DATA SECTION, so
 the writer can stream every file into a temp before it knows the index's own
 compressed length. ``sha256`` is of the decompressed bytes and is verified on

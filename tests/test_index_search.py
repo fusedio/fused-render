@@ -628,6 +628,15 @@ def test_search_ranked_agrees_whether_or_not_the_name_column_is_there(tmp_path):
     for p in [os.path.join(cfg.files_dir, part["file"])
               for part in read_manifest(cfg)["partitions"]]:
         pq.write_table(pq.read_table(p).drop(["name"]), p)
+    # This rewrites the partition files IN PLACE without going through
+    # `compact` (no generation bump) — a real "index predating `name`"
+    # never does this; a real index's schema only ever changes via a new
+    # generation, which is exactly what item 5's cache keys on. Clear the
+    # cache here to simulate a fresh process seeing this (unrealistic,
+    # test-only) same-generation schema change; production readers never
+    # need to.
+    from fused_render.index import query as _query_mod
+    _query_mod._src_cols_cache.clear()
     without_name = search_ranked(cfg, "/r", "readme.md")
 
     assert with_name["hits"] == without_name["hits"]
@@ -685,6 +694,71 @@ def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatc
     out = search_ranked(cfg, "/r", "alpha")
     assert out["hits"], out
     assert len(describes) == 1, describes
+
+
+def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
+        tmp_path, monkeypatch):
+    """SPEC-index-search-wedge.md item 5: every keystroke against an
+    unchanged index used to pay its own DESCRIBE (D707's per-call dedup only
+    ever collapsed the TWO DESCRIBEs one `search_ranked` call used to issue
+    into one — it never carried across calls). A manifest generation's
+    schema is uniform (`_src_cols`'s own docstring), so a second, third, ...
+    call against the SAME generation should cost zero more DESCRIBEs — only
+    a new generation (a compaction) may pay again."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"], dirs=["/r/sub"])
+    describes = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().startswith("DESCRIBE"):
+                describes.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+
+    out1 = search_ranked(cfg, "/r", "alpha")
+    assert out1["hits"], out1
+    assert len(describes) == 1, describes
+
+    # A second call, different query, SAME generation: no new DESCRIBE.
+    out2 = search_ranked(cfg, "/r", "beta")
+    assert out2["hits"], out2
+    assert len(describes) == 1, describes
+
+    # A third call via search_under: its files branch reuses the same cache
+    # entry `search_ranked` already populated (no new DESCRIBE for it), but
+    # its dirs branch asks a schema question of a DIFFERENT source (dirs.parquet)
+    # for the first time this generation — that one legitimately costs one
+    # DESCRIBE, since nothing has cached the dirs schema yet.
+    search_under(cfg, "/r")
+    assert len(describes) == 2, describes
+
+    # Compact again (a real schema-affecting event, at least generation-wise)
+    # — a new generation must be willing to look again, not trust a stale
+    # answer forever.
+    shards2 = str(tmp_path / "run2" / "shards")
+    os.makedirs(shards2, exist_ok=True)
+    sink2 = Sink(shards2, "t", pa, pq, cfg.shard_rows)
+    root = canonical_root("/r")
+    sink2.add(root, "s2", ("sig2", [(root + "/gamma.txt", root, "gamma.txt",
+                                      "txt", 30, 300.0)], 30, 1_000_000_000, 0))
+    sink2.close()
+    compact(cfg, root, shards2, pa, pq)
+
+    out3 = search_ranked(cfg, "/r", "gamma")
+    assert out3["hits"], out3
+    assert len(describes) == 3, describes
 
 
 # -- cancellation: a `token` handed to search_ranked -------------------------

@@ -1,22 +1,21 @@
 // The recent list's `null` vs `[]` semantics and the change-poll's loop.
 import { describe, expect, test } from "bun:test";
 
-import type { runAgent } from "./agent";
-import { changeIsHere, CHANGES_BACKOFF_MS, subscribeRecent, type RecentEnv } from "./sessions";
-import type { SessionRow } from "./types";
+import type { Task } from "@platform/lib/api";
+import { changeIsHere, CHANGES_BACKOFF_MS, subscribeTasks, type RecentEnv } from "./sessions";
 
-const row = (id: string): SessionRow => ({
-  id,
-  preview: id,
-  created_at: 0,
-  last_used: 0,
-  cwd: "/proj",
-  pane: "",
-  running: false,
-});
+const row = (key: string): Task =>
+  ({
+    key,
+    task_id: key.toUpperCase(),
+    project: "/proj",
+    target: "/proj/app.py",
+    session_id: key,
+    title: key,
+  }) as Task;
 
 /** A change-poll that answers from a script and records its waits. */
-function env(script: unknown[], sessions: unknown[]): RecentEnv & { urls: string[]; waits: number[] } {
+function env(script: unknown[], listings: unknown[]): RecentEnv & { urls: string[]; waits: number[] } {
   const urls: string[] = [];
   const waits: number[] = [];
   let i = 0;
@@ -37,12 +36,11 @@ function env(script: unknown[], sessions: unknown[]): RecentEnv & { urls: string
       waits.push(ms);
       return Promise.resolve();
     },
-    run: ((_d: string, action: string) => {
-      if (action !== "sessions") throw new Error("unexpected " + action);
-      const answer = sessions[Math.min(s++, sessions.length - 1)];
+    tasks: () => {
+      const answer = listings[Math.min(s++, listings.length - 1)];
       if (answer === "boom") return Promise.reject(new Error("no such folder"));
-      return Promise.resolve(answer);
-    }) as unknown as typeof runAgent,
+      return Promise.resolve(answer as { tasks?: Task[] });
+    },
   };
 }
 
@@ -61,44 +59,39 @@ describe("changeIsHere (T:18384)", () => {
   });
 });
 
-describe("subscribeRecent", () => {
+describe("subscribeTasks", () => {
   test("`null` first (the skeleton), then the rows", async () => {
-    const seen: (SessionRow[] | null)[] = [];
-    const e = env([], [{ sessions: [row("a"), row("b")] }]);
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), e);
+    const seen: (Task[] | null)[] = [];
+    const e = env([], [{ tasks: [row("a"), row("b")] }]);
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), e);
     await settle();
     off();
     expect(seen[0]).toBeNull();
-    expect(seen[1]?.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(seen[1]?.map((t) => t.key)).toEqual(["a", "b"]);
     // `null` is emitted ONCE — a re-read repaints in place (T:18411).
     expect(seen.filter((s) => s === null).length).toBe(1);
   });
 
   test("no target ⇒ an empty list and no watch at all", async () => {
-    const seen: (SessionRow[] | null)[] = [];
+    const seen: (Task[] | null)[] = [];
     const e = env([], []);
-    subscribeRecent("/tpl", null, (r) => seen.push(r), e)();
+    subscribeTasks(null, (r) => seen.push(r), e)();
     await settle();
     expect(seen).toEqual([null, []]);
     expect(e.urls.length).toBe(0);
   });
 
   test("a failed read is an empty list, never an error UI (T:18469)", async () => {
-    const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), env([], ["boom"]));
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([], ["boom"]));
     await settle();
     off();
     expect(seen[seen.length - 1]).toEqual([]);
   });
 
-  test("an `{error}` answer is the same as a failure", async () => {
-    const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent(
-      "/tpl",
-      "/proj/app.py",
-      (r) => seen.push(r),
-      env([], [{ error: "missing target file" }]),
-    );
+  test("an answer with no `tasks` at all is the same as a failure", async () => {
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([], [{}]));
     await settle();
     off();
     expect(seen[seen.length - 1]).toEqual([]);
@@ -106,9 +99,8 @@ describe("subscribeRecent", () => {
 
   test("the first change-poll is a handshake that reads nothing back", async () => {
     let reads = 0;
-    const e = env([{ generation: 7, full: true }], [{ sessions: [row("a")] }]);
-    const off = subscribeRecent(
-      "/tpl",
+    const e = env([{ generation: 7, full: true }], [{ tasks: [row("a")] }]);
+    const off = subscribeTasks(
       "/proj/app.py",
       () => {
         reads++;
@@ -130,11 +122,10 @@ describe("subscribeRecent", () => {
         { generation: 2, rows: [{ project: "/elsewhere" }] },
         { generation: 3, rows: [{ project: "/proj" }] },
       ],
-      [{ sessions: [row("a")] }],
+      [{ tasks: [row("a")] }],
     );
     let reads = 0;
-    const off = subscribeRecent(
-      "/tpl",
+    const off = subscribeTasks(
       "/proj/app.py",
       (r) => {
         if (r) reads++;
@@ -149,11 +140,10 @@ describe("subscribeRecent", () => {
   test("a `gone` key only counts when the list was showing it (T:18352)", async () => {
     const e = env(
       [{ generation: 1 }, { generation: 2, gone: ["nope"] }, { generation: 3, gone: ["a"] }],
-      [{ sessions: [row("a")] }],
+      [{ tasks: [row("a")] }],
     );
     let reads = 0;
-    const off = subscribeRecent(
-      "/tpl",
+    const off = subscribeTasks(
       "/proj/app.py",
       (r) => {
         if (r) reads++;
@@ -166,10 +156,9 @@ describe("subscribeRecent", () => {
   });
 
   test("a failed change-poll backs off 3 s and carries on", async () => {
-    const e = env([{ generation: 1 }, "boom", { generation: 2, full: true }], [{ sessions: [] }]);
+    const e = env([{ generation: 1 }, "boom", { generation: 2, full: true }], [{ tasks: [] }]);
     let reads = 0;
-    const off = subscribeRecent(
-      "/tpl",
+    const off = subscribeTasks(
       "/proj/app.py",
       (r) => {
         if (r) reads++;
@@ -184,7 +173,7 @@ describe("subscribeRecent", () => {
 
   test("unsubscribing aborts the in-flight long-poll (bugbot #892)", async () => {
     let signal: AbortSignal | undefined;
-    const e = env([{ generation: 1 }], [{ sessions: [] }]);
+    const e = env([{ generation: 1 }], [{ tasks: [] }]);
     const wrapped: RecentEnv = {
       ...e,
       fetch: (url, init) => {
@@ -192,31 +181,30 @@ describe("subscribeRecent", () => {
         return e.fetch(url, init);
       },
     };
-    const off = subscribeRecent("/tpl", "/proj/app.py", () => {}, wrapped);
+    const off = subscribeTasks("/proj/app.py", () => {}, wrapped);
     await settle();
     off();
     expect(signal?.aborted).toBe(true);
   });
 
   test("a hidden tab sits the long-poll out entirely (T:18369)", async () => {
-    const e = env([{ generation: 1 }], [{ sessions: [] }]);
-    const off = subscribeRecent("/tpl", "/proj/app.py", () => {}, { ...e, hidden: () => true });
+    const e = env([{ generation: 1 }], [{ tasks: [] }]);
+    const off = subscribeTasks("/proj/app.py", () => {}, { ...e, hidden: () => true });
     await settle();
     off();
     expect(e.urls.length).toBe(0);
   });
 
-  test("rows with no id are dropped rather than rendered", async () => {
-    const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent(
-      "/tpl",
+  test("rows with no key are dropped rather than rendered", async () => {
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks(
       "/proj/app.py",
       (r) => seen.push(r),
-      env([], [{ sessions: [row("a"), null, { preview: "no id" }] }]),
+      env([], [{ tasks: [row("a"), null, { title: "no key" }] }]),
     );
     await settle();
     off();
-    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
   });
 });
 
@@ -228,10 +216,10 @@ describe("subscribeRecent", () => {
 // chat is exactly that. Landing then spends ONE read, racing the CLI's own
 // transcript write, and when it lost, nothing ever came back: "new task from
 // Home → Back: not in Recent chats, needed a refresh" (owner, R3-1).
-describe("subscribeRecent — the push side (R3-1)", () => {
+describe("subscribeTasks — the push side (R3-1)", () => {
   /** The env, plus a hand-driven poke channel and retry clock. */
-  function pushEnv(sessions: unknown[]) {
-    const e = env([], sessions);
+  function pushEnv(listings: unknown[]) {
+    const e = env([], listings);
     const fired: Array<() => void> = [];
     const timers: Array<{ ms: number; fn: () => void; cancelled: boolean }> = [];
     const wrapped: RecentEnv = {
@@ -255,28 +243,27 @@ describe("subscribeRecent — the push side (R3-1)", () => {
   }
 
   test("a poke re-reads the list", async () => {
-    const seen: (SessionRow[] | null)[] = [];
-    const p = pushEnv([{ sessions: [row("a")] }, { sessions: [row("a"), row("b")] }]);
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    const seen: (Task[] | null)[] = [];
+    const p = pushEnv([{ tasks: [row("a")] }, { tasks: [row("a"), row("b")] }]);
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
     await settle();
-    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
     // The turn that just ended, announced by this document's own controller —
     // or by any other document's, through the activity stamp.
     p.poke();
     await settle();
     off();
-    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
     // The skeleton is still spent exactly once: a re-read over a drawn list
     // repaints in place (T:18411).
     expect(seen.filter((s) => s === null).length).toBe(1);
   });
 
   test("two more looks a few seconds apart cover the CLI's transcript write", async () => {
-    const p = pushEnv([{ sessions: [] }, { sessions: [row("a")] }]);
-    const seen: (SessionRow[] | null)[] = [];
+    const p = pushEnv([{ tasks: [] }, { tasks: [row("a")] }]);
+    const seen: (Task[] | null)[] = [];
     // `coverWrite` — T's `leftLive`. The looks are for a chat left MID-TURN.
-    const off = subscribeRecent(
-      "/tpl",
+    const off = subscribeTasks(
       "/proj/app.py",
       (r) => seen.push(r),
       p.env,
@@ -288,27 +275,27 @@ describe("subscribeRecent — the push side (R3-1)", () => {
     p.timers[0].fn();
     await settle();
     off();
-    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
   });
 
   test("A COLD LANDING SCHEDULES NEITHER (T:13066, P4-21)", async () => {
     // T gates them on `leftLive` because their whole purpose is covering the
     // CLI's first transcript write for a chat abandoned mid-turn. PR4 shipped
     // them unconditionally, so every cold landing boot spent two extra
-    // `sessions` reads for a write that had already happened.
-    const p = pushEnv([{ sessions: [row("a")] }]);
-    const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    // listing reads for a write that had already happened.
+    const p = pushEnv([{ tasks: [row("a")] }]);
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
     await settle();
     expect(p.timers.map((t) => t.ms)).toEqual([]);
     // One read, and the rows are up: the list is what it honestly is.
-    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a"]);
     off();
   });
 
   test("unsubscribing takes the listeners AND the pending retries with it", async () => {
-    const p = pushEnv([{ sessions: [] }]);
-    const off = subscribeRecent("/tpl", "/proj/app.py", () => {}, p.env);
+    const p = pushEnv([{ tasks: [] }]);
+    const off = subscribeTasks("/proj/app.py", () => {}, p.env);
     await settle();
     expect(p.fired.length).toBe(1);
     off();
@@ -319,9 +306,9 @@ describe("subscribeRecent — the push side (R3-1)", () => {
   });
 
   test("a poke after unsubscribing reads nothing", async () => {
-    const p = pushEnv([{ sessions: [] }]);
-    const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    const p = pushEnv([{ tasks: [] }]);
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), p.env);
     await settle();
     const fn = p.fired[0];
     off();

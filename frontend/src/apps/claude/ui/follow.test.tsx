@@ -128,6 +128,39 @@ test("A READER WHO HAS SCROLLED UP IS NOT JUMPED when the banner appears", () =>
   expect(scroller.scrollTop).toBe(1000);
 });
 
+test("THE AUTO-FOLD SHRINKING THE LOG DOES NOT RE-ARM THE FOLLOW (Akshil 2026-09-15)", () => {
+  const { scroller, followRef } = mount();
+  // A reader who has scrolled up to read the middle of the conversation.
+  scroller.scrollTop = 200;
+  act(() => scroller.fire("wheel", { deltaY: -50 }));
+  act(() => scroller.fire("scroll", {}));
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(200);
+  // Now a new reply lands and the rule folds the previous one: `.chat-log`
+  // loses most of its height and the browser CLAMPS `scrollTop` down with it.
+  // The reader has not moved — but the tail has moved UP TO MEET THEM, so the
+  // near-bottom window they are suddenly inside is the fold's doing and not a
+  // gesture. Read as "they are at the bottom", it re-armed the follow and the
+  // next write yanked them to the tail.
+  scroller.scrollHeight = 400;
+  scroller.scrollTop = 100;
+  act(() => scroller.fire("scroll", {}));
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(100);
+});
+
+test("a reader who WAS at the tail is still carried down by the fold", () => {
+  const { scroller, followRef } = mount();
+  // Nothing turned the flag off, so the shrink changes nothing about it: the
+  // guard only stops a shrink from RE-ARMING, it never disarms.
+  act(() => scroller.fire("scroll", {}));
+  scroller.scrollHeight = 400;
+  scroller.scrollTop = 100;
+  act(() => scroller.fire("scroll", {}));
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(400);
+});
+
 test("the handle is dropped with the scrollport", () => {
   const { followRef } = mount();
   expect(followRef.current).not.toBe(null);

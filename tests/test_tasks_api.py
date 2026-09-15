@@ -23,6 +23,8 @@ from fused_render import schedule, tasks_store
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from fused_render.shell import prefs as prefs_mod
+from fused_render.shell import storage as shell_storage
 from tests import _machinery_records as records
 
 
@@ -73,6 +75,15 @@ def no_real_wake(monkeypatch):
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+@pytest.fixture()
+def card_titles(home):
+    """The Cards wall's experimental title, ON — `task_card_last_message`
+    (shell/prefs.py). A row carries `last_message` only while it is, and the
+    pref is read per request, so writing the file is the whole setup. `home`
+    rather than `tmp_path` so the tmp FUSED_RENDER_HOME is in place first."""
+    shell_storage.write_json(prefs_mod._path(), {"task_card_last_message": True})
 
 
 # ------------------------------------------------------------------ fixtures
@@ -600,6 +611,164 @@ def test_only_the_three_newest_messages_ride_along(client, projects_dir):
         "MSG-005", "MSG-004", "MSG-003"]
     assert [m["body"] for m in task["messages"]] == [
         "message 5", "message 4", "message 3"]
+
+
+# ------------------------------------------------- the last turn of the thread
+#
+# `last_message` is the one field on a row that can carry CLAUDE's words:
+# `messages` above is prompts only. It is what the Cards wall titles a card by
+# while `task_card_last_message` is on (shell/prefs.py) — which is why every
+# test here takes the `card_titles` fixture — and the rule is simply "the
+# newest turn, whoever took it".
+
+
+def test_the_last_message_is_the_reply_when_claude_answered_last(
+        client, projects_dir, card_titles):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran the migration, 3 tables updated\nand nothing else", T10),
+    ])
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "assistant"
+    # ONE LINE of it, which is all a card's title row can draw.
+    assert said["text"] == "Ran the migration, 3 tables updated"
+    assert said["at"] == tasks_store.epoch(T10)
+
+
+def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
+        client, projects_dir, card_titles):
+    # The usual state of a running task: the reader has said something and
+    # nothing has come back yet. The card shows what was asked.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _assistant("older answer", T9),
+        _user("now do the other one", T10),
+    ])
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "user"
+    assert said["text"] == "now do the other one"
+
+
+def test_a_tool_only_turn_is_not_something_claude_said(
+        client, projects_dir, card_titles):
+    # A row whose content is pure tool_use has no words in it. The substring
+    # screen lets the LINE through (it holds an assistant hint); the parse is
+    # what refuses it, and the prompt stays the newest thing said.
+    record = {"type": "assistant", "timestamp": T10,
+              "message": {"role": "assistant",
+                          "content": [{"type": "tool_use", "id": "t1",
+                                       "name": "Bash", "input": {}}]}}
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("list the files", T9), record,
+    ])
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "user"
+    assert said["text"] == "list the files"
+
+
+def test_an_api_error_is_not_the_last_message_either(
+        client, projects_dir, card_titles):
+    # Its text is the failure report ("You've hit your session limit"), which
+    # the row already says in `blocked_reason` — a card titled by it would be
+    # a card titled by an outage.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _api_error("You've hit your session limit", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["blocked_reason"] == "failed"
+    assert task["last_message"]["role"] == "user"
+    assert task["last_message"]["text"] == "run the migration"
+
+
+def test_a_task_with_nothing_said_in_it_has_no_last_message(
+        client, tmp_path, card_titles):
+    # A scheduled message that has not run: no transcript, nothing said. The
+    # card falls back to the task's own title.
+    _seed_schedule([_entry("e1", "water the plants", time.time() + 3600,
+                           target=str(tmp_path))])
+    assert _tasks(client)[0]["last_message"] is None
+
+
+def test_the_last_message_survives_an_incremental_re_read(
+        client, projects_dir, card_titles):
+    # The scan is incremental and the reply is parsed lazily off the line it
+    # kept, so the SECOND poll — which reads no new bytes at all — must answer
+    # the same as the first rather than blanking the field.
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it", T10),
+    ])
+    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+
+    # …and a turn appended after it wins, which is what makes the field track
+    # the conversation rather than freeze on its first answer.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({**_assistant("Then tidied up", T11),
+                            "cwd": "/p", "sessionId": "sess-a",
+                            "uuid": "sess-a-2"}) + "\n")
+    assert _tasks(client)[0]["last_message"]["text"] == "Then tidied up"
+
+
+def test_a_tool_turn_after_a_reply_does_not_un_say_the_reply(
+        client, projects_dir, card_titles):
+    # A tool_use row whose INPUT carries text blocks passes the substring
+    # screen, so the line is kept and the parse finds no words in it. Claude
+    # running a tool does not un-say the answer before it: the newest thing
+    # said is still "Ran it", and a card that dropped back to the prompt would
+    # be showing a question that has already been answered.
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it", T10),
+    ])
+    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+
+    record = {"type": "assistant", "timestamp": T11, "cwd": "/p",
+              "sessionId": "sess-a", "uuid": "sess-a-2",
+              "message": {"role": "assistant",
+                          "content": [{"type": "tool_use", "id": "t1",
+                                       "name": "Write",
+                                       "input": {"blocks": [
+                                           {"type": "text", "text": "x"}]}}]}}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "assistant"
+    assert said["text"] == "Ran it"
+
+
+def test_a_prompt_after_a_reply_wins_even_on_the_same_timestamp(
+        client, projects_dir, card_titles):
+    # The tie-break is "the later LINE is the later turn", and it only holds
+    # while the reply IS the later line. Here the reader asked again in the
+    # same second the answer landed, so the prompt is the newest turn and the
+    # reply is the answer to the one before it.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it", T10),
+        _user("now the other one", T10, uuid="u3"),
+    ])
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "user"
+    assert said["text"] == "now the other one"
+
+
+def test_the_row_carries_no_last_message_while_the_pref_is_off(
+        client, projects_dir):
+    # Default off (no `card_titles` fixture): the field is ABSENT, not null —
+    # nothing draws it, and every row on the machine stops paying for it.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it", T10),
+    ])
+
+    assert "last_message" not in _tasks(client)[0]
 
 
 def test_show_more_returns_the_whole_thread_newest_first(client, projects_dir):

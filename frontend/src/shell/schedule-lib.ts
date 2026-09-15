@@ -285,15 +285,16 @@ export function assignLanes<T extends { time: Date }>(
 // still be Retry for one and Open for the other.
 //
 // SIX KEYS, FIVE LANES. `needs_attention` is a STATUS — its own word, its own
-// hue, its own rank at the top of the List — and it draws in the Blocked lane
-// rather than a sixth column of its own (see BOARD_LANES). A board is read by
-// sweeping across it, and a lane that is empty except during the minutes
-// somebody is being waited on is a lane that teaches the reader to skip it.
+// hue — and it draws in the Blocked lane rather than a sixth column of its own
+// (see BOARD_LANES), at the head of it. A board is read by sweeping across it,
+// and a lane that is empty except during the minutes somebody is being waited on
+// is a lane that teaches the reader to skip it.
 //
-// THIS IS THE LIST'S VOCABULARY TOO, and a test holds the two arrays to the same
-// sequence apart from the two ranks the List hoists (tasks-lib.LIST_ORDER, whose
-// note carries the argument): a reader moving between the views carries ONE
-// mental picture of what a status IS, even where urgency reorders them.
+// THIS IS EVERY VIEW'S ORDER, not just the board's: the List and the Cards wall
+// read this array through tasks-lib.LIST_ORDER and sort by the very function the
+// board sorts by (2026-09-14, design.md §5). So a reader moving between the
+// views carries ONE mental picture of what a status is AND of where it sits, and
+// this is the single place either can be changed.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },

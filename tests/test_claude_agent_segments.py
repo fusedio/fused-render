@@ -611,6 +611,47 @@ def test_history_turns_carry_segments(agent, tmp_path, monkeypatch):
     assert tool["status"] == "ok" and tool["output"] == "applied"
 
 
+def test_a_restored_reply_carries_the_record_that_opened_it(
+        agent, tmp_path, monkeypatch):
+    """An assistant turn's `uuid` — the only identity a reply keeps.
+
+    The page remembers which replies the reader folded, and it used to remember
+    them by POSITION in this payload: a re-read that shifted the rows moved every
+    fold one turn down the log, so the reply they had opened folded itself and
+    its neighbour opened instead (`ui/Transcript.foldKey`).
+
+    THE RECORD THAT OPENED THE REPLY, never a later one it merged. Consecutive
+    assistant rows are one turn, and naming it after the newest row would give
+    the same turn a different id every time another chunk landed — which is the
+    bug again, one row further on.
+    """
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("fix the title"),
+        dict(_t_assistant([{"type": "text", "text": "Editing."}]), uuid="a1"),
+        dict(_t_assistant([{"type": "text", "text": "Done."}]), uuid="a2"),
+        _t_user("and the tests"),
+        dict(_t_assistant([{"type": "tool_use", "id": "tu1", "name": "Bash",
+                            "input": {"command": "pytest"}}]), uuid="a3"),
+        dict(_t_result("tu1", "1 passed"), uuid="r1"),
+    ])
+    assert [t["role"] for t in turns] == ["user", "assistant", "user", "assistant"]
+    assert turns[1]["text"] == "Editing.\n\nDone."
+    assert turns[1]["uuid"] == "a1"
+    # …and a reply that opened no TEXT turn at all — one that only called tools
+    # — is named by the first row of the stretch its segments came from.
+    assert turns[3]["text"] == "" and turns[3]["uuid"] == "a3"
+
+
+def test_a_reply_with_no_record_id_carries_no_uuid_key(agent, tmp_path, monkeypatch):
+    """Absent, not "" — the page falls back to the position key exactly as it
+    did before, and an older transcript is unaffected."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("hi"),
+        _t_assistant([{"type": "text", "text": "hello"}]),
+    ])
+    assert "uuid" not in turns[1]
+
+
 def test_history_restores_a_turns_thinking_block(agent, tmp_path, monkeypatch):
     """The transcript has no `stream_event` rows at all, so its finalized
     `thinking` block is the only source there is — a restored turn used to lose

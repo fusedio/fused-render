@@ -36,8 +36,84 @@ export function useEventCounter(events: readonly string[]): number {
   return n;
 }
 
-export function useNavEpoch(): number {
-  return useEventCounter(["popstate", NAV_EVENT]);
+/**
+ * The part of the URL a ROUTE is about: the path, plus every query param except
+ * the ones the caller names as "chrome of the page itself".
+ *
+ * Pure, and it takes its pieces rather than reading `location`, so the rule is
+ * testable without a history (hooks.test.ts).
+ */
+export function routeMark(
+  pathname: string,
+  search: string,
+  ignore: readonly string[] = [],
+): string {
+  if (ignore.length === 0) return pathname + search;
+  const params = new URLSearchParams(search);
+  for (const name of ignore) params.delete(name);
+  const rest = params.toString();
+  return pathname + (rest ? `?${rest}` : "");
+}
+
+/**
+ * THE ROUTE EPOCH: bumped on an explicit navigation, and on a Back/Forward that
+ * actually lands somewhere else.
+ *
+ * `ignore` names params that belong to the PAGE rather than to the route — a
+ * panel the page opened, whose open/close is pushed so Back can undo it. A
+ * traversal that only moves such a param is the page's own business, and
+ * bumping the epoch for it would remount the very page the param is about:
+ * `App` keys its route on this, so Back out of an open task peek used to throw
+ * away the Tasks page's filters, its expanded rows and its scroll position and
+ * rebuild the whole thing — to close a panel.
+ *
+ * NAV_EVENT still bumps unconditionally: that is an explicit navigate()/
+ * navigateUrl(), which every route has always been remounted by, including the
+ * same-path ones. Only the TRAVERSAL is narrowed, and only by the params the
+ * caller hands over.
+ */
+export function useNavEpoch(ignore: readonly string[] = []): number {
+  const [n, setN] = useState(0);
+  // Read through a ref so the effect can stay mounted for the life of the app
+  // while a caller is free to pass a fresh array literal on every render.
+  const ignoreRef = useRef(ignore);
+  ignoreRef.current = ignore;
+  const markRef = useRef("");
+  // THE MARK HAS TO BE RE-READ WHEN THE IGNORE LIST CHANGES, and it is its own
+  // effect because the subscription below deliberately never re-runs.
+  //
+  // The list arrives LATE: it comes from a pref, so the first paint passes an
+  // empty one and the mark recorded then still carries `?peek=`. Once the pref
+  // lands and `peek` joins the list, every later read strips it — and a Back
+  // that only dropped that param compared a stripped mark against the stale
+  // one, saw a difference, and remounted the very page the param belongs to
+  // (Bugbot, PR #1133). Re-recording it is enough: this is a correction to what
+  // "where we are" means, not a navigation, so nothing bumps.
+  const ignoreKey = ignore.join("\u0000");
+  useEffect(() => {
+    markRef.current = routeMark(location.pathname, location.search, ignoreRef.current);
+  }, [ignoreKey]);
+  useEffect(() => {
+    const read = () => routeMark(location.pathname, location.search, ignoreRef.current);
+    markRef.current = read();
+    const bump = () => {
+      markRef.current = read();
+      setN((v) => v + 1);
+    };
+    const onPop = () => {
+      const next = read();
+      if (next === markRef.current) return;
+      markRef.current = next;
+      setN((v) => v + 1);
+    };
+    window.addEventListener(NAV_EVENT, bump);
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener(NAV_EVENT, bump);
+      window.removeEventListener("popstate", onPop);
+    };
+  }, []);
+  return n;
 }
 
 export function useUrlVersion(): number {
