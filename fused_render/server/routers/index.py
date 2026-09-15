@@ -498,7 +498,12 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     `root`, since a `~`/`/`-escaping query can leave the box's root far
     behind.
 
-    `token`, when given, is forwarded unchanged. `ranked`, likewise (D720) —
+    `token`, when given, is forwarded unchanged — to BOTH `resolve_query`'s
+    filesystem walk and `index_rank`'s SQL query, so a client that
+    disconnects mid-request stops the walk before its next segment's
+    `os.path.isdir` (bounding one slow segment, never making that segment's
+    syscall itself interruptible — see `_walk_from`'s docstring) in addition
+    to the query cancellation this already had. `ranked`, likewise (D720) —
     default True, so the startup warm call and every caller that doesn't
     pass it keeps the scored behavior. `ranked` has no effect once `mode` is
     "glob": glob hits are never scored (see `search_ranked`'s own
@@ -532,7 +537,8 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     reached it."""
     guard = MountGuard(mounts_dir=runner._mounts_dir())
     blocked_out: list = []
-    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out)
+    resolved = resolve_query(root, q, guard=guard, blocked_out=blocked_out,
+                             token=token)
     base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
     out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
                      ranked=ranked, glob=(mode == "glob"))
@@ -565,7 +571,7 @@ def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
     `_rank_reason` has had a chance to read it — it exists only to let this
     function answer "mount" correctly and must never reach the wire."""
     out = _rank_body(cfg, root, q, limit, token, ranked)
-    out["reason"] = _rank_reason(cfg, out["base"], out)
+    out["reason"] = _rank_reason(cfg, out["base"], out, token=token)
     out.pop("blocked_query_path", None)
     return out
 
@@ -637,7 +643,8 @@ def _scan_in_flight(cfg: IndexConfig, root: str) -> bool:
     return False
 
 
-def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
+def _rank_reason(cfg: IndexConfig, root: str, out: dict,
+                  token: CancelToken | None = None) -> str:
     """Why the ranked answer is what it is, in the client's vocabulary.
 
     The client switches the SOURCE on this — `mount` (and `package`) send it to
@@ -673,10 +680,20 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
     ancestor and would not, by itself, look mount-backed. Only when that
     isn't set does this fall back to `MountGuard.blocks_root(root)`, which
     covers `root` (here, `base`) actually landing ON or under a mount — the
-    case a resolved, already-covered-looking base can still be in."""
+    case a resolved, already-covered-looking base can still be in.
+
+    `token`, when given, is checked immediately before the `blocks_root`
+    call, for the same reason `_walk_from` checks one before each segment's
+    `isdir`: a client that has already disconnected should not pay that
+    realpath at all if the request is about to be thrown away. It cannot
+    interrupt the realpath once started — same limit, same honest
+    non-fix — it only skips paying for it when cancellation is already
+    known before the call begins."""
     if not out.get("covered"):
         if out.get("blocked_query_path"):
             return "mount"
+        if token is not None:
+            token.check()
         # BEFORE any kernel syscall of ours on the caller's path: blocks_root
         # is string work against the mount records plus one realpath, where a
         # stat under a wedged rclone mount blocks this thread indefinitely.
