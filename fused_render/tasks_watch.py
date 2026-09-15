@@ -90,6 +90,28 @@ _marks: dict[str, float] = {}
 # enough that a send whose run died on the spot — a bad model id, a refused
 # permission — is not left spinning for a noticeable time.
 MARK_TTL_SEC = 15.0
+# session_id -> was its registry row seen `busy`/`shell` (RUNNING_STATUSES)
+# while ITS CURRENT mark was alive? A mark this never happened for has nothing
+# to do with a registry row that goes idle or departs — that row belongs to
+# whatever turn came before the send, not this one (bugbot #1163's flicker
+# wore the opposite shape: `_verdict_outvotes_live` discounting a genuinely
+# fresh turn's OWN row). Cleared the moment the mark itself is: a new
+# `mark_running` on the same session starts this over, `_expire_marks` drops
+# it with the mark it timed out on, and a stood-down mark takes it along too.
+_mark_busy_seen: set[str] = set()
+# session_id -> when the SENDER said a turn on it had ended (`mark_idle`,
+# `POST /api/tasks/idle`). The other half of `_marks`: the mark is retired the
+# instant this is set (see `mark_idle`), so nothing here changes what
+# `is_marked_running` answers — it exists so a caller that wants to know "did
+# the page itself just tell us this turn is over" can ask, and so a mark that
+# was never placed (a turn a NEWER mark preempted, or one this session never
+# got) still returns None rather than looking like a stand-down that never
+# happened.
+_idle: dict[str, float] = {}
+# A stand-down is news once. Kept only long enough that a caller reading it a
+# beat later still finds it — well past any poll interval, short enough that a
+# session's whole history is not remembered in a dict that only ever grows.
+IDLE_TTL_SEC = 60.0
 _started = False
 
 
@@ -213,12 +235,59 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC) -> None:
     and still a listing behind.
 
     Re-marking an already-marked session just moves the expiry, so a client that
-    says it twice costs one extra bump and nothing else."""
+    says it twice costs one extra bump and nothing else. A NEW mark is a new
+    turn, so any stand-down bookkeeping the last one left behind — a
+    corroborating `busy` sighting, an `idle_at` stamp — goes with it; nothing
+    about how the previous turn ended is entitled to an opinion about this
+    one (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark)."""
     if not session_id:
         return
     with _cond:
         _marks[session_id] = time.time() + max(0.0, ttl_sec)
+        _mark_busy_seen.discard(session_id)
+        _idle.pop(session_id, None)
     _bump({session_id})
+
+
+def mark_idle(session_id: str) -> None:
+    """Say that a turn just ENDED on this session, and announce it.
+
+    The other half of `mark_running` (`POST /api/tasks/idle`): the page that
+    sent a turn is also the first to know it landed — the final result, a
+    stop, an error — which is sooner than a registry row disappearing and far
+    sooner than the mark's own TTL. Retiring the mark here is what makes a
+    three-second turn read `done` in about a second instead of wearing a
+    running ring for the rest of `MARK_TTL_SEC`; the TTL remains the safety
+    net for a page that never gets to call this (closed tab, lost network).
+
+    Idempotent and announced whether or not a mark was actually standing —
+    the caller is reporting a fact about the TURN, not asking whether the
+    watcher had an opinion, and a duplicate or late call must cost one bump
+    and nothing else, the same contract `mark_running` keeps."""
+    if not session_id:
+        return
+    with _cond:
+        _marks.pop(session_id, None)
+        _mark_busy_seen.discard(session_id)
+        _idle[session_id] = time.time()
+    _bump({session_id})
+
+
+def idle_at(session_id: str) -> float | None:
+    """When `mark_idle` last retired this session's mark, or None if it never
+    has — or if it did, long enough ago (`IDLE_TTL_SEC`) that the stamp is not
+    worth keeping around. Not consulted by `is_marked_running`, which already
+    reflects a stand-down the moment `mark_idle` makes one; this is for a
+    caller that wants to know the stand-down itself happened."""
+    if not session_id:
+        return None
+    with _cond:
+        at = _idle.get(session_id)
+    if at is None:
+        return None
+    if time.time() - at > IDLE_TTL_SEC:
+        return None
+    return at
 
 
 def _expire_marks(now: float) -> set[str]:
@@ -231,7 +300,33 @@ def _expire_marks(now: float) -> set[str]:
         gone = {sid for sid, until in _marks.items() if until <= now}
         for sid in gone:
             del _marks[sid]
+            _mark_busy_seen.discard(sid)
     return gone
+
+
+def _note_registry_status(sid: str, status: object) -> None:
+    """A registry sighting for `sid` — a fresh reparse, or a departure passing
+    `status=None`. Corroborates an active mark when the status is a running
+    one (`busy`/`shell`); retires the mark when it is not, but ONLY if a
+    running status was already seen for it while THIS mark was alive.
+
+    That qualifier is the whole fix (bugbot #1163's flicker, the opposite
+    shape of this one): a registry row that was already `idle`, or gone,
+    before the mark existed belongs to the turn before this send and has
+    nothing to say about it — only a row this mark can point to and say "that
+    was me, and now it isn't" is allowed to stand it down early. Without it,
+    `test_an_older_turns_row_departing_does_not_retire_a_fresh_mark` would see
+    a brand-new mark wiped out by the PREVIOUS turn's process finally being
+    reaped."""
+    running = isinstance(status, str) and status in RUNNING_STATUSES
+    with _cond:
+        if running:
+            if sid in _marks:
+                _mark_busy_seen.add(sid)
+            return
+        if sid in _mark_busy_seen:
+            _mark_busy_seen.discard(sid)
+            _marks.pop(sid, None)
 
 
 # --------------------------------------------------------------- one tick
@@ -314,6 +409,7 @@ def _read_registry() -> set[str]:
                         _departed[sid] = time.time()
                     _tr_paths.pop(sid, None)
                     _tr_sizes.pop(sid, None)
+                    _note_registry_status(sid, None)
                     keys.add(sid)
             continue
         _sess_mtimes[path] = mtime
@@ -337,15 +433,18 @@ def _read_registry() -> set[str]:
                 with _cond:
                     _registry.pop(old_sid, None)
                     _departed[old_sid] = time.time()
+                _note_registry_status(old_sid, None)
                 keys.add(old_sid)
             continue
         if old_sid and old_sid != sid:
             _registry.pop(old_sid, None)
+            _note_registry_status(old_sid, None)
             keys.add(old_sid)
         _sess_sids[path] = sid
         with _cond:
             _registry[sid] = row
             _departed.pop(sid, None)
+        _note_registry_status(sid, row.get("status"))
         keys.add(sid)
     for path in list(_sess_mtimes):
         if path in seen:
@@ -358,7 +457,21 @@ def _read_registry() -> set[str]:
                 _departed[sid] = time.time()
             _tr_paths.pop(sid, None)
             _tr_sizes.pop(sid, None)
+            _note_registry_status(sid, None)
             keys.add(sid)
+    # Corroboration is invited every tick, not only when the file itself
+    # changed: a mark set against an ALREADY-busy row that never rewrites
+    # again must still count as seen once, or its eventual departure would
+    # read as the untouched-turn-before case
+    # (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark) instead
+    # of what it actually is — a row this mark can rightly be stood down by.
+    with _cond:
+        marked_sids = list(_marks)
+    for sid in marked_sids:
+        with _cond:
+            row = _registry.get(sid)
+        if row is not None:
+            _note_registry_status(sid, row.get("status"))
     return keys
 
 
@@ -449,6 +562,8 @@ def reset() -> None:
         _registry.clear()
         _departed.clear()
         _marks.clear()
+        _mark_busy_seen.clear()
+        _idle.clear()
     _primed = False
     _sess_mtimes.clear()
     _sess_sids.clear()

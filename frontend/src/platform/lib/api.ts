@@ -3298,6 +3298,28 @@ export function markTaskRunning(sessionId: string): Promise<{ ok: boolean }> {
   });
 }
 
+/**
+ * "A TURN JUST ENDED ON THIS SESSION" — the other half of `markTaskRunning`,
+ * told to the server the moment the poll loop sees the turn close (a final
+ * result, a stop, an error), because a registry row disappearing is a tick
+ * behind and the mark's own TTL is fifteen seconds behind that.
+ *
+ * A SEPARATE endpoint from `markTaskRunning`, deliberately: the send's mark
+ * must post exactly once, at the START, or a finished row would spin out the
+ * mark's whole window (see `run-controller.test.ts`, "the server hears that a
+ * turn started") — folding "ended" into the same call as a `running: false`
+ * flag would have made that one call do both jobs.
+ *
+ * BEST-EFFORT BY CONTRACT, same as `markTaskRunning`: retiring the mark early
+ * is a nicety, not a guarantee — the registry-corroborated stand-down and the
+ * TTL both still apply if this never lands.
+ */
+export function markTaskIdle(sessionId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/idle", {
+    session_id: sessionId,
+  });
+}
+
 // "Show more": the whole thread, newest first. Deliberately a separate call —
 // this one is allowed to parse the full transcript because it is one task, on
 // demand, and never on the listing path.

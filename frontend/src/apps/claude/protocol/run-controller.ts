@@ -31,7 +31,7 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
-import { markTaskRunning, scheduleMessage } from "@platform/lib/api";
+import { markTaskIdle, markTaskRunning, scheduleMessage } from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
@@ -464,6 +464,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (!id) return;
     void markTaskRunning(id).catch(() => {
       // The 20-30 s polls, and the registry behind them, remain the fallback.
+    });
+  };
+
+  /**
+   * TELL THE SERVER THE TURN JUST CLOSED, the symmetric other half of
+   * `noteTurnRunning` — see `tasks_watch.mark_idle` / `POST /api/tasks/idle`.
+   *
+   * Without this the mark placed at the turn's start only comes down by a
+   * registry row disappearing (up to a tick late) or by its own fifteen-second
+   * TTL, so a three-second turn wore a running ring for the rest of that
+   * window after the reply had already landed on screen (Akshil, 2026-09-15).
+   * This is the earliest anything can say the turn is OVER, the same way the
+   * mark itself was the earliest anything could say it had started.
+   *
+   * BEST-EFFORT, like its counterpart: the registry-corroborated stand-down
+   * and the TTL both still apply if this call never lands.
+   */
+  const noteTurnIdle = (id: string) => {
+    if (!id) return;
+    void markTaskIdle(id).catch(() => {
+      // The registry-corroborated stand-down and the TTL remain the fallback.
     });
   };
 
@@ -1489,6 +1510,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
         activeSeat = 0;
         activeTurnKey = null;
         setRunningUi(false);
+        // GUARDED ON OWNERSHIP, unlike `noteChatActivity` below: a re-attach
+        // (Bugbot, PR #653, same paragraph above) can leave an ABANDONED
+        // loop's `finally` running after a NEWER loop already placed its own
+        // fresh mark on this session — `mark_idle` does not know whose mark
+        // it would be retiring, so only the owning loop is trusted to say the
+        // turn is over. An abandoned loop's turn still closes; it just relies
+        // on the registry stand-down / TTL instead of this early signal.
+        noteTurnIdle(state.sessionId ?? "");
       }
       // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
       // transcript follower can tell rows this page just wrote from somebody

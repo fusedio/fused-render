@@ -1835,8 +1835,13 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
     with a flicker in front of it. The send either happened in the last fifteen
     seconds or it did not, and no other fact makes it un-happen.
 
-    True implies running: the mark is only stood down by a registry that says
-    `busy`, which is running too."""
+    True implies running: `is_marked_running` is the one thing consulted for
+    it, and every way a mark is stood down — its own TTL, a registry that went
+    `busy` then wasn't, or the sender itself saying the turn ended
+    (`mark_idle`, `POST /api/tasks/idle`) — lives there, not here. That last
+    one is what keeps a FAST turn from wearing the ring for the rest of the
+    mark's fifteen seconds: the reply landing is news the same page can say
+    the instant it knows it, same as the send was."""
     if not path:
         return False, 0.0, False
     try:
@@ -3207,6 +3212,37 @@ def api_task_running(patch: RunningPatch):
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
     tasks_watch.mark_running(session_id)
+    return {"ok": True, "session_id": session_id}
+
+
+class IdlePatch(BaseModel):
+    session_id: str
+
+
+@router.post("/api/tasks/idle")
+def api_task_idle(patch: IdlePatch):
+    """A turn just ENDED on this session — said by the page that sent it.
+
+    The other half of `/api/tasks/running`, and for the same reason: the CLI
+    running out of process means this server learns a turn is OVER from a
+    registry row disappearing (up to a tick late) or from the mark's own
+    fifteen-second fuse — both far slower than the page that watched the reply
+    arrive. `run-controller.ts` calls this at every turn boundary the poll
+    loop's own `finally` sees (a final result, a stop, an error), the same
+    place `noteChatActivity` already fires from.
+
+    Retires the send's mark at once (`tasks_watch.mark_idle`) — a FAST turn no
+    longer has to sit in a running ring for whatever was left of the mark's
+    window. Best-effort like its counterpart: a call that never arrives (a
+    closed tab) leaves the registry-corroborated stand-down and the TTL as the
+    fallback, so nothing here can pin a row running or wrongly mark one done —
+    the worst a wrong or malicious call does is retire a mark early, and the
+    registry/tail reading underneath is what a listing shows once it is gone.
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_idle(session_id)
     return {"ok": True, "session_id": session_id}
 
 

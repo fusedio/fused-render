@@ -350,3 +350,72 @@ def test_running_endpoint_marks_the_session_and_wakes_the_long_poll(claude_home)
         assert r["rows"][0]["live"] is True
         assert r["rows"][0]["status"] == "in_progress"
         assert client.post("/api/tasks/running", json={"session_id": "  "}).status_code == 400
+
+
+# ------------------------------------------------ the turn ENDING, said aloud
+
+def test_mark_idle_retires_the_mark_and_announces_it(claude_home):
+    """The other half of the send. A mark is a fifteen-second floor, and a turn
+    that ends in three seconds spends the other twelve wearing a running ring
+    nothing on disk contradicts fast enough — so the page that sent it says
+    when it ended, the same way it said when it started."""
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    assert tasks_watch.is_marked_running(SID)
+    gen, _keys = tasks_watch.wait(0, 0)
+
+    tasks_watch.mark_idle(SID)
+    assert not tasks_watch.is_marked_running(SID)
+    assert tasks_watch.idle_at(SID) is not None
+    # News at once, like the mark: no tick in between, and nothing left for the
+    # next tick to expire.
+    assert tasks_watch.wait(gen, 0) == (gen + 1, frozenset({SID}))
+    assert tasks_watch.tick() == set()
+
+    # A send after a stand-down is a new turn; the stand-down goes with it.
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    assert tasks_watch.idle_at(SID) is None
+    assert tasks_watch.is_marked_running(SID)
+
+    tasks_watch.mark_idle("")  # no id, no stand-down, no bump
+    assert tasks_watch.idle_at("") is None
+
+
+def test_a_stand_down_runs_out_once_the_tail_is_stale_anyway(claude_home):
+    tasks_watch.mark_idle(SID)
+    assert tasks_watch.idle_at(SID) is not None
+    tasks_watch._idle[SID] = time.time() - tasks_watch.IDLE_TTL_SEC - 1
+    assert tasks_watch.idle_at(SID) is None
+
+
+def test_the_registry_going_idle_after_busy_retires_the_mark(claude_home):
+    """The safety net for a turn this app did not send, or a page that closed
+    before it could say the turn ended: a registry row that was `busy` and is
+    now not, AFTER the mark was placed, has said everything the mark was
+    standing in for."""
+    _transcript(claude_home, SID)
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    assert tasks_watch.is_marked_running(SID), "busy corroborates the mark"
+    _registry(claude_home, SID, status="idle")
+    assert SID in tasks_watch.tick()
+    assert not tasks_watch.is_marked_running(SID)
+
+
+def test_an_older_turns_row_departing_does_not_retire_a_fresh_mark(claude_home):
+    """The flicker this rule must not cause. The previous turn's `claude -p` is
+    still being reaped when the next send lands — its row goes away AFTER the
+    new mark, and it was never busy on this mark's watch, so it has nothing to
+    say about it."""
+    _transcript(claude_home, SID)
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="idle")
+    tasks_watch.tick()
+    # …now the user sends again, before the new process has published anything.
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    os.remove(os.path.join(tasks_watch.SESSIONS_DIR, "p.json"))
+    tasks_watch.tick()
+    assert tasks_watch.is_marked_running(SID), "a stale row's exit is not news"
