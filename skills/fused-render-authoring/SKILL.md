@@ -116,6 +116,10 @@ function isPreview() {
 
 Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fused-theme="shell"` on `<html>`, two `:root` token blocks against `data-theme`. Full rules → `fused-render-theming`.
 
+## Cross-browser
+
+Views open in the user's default browser (Chrome, Firefox, Safari) AND in WKWebView (popover, iOS shell) — one engine tested ≠ done. Baseline-widely-available features only, hand-written `-webkit-` prefixes where still needed, paste-in reset, trap table, two-engine check → `fused-render-cross-browser`.
+
 ## Preview templates
 
 Same html, opened FOR target file: read-only `_file` param carries path. Reader `.py` only when Python adds value; text → `readFile`, media → `rawUrl`. Built-in sources: `fused_render/templates/<name>/` (see `xlsx/`; server serves staged copy `~/.fused-render/.core-templates/`). Extension → mode list: `fused_render/templates/registry.json`. User overrides → `fused-render-custom-templates`.
@@ -151,6 +155,7 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
 - `writeFile` on existing file without `expectedMtime` = silent clobber; create-if-absent = `{create: true}`, not stat-then-write.
 - `readFile` for media → use `rawUrl`.
+- Styled in Chrome only — dead `:hover` on touch, unstyled `<select>`, vanished scrollbar, `user-select` without `-webkit-` → `fused-render-cross-browser`.
 - Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
 - Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.
