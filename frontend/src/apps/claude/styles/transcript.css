@@ -118,6 +118,57 @@
   flex-direction: column;
   align-items: flex-end;
 }
+/* THE BUBBLE'S LINE, and the stamp's containing block: the clock is drawn in
+   the LEFT icon lane — the column an assistant turn's ✻ mark occupies — which
+   on a right-aligned user row is empty space no flow layout would put it in
+   (design.md §C). Scoped to the bubble rather than to the whole turn so that a
+   turn carrying receipt rows — taller than its bubble — still centres the time
+   on the WORDS it is the time of. */
+.chat-root .turn.user .turn-line {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+/* WHEN THIS WAS SENT, on hover only. A time under every message is a second
+   column of numbers down the conversation, and the one message whose time a
+   reader wants is the one they are pointing at. Left-aligned in the mark's
+   lane, and tabular so the digits do not shimmy as the minute changes.
+
+   NO `pointer-events: none` (PR4 review #6). It read as "a label, not a
+   target", and it took the `title` with it: the exact instant — the ISO string
+   `stampTitle` builds — is only reachable by resting on the clock, and an
+   element the pointer cannot land on has no tooltip. It is still not a control:
+   nothing here is clickable, and `user-select: none` keeps the minute out of a
+   copied conversation. */
+.chat-root .turn.user .turn-stamp {
+  position: absolute;
+  left: 0;
+  /* CENTRED ON THE BUBBLE (design.md §C, Akshil 2026-09-15). Top-aligned, the
+     time sat level with the first line of a five-line message and read as a
+     label hanging off the top corner; the eye pairs a mark in the lane with the
+     middle of the block beside it. */
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+.chat-root .turn.user:hover .turn-stamp {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.user .turn-stamp {
+    transition: none;
+  }
+}
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);
   border-radius: 18px 18px 4px 18px;
@@ -135,6 +186,9 @@
   display: flex;
   gap: 10px;
 }
+/* A BUTTON, not a span (design.md §B): the mark folds and unfolds its reply.
+   Everything below is the seat it always was — the UA button furniture is what
+   has to be turned off. */
 .chat-root .turn.assistant .dot {
   flex-shrink: 0;
   width: 24px;
@@ -148,8 +202,285 @@
   align-items: center;
   justify-content: center;
   margin-top: 2px;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 90ms ease-out;
+}
+.chat-root .turn.assistant .dot:hover:not(:disabled) {
+  border-color: var(--c-border-strong);
+}
+/* A FOLDED REPLY'S MARK IS GREY (design.md §B). The accent ✻ is the colour of a
+   reply that is on screen; a mark still burning above one line of ellipsized
+   text says the reply is there when it is not. Same muted token the folded line
+   itself wears — and the hover lift above is untouched, because the control is
+   still very much live. */
+.chat-root .turn.assistant.is-folded .dot {
+  color: var(--c-faint);
+}
+/* A STREAMING TURN, OR ONE HOLDING AN UNANSWERED CARD, cannot be folded — and
+   says so by not lighting up under the pointer. The mark stays exactly where it
+   was, because a control that disappears mid-run is a control nobody learns. */
+.chat-root .turn.assistant .dot:disabled {
+  cursor: default;
+}
+.chat-root .turn.assistant .dot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+/* FOLDED: one line, ellipsized at the column's real width. `block` so
+   `text-overflow` has a box to clip in; the `.body` is `min-width: 0` already,
+   which is what lets it shrink instead of pushing the row wide. */
+.chat-root .turn.assistant .turn-collapsed {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--c-dim);
+  /* THE WHOLE LINE OPENS IT (Akshil, 2026-09-15). A folded reply is a one-line
+     row whose only visible control is a 12px glyph in the gutter: the reader
+     aims at the words. Expanding only — the open body is never a control, so
+     nothing a reader selects or clicks inside a reply can shut it. */
+  cursor: pointer;
+}
+/* ONE INLINE RUN out of whatever marked parsed the first line as — a
+   paragraph, a heading, a list item, a blockquote. Every block becomes inline
+   at the row's own size so the ellipsis still lands on THIS line, and inline
+   marks (bold, italic, code, links) keep their look. */
+.chat-root .turn.assistant .turn-collapsed-md,
+.chat-root .turn.assistant .turn-collapsed-md * {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: nowrap;
+  /* GREY WINS OVER THE MARKDOWN'S OWN COLOURS (Akshil, 2026-09-15): bold and
+     italic keep their weight and slant, but a folded row is one muted line —
+     a link's blue, a heading's foreground or inline code's tint would make
+     the summary louder than the open body. `inherit` from `.turn-collapsed`,
+     which also carries the hover lift and `.is-muted`. */
+  color: inherit;
+  background: none;
+}
+.chat-root .turn.assistant .turn-collapsed-md ul,
+.chat-root .turn.assistant .turn-collapsed-md ol {
+  list-style: none;
+}
+/* Scaffolding lines never reach this row (Turn.firstLine skips them), so a
+   <pre> here is renderMd's own fallback for prose it could not parse — keep it
+   VISIBLE as the plain line it is rather than hiding the whole row. */
+.chat-root .turn.assistant .turn-collapsed-md pre {
+  font: inherit;
+}
+.chat-root .turn.assistant .turn-collapsed-md hr {
+  display: none;
+}
+.chat-root .turn.assistant .turn-collapsed:hover {
+  color: var(--c-fg);
+}
+/* The reply was nothing but tool calls and this is the first call standing in
+   for a sentence — machinery, so it is drawn as machinery. */
+.chat-root .turn.assistant .turn-collapsed.is-muted {
+  color: var(--c-faint);
+  font-size: 12px;
+}
+/* …and it still answers the pointer. `.is-muted` is a longer selector than
+   `:hover` above and was winning it outright, so the one row in the log whose
+   words are the ONLY affordance it has was the one row that looked dead under
+   the cursor. One step up, not to `--c-fg`: the line is machinery either way. */
+.chat-root .turn.assistant .turn-collapsed.is-muted:hover {
+  color: var(--c-dim);
+}
+
+/* ── the run trigger (design.md §A) ──────────────────────────────────────────
+   `show more` in the bottom-right corner of the paragraph the run follows. The
+   transcript's left rail stays prose from top to bottom: a settled turn shows
+   NO machinery row at all until the reader asks for one.
+
+   Room is reserved for the word on the LAST LINE ONLY (PR4 review #5). The
+   padding used to sit on the whole `.seg-text`, which narrowed every paragraph
+   of the block by 46px — a measure change for the entire reply, to make room in
+   one corner of it — and now that every prose segment is wrapped in a block
+   (`SegmentView`, review #4) that would have been every paragraph in the log.
+   One variable, used by all of these rules, because it is the same number. */
+/* FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `right: 0` below is only
+   "the right edge of the transcript" if the box it is positioned in reaches
+   that edge — and it did not. `.turn.assistant` is a flex row and `.body` was
+   a flex item with no `flex` of its own, so it SHRINK-WRAPPED to its content:
+   a turn ending in a short line put its `show more` a few hundred px in from the
+   column, level with nothing, while the next turn's sat at the margin. One x
+   for every trigger in the log is the whole point of a corner affordance, so
+   the body takes the column (`flex: 1` on `.body` below) and every block in it
+   takes the body. `display: block` is stated rather than assumed because a
+   `<span>` ancestor is one rule away from making these inline. */
+.chat-root .seg-block {
+  position: relative;
+  display: block;
+  width: 100%;
+  /* ROOM ON THE LAST LINE for the whole word at PROSE size — `show more` at
+     14px is ~70px of glyphs plus the 8px it stands off the sentence. It was
+     96px while the word still carried a chevron; dropping the glyph gives the
+     paragraph's last line 18px of its measure back. The compact wall restates
+     it under its own 10px reading token below. */
+  --c-run-trigger-w: 78px;
+  /* AND THE ROW a non-prose last child drops the word into (below). One LINE of
+     the reading type, because the trigger is set in the reading type
+     (`.run-trigger`, `font: inherit`) — the literal 18px this replaces was the
+     height of the old 11px `more` and left the 14px word overhanging. */
+  --c-run-trigger-h: calc(var(--c-fs-read) * var(--c-lh-read));
+}
+.chat-root.chat-compact .seg-block {
+  /* 64px, not 56. The glyphs scale with the reading size (10px → ~50px of
+     them) but the 8px the word stands off the sentence does NOT, so a straight
+     ratio of the 78px lands under a px clear of the label — a reservation one
+     font metric away from clipping the `e`. */
+  --c-run-trigger-w: 64px;
+}
+/* RESERVED ON THE LAST LINE, INLINE (PR5 review #2). This was `padding-right`
+   on the last block, which narrows EVERY line of that paragraph: 96px is ~27%
+   of the measure at 430px, so a six-line answer gave up a quarter of its width
+   to make room for a word that is only ever on one line of it. A zero-height
+   inline-block at the END of the last child takes the room out of the LAST LINE
+   instead — the lines above keep the full column, and the final line wraps
+   short around the gap the positioned word sits in. */
+.chat-root .seg-block.has-trigger > .seg-text > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: var(--c-run-trigger-w);
+  height: 0;
+}
+/* …EXCEPT where the last block is not prose. A spacer inside a code block, a
+   table or a quote is inside THEIR box: it scrolls with the code, sits inside
+   the quote's rule, and reserves nothing where the word actually lands. Those
+   keep their full width and the block reserves a ROW under them instead — the
+   trigger, still bottom-right, drops into it. `.md-tablewrap` is named beside
+   `table` because the enhance pass wraps a settled table in it (`markdown.ts`
+   `wrapTables`), so after that pass the bare `table` selector matches nothing.
+
+   A LIST gets its spacer INSIDE THE LAST ITEM (Akshil, 2026-09-15). After the
+   `ul` itself the inline-block opens a line of its own under the list, and the
+   trigger — end-aligned to the prose box — dropped onto that empty line, a
+   row under a one-line bullet with the whole column free beside it. In the
+   last `li` the room comes out of the item's own last line, so the word sits
+   level with the sentence the way it does in a paragraph. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > pre:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > table:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > .md-tablewrap:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child::after {
+  content: none;
+}
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: var(--c-run-trigger-w);
+  height: 0;
+}
+/* …AND LEVEL WITH IT. `li` carries `margin: 2px 0` (below), and the trigger is
+   end-aligned to the prose box, so with the margin the word sat 2px under the
+   bullet's line. The seat's last item gives that margin up; the list's own
+   bottom margin is already 0 as the prose's `:last-child`. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child {
+  margin-bottom: 0;
+}
+.chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
+.chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
+.chat-root .seg-block.has-trigger:has(> .seg-text > .md-tablewrap:last-child),
+.chat-root .seg-block.has-trigger:has(> .seg-text > blockquote:last-child) {
+  padding-bottom: var(--c-run-trigger-h);
+}
+/* THE TRIGGER IS ANCHORED TO THE PROSE BOX, NOT TO THE BLOCK (Bugbot on
+   c20a913). While a turn streams the block also holds the caret, which sits
+   AFTER the block-level `.seg-text` and so opens a line box of its own below
+   it; `bottom: 0` against the block then parked the word on the caret's row
+   and let it jump up a line when the caret unmounted. A one-column grid puts
+   `.seg-text` and the trigger in the SAME cell — end-aligned both ways — and
+   the caret in the row under, so the word sits on the prose's last line from
+   the first frame and never moves. Same DOM, same element identity. */
+.chat-root .seg-block.has-trigger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.chat-root .seg-block.has-trigger > .seg-text {
+  grid-row: 1;
+  grid-column: 1;
+  min-width: 0;
+}
+.chat-root .seg-block > .run-trigger {
+  grid-row: 1;
+  grid-column: 1;
+  align-self: end;
+  justify-self: end;
+}
+.chat-root .seg-block.has-trigger > .cursor {
+  grid-row: 2;
+  grid-column: 1;
+  justify-self: start;
+}
+/* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
+   word on the FIRST SENTENCE of the prose that follows, not the paragraph's
+   last line: `SegmentView` draws that prose as two blocks (`leadSplit`), the
+   sentence with the trigger in its corner and the rest under it. The pair is
+   spaced as two paragraphs — the lead is a line the eye lands on, then the
+   reply. Nothing else in these blocks changes: the same `.seg-text`, the same
+   corner seat, the same reservation on the last line. */
+.chat-root .seg-block.is-lead + .seg-block.is-rest {
+  margin-top: 12px;
+}
+/* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
+   call, or a run that follows a card. The trigger takes its own line, still
+   right-aligned, still the same component. */
+.chat-root .seg-block.is-bare {
+  text-align: right;
+}
+.chat-root .seg-block.is-bare > .run-trigger {
+  justify-self: end;
+}
+/* THE PROSE'S OWN TYPE (Akshil, 2026-09-15). `font: inherit` takes the block's
+   family, size AND weight — and `line-height: inherit` is restated because the
+   shorthand is one browser bug away from resetting it to `normal`. The two
+   numbers are the whole alignment: the trigger's line box is the prose's line
+   box, so `bottom: 0` puts its baseline on the last line's baseline rather than
+   a few px under it. It stays OUT of the reading by COLOUR, not by size. */
+.chat-root .run-trigger {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0 0 0 8px;
+  font: inherit;
+  line-height: inherit;
+  color: var(--c-faint);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 90ms ease-out;
+}
+.chat-root .run-trigger:hover {
+  color: var(--c-fg);
+}
+.chat-root .run-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.assistant .dot,
+  .chat-root .run-trigger {
+    transition: none;
+  }
 }
 .chat-root .turn.assistant .body {
+  /* THE COLUMN, not the content (see `.seg-block` above): a flex item that
+     shrink-wraps takes the trigger's `right: 0` with it. `min-width: 0` stays —
+     it is the half that lets a long unbroken token shrink the item instead of
+     pushing the row wide — and `display: block` is stated because this is a
+     `<span>`, which a flex container blockifies today and nothing guarantees
+     for a future one. */
+  flex: 1;
+  display: block;
   min-width: 0;
   word-break: break-word;
   padding-top: 2px;

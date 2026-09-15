@@ -128,6 +128,19 @@ const actions = {
   stopRun: async () => {},
 };
 
+/** Click the Nth assistant turn's ✻ mark — the collapse toggle (design.md §B).
+ *  Every settled reply but the last one lands folded, and a folded reply draws
+ *  nothing but its first line; a test about what is INSIDE such a turn has to
+ *  open it the way a reader does. */
+function unfold(r: ReturnType<typeof create>, nth: number): void {
+  const dots: Json[] = [];
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("dot")) dots.push(n);
+  });
+  const onClick = (dots[nth]?.props as { onClick?: () => void } | undefined)?.onClick;
+  if (onClick) act(() => onClick());
+}
+
 const turn = (key: string, streaming = false) => ({
   role: "assistant" as const,
   key,
@@ -145,6 +158,11 @@ test("a parked card renders inside the turn it was answered in — not the strea
       actions={actions}
     />,
   );
+  // THE FIRST REPLY LANDS FOLDED (design.md §B: every settled turn but the
+  // last), and a folded turn draws its one line and nothing else — its parked
+  // card included. What is under test here is WHERE the card goes, so the turn
+  // is opened first, through the same control a reader would use: its ✻ mark.
+  unfold(r, 0);
   const seen = cards(r);
   expect(seen.length).toBe(1);
   // Inside an assistant turn, and inside the FIRST one: the DOM order is what
@@ -170,7 +188,10 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   const first = {
     role: "assistant" as const,
     key: "a:1",
-    text: "Reply A, all of it.",
+    // TWO PARAGRAPHS: a one-line reply is never foldable (`Turn`'s
+    // `isOneLiner`), and the fold is what this test is watching. The folded row
+    // shows the first line, so every assertion below is unchanged.
+    text: "Reply A, all of it.\n\nEvery word.",
   };
   const asked = { role: "user" as const, key: "u:2", text: "now say done" };
   const second = {
@@ -213,13 +234,34 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   // The answer to the follow-up is ONLY the answer to the follow-up: reply A
   // is not typed a second time under it.
   expect(rows[2]).not.toContain("Reply A");
-  // …and the landed bubble is untouched — same node, same content, not rebuilt
-  // beneath the newer one.
+  // …and the landed reply is the SAME reply, folded — not rebuilt beneath the
+  // newer one. A new response folds whatever the rule had left open (design.md
+  // §B, Akshil 2026-09-15), so the row loses its body and keeps its identity:
+  // same first line, same mark, nothing typed twice.
   let after: Json | null = null;
   walk(r.toJSON() as Json, (n) => {
     if (cls(n).includes("assistant") && !after) after = n;
   });
-  expect(JSON.stringify(after)).toBe(before);
+  const shown = JSON.stringify(after);
+  expect(before).toContain("Reply A, all of it.");
+  expect(shown).toContain("is-folded");
+  expect(shown).toContain("Reply A, all of it.");
+  expect(shown).toContain('"aria-label":"Expand response"');
+  // The body it opens and shuts is the one it always named.
+  const bodyId = /"aria-controls":"([^"]*)"/.exec(before)![1]!;
+  expect(shown).toContain('"aria-controls":"' + bodyId + '"');
+  // …AND IT IS THE SAME NODE, not a rebuild that happens to read alike — the
+  // half a final-state assertion cannot see, and the whole point of R4-3. The
+  // fold is the only thing standing between the two serializations, so press
+  // the mark open and the subtree must come back BYTE FOR BYTE: same `useId`
+  // body id, same rendered markdown, same everything. A bubble rebuilt under
+  // the newer one would differ here even when it read the same on screen.
+  unfold(r, 0);
+  let reopened: Json | null = null;
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("assistant") && !reopened) reopened = n;
+  });
+  expect(JSON.stringify(reopened)).toBe(before);
 });
 
 test("a parked card survives the run ending: no streaming turn anywhere", () => {

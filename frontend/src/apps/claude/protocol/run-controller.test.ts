@@ -113,6 +113,9 @@ function makeController(
     run: agent.run,
     sleep: () => Promise.resolve(),
     now: () => 1_000,
+    // The STAMP clock, separate from the duration clock above (review #9): a
+    // bubble's `ts` is a date, and dates do not come off a fake `now`.
+    wallClock: () => 1_000,
     model: () => "sonnet",
     effort: () => "high",
     hasPane: () => true,
@@ -274,6 +277,77 @@ describe("start → poll → done", () => {
     expect(params.get("run")).toBeUndefined();
     // One stamp at the loop's start, one at its end (T:16238, 16425).
     expect(activity.length).toBe(2);
+  });
+
+  test("the bubble a send posts is stamped with WHEN it was sent", async () => {
+    // Epoch SECONDS, the same unit a restored turn carries (agent.py
+    // `_row_ts`), so the hover clock reads identically before and after a
+    // reload. Off the injected WALL clock — `wallClock: () => 1_000` ms — which
+    // is its own dep precisely because `now` is the monotonic duration clock
+    // and a stamp read off that one lands in 1970 (review #9).
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await controller.sendMessage("hi");
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
+  });
+
+  test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
+    // Review #9. `now` is shared by every elapsed-time reader in the controller
+    // and is free to be monotonic (`performance.now`) or fake; reading a DATE
+    // off it stamped the bubble 1 Jan 1970 under exactly the injection every
+    // other test in this file uses. With no `wallClock` handed in, the default
+    // is `Date.now` — so the bubble is dated NOW even though `now()` says 1 s.
+    const before = Date.now() / 1000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      agentDir: "/tpl/claude",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("hi");
+    const ts = users(controller)[0]!.ts!;
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(Date.now() / 1000 + 1);
+    controller.dispose();
+  });
+
+  test("an adopted optimistic bubble keeps the time the user pressed send", async () => {
+    // The annotation round photographs the pane BEFORE it can call
+    // `sendMessage`; the bubble is already up. Re-stamping on adoption would
+    // date the message by however long the capture took.
+    let ms = 1_000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      agentDir: "/tpl/claude",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    const key = controller.postOptimisticUser("hi");
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
+    ms = 9_000; // the capture ran
+    await controller.sendMessage("hi", { optimisticKey: key });
+    expect(users(controller).map((t) => t.ts)).toEqual([1]);
   });
 
   test("a session already live absorbs the message instead of spawning a second run", async () => {
@@ -3349,5 +3423,204 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     const cached = [...store.values()][0]!;
     expect((cached.permissions || []).map((p) => p.id)).toEqual(["q2"]);
     expect(cached.live_run).toBe("r9");
+  });
+});
+
+describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
+  const gone = () => ({ turns: [], transcript: null, deleted: true });
+
+  test("says the task was deleted instead of opening a blank chat, and caches nothing", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    const st = made.controller.getState();
+    const errors = st.turns.filter((t) => t.role === "error");
+    expect(errors.length).toBe(1);
+    expect((errors[0] as { text: string }).text).toContain("deleted");
+    expect(st.trouble?.message).toContain("deleted");
+    expect(st.historyLoading).toBe(false);
+    // An answer about a task that no longer exists is not worth remembering.
+    expect(store.size).toBe(0);
+  });
+
+  test("a conversation cached BEFORE the erase is evicted, not painted warm again", async () => {
+    // The cache answers for whatever key the controller asks by, and records
+    // what it is asked to forget: the eviction must name the same entry.
+    const asked: string[] = [];
+    const deleted: string[] = [];
+    let stale: HistoryResponse | undefined = {
+      turns: [{ role: "user", text: "old words", uuid: "u1" }],
+      transcript: null,
+    } as unknown as HistoryResponse;
+    const historyCache = {
+      get: (f: string, s: string) => {
+        asked.push(f + "|" + s);
+        return stale;
+      },
+      set: () => {},
+      delete: (f: string, s: string) => {
+        deleted.push(f + "|" + s);
+        stale = undefined;
+      },
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    expect(deleted).toEqual([asked[0]]);
+    const st = made.controller.getState();
+    // The warm paint of the destroyed transcript is gone with the fetch.
+    expect(st.turns.some((t) => t.role === "user")).toBe(false);
+    expect(st.turns.filter((t) => t.role === "error").length).toBe(1);
+  });
+
+  test("an EMPTY answer without the mark is a chat not written yet — no error", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.openSession("s-new");
+    expect(made.controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});
+
+describe("the server hears that a turn started (Akshil, 2026-09-15)", () => {
+  /** Every POST this turn made, by URL, with the body it carried. */
+  function captureFetch() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      posts.push({
+        url: String(typeof input === "string" ? input : (input as { url: string }).url),
+        body: init?.body ? JSON.parse(init.body) : null,
+      });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return { posts, restore: () => { globalThis.fetch = real; } };
+  }
+
+  const marks = (posts: { url: string; body: unknown }[]) =>
+    posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
+
+  test("a fresh chat is marked as soon as the poll names its session", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => poll({ done: n > 0, text: "ok", segments: [text("ok")] }),
+      });
+      await controller.sendMessage("hi");
+      // ONCE, and only for the turn's START. `noteChatActivity` fires at both
+      // boundaries; this must not, or a finished row would spin out the mark's
+      // whole TTL. `turn` is the fixture's fixed `wallClock`.
+      expect(marks(posts)).toEqual([{ session_id: "s1", turn: 1_000 }]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a chat that already has a session is marked at the send itself", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      // The first poll has not answered yet when this goes out — that is the
+      // whole point: it is the earliest anything can say the turn is open.
+      expect(marks(posts)).toEqual([{ session_id: "s1", turn: 1_000 }]);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("running and idle marks can race (Bugbot #1163)", () => {
+  /** Like `captureFetch` above, but the response to a `/api/tasks/running`
+   *  POST hangs until `release()` is called — so a test can prove `noteTurnIdle`
+   *  never even FIRES its own POST while that one is still in flight. */
+  function captureFetchWithGate() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+      posts.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+      if (url === "/api/tasks/running") await gate;
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return {
+      posts,
+      release,
+      restore: () => {
+        globalThis.fetch = real;
+      },
+    };
+  }
+
+  test("idle's own POST is never fired until running's has landed", async () => {
+    const { posts, release, restore } = captureFetchWithGate();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          // Done on the very first poll — the shortest possible turn, and the
+          // shape that used to race: `noteTurnRunning` and `noteTurnIdle` fire
+          // back to back with nothing between them.
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      // `noteTurnIdle` is fire-and-forget from `pollLoop`'s own `finally`, so
+      // this resolves without waiting for either POST to land.
+      await controller.sendMessage("hi");
+      const urls = () => posts.map((p) => p.url);
+      expect(urls()).toEqual(["/api/tasks/running"]);
+      // The running POST is still in flight (gated) — the fix is exactly this:
+      // idle's fetch is not even ISSUED yet, so the server can never see it
+      // before the running POST it belongs after.
+      expect(urls()).not.toContain("/api/tasks/idle");
+
+      release(); // the running POST's response lands…
+      // …flush the microtask chain `noteTurnIdle` was waiting on: `res.json()`,
+      // `markTaskRunning`'s own `.then`, and `markTaskIdle`'s `fetch` each add a
+      // hop, so a macrotask tick (rather than a fixed count of microtasks) is
+      // what reliably drains all of them.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(urls()).toEqual(["/api/tasks/running", "/api/tasks/idle"]);
+    } finally {
+      restore();
+    }
   });
 });

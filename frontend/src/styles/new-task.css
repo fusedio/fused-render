@@ -735,3 +735,54 @@
   white-space: nowrap;
   color: var(--fg);
 }
+
+/* -- The header's source chip (design.md B, Option 1) --------------------------
+   A card opened out of a task says which one: "New task · from TASK-003", mono
+   and muted beside the heading, and pressing it opens that task. It is a
+   REFERENCE, so it reads like the ids on the list do (.tasks-id) rather than
+   like a button — no fill, no border at rest, the weight and size of the row it
+   names, not of the h2 it sits in. */
+.new-task-source {
+  margin-left: 8px;
+  padding: 1px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  color: var(--fg-muted);
+}
+
+/* A SPAN wears the same chip where there is no task to open into (no side peek
+   on this surface) — same words, no affordance. Only the button is a door, so
+   only the button offers one. */
+button.new-task-source {
+  cursor: pointer;
+}
+
+/* The affordance arrives on approach, the way every quiet reference in the app
+   does: the wash says it is a door, the colour says which words are the name. */
+button.new-task-source:hover,
+button.new-task-source:focus-visible {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+/* -- The path, locked to one app (design.md §2) -------------------------------
+   Inside an app's Tasks tab the target is not a question, so the combobox is
+   `disabled` — which every engine then greys out on its own terms (WebKit does
+   it with `-webkit-text-fill-color`, and an opacity on top of that reads as a
+   control that has failed rather than one that has already been answered). The
+   two lines below take that back and state the quiet the field should wear: the
+   value in muted ink on the alternate surface, at full opacity, with the
+   default cursor instead of `not-allowed` — nothing here is refused. */
+.new-task-target-lock:disabled {
+  opacity: 1;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  -webkit-text-fill-color: var(--fg-muted);
+  cursor: default;
+}

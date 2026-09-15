@@ -93,7 +93,7 @@ export const tasksTour: Tour = {
         },
         {
           // List. ROW ONE, not "the new one": rows sort by lane and then time
-          // (tasks-lib.sortByLane), so an Upcoming task already on the page can
+          // (tasks-lib.sortForList), so an Upcoming task already on the page can
           // outrank the fresh one. The copy is true of whichever row this is.
           element: ".tasks-row",
           popover: {

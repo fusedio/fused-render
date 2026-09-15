@@ -296,8 +296,6 @@ def registry(tmp_path, monkeypatch):
     sessions = tmp_path / "claude-sessions-registry"
     sessions.mkdir()
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(sessions))
-    monkeypatch.setattr(tasks_watch, "HISTORY_PATH",
-                        str(tmp_path / "no-history.jsonl"))
     tasks_watch.reset()
 
     stamp = [time.time() + 10]

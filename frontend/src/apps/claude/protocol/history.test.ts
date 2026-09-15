@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ago, historyToTurns, paneSlashes, rowPane, sessionTitle } from "./history";
+import { ago, historyToTurns, paneSlashes, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
 import {
   composeOutgoing,
@@ -26,6 +26,24 @@ describe("historyToTurns", () => {
     });
     expect(turns[0].key).toBe("h:0");
     expect((turns[0] as { uuid?: string }).uuid).toBeUndefined();
+  });
+
+  test("an assistant turn is keyed by its own record id, not by its position", () => {
+    // A positional key is not an identity: a re-read that gained or lost a row
+    // moved every fold the reader had set one turn down the log (the fold map
+    // in `ui/Transcript` is keyed by `foldKey`, which is this key).
+    const turns = historyToTurns({
+      turns: [
+        { role: "assistant", text: "one", uuid: "r1" },
+        { role: "assistant", text: "two" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[0].key).toBe("r1");
+    expect((turns[0] as { uuid?: string }).uuid).toBe("r1");
+    // …and an older server that sends none falls back exactly as before.
+    expect(turns[1].key).toBe("h:1");
+    expect((turns[1] as { uuid?: string }).uuid).toBeUndefined();
   });
 
   test("segments ride along only when the turn had any (agent.py:5041)", () => {
@@ -92,6 +110,36 @@ describe("historyToTurns", () => {
     });
     expect((turns[0] as { stopped?: boolean }).stopped).toBeUndefined();
     expect((turns[1] as { stopped?: boolean }).stopped).toBeUndefined();
+  });
+
+  test("a user turn carries `ts` through, untouched (agent.py `_row_ts`)", () => {
+    const ts = 1789516743.5;
+    const turns = historyToTurns({
+      turns: [
+        { role: "user", text: "fix the header", uuid: "u-1", ts },
+        { role: "assistant", text: "done" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[0]).toEqual({ role: "user", key: "u-1", text: "fix the header", raw: "fix the header", uuid: "u-1", ts });
+    // The assistant side is dated by the message it answers; no second clock.
+    expect("ts" in turns[1]).toBe(false);
+  });
+
+  test("no `ts` on the wire means no `ts` on the turn — never a zeroed 1970", () => {
+    const turns = historyToTurns({
+      turns: [{ role: "user", text: "hi", uuid: "u-1" }],
+      transcript: stat,
+    });
+    expect("ts" in turns[0]).toBe(false);
+  });
+
+  test("a legitimate 0 survives the passthrough (the guard is not truthiness)", () => {
+    const turns = historyToTurns({
+      turns: [{ role: "user", text: "hi", uuid: "u-1", ts: 0 }],
+      transcript: stat,
+    });
+    expect((turns[0] as { ts?: number }).ts).toBe(0);
   });
 
   test("an empty or malformed payload is an empty transcript, never a throw", () => {
@@ -177,17 +225,9 @@ describe("ago (T:17945)", () => {
   });
 });
 
-describe("rowPane (T:18113)", () => {
-  test("a row opened on THIS target names no file", () => {
-    expect(rowPane({ pane: "/a/b.py" }, "/a/b.py")).toBe("");
-    expect(rowPane({ pane: "" }, "/a/b.py")).toBe("");
-  });
-  test("another file is named", () => {
-    expect(rowPane({ pane: "/a/c.py" }, "/a/b.py")).toBe("/a/c.py");
-  });
+describe("paneSlashes (T:18106)", () => {
   test("only a drive-letter path has its backslashes rewritten", () => {
     expect(paneSlashes("C:\\a\\b.py")).toBe("C:/a/b.py");
     expect(paneSlashes("/a/we\\ird.py")).toBe("/a/we\\ird.py");
-    expect(rowPane({ pane: "C:\\a\\b.py" }, "C:/a/b.py")).toBe("");
   });
 });

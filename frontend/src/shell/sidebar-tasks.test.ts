@@ -259,18 +259,28 @@ describe("one poll behind both readers", () => {
   it("has the page publish its own rows instead of a second poll", () => {
     // Two polls of /api/tasks would be two answers, and the sidebar would show a
     // dot the page disagreed with for up to twenty seconds at a time.
-    expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
+    // THE LISTING FEED IS THE PAGE'S POLLER NOW (2026-09-15): the page
+    // subscribes and the STORE does the reading and the publishing, so there is
+    // still exactly one `/api/tasks` behind both readers — one fewer, in fact,
+    // because every chat card on the page shares it too.
+    expect(SCHEDULED).toContain("subscribeListing((ev) => {");
+    expect(SCHEDULED).not.toContain("getTasks(");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
     expect(STORE).toContain("getTasksPulse()");
-    expect(STORE).not.toContain("getTasks()");
+    expect(STORE).toContain("publishTasks(rows)");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
     expect(STORE).toContain("listeners.delete(setCurrent)");
     // Both reader sets count — the summary readers and the Current apps section's
     // row readers (D487) share the one poll, so either alone keeps it alive.
-    expect(STORE).toMatch(/if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0\) return;/);
+    // …and a listing feed counts as a feeder for the same reason: it publishes
+    // every row of every answer through publishTasks. ONE predicate for both
+    // owners (`fedElsewhere`) — see the case below.
+    expect(STORE).toMatch(
+      /if \(listeners\.size \+ rowListeners\.size === 0 \|\| fedElsewhere\(\)\) return;/,
+    );
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
     expect(STORE).toContain("const IDLE_MS = 30_000");
@@ -287,7 +297,7 @@ describe("one poll behind both readers", () => {
     // Including the sidebar's own mount read: it remounts on every navigation
     // (App keys it on the nav epoch), so an unconditional fetch there would
     // spend the same double-poll per trip to /tasks instead of per tick.
-    expect(STORE).toContain("if (feeders === 0) void poll();");
+    expect(STORE).toContain("if (!fedElsewhere()) void poll();");
     expect(STORE).toContain("feeders++");
     expect(STORE).toContain("feeders--");
     expect(SCHEDULED).toContain("useTasksFeeder();");
@@ -299,6 +309,32 @@ describe("one poll behind both readers", () => {
     );
   });
 
+  it("EVERY guard asks about BOTH owners, not just the feeder (bugbot #1162)", () => {
+    // `schedule` and `pokeTasks` learned about the listing feed when it landed,
+    // but `poll` and the two subscribe hooks still keyed off `feeders` alone —
+    // so a sidebar remounting while a CHAT held the listing (no Tasks page
+    // anywhere) fired /api/tasks/pulse and published its thinner answer over the
+    // full rows the feed had just handed over. Two reads, two sources, and a dot
+    // that disagreed with the rows under it until the next tick.
+    //
+    // One predicate, so the next owner cannot be added to three places out of
+    // four.
+    expect(STORE).toContain("function fedElsewhere(): boolean {");
+    expect(STORE).toMatch(/return feeders > 0 \|\| listingSubs\.size > 0;/);
+    // Four guards, and none of them may still be asking the old question. The
+    // `feeders` reads that legitimately REMAIN are the counter's own
+    // (`feeders++`/`feeders--`) and pokeTasks' window event, which is about the
+    // Tasks page's OTHER two feeds and not about who polls.
+    const guarded = ["schedule", "poll", "useTasksPulse", "useTasksPulseRows"];
+    for (const name of guarded) {
+      const start = STORE.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = STORE.slice(start, STORE.indexOf("\n}", start));
+      expect(body).toContain("fedElsewhere()");
+      expect(body).not.toContain("feeders === 0");
+    }
+  });
+
   it("drops a stale self-poll that resolves after a fresher publish", () => {
     // BUGBOT, 2026-08-18: a self-poll already in the air when the page starts
     // feeding (or when a fresher publish lands) must LOSE, not overwrite. The
@@ -306,7 +342,7 @@ describe("one poll behind both readers", () => {
     // moved it while the request was in flight.
     expect(STORE).toContain("const departed = generation;");
     expect(STORE).toMatch(
-      /if \(feeders === 0 && generation === departed\) publishTasks\(answer\);/,
+      /if \(!fedElsewhere\(\) && generation === departed\) publishTasks\(answer\);/,
     );
     // Every publish — the page's or a poll's own — is a new generation, so two
     // racing polls can't both win either.
@@ -594,9 +630,13 @@ describe("pokeTasks", () => {
     // While the Tasks page holds the feeder, this store must not call the
     // server — that is the double-poll the feeder exists to prevent. The poke
     // becomes a window event, and the PAGE's own reload publishes back.
-    expect(STORE).toMatch(
-      /export function pokeTasks\(\) \{\s*\n\s*if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
+    const poke = STORE.slice(STORE.indexOf("export function pokeTasks()"));
+    expect(poke).toMatch(
+      /if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
     );
+    // And the ROWS are answered by the shared listing feed, which is the only
+    // thing allowed to re-read /api/tasks while it is live.
+    expect(poke).toMatch(/if \(listingSubs\.size > 0\) refreshListing\(\);/);
   });
 
   it("polls itself immediately when unfed — through the guarded poll()", () => {
@@ -606,9 +646,14 @@ describe("pokeTasks", () => {
   });
 
   it("the Tasks page listens for the poke with its own reload", () => {
+    // `reloadFeeds`, not `reload`: the ROWS were answered by `pokeTasks` itself
+    // (it refreshes the shared listing feed), and this event is what still
+    // answers for the page's own two other endpoints — the schedule and the
+    // queue. Asking for the listing here as well would be a second full read for
+    // one poke.
     expect(SCHEDULED).toContain("TASKS_POKE_EVENT");
-    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reload\)/);
-    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
+    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
+    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
   });
 
   it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {

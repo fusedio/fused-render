@@ -104,6 +104,17 @@
   gap: 12px;
   overflow: hidden;
   min-height: 0;
+  /* THE UNTIGHT GUTTER, carried as a var rather than left to whatever the
+     live padding happens to be (Bugbot, PR #1141). `.prefs-page`'s own 22px
+     each side (`styles/preferences.css`) is where this page's left/right
+     padding actually comes from — this rule never restates it — but
+     `task-peek-store.ts`'s `measureTasksBaseline` needs a number that stays
+     the FULL gutter even once `task-peek.css`'s `[data-tight="1"]` rule below
+     narrows the padding to 12px either side. Declared ONLY here, on the base
+     rule, so the tight override — which redeclares `padding-left`/
+     `padding-right` and nothing else — never touches it. Update together with
+     `.prefs-page`'s padding if that ever changes. */
+  --tasks-page-gutter: 44px;
 }
 
 .schedule-page > .schedule-header h1 {
@@ -2730,6 +2741,44 @@ input.schedule-when-field {
   background: currentColor;
 }
 
+/* -- The same centre, in red: UNSENT WORDS ON A SETTLED ROW ---------------------
+   Akshil, 2026-09-14. A Done or Archived row whose composer is still holding a
+   sentence looks, at a glance, exactly like one that is finished — and it is the
+   one row on the page that is NOT. A Blocked row wears it for the neighbouring
+   reason: a reply already typed is one press from unsticking it. `tasks-lib
+   .draftRing` is the gate and holds the whole argument, including why In
+   Progress never wears it.
+
+   THE SAME 8px CIRCLE, deliberately. It is not a second glyph to learn: the ring
+   already means "a unit of work", its centre already means "there is something
+   in here", and hue is what this page states a KIND of attention in. Red is the
+   one hue that means "yours is owed" here (`--status-failed`, the Blocked ring's
+   own), and an unsent sentence is the only thing on a settled row a person can
+   still act on.
+
+   AND IT OUTRANKS THE UNREAD FILL, by sitting after it at equal specificity —
+   which is a decision and not an accident of ordering. A settled row can be both
+   (output nobody read, input nobody sent), the two marks want the same pixels,
+   and only one of them is a thing the reader can DO something about. The unread
+   fact is not lost: the ring still carries `--unread`, the count still rides in
+   `data-tip` ("3 unread" on hover) and the row's own accessible name still reads
+   both ("Done, unsent draft, 3 unread"). What it loses is the hue, on the rows
+   where it has been outbid.
+
+   Not gated on `--done`/`--archived`/`--blocked` here: the class is only ever
+   written on those lanes, and a selector restating the rule is a second copy of it to
+   go stale — the same argument the `--unread` gate above settled. */
+.schedule-ring--draft-held::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--status-failed);
+}
+
 /* -- The count on hover, without the browser's two-second wait -----------------
    "3 unread" is the one thing the mark does not print, so a reader who wants the
    number hovers for it — and a native `title` makes them hold still for one to
@@ -3024,13 +3073,29 @@ input.schedule-when-field {
   border-color: transparent;
 }
 
-.schedule-tv-pop-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  flex: 0 0 13px;
-  color: var(--accent-soft);
+/* THE ROW THAT IS ON, said the way this app says it everywhere else: the row is
+   LIT (Akshil, 2026-09-14). There was a 13px tick column ahead of every label —
+   a second vocabulary for a fact the page already states with a fill, and a
+   column of empty boxes on every row that was off.
+
+   THE LIST ROW'S OWN TOKENS, so a filter row and a task row agree about what
+   "chosen" looks like: `--row-bg-hover` is the fill `.tasks-row.is-selected`
+   wears (tasks.css) and `--peek-halo` is the outline the open row wears
+   (task-peek.css). A step of `--fg` on top of the fill is what keeps the two
+   states apart — HOVER is the bare `--row-bg-hover` above and this is a rung
+   louder plus a ring, so a pointer passing over an unpicked row never looks
+   like the pick. The same step, from the same argument, as the Cards wall's
+   selected head (task-cards.css).
+
+   Restated under `:hover` — and under `.prefs-section`, where this control
+   actually lives — so the ring does not blink off when the pointer lands on the
+   row that is already on. */
+.schedule-tv-pop-item.is-on,
+.schedule-tv-pop-item.is-on:hover,
+.prefs-section .schedule-tv-pop-item.is-on,
+.prefs-section .schedule-tv-pop-item.is-on:hover {
+  background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
+  box-shadow: inset 0 0 0 1px var(--peek-halo);
 }
 
 /* The sessions feed failing is a missing HALF, not a broken page. */
@@ -3392,13 +3457,18 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
-.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
-.tasks-list::-webkit-scrollbar-thumb:hover,
-.task-cards-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
-  background-clip: padding-box;
-}
+/* HOVER-ONLY INK for these bars lives in styles/scrollbars.css (Akshil,
+   2026-09-15) — one list for every scroller on Tasks, the side peek, Home and
+   AI Models, so the pages cannot drift into three different fades. The rules
+   above are unchanged and still own the bar's shape, width and colour; that
+   file only paints the thumb out while the scroller is unhovered, which is why
+   it must stay on `::-webkit-scrollbar-thumb` — anything set through
+   `scrollbar-color` would make Chromium drop the width rule above, and with it
+   the overlay opt-out this whole block exists for.
+
+   The thumb's own `:hover` brightening (48%) went with it: hover state on the
+   thumb is the one Chromium leaves stuck after the pointer leaves, and a bar
+   that only appears on hover has nothing to brighten from. */
 
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
@@ -3460,6 +3530,11 @@ input.schedule-when-field {
   background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
+
+/* …and with the side peek ON it is overridden in styles/task-peek.css, where
+   this page's ONE selected look lives: the card's hover has to be a lighter
+   tint of that look rather than a neutral wash beside an accent ring. The rule
+   above is what a reader with the feature OFF still gets, unchanged. */
 
 /* -- Drag: moving a card between lanes ---------------------------------------
    Native HTML5 drag. A draggable card says so with the grab cursor; while one
@@ -3983,4 +4058,327 @@ input.schedule-when-field {
 }
 .schedule-tv-lane-split > span {
   flex: 0 0 auto;
+}
+/* -- The toolbar folds its words before it clips them ------------------------
+   EVERY SELECTOR HERE IS SCOPED TO `[data-fit]`, the attribute shell/row-fit.ts
+   writes and which exists only while `task_peek_enabled` is on
+   (shell/task-peek-flag.ts). That is the flag's contract: a reader who has
+   opted out of the side peek gets the toolbar this page has always had, down to
+   how it shrinks. Unscoped, these rules changed it for them — the search
+   floored at 72px where it used to collapse to nothing, the row stopped
+   shrinking, and the filter group's minimum moved.
+
+   `data-fit` itself is how many of TOOLBAR_DROPS have had to go for the row to
+   fit the width it has: measured, never a breakpoint.
+
+   THE CHILDREN MUST NOT SHRINK, and that is what makes the measurement possible
+   at all: a flex row whose items shrink never overflows, so a narrow bar
+   squeezed the view toggle instead — the reader got "List | Board" and an empty
+   stub where Cards and Calendar had been clipped away (Akshil, 2026-09-13, with
+   the side peek open). Now the row overflows honestly, the hook sees it, and
+   the words fold. */
+
+/* The view toggle and the primary button are what must not be squeezed — they
+   are fixed sets of words, and a clipped one is the defect this whole rule is
+   about. The filter group between them keeps its own `flex: 0 1 auto`: its
+   search box is 260px of slack that SHOULD be spent first, before any word is
+   folded. */
+.schedule-toolbar[data-fit] > .schedule-view-seg,
+.schedule-toolbar[data-fit] > .schedule-new {
+  flex-shrink: 0;
+}
+
+/* NOWRAP, unconditionally (the wrap fallback is gone — see the note at the end
+   of this section), and `flex: 0 0 auto` with it: the toolbar is fixed
+   furniture above a scrolling view, and the page's column flex must not be able
+   to squeeze it. */
+.schedule-toolbar[data-fit] {
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+}
+
+/* NO `min-width: 0` on the filter group while the ladder is live: the zero
+   removes the box's automatic minimum size, and flex was then free to squeeze
+   the group to 140px around 173px of controls — the Project chip drew straight
+   THROUGH the New task button beside it (measured live at frame 437). `auto` is
+   its own min-content: its filter buttons and their gap, exactly as narrow as
+   the group may honestly go. */
+.schedule-toolbar[data-fit] .schedule-tv-filters {
+  min-width: auto;
+}
+
+/* The search is the toolbar's designed slack, and it publishes two numbers:
+   what it OPENS at (a flex basis of 260) and what it must KEEP
+   (`--fit-natural`, which shell/row-fit.ts charges it). Everything between the
+   two is spent before any word in the row folds.
+
+   A FLEX BASIS carries the 260, not a `width`: a definite width makes an item
+   contribute that width to its container's min-content whatever its `min-width`
+   says, so the group could not shrink below 260 + its buttons and the row
+   simply overflowed instead.
+
+   Below its floor the field does not get narrower, it GOES — rung 2 takes it
+   off the row entirely, further down this file. */
+.schedule-toolbar[data-fit] .schedule-tv-search {
+  /* WHAT THE FIELD MUST KEEP, and it is now the width that holds its own
+     caption rather than a bare six characters (Akshil, 2026-09-14). At 72 the
+     placeholder was cut to "Sea" at the default panel width — and worse, the
+     fit arithmetic charged the field 72 while flex stopped it well above that,
+     so the toolbar's need was understated at every level. One number, read by
+     the stylesheet as the floor and by shell/row-fit.ts as the charge, and the
+     two now describe the same field.
+
+     THE FLOOR IS ABOVE THE BACKSTOP, and that one pixel of daylight is the
+     whole of the bug Akshil kept seeing (design.md, Polish batch 4, item 3:
+     "placeholder still not visible at the default width"). The floor and the
+     container query below were the SAME number, and a container query's
+     `max-width` is INCLUSIVE — so the instant flex squeezed the field down onto
+     its own floor, which is the ordinary state of this toolbar at the default
+     panel width, the query matched and blanked the caption the floor exists to
+     protect. The field was never too narrow to read; it was exactly wide
+     enough, and told to go transparent for it.
+
+     120 = "Search tasks…" (82px at this size) inside the 28px of left padding
+     the magnifier sits in and 10px of right padding. 132 is that plus a couple
+     of pixels for the font that actually loads — the width the query below
+     still names, because it is the width at which the caption stops fitting.
+     140 is the FLOOR: the same caption with 8px of daylight over the query, so
+     a field resting on its floor is a field reading properly. */
+  --fit-natural: 140px;
+  /* Opens at 260 and gives that slack up first — everything between the basis
+     and the floor is spent before any word in the row folds. */
+  flex: 0 1 260px;
+  width: auto;
+  min-width: var(--fit-natural);
+  /* A SIZE CONTAINER, so the rule below can ask how wide this field actually
+     ended up — see it for what the question is for. */
+  container: tasks-search / inline-size;
+}
+
+/* THE PLACEHOLDER IS WHOLE OR IT IS GONE — never "Sea".
+   132 is the width at which the caption stops fitting; the floor above is 140,
+   STRICTLY WIDER, so in the ordinary run of things this rule never fires: the
+   field is either resting on its floor and reading properly, or the ladder has
+   taken it off the row (rung 2) and there is no caption to clip. It stays as a
+   BACKSTOP, for the widths the floor cannot govern — a font that loads wider
+   than the one measured, a zoomed page, a future seat that squeezes the group
+   below its own minimum. A clipped word reads as a rendering fault; a bare
+   magnifier over an empty box reads as a search that has run out of room, which
+   is what it is.
+
+   THE TWO NUMBERS MUST NOT MEET. `max-width` in a container query is
+   inclusive, so a query set at the floor fires ON the floor — see the floor's
+   own comment for the day that cost.
+   A container query, not a `[data-fit]` level: the field's width is decided by
+   flex against whatever the other seats took, so no rung of the ladder names a
+   width this rule could key on. */
+@container tasks-search (max-width: 132px) {
+  .schedule-tv-search-input::placeholder {
+    color: transparent;
+  }
+}
+
+/* CUMULATIVE — every rule holds at its own level AND at every level past it.
+   Spelled out rather than left to `:not([data-fit="0"])`, because each starts at
+   a different rung; a level named once and then overtaken puts the words back on
+   (the New task label reappeared at level 4, the one level it most needed to be
+   gone).
+
+   AND EVERY ONE OF THEM NAMES `[data-fit]` FIRST. `:not([data-fit="0"])` alone
+   matches a toolbar with no attribute at all — which is precisely the flag-off
+   page — so the view labels folded for readers who had opted out of the whole
+   feature (measured live, 2026-09-13). A negation is not a scope. */
+.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-fit-lbl {
+  display: none;
+}
+
+.schedule-toolbar:is(
+    [data-fit="2"],
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-filter-btn
+  .schedule-fit-lbl {
+  display: none;
+}
+
+.schedule-toolbar:is(
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-new
+  .schedule-fit-lbl {
+  display: none;
+}
+
+/* -- rung 2: THE SEARCH GOES ---------------------------------------------------
+   Before "+ New task" loses its words, and that ORDER is the point (Akshil,
+   2026-09-14 — design.md, Polish batch 4, item 3). A search field is 140px of
+   row spent on a control the reader is not using this second, and the omnibox
+   (⌘K) answers the same question from anywhere; "+ New task" is the one thing
+   on this toolbar that STARTS something, and a button that has lost its verb is
+   a button a newcomer has to press to find out about. The wide thing folds
+   before the important thing.
+
+   AND IT GOES ENTIRELY (Polish batch 5). It spent a day folding to a 32px
+   magnifier that opened over the row on focus, which kept its tab stop at the
+   price of a control whose caption, whose value and whose caret all had to be
+   painted out and put back by rules — three states of one field, two of them
+   drawn to look like something the field is not. A row with no room for a
+   search field is better off saying so: `display: none` and the toolbar
+   re-measures, `⌘K` is where the question goes, and the field comes back the
+   moment the width does. The `--fit-natural` override, the `:focus-within`
+   expansion, the transparent text and the "a filter is on" dot went with it. */
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-search {
+  display: none;
+}
+
+/* -- and then CONTROLS GO, lowest priority first ------------------------------
+   The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
+   Rung 5 is not here: Project loses its own trigger by MERGING into the Status
+   one (`merged` in Scheduled.tsx), so its rows stay one press away rather than
+   going off the page. From rung 6 the controls are honestly gone, in the order
+   Akshil set: the remaining filter trigger, then Calendar, Cards and Board.
+
+   LIST AND NEW TASK ARE NOT IN THIS LIST AT ANY LEVEL, and that is the rule
+   rather than an omission: the page must always be able to get back to its
+   default view and must always be able to start a task. The SEARCH is not here
+   either — it left two rungs earlier, and ⌘K answers the same question from
+   anywhere, which no filter trigger does. Everything else is a lens, and a lens
+   you cannot reach at 300px is a lens you set at 1400 and left on. */
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-tv-filters
+  .schedule-tv-pop-wrap {
+  display: none;
+}
+
+/* AND THE GROUP GOES WITH THE LAST TRIGGER IN IT. The search left at rung 2 and
+   the two filter triggers at this one, so from here `.schedule-tv-filters` is
+   an empty flex box — nothing to see, and still charging the row one gap. It is
+   the same rung, not a new one: the group is gone exactly when the last thing
+   inside it is (design.md, Polish batch 5). */
+.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-tv-filters {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="7"], [data-fit="8"], [data-fit="9"])
+  .schedule-view-btn[data-view="calendar"] {
+  display: none;
+}
+
+.schedule-toolbar:is([data-fit="8"], [data-fit="9"]) .schedule-view-btn[data-view="cards"] {
+  display: none;
+}
+
+.schedule-toolbar[data-fit="9"] .schedule-view-btn[data-view="board"] {
+  display: none;
+}
+
+/* Folded, the button is its glyph and nothing else — so it stops being a pill
+   with a word's worth of side padding and becomes a square target of the same
+   height as its neighbours. The caption moves to the tooltip the button already
+   carries (`title`), which is where a label goes when it cannot be ink. */
+.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-view-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* THE SAME FOR A FILTER TRIGGER, and it matters most on an ACTIVE one (Akshil,
+   2026-09-14): with a selection it is a split control — glyph, word, count,
+   and a ✕ in its own half — so it is the widest seat on the row exactly when
+   the row has least to spare. Folding took the word and left the pill's
+   padding, which is a lot of nothing between a glyph and a badge.
+
+   THE COUNT AND THE ✕ STAY. The badge is the only thing on a folded trigger
+   that says a filter is ON at all, and the ✕ is the one gesture that turns it
+   off without opening the menu first; hiding either would make a narrow page a
+   page you cannot get your own filter off. */
+.schedule-toolbar:is(
+    [data-fit="2"],
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-tv-filter-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.schedule-toolbar:is(
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"]
+  )
+  .schedule-new {
+  /* A SQUARE, not a pill with its word taken out. `width` and not `min-width`:
+     `.btn` carries its own horizontal padding and its own floor, and a button
+     that folded its label while keeping both stayed 76px wide — which was the
+     difference between the row fitting on one line and wrapping onto three. */
+  width: 32px;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+
+/* NO WRAP FALLBACK ANY MORE (2026-09-14, design.md Widths v2). The row used to
+   take a second line once every rung was spent; the ladder now runs down to
+   List and "+" — about 70px — so there is no width left where a second line is
+   the better answer, and the toolbar's whole contract is that it stays on ONE
+   line however narrow the middle pane gets. `flex-wrap: nowrap` above is now
+   unconditional. */
+
+/* The merged filter menu's two sections. A heading rather than a divider: the
+   rows below it are the same rows the separate menu drew, and the only thing
+   the reader needs is which facet they are looking at. */
+.schedule-tv-pop-head {
+  margin: 6px 0 2px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+}
+
+.schedule-tv-pop-head:first-child {
+  margin-top: 0;
+}
+
+/* The project rows' radiogroup (ScheduleTaskViews `projectRows`): a box in the
+   accessibility tree and no box in the layout, so the rows stay the panel's own
+   flex children and 28 folders are 28 rows rather than 28 slivers.
+
+   `display: contents` REMOVES THE BOX, NOT THE ELEMENT: the DOM is unchanged, so
+   every `>` selector aimed at these rows has to name this wrapper as a step on
+   the way down. tasks.css's `.schedule-tv-pop.tasks-pop > … > .schedule-tv-pop-item`
+   does; the two move together. */
+.schedule-tv-pop-radiogroup {
+  display: contents;
 }

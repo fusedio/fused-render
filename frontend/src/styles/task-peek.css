@@ -1,0 +1,986 @@
+/* ---- Task side peek (shell/TaskPeek.tsx) --------------------------------- */
+/* The panel that slides in from the right of the Tasks page, and the two things
+   it needs from the page around it: a flex row to sit in, and a frame that
+   narrows to make room.
+
+   .claude-design/task-side-peek/design.md is the spec;
+   notion-side-peek-notes.md beside it holds the measured reference values this
+   file copies (44px header, 12px seam in a 1px line, 200ms `ease`).
+
+   WHY `ease` AND NOT `--ease-out`. Opening is TWO properties on TWO elements
+   that have to stay glued together — the frame's width and the panel's
+   translateX — and they only look like one movement if they decelerate
+   identically. `ease` is what Notion uses for exactly this pair; the app's
+   `--ease-out` is for a single element arriving. Declared as its own token so
+   the pairing is stated once and both halves read it. */
+:root {
+  --peek-dur: var(--dur-slow);
+  --peek-ease: ease;
+  /* The seam's hit area (the drawn line inside it is 1px — see the sidebar
+     handle's argument in styles/sidebar.css). */
+  --peek-seam-w: 12px;
+  /* The header's line. 44 is the app's own strip height and the number Akshil
+     asked for; it was 45 for a day, borrowed from the chat's identity row back
+     when the peek wore that row (design.md, Header + list state v2). */
+  --peek-head-h: 44px;
+  /* ONE HEADER CONTROL'S FOOTPRINT — the × and the ⋮ are squares of this, and
+     it is also the inset the app preview is given left and right (Akshil,
+     2026-09-14 — design.md, Polish batch 4, item 7: "left/right padding around
+     the preview = one icon-button width").
+
+     ONE VAR RATHER THAN TWO NUMBERS, because the point of the measure is that
+     the preview's edge lines up with the header's: the app's frame starts where
+     the × ends. `shell/peek-preview.ts` `PREVIEW_INSET` carried 28 for
+     the scale arithmetic, which is the one place a stylesheet cannot reach. */
+  --peek-icon-w: 28px;
+  /* The preview's side inset: the header's 10px padding plus one icon button,
+     so the app's left edge sits where the × ends and its right edge where the
+     ⋮ begins (Akshil, 2026-09-14). `shell/peek-preview.ts` `PREVIEW_INSET`
+     carries the same 38. */
+  --peek-preview-inset: 38px;
+  /* Air above and below the preview card. `shell/peek-preview.ts`
+     `PREVIEW_PAD_Y` carries the same 12 — the box's height includes it, so the
+     app's viewport is sized to the card, not the box. */
+  --peek-preview-pad-y: 12px;
+  /* THE NARROWEST A WALL CARD IS WORTH DRAWING. Below about this the card's own
+     head (a ring, a number, a folder chip) stops fitting on one line and the
+     conversation inside it is a column of two-word lines. The wall drops a
+     column instead (`.task-cards` below). */
+  --task-card-min: 300px;
+  /* THE CHAT'S OWN GROUND, and the preview's gutters are painted with it
+     (Akshil, 2026-09-14 — design.md, Polish batch 5). Edge to edge the panel
+     showed three colours down one column: the header, then 28px of PAGE either
+     side of the app, then the conversation on a lighter surface again. The
+     gutters belong to the body they are cut out of, not to the page behind it.
+
+     STATED HERE AS A LITERAL, which is the one thing this file does that its
+     neighbours do not, and the reason is that the chat's palette is LAZY:
+     `apps/claude/styles/chat.css` arrives with `ClaudeChat`, which is a
+     `lazy()` import and is never loaded at all for a reader on the legacy
+     iframe chat. `var(--c-panel)` would therefore resolve to nothing exactly
+     half the time. The value is `--c-panel`'s, both themes, and
+     `task-peek-flag.test.ts` reads the two files and fails if they ever
+     disagree. */
+  --peek-chat-bg: #1e2025;
+}
+
+:root[data-theme="light"] {
+  --peek-chat-bg: #fafafa;
+}
+
+/* -- the row the two halves live in ---------------------------------------- */
+/* A flex row inside #content, `position: relative` because the panel is
+   absolutely positioned over its right edge (Notion's own arrangement: DOM
+   siblings, one of them lifted out of flow so its slide does not reflow the
+   frame under it). `overflow: hidden` is what keeps a panel parked off the
+   right edge from growing a horizontal page scrollbar. */
+.tasks-peek-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+  overflow: hidden;
+}
+
+/* The Tasks page itself. Width is set inline as `calc(100% - <peek>px)` so the
+   two transitions below run off ONE number; it re-lays-out to that width (no
+   transform on content), which is what lets the page column's centred margins
+   absorb the loss first (styles/schedule.css). */
+.tasks-frame {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  transition: width var(--peek-dur) var(--peek-ease);
+}
+
+/* -- the middle pane's floor ------------------------------------------------
+   THE VIEW STOPS SHRINKING AND STARTS SCROLLING (design.md, Widths v2).
+
+   Above the floor the page does what it always did: the column's centred
+   margins absorb the loss, then the rows reflow and the fit ladders fold their
+   marks. Below it — three quarters of the width the column had when the peek
+   first opened — the CONTENT keeps its size and the pane scrolls sideways
+   inside the frame. A list squeezed past that point is not a narrower list, it
+   is a column of ellipses.
+
+   `--tasks-floor` is written inline by shell/Scheduled.tsx (the frame's ¾
+   baseline, with the page's gutters taken back off, so this is the width of the
+   content INSIDE them). `data-floored` is the switch, so at every other width
+   not one of these declarations is in play and the page is exactly the page it
+   was.
+
+   SCOPED TO THE FRAME, never to the document: `.tasks-peek-host` is
+   `overflow: hidden` and each view is its own scroller, so what grows a
+   horizontal bar here is the view, under its own content — never the page
+   (design-principles §0).
+
+   THE TOOLBAR IS DELIBERATELY NOT IN THIS LIST. It is exempt from the floor: it
+   stays on one line at every width and folds and then hides its own controls
+   instead (shell/row-fit.ts `TOOLBAR_DROPS`). A toolbar that scrolled sideways
+   would put New task somewhere you have to go looking for it.
+
+   AND NEITHER IS THE BOARD, for the opposite reason: its lanes are
+   `flex: 0 0 260px` and the strip already has `overflow-x: auto` of its own
+   (styles/schedule.css `.schedule-tv-board`), so it has never reflowed and has
+   always scrolled — it is already the behaviour this rule is asking for. Giving
+   it a floor as well would only pad a two-lane board out with scrollable
+   emptiness. */
+.tasks-frame[data-floored="1"] .tasks-list,
+.tasks-frame[data-floored="1"] .schedule-cal {
+  overflow-x: auto;
+}
+
+/* THE HORIZONTAL BAR MUST NOT SIT ON THE LAST ROW, and the corner where it
+   meets the vertical one must not be a white square (Akshil, 2026-09-14).
+   Chromium paints `::-webkit-scrollbar-corner` in the UA's own colour when a
+   box scrolls on both axes, which on a dark page is a bright chip in the
+   bottom-right of the list; and the horizontal bar is laid over the content
+   rather than under it, so the last row reads as struck through.
+
+   The corner is painted out, and the content is given the bar's height back as
+   padding so the last row clears it. Both are scoped to the floored state, so a
+   list that scrolls only vertically is untouched. */
+.tasks-frame[data-floored="1"] .tasks-list::-webkit-scrollbar-corner,
+.tasks-frame[data-floored="1"] .schedule-cal::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.tasks-frame[data-floored="1"] .tasks-list > .tasks-list-frame {
+  padding-bottom: 10px;
+}
+
+/* The calendar card is `overflow: hidden` at rest (it has a radius to keep its
+   grid inside); on the floor the x axis has to open without the y following it
+   into a second scrollbar beside the body's own. */
+.tasks-frame[data-floored="1"] .schedule-cal {
+  overflow-y: hidden;
+}
+
+/* WHAT ACTUALLY STOPS SHRINKING. The scroller keeps the frame's width; its
+   content is held at the floor, and the difference is the scroll. */
+.tasks-frame[data-floored="1"] .schedule-cal > * {
+  min-width: var(--tasks-floor, 0px);
+}
+
+/* …AND THE LIST IS HELD AT THE LARGER OF TWO NUMBERS (Akshil, 2026-09-14 —
+   design.md, Fix batch 6 §2).
+
+   The floor is three quarters of the baseline, and a row wants what a row
+   wants: with the content held at the floor alone the pane stopped shrinking
+   but the ROWS did not — the fit ladder went on folding the project, the
+   message count and the time to keep each row on one line inside a box that was
+   already scrolling. Two mechanisms answering the same narrowness, and the one
+   that took the marks away won.
+
+   So at the floor the ladder stands down (shell/row-fit.ts `pickRowFit` returns
+   level 0) and this takes over: `--tasks-row-need` is the widest row's measured
+   need with nothing folded, written on the scroller by the list itself. The
+   marks stay on the row and the reader scrolls right to them.
+
+   `max()` rather than a swap, because the two are both real: a short row on a
+   narrow pane must still fill the floor (the frame's own border and the empty
+   state read off it), and a long one must be able to exceed it. The `0px`
+   fallbacks make this exactly the old rule on a page that has not written
+   either variable yet. */
+.tasks-frame[data-floored="1"] .tasks-list > * {
+  min-width: max(var(--tasks-floor, 0px), var(--tasks-row-need, 0px));
+}
+
+/* THE CARDS WALL IS NOT IN THAT LIST, and that is this batch's decision (Akshil,
+   2026-09-14): a grid of live conversations has an obvious answer to being
+   narrowed that a list of rows does not — fewer, smaller cards. It held three
+   fixed columns and was floored into a sideways scroll with the rest; now the
+   tracks auto-fill against a minimum card width, so the wall drops to two and
+   then to one and never scrolls horizontally at all.
+
+   `min()` guards the one-column case: on a pane narrower than the minimum the
+   track follows the pane rather than poking out of it, which is the overflow
+   this rule exists to prevent. */
+.tasks-peek-host .task-cards {
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--task-card-min), 100%), 1fr));
+}
+
+.tasks-frame[data-floored="1"] .task-cards-scroll {
+  overflow-x: hidden;
+}
+
+/* -- the page's gutters, when there is nothing to spare ---------------------
+   The Tasks page holds its column at 1050 with `margin-inline: auto` and 22px of
+   padding either side, and while the frame is wider than the two together the
+   centred margins absorb the panel's share first — which is the whole reason
+   opening a peek reads as "the page shifts" rather than "the page reflows".
+
+   Once the frame is narrower than that, the margins are gone and the padding is
+   all that is left: two dark bands down the sides of a list that is already
+   short of room (Akshil, 2026-09-14). So below the threshold the PAGE's gutters
+   go entirely and the content runs edge to edge.
+
+   NOT a 12px inset on the page, which is what this rule held for a day (Polish
+   batch 3) and what Akshil asked to replace (Polish batch 4): an inset on the
+   page is a band down both sides of EVERYTHING, scrollers included, so the
+   list's horizontal bar and the board's lane strip each ended 12px short of the
+   frame and the dark band was still there — just narrower. The page gives its
+   gutter up completely and the 4px that keeps type off the edge is put on the
+   BLOCKS instead (the header and each section), which is where an inset belongs:
+   inside the thing being read, not around the thing being scrolled.
+
+   `data-tight` is the switch, written by Scheduled.tsx off the same arithmetic
+   as the floor.
+
+   DELIBERATELY NOT REDECLARING `--tasks-page-gutter` here (Bugbot, PR #1141,
+   `styles/schedule.css`'s `.schedule-page` rule): that var is the UNTIGHT
+   44px `measureTasksBaseline` freezes the baseline's gutter from, and this
+   rule narrowing the live padding must not narrow it too, or a resize that
+   lands here after the baseline is already frozen feeds 0 back into
+   `peekGutter()` mid-visit. */
+.tasks-frame[data-tight="1"] .schedule-page {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* …and the 4px goes here. `padding`, not `padding-inline`, because neither of
+   these carries a vertical one of its own (`.prefs-section` is a bare flex
+   column and `.schedule-header` a bare block) — the shorthand states the whole
+   box rather than leaving a reader to go and check. */
+.tasks-frame[data-tight="1"] .schedule-page > .schedule-header,
+.tasks-frame[data-tight="1"] .schedule-page > .prefs-section {
+  padding: 0 4px;
+}
+
+/* THE TWO SCROLLBARS STILL STACK, and that is a deferral rather than an
+   oversight (design.md, Polish batch 4, item 2). Keeping the horizontal bar at
+   the bottom of the floor scroller while the vertical one stays on the frame
+   needs the wrapper Polish batch 3 already refused: every view is addressed as
+   `.schedule-main > .view` in four stylesheets and their tests, and a new
+   element in that chain breaks all of them for a feature this batch does not
+   own. The corner is painted and the last row clears the bar (batch 3), so what
+   is left is cosmetic. */
+
+/* -- the panel ------------------------------------------------------------- */
+.task-side-peek {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* An ELEVATED surface with a hairline ring and a soft drop, not a border-left:
+     a 1px border would be one more line in a page that already has a seam here,
+     and the ring carries the whole edge (top and bottom included) at the same
+     weight. Square corners — the panel meets three window edges. */
+  background: var(--bg-panel);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 12px -2px var(--shadow-sm);
+  transform: translateX(100%);
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s linear var(--peek-dur);
+  /* Closed it is off screen AND out of the tab order — `visibility` waits out
+     the slide (the delay above) so the exit still animates. */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.task-side-peek.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s;
+}
+
+/* PARKED — closed, and the slide has had its time (TaskPeek `parked`). The rule
+   above hides the panel on a DELAY, which is right while a transition is
+   running and is nothing at all when one never runs: a background tab does not
+   tick transitions, and under `prefers-reduced-motion` the duration collapses
+   while the delay does not. Either way the panel stayed visible over the page
+   with its buttons still in the tab order. This class is set by a timer instead
+   — no delay, no transition, no way to be left on. */
+.task-side-peek.is-parked {
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
+}
+
+/* A DEEP LINK IS NOT AN ANIMATION (design.md, URL/history): a page that loads
+   with `?peek=` shows the panel already in place rather than sliding it in over
+   a list the reader has not seen yet. Also the shape a Back/Forward restores.
+   Both halves of the pair carry the class — the frame is the panel's SIBLING
+   and sits before it, so no combinator reaches it from here. */
+.task-side-peek.is-instant,
+.task-side-peek.is-instant.is-open,
+.tasks-frame.is-instant {
+  transition: none;
+}
+
+/* Cover mode (rule 4): under ~360px of frame even with the sidebar at its rail
+   there is nothing left worth squeezing, so the panel takes the content area
+   and the frame keeps its width underneath. Still a slide from the right. */
+.task-side-peek.is-cover {
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+/* While the seam is captured: no transitions anywhere in the pair, or the edge
+   chases the cursor 200ms behind it. */
+body.tasks-peek-dragging .task-side-peek,
+body.tasks-peek-dragging .tasks-frame {
+  transition: none;
+}
+
+body.tasks-peek-dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* -- the seam -------------------------------------------------------------- */
+/* 12px of hit area straddling the panel's leading edge; the INK is the 1px line
+   the pseudo draws, and only that line lights up — the rule every other seam in
+   the app follows (styles/sidebar.css has the argument). */
+.task-side-peek-seam {
+  position: absolute;
+  /* INWARD from the panel's leading edge, not straddling it (re-measured from
+     Notion): the frame beside it is fully interactive, and a hit area hanging
+     over it would eat the first 6px of every row the reader aims at. */
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--peek-seam-w);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+/* THE SEAM STAYS IN COVER MODE, and that is a fix rather than an oversight
+   (Bugbot, PR #1138). It used to be hidden here, on the reasoning that a panel
+   filling the content area has no edge worth dragging — but it is the ONLY
+   control that makes the panel narrower, so hiding it left the reader with a
+   covered page and no way back to their list except closing the task. In cover
+   the panel's leading edge is the content area's own, so the seam rides the far
+   left of the page and a drag to the right brings the middle pane straight
+   back. */
+.task-side-peek.is-cover .task-side-peek-seam {
+  /* A touch wider than the ordinary seam: in cover it is the one thing to aim
+     at, and there is no row behind it whose first 6px it could be stealing. */
+  width: calc(var(--peek-seam-w) + 4px);
+}
+
+.task-side-peek-seam::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.task-side-peek-seam:hover::after,
+.task-side-peek-seam:focus-visible::after,
+.task-side-peek-seam.dragging::after {
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
+}
+
+/* -- the head -------------------------------------------------------------- */
+/* ONE 44px LINE, and it is the PEEK's own — not the chat's (design.md, Header +
+   list state v2). It wore `@apps/claude/ui/Topbar` for a day, which bought one
+   row instead of two and cost the row its subject: a ✻ Claude wordmark and a
+   model/run cluster are facts about the TOOL, and this panel is about a TASK.
+
+   Left to right: the panel's controls · who this is (status ring, number,
+   title) · what can be done with it (open, project, ⋮). Only the middle flexes,
+   because only the middle holds something that may honestly be cut short. */
+.task-side-peek-head {
+  flex: 0 0 auto;
+  min-height: var(--peek-head-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 10px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Holds the middle open while there is no task yet, so the two clusters do not
+   slide together and back as one lands. */
+.task-side-peek-idle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.task-side-peek-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* WHO THIS PANEL IS ABOUT. The only part of the row that flexes, and the title
+   inside it is the only part of THAT which shrinks — see `.task-side-peek-title`
+   for why the ring and the number do not. */
+.task-side-peek-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+/* The row's own ring, at the row's own size. The word it stands for is the
+   ring's `title`, not ink: it is the one fact here that is already repeated on
+   every row of the list behind the panel. */
+.task-side-peek-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+/* TASK-137 — mono and muted, the spelling the row, the card and the chat's own
+   line all use, so the number reads as the same number in all four places. */
+.task-side-peek-id {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+/* THE ONE THING IN THE ROW THAT MAY BE CUT SHORT, and it takes everything that
+   is left. A title is a sentence — an ellipsis on it loses the end of a
+   sentence, which the reader can live with; an ellipsis on a folder name or a
+   task number produces a DIFFERENT name and a different number. */
+.task-side-peek-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-side-peek-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+/* THE PROJECT, AND IT IS A FACT (Akshil, 2026-09-14 — design.md, Polish batch
+   4). It was a folder mark and a name, wired to the folder's Explorer page, one
+   inch from a second door that also wore a folder and went somewhere else. Two
+   doors an inch apart cannot be told apart by their pictures, so the quieter of
+   the two stops being a door: the name is the label of the project this task
+   runs in, muted, with the full path in its tooltip — and the header keeps
+   exactly one way out, which says its act in words.
+
+   No padding, no radius, no hover: nothing here is pressable, and a label that
+   lights up under the pointer is a label promising a press. */
+.task-side-peek-project {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* THE HEADER'S LABELLED BUTTON — the Open door. (Its twin, "Resize panel",
+   went 2026-09-15: expanding the sidebar is the way out of cover now.) The way
+   back to the split. One skin, because they are the same kind of thing: a word
+   you press, in a row that is otherwise glyph squares and ink.
+
+   AN OUTLINE AT REST (Akshil, 2026-09-14 — design.md, Polish batch 5). Without
+   one they were two runs of muted text sitting beside the project NAME, which
+   is a run of muted text that is not pressable; the only thing that said
+   otherwise was a hover wash, and a hover is not an affordance for a reader who
+   has not hovered yet. 1px of `--border` and the app's small-control radius
+   says "button" before the pointer arrives; the wash still says "this one"
+   after it does.
+
+   Sized off `.task-side-peek-btn`'s own height so they sit on the row's
+   baseline with the ⋮ beside them rather than next to them. */
+.task-side-peek-open {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--peek-icon-w);
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.task-side-peek-open:hover {
+  background: var(--row-bg-hover);
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
+.task-side-peek-btn {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.task-side-peek-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+.task-side-peek-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* THE HEADER FOLDS BEFORE IT CLIPS, exactly as the page toolbar does
+   (shell/row-fit.ts `PEEK_HEAD_DROPS`): the title ellipsises all the way down
+   first, and only when even a floored title will not fit does the project name
+   go, and then the Open door — which reappears in the ⋮, because a hidden
+   control has to be somewhere. Measured, never a breakpoint.
+
+   Nothing else is ever hidden: the way OUT of a panel and the way to its
+   actions are what a narrow window must never take away. */
+.task-side-peek-head[data-fit]:not([data-fit="0"]) .task-side-peek-project {
+  display: none;
+}
+
+.task-side-peek-head[data-fit="2"] .task-side-peek-open {
+  display: none;
+}
+
+/* -- the body -------------------------------------------------------------- */
+/* THE CONVERSATION STARTS DIRECTLY UNDER THE HEADER. There is no title row and
+   no padding of its own: the header's title IS the task's, and the chat owns
+   its own measure and its own gutters (the 76px column this file used to
+   impose put a second gutter inside the template's first and squeezed the
+   composer's controls under their own floor at a 564px panel). */
+.task-side-peek-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.task-side-peek-chat {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* `.chat-frame` (legacy) and `.chat-mount` (native) both already declare
+   `flex: 1 1 auto; width: 100%; height: 100%`, so the column above is all
+   either of them needs — and the SHIMMER over a conversation that has not
+   painted yet is ChatFrame's own placeholder, restarted on every swap because
+   the mount is keyed on the task (TaskPeek). One skeleton, not two. */
+
+/* The wait BEFORE there is a frame at all: the folder's chat template is still
+   being resolved (a stat), so there is no src to hand the mount yet. */
+.task-side-peek-wait {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 2px;
+}
+
+/* -- ONE ACTIVE ITEM, in every view ----------------------------------------
+   A FILL, NOT A RING (Akshil, 2026-09-14 afternoon — design.md "Polish batch
+   3"). The ring came from Notion and never settled here: on a page whose accent
+   is a bright lime it read as a warning outline rather than as "this is the one
+   you are looking at", and beside a panel showing the same task it was saying a
+   thing the panel had already said, louder.
+
+   The tokens are the app's own row pair, and there is no `--bg-secondary` /
+   `--bg-tertiary` in styles/tokens.css to reach for: `--row-bg-selected` is the
+   secondary surface a row wears when it IS the current one, `--row-bg-hover`
+   the lighter one it wears under the pointer. Both are opaque and
+   pre-composited, for the reason tokens.css gives — a stretched-link row cannot
+   stack a translucent wash over its own background.
+
+   AND THE SELECTED FILL IS GREY, NOT ACCENT (Akshil, 2026-09-14 — design.md,
+   Polish batch 4). The first cut of this reached for `--row-bg-active`, which
+   is the app's ACCENT wash: the lime tint made the open row read as a state the
+   task was in rather than as the reader's own place in the list, and beside a
+   panel showing that very task it was the ring's mistake again in a different
+   medium. `--row-bg-selected` is the hover's own neutral at twice the step —
+   one family, two weights, nothing said in colour that is not about colour.
+
+   EXACTLY ONE ITEM IS EVER FILLED. The List kept a second mark — `.is-selected`,
+   "where the reader just was" — and with a panel open that was two highlights
+   for one question. Under this host it paints nothing; the peeked item is the
+   answer, and when there is no peeked item there is nothing to point at.
+
+   Same three declarations for a row, a board card and a wall card, so the three
+   views cannot drift.
+
+   SCOPED TO `.tasks-peek-host`, which Scheduled.tsx renders only when the flag
+   is on and the route is the unscoped /tasks — styles/tasks.css and
+   styles/task-cards.css still hold the page's own rules for everyone else. */
+
+/* THE ACTIVE ITEM. `:hover` restated so the fill does not step DOWN to the
+   hover tone when the pointer lands on the item that is already open. */
+.tasks-peek-host .tasks-row.is-peeked,
+.tasks-peek-host .tasks-row.is-peeked:hover,
+.tasks-peek-host .schedule-tv-card.is-peeked,
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card.is-peeked,
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card.is-peeked:hover:not(:disabled),
+.tasks-peek-host .task-card.is-peeked,
+.tasks-peek-host .task-card.is-peeked .task-card-head,
+.tasks-peek-host .task-card.is-peeked .task-card-head:hover {
+  background: var(--row-bg-selected);
+}
+
+/* THE CARDS VIEW'S OWN MISS. The wall card is a box with a head and a body
+   painted on top of it, so a fill on the card alone was covered by its own
+   children and the open card showed nothing at all — the head is named above
+   for exactly that reason, and the body keeps its own surface because it frames
+   a live conversation. */
+.tasks-peek-host .task-card.is-peeked {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* THE BOARD CARD'S RING, OFF WHILE IT IS THE OPEN ONE. A click focuses the
+   card, and the page's `:focus-visible` rule then draws the accent outline on
+   top of the fill — two marks for one fact (Akshil, 2026-09-14: "keep only the
+   bg change"). The fill is the answer here; a card that is merely tabbed to
+   and not open keeps its ring. */
+.tasks-peek-host .schedule-tv-card.is-peeked:focus-visible,
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card.is-peeked:focus-visible {
+  outline: none;
+}
+
+/* THE SECOND HIGHLIGHT, GONE. `.is-selected` is the List's own memory of the
+   last conversation opened from it and it exists with the feature off; here the
+   peeked item is the one answer, so this paints nothing unless it IS that item
+   (the rule above, which outranks this one by a class). */
+.tasks-peek-host .tasks-row.is-selected:not(.is-peeked),
+.tasks-peek-host .tasks-row.is-selected:not(.is-peeked):hover {
+  background: transparent;
+}
+
+/* …EXCEPT UNDER THE POINTER, where every row lights the same way. Stated after
+   the rule above so the pointer wins over "not the open one".
+
+   THE APP'S OWN NEUTRAL (`--row-bg-hover`), not an accent mix. The peek wore a
+   `--peek-halo 4%` wash here for a day, one tint for the row and another for
+   the board card; Akshil's answer (design.md, Polish batch 4, item 1) is that a
+   hover says "the pointer is here" and nothing else, and the page already has a
+   colour for that. One declaration for the row and the board card, so the two
+   views cannot drift.
+
+   NOT THE CARDS WALL'S HEAD (Akshil, 2026-09-14: "when we hover on the heading,
+   we shouldn't change the color"): that strip has no hover fill with the flag
+   off any more (task-cards.css), and the flag does not put one back. */
+.tasks-peek-host .tasks-row:hover,
+.tasks-peek-host .tasks-row.is-selected:not(.is-peeked):hover,
+.tasks-peek-host .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+}
+
+/* A row whose press does nothing stays unlit — tasks.css states this for the
+   flag-off page; restated here because the fill it has to beat is the one
+   above, and a rule that outranks a fill has to come after it. */
+.tasks-peek-host .tasks-row.is-inert:hover {
+  background: transparent;
+}
+
+/* The board card's hovered EDGE keeps its own step up, unchanged from the page
+   the feature is off on. */
+.tasks-peek-host .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
+.tasks-peek-host .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* A CALENDAR CHIP IS ALREADY PAINTED in its folder's own colour (`--chip`), and
+   a fill over that erases the one thing the month grid is colour-coded for. The
+   open chip keeps the ring it has always had — it is the one shape on this page
+   where an outline is the only mark available. */
+.tasks-peek-host .schedule-cal-chip.is-peeked {
+  box-shadow: inset 0 0 0 1.5px var(--peek-halo);
+  border-radius: inherit;
+}
+
+/* A WALKED-TO ITEM IS FOCUSED, AND IT IS NOT RINGED (Akshil, 2026-09-14 —
+   design.md, Polish batch 5; the mark is `PEEK_WALK_ATTR` in
+   shell/task-peek-store.ts, put on by `walkTo` in shell/TaskPeek.tsx).
+
+   ↑/↓ move focus with the panel so the next press has somewhere to come from,
+   but the focus is the PANEL'S, not the reader's: the UA turns `:focus-visible`
+   on as soon as a keyboard is used, so every walk left a yellow outline on a
+   row nobody had tabbed to — and a walk back put it on the open row, beside the
+   halo that already says which one that is.
+
+   BOTH STATES, because this focus is programmatic and the two selectors answer
+   different questions: `:focus-visible` is the ring the UA would draw, `:focus`
+   is the one an item with a rule of its own might. The mark comes off the
+   moment the element is blurred, so a later TAB onto the same item gets its
+   ring back — which is the case the ring is for. */
+[data-peek-walk]:focus,
+[data-peek-walk]:focus-visible {
+  outline: none;
+}
+
+/* -- the app preview ------------------------------------------------------- */
+/* The peeked task's project IS a fused-render app: its entry view, live and
+   interactive, above the conversation (.claude-design/task-side-peek/design.md,
+   "App preview in the peek"; the geometry is shell/peek-preview.ts).
+
+   THE BOX NEITHER CROPS NOR SQUASHES. The frame inside lays out at a virtual
+   1280-wide viewport and is drawn at `scale(inner / 1280)`, so the app sees a
+   desktop-width window however narrow the panel is — and its virtual height is
+   whatever fills the card at that scale, so the app scrolls itself and nothing
+   around it grows a scrollbar. */
+.task-side-peek-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+  /* THE CHAT'S GROUND, not the page's (`--peek-chat-bg` at the top of this
+     file): the gutters are a margin cut out of the panel's body, and the
+     panel's body under them is the conversation. */
+  background: var(--peek-chat-bg);
+  border-bottom: 1px solid var(--border);
+  /* A GUTTER THE WIDTH OF ONE HEADER BUTTON (Akshil, 2026-09-14 — design.md,
+     Polish batch 4). Edge to edge, the app inside read as a second window
+     jammed into the panel: a live, bordered, interactive rectangle welded to
+     both walls, with the conversation below it inset and the header above it
+     inset and only this one thing not. One icon-button of air either side puts
+     its edges on the same line as the × and the ⋮, and the app stops being a
+     hole in the panel and starts being something the panel is showing.
+
+     The SCALE is inset with it (`shell/peek-preview.ts` `PREVIEW_INSET`): the
+     frame is drawn at the width that is left, not at the panel's, or the 28px
+     would simply crop 56px of app off the right-hand side. */
+  padding-left: var(--peek-preview-inset);
+  padding-right: var(--peek-preview-inset);
+  /* The card below is rounded, so it needs air above and below too, or its
+     corners sit on the header's hairline and on the seam. The box's height
+     (`previewBox`) includes this padding; the scroller is the card. */
+  padding-top: var(--peek-preview-pad-y);
+  padding-bottom: var(--peek-preview-pad-y);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+body.tasks-peek-dragging .task-side-peek-preview {
+  transition: none;
+}
+
+/* THE CARD (Akshil, 2026-09-15). The Home grid's app card (`.app-pcard`,
+   styles/apps.css) is a bordered 12px-radius well that firms its border and
+   lifts a shadow on hover; this is that well without the head row. It is the
+   scroller now (the box above only pads), so the crop happens inside the
+   rounded corners. The border is an overlay, not a box border: the frame is
+   scaled to fill exactly `peekWidth − 2·inset` (`shell/peek-preview.ts`), and
+   a real 1px border either side would leave the frame 2px too wide and put a
+   horizontal scrollbar under every preview. */
+.task-side-peek-preview-card {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--bg);
+  transition: box-shadow 0.12s ease;
+}
+
+/* NOT A SCROLLER ANY MORE (Akshil, 2026-09-15). The frame is sized to the card
+   (`shell/peek-preview.ts` `previewBox`, `frameHeight = card / scale`), so
+   there is nothing here to scroll; the app scrolls itself inside the iframe.
+   `overflow: auto` on this box drew a second pair of scrollbars — x from the
+   scaled frame landing a sub-pixel wide, y from the crop — around a frame that
+   already had its own. The wrapper stays so the border overlay on the card
+   never has content moving under it. */
+.task-side-peek-preview-scroll {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.task-side-peek-preview-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: inherit;
+  pointer-events: none;
+  transition: border-color 0.12s ease;
+}
+
+.task-side-peek-preview-card:hover {
+  box-shadow: 0 4px 18px var(--shadow-sm);
+}
+
+.task-side-peek-preview-card:hover::after {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* The scaled frame's real footprint — a plain box of the drawn size, so the
+   scroller above has the right scrollable area. `transform` does not affect
+   layout, which is exactly why this wrapper has to state the size itself. */
+.task-side-peek-preview-scale {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.task-side-peek-preview-frame {
+  display: block;
+  border: 0;
+  transform-origin: 0 0;
+  background: var(--bg);
+}
+
+/* A one-line, muted strip — the conversation below is unaffected, which is the
+   whole claim this state makes. */
+.task-side-peek-preview-off {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The shimmer over an app that has not painted yet. Opaque, so the frame's own
+   cold document never shows through. */
+.task-side-peek-preview-wait {
+  position: absolute;
+  inset: 0;
+  padding: 12px 16px;
+  /* Inside the card now, so its ground is the card's, not the gutters'. */
+  background: var(--bg);
+}
+
+/* The horizontal twin of the panel's own seam: same 12px hit area, same 1px of
+   ink, same accent on hover and drag. It is the only control the preview has —
+   there are no buttons inside it (design.md, Controls: none). */
+.task-side-peek-hseam {
+  position: relative;
+  flex: 0 0 auto;
+  height: var(--peek-seam-w);
+  margin-top: calc(var(--peek-seam-w) / -2);
+  margin-bottom: calc(var(--peek-seam-w) / -2);
+  z-index: 1;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.task-side-peek-hseam::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--peek-seam-w) / 2);
+  height: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.task-side-peek-hseam:hover::after,
+.task-side-peek-hseam:focus-visible::after,
+.task-side-peek-hseam.dragging::after {
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
+}
+
+body.tasks-peek-dragging {
+  user-select: none;
+}
+
+/* -- the row's and the card's doors, as OUTLINES (Akshil, 2026-09-14) ----------
+   Open and Archive/Unarchive on a List row and on a Board card: a visible
+   outline once the row is hovered (they arrive with the row's reveal), a
+   brighter outline and near-white ink when the pointer is on the button itself,
+   and NO fill at any point — a filled pill on a row that is itself filled read
+   as a third surface. Scoped to the peek host; the flag-off page keeps
+   tasks.css's own hover skin. */
+.tasks-peek-host .tasks-act--page,
+.tasks-peek-host .tasks-act--archive,
+.tasks-peek-host .tasks-act--unarchive,
+.tasks-peek-host .prefs-section .tasks-act--page,
+.tasks-peek-host .prefs-section .tasks-act--archive,
+.tasks-peek-host .prefs-section .tasks-act--unarchive {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-muted);
+  transition:
+    opacity 0.08s ease,
+    border-color 0.08s ease,
+    color 0.08s ease;
+}
+
+.tasks-peek-host .tasks-act--page:hover:not(:disabled),
+.tasks-peek-host .tasks-act--archive:hover:not(:disabled),
+.tasks-peek-host .tasks-act--unarchive:hover:not(:disabled),
+.tasks-peek-host .tasks-act--page:focus-visible,
+.tasks-peek-host .tasks-act--archive:focus-visible,
+.tasks-peek-host .tasks-act--unarchive:focus-visible,
+.tasks-peek-host .prefs-section .tasks-act--page:hover:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-act--archive:hover:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-act--unarchive:hover:not(:disabled) {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--fg) 55%, var(--border));
+  color: var(--fg);
+}
+
+/* THE CARD KEEPS ITS HOVER UNDER ITS OWN BUTTONS. The Board card's action strip
+   is the card's SIBLING inside `.tasks-card-wrap` (it overlays the head), so the
+   moment the pointer reached Open or Archive the card stopped matching `:hover`
+   and dropped its fill and edge — the buttons looked like they sat on a
+   different card. The wrapper's hover is the card's hover. */
+.tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled),
+.tasks-peek-host .prefs-section .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled) {
+  background: var(--row-bg-hover);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* …and the open card stays at its own fill even while its buttons are hovered. */
+.tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card.is-peeked,
+.tasks-peek-host .prefs-section .tasks-card-wrap:hover > .schedule-tv-card.is-peeked {
+  background: var(--row-bg-selected);
+}

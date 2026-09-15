@@ -45,6 +45,14 @@ export interface UserTurn {
   appState?: true;
   uuid?: string;
   /**
+   * WHEN this message was sent, epoch SECONDS. A restored turn takes it from
+   * the transcript record's `timestamp` (agent.py `_row_ts`); a live send is
+   * stamped by the controller the moment the bubble goes up. Optional on both
+   * roads: an old transcript carries no stamp, and the UI simply draws no time
+   * rather than inventing one.
+   */
+  ts?: number;
+  /**
    * ADDED (PR2): the receipt rows this turn wears — "screenshot attached",
    * "file attached: notes.csv", or the refusal and its reason (T:10815
    * `shotReceipt`).
@@ -62,6 +70,12 @@ export interface UserTurn {
 export interface AssistantTurn {
   role: "assistant";
   key: string;
+  /** The transcript record that OPENED this reply, on a restored turn (agent.py
+   *  `_history`). The reply's only identity across a history re-read, which is
+   *  what its fold is remembered by (`ui/Transcript.foldKey`). Absent on a live
+   *  turn, which has no record yet, and on an older server's payload. NOT drawn
+   *  as `data-msg`: only a user turn is a position a `?msg=` link may land on. */
+  uuid?: string;
   /** Finalised markdown text; while streaming this is the text so far. */
   text: string;
   /** Present when the turn had tool/thinking/notice segments (T:15591). */
@@ -511,8 +525,23 @@ export interface ControllerDeps {
   file: string | null;
   agentDir: string;
   params: import("../params/store").ParamsStore;
-  /** For the working-line clock and tests. */
+  /** For the working-line clock and tests. MONOTONIC as far as this file is
+   *  concerned: every reader of it measures a DURATION (elapsed run time, a
+   *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,
+   *  and nothing may read it as a date. */
   now?: () => number;
+  /**
+   * WALL CLOCK — what time it is in the world, for the one thing that is not a
+   * duration: the stamp a sent message wears (`addUser`'s `ts`, drawn by the
+   * chat's hover clock beside a restored turn's `_row_ts`). Split off `now`
+   * (PR4 review #9) because a fake or monotonic clock made that a date in 1970
+   * — a test's `now: () => 1_000` stamped every bubble "1 Jan 1970, 00:00:01",
+   * and `performance.now()` behind `now` would do the same in production.
+   *
+   * Defaults to `Date.now`, and a test that needs a deterministic STAMP sets
+   * this one rather than bending the duration clock.
+   */
+  wallClock?: () => number;
   /** Fired after a run starts/ends so hosts can poke task lists (T:16435 chat-activity). */
   onActivity?: () => void;
   /** ADDED: the transport, injectable so bun tests drive the loop with a fake
@@ -535,6 +564,9 @@ export interface ControllerDeps {
   historyCache?: {
     get(file: string, sessionId: string): import("./types").HistoryResponse | undefined;
     set(file: string, sessionId: string, res: import("./types").HistoryResponse): void;
+    /** Forget one conversation — its history answer said `deleted`. Optional:
+     *  a host cache without it simply keeps the entry. */
+    delete?(file: string, sessionId: string): void;
   };
   /** ADDED: the comeback after a usage limit. Injectable so bun tests see the
    *  body without a server; defaults to `@platform/lib/api`'s `scheduleMessage`

@@ -47,6 +47,8 @@ import {
   putCanvasesEnabled,
   putNativeChatEnabled,
   putProjectQueueEnabled,
+  putTaskPeekEnabled,
+  putTaskCardTitleMode,
   putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
@@ -67,6 +69,8 @@ import {
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { publishTaskPeekEnabled } from "./task-peek-flag";
+import { publishTaskCardTitleMode } from "./task-card-title-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
@@ -374,6 +378,104 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
         />
         <span>
           <b>Project queue</b> (one task at a time per folder).
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// The task side peek (experimental): a click on a task opens it in a panel
+// beside the list instead of navigating to the Explorer. Same one-checkbox
+// section shape as Native chat above — and no `forced_by`, because this switch
+// has no env override to be beaten by (prefs.py `task_peek_enabled` says why).
+function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `?? false`: a server that predates the switch sends nothing, which is off —
+  // both the pref's own default and the behaviour the page has always had.
+  const enabled = prefs.task_peek?.enabled ?? false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putTaskPeekEnabled(!enabled);
+      onChange(next);
+      // Published so the Tasks page picks it up on its next paint rather than
+      // on a reload — the same hand-over the native chat's switch makes.
+      publishTaskPeekEnabled(next.task_peek?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Task side panel (experimental)</h2>
+      <p className="deploy-muted">
+        Open tasks in a side panel instead of leaving the page. Experimental.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Open a task beside the list</b> — the List, Board, Cards and Calendar stay on
+          screen and shrink to make room.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// What a task CARD is titled by (experimental): the task's own title, or the
+// newest message in its conversation. Same one-checkbox section shape as the
+// side peek above, same reasons — and it is a SEPARATE section rather than a
+// second box inside that one, because the two are independent: a reader can
+// want either, both or neither, and nesting would imply one turns the other on.
+function TaskCardTitleSection({
+  prefs,
+  onChange,
+}: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `?? false`: a server that predates the switch sends nothing, which is off —
+  // both the pref's own default and the card the wall has always drawn.
+  const enabled = prefs.task_cards?.last_message ?? false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putTaskCardTitleMode(!enabled);
+      onChange(next);
+      // Published so the Cards wall picks it up on its next paint rather than
+      // on a reload — the same hand-over the two switches above make.
+      publishTaskCardTitleMode(next.task_cards?.last_message === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Tasks: show last message as the title</h2>
+      <p className="deploy-muted">
+        On every view of the Tasks page — List, Board and the Cards wall.
+        Experimental.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Title a task by its last message</b> — the newest thing said in the
+          conversation, yours or Claude's, with the task number leading the row
+          instead. Tasks with nothing said yet keep their title.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1066,6 +1168,8 @@ export default function Preferences() {
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <NativeChatSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
+                <TaskPeekSection prefs={prefs} onChange={setPrefs} />
+                <TaskCardTitleSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

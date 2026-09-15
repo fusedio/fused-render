@@ -30,9 +30,60 @@ export interface ProbeResult {
   version?: string;
   /** Version installed on disk (bundle Info.plist); null when unpackaged. */
   installedVersion?: string | null;
+  /** True when the server is a dev.sh run (/api/config `dev`). */
+  dev?: boolean;
 }
 
 export const FAIL_THRESHOLD = 2;
+
+/** The URL param and the localStorage key that turn the refresh dialog into a
+ *  PREVIEW in dev — how the dialog itself is looked at (see
+ *  `updateDialogMode`). */
+export const UPDATE_DIALOG_PARAM = "update_modal";
+export const UPDATE_DIALOG_KEY = "fused_update_modal";
+
+/** What the refresh dialog is doing right now:
+ *   "real"    — a genuine mismatch blocks the page (every packaged server).
+ *   "off"     — suppressed, because on a dev run the mismatch is a lie.
+ *   "preview" — forced on with no mismatch, to work ON the dialog. */
+export type UpdateDialogMode = "real" | "off" | "preview";
+
+/**
+ * THE REFRESH DIALOG HAS THREE MODES, and only the first is a product state.
+ *
+ * "real" — everywhere but a dev run. The tab is on an older shell than the
+ * server it is talking to, and every click from here is a guess about which
+ * side is answering, so `update-refresh` blocks the page.
+ *
+ * "off" — A DEV RUN IS THE EXCEPTION, and not as a convenience. There the
+ * served `version` is whatever the checkout says while the bundle in the tab
+ * was rebuilt by the vite watch seconds ago — the two disagree on the ONE fact
+ * the dialog is about, so it fired on a version bump or a branch switch at a
+ * developer already looking at the newest code, and blocked the page they were
+ * looking at it in. Suppressed rather than softened: a card that is always
+ * wrong here teaches you to ignore the card.
+ *
+ * "preview" — dev plus `?update_modal=1` (or `localStorage.fused_update_modal
+ * = "1"` for a run of page loads). Merely LIFTING the suppression showed
+ * nothing (Akshil, 2026-09-14: "just adding ?update_modal=1 doesn't work"),
+ * because a dev server and its own freshly built bundle report the same
+ * version — there is no mismatch left to reveal. So the flag forces the dialog
+ * up regardless of the banner state, with the REAL numbers on it (the server's
+ * `version` as the new one, this bundle's `__BUILD_VERSION__` as the page's):
+ * it is the dialog, not a mock of it, and the only thing invented is the
+ * disagreement.
+ *
+ * Prod is untouched by the flag: it is already "real" and never suppressed.
+ */
+export function updateDialogMode(
+  dev: boolean,
+  search: string,
+  stored: string | null,
+): UpdateDialogMode {
+  if (!dev) return "real";
+  if (stored === "1") return "preview";
+  return new URLSearchParams(search).get(UPDATE_DIALOG_PARAM) === "1" ? "preview" : "off";
+}
 
 export function initialStatus(): StatusState {
   return { banner: "hidden", fails: 0 };

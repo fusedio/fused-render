@@ -15,7 +15,29 @@
 // The name is TASK-nnn and not a session hash: a session IS a task, 1:1, and
 // TASK-023 is the identifier every other surface in this app prints, so a
 // reader can carry it to the Tasks page and quote it to someone (T:12660-12672).
+//
+// AND ONCE THE LISTING HAS A ROW FOR THIS SESSION, the whole line is the TASK
+// SIDE PEEK'S identity block instead (Akshil, 2026-09-14): the status ring, the
+// number, the task's title and the project it runs in. The ✻ Claude wordmark and
+// the target's path are facts about the tool and the file — true, and printed
+// twice over elsewhere on the page — where the reader's question in a chat is
+// "which conversation am I in, and how is it doing". The peek answers exactly
+// that, so the chat borrows the peek's own component rather than growing a
+// second header that must be kept looking like it.
+import type { Task } from "@platform/lib/api";
+// THE TASK PANEL'S OWN IDENTITY BLOCK (shell/TaskPeekWho.tsx). Imported rather
+// than restated: the side peek and this header are two windows onto one
+// conversation, and a reader who moves between them must not have to pair up
+// two different headers (Akshil, 2026-09-14). Its CSS is `styles/task-peek.css`,
+// which the shell loads for every page through `shell.css` — the chat draws
+// inside that document, so there is nothing to import here.
+import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import "../styles/composer.css";
+// The skeleton below wears the landing list's own placeholder bar
+// (`.c-skel-bar`, `home.css`), which is the one shimmer this app draws. Imported
+// here so the rule travels with the component that spends it rather than by
+// luck of what else the bundle happened to pull in.
+import "../styles/home.css";
 import { ClaudeMark } from "./ClaudeMark";
 import { knownTaskId } from "./Kebab";
 
@@ -25,6 +47,33 @@ export interface TopbarProps {
   subtitle?: string;
   /** TASK-nnn, when the listing has been read (`#session`). */
   taskId?: string;
+  /**
+   * THE LISTING'S ROW FOR THIS SESSION, when there is one (`useSessionTask`).
+   * With it the header IS the task — status ring, number, title, project — and
+   * without it the line below is drawn exactly as it always was.
+   *
+   * "Without it" is a real state and not an error: a chat seconds old has a
+   * session id before `/api/tasks` has a row for it, and a header that appeared
+   * a moment after the transcript did would be worse than one that fills in.
+   */
+  task?: Task | null;
+  /**
+   * NOBODY HAS ANSWERED FOR THIS SESSION YET (`useSessionTask`'s `pending`).
+   *
+   * The line below is a CLAIM — "this conversation has no task row, so here is
+   * the tool's own name and the file" — and it is true of exactly one thing: a
+   * chat so new the server's watcher has not seen its transcript. A deep link
+   * into an old conversation is not that, and printing the claim while
+   * `/api/tasks` reads 800 rows meant every such arrival wore the wrong
+   * identity and then swapped (Akshil, 2026-09-14). While the answer is
+   * genuinely unknown the header says so, in the same placeholder bar the
+   * landing's Recent list draws.
+   */
+  pending?: boolean;
+  /** For the project chip's `~` in its tooltip. Absent in the chat, which knows
+   *  no home directory of its own — the tooltip then spells the path in full,
+   *  which is the same path. */
+  home?: string;
   /** A turn is live: one source of truth for the mark and the composer's stop
    *  square (T:1342-1349). */
   running: boolean;
@@ -39,9 +88,67 @@ export interface TopbarProps {
   status?: string;
 }
 
-export function Topbar({ sessionId, subtitle, taskId, running, status }: TopbarProps) {
+export function Topbar({
+  sessionId,
+  subtitle,
+  taskId,
+  task,
+  pending,
+  home,
+  running,
+  status,
+}: TopbarProps) {
+  if (task) {
+    return (
+      // THE FULL SESSION ID STAYS REACHABLE. The peek's identity block prints
+      // TASK-nnn and the title, which is the reader's question — but the hash is
+      // what a log line, a bug report or `claude --resume` is addressed by, and
+      // in this branch there is no `.c-session` span left carrying it. The
+      // tooltip goes on the line itself rather than on a span of its own, so the
+      // header spends no width on a string nobody reads on purpose (T:12700).
+      <div className="c-topbar" title={sessionId || undefined}>
+        <TaskPeekWho task={task} running={running} />
+        <TaskPeekProject task={task} {...(home ? { home } : {})} />
+        {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
+            the ring says running or not, and "resumes 4:00 AM" is the one fact
+            about this conversation the ring cannot carry. */}
+        {status ? (
+          <span className="c-tb-paused" aria-live="polite">
+            {status}
+          </span>
+        ) : null}
+        {/* NO "running" WORD HERE (Akshil, 2026-09-14): the ring at the left
+            already says it, and one line saying one thing twice spends the
+            header's last inch on nothing. The page's own turn clock still
+            drives the composer's stop square; the header defers to the ring. */}
+      </div>
+    );
+  }
+
+  // …AND THE UNKNOWN, WHICH IS NEITHER (Akshil, 2026-09-14). One ring-sized dot
+  // and one bar — the shape of the identity block that is about to land, at the
+  // place it will land — so the header's height and rhythm do not move when it
+  // does. `aria-hidden`, because there is nothing here to read out: the line has
+  // no name yet, and announcing a placeholder is worse than announcing nothing.
+  //
+  // A TASK ALWAYS OUTRANKS IT, stated rather than left to the branch order
+  // above (Akshil QA, 2026-09-14): `pending` is "nobody has answered", and a
+  // header holding a row HAS its answer — a skeleton over it would be the
+  // placeholder hiding the very thing it stands in for.
+  if (pending && !task) {
+    return (
+      <div className="c-topbar" title={sessionId || undefined}>
+        <span className="c-tb-skel" aria-hidden="true">
+          <span className="c-skel-dot" />
+          <span className="c-skel-bar is-title" />
+        </span>
+      </div>
+    );
+  }
+
   // The number, or the session hash until it lands (T:12698 — the answer to a
-  // slow listing is the old label, never a gap).
+  // slow listing is the old label, never a gap). Computed HERE and not above the
+  // branch: only this line prints it.
   const label =
     taskId ||
     knownTaskId(sessionId) ||

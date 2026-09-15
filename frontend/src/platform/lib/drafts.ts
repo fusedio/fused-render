@@ -257,6 +257,78 @@ async function write(
 const spent = new Set<string>();
 
 /**
+ * CHAT WRITES STILL ON THE WIRE, one per key — the OTHER half of `spent`, for
+ * the race a delete never had (Bugbot, PR #1145).
+ *
+ * THE RACE IT CLOSES. Pressing a never-sent chat's row in the Recent list flips
+ * `inChat`, and that ternary throws the LANDING composer away and mounts the
+ * CHAT one on the same `new:<file>` key. React runs the deleted subtree's effect
+ * cleanups before the new subtree's effects, so the landing's unmount flush
+ * (`useAutosave`'s cleanup) dispatches its PUT first — and then the new mount's
+ * seed fires `fetchChatDraft` on that very key while the PUT is still in the
+ * air. The GET is answered out of a snapshot taken BEFORE the write landed, so
+ * the box paints the words as they were one draft ago, and the autosave under
+ * it then puts that stale sentence back over the newer one.
+ *
+ * `spent` cannot cover it: nothing here is spent — the draft is alive, it is
+ * simply mid-write. And nothing inside one mount can cover it either, for the
+ * reason `spent` gives: the flush belongs to a component being thrown away and
+ * the seed runs in a different one. So, like spent-ness, this is a fact about
+ * the KEY and it lives at module scope.
+ *
+ * EVERY WRITE ON THE KEY, NOT THE NEWEST ONE (Bugbot, PR #1145, second pass).
+ * A single slot per key looked right — one composer issues these in order — but
+ * "issued in order" is not "answered in order", and `useAutosave` really can
+ * have two PUTs in the air at once on this very path: the debounce fires, the
+ * reader types one more word, and the press unmounts the box a moment later, so
+ * the flush goes out while the debounced write is still unanswered. A read that
+ * waited only for the newest could be answered before the older one landed and
+ * seed from a snapshot that neither write had reached. So the entry is a SET,
+ * and a read waits for all of it.
+ *
+ * WHAT IS AWAITED IS A SNAPSHOT taken when the read starts: a write dispatched
+ * after that is genuinely concurrent with the GET, and making the read wait for
+ * writes that had not happened when it began would be a wait with no end during
+ * fast typing.
+ *
+ * Each promise drops itself once it settles, and the key's whole entry goes
+ * when the last one does.
+ */
+const inflightChat = new Map<string, Set<Promise<unknown>>>();
+
+/** Record a chat write for the reads that must not overtake it, and hand the
+ *  caller back its own promise unchanged. */
+function trackChatWrite(key: string, out: Promise<boolean>): Promise<boolean> {
+  // `write` already resolves rather than rejecting, but the tracked copy carries
+  // its own `catch` so a future caller's failure can never leave every later
+  // `fetchChatDraft` awaiting a rejected promise (the guarantee `settle` keeps
+  // for the same reason).
+  const mine = out.catch(() => false);
+  let live = inflightChat.get(key);
+  if (!live) {
+    live = new Set();
+    inflightChat.set(key, live);
+  }
+  const held = live;
+  held.add(mine);
+  void mine.then(() => {
+    held.delete(mine);
+    // Only if this is still the key's own set, and only once it is empty — a
+    // set replaced in the meantime belongs to writes this one knows nothing of.
+    if (held.size === 0 && inflightChat.get(key) === held) inflightChat.delete(key);
+  });
+  return out;
+}
+
+/** Wait for every chat write on `key` that was already on the wire when this
+ *  was called. Resolves at once when there are none. */
+async function settleChatWrites(key: string): Promise<void> {
+  const live = inflightChat.get(key);
+  if (!live || live.size === 0) return;
+  await Promise.all(Array.from(live));
+}
+
+/**
  * Upsert this chat's draft. EMPTY TEXT WITH NO ATTACHMENTS IS A DELETE, decided
  * server-side (design.md: "writing empty == delete") — so the caller does not
  * have to tell "cleared the box" apart from "never typed", and a composer
@@ -275,7 +347,9 @@ export function saveChatDraft(
   opts?: DraftWriteOptions,
 ): Promise<boolean> {
   if (text.trim() || attachments.length) spent.delete(key);
-  return write("PUT", chatUrl(key), { text, attachments }, opts);
+  // TRACKED, so a composer seeding on this key waits for these words rather
+  // than reading the ones they replace (see `inflightChat`).
+  return trackChatWrite(key, write("PUT", chatUrl(key), { text, attachments }, opts));
 }
 
 /** On send, and on an explicit clear. The key is marked spent BEFORE the
@@ -283,7 +357,70 @@ export function saveChatDraft(
  *  draft back out from under the delete. */
 export function deleteChatDraft(key: string, opts?: DraftWriteOptions): Promise<boolean> {
   spent.add(key);
-  return write("DELETE", chatUrl(key), undefined, opts);
+  // NO announcement from here (contrast `markChatDraftSpent`): this is the
+  // composer's OWN send, and the listener that would hear it is that same
+  // composer — which empties its tray on the news, while the host is still
+  // about to `take()` those files for the message going out. The tray went
+  // empty under the send (ClaudeChat.attach tests, 2026-09-14).
+  // Tracked like the PUT above. `spent` already makes a read on this key answer
+  // null outright, so this buys nothing on its own — but the slot has to hold
+  // the LATEST write on the key either way, or a delete would leave a finished
+  // PUT's entry behind for a later read to wait on.
+  return trackChatWrite(key, write("DELETE", chatUrl(key), undefined, opts));
+}
+
+/** SPENT WITHOUT A DELETE — for the sender that does not own the delete.
+ *
+ *  The Board's drop on a Done row wearing the `✎ Draft` chip sends the
+ *  composer's unsent words as a message (shell/draft-run), and it never calls
+ *  `deleteChatDraft`: `POST /api/schedule` drops the chat draft filed under the
+ *  session it is scheduling into, so a second request from here would be the
+ *  half that can fail — the words back on the row beside the message they had
+ *  already become.
+ *
+ *  What that sender still owes this module is the OTHER half of the call above,
+ *  and it is the half `spent` exists for: the key goes spent BEFORE the request,
+ *  so nothing that re-reads in the meantime — the board's own reload, a composer
+ *  remounting on that conversation — hands the words back as still unsent. */
+export function markChatDraftSpent(key: string): Promise<void> {
+  spent.add(key);
+  // AWAITED: a composer that hears this has a PUT that may already be on the
+  // wire (its `reset` cancels only the pending timer), and the sender's create
+  // request deletes the draft server-side. The listener's promise is that
+  // write settling, so the caller sends only once nothing can land after the
+  // delete and put the words back (Bugbot, PR #1140).
+  return Promise.all([...spentListeners].map((cb) => cb(key))).then(() => undefined);
+}
+
+/** The other sender's mistake, undone: a drop that spent the key and then
+ *  FAILED to send (a 409 from the scheduler, the server not answering) leaves
+ *  the words exactly where they were on the server — so the key must read as
+ *  unsent again, or the board's own "try another drag" invitation surfaces
+ *  "that draft is gone" until a reload empties this set (Bugbot, PR #1140).
+ *  Nobody is told: the composer that heard the spend already emptied its box,
+ *  and the next thing that mounts on the key re-seeds from the server, which
+ *  still holds the words. */
+export function unmarkChatDraftSpent(key: string): void {
+  spent.delete(key);
+}
+
+/**
+ * WHO ELSE HOLDS THESE WORDS. A key can be spent by a sender that is NOT the
+ * composer showing it — the Board's drag of a Done row into In Progress
+ * (shell/draft-run `chatBody`). That composer's box still has the sentence in
+ * it, its autosave is still armed, and the next keystroke or blur would write
+ * the sent words back as an unsent draft — or Send would send them twice
+ * (Bugbot, PR #1140). So a spend BY SOMEBODY ELSE is announced, and a composer
+ * mounted on that key empties itself the way its own Send does — box, tray AND the in-flight
+ * autosave, which it settles and hands back as its promise. Module-scope for
+ * the same reason `spent` is: the composer and the board are different trees.
+ */
+const spentListeners = new Set<(key: string) => void | Promise<void>>();
+export function onChatDraftSpent(cb: (key: string) => void | Promise<void>): () => void {
+  spentListeners.add(cb);
+  return () => {
+    spentListeners.delete(cb);
+  };
 }
 
 /**
@@ -447,6 +584,11 @@ export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
  *  start of the wait or in the middle of it makes no difference to the reader:
  *  the words came back after they were sent. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
+  if (spent.has(key)) return null;
+  // EVERY WRITE ON THIS KEY THAT IS STILL IN THE AIR IS WAITED FOR FIRST (see
+  // `inflightChat`): the composer that is being replaced flushes on unmount,
+  // and reading past those PUTs hands the new box the previous draft.
+  await settleChatWrites(key);
   if (spent.has(key)) return null;
   const all = await fetchDrafts();
   if (spent.has(key)) return null;

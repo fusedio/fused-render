@@ -414,8 +414,12 @@
 /* the nav lock (T:1466-1470). A mode holds the reader on THIS chat: the notes
    are about the app beside it, and ← Chats or a recent row would carry them off
    to a chat they are not about. `disabled` and the handlers' guards keep the
-   keyboard honest; this is only the drawing. */
-.chat-root.annlock .c-chat-row,
+   keyboard honest; this is only the drawing.
+
+   `.tasks-row` is the recent row's class since the list swapped to the Tasks
+   page's own row (.claude-design/design.md §B). Scoped under `.chat-root`, so
+   the Tasks page's own rows elsewhere on the page are untouched. */
+.chat-root.annlock .tasks-row,
 .chat-root.annlock .c-art-row,
 .chat-root.annlock .c-snap-row,
 .chat-root.annlock .c-schedbtn,

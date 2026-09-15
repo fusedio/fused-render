@@ -634,10 +634,20 @@ export interface HistoryUserTurn {
   /** App-state block stripped. */
   text: string;
   uuid: string;
+  /** The transcript record's own `timestamp`, as epoch SECONDS (agent.py
+   *  `_row_ts`). ABSENT — never `0` — on a row with no parseable stamp, which
+   *  is why it is optional rather than defaulted: `0` is a real instant and the
+   *  hover would confidently show 1970. User turns only. */
+  ts?: number;
 }
 export interface HistoryAssistantTurn {
   role: "assistant";
   text: string;
+  /** The transcript record that OPENED this reply (agent.py `_history`). The
+   *  only identity a restored reply keeps across a re-read, which is what the
+   *  chat's fold state is remembered by (`ui/Transcript.foldKey`). Optional: an
+   *  older server sends none and the turn falls back to its position key. */
+  uuid?: string;
   /** Absent on a text-only turn (agent.py:5041). */
   segments?: Segment[];
   /** Only on the LAST turn and only when true (agent.py:5049-5050). */
@@ -666,6 +676,10 @@ export interface HistoryResponse {
    *  cards, so transcript and card paint in one frame. `""` = nothing live (an
    *  answer too); absent = an older server, and the page discovers as before. */
   live_run?: string;
+  /** The transcript is gone AND the task was deleted (`/api/tasks/erase`
+   *  tombstoned it): a stale row was pressed. Absent for a chat that has not
+   *  written its first row yet — the other way a transcript can be missing. */
+  deleted?: boolean;
   permissions?: PermissionRow[];
   mode?: PermissionMode | "";
   /**

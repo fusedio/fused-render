@@ -31,7 +31,12 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
-import { decideThroughQueue, scheduleMessage } from "@platform/lib/api";
+import {
+  decideThroughQueue,
+  markTaskIdle,
+  markTaskRunning,
+  scheduleMessage,
+} from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
 import { queueEnabled } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
@@ -221,6 +226,9 @@ function emptyState(file: string | null): ChatState {
 export function createChatController(deps: ControllerDeps): ChatController {
   const sleep = deps.sleep || nativeSleep;
   const now = deps.now || Date.now;
+  /** WHAT TIME IT IS, as opposed to how long something took (review #9). See
+   *  `ControllerDeps.wallClock`. */
+  const wallClock = deps.wallClock || Date.now;
   const dir = deps.agentDir;
   const FILE = deps.file;
   // Every `agent.py` call this controller makes carries the chat's own target
@@ -251,6 +259,21 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let activeSeat = 0;
   let stoppedSeat = 0;
   let disposed = false;
+  /**
+   * SEAT (`pollLoop`'s `loopSeq`) → the in-flight `markTaskRunning` POST that
+   * seat fired, so `noteTurnIdle` can await ITS OWN running-mark landing
+   * before firing idle. Without this a short turn's idle POST can beat the
+   * running POST to the server — nothing serializes two independent fetches —
+   * and `mark_running` then reads the late running as a NEW send, clearing the
+   * stand-down `mark_idle` just made (Bugbot #1163). Keyed on seat rather than
+   * a single shared variable so an abandoned loop's stale entry cannot be
+   * mistaken for the owning loop's; entries are deleted once awaited.
+   *
+   * Seat `0` (an untracked ping — see `noteSessionId`'s default) is never
+   * stored: nobody looks it up, because `noteTurnIdle` only ever runs from
+   * inside `pollLoop`, whose seat is never `0`.
+   */
+  const runningMarks = new Map<number, Promise<void>>();
   /**
    * THE WINDOW THAT IS ALREADY ON SCREEN, so a follow-up never re-types the
    * reply before it (owner feedback R4-3).
@@ -472,11 +495,97 @@ export function createChatController(deps: ControllerDeps): ChatController {
     history: "push" | "replace" = "push",
   ) => deps.params.set(patch, { history });
 
-  /** T:16245 — a session id arrived on the poll. */
-  const noteSessionId = (id: string) => {
+  /**
+   * TELL THE SERVER A TURN IS OPEN ON THIS SESSION, so every OTHER surface's
+   * ring says so within a poll instead of within a file write.
+   *
+   * `announceTasksChanged` below is a message between documents on this origin;
+   * this is the other half, and it is needed because the turn does not start in
+   * the server at all — a chat here runs `claude -p` through `/api/run`, out of
+   * process, and the CLI publishes the fact two to four seconds later. Until
+   * then the listing read the row as done, so every turn sent from this app
+   * wore a done ring for its first seconds and a short turn for all of it
+   * (Akshil, 2026-09-15). See `tasks_watch.mark_running`.
+   *
+   * BEST-EFFORT, like everything else on this boundary: the server-side mark
+   * expires by itself and the registry overrides it, so a rejected call costs
+   * the first seconds of one ring. A session id we do not have yet — the first
+   * turn of a brand-new chat — is simply not marked here; `noteSessionId` marks
+   * it the moment the poll names it.
+   *
+   * `seat` is `pollLoop`'s `loopSeq` for the turn this call belongs to (`0` for
+   * an untracked ping — see `noteSessionId`). The POST's promise is stashed in
+   * `runningMarks` under it so THIS SEAT's `noteTurnIdle` can wait for it to
+   * land before firing idle (Bugbot #1163) — otherwise two independent
+   * fetches race and idle can beat running to the server.
+   *
+   * Also carries a `turn` timestamp (`wallClock()` — a real-world stamp, not a
+   * duration, captured here as the earliest this event is true) so the server
+   * can reject a running mark that arrives after a LATER `mark_idle` already
+   * stood the session down (`tasks_watch.mark_running`'s stale-turn check):
+   * belt-and-suspenders for the same race, for the ping this function cannot
+   * itself await (the one `noteSessionId` fires from `resumeAttach`, seat `0`).
+   */
+  const noteTurnRunning = (id: string, seat: number) => {
+    if (!id) return;
+    const p = markTaskRunning(id, wallClock()).then(
+      () => {},
+      () => {
+        // The 20-30 s polls, and the registry behind them, remain the fallback.
+      },
+    );
+    if (seat) runningMarks.set(seat, p);
+  };
+
+  /**
+   * TELL THE SERVER THE TURN JUST CLOSED, the symmetric other half of
+   * `noteTurnRunning` — see `tasks_watch.mark_idle` / `POST /api/tasks/idle`.
+   *
+   * Without this the mark placed at the turn's start only comes down by a
+   * registry row disappearing (up to a tick late) or by its own fifteen-second
+   * TTL, so a three-second turn wore a running ring for the rest of that
+   * window after the reply had already landed on screen (Akshil, 2026-09-15).
+   * This is the earliest anything can say the turn is OVER, the same way the
+   * mark itself was the earliest anything could say it had started.
+   *
+   * AWAITS THIS SEAT'S OWN running POST FIRST (Bugbot #1163). `pollLoop` fires
+   * `noteTurnRunning` and moves on without waiting, so for a short turn the
+   * idle fetch can reach the server before the running one — `mark_running`
+   * then reads the late running as a fresh send and clears the stand-down
+   * `mark_idle` just made, leaving the row `in_progress` for the whole mark
+   * TTL: the exact leftover ring this call exists to prevent. Ordering the two
+   * requests per turn closes that for the normal case; the `turn` timestamp
+   * below is the fallback for the one running ping this cannot order (an
+   * untracked seat `0`).
+   *
+   * BEST-EFFORT, like its counterpart: the registry-corroborated stand-down
+   * and the TTL both still apply if this call never lands.
+   */
+  const noteTurnIdle = (id: string, seat: number) => {
+    if (!id) return;
+    const turn = wallClock();
+    const pending = runningMarks.get(seat);
+    if (seat) runningMarks.delete(seat);
+    void (pending ?? Promise.resolve()).then(() =>
+      markTaskIdle(id, turn).catch(() => {
+        // The registry-corroborated stand-down and the TTL remain the fallback.
+      }),
+    );
+  };
+
+  /** T:16245 — a session id arrived on the poll. `seat` is the owning
+   *  `pollLoop`'s `loopSeq`, or omitted (`0`) for a caller with no loop of its
+   *  own yet — `resumeAttach`'s own probe, ahead of the `pollLoop` it hands off
+   *  to, which re-marks running (with its own real seat) the moment it starts
+   *  regardless (see `noteTurnRunning`). */
+  const noteSessionId = (id: string, seat = 0) => {
     if (!id || state.sessionId === id) return;
     setParam({ session_id: id });
     emit({ sessionId: id });
+    // A NEW CHAT LEARNS ITS OWN NAME MID-TURN, and this is the first moment the
+    // mark above can name it. Guarded on a live run, so re-opening a finished
+    // conversation does not announce a turn that is not happening.
+    if (activeRun) noteTurnRunning(id, seat);
   };
 
   /** T:16333 / T:17793 / T:13036 — `run` is in-flight bookkeeping and is
@@ -571,10 +680,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // out. A key that is no longer in the log (a Back mid-capture) is not
     // adopted — the row it named is gone, so this send posts its own.
     const held = !!adopt && state.turns.some((t) => t.key === adopt && t.role === "user");
+    // WHEN, in the same epoch SECONDS a restored turn carries (agent.py
+    // `_row_ts`), so the hover clock reads identically on a message you just
+    // sent and the same message after a reload. Off `wallClock` and never the
+    // controller's `now`, which is the DURATION clock every elapsed-time reader
+    // shares and which a test may set to `1_000` (review #9). Stamped from the
+    // ADOPTED row when there is one: the optimistic bubble went up when the
+    // user pressed send, and the capture that ran in between is not part of
+    // what they did.
+    const heldTs = held
+      ? (state.turns.find((t) => t.key === adopt && t.role === "user") as UserTurn | undefined)?.ts
+      : undefined;
     const turn: UserTurn = {
       role: "user",
       key: held ? (adopt as string) : nextKey("u"),
       text,
+      ts: typeof heldTs === "number" ? heldTs : wallClock() / 1000,
       ...(raw ? { raw } : {}),
       // The receipt rides the bubble the send posted, so the row is under the
       // words from the first paint rather than appended after the start
@@ -1012,6 +1133,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
+    // …AND THE SERVER HEARS IT TOO (see `noteTurnRunning`). Here rather than
+    // inside `noteChatActivity`, which fires at BOTH turn boundaries: this one
+    // means "a turn is open", and saying it again in the `finally` would mark a
+    // row running for fifteen seconds after it finished.
+    noteTurnRunning(state.sessionId ?? "", seat);
 
     /**
      * ONE BUBBLE PER REPLY IN THE PAYLOAD, keyed by SLOT.
@@ -1167,7 +1293,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
 
         const poll = data as PollResponse;
-        if (poll.session_id) noteSessionId(String(poll.session_id));
+        if (poll.session_id) noteSessionId(String(poll.session_id), seat);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // usage arrives only at message end; estimate from streamed text meanwhile
@@ -1497,6 +1623,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
         activeSeat = 0;
         activeTurnKey = null;
         setRunningUi(false);
+        // GUARDED ON OWNERSHIP, unlike `noteChatActivity` below: a re-attach
+        // (Bugbot, PR #653, same paragraph above) can leave an ABANDONED
+        // loop's `finally` running after a NEWER loop already placed its own
+        // fresh mark on this session — `mark_idle` does not know whose mark
+        // it would be retiring, so only the owning loop is trusted to say the
+        // turn is over. An abandoned loop's turn still closes; it just relies
+        // on the registry stand-down / TTL instead of this early signal.
+        noteTurnIdle(state.sessionId ?? "", seat);
       }
       // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
       // transcript follower can tell rows this page just wrote from somebody
@@ -2360,6 +2494,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * `fromCache` keeps `historyLoading` up: the fetch is still out.
    */
+  /**
+   * A PRESS ON A ROW THAT NO LONGER EXISTS (Akshil, 2026-09-15). The server
+   * used to answer an erased session with the same empty payload a chat that
+   * has not written its first row gets, and the page opened a blank
+   * conversation with nothing to say why; it marks the erased case `deleted`
+   * now, and this is the one place both history roads (`openSession`,
+   * `refreshHistory`) turn that into words.
+   *
+   * ONLY WHEN NOTHING IS LIVE. A run can be in flight for a tombstoned key
+   * (erase, then send again), and the answer says so in `live_run`; that run
+   * is this chat's and gets adopted like any other, not shouted down.
+   *
+   * NOT CACHED, and the cached copy GOES: the answer is about a task that is
+   * gone, and a warm paint of the destroyed transcript on the next open — this
+   * chat was open before it was erased — would show it as if it stood.
+   *
+   * Returns whether it took the answer.
+   */
+  function landDeleted(res: HistoryResponse): boolean {
+    if (!res.deleted || res.live_run) return false;
+    const sid = restoredSid || "";
+    deps.historyCache?.delete?.(FILE || "", sid);
+    landHistory(res, false);
+    addError("This task was deleted. Its conversation is gone; pick another chat or start a new one.");
+    return true;
+  }
+
   function landHistory(res: HistoryResponse, fromCache: boolean): void {
     const live = typeof res.live_run === "string";
     if (live) {
@@ -2477,6 +2638,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       if (res.error) throw new Error(res.error);
+      if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       landHistory(res, false);
     } catch (err) {
@@ -3215,6 +3377,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (activeRun || sending) return;
       if (state.ownRunEndedAt !== endBefore || state.transcriptGen !== tGen) return;
       if (res.error) throw new Error(res.error);
+      // ERASED WHILE OPEN: the same words `openSession` prints, and no cache
+      // write — this refresh used to store the empty answer and blank the
+      // conversation in silence.
+      if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a

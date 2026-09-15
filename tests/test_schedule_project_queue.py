@@ -870,8 +870,6 @@ def registry(tmp_path, monkeypatch):
     sessions = tmp_path / "claude" / "sessions"
     sessions.mkdir(parents=True)
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(sessions))
-    monkeypatch.setattr(tasks_watch, "HISTORY_PATH",
-                        str(tmp_path / "claude" / "history.jsonl"))
     tasks_watch.reset()
     yield sessions
     tasks_watch.reset()

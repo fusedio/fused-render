@@ -2369,6 +2369,15 @@ function TemplatePreview({
                    (ChatMount's `recap`). */
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
+                /* THE EXPLORER SIDE PANEL'S OWN CUT: this sidebar is a
+                   companion beside a file the reader is already looking at,
+                   not a place to browse unstarted work — so its "Recent
+                   chats" drops the Upcoming lane (drafts and scheduled-for-
+                   later tasks alike, ChatMount's `hideUpcoming`). The content
+                   pane's OWN `_mode=claude` render (above, the full-page
+                   chat) does not carry this: it is the primary chat the
+                   reader opened onto this file, exactly like the landing. */
+                hideUpcoming
               />
             }
             onSelect={setSide}

@@ -109,6 +109,8 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render._view_url_codec import canonical_fs_path
+
 try:
     import fcntl  # POSIX only — Windows falls back to no inter-process lock,
     # the same posture as claude_sessions.api_claude_session_triage, whose
@@ -285,17 +287,35 @@ def erased(key: str = "") -> set[str]:
             if isinstance(store.get(k), dict) and store[k].get("erased")}
 
 
+def _counter(project: str) -> str:
+    """The name of the counter a project's numbers come out of: its canonical
+    spelling (`canonical_fs_path` — forward slashes on a drive path, unchanged
+    on POSIX).
+
+    ONE FOLDER, ONE COUNTER, HOWEVER IT WAS SPELLED. A task's project reaches
+    this store by two roads: a transcript's `cwd`, written by Claude Code in the
+    OS's own spelling, and a scheduled entry's `target`, which the router ran
+    through `os.path.abspath` — and on Windows those two spell the same folder
+    with different slashes. Keyed on the raw string, each spelling had a counter
+    of its own and a queued chat's row and the row holding its folder were both
+    TASK-001 (Windows CI, PR #1124). The record still stores the project as it
+    was given; only the counter is looked up by the canonical name, so a store
+    written before this rule counts on unchanged."""
+    return canonical_fs_path(project or "")
+
+
 def _next_numbers(store: dict) -> dict[str, int]:
-    """project -> highest number allocated in it. "Max seen plus one" is the
-    allocation rule precisely so a deleted task's number is never handed out
-    again: counting live tasks would recycle it."""
+    """project (canonical, see `_counter`) -> highest number allocated in it.
+    "Max seen plus one" is the allocation rule precisely so a deleted task's
+    number is never handed out again: counting live tasks would recycle it."""
     high: dict[str, int] = {}
     for key in list(store):
         rec = _record(store, key)
         if rec is None:
             continue
-        if rec["n"] > high.get(rec["project"], 0):
-            high[rec["project"]] = rec["n"]
+        counter = _counter(rec["project"])
+        if rec["n"] > high.get(counter, 0):
+            high[counter] = rec["n"]
     return high
 
 
@@ -379,7 +399,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
                 if not project:
                     continue
                 rec = _record(store, key)
-                if rec is None or rec["project"] == project:
+                if rec is None or _counter(rec["project"]) == _counter(project):
                     continue
                 _spend(store, rec)
                 store.pop(key, None)
@@ -392,8 +412,9 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
         # in the same millisecond still number deterministically.
         missing.sort(key=lambda it: (it[2] if it[2] is not None else 0.0, it[0]))
         for key, project, _order in missing:
-            n = high.get(project, 0) + 1
-            high[project] = n
+            counter = _counter(project)
+            n = high.get(counter, 0) + 1
+            high[counter] = n
             store[key] = {"project": project, "n": n}
             changed = True
 

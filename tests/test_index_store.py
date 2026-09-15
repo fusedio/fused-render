@@ -353,6 +353,46 @@ def test_compact_reads_the_previous_index_through_the_manifest(tmp_path):
     assert pq.read_table(part).column("path").to_pylist() == ["/one/a.txt", "/two/b.txt"]
 
 
+def test_delete_store_evicts_the_schema_cache_for_this_store(tmp_path):
+    """Review finding I / D880: `delete_store` removes the manifest, so the
+    next compaction's `generation` starts back at 1 — the same
+    `query._cached_src_cols` key an earlier life of this same store dir
+    could already have populated at generation 1. Left uncached across the
+    delete, a rebuilt store's real schema could be shadowed by that stale
+    entry. Pin that `delete_store` evicts every cache entry for `cfg.dir`
+    and leaves an unrelated store's entries alone."""
+    from fused_render.index import query as query_mod
+    from fused_render.index.store import delete_store
+
+    cfg = _cfg(tmp_path)
+    other_dir = str(tmp_path / "other-ix")
+    query_mod._src_cols_cache[(cfg.dir, 1, "dirs")] = {"stale_col"}
+    query_mod._src_cols_cache[(cfg.dir, 1, "files")] = {"stale_col"}
+    query_mod._src_cols_cache[(other_dir, 1, "dirs")] = {"unrelated_col"}
+
+    delete_store(cfg)
+
+    assert (cfg.dir, 1, "dirs") not in query_mod._src_cols_cache
+    assert (cfg.dir, 1, "files") not in query_mod._src_cols_cache
+    assert query_mod._src_cols_cache[(other_dir, 1, "dirs")] == {"unrelated_col"}
+
+
+def test_delete_store_on_an_empty_store_still_evicts_the_cache(tmp_path):
+    """`delete_store` on a store that was never built is a documented no-op
+    for the files it tries to unlink — but it must still run the cache
+    eviction unconditionally, since a cache entry can exist for a `cfg.dir`
+    whose on-disk store was already gone (e.g. deleted a second time)."""
+    from fused_render.index import query as query_mod
+    from fused_render.index.store import delete_store
+
+    cfg = _cfg(tmp_path)
+    query_mod._src_cols_cache[(cfg.dir, 1, "dirs")] = {"stale_col"}
+
+    delete_store(cfg)  # no files on disk at all
+
+    assert (cfg.dir, 1, "dirs") not in query_mod._src_cols_cache
+
+
 # -- the applied-ignore fingerprint -------------------------------------------
 
 def test_applied_ignore_sig_round_trips(tmp_path):

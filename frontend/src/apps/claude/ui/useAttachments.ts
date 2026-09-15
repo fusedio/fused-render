@@ -78,6 +78,21 @@ export interface Attachments {
   take(lead?: readonly Attachment[]): OutgoingAttachments;
   /** The send never landed: put them back, prepended. */
   giveBack(items: readonly Attachment[]): void;
+  /**
+   * THE WORDS WENT OUT WITHOUT US. Somebody else sent this conversation's draft
+   * (the Board's drag of a Done row into In Progress — platform/lib/drafts
+   * `onChatDraftSpent`), files included, straight off the server's copy. The
+   * tray is now holding handles to a message that has already been sent, so it
+   * empties itself the way an unmount does: every ready chip revoked, and a
+   * chip whose bytes are still on their way revoked the moment they land
+   * instead of becoming a chip — and the same for a capture or a path
+   * registration still past its `await` — otherwise that late arrival
+   * autosaves an attachments-only draft under the key and un-spends it
+   * (Bugbot, PR #1140).
+   * Not `take()`: that is the send primitive, keeps its pictures alive for a
+   * `giveBack`, and leaves pending chips in place by design.
+   */
+  discard(): void;
 }
 
 function errText(err: unknown): string {
@@ -144,6 +159,15 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     };
   }, []);
 
+  // WHICH TRAY an in-flight arrival belongs to. `discard()` (below) empties the
+  // tray for a message that has already been sent; anything that was still
+  // past an `await` at that moment — a capture, a path registration, a file
+  // upload — would otherwise seat into the emptied tray a beat later and
+  // autosave the just-sent files back as a draft. So every async path notes
+  // the epoch it started in and, on landing, revokes instead of seating when
+  // the epoch has moved (Bugbot, PR #1140, twice).
+  const epoch = useRef(0);
+
   const capture = useCallback(async () => {
     if (busy.current) return;
     busy.current = true;
@@ -160,11 +184,13 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       // cross-origin pane the native path could not shoot went to a DOM clone of
       // a document this page cannot open (Bugbot, PR #1064).
       const target = frame();
+      const began = epoch.current;
       const shot = await api.attachPane(agentDir, target, {
         xo: frameIsCrossOrigin(target),
       });
-      if (!alive.current) {
-        // No chip will ever show it, so this is the last handle to its Blob.
+      if (!alive.current || epoch.current !== began) {
+        // No chip will ever show it — the tray is gone, or was emptied for a
+        // message already sent — so this is the last handle to its Blob.
         api.revoke(shot);
         return;
       }
@@ -217,6 +243,7 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     async (files: readonly File[]) => {
       if (!files.length) return;
       if (!alive.current) return;
+      const began = epoch.current;
       const ids = files.map(() => "pending:" + ++seq.current);
       commit((prev) => [
         ...prev,
@@ -238,6 +265,12 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
             api.revoke(att);
             break;
           }
+          if (epoch.current !== began) {
+            // `discard()` ran while these bytes were on their way: the message
+            // they were for has been sent, so they are revoked, not seated.
+            api.revoke(att);
+            continue;
+          }
           commit((prev) => prev.map((s) => (s.id === id ? att : s)));
         }
       } catch (err) {
@@ -250,7 +283,9 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // a hole: a placeholder must not sit in the tray claiming a file is
         // still on its way, and removing it outright — what stood here — is the
         // dropped picture vanishing with no answer at all (Bugbot, PR #1064).
-        const unspent = ids.slice(i);
+        // …unless the tray was discarded meanwhile: its placeholders are gone
+        // and a refusal chip would be a new attachment on a sent message.
+        const unspent = epoch.current === began ? ids.slice(i) : [];
         if (unspent.length && alive.current) {
           const why = broke ? " (" + errText(broke) + ")" : "";
           const refused = new Map<string, Attachment>(
@@ -276,8 +311,12 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
   const addPaths = useCallback(
     async (paths: readonly string[]) => {
       if (!paths.length) return;
+      const began = epoch.current;
       const added = await api.attachPaths(agentDir, [...paths]);
-      if (!alive.current) {
+      if (!alive.current || epoch.current !== began) {
+        // Gone, or emptied for a message already sent (`discard`) — which is
+        // also how a peek's draft re-seed racing a Board drop is kept from
+        // putting the just-sent files back.
         for (const att of added) api.revoke(att);
         return;
       }
@@ -293,6 +332,14 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     },
     [api, commit],
   );
+
+  const discard = useCallback(() => {
+    // Ready chips are revoked here; anything still in flight is answered by the
+    // epoch bump — every async path above checks it on landing (see `epoch`).
+    epoch.current += 1;
+    for (const att of live.current) if (!att.pending) api.revoke(att);
+    commit(() => []);
+  }, [api, commit]);
 
   const take = useCallback(
     (lead: readonly Attachment[] = []): OutgoingAttachments => {
@@ -333,5 +380,5 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [commit],
   );
 
-  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack };
+  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack, discard };
 }

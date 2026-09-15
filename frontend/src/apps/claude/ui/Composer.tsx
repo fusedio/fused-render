@@ -16,6 +16,7 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
   deleteChatDraft,
+  onChatDraftSpent,
   fetchChatDraft,
   saveChatDraft,
   useAutosave,
@@ -267,6 +268,13 @@ export interface ComposerCardProps {
    *  Bugbot #1046 closed on the Back button's twin. */
   navLockedReason?: string;
   autoFocus?: boolean;
+  /**
+   * A GESTURE ASKED FOR THE BOX — bump the number to ask again. Unlike
+   * `autoFocus` this is not policy about arriving, it is a request, so it wins
+   * over a host that keeps the keyboard elsewhere (see the effect that reads
+   * it). `ClaudeChat` raises it when a never-sent chat's row is pressed.
+   */
+  focusRequest?: number;
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
@@ -331,6 +339,9 @@ export interface ComposerCardProps {
    * /api/fs/raw.
    */
   onRestoreAttachments?(paths: string[]): void;
+  /** Empty the tray without sending it — what a spend heard from elsewhere
+   *  (`onChatDraftSpent`) does to the files, the way `take()` does on Send. */
+  onDiscardAttachments?(): void;
   /**
    * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
    * whether the paste was an attachment — a paste of WORDS must reach the box,
@@ -378,6 +389,7 @@ export function ComposerCard({
   navLocked,
   navLockedReason,
   autoFocus,
+  focusRequest,
   placeholder,
   restore,
   boxRef: hostBoxRef,
@@ -388,6 +400,7 @@ export function ComposerCard({
   chips,
   attachments,
   onRestoreAttachments,
+  onDiscardAttachments,
   onPaste,
   camera,
   fitRevision,
@@ -450,6 +463,22 @@ export function ComposerCard({
   // StrictMode double mount costs one duplicate GET whose second answer is a
   // no-op `setText` of the same words.
   const seededKeys = useRef<Set<string>>(new Set());
+  /**
+   * A DRAFT THAT LANDED HAS TO TAKE THE KEYBOARD (Akshil QA, 2026-09-14).
+   *
+   * Pressing a never-sent chat's row in the Recent list is a promise that the
+   * next Enter sends those words — and it was not kept: the box filled and
+   * `document.activeElement` stayed on `<body>`. The mount effect below fires
+   * `autoFocus` when the composer APPEARS, which on that road is before the
+   * draft's GET has answered, and the commit that paints the restored text
+   * (plus the auto-grow relayout behind it) can leave the caret nowhere.
+   *
+   * So the seed says when it landed and the focus is taken THEN, at the end of
+   * the text — a caret in the middle of a restored sentence is its own small
+   * bug. A counter rather than a flag, because a key change (`new:<file>` →
+   * `<session>`) can seed twice in one composer's life.
+   */
+  const [seededAt, setSeededAt] = useState(0);
   useEffect(() => {
     if (seededKeys.current.has(draftKey)) return;
     seededKeys.current.add(draftKey);
@@ -469,6 +498,8 @@ export function ComposerCard({
         // the box coming back does not cost a PUT of the same text.
         autosaveRef.current.reset({ text: saved.text, attachments: saved.attachments ?? [] });
         grow();
+        // …and the caret goes in after them (see `seededAt`).
+        setSeededAt((n) => n + 1);
       }
       // The tray's half, through the same door "Back to chat" uses: these are
       // real paths, so they are registered rather than uploaded.
@@ -509,6 +540,37 @@ export function ComposerCard({
   autosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // SOMEBODY ELSE SENT THESE WORDS. The Board can drag a Done row into In
+  // Progress and send this conversation's unsent draft from there
+  // (shell/draft-run `chatBody`), while this box is open on the same key with
+  // the same sentence in it. Left alone, the next autosave puts the sent words
+  // back on the list as a draft and Send sends them again (Bugbot, PR #1140).
+  // So the spend is heard and the box does what its own Send does: empties,
+  // and resets the autosave to the empty value so no debounced write survives.
+  // Only a spend from ELSEWHERE arrives here — the composer's own send
+  // (`deleteChatDraft`) is silent, since the host still has to `take()` the
+  // tray for the outgoing message.
+  const discardAttachments = useRef(onDiscardAttachments);
+  discardAttachments.current = onDiscardAttachments;
+  useEffect(
+    () =>
+      onChatDraftSpent((key) => {
+        if (key !== draftKeyRef.current) return;
+        setText("");
+        // THE TRAY GOES TOO (Bugbot, PR #1140): the files were part of the draft
+        // that was just sent, and a tray still holding them would autosave an
+        // attachments-only draft back under the key — un-spending it and
+        // resurrecting the chip.
+        discardAttachments.current?.();
+        autosaveRef.current.reset({ text: "", attachments: [] });
+        // AND THE WIRE IS DRAINED before the sender proceeds: `reset` cancels
+        // only the pending timer, so a PUT fired a keystroke ago is still out
+        // there and would land after the create's delete. The promise is what
+        // `markChatDraftSpent` awaits.
+        return autosaveRef.current.settle().then(() => undefined);
+      }),
+    [],
+  );
 
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the
@@ -542,6 +604,107 @@ export function ComposerCard({
   useEffect(() => {
     if (autoFocus) boxRef.current?.focus({ preventScroll: true });
   }, [autoFocus, boxRef]);
+
+  /**
+   * …AND AGAIN ONCE A RESTORED DRAFT IS IN THE BOX (`seededAt`, Akshil QA
+   * 2026-09-14), with the caret at the END of it.
+   *
+   * TWICE, and the second time deferred by a task rather than a frame: the box
+   * this focuses can be REPLACED by the commit that follows (the auto-grow
+   * relayout, the fit ladder's re-key), and a focus on a node that is no longer
+   * in the document is a focus on nothing. `boxRef.current` is re-read inside
+   * `put` so the retry lands on whatever node is there now, and it is skipped
+   * when the caret is already home — so the common case costs one `focus`.
+   *
+   * A TASK AND NOT `requestAnimationFrame`: a pane that is not on screen never
+   * gets a frame, and a caret that only arrives when somebody is looking is a
+   * caret that never arrives for the test rig.
+   *
+   * Gated on `autoFocus` like the mount effect above: a landing page, a preview
+   * and a `noFocus` host must not be made to take the keyboard by a draft that
+   * happened to load.
+   */
+  /**
+   * THE CARET, TAKEN AND PUT AT THE END OF WHATEVER IS IN THE BOX.
+   *
+   * TWICE, and the second time deferred by a task rather than a frame: the box
+   * this focuses can be REPLACED by the commit that follows (the auto-grow
+   * relayout, the fit ladder's re-key), and a focus on a node that is no longer
+   * in the document is a focus on nothing. `boxRef.current` is re-read inside
+   * `put` so the retry lands on whatever node is there now, and the focus is
+   * skipped when the caret is already home — so the common case costs one call.
+   *
+   * A TASK AND NOT `requestAnimationFrame`: a pane that is not on screen never
+   * gets a frame, and a caret that only arrives when somebody is looking is a
+   * caret that never arrives at all.
+   *
+   * Returns its own canceller, so every caller is an effect body's one-liner.
+   */
+  const takeCaret = useCallback(() => {
+    let live = true;
+    const put = () => {
+      if (!live) return;
+      const box = boxRef.current;
+      if (!box) return;
+      const doc = (box as { ownerDocument?: Document }).ownerDocument
+        ?? (typeof document === "undefined" ? undefined : document);
+      if (doc?.activeElement !== box) box.focus({ preventScroll: true });
+      // Guarded because a textarea that is not in a document (and every test
+      // double) may refuse the call, and a throw here would cost the focus as
+      // well as the caret.
+      try {
+        const end = box.value.length;
+        box.setSelectionRange(end, end);
+      } catch {
+        // No selection API — the focus above is the half that matters.
+      }
+    };
+    put();
+    const again = setTimeout(put, 0);
+    return () => {
+      live = false;
+      clearTimeout(again);
+    };
+  }, [boxRef]);
+
+  /**
+   * A GESTURE ASKED FOR THIS BOX (`focusRequest`) — which is NOT the same fact
+   * as `autoFocus`, and the difference is the whole of this seat (Akshil QA,
+   * 2026-09-14).
+   *
+   * `autoFocus` is ambient policy: "should this composer take the keyboard
+   * merely by appearing". The explorer's folder pane answers NO and is right to
+   * — `apps/explorer/ListingPreviewPane` mounts the chat with `noFocus` so the
+   * listing keeps the keyboard. But pressing a never-sent chat's row in the
+   * Recent list is a REQUEST for the composer: the whole content of that row is
+   * an unsent sentence, and the press promises the next Enter sends it. Gating
+   * that on the ambient answer is what left the caret on `<body>` in exactly
+   * the pane the gesture lives in.
+   *
+   * A COUNTER, so the same request twice is two requests. The flag it raises
+   * outlives this effect because the draft's own GET has not answered yet —
+   * `seededAt` below takes the caret again once the words are actually in the
+   * box, and it has to know the gesture happened.
+   */
+  const requested = useRef(false);
+  useEffect(() => {
+    if (!focusRequest) return;
+    requested.current = true;
+    return takeCaret();
+  }, [focusRequest, takeCaret]);
+
+  /**
+   * …AND AGAIN ONCE A RESTORED DRAFT IS IN THE BOX, with the caret after it.
+   *
+   * The seed answers well after the mount, so this is the call that actually
+   * lands the caret for a draft press — and it is also why `requested` is a ref
+   * rather than a dependency: the request happened one commit and several
+   * hundred milliseconds ago.
+   */
+  useEffect(() => {
+    if (!seededAt || !(autoFocus || requested.current)) return;
+    return takeCaret();
+  }, [seededAt, autoFocus, takeCaret]);
 
   // Stranded follow-ups come back. Keyed on `seq` and not on the text, so the
   // same words stranded twice are delivered twice — and the box takes the

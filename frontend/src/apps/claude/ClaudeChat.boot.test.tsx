@@ -14,6 +14,7 @@ import { act, create } from "react-test-renderer";
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
+const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
 
 /** One `/api/run` call: the script and the action, plus the fields. */
@@ -31,8 +32,9 @@ let holdPrefs = false;
  *  `usePaneState`'s own. */
 let holdPaneStat = false;
 let stats = 0;
-/** Held back so a test can watch the landing's ready signal wait on the session
- *  list (T:19282-19291). Resolved by `releaseSessions()`. */
+/** Held back so a test can watch the landing's ready signal wait on the task
+ *  listing the Recent list is drawn from (T:19282-19291). Resolved by
+ *  `releaseSessions()`. */
 let holdSessions = false;
 let releaseSessions: () => void = () => {};
 /** Every `/api/schedule` read of this mount — one per watcher tick, which is
@@ -73,6 +75,16 @@ function stubFetch(): void {
     // that never settles is what the real endpoint does (it holds the request
     // open until something changes), so the landing view can be mounted.
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    // THE LANDING'S RECENT LIST, which reads the task listing now rather than
+    // agent.py's `sessions` action (.claude-design/design.md §B).
+    if (url === "/api/tasks") {
+      if (holdSessions) {
+        return new Promise<Response>((res) => {
+          releaseSessions = () => res(jsonRes({ tasks: [] }));
+        });
+      }
+      return jsonRes({ tasks: [] });
+    }
     if (url === "/api/schedule") {
       scheduleReads++;
       return jsonRes({ entries: [] });
@@ -90,14 +102,6 @@ function stubFetch(): void {
       runs.push({ py: body.py, action, params: body.params ?? {} });
       if (body.py.endsWith("/app.py")) return jsonRes({ ok: true, result: {} });
       if (action === "defaults") return jsonRes({ ok: true, result: {} });
-      if (action === "sessions") {
-        if (holdSessions) {
-          return new Promise<Response>((res) => {
-            releaseSessions = () => res(jsonRes({ ok: true, result: { sessions: [] } }));
-          });
-        }
-        return jsonRes({ ok: true, result: { sessions: [] } });
-      }
       if (action === "live_host") return jsonRes({ ok: true, result: { run_id: "" } });
       if (action === "start") return jsonRes({ ok: true, result: { run_id: "r1" } });
       if (action === "poll") {
@@ -118,6 +122,12 @@ beforeEach(() => {
   stats = 0;
   scheduleReads = 0;
   resetAgentDirCacheForTests();
+  // AND THE LISTING FEED, which is module state shared by every suite in the one
+  // `bun test` process (`shell/tasksPulse`): the rows a previous mount's
+  // `/api/tasks` returned are remembered and REPLAYED synchronously to the next
+  // subscriber, so a landing that is supposed to be waiting on a held read would
+  // otherwise be handed an answer before it ever asked.
+  resetListingFeedForTests();
   stubFetch();
 });
 

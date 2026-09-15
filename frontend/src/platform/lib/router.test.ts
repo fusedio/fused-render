@@ -145,6 +145,37 @@ describe("navigate carries the frozen-tree framing", () => {
   });
 });
 
+// `opts.sel` is how a caller seeds the DESTINATION's `?sel=` — the breadcrumb
+// and Mod+Up "go to parent" hops both use it (cameFromSelParam) to land the
+// parent folder highlighting the child just left. It is never carried FORWARD
+// from the current page's own querystring (a name from the folder you left
+// names nothing in the folder you arrive in) — only ever set explicitly by a
+// caller for the destination.
+describe("navigate seeds `?sel=` for the destination", () => {
+  test("opts.sel is written onto the destination url", () => {
+    const url = pushedFrom("", () => navigate("/w/docs", { isDir: true, sel: "sub" }));
+    expect(url).toBe("/explorer/view/w/docs?sel=sub");
+  });
+
+  test("a name with special characters round-trips through encodeURIComponent", () => {
+    const url = pushedFrom("", () =>
+      navigate("/w/docs", { isDir: true, sel: "my notes #1 & 2.md" }),
+    );
+    const qs = new URLSearchParams(url.split("?")[1]);
+    expect(qs.get("sel")).toBe("my notes #1 & 2.md");
+  });
+
+  test("no opts.sel means no `sel` param at all", () => {
+    const url = pushedFrom("", () => navigate("/w/docs", { isDir: true }));
+    expect(url).not.toContain("sel=");
+  });
+
+  test("the current page's own `?sel=` is never carried forward to the destination", () => {
+    const url = pushedFrom("?sel=old-child", () => navigate("/w/docs", { isDir: true }));
+    expect(url).not.toContain("sel=");
+  });
+});
+
 // `_snapshot=<sha>` is the SECOND exception to the fresh-query rule, and unlike
 // `snapshot=1` it is bounded: it names a commit, checked against the live app
 // folder that commit was resolved against (getSnapshotAppDir(), set by

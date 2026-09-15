@@ -1462,6 +1462,11 @@ export default function Listing({
                       {renderHighlightPath(entry.rel, positions)}
                     </span>
                   </span>
+                  {/* Guaranteed sweep-start strip — see explorer.css's
+                      .sweep-anchor comment. Before ClipMark in the DOM so a
+                      cut/copied badge, when present, still wins the overlap
+                      at the very right edge. */}
+                  <span className="sweep-anchor" aria-hidden="true" />
                   <ClipMark
                     cut={cutSet.has(childPath)}
                     copied={copiedSet.has(childPath)}
@@ -1656,6 +1661,11 @@ export default function Listing({
               <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
+            {/* Guaranteed sweep-start strip — see explorer.css's
+                .sweep-anchor comment. Before ClipMark in the DOM so a
+                cut/copied badge, when present, still wins the overlap at
+                the very right edge. */}
+            <span className="sweep-anchor" aria-hidden="true" />
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}
@@ -2177,9 +2187,11 @@ export default function Listing({
               // arithmetic. Until it is dragged that fraction is the companion
               // share — 30%, or 50% in a container of 1000px or less (D283), the
               // same rule a file's sidebar reads. The pixel floors are the slot's
-              // / the list's CSS min-widths, and under ~440px they are what the
-              // pane actually gets: half of anything narrower is below the 220px
-              // floor, so the two shares paint identically down there.
+              // / the list's CSS min-widths — the pane's is `--side-pane-min`,
+              // shared with the Tasks side peek (platform/lib/pane-metrics.ts)
+              // — and under twice that width they are what the pane actually
+              // gets: half of anything narrower is below the floor, so the two
+              // shares paint identically down there.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey): the mode

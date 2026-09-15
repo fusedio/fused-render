@@ -58,7 +58,6 @@ def home(tmp_path, monkeypatch):
     claude = tmp_path / "claude"
     (claude / "projects" / "-proj").mkdir(parents=True)
     (claude / "sessions").mkdir()
-    monkeypatch.setattr(tasks_watch, "HISTORY_PATH", str(claude / "history.jsonl"))
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(claude / "sessions"))
     monkeypatch.setattr(session_liveness, "PROJECTS_DIR", str(claude / "projects"))
 

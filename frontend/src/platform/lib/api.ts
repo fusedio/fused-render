@@ -1186,6 +1186,17 @@ export interface Prefs {
   // both the pref's own default and what every server did before this existed,
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
+  /** Whether a task on the Tasks page opens in a side panel beside the list
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
+   *  experimental, default off). Optional because a server that predates the
+   *  switch sends nothing — which reads as off, the same as the default. */
+  task_peek?: { enabled: boolean };
+  /** Whether a card on the Tasks page's Cards wall is titled by the newest
+   *  message in its conversation instead of by the task's own title
+   *  (shell/prefs.py `task_card_last_message`, experimental, default off).
+   *  Optional for the same reason `task_peek` is: a server that predates the
+   *  switch sends nothing, and nothing reads as off. */
+  task_cards?: { last_message: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1405,6 +1416,17 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
+/** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
+export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_peek_enabled: enabled });
+}
+
+/** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
+ *  the conversation's newest message, or the task's own title. */
+export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
 }
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
@@ -3115,6 +3137,20 @@ export interface Task {
   // joined onto a session row was before a form could be bound to one.
   draft?: { preview: string; updated_at: number; kind?: "chat" | "form" } | null;
   /**
+   * THE LAST TURN OF THIS CONVERSATION, whoever took it — one line of it, with
+   * `role` saying which — or null for a task nothing has been said in yet.
+   *
+   * `messages` below carries PROMPTS only, so this is the one field on the row
+   * that can carry Claude's own words. It is what the Cards wall titles a card
+   * by while the `task_card_last_message` pref is on (shell/task-card-title-
+   * flag.ts); nothing reads it while the pref is off.
+   *
+   * Optional: a server that predates the field sends nothing, which reads the
+   * same as "nothing said yet" — the card falls back to the task's title, the
+   * behaviour it has always had.
+   */
+  last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
+  /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
    *
@@ -3500,6 +3536,64 @@ export function decideThroughQueue(body: {
   custom?: string;
 }): Promise<QueueDecision> {
   return postJson<QueueDecision>("/api/tasks/queue/decide", body);
+}
+
+/**
+ * "A TURN JUST STARTED ON THIS SESSION" — told to the server at the moment of
+ * the send, because nothing on disk says it in time.
+ *
+ * A chat here runs `claude -p` out of process, and the CLI writes its registry
+ * row two to four seconds later; until then the listing read every one of this
+ * app's own turns as done (fused_render/tasks_watch.py `mark_running`). The
+ * sender is the only party that knows sooner, so it says so — once, from
+ * `run-controller.ts`, beside the `announceTasksChanged` that already marks
+ * both turn boundaries.
+ *
+ * BEST-EFFORT BY CONTRACT: the mark is a short-lived floor the registry
+ * overrides, so a failed call costs the first seconds of one ring and nothing
+ * else. Callers swallow the rejection rather than surfacing it.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided a turn had started —
+ * belt-and-suspenders against this call's own POST arriving at the server
+ * AFTER a later `markTaskIdle` for the same session (a race the client also
+ * guards against by awaiting this call before firing that one; see
+ * `run-controller.ts` `noteTurnIdle`). `tasks_watch.mark_running` ignores a
+ * mark whose `turn` is not newer than the last `mark_idle` it saw.
+ */
+export function markTaskRunning(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/running", {
+    session_id: sessionId,
+    turn,
+  });
+}
+
+/**
+ * "A TURN JUST ENDED ON THIS SESSION" — the other half of `markTaskRunning`,
+ * told to the server the moment the poll loop sees the turn close (a final
+ * result, a stop, an error), because a registry row disappearing is a tick
+ * behind and the mark's own TTL is fifteen seconds behind that.
+ *
+ * A SEPARATE endpoint from `markTaskRunning`, deliberately: the send's mark
+ * must post exactly once, at the START, or a finished row would spin out the
+ * mark's whole window (see `run-controller.test.ts`, "the server hears that a
+ * turn started") — folding "ended" into the same call as a `running: false`
+ * flag would have made that one call do both jobs.
+ *
+ * BEST-EFFORT BY CONTRACT, same as `markTaskRunning`: retiring the mark early
+ * is a nicety, not a guarantee — the registry-corroborated stand-down and the
+ * TTL both still apply if this never lands.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided the turn had ended —
+ * the other half of `markTaskRunning`'s `turn`. `tasks_watch.mark_idle` keeps
+ * the newest one it has seen, so a `mark_running` that later arrives claiming
+ * an earlier or equal `turn` is recognized as the SAME turn's late running
+ * POST, not a fresh send, and is ignored.
+ */
+export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/idle", {
+    session_id: sessionId,
+    turn,
+  });
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —

@@ -337,6 +337,13 @@ export function assignLanes<T extends { time: Date }>(
 // (tasks-lib.LIST_ORDER, whose note carries the argument): the lane draws the
 // running cards first and the waiting ones under them, and a List that read that
 // lane upwards would be the two views telling one story in opposite directions.
+//
+// OTHERWISE THIS IS EVERY VIEW'S ORDER, not just the board's: the List and the
+// Cards wall read this array through tasks-lib.LIST_ORDER and sort by the very
+// function the board sorts by (2026-09-14, design.md §5), with `queued` the one
+// key LIST_ORDER re-seats. So a reader moving between the views carries ONE
+// mental picture of what a status is AND of where it sits, and this is the
+// single place either can be changed.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "queued", label: "Queued" },

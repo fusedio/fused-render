@@ -24,6 +24,49 @@
   transition: none;
 }
 
+/* THE TUCK — the 200ms a collapsing sidebar spends still holding its expanded
+   contents (SidebarFrame `tucking`).
+ *
+ * Without it the collapse was a CLIP: the rail subtree swapped in on the frame
+ * the flag flipped, and `overflow-x: hidden` above simply cut the panel down to
+ * 44px over the next 200ms. The width transition was animating a box with
+ * nothing moving inside it, which reads as the window eating the panel rather
+ * than as the panel leaving.
+ *
+ * Now the expanded children stay for exactly that long and go with the box:
+ * `opacity 1 → 0` and a slide to the LEFT, a little further than the rail's own
+ * 44px so nothing is still visible in the strip when the swap happens, plus the
+ * small downward drift that keeps it from reading as a pure horizontal wipe.
+ * The 250/59 pair is Notion's, measured
+ * (.claude-design/task-side-peek/notion-side-peek-notes.md §10).
+ *
+ * `pointer-events: none` because these rows are on their way out — a click
+ * landing on a nav item mid-tuck would navigate somewhere the reader is
+ * watching disappear. `prefers-reduced-motion` collapses the durations through
+ * the blanket rule in styles/reduced-motion.css, so the tuck simply happens at
+ * once there; the component's 200ms hold is then a hold over nothing visible,
+ * which is correct rather than merely harmless. */
+#sidebar.sidebar-tucking {
+  overflow: hidden;
+}
+
+#sidebar.sidebar-tucking > * {
+  /* Beats `sidebar-content-in` above, which is an ENTRANCE and would otherwise
+     replay on these very children as the box around them re-renders. */
+  animation: none;
+  /* Held at the width the panel HAD (the component hands it over inline), or
+     the rows would be squeezed by the narrowing box — which is the clip this
+     exists to replace. */
+  width: var(--sidebar-tuck-w, 232px);
+  max-width: none;
+  opacity: 0;
+  transform: translate(calc(20px - var(--sidebar-tuck-w, 232px)), 59px);
+  pointer-events: none;
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+
 /* The collapsed strip and the expanded rows are two different subtrees, swapped
    at the animation boundary; fading whichever one is newly mounted keeps that
    swap from reading as a pop. Only replays on a real subtree swap — React reuses

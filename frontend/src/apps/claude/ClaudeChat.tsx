@@ -101,6 +101,7 @@ import {
   CardPolicyProvider,
   Composer,
   createCardPolicy,
+  draftTextOf,
   Home,
   openCardIds,
   resetCardPolicy,
@@ -122,8 +123,9 @@ import {
   useAwayRecap,
   useFitStrip,
   useComposerDefaults,
-  useRecentSessions,
+  useRecentTasks,
   useRepairScroll,
+  useSessionTask,
   useTaskId,
   useLimitWord,
   type TranscriptTail,
@@ -148,7 +150,6 @@ import {
 } from "./sched/waiting";
 import type { WaitingSeed } from "./sched/waiting";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
-import { mergeWaitingChats, useWaitingChats } from "./sched/waiting-chats";
 import { inboxBubbles } from "./protocol/inbox";
 import { createLiveWatch } from "./live/watch";
 import {
@@ -156,7 +157,9 @@ import {
   cancelScheduledMessage,
   getClaudeSessionLiveness,
   skipQueue,
+  type Task,
 } from "@platform/lib/api";
+import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -250,6 +253,15 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /**
+   * DROP THE UPCOMING LANE FROM THE LANDING'S "Recent chats" — `Lists`' own
+   * prop (ui/Lists.tsx), carried through untouched. Set by exactly one host:
+   * the explorer's Claude side panel (`ChatMount`'s own `hideUpcoming`,
+   * Preview.tsx's `?_side=claude` sidebar and ListingPreviewPane's folder
+   * pane) — never inferred here from `file`/`remote`/anything else, so a
+   * second host cannot pick it up by accident of sharing some other fact.
+   */
+  hideUpcoming?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -265,6 +277,13 @@ function stampChatActivity(): void {
   } catch {
     // The shell's 20-30 s task polls remain the fallback.
   }
+}
+
+/** A promise that resolves after `ms`, for racing a wait that has no timeout of
+ *  its own. Resolves rather than rejects: losing the race is not an error, it is
+ *  "stop waiting and show what we have". */
+function deadline(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">): string {
@@ -1641,7 +1660,20 @@ function ChatBody(props: ChatBodyProps) {
         setEntered(true);
         if (sessionId) {
           resetCardPolicy(cardPolicy);
-          await controller.openSession(sessionId);
+          // RACED, because `markReady` is below it and the host keeps this pane
+          // covered until it fires. `openSession` awaits a history round trip,
+          // and a request the server accepts and never answers (a wedged worker,
+          // a machine asleep mid-flight) never rejects either — so the cover
+          // stayed on for the life of the page. After the same 8 s every other
+          // gate waits we stop waiting and uncover: the restore is still running
+          // and still paints when it lands, and what the reader gets meanwhile is
+          // the chat's own empty log — which is exactly what a restore that FAILS
+          // already leaves (run-controller.openSession swallows the error by
+          // design, T:18057-18059). Never a blank box.
+          await Promise.race([
+            controller.openSession(sessionId),
+            deadline(GATE_FALLBACK_MS),
+          ]);
           if (cancelled) return;
         }
         // A bare `run` has nothing to restore, and a restored session is on
@@ -1892,39 +1924,27 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  const recentSessions = useRecentSessions(
+  /** Bumped by a gesture that has asked for the composer — today only the
+   *  never-sent chat's row (`onOpenChatDraft`). Handed to the CHAT's composer
+   *  alone: the landing's box is the one the reader is leaving. */
+  const [focusReq, setFocusReq] = useState(0);
+  /** The words a pressed draft row put in the LANDING's composer — the same
+   *  `{text, seq}` seat a stranded follow-up comes back on, kept apart from
+   *  `stranded` because that one is about a turn that was running and this one
+   *  is about a row the reader pointed at (`onFillDraft`). */
+  const [landingFill, setLandingFill] = useState<{ text: string; seq: number } | null>(null);
+  const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
     undefined,
     leftLive,
   );
-  /**
-   * …AND THE CHATS IN THIS FOLDER THAT HAVE NOT RUN YET, in the same list.
-   *
-   * `sessions` lists TRANSCRIPTS, so a chat whose first message was queued is in
-   * no list at all: nothing of it has run, nothing has been written, and the
-   * landing showed no sign of a conversation the reader had typed into minutes
-   * before. Its row is on `/api/tasks` instead, keyed `pending:<leader id>`
-   * (`sched/waiting-chats`), and it is folded in here rather than given a section
-   * of its own — a waiting chat is not a different kind of thing from one that
-   * ran, it is the same conversation earlier, and it sorts by the same clock.
-   *
-   * ONLY ON THE LANDING and only under the flag: inside a chat the list is not
-   * drawn, and flag off there is nothing to merge because nothing queues.
-   */
-  const waitingChats = useWaitingChats(
-    !inChat && queueOn ? file : null,
-    queueOn,
-    // …AND ON THE RECENT LIST'S OWN TICK. A leader's transcript appearing is news
-    // the sessions watch hears and the tasks read does not, and until it re-read
-    // the same conversation was drawn twice — once as a transcript, once as the
-    // waiting row it had stopped being (🔴 review 2026-09-12).
-    recentSessions,
-  );
-  const recent = useMemo(
-    () => mergeWaitingChats(recentSessions, waitingChats),
-    [recentSessions, waitingChats],
-  );
+  // …AND THE CHATS IN THIS FOLDER THAT HAVE NOT RUN YET are in the same list
+  // for free: `/api/tasks` lists a chat whose first message queued as a row
+  // keyed `pending:<leader id>` (the project queue), in this folder, and the
+  // Recent list is that listing filtered to the pane. A waiting chat is not a
+  // different kind of thing from one that ran — it is the same conversation
+  // earlier — and `Lists.pressFor` opens it by its entry (`chatUrl`'s `queued`).
   /** ONE TRIP'S WORTH. T's `leftLive` is a local in its Back handler, so it is
    *  spent by the landing it was set for; here it has to be cleared by hand, or
    *  every later cold landing of this page's life would go on paying for the
@@ -1943,16 +1963,25 @@ function ChatBody(props: ChatBodyProps) {
    * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
    * target with no `agentDir` (which never subscribes), and a reader who enters
    * a chat before the first read lands — a recent row clicked on the skeleton,
-   * or a deep link resolving late. `useRecentSessions` is handed a null
+   * or a deep link resolving late. `useRecentTasks` is handed a null
    * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
    * the pane would stay covered for the life of the page. Entering a chat is
    * itself a reason to uncover it, and a target with no list has answered "no
    * list" — so both count.
+   *
+   * AND NEVER FOR EVER (2026-09-15), which is the third road. `recent` stays
+   * `null` while the listing is in flight, and a listing that never answers — a
+   * wedged worker, a request the browser is still holding — left the cover on
+   * for the life of the page with nothing to take it off. `recentLate` is the
+   * same 8 s backstop every other gate in the app waits (`platform/lib/clock`),
+   * after which a landing wearing its list's skeleton is a better thing to show
+   * than a covered box.
    */
+  const recentLate = useFallbackAfter(GATE_FALLBACK_MS, landingReady && recent === null);
   useEffect(() => {
     if (!landingReady) return;
-    if (recent !== null || inChat || !agentDir) markReady();
-  }, [landingReady, recent, inChat, agentDir, markReady]);
+    if (recent !== null || recentLate || inChat || !agentDir) markReady();
+  }, [landingReady, recent, recentLate, inChat, agentDir, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
@@ -2659,6 +2688,20 @@ function ChatBody(props: ChatBodyProps) {
     // is being left; carried into the next one it would re-adopt the leader the
     // line above just forgot, on the first render after it.
     params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
+    // …and so do the words a draft row put in the LANDING's box. `Home` unmounts
+    // on the way into the chat, so the composer that comes back on Back is a NEW
+    // instance with an empty delivery ledger — a fill left standing would be
+    // handed to it a second time (the trap `stranded` fell into, one seat over).
+    setLandingFill(null);
+    // …AND SO DOES THE CARET REQUEST (Bugbot, PR #1145). `focusReq` is a
+    // COUNTER, so once a draft press has bumped it it is truthy for the rest of
+    // the page's life — and the prop is handed to every chat composer that
+    // mounts after it. Left standing, the next ordinary session opened from the
+    // explorer's folder pane took the keyboard off the listing, which is the
+    // exact case `focusRequest` exists to stay OUT of (`autoFocus` is the
+    // ambient policy; this is one gesture's request). Back is the funnel out of
+    // the chat, so the request is spent here.
+    setFocusReq(0);
   }, [controller, cardPolicy, leader, params]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
@@ -2678,10 +2721,56 @@ function ChatBody(props: ChatBodyProps) {
       // transcript until something else re-rendered (Bugbot, d9f041e11).
       leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
+      setLandingFill(null);
+      // And this session was opened by a press on a CONVERSATION, which asks for
+      // nothing but to be read — belt and braces beside the clear in `onBack`,
+      // the same way `setStranded(null)` is spelled in both.
+      setFocusReq(0);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy, leader, params],
   );
+  /**
+   * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
+   *
+   * Round 1 made both draft kinds doors: a chat draft entered the chat view, a
+   * task draft left the app for the Tasks modal. Neither is what a press on a
+   * list sitting under the landing's own composer should do. The row's whole
+   * content is unsent words, that composer is where unsent words live, and the
+   * reader is looking straight at it — so nothing navigates, nothing enters,
+   * and no URL moves. The text lands in the box with the caret after it.
+   *
+   * THROUGH THE SAME SEAT STRANDED WORDS COME BACK ON (`restore`): it appends
+   * rather than replaces, which is the right way round for a box that may
+   * already hold something the reader typed — a press must never eat words.
+   * Its own counter, because the landing's composer and the chat's are two
+   * instances with two delivery ledgers and a hand-back is not a draft press.
+   *
+   * ALREADY IN THE BOX IS NOT FILLED AGAIN. The landing composer seeds itself
+   * from this folder's own `new:<file>` draft, so the row for THIS folder names
+   * words that are already on screen; filling would print them twice. That case
+   * is a focus request and nothing more, which is also exactly what it should
+   * be — the reader is asking for the box.
+   */
+  const fillSeq = useRef(0);
+  const onFillDraft = useCallback((task: Task) => {
+    void draftTextOf(task).then((text) => {
+      const box = boxRef.current;
+      if (text && !(box && box.value.includes(text))) {
+        fillSeq.current += 1;
+        setLandingFill({ text, seq: fillSeq.current });
+      }
+      // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
+      // That prop is ambient policy — "may this composer take the keyboard merely
+      // by appearing" — and the explorer's folder pane says no on purpose
+      // (`apps/explorer/ListingPreviewPane` mounts the chat `noFocus` so the
+      // listing keeps the keyboard). A row whose whole content is an unsent
+      // sentence is a request, not an arrival: the caret belongs in the box the
+      // words are in, or the promise the row makes (press Enter and this sends)
+      // is one the reader has to click to collect (Akshil QA, 2026-09-14).
+      setFocusReq((n) => n + 1);
+    });
+  }, [boxRef]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -3376,6 +3465,10 @@ function ChatBody(props: ChatBodyProps) {
       // upload, `useAttachments.addPaths`).
       attachments: () => attach.items,
       onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
+      // A spend heard from the Board (the row's draft dragged into In Progress)
+      // empties the tray for good: the files already went with the message,
+      // off the server's copy (`useAttachments.discard`).
+      onDiscardAttachments: attach.discard,
       hasAttachments:
         attach.items.length > 0 ||
         ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),
@@ -3595,6 +3688,30 @@ function ChatBody(props: ChatBodyProps) {
    *  conversation's own row, on mount and on `tasks-changed` (which the
    *  comeback's own POST rings), floored at five seconds. */
   const limitWord = useLimitWord(taskKey);
+  /**
+   * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
+   * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
+   *
+   * Asked for only while a chat is up — the same window in which the landing's
+   * list is NOT subscribed — so the two never hold the listing open at once.
+   *
+   * THREE ANSWERS, not two (`SessionIdentity`): the row, "not read yet", or
+   * "read, and there is no row for this session". Only the last of those is the
+   * ✻ Claude line's own state — a brand-new chat — and the middle one draws the
+   * header's skeleton, so a deep link no longer wears the wrong identity for
+   * the length of an 800-row listing read (Akshil, 2026-09-14).
+   */
+  //
+  // AND ONLY WHERE THE HEADER IS DRAWN (2026-09-15). The Topbar this feeds is
+  // taken away by the compact and peek cuts (`{!compact && !peek ? …}` below),
+  // so a cards wall of twelve tiles held twelve subscriptions for a header none
+  // of them renders. The rows are one shared feed now, so the cost is no longer
+  // twelve sockets — but it is still twelve listings narrowed and twelve
+  // re-renders per change for nothing.
+  const head = useSessionTask(
+    inChat && !compact && !peek ? (state.sessionId ?? null) : null,
+    file,
+  );
 
   return (
    <CardPolicyProvider value={cardPolicy}>
@@ -3828,6 +3945,8 @@ function ChatBody(props: ChatBodyProps) {
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
+                task={head.task}
+                pending={head.pending}
                 running={running}
                 // THE PLAN'S PAUSE, in the seat "running" rides: a session the
                 // usage limit stopped says `paused · resumes 4:00 AM` instead
@@ -3949,6 +4068,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
+                {...(focusReq ? { focusRequest: focusReq } : {})}
                 footnote={footnoteFor(pane.noun)}
                 artStrip={<ArtStrip items={art.items} />}
               />
@@ -3966,7 +4086,11 @@ function ChatBody(props: ChatBodyProps) {
             placeholder={homePlaceholderFor(pane.noun)}
             recent={recent}
             onOpenSession={onOpenSession}
+            onFillDraft={onFillDraft}
+            {...(landingFill ? { restore: landingFill } : {})}
+            {...(focusReq ? { focusRequest: focusReq } : {})}
             listsDisabled={ann.locked}
+            {...(props.hideUpcoming ? { hideUpcoming: true } : {})}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

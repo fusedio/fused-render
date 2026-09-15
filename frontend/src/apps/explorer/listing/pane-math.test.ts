@@ -16,9 +16,18 @@
 // viewstate before that.
 import { describe, expect, test } from "bun:test";
 import { COMPANION_FRAC, companionFrac } from "@apps/explorer/lib/side-width";
+import { closeOverdrag } from "@platform/lib/panel-drag";
+import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
+
+/** The list's own sliver, the other half of every "both floors together" below.
+ *  Not exported by pane-math (it is an implementation detail of the clamps), so
+ *  it is restated here — the tests that use it all derive from the PANE's floor,
+ *  which is the one that moves. */
+const LIST_MIN_W = 60;
 import {
   MAX_PANE_SHARE,
   PANE_DEFAULT_FRAC,
+  PANE_MIN_W,
   clampPaneWidth,
   clampSharedPaneWidth,
   dragPaneFrac,
@@ -53,13 +62,27 @@ describe("the pane's width", () => {
   });
 });
 
+describe("the pane's floor", () => {
+  test("is the SHARED one, not a copy of it", () => {
+    // The bug this pins (code review, batch 3): `PANE_MIN_W` was its own literal
+    // 220 here, and when `.listing-pane-slot`'s CSS floor moved to the composer
+    // row's width every clamp below went on computing against a number the
+    // layout would not render — so between the two floors the divider walked
+    // away from the cursor, for every user, on every drag.
+    expect(PANE_MIN_W).toBe(SIDE_PANE_MIN_WIDTH);
+  });
+});
+
 describe("clampPaneWidth", () => {
   test("passes a comfortable width through untouched", () => {
     expect(clampPaneWidth(1200, 400)).toBe(400);
   });
 
-  test("holds the pane's 220px floor", () => {
-    expect(clampPaneWidth(1200, 10)).toBe(220);
+  test("holds the pane's own floor, whatever the shared constant says it is", () => {
+    // Not a literal: the floor moved once already (220 → the composer row's
+    // width) and this module read a stale copy of it for the whole of that
+    // change. Asking the constant is what a test can do that a number cannot.
+    expect(clampPaneWidth(1200, 10)).toBe(SIDE_PANE_MIN_WIDTH);
   });
 
   test("leaves the list its 60px sliver", () => {
@@ -69,7 +92,7 @@ describe("clampPaneWidth", () => {
   test("degenerate container: the pane keeps its floor and the list scrolls", () => {
     // 200px of container cannot hold both minimums; PANE_MIN_W is applied last
     // so it is the one that survives.
-    expect(clampPaneWidth(200, 190)).toBe(220);
+    expect(clampPaneWidth(200, 190)).toBe(SIDE_PANE_MIN_WIDTH);
   });
 });
 
@@ -83,7 +106,7 @@ describe("clampSharedPaneWidth", () => {
   });
 
   test("the pixel floor holds below the share cap", () => {
-    expect(clampSharedPaneWidth(1200, 10)).toBe(220);
+    expect(clampSharedPaneWidth(1200, 10)).toBe(SIDE_PANE_MIN_WIDTH);
   });
 
   test("the share cap holds where the pixel floor alone would not", () => {
@@ -93,28 +116,32 @@ describe("clampSharedPaneWidth", () => {
   });
 
   test("the pixel floor wins over the share cap when they disagree", () => {
-    // At 280px the share cap alone would ask for 196px (70% of 280) — below
-    // the 220px floor. The floor is applied LAST and wins outright: this is
+    // Just above both floors together the share cap alone asks for 70% of the
+    // container, which is fewer pixels than the pane's own floor — 322 of a
+    // 460px container. The floor is applied LAST and wins outright: this is
     // the exact bug the second review pass caught (a computed fraction below
-    // the floor disagreeing with CSS's own `min-width: 220px`).
-    expect(clampSharedPaneWidth(280, 900)).toBe(220);
-    expect(clampSharedPaneWidth(280, 900)).toBeGreaterThan(280 * MAX_PANE_SHARE);
+    // the floor disagreeing with CSS's own `min-width`).
+    const narrow = SIDE_PANE_MIN_WIDTH + LIST_MIN_W;
+    expect(clampSharedPaneWidth(narrow, 900)).toBe(SIDE_PANE_MIN_WIDTH);
+    expect(clampSharedPaneWidth(narrow, 900)).toBeGreaterThan(narrow * MAX_PANE_SHARE);
   });
 
   test("degenerate container: the pane keeps its floor and the list scrolls", () => {
-    expect(clampSharedPaneWidth(200, 190)).toBe(220);
+    expect(clampSharedPaneWidth(200, 190)).toBe(SIDE_PANE_MIN_WIDTH);
   });
 });
 
 describe("dragPaneFrac", () => {
   test("turns the cursor's distance from the right edge into a fraction", () => {
-    expect(dragPaneFrac(1000, 300)).toBe(0.3);
+    // A cursor comfortably inside both the floor and the share cap, so the
+    // number that comes back is the drag's own and not a clamp's.
+    expect(dragPaneFrac(1000, 500)).toBe(0.5);
   });
 
   test("the fraction carries the clamp, not the raw pixels", () => {
-    // Dragged past the right edge: clamped to 220px, which on a 1000px
-    // container is 22%.
-    expect(dragPaneFrac(1000, 20)).toBe(0.22);
+    // Dragged past the right edge: clamped to the pane's floor, expressed as a
+    // share of the container it is in.
+    expect(dragPaneFrac(1000, 20)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / 1000, 10);
     // Dragged over the list: the pixel floor alone would clamp to
     // container - 60 (94%), but MAX_PANE_SHARE catches it first at 70% — a
     // LOCAL drag is bounded exactly like an imported width now (second
@@ -124,28 +151,33 @@ describe("dragPaneFrac", () => {
   });
 
   test("a container too narrow for both floors expresses no split at all", () => {
-    // Under 280px (220 + 60) the clamp returns PANE_MIN_W whatever the cursor
-    // does, so any fraction it yielded would describe the CONTAINER, not a
-    // choice — at 220px exactly 1.0, "the pane takes everything", which no
-    // wider window can honour. One drag in a narrow pane used to persist that
-    // and leave the list a 60px sliver forever after.
-    expect(dragPaneFrac(220, 170)).toBeNull();
-    expect(dragPaneFrac(220, 300)).toBeNull();
-    expect(dragPaneFrac(279, 100)).toBeNull();
+    // Under both floors together the clamp returns PANE_MIN_W whatever the
+    // cursor does, so any fraction it yielded would describe the CONTAINER, not
+    // a choice — at the floor's own width exactly 1.0, "the pane takes
+    // everything", which no wider window can honour. One drag in a narrow pane
+    // used to persist that and leave the list a 60px sliver forever after.
+    expect(dragPaneFrac(SIDE_PANE_MIN_WIDTH, 170)).toBeNull();
+    expect(dragPaneFrac(SIDE_PANE_MIN_WIDTH, 300)).toBeNull();
+    expect(dragPaneFrac(SIDE_PANE_MIN_WIDTH + LIST_MIN_W - 1, 100)).toBeNull();
   });
 
-  test("280px is the narrowest container that still means something", () => {
-    // Both floors fit exactly, so the split is decided even though it has only
-    // one possible value.
-    expect(dragPaneFrac(280, 500)).toBeCloseTo(220 / 280, 10);
-    expect(dragPaneFrac(280, 0)).toBeCloseTo(220 / 280, 10);
+  test("both floors together is the narrowest container that still means something", () => {
+    // They fit exactly, so the split is decided even though it has only one
+    // possible value.
+    const narrow = SIDE_PANE_MIN_WIDTH + LIST_MIN_W;
+    expect(dragPaneFrac(narrow, 500)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / narrow, 10);
+    expect(dragPaneFrac(narrow, 0)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / narrow, 10);
   });
 
   test("the fraction a real drag produces can never reach 1, or exceed MAX_PANE_SHARE once the container is wide enough", () => {
-    // Below ~314px (PANE_MIN_W / MAX_PANE_SHARE) the pane's own floor asks
-    // for a bigger share than the cap allows, and floor-last means the
-    // floor wins — so 300px is still governed by the pixel floor alone.
-    expect(dragPaneFrac(300, 600)).toBeCloseTo(220 / 300, 10);
+    // Below `PANE_MIN_W / MAX_PANE_SHARE` the pane's own floor asks for a
+    // bigger share than the cap allows, and floor-last means the floor wins —
+    // so a container just inside that band is governed by the pixel floor
+    // alone. (At a 400px floor the band runs to ~571px, where it ran to ~314
+    // at 220 — the edges move with the floor, which is why the test derives
+    // them rather than naming them.)
+    const inBand = Math.floor(SIDE_PANE_MIN_WIDTH / MAX_PANE_SHARE) - 20;
+    expect(dragPaneFrac(inBand, 600)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / inBand, 10);
     // From there up, MAX_PANE_SHARE is the ceiling a real drag can reach —
     // never the old (W - 60) / W, which would have let a 1024px container
     // reach ~94%.
@@ -185,10 +217,10 @@ describe("paneFracFromSharedWidth", () => {
   });
 
   test("a shared width narrower than either surface's own floor is clamped up", () => {
-    // 100px is below both this pane's 220px floor and the file sidebar's
-    // 380px one, so no ordinary drag on either surface produces it — the
-    // clamp still has to hold for whatever arrives.
-    expect(paneFracFromSharedWidth(100, 1200)).toBeCloseTo(220 / 1200, 10);
+    // 100px is below both this pane's floor and the file sidebar's 380px one,
+    // so no ordinary drag on either surface produces it — the clamp still has
+    // to hold for whatever arrives.
+    expect(paneFracFromSharedWidth(100, 1200)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / 1200, 10);
   });
 
   test("a shared width wider than this container's list floor allows is clamped down", () => {
@@ -227,54 +259,67 @@ describe("paneFracFromSharedWidth", () => {
     expect(paneFracFromSharedWidth(900, 1000)).toBe(MAX_PANE_SHARE);
   });
 
-  test("a degenerate container (< 280px) ignores the shared width entirely", () => {
+  test("a container under both floors together ignores the shared width entirely", () => {
     // Below PANE_MIN_W + LIST_MIN_W, clampSharedPaneWidth returns PANE_MIN_W
-    // (220) regardless of input — more pixels than the container has — and
-    // dividing it out would answer a fraction over 1 (`flexBasis: "110%"`),
-    // which dragPaneFrac itself refuses to produce (it answers null there).
-    // This module has no null to hand back, so it falls back to the plain
-    // companion share instead, unconditionally, before the shared width is
-    // even read.
+    // regardless of input — more pixels than the container has — and dividing
+    // it out would answer a fraction over 1 (`flexBasis: "110%"`), which
+    // dragPaneFrac itself refuses to produce (it answers null there). This
+    // module has no null to hand back, so it falls back to the plain companion
+    // share instead, unconditionally, before the shared width is even read.
+    const under = SIDE_PANE_MIN_WIDTH + LIST_MIN_W - 1;
     expect(paneFracFromSharedWidth(900, 200)).toBe(companionFrac(200));
-    expect(paneFracFromSharedWidth(900, 279)).toBe(companionFrac(279));
+    expect(paneFracFromSharedWidth(900, under)).toBe(companionFrac(under));
     expect(paneFracFromSharedWidth(900, 200)).toBeLessThanOrEqual(1);
   });
 
-  test("280px is still the narrowest container the shared width can reach — and the FLOOR wins there, not the share cap", () => {
-    // Both floors fit exactly (PANE_MIN_W=220 of 280 = ~78.6%), so unlike the
-    // degenerate case above the shared width IS honoured and clamped. But
-    // 78.6% is ABOVE MAX_PANE_SHARE (70%) — a share cap alone would ask for
-    // 196px here, below the pane's own 220px floor, and CSS's
-    // `min-width: 220px` would then override the computed flex-basis. The
-    // floor is applied LAST specifically to avoid that: it wins outright in
-    // this narrow band (up to ~314px, PANE_MIN_W / MAX_PANE_SHARE), exactly
-    // as it did before the cap existed.
-    expect(paneFracFromSharedWidth(900, 280)).toBeCloseTo(220 / 280, 10);
+  test("both floors together is still the narrowest the shared width can reach — and the FLOOR wins there, not the share cap", () => {
+    // They fit exactly, so unlike the degenerate case above the shared width IS
+    // honoured and clamped. But the floor's share of that container is ABOVE
+    // MAX_PANE_SHARE, so a share cap alone would ask for fewer pixels than the
+    // floor and CSS's own `min-width` would override the computed flex-basis.
+    // The floor is applied LAST specifically to avoid that: it wins outright in
+    // this narrow band (up to `PANE_MIN_W / MAX_PANE_SHARE`), exactly as it did
+    // before the cap existed.
+    const narrow = SIDE_PANE_MIN_WIDTH + LIST_MIN_W;
+    expect(narrow * MAX_PANE_SHARE).toBeLessThan(SIDE_PANE_MIN_WIDTH);
+    expect(paneFracFromSharedWidth(900, narrow)).toBeCloseTo(SIDE_PANE_MIN_WIDTH / narrow, 10);
   });
 
   test("MAX_PANE_SHARE only becomes the ceiling once the container is wide enough that it exceeds the floor", () => {
-    // Just past ~314px (PANE_MIN_W / MAX_PANE_SHARE = 314.28...), the share
-    // cap asks for more pixels than the floor does, and the cap takes over.
-    expect(paneFracFromSharedWidth(900, 320)).toBe(MAX_PANE_SHARE);
+    // Just past `PANE_MIN_W / MAX_PANE_SHARE`, the share cap asks for more
+    // pixels than the floor does, and the cap takes over.
+    expect(paneFracFromSharedWidth(900, Math.ceil(SIDE_PANE_MIN_WIDTH / MAX_PANE_SHARE) + 6)).toBe(
+      MAX_PANE_SHARE,
+    );
   });
 });
 
 // ---------------------------------------------------------------- drag close
-// The listing pane's version of the sidebars' drag-to-close (#680): between
-// the 220px floor and half of it the clamp renders the resistance band, and
-// only a pull clean through — the cursor within 110px of the right edge —
-// reads as "shut it".
+// The listing pane's version of the sidebars' drag-to-close (#680): between the
+// pane's floor and `closeOverdrag(floor)` short of it the clamp renders the
+// resistance band, and only a pull clean through reads as "shut it". The band
+// scales with the floor — it is the same `closeOverdrag` every panel uses — so
+// these are derived rather than named.
 describe("paneDragCloses", () => {
+  const SHUT = SIDE_PANE_MIN_WIDTH - closeOverdrag(SIDE_PANE_MIN_WIDTH);
+
   test("a drag through the resistance band closes", () => {
-    expect(paneDragCloses(1000, 109)).toBe(true);
+    expect(paneDragCloses(1000, SHUT - 1)).toBe(true);
     expect(paneDragCloses(1000, 0)).toBe(true);
     expect(paneDragCloses(1000, -50)).toBe(true);
   });
 
   test("holding inside the band, or above the floor, does not", () => {
-    expect(paneDragCloses(1000, 110)).toBe(false); // the band's own edge sticks
-    expect(paneDragCloses(1000, 219)).toBe(false);
-    expect(paneDragCloses(1000, 500)).toBe(false);
+    expect(paneDragCloses(1000, SHUT)).toBe(false); // the band's own edge sticks
+    expect(paneDragCloses(1000, SIDE_PANE_MIN_WIDTH - 1)).toBe(false);
+    expect(paneDragCloses(1000, 900)).toBe(false);
+  });
+
+  test("the band is the app's own, not a number of this pane's", () => {
+    // `closeOverdrag` is what the sidebars pull through too; the pane read a
+    // hand-rolled `PANE_MIN_W / 2` until 2026-09-14, which was the same
+    // arithmetic in a file that did not notice when the floor moved.
+    expect(SHUT).toBe(SIDE_PANE_MIN_WIDTH - Math.floor(SIDE_PANE_MIN_WIDTH / 2));
   });
 
   test("a container too narrow to express a split never closes by drag", () => {

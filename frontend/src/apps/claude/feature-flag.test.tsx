@@ -14,6 +14,7 @@ const {
   resetNativeChatFlagForTests,
   queueEnabled,
   publishProjectQueueEnabled,
+  setPrefsDeadlineForTests,
 } = await import("./feature-flag");
 
 let calls = 0;
@@ -154,4 +155,74 @@ test("the test reset forgets it too, so a suite starts from 'off'", async () => 
   expect(queueEnabled()).toBe(true);
   resetNativeChatFlagForTests();
   expect(queueEnabled()).toBe(false);
+});
+
+// ── the backstop is a BUDGET, not a per-attempt stopwatch (bugbot, 2026-09-15) ──
+//
+// It used to wrap each ATTEMPT: a wedged server spent 8 s, was told it had
+// failed, and was asked again for another 8 s — sixteen seconds of placeholder
+// over every chat embed on the page, twice what this constant names. And the
+// first attempt was ABANDONED at the deadline, so a GET that landed a moment
+// later — a slow cold start — was thrown away in favour of a fresh request.
+//
+// The budget is shortened here for the obvious reason: eight seconds of real
+// time per case is not a test anyone runs.
+
+/** Like `probe`, but waits `ms` of real time for the deadline to fire. */
+async function probeFor(ms: number) {
+  const seen: Array<boolean | null> = [];
+  function Probe() {
+    seen.push(useNativeChatFlag());
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, ms));
+  });
+  return seen;
+}
+
+test("A HUNG READ COSTS ONE BUDGET AND IS NOT ASKED AGAIN INSIDE IT", async () => {
+  setPrefsDeadlineForTests(30);
+  // The request the server accepts and never answers — the case the backstop
+  // exists for, and the one that used to buy a second eight-second window.
+  answer = () => new Promise<unknown>(() => {});
+  // Looked at after ONE budget and a half — where the old code was still `null`
+  // with its second attempt in flight, and would not settle until 60 ms.
+  const seen = await probeFor(45);
+  expect(seen[0]).toBe(null); // in flight: the mount holds a cover
+  expect(seen[seen.length - 1]).toBe(false); // …and legacy once the budget is out
+  expect(nativeChatEnabledNow()).toBe(false);
+  // ONE request. The retry is for a REJECTION, which is fast; a timeout must not
+  // buy a second attempt, because that is what doubled the cover.
+  expect(calls).toBe(1);
+});
+
+test("a read that is merely SLOW is not abandoned in favour of asking again", async () => {
+  setPrefsDeadlineForTests(60);
+  answer = () =>
+    new Promise((done) => setTimeout(() => done({ chat: { native: true } }), 25));
+  const seen = await probeFor(120);
+  // The answer arrived inside the budget and is the answer.
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("the retry still exists — for a REJECTION, and it spends the same budget", async () => {
+  setPrefsDeadlineForTests(200);
+  let first = true;
+  answer = async () => {
+    if (first) {
+      first = false;
+      throw new Error("dropped");
+    }
+    return { chat: { native: true } };
+  };
+  const seen = await probeFor(60);
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(calls).toBe(2);
 });

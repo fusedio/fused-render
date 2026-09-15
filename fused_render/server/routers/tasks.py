@@ -134,6 +134,7 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
+from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()
 
@@ -214,6 +215,12 @@ _LISTING_MESSAGES = 3
 # thread endpoint does not truncate.
 _BODY_MAX = 2000
 
+# How much of the NEWEST message a listing row carries as its `last_message` —
+# one line of it, and this many characters of that line. A card's title row is
+# one clamped line wide, so anything past it is bytes on every poll for text no
+# surface can show.
+_LAST_MESSAGE_MAX = 200
+
 # Scheduled states whose body was actually handed to a session, and therefore
 # appears in the transcript as a prompt. Everything else (pending, missed,
 # cancelled, error) never reached one, so it is a message the thread has to
@@ -268,7 +275,11 @@ def _prompt(obj) -> dict | None:
     they are different questions: is the record machinery WHOLE, and if not, what
     is left once the prefixes come off.
     """
-    if obj.get("type") != "user" or obj.get("isMeta"):
+    # `isSidechain` is a subagent's brief, which the user never typed — skipped
+    # by every other reader of a transcript's prompts (tasks_store.head,
+    # claude_sessions, agent.py) and, until 2026-09-15, not by this one.
+    if (obj.get("type") != "user" or obj.get("isMeta")
+            or obj.get("isSidechain")):
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -333,6 +344,11 @@ _LIMIT_HINTS = ("usage limit", "session limit")
 _ASSISTANT_HINTS = ('"type":"assistant"', '"type": "assistant"')
 _TEXT_HINTS = ('"type":"text"', '"type": "text"')
 _USER_HINTS = ('"type":"user"', '"type": "user"')
+# A subagent's rows — its brief AND its replies — ride the same transcript
+# with `isSidechain: true`. `_prompt` refuses the brief; this screen refuses
+# the reply, so a subagent's prose is never the row's `last_message` and its
+# API error is never pinned on the user's own prompt.
+_SIDECHAIN_HINTS = ('"isSidechain":true', '"isSidechain": true')
 
 
 def _reply_fate(line: str) -> bool | None:
@@ -359,6 +375,8 @@ def _reply_fate(line: str) -> bool | None:
     """
     if any(hint in line for hint in _USER_HINTS):
         return None
+    if any(hint in line for hint in _SIDECHAIN_HINTS):
+        return None  # a subagent's reply: not this conversation's turn
     if any(hint in line for hint in _API_ERROR_HINTS):
         return True  # checked first: an error row is a text row as well
     if (any(hint in line for hint in _ASSISTANT_HINTS)
@@ -402,6 +420,21 @@ def _absorb(rec: dict, line: str) -> None:
     fate = _reply_fate(line)
     if fate is not None:
         _mark_fate(rec["tail"], fate, line)
+        # ...and an ORDINARY reply is also the newest thing Claude has said, so
+        # the line is KEPT — as the raw string, still unparsed. That is the
+        # whole of how `last_message` stays on the cheap side of the screen
+        # above: the candidate is overwritten by every later reply and only the
+        # survivor is ever handed to `json.loads` (`_condense_reply`), so a
+        # transcript of a thousand assistant turns costs one parse, not a
+        # thousand. An API-error row (`fate is True`) is not kept: its text is
+        # the failure report, which the row already says in `blocked_reason`.
+        #
+        # The raw line lives no longer than the scan that read it — `_scan`
+        # condenses it to the one-line row before returning, and nothing that
+        # wide is ever parked in `_SCAN` between polls. See `_condense_reply`.
+        if fate is False:
+            rec["reply_line"] = line
+            rec["reply_last"] = True
         return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
@@ -426,6 +459,15 @@ def _absorb(rec: dict, line: str) -> None:
             rec["command"] = _command(obj)
         return
     prompt["body"] = prompt["body"][:_BODY_MAX]
+    # A prompt read AFTER the kept reply is the later turn, whatever the two
+    # timestamps say — the file is append-only. So the reply is DROPPED, not
+    # merely outranked: it answered an older prompt and can never again be the
+    # newest thing said. Deciding that by timestamp instead let a reply with a
+    # real `at` beat a prompt whose timestamp did not parse (read as 0.0), and
+    # a row wore a days-old reply as its title (Akshil, 2026-09-15).
+    rec["reply"] = None
+    rec["reply_line"] = ""
+    rec["reply_last"] = False
     rec["count"] += 1
     rec["tail"].append(prompt)
     if len(rec["tail"]) > _LISTING_MESSAGES:
@@ -436,8 +478,12 @@ def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
     # dev server — degrades to "no command" instead of raising.
+    # `reply_line`/`reply`/`reply_last` are read with `.get` for the same
+    # reason — a record built before they existed degrades to "nothing said
+    # yet" (and, for `reply_last`, to the stricter timestamp rule) rather than
+    # raising under the dev server's hot reload.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": ""}
+            "command": "", "reply_line": "", "reply": None, "reply_last": False}
 
 
 def _scan(path: str) -> dict | None:
@@ -475,9 +521,131 @@ def _scan(path: str) -> dict | None:
         for line in text.split("\n"):
             if line.strip():
                 _absorb(rec, line)
+        _condense_reply(rec)
     rec["size"] = size
     _SCAN[path] = rec
     return rec
+
+
+def _one_line(text: str) -> str:
+    """A message as a ROW can show it: its first non-empty line, capped.
+
+    The shell clamps the line it draws to one line anyway; doing it here is what
+    keeps the clamp from being paid for in bytes on every poll, and it is the
+    same rule the title takes (`_title` → first line, 200 characters)."""
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:_LAST_MESSAGE_MAX]
+    return ""
+
+
+def _reply_said(line: str) -> dict | None:
+    """One kept assistant line as `{role, text, at}`, or None when there is
+    nothing a row could show for it.
+
+    The ONLY `json.loads` this feature adds, and it runs at most once per scan
+    (see `_condense_reply`). A row with no text block — a turn that was pure
+    tool_use — is None: the substring screen lets one through whenever the LINE
+    holds a text hint anywhere, and "Claude ran a tool" is not something Claude
+    said.
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None  # truncated line: the next scan re-reads it whole
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return None
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return None
+    text = _one_line(tasks_store.first_text(message.get("content")))
+    if not text:
+        return None
+    return {"role": "assistant", "text": text,
+            "at": tasks_store.epoch(obj.get("timestamp")) or 0.0}
+
+
+def _condense_reply(rec: dict) -> None:
+    """Boil the kept assistant line down to the one-line `{role, text, at}` the
+    row is emitted as, and drop the raw bytes. Called once per scan that read
+    new bytes, from `_scan`.
+
+    ONE `json.loads` PER SCAN, not one per assistant turn — the promise
+    `_absorb` makes — and now also one per scan rather than one per emitted
+    row, which is what keeps `_SCAN` small: the raw line is a whole transcript
+    record wide (a turn with a big tool payload is kilobytes), and parked on
+    the record it stayed that wide for the life of the process for every
+    transcript whose `last_message` nobody ever asked for — a listing narrowed
+    past the task, or the `task_card_last_message` pref simply off. Condensed
+    here it is a few hundred bytes per transcript, bounded by
+    `_LAST_MESSAGE_MAX`, whoever reads it. Parsing back in `_absorb` would
+    bound it too and cost a parse per assistant turn instead of per scan, which
+    is the cost this screen exists to avoid.
+
+    A line that would not parse leaves the previous answer standing rather than
+    blanking the row: the scan's offset only ever advances to a newline, so the
+    line comes back whole on the next call.
+
+    So does a turn that said NOTHING — a pure tool_use row that passed the
+    substring screen — and deliberately: "Claude ran a tool" does not un-say
+    the words before it, so the newest thing said is still the reply it stands
+    on, and blanking that would hand the row back to a prompt Claude has
+    already answered. What keeps THAT honest is `reply_last`: a line with no
+    words in it is not the newest thing said, so the standing reply stops
+    winning ties it can no longer claim (`_last_message`), and a prompt read
+    after it wins outright. (One reply per scan is all the candidate slot
+    holds, so a wordless turn that arrives in the SAME scan as the reply before
+    it does take that reply's place — the row falls back to the prompt for a
+    poll. That is the screen's standing trade: one parse, the survivor's.)
+    """
+    line = rec.get("reply_line") or ""
+    if not line:
+        return
+    rec["reply_line"] = ""
+    said = _reply_said(line)
+    if said is not None:
+        rec["reply"] = said
+    else:
+        rec["reply_last"] = False
+
+
+def _last_message(rec: dict | None) -> dict | None:
+    """THE NEWEST THING SAID IN THIS CONVERSATION — `{role, text, at}` — or
+    None for a task nobody has said anything in yet.
+
+    Both halves come from the incremental scan and neither is a second read:
+    the newest prompt is the last of the three the row already carries, and the
+    reply is the line `_absorb` kept. Whichever is newer wins, which is the
+    whole claim the field makes — a card titled by it is showing the last turn
+    of the conversation, whoever took it.
+
+    A prompt read AFTER the reply DROPS it in `_absorb` — the file is
+    append-only, so the later line is the later turn and no clock is asked —
+    which is why the comparison below never sees that case. What it still
+    settles is the other way a kept reply stops being newest: a later turn
+    with NO words in it (`_condense_reply` clears `reply_last`, keeps `reply`).
+    `>=` while `reply_last` holds, so a reply with no usable timestamp (0.0,
+    beside a prompt with the same) still beats the prompt it answers; `>` once
+    it is gone, so the tie goes to the prompt. A record from before the key
+    existed reads as False and takes the stricter test, which loses nothing a
+    timestamp can settle.
+    """
+    if rec is None:
+        return None
+    said = None
+    tail = rec.get("tail") or []
+    if tail:
+        text = _one_line(tail[-1].get("body"))
+        if text:
+            said = {"role": "user", "text": text, "at": tail[-1].get("at") or 0.0}
+    reply = rec.get("reply")
+    if reply is not None and (
+            said is None
+            or (reply["at"] >= said["at"] if rec.get("reply_last")
+                else reply["at"] > said["at"])):
+        said = reply
+    return said
 
 
 def _full_prompts(path: str) -> list[dict]:
@@ -2235,28 +2403,67 @@ def _task_number(task_key: str, tasks: dict[str, dict]) -> str:
 # ------------------------------------------------------------------ liveness
 
 
-def _live(path: str | None, now: float) -> tuple[bool, float]:
-    """(is this session running, when was it last active).
+def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
+    """(is this session running, when was it last active, did the SENDER say a
+    turn had just started here).
 
     The same 45-second rule as the sessions inbox, and the same tail read — a
     transcript's mtime alone lies, because Claude Code appends housekeeping
     records after the turn is over. Skipped entirely for a file nothing has
     touched in 90 seconds: it is stale either way, so the read would only be
-    deciding what kind of stale."""
+    deciding what kind of stale.
+
+    The third value is EVIDENCE vs TESTIMONY. The first two are inferred from
+    files — timestamps a later rule is entitled to re-read and discount
+    (`_verdict_outvotes_live`). The mark is the page that made the send saying
+    it made it, which no reading of the transcript can outvote, and a caller
+    that discounts it has thrown away the one fact this whole path exists to
+    carry.
+
+    It is the state of the mark, NOT which branch below won (Bugbot, PR #1163).
+    Reporting it only where the mark decided the answer meant it went false the
+    instant the registry caught up and said `busy` — so a row could show the
+    send, drop back to done two seconds later when the echo rule got its vote
+    back, and only return when the prompt reached the transcript. Same lag,
+    with a flicker in front of it. The send either happened in the last fifteen
+    seconds or it did not, and no other fact makes it un-happen.
+
+    True implies running: `is_marked_running` is the one thing consulted for
+    it, and every way a mark is stood down — its own TTL, a registry that went
+    `busy` then wasn't, or the sender itself saying the turn ended
+    (`mark_idle`, `POST /api/tasks/idle`) — lives there, not here. That last
+    one is what keeps a FAST turn from wearing the ring for the rest of the
+    mark's fifteen seconds: the reply landing is news the same page can say
+    the instant it knows it, same as the send was."""
     if not path:
-        return False, 0.0
+        return False, 0.0, False
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return False, 0.0
+        return False, 0.0, False
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    marked = tasks_watch.is_marked_running(session_id)
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
     # the tail's timestamps add up to, and `idle` is not, even if housekeeping
     # touched the file a second ago. Its last-active stamp is used only when it
     # is newer than the transcript's — a registry row is rewritten on status
     # changes, not on every message, so the file can know the later moment.
-    from_registry = tasks_watch.live_from_registry(
-        os.path.splitext(os.path.basename(path))[0], mtime)
+    from_registry = tasks_watch.live_from_registry(session_id, mtime)
+    # …EXCEPT IN THE FIRST SECONDS OF A TURN THIS APP SENT (tasks_watch
+    # `mark_running`). A chat here runs `claude -p`, whose registry row lands two
+    # to four seconds after the process starts — so both "no row at all" and "the
+    # previous turn's idle row" read as done, and every turn sent from this app
+    # wore a done ring for its first seconds; a short turn for the whole of it
+    # (Akshil, 2026-09-15).
+    #
+    # While the send's mark is alive, ONLY `busy` outranks it: a registry saying
+    # the turn is running is the same answer from a better source, and every
+    # other answer is a file that has not caught up. `now` is the honest
+    # last-active — the turn is happening as this is read — and the mark expires
+    # on its own, so a run that died on the spot settles without a write.
+    if marked and not (from_registry and from_registry[0]):
+        return True, now, True
     if from_registry is not None:
         running, active = from_registry
         if now - mtime <= sessions._STALE_TAIL_SEC:
@@ -2264,12 +2471,12 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
             file_active = last.timestamp() if last is not None else mtime
         else:
             file_active = mtime
-        return running, max(active, file_active)
+        return running, max(active, file_active), marked
     if now - mtime > sessions._STALE_TAIL_SEC:
-        return False, mtime
+        return False, mtime, marked
     activity, last = sessions._tail(path, mtime)
     running = (now - activity) < sessions._RUNNING_WINDOW_SEC
-    return running, (last.timestamp() if last is not None else mtime)
+    return running, (last.timestamp() if last is not None else mtime), marked
 
 
 # --------------------------------------------------------------- the endpoints
@@ -2378,7 +2585,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          queue: dict | None = None, queue_on: bool | None = None,
          reserved: set[str] | None = None,
          chat_drafts: dict | None = None,
-         bound_chips: dict | None = None) -> dict:
+         bound_chips: dict | None = None,
+         last_message: bool = False) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -2432,13 +2640,21 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     draft WINS, because that one is literally sitting in this conversation's
     composer while the form is a message about to be scheduled into it.
 
+    `last_message` is `shell_prefs.task_card_last_message()`, read once per
+    request by the caller for the same reason the joins above are: it is one
+    file, and asking it per row would open it once per task on the machine.
+    False — the default, and what the three single-row callers take, none of
+    which reads the field — leaves the key OFF the row entirely rather than
+    sending a null: the only surface for it is the Cards wall's experimental
+    title, and the client already reads an absent key as "nothing said".
+
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
     the write. Collected rather than written here because building a row is
     inside a per-task `try` that swallows IO errors — a failed write would cost
     the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
-    live, active = _live(task["path"], now)
+    live, active, marked = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
     # The transcript's prompts already include every scheduled message that
     # fired, so only the ones that never reached a session are added — and with
@@ -2465,7 +2681,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `active` rides along because it is the tie-breaker the bug demanded:
     # a transcript still being written to meaningfully after the verdict is a
     # session that kept working, and only the verdict's own echo is set aside.
-    if live and _verdict_outvotes_live(merged, active):
+    #
+    # …AND A SEND IS NOT AN ECHO (`marked`, Bugbot PR #1163). This rule discounts
+    # TIMESTAMPS: it exists because a finished run's closing records look like a
+    # pulse, and the only thing it is entitled to set aside is the transcript's
+    # own vote. The mark is not that vote — it is the page that sent the message
+    # saying it sent it, a fact no reading of the file can outrank. Both windows
+    # are 15 seconds, so without this a follow-up typed into a task whose
+    # scheduled run had just reported would have been suppressed for the mark's
+    # entire life, and the row would have sat on `done` until the registry row
+    # landed — which is the exact lag the mark exists to close.
+    #
+    # `marked` is the mark's STATE, not the branch `_live` took, so this holds
+    # across the registry catching up mid-send as well — see its docstring.
+    if live and not marked and _verdict_outvotes_live(merged, active):
         live = False
     # …and a turn the usage limit ended is over too, however fresh the failure
     # row it ended on. See `_limit_outvotes_live`: without this the row read In
@@ -2574,7 +2803,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # has nothing a draft could be bound TO, and "" must not match.
     bound = ((bound_chips or {}).get(task["session_id"]) or {}
              if task["session_id"] else {})
-    return {
+    row = {
         "key": task["key"],
         "task_id": number,
         # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
@@ -2765,6 +2994,18 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
+    if last_message:
+        # THE LAST TURN OF THE CONVERSATION, whoever took it — one line of it,
+        # with `role` saying which — or None for a task nothing has been said
+        # in. `messages` above carries PROMPTS only, so this is the one field on
+        # the row that can carry a reply, and it is what the Cards wall titles a
+        # card by while `task_card_last_message` is on (shell/prefs.py). Off,
+        # the key is absent — which the client reads as "nothing said" — and
+        # every row on the machine stops carrying a field no surface draws.
+        # It costs no read either way: the reply was condensed by the scan that
+        # was already reading the bytes (`_condense_reply`).
+        row["last_message"] = _last_message(rec)
+    return row
 
 
 def _leader_origin(task: dict, entry_id: str) -> str:
@@ -3611,6 +3852,11 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # session alone — which builds no draft rows at all — still answers a row
     # that knows about its draft (`_bound_chips`).
     bound_chips = _bound_chips(task_drafts)
+    # ONE prefs read for the whole build, like every other join above: whether
+    # a row carries `last_message` at all (shell/prefs.py, experimental and
+    # default off). Per row it would be one file open per task on the machine,
+    # per poll.
+    last_message = shell_prefs.task_card_last_message()
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
@@ -3628,7 +3874,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on, reserved,
-                       chat_drafts, bound_chips)
+                       chat_drafts, bound_chips, last_message)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -3829,9 +4075,87 @@ def api_tasks_pulse():
     }
 
 
+class RunningPatch(BaseModel):
+    session_id: str
+    # The client's `Date.now()` at send (`run-controller.ts` `noteTurnRunning`).
+    # Optional so an older client, or a direct call, still works — see
+    # `tasks_watch.mark_running`'s stale-turn check, which only runs when this
+    # is present.
+    turn: float | None = None
+
+
+@router.post("/api/tasks/running")
+def api_task_running(patch: RunningPatch):
+    """A turn just started on this session — said by the page that sent it.
+
+    THE ONE FACT NO FILE CARRIES IN TIME. A chat sent from this app runs
+    `claude -p` through `/api/run`, which means the turn begins in another
+    process entirely: this server has no route it could hang the news on, and
+    the CLI's own registry row lands two to four seconds later. So the sender
+    says it, once, at the moment it sends — `run-controller.ts`, beside the
+    `announceTasksChanged` it already fires on both turn boundaries.
+
+    A FLOOR WITH A FUSE, not a status (tasks_watch.mark_running): it expires by
+    itself, and a registry that says `busy` replaces it the moment it appears.
+    Nothing here can pin a row open — the worst a wrong or malicious call can do
+    is spin one ring for fifteen seconds.
+
+    A session id with no task row yet is not an error: a brand-new chat's
+    transcript may not exist when its first turn starts, and the mark is simply
+    waiting for it. Hence no 404 and no lookup — this endpoint does not read the
+    listing at all.
+
+    `turn` lets `tasks_watch.mark_running` recognize a running POST that lost
+    the race to its own turn's `/api/tasks/idle` call (two independent
+    fetches; nothing here orders their arrival) and drop it, rather than
+    reopening a row a later idle call already closed (bugbot #1163).
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_running(session_id, turn=patch.turn)
+    return {"ok": True, "session_id": session_id}
+
+
+class IdlePatch(BaseModel):
+    session_id: str
+    # The other half of `RunningPatch.turn` — see `tasks_watch.mark_idle`.
+    turn: float | None = None
+
+
+@router.post("/api/tasks/idle")
+def api_task_idle(patch: IdlePatch):
+    """A turn just ENDED on this session — said by the page that sent it.
+
+    The other half of `/api/tasks/running`, and for the same reason: the CLI
+    running out of process means this server learns a turn is OVER from a
+    registry row disappearing (up to a tick late) or from the mark's own
+    fifteen-second fuse — both far slower than the page that watched the reply
+    arrive. `run-controller.ts` calls this at every turn boundary the poll
+    loop's own `finally` sees (a final result, a stop, an error), the same
+    place `noteChatActivity` already fires from.
+
+    Retires the send's mark at once (`tasks_watch.mark_idle`) — a FAST turn no
+    longer has to sit in a running ring for whatever was left of the mark's
+    window. Best-effort like its counterpart: a call that never arrives (a
+    closed tab) leaves the registry-corroborated stand-down and the TTL as the
+    fallback, so nothing here can pin a row running or wrongly mark one done —
+    the worst a wrong or malicious call does is retire a mark early, and the
+    registry/tail reading underneath is what a listing shows once it is gone.
+
+    `turn` is kept as the floor a later, out-of-order `mark_running` for this
+    same turn is measured against (`tasks_watch.mark_running`).
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_idle(session_id, turn=patch.turn)
+    return {"ok": True, "session_id": session_id}
+
+
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
-    live, _active = _live(task["path"], now)
+    live, _active, _marked = _live(task["path"], now)
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)

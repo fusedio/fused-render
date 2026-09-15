@@ -28,7 +28,6 @@ const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
 const CHAT_CSS = readFileSync(join(SHELL, "../apps/claude/styles/sched.css"), "utf8");
 /** The Recent-chats row's stylesheet — same reason as CHAT_CSS: the waiting mark
  *  is one decision and every surface that draws it is held still here. */
-const HOME_CSS = readFileSync(join(SHELL, "../apps/claude/styles/home.css"), "utf8");
 
 const CARD = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
 const ROW = VIEWS.slice(VIEWS.indexOf("function TaskNode("), VIEWS.indexOf("function TaskCard("));
@@ -156,9 +155,10 @@ describe("the Board's waiting cards", () => {
     expect(BOARD).toContain('if (action.kind === "skip") {');
     expect(BOARD).toContain("onQueued?.(await performSkip(task));");
     // …and the warning under the cursor says so, in the verb's own words rather
-    // than borrowing "Run now".
-    expect(BOARD).toContain("RUN_NEXT_HINT");
-    expect(BOARD).toContain('skip: kind === "skip"');
+    // than borrowing "Run now": `skip` is a drop kind of its own in the one
+    // wording table every run-shaped drop reads (`RUN_DROP_WORDS`).
+    expect(VIEWS).toMatch(/skip: \{\s*title: RUN_NEXT_HINT,\s*hint: RUN_NEXT_HINT,\s*\}/);
+    expect(BOARD).toContain('RUN_DROP_WORDS[runDrop?.kind ?? "run"]');
     // The one wording, from the one place — never a literal in a view. (The
     // file's other "Skip" is the repeat-occurrence verb on a message row, which
     // is a different feature and keeps its own word.)
@@ -305,9 +305,8 @@ describe("the queue's ink", () => {
     expect(css(CHAT_CSS)).toMatch(
       /\.c-waitcard \.wc-ring \{[^}]*border: 2px dashed currentColor;/,
     );
-    expect(css(HOME_CSS)).toMatch(
-      /\.c-chat-row\.is-waiting \.c-dot::after \{[^}]*border: 2px dashed var\(--status-queued\);/,
-    );
+    // The Recent-chats row is the Tasks list's own row since PR #1145, so its
+    // ring IS `.schedule-ring--queued` above — there is no second dot to assert.
   });
 
   it("gives the caption no width and no breakpoint — it measures, it does not guess", () => {
@@ -409,18 +408,25 @@ describe("the page holds the optimistic claims, not the view", () => {
   });
 
   it("retires a claim on the server's own answer, full listing or delta", () => {
-    expect(PAGE).toContain("expireQueueOverrides(cur, (r.tasks ?? []).map((t) => t.key))");
-    expect(PAGE).toContain("const spoken = [...rows.map((t) => t.key), ...gone];");
-    expect(PAGE).toContain("expireQueueOverrides(before, spoken)");
+    // Both arrive through the ONE listing feed (`tasksPulse.subscribeListing`,
+    // 2026-09-15): a delta speaks about the rows and `gone` keys it carries, a
+    // whole listing about every key it holds — and a failed read about nothing.
+    expect(PAGE).toContain("const spoken = ev.delta");
+    expect(PAGE).toContain("? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]");
+    expect(PAGE).toContain(": ev.rows.map((t) => t.key);");
+    expect(PAGE).toContain("setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));");
+    expect(PAGE).toContain("if (ev.failed) return;");
   });
 
   it("paints BEFORE the scope and the filters, so a moved row is filtered as moved", () => {
     expect(PAGE.indexOf("applyQueueOverrides")).toBeLessThan(PAGE.indexOf("const inScope"));
     expect(PAGE).toContain("scope ? painted.filter(");
     // The SIDEBAR gets the unpainted rows: a claim is this page's optimism about
-    // a press made on this page, and the rail is not the place to carry it.
-    expect(PAGE).toContain("publishTasks(r.tasks ?? []);");
-    expect(PAGE).not.toContain("publishTasks(painted");
+    // a press made on this page, and the rail is not the place to carry it. The
+    // rows reach the rail from the shared feed (`tasksPulse.publishTasks`, inside
+    // `subscribeListing`), so this page publishes nothing of its own — painted
+    // or otherwise.
+    expect(PAGE).not.toContain("publishTasks(");
   });
 });
 

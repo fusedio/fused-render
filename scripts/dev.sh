@@ -552,6 +552,16 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # production dies-with-server behavior).
 export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
 
+# Mark the server as a DEV RUN: /api/config echoes it as `dev: true` and the
+# shell's status banner then stops asking the developer to refresh for an
+# update. Here the served `version` is the checkout's while the bundle in the
+# tab was rebuilt by the vite watch moments ago, so every version bump or
+# branch switch raised a blocking modal over the newest code there is. Set for
+# BOTH launch paths below — the export is inherited by the watchfiles
+# supervisor and by the plain single launch. Respect an already-set value
+# (including "0", to see the production banner from a dev checkout).
+export FUSED_RENDER_DEV="${FUSED_RENDER_DEV:-1}"
+
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
 # a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
 # worktree is self-contained. Without this the fallback was bare `python3` on

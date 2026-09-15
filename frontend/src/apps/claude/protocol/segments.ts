@@ -21,7 +21,7 @@
 //     the payload before handing a span to `pollBody`. Nothing here guesses a
 //     boundary; the old frozen `segBase`/`textBase` pair did, and got it wrong
 //     by however much of the first reply streamed after the send (feedback #9).
-import type { Segment } from "./types";
+import type { Segment, ToolSegment, ToolStatus } from "./types";
 
 /** T:15637 — a segment's text, or "" for one that has none. */
 export function segText(seg: Segment | undefined | null): string {
@@ -46,6 +46,357 @@ export function viewKind(seg: Segment | undefined | null): SegmentKind {
 export function cardKey(seq: number, seg: Segment | undefined | null, i: number): string {
   const s = seg as { kind?: string; id?: string } | undefined | null;
   return s && s.kind === "tool" && s.id ? "tool:" + s.id : seq + ":" + i;
+}
+
+/* ── collapsible runs (design.md §A) ────────────────────────────────────────
+ *
+ * A turn that makes fifteen edits is fifteen chips, and fifteen chips are a
+ * wall the prose either side of them disappears into. v1 folded them under an
+ * `N tool calls` header; that traded fifteen rows for one row, and one row is
+ * still a row the reader did not ask for. v2 takes the row away entirely: the
+ * stretch collapses behind a `show more` trigger that sits on the RIGHT EDGE of
+ * the sentence before it (ui/RunTrigger), so a settled turn is prose and
+ * nothing else until the reader asks.
+ *
+ * WHAT COLLAPSES: any consecutive stretch of `tool` | `thinking` | `notice`,
+ * in ANY MIX, down to a SINGLE member — a lone settled chip gets the trigger
+ * too, because the goal is zero machinery rows inline and one chip is one such
+ * row. There is no `RUN_MIN` any more.
+ *
+ * THREE THINGS BREAK A RUN, and each one is a thing the reader is owed:
+ *
+ *   * a `text` segment — prose between two calls means they did not happen
+ *     together (and anything a newer agent.py invents renders as text, so it
+ *     breaks a run for the same reason);
+ *   * a segment with a filed card in `cardsAfter` — the permission or plan the
+ *     reader answered under that chip. The card is glued to its chip
+ *     (Transcript's `parkPlan`, #18), so the chip stays individual and the run
+ *     ends BEFORE it; the members after it are free to start a new one;
+ *   * the end of the list.
+ *
+ * AND TWO THINGS SUPPRESS ONE (v1's bugbot fix, kept): a stretch holding a tool
+ * that is not KNOWN SETTLED — running, or wearing a status this file has no
+ * literal for — renders member by member, because while the turn is live the
+ * progress is the point; and, while the turn is still streaming, the stretch
+ * that runs to the END of the list, because that is the only stretch that can
+ * still GROW and a lid that goes on when the second call settles comes straight
+ * back off when the third lands. A stretch with any segment AFTER it is closed —
+ * the poll only ever appends — so folding that one is final. Suppressed means
+ * the members are emitted individually WITH NO TRIGGER, exactly as before.
+ *
+ * RAW INDICES THROUGHOUT. Every row carries the index it had in the list that
+ * was handed in — `cardsAfter`, `cardKey` and the streaming tail are all keyed
+ * by position in THAT list — so a hole in the array is a run breaker that is
+ * dropped from the output without moving anything around it.
+ */
+
+/** A folded stretch of collapsible segments. `start` is the ORIGINAL index of
+ *  `segs[0]`; the rest are consecutive from there (a hole breaks the stretch),
+ *  which is what lets the paint side rebuild each member's `cardKey` without
+ *  carrying an index per segment. */
+export interface CollapsibleRun {
+  kind: "run";
+  start: number;
+  segs: Segment[];
+}
+
+/** One segment, with the index it had in the raw list. A WRAPPER rather than
+ *  the bare segment: `kind` is the discriminant for the row union and a segment
+ *  has a `kind` of its own, so wrapping is what keeps the two from colliding —
+ *  and it carries the raw index instead of leaving the paint side to count it
+ *  off the rows before it, which a dropped hole made wrong. */
+export interface GroupedSeg {
+  kind: "seg";
+  index: number;
+  seg: Segment;
+}
+
+/** One row of the grouped view. */
+export type GroupedRow = GroupedSeg | CollapsibleRun;
+
+/** Narrow a grouped row. `kind` is the discriminant either way, so this is the
+ *  whole test. */
+export function isRun(row: GroupedRow | null | undefined): row is CollapsibleRun {
+  return !!row && row.kind === "run";
+}
+
+/** The kinds that collapse: everything that is not prose. `viewKind` maps a
+ *  hole and anything a newer agent.py invents to "text", so both break a run. */
+function isCollapsible(seg: Segment | null | undefined): seg is Segment {
+  return !!seg && viewKind(seg) !== "text";
+}
+
+/** The `ToolStatus` members (protocol/types.ts) that mean the call is OVER.
+ *  Spelled as the LIST OF SETTLED ONES rather than `!== "running"`: a payload
+ *  whose `status` is missing, or one carrying a state a newer agent.py invents,
+ *  is not something this file knows to be finished, and "not known finished"
+ *  must keep its members individual — folding a stretch that might still be
+ *  moving is the one mistake this grouping cannot take back on the next poll
+ *  without shifting the transcript under the reader. */
+const SETTLED: readonly ToolStatus[] = ["ok", "error"];
+
+function isSettled(seg: ToolSegment): boolean {
+  const status = (seg as { status?: unknown }).status;
+  return SETTLED.some((s) => s === status);
+}
+
+/** Is every TOOL in `[from, to)` known to be over? Thinking blocks and notices
+ *  have no status and are settled by construction. */
+function stretchSettled(list: readonly (Segment | null | undefined)[], from: number, to: number): boolean {
+  for (let k = from; k < to; k++) {
+    const seg = list[k];
+    if (seg && seg.kind === "tool" && !isSettled(seg)) return false;
+  }
+  return true;
+}
+
+/**
+ * Group consecutive collapsible segments into runs — see the note above for
+ * what breaks one and what suppresses one.
+ *
+ * `cardsAfter` is read for its KEYS only (a filed card's position), so it is
+ * typed as loosely as that use: the paint side's map holds React nodes and this
+ * file imports types only.
+ */
+export function groupCollapsibles(
+  segments: Segment[] | null | undefined,
+  cardsAfter?: Map<number, unknown> | null,
+  /** `AssistantTurn.streaming` — is this turn still being polled? Only a live
+   *  turn can gain segments, so it is the only one whose trailing stretch is
+   *  held open. Defaults to false, which is every history replay and every
+   *  turn that has ended. */
+  streaming = false,
+): GroupedRow[] {
+  const list: (Segment | null | undefined)[] = Array.isArray(segments) ? segments : [];
+  const out: GroupedRow[] = [];
+  /** One segment on its own, at its own index. A hole paints nothing. */
+  const one = (index: number) => {
+    const seg = list[index];
+    if (seg) out.push({ kind: "seg", index, seg });
+  };
+  /** `[from, to)` as one run, or nothing when the span is empty. */
+  const run = (from: number, to: number) => {
+    const segs: Segment[] = [];
+    for (let k = from; k < to; k++) {
+      const seg = list[k];
+      if (seg) segs.push(seg);
+    }
+    if (segs.length) out.push({ kind: "run", start: from, segs });
+  };
+  let i = 0;
+  while (i < list.length) {
+    if (!isCollapsible(list[i])) {
+      one(i);
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < list.length && isCollapsible(list[end])) end += 1;
+    // Judged over the WHOLE consecutive stretch, not the piece a card happens
+    // to cut off it, so one running call cannot fold the calls in front of it.
+    const growing = streaming && end === list.length;
+    if (growing || !stretchSettled(list, i, end)) {
+      for (let k = i; k < end; k += 1) one(k);
+      i = end;
+      continue;
+    }
+    // The card-bearing member is emitted on its own, between the run that ended
+    // before it and whatever starts after it.
+    let from = i;
+    for (let k = i; k < end; k += 1) {
+      if (!cardsAfter || !cardsAfter.has(k)) continue;
+      run(from, k);
+      one(k);
+      from = k + 1;
+    }
+    run(from, end);
+    i = end;
+  }
+  return out;
+}
+
+/* ── where a run's trigger sits (design.md §A, Q1 revised 2026-09-15) ───────
+ *
+ * The trigger belongs in the bottom-right corner of a PROSE block, never on a
+ * line of its own — a bare right-aligned word above the first paragraph is the
+ * machinery row §A exists to delete, wearing a smaller hat.
+ *
+ * So a run seats itself on the prose it is adjacent to:
+ *
+ *   * the prose BEFORE it, wherever there is one (the original rule);
+ *   * failing that — the turn OPENS on tool calls — the prose that FOLLOWS it,
+ *     which gets the same corner seat. Only the run before the turn's FIRST
+ *     prose looks forward: anywhere else "no prose before me" means a card or a
+ *     bare stretch broke the chain, and reaching over that is reaching over
+ *     something the reader is owed.
+ *
+ * A prose block can therefore hold TWO runs, one either side. It does NOT grow
+ * two words in one corner: they MERGE onto one trigger, which opens both — and
+ * the members of each render at their own chronological position, the leading
+ * run's above the prose and the trailing run's below it.
+ *
+ * Looking BACKWARD, a prose block is not a seat when it is the STREAMING TAIL
+ * (the corner of a paragraph still being written) or when it has a card filed
+ * after it (the card is between the prose and the run). Those runs keep the
+ * bare own-line trigger, as does a turn with no prose in it at all. Looking
+ * FORWARD the tail IS a seat — see `seat()` below.
+ */
+export interface TriggerSeats {
+  /** prose ROW index → the run ROW indices whose trigger it carries, earliest
+   *  first (a leading run before a trailing one). */
+  seats: Map<number, number[]>;
+  /** Run ROW indices with no prose to sit on: their own right-aligned line. */
+  bare: Set<number>;
+}
+
+/**
+ * Seat every run in `rows` — see the note above. Pure, and over ROW indices,
+ * so the paint side does not have to decide placement while it is also
+ * building elements (and so this is testable without a renderer).
+ */
+export function seatTriggers(
+  rows: readonly GroupedRow[],
+  opts?: {
+    /** The growing segment's index in the RAW list, or -1. */
+    tailIndex?: number;
+    /** Filed cards by raw index — read for its keys only. */
+    cardsAfter?: Map<number, unknown> | null;
+  },
+): TriggerSeats {
+  const tailAt = opts?.tailIndex ?? -1;
+  const cards = opts?.cardsAfter ?? null;
+  const seats = new Map<number, number[]>();
+  const bare = new Set<number>();
+  /** Is row `r` a prose block a trigger can be drawn in?
+   *
+   *  `forward` is the leading run reaching DOWN to the paragraph after it, and
+   *  that paragraph is allowed to be the STREAMING TAIL (PR5 review #5). The
+   *  tail is rewritten per frame, but only its PROSE slot is: the block around
+   *  it is the same keyed element with the trigger in slot 1 beside the caret
+   *  (`SegmentView.segBlock`), so seating there costs nothing — while refusing
+   *  it cost the reader a word parked on a bare line above the answer for as
+   *  long as it streamed, teleporting into the corner when the turn settled.
+   *
+   *  Looking BACKWARD it still refuses: a run behind the tail means the tail is
+   *  not the turn's last row — the shape `tailIndex` never produces — and a
+   *  word in the corner of a paragraph that is still growing would ride its
+   *  last line down the screen. */
+  const seat = (r: number, forward = false): boolean => {
+    const row = rows[r];
+    if (!row || isRun(row) || viewKind(row.seg) !== "text") return false;
+    return forward || row.index !== tailAt;
+  };
+  const sit = (at: number, run: number) => {
+    const held = seats.get(at);
+    if (held) held.push(run);
+    else seats.set(at, [run]);
+  };
+  let sawProse = false;
+  rows.forEach((row, r) => {
+    if (!isRun(row)) {
+      if (viewKind(row.seg) === "text") sawProse = true;
+      return;
+    }
+    const before = rows[r - 1];
+    if (seat(r - 1) && !cards?.has((before as GroupedSeg).index)) {
+      sit(r - 1, r);
+      return;
+    }
+    if (!sawProse && seat(r + 1, true)) {
+      sit(r + 1, r);
+      return;
+    }
+    bare.add(r);
+  });
+  return { seats, bare };
+}
+
+/* ── the lead sentence a leading run's trigger sits on (Akshil, 2026-09-15) ──
+ *
+ * A run BEFORE the turn's first prose seats its `show more` on that prose —
+ * but on its FIRST SENTENCE, not its last line. The reader's eye is on the
+ * opening sentence when they want to know what the machinery above it did;
+ * a word in the corner of a five-line paragraph is a screen away from that.
+ *
+ * So the paint side splits the first prose segment into the lead sentence,
+ * drawn as its own block carrying the trigger, and the rest. This is the pure
+ * half: WHERE to cut.
+ *
+ *   * The cut is inside the FIRST PARAGRAPH only (up to the first blank line).
+ *   * A paragraph that is a fenced block or a table is not a sentence: no
+ *     split, the whole block keeps the corner seat it had.
+ *   * A heading's line is the lead; a list's or quote's first ITEM is — up to
+ *     the next marker at column 0, so an indented continuation stays with it.
+ *   * Prose cuts at the first `.`, `!` or `?` (closing quotes/brackets kept)
+ *     that is followed by whitespace and then something that is not a
+ *     lowercase letter — `e.g. the`, `file.ts is` and `3.5 seconds` are not
+ *     sentence ends — and that is not inside backticks.
+ *   * No boundary in the paragraph → the whole paragraph is the lead.
+ *   * Nothing left after the lead → null: there is nothing to split off, and
+ *     the block is drawn once, whole, as before.
+ *
+ * While the tail streams the text is cut per frame: until the boundary's
+ * trailing whitespace arrives the whole text is the lead, so the word sits at
+ * the end of what has been typed and settles onto the first sentence the
+ * moment there is one.
+ */
+export interface LeadSplit {
+  /** The lead sentence (or line) — markdown, untrimmed of its inline marks. */
+  lead: string;
+  /** Everything after it, leading whitespace dropped. Never empty. */
+  rest: string;
+}
+
+const LEAD_NOT_PROSE = /^(```|~~~|\|)/;
+const LEAD_HEADING = /^#{1,6}\s/;
+const LEAD_ONE_LINE = /^([-*+]\s|\d+[.)]\s|>)/;
+const SENTENCE_END = /[.!?]["'\u2019\u201d)\]]*(?=\s)/g;
+
+export function leadSplit(text: string): LeadSplit | null {
+  // Leading blank lines belong to nobody: skipped, so a text that opens on
+  // `\n\n` does not hand the trigger an empty lead (Bugbot on d7458fe).
+  const start = text.length - text.trimStart().length;
+  if (start >= text.length) return null;
+  const body = text.slice(start);
+  const blank = body.search(/\r?\n[ \t]*\r?\n/);
+  const para = blank === -1 ? body : body.slice(0, blank);
+  if (LEAD_NOT_PROSE.test(para)) return null;
+  const cut = (at: number): LeadSplit | null => {
+    const lead = text.slice(0, start + at);
+    const rest = text.slice(start + at).replace(/^\s+/, "");
+    return lead.trim() && rest ? { lead, rest } : null;
+  };
+  if (LEAD_HEADING.test(para)) {
+    const nl = para.indexOf("\n");
+    return cut(nl === -1 ? para.length : nl);
+  }
+  if (LEAD_ONE_LINE.test(para)) {
+    // The first ITEM, not the first line: an indented continuation (or a
+    // quote's lazy continuation) belongs to the item above it, and parsed on
+    // its own it would come out as a paragraph (Bugbot on d7458fe). The cut is
+    // at the first line that opens a SIBLING — another marker at column 0.
+    let at = para.indexOf("\n");
+    while (at !== -1) {
+      if (LEAD_ONE_LINE.test(para.slice(at + 1))) return cut(at);
+      at = para.indexOf("\n", at + 1);
+    }
+    return cut(para.length);
+  }
+  SENTENCE_END.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SENTENCE_END.exec(para))) {
+    const end = m.index + m[0].length;
+    // Inside inline code: an odd number of backticks before the mark.
+    const ticks = (para.slice(0, m.index).match(/`/g) ?? []).length;
+    if (ticks % 2 === 1) continue;
+    // What follows the whitespace decides: a lowercase letter means the mark
+    // was an abbreviation or a dotted name, not a full stop.
+    const next = para.slice(end).match(/^\s+(\S)/);
+    if (!next) continue;
+    if (/[a-z]/.test(next[1]!)) continue;
+    return cut(end);
+  }
+  return cut(para.length);
 }
 
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last

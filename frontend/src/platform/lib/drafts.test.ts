@@ -30,8 +30,10 @@ import {
   chatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
+  markChatDraftSpent,
   moveChatDraft,
   newChatFile,
+  onChatDraftSpent,
   saveChatDraft,
   saveTaskDraft,
   useAutosave,
@@ -40,6 +42,7 @@ import {
   type ChatDraft,
   type DraftWriteOptions,
   type TaskDraftForm,
+  unmarkChatDraftSpent,
 } from "@platform/lib/drafts";
 
 // `useAutosave`'s unload effect reaches for `window`/`document` — real
@@ -640,5 +643,199 @@ describe("moveChatDraft", () => {
     expect(await moveChatDraft("sess-a", "sess-a")).toBe(false);
     expect(writes(f.calls)).toEqual([]);
     f.restore();
+  });
+});
+
+// ---- a seed never overtakes the write it should be reading --------------------
+// Pressing a never-sent chat's row in Recent flips `inChat`, which throws the
+// LANDING composer away and mounts the CHAT one on the same `new:<file>` key.
+// The landing's unmount flush dispatches its PUT first, then the new mount's
+// seed GETs that key — and a GET answered out of a pre-write snapshot hands the
+// new box the previous draft, which its own autosave then writes back over the
+// newer one (Bugbot, PR #1145).
+describe("fetchChatDraft waits for a write still on the wire", () => {
+  test("the seed reads the flushed words, not the ones they replaced", async () => {
+    const key = "new:/Users/me/draft-press";
+    let stored = "the words as they were one draft ago";
+    const releasePut: (() => void)[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        // The unmount flush: held open, exactly as a PUT still in the air is.
+        const body = JSON.parse(String(init.body)) as { text: string };
+        return new Promise<Response>((resolve) => {
+          releasePut.push(() => {
+            stored = body.text;
+            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ chat: { [key]: { text: stored, attachments: [], updated_at: 1 } }, task: {} }),
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+
+    // The landing composer's unmount flush goes out…
+    const writing = saveChatDraft(key, "the newest sentence");
+    // …and the chat composer mounts and seeds on the same key while it is in
+    // the air. Without the wait this GET is answered first, out of the old
+    // snapshot.
+    const seeding = fetchChatDraft(key);
+    await Promise.resolve();
+    for (const answer of releasePut.splice(0)) answer();
+    await writing;
+
+    expect((await seeding)?.text).toBe("the newest sentence");
+    globalThis.fetch = real;
+  });
+
+  test("TWO writes in the air, and the read waits for BOTH", async () => {
+    // The debounce fires, the reader types one more word, and the press unmounts
+    // the box before that PUT is answered — so two writes are on the wire at
+    // once. A read that waited only for the NEWEST could be dispatched while the
+    // older one was still unlanded (Bugbot, PR #1145, second pass).
+    //
+    // Asserted as the CONTRACT rather than as a returned string: what matters is
+    // that the GET is not dispatched until every write that was already in the
+    // air has settled, and a test that only compares the answer passes or fails
+    // on microtask ordering instead.
+    const key = "new:/Users/me/two-writes";
+    const landed: string[] = [];
+    /** `landed`, as it stood the moment the GET went out. Held in an object so
+     *  the assignment below (inside a callback) is not narrowed away. */
+    const seen: { atGet: string[] | null } = { atGet: null };
+    const gate: Record<string, () => void> = {};
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { text: string };
+        return new Promise<Response>((resolve) => {
+          gate[body.text] = () => {
+            landed.push(body.text);
+            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+          };
+        });
+      }
+      seen.atGet = [...landed];
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: { [key]: { text: landed[landed.length - 1] ?? "", attachments: [], updated_at: 1 } },
+            task: {},
+          }),
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+
+    const first = saveChatDraft(key, "the debounced words");
+    const second = saveChatDraft(key, "the flushed words");
+    const seeding = fetchChatDraft(key);
+    await Promise.resolve();
+    // The NEWER write answers FIRST; the older one is still out there.
+    gate["the flushed words"]?.();
+    await second;
+    await Promise.resolve();
+    await Promise.resolve();
+    // The read must not have gone out yet — one write is still unlanded.
+    expect(seen.atGet).toBeNull();
+    gate["the debounced words"]?.();
+    await first;
+    await seeding;
+
+    // Both had landed before the GET was dispatched.
+    expect(seen.atGet).toEqual(["the flushed words", "the debounced words"]);
+    globalThis.fetch = real;
+  });
+
+  test("a settled write leaves nothing behind for the next read to wait on", async () => {
+    const key = "new:/Users/me/draft-settled";
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            init?.method === "PUT"
+              ? {}
+              : { chat: { [key]: { text: "done", attachments: [], updated_at: 1 } }, task: {} },
+          ),
+      } as unknown as Response)) as unknown as typeof fetch;
+    await saveChatDraft(key, "done");
+    expect((await fetchChatDraft(key))?.text).toBe("done");
+    globalThis.fetch = real;
+  });
+});
+
+// ---- a spend can be heard, and taken back ------------------------------------
+// The Board can send a conversation's draft from a drag (shell/draft-run
+// `chatBody`) while a composer sits open on the same key. Two facts follow
+// (Bugbot, PR #1140): the composer must HEAR the spend and empty itself, and a
+// spend whose send then FAILS must be undone so the next drag does not read
+// "gone" for words the server still holds.
+describe("markChatDraftSpent announces, unmarkChatDraftSpent undoes", () => {
+  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
+  function serve(chat: Record<string, ChatDraft>) {
+    const real = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ chat, task: {} }),
+      } as unknown as Response)) as unknown as typeof fetch;
+    return () => {
+      globalThis.fetch = real;
+    };
+  }
+
+  test("a listener hears the key, and only while subscribed", async () => {
+    const heard: string[] = [];
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
+    await markChatDraftSpent("s-1");
+    off();
+    await markChatDraftSpent("s-2");
+    expect(heard).toEqual(["s-1"]);
+  });
+
+  test("the spend waits for what the listener is still writing", async () => {
+    let settled = false;
+    const off = onChatDraftSpent(
+      () =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            settled = true;
+            r();
+          }, 5),
+        ),
+    );
+    const p = markChatDraftSpent("s-5");
+    expect(settled).toBe(false);
+    await p;
+    expect(settled).toBe(true);
+    off();
+  });
+
+  test("the composer's own send does NOT announce — it would empty its own tray mid-send", () => {
+    const heard: string[] = [];
+    const off = onChatDraftSpent((k) => {
+      heard.push(k);
+    });
+    const restore = serve({});
+    void deleteChatDraft("s-3");
+    restore();
+    off();
+    expect(heard).toEqual([]);
+  });
+
+  test("a failed send un-spends: the words read back again", async () => {
+    const key = "s-4";
+    const restore = serve({ [key]: held("still on the server") });
+    markChatDraftSpent(key);
+    expect(await fetchChatDraft(key)).toBeNull();
+    unmarkChatDraftSpent(key);
+    expect((await fetchChatDraft(key))?.text).toBe("still on the server");
+    restore();
   });
 });

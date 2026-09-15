@@ -45,9 +45,7 @@ export { HomeCard } from "./HomeCard";
 export type { HomeCardProps } from "./HomeCard";
 export { Lists, RecentSkeleton, LIST_LABELS } from "./Lists";
 export type { ListsProps } from "./Lists";
-export { RecentRow } from "./RecentRow";
-export { useRecentSessions } from "./useRecentSessions";
-export type { RecentRowProps } from "./RecentRow";
+export { useRecentTasks, useSessionTask } from "./useRecentTasks";
 export { ArtifactRow } from "./ArtifactRow";
 export type { ArtifactRowProps } from "./ArtifactRow";
 export { SnapRow } from "./SnapRow";
@@ -91,10 +89,12 @@ export {
 export type { ComposerDefaults } from "./composer-defaults";
 export {
   ago,
+  draftTextOf,
   paneChatUrl,
   paneSlashes,
-  rowPane,
   sessionTitle,
+  taskInPane,
+  taskPane,
 } from "./list-rows";
 export {
   rowNeed,
@@ -118,12 +118,14 @@ export {
   Transcript,
   ANCHOR_FLARE_MS,
   ANCHOR_SETTLE_MS,
+  lastAssistantKey,
   lastErrorKey,
   openCardIds,
 } from "./Transcript";
 export type { TranscriptProps, TranscriptTail } from "./Transcript";
-export { Turn } from "./Turn";
-export type { TurnProps } from "./Turn";
+export { Turn, collapsedLine } from "./Turn";
+export type { TurnProps, CollapsedLine } from "./Turn";
+export { formatStamp, stampTitle } from "./stamp";
 export { SegmentView } from "./SegmentView";
 export type { SegmentViewProps, SegmentTail } from "./SegmentView";
 export { Caret } from "./Caret";
@@ -131,6 +133,8 @@ export { MarkdownView, INNER_HTML_SITES } from "./MarkdownView";
 export type { MarkdownViewProps } from "./MarkdownView";
 export { ToolChip } from "./ToolChip";
 export type { ToolChipProps } from "./ToolChip";
+export { RunTrigger } from "./RunTrigger";
+export type { RunTriggerProps } from "./RunTrigger";
 export { ThinkingView } from "./ThinkingView";
 export type { ThinkingViewProps } from "./ThinkingView";
 export { NoticeView } from "./NoticeView";
@@ -157,7 +161,10 @@ export {
   createCardPolicy,
   resetCardPolicy,
   cardKey,
+  runKey,
   useCardOpen,
+  useCardOpens,
+  useHoldTail,
   cardOverride,
   type CardPolicy,
 } from "./cardPolicy";

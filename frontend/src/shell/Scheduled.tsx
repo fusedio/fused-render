@@ -50,12 +50,11 @@
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   getConfig,
   getSchedule,
   getScheduleQueue,
-  getTaskChanges,
-  getTasks,
 } from "@platform/lib/api";
 import type {
   ScheduledMessage,
@@ -82,7 +81,7 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal, { splitDraft } from "./NewJobModal";
+import NewJobModal, { seededDraftForm, splitDraft } from "./NewJobModal";
 import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -95,15 +94,10 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
-  FAST_LANE_BACKOFF_MAX_MS,
-  FAST_LANE_BACKOFF_MS,
-  FAST_LANE_MAX_STALLS,
-  FAST_LANE_MIN_LAP_MS,
-  forgetListing,
-  publishTasks,
   readListing,
   readTasksRows,
-  rememberListing,
+  refreshListing,
+  subscribeListing,
   TASKS_POKE_EVENT,
   useTasksFeeder,
 } from "./tasksPulse";
@@ -112,7 +106,6 @@ import {
   applyQueueOverrides,
   expireQueueOverrides,
   isChatDraftTask,
-  mergeTaskChanges,
   NO_QUEUE_OVERRIDES,
   provisionalTasks,
   viewFromSearch,
@@ -123,6 +116,16 @@ import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
+import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
+import { useTaskPeekEnabled } from "./task-peek-flag";
+import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
+import {
+  closePeek,
+  frameClickCloses,
+  openPeek,
+  peekGutter,
+  refreshPeekBaseline,
+} from "./task-peek-store";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -140,9 +143,13 @@ export interface TasksScope {
   entry?: string | null;
 }
 
-// How often the page re-reads itself. A `pending` message becomes `sent` on the
-// server's own tick (30s), so anything much slower than this shows a message as
-// still-waiting for a while after it went out.
+// How often the page re-reads the SCHEDULE and the QUEUE. A `pending` message
+// becomes `sent` on the server's own tick (30s), so anything much slower than
+// this shows a message as still-waiting for a while after it went out.
+//
+// The TASKS feed is no longer on this clock: it moved to the shared listing feed
+// (`tasksPulse.subscribeListing`), whose floor refresh is this same 20s — one
+// `/api/tasks` for the document rather than one per surface that wants the rows.
 const POLL_MS = 20000;
 
 // Which view is up, remembered across visits — a person who plans on the
@@ -331,27 +338,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [tasksLoaded, setTasksLoaded] = useState(
     () => readListing() !== null || tasks.length > 0,
   );
-  // The rows as the changes loop below last saw them, and the server
-  // generation they answer to. Refs, not state: the loop is one long-lived
-  // effect and must read the newest value without re-subscribing on every
-  // poll. Mirrored from `tasks` by the effect under it.
-  const tasksRef = useRef<Task[]>([]);
-  const generationRef = useRef(-1);
-  useEffect(() => {
-    tasksRef.current = tasks;
-  }, [tasks]);
   // THE CLAIMS A QUEUE VERB MAKES, until the server speaks about the same key
   // (tasks-lib.applyQueueOverrides). They live on the PAGE and not in the view
   // that raised them for one reason: a claim exists to outrun the poll, and a
   // view is remounted by every navigation — a store inside one would be undone
-  // by the answer it was written to beat. `queueRef` is the changes loop's read,
-  // for the same reason `tasksRef` is: one long-lived effect, newest value, no
-  // re-subscribe per poll.
+  // by the answer it was written to beat. They are retired by the listing feed's
+  // subscription below, which is the one place the server's answer arrives.
   const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
-  const queueRef = useRef<QueueOverrides>(NO_QUEUE_OVERRIDES);
-  useEffect(() => {
-    queueRef.current = queueOverrides;
-  }, [queueOverrides]);
   const noteQueued = useCallback((override: QueueOverride) => {
     setQueueOverrides((cur) => withQueueOverride(cur, override));
   }, []);
@@ -739,6 +732,56 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
 
+  /**
+   * `?draft=<id>` — AN UNFINISHED NEW TASK FORM, PRESSED SOMEWHERE ELSE
+   * (Akshil, 2026-09-14).
+   *
+   * The chat landing's Recent list draws this page's rows, draft rows included.
+   * That list no longer builds this URL — a draft row pressed there fills the
+   * landing's own composer and goes nowhere (Akshil, 2026-09-15) — but the
+   * param stays, and this arm with it: it is how THIS page's own draft rows and
+   * any link that already names one reopen the card.
+   *
+   * IT IS `openDraft`'S OWN ARM, reached by a param rather than by a row — same
+   * id, same stored form, same `NO_HOP` and the same "no time" rule
+   * (`reopenTime`: a reopened draft reads its `when` out of the form it stored,
+   * and an immediate task must stay one). The form comes off `GET /api/drafts`
+   * rather than off a row, because the listing has not answered on first render
+   * and this opening must not wait for 800 rows to decide which card to be.
+   *
+   * A lookup that fails opens the card on the id anyway: the server folds a
+   * write naming an existing id into that draft (`drafts.py put_task`), so an
+   * uninformed card costs a moment of stale fields and never a second draft.
+   * Same generation as every other door that fetches first, so a second press
+   * through any of them owns the modal.
+   *
+   * The param is CONSUMED, exactly as `?new=1` is: a reload that reopened the
+   * card for ever is a URL worth nothing to go back to.
+   */
+  useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    const id = q.get("draft");
+    if (!id) return;
+    const gen = ++chatDraftGen.current;
+    void fetchDrafts().then(
+      (all) => {
+        if (gen !== chatDraftGen.current) return;
+        // Spread rather than handed over: `TaskDraft` is an interface and
+        // `DraftSeed.form` is an index-signature bag, and only a fresh object
+        // literal crosses that gap.
+        const stored = all?.task[id];
+        openForm(null, null, NO_HOP, { id, form: stored ? { ...stored } : null });
+      },
+      () => {
+        if (gen !== chatDraftGen.current) return;
+        openForm(null, null, NO_HOP, { id, form: null });
+      },
+    );
+    q.delete("draft");
+    const rest = q.toString();
+    history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
+  }, []);
+
   // Three feeds, one poll, INDEPENDENT failures — each is allowed to fail
   // without taking the others down, because each answers a different question
   // and two thirds of an answer beats an error page.
@@ -749,46 +792,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // so). The queue failing costs the Queued strip, and says nothing at all —
   // an empty queue and an unreadable one look the same to a user, and the
   // common case by far is that there is simply nothing waiting.
-  const reload = () => {
+  //
+  // TWO OF THEM HERE NOW, not three: the ROWS moved to the shared listing feed
+  // (`tasksPulse.subscribeListing`, subscribed below), which runs one
+  // `/api/tasks` and one change long-poll for the whole document — so this page
+  // and every chat card on it read the same listing off the same socket, and the
+  // sidebar's dot, which that feed publishes, cannot disagree with the rows under
+  // it. This pair keeps its own clock because it is its own pair of endpoints.
+  const reloadFeeds = () => {
     getSchedule().then(
       (r) => {
         setState(r);
         setLoadError(null);
       },
       (e: Error) => setLoadError(e.message),
-    );
-    getTasks().then(
-      (r) => {
-        // A full listing that left before a delta landed is OLDER than what
-        // is on screen; applying it would roll the rows back and the
-        // generation with them (bugbot #892). The next poll catches up.
-        if (typeof r.generation === "number" && r.generation < generationRef.current) return;
-        setTasks(r.tasks ?? []);
-        // THE SERVER HAS SPOKEN about every key in a full listing, so every
-        // claim about one of them is over — right or wrong. A claim that
-        // survived the answer contradicting it would survive the next one too,
-        // and the row would be stuck at whatever a click asserted.
-        setQueueOverrides((cur) => expireQueueOverrides(cur, (r.tasks ?? []).map((t) => t.key)));
-        setTasksFailed(false);
-        setTasksLoaded(true);
-        if (typeof r.generation === "number") generationRef.current = r.generation;
-        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
-        // dot and the counts beside the label are this answer, not a second poll
-        // of their own — two polls would show a dot the page disagrees with for
-        // twenty seconds at a time. Publishing also restarts that module's own
-        // timer, so while this page is open nothing else calls /api/tasks.
-        publishTasks(r.tasks ?? []);
-        // And keep it for the next mount: this page is remounted on every
-        // navigation, and the seed above is what saves the trip back from
-        // paying for the listing twice.
-        rememberListing(r.tasks ?? []);
-      },
-      () => {
-        setTasks([]);
-        setTasksFailed(true);
-        setTasksLoaded(true);
-        forgetListing();
-      },
     );
     getScheduleQueue().then(
       (r) => {
@@ -801,138 +818,64 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       },
     );
   };
-  useEffect(reload, []);
+  /** "Re-read everything on this page NOW" — what a created task, a returned-to
+   *  tab or a finished run asks for. The rows answer through the feed's own
+   *  refresh, which is collapsed to one read for the document. */
+  const reload = () => {
+    reloadFeeds();
+    refreshListing();
+  };
+  useEffect(reloadFeeds, []);
   useRefreshOnReturn(reload);
   useEffect(() => {
-    const id = window.setInterval(reload, POLL_MS);
+    // The ROWS are deliberately not on this timer: the feed carries the same 20s
+    // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
+    // reads every twenty seconds for one answer.
+    const id = window.setInterval(reloadFeeds, POLL_MS);
     return () => window.clearInterval(id);
   }, []);
   // The corner card knows a run ended about a second after it does; this page's
   // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
-  // the feeder above means the shared store may not fetch on our behalf — and
-  // the page re-reads all three feeds, so the row flips the moment the popover
-  // does rather than up to a poll later.
+  // it has already refreshed the listing itself, so what this answers for is the
+  // schedule and the queue, and the row flips the moment the popover does rather
+  // than up to a poll later.
   useEffect(() => {
-    window.addEventListener(TASKS_POKE_EVENT, reload);
-    return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
+    window.addEventListener(TASKS_POKE_EVENT, reloadFeeds);
+    return () => window.removeEventListener(TASKS_POKE_EVENT, reloadFeeds);
   }, []);
-  // The fast lane. /api/tasks/changes long-polls the server's change watcher
-  // (tasks_watch.py) and answers the moment a session starts, resumes, takes
-  // a prompt or grows — so a `claude` typed into a terminal in some folder is
-  // a row here within a second, not up to a poll later. Only the rows that
-  // moved come back and are folded into place (mergeTaskChanges); the 20s
-  // full reload above stays as the truth underneath. Hidden tabs sit the loop
-  // out — useRefreshOnReturn reloads on the way back — and a failed call
-  // backs off rather than hammering a server that is restarting.
-  useEffect(() => {
-    let stopped = false;
-    let controller: AbortController | null = null;
-    const sleep = (ms: number) =>
-      new Promise<void>((resolve) => {
-        window.setTimeout(resolve, ms);
-      });
-    const untilVisible = () =>
-      new Promise<void>((resolve) => {
-        const onChange = () => {
-          if (document.visibilityState !== "visible") return;
-          document.removeEventListener("visibilitychange", onChange);
-          resolve();
-        };
-        document.addEventListener("visibilitychange", onChange);
-      });
-    // The same hollow-lap guard the sidebar's lane carries (tasksPulse
-    // watchTaskChanges): an answer that neither moved the generation nor spent
-    // any time waiting is a server that cannot answer this endpoint — an older
-    // build, a proxy or login page returning 200 — and re-asking it at full
-    // speed is a request storm no `catch` will ever slow down. A 25 s lapse
-    // moves nothing either and is free, which is what the clock separates.
-    let stalls = 0;
-    let backoff = FAST_LANE_BACKOFF_MS;
-    const run = async () => {
-      while (!stopped) {
-        if (document.visibilityState !== "visible") {
-          await untilVisible();
-          continue;
-        }
-        if (generationRef.current < 0) {
-          // No full listing has answered yet; nothing to merge into.
-          await sleep(500);
-          continue;
-        }
-        controller = new AbortController();
-        let lap: "ok" | "hollow" | "failed";
-        const started = Date.now();
-        try {
-          const r = await getTaskChanges(generationRef.current, 25, controller.signal);
-          if (stopped) return;
-          if (r.full) {
-            // "Reload everything" includes a server that restarted and counts
-            // from zero again: forget our generation FIRST, or the stale-listing
-            // guard in reload() would refuse the very listing that catches us
-            // up, forever (bugbot #892).
-            generationRef.current = -1;
-            reload();
-            // Real news, whatever it cost to get: the hollow-lap count starts
-            // over. A `full` that REPEATS still pays the 1 s below.
-            stalls = 0;
-            backoff = FAST_LANE_BACKOFF_MS;
-            await sleep(1000);
-            continue;
-          }
-          // A generation that is not a number is not an answer: keep the one we
-          // have (asking with `undefined` is how this loop used to spin) and
-          // let the pacing below treat the lap as hollow.
-          const prev = generationRef.current;
-          const gen =
-            typeof r.generation === "number" && Number.isFinite(r.generation) ? r.generation : -1;
-          if (gen >= 0) generationRef.current = gen;
-          const rows = r.rows ?? [];
-          const gone = r.gone ?? [];
-          if (rows.length || gone.length) {
-            const merged = mergeTaskChanges(tasksRef.current, rows, gone);
-            tasksRef.current = merged;
-            setTasks(merged);
-            // …and the delta is an answer about exactly the keys it names, which
-            // is the fast half of the same rule: every queue verb rings the
-            // watcher, so this usually lands within milliseconds of the press
-            // and the claim it retires is the one the press made.
-            const spoken = [...rows.map((t) => t.key), ...gone];
-            const before = queueRef.current;
-            const after = expireQueueOverrides(before, spoken);
-            if (after !== before) {
-              queueRef.current = after;
-              setQueueOverrides(after);
-            }
-            publishTasks(merged);
-            // The merge is now the freshest full listing there is, so it — not
-            // the poll's older answer — is what a remount should seed from.
-            rememberListing(merged);
-          }
-          lap = gen > prev || Date.now() - started >= FAST_LANE_MIN_LAP_MS ? "ok" : "hollow";
-        } catch {
-          if (stopped) return;
-          lap = "failed";
-        }
-        if (lap === "ok") {
-          stalls = 0;
-          backoff = FAST_LANE_BACKOFF_MS;
-          continue;
-        }
-        // A run of hollow laps ends the lane: the 20 s full reload above is the
-        // floor, and it is the truth here anyway. A FAILED call never ends it —
-        // an unreachable server is one that can come back.
-        if (lap === "hollow" && ++stalls >= FAST_LANE_MAX_STALLS) return;
-        if (stopped) return;
-        await sleep(backoff);
-        backoff = Math.min(backoff * 2, FAST_LANE_BACKOFF_MAX_MS);
-      }
-    };
-    void run();
-    return () => {
-      stopped = true;
-      controller?.abort();
-    };
-  }, []);
+  // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
+  //
+  // The fast lane is still `/api/tasks/changes`, long-polling the server's change
+  // watcher (tasks_watch.py) so a `claude` typed into a terminal in some folder is
+  // a row here within a second rather than up to a poll later; only the rows that
+  // moved come back and are folded into place, and a 20s floor read stays as the
+  // truth underneath. What changed is WHOSE loop it is: this page used to run one
+  // and every ClaudeChat mount on it ran another, so the cards wall with twelve
+  // chats open held thirteen sockets on a 25-second wait against a browser cap of
+  // six, and every other request on the page queued behind them. The feed also
+  // publishes to the sidebar and remembers the listing for the next mount, which
+  // is what this effect used to do by hand.
+  useEffect(
+    () =>
+      subscribeListing((ev) => {
+        setTasks(ev.rows);
+        setTasksFailed(ev.failed);
+        setTasksLoaded(true);
+        // THE SERVER HAS SPOKEN about every key it named, so every claim about
+        // one of them is over — right or wrong (tasks-lib.expireQueueOverrides).
+        // A full listing speaks about every key it holds; a delta about exactly
+        // the rows and `gone` keys it carries — which is the fast half of the
+        // same rule, since every queue verb rings the watcher and the delta it
+        // rings usually lands within milliseconds of the press that made the
+        // claim. A FAILED read has said nothing, and retires nothing.
+        if (ev.failed) return;
+        const spoken = ev.delta
+          ? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]
+          : ev.rows.map((t) => t.key);
+        setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));
+      }),
+    [],
+  );
 
   // A folder chip pressed on a row or a card: filter the page to that
   // project, pressing the pinned one again clears it. It REPLACES the project
@@ -1014,6 +957,57 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // folder, so a row can say "Folder missing" instead of opening an Explorer
   // that can only answer with a stat error (useMissingFolders).
   const missing = useMissingFolders(shown);
+  // THE SIDE PEEK, and it belongs to THIS page only: `useTaskPeekHost` is what
+  // arms `openPeek` for the four views, adopts a `?peek=` deep link and follows
+  // Back. Scoped (the app page's Tasks tab) it stays disarmed, so every press
+  // there navigates exactly as it did — the same rule that leaves the sidebar's
+  // task list and the notifications alone
+  // (.claude-design/task-side-peek/design.md).
+  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): experimental, default
+  // off, and off means this page is the page it has always been — no panel, no
+  // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
+  // so there is one answer for the whole page.
+  const peekOn = useTaskPeekEnabled();
+  // The toolbar folds its words before it clips them (shell/row-fit.ts) — and
+  // only while the feature is on, since the ladder arrived with it.
+  const [toolbar, toolbarRef] = useToolbarFit(peekOn);
+  const peekable = !scope && peekOn;
+  useTaskPeekHost(peekable);
+  const peek = useTaskPeekLayout(peekable);
+  // SCROLL, DON'T FOLD (Akshil, 2026-09-15). `data-floored` used to switch on
+  // at the middle pane's floor only, and the row ladder folded marks on the way
+  // down to it. With the floor at a flat 500 that meant hiding meta across the
+  // whole 1094→500 range — so the switch is now `tight` (frame narrower than
+  // the column): under it the list's content is held at the widest row's need
+  // and the pane scrolls sideways. Floored is a subset of tight (500 < any
+  // baseline), so nothing the floor did is lost.
+  const scrolls = peek.open && peek.tight;
+  // THE MIDDLE PANE'S BASELINE (design.md, Widths v2). What is kept here is the
+  // WATCH; the measurement itself is the store's (`measureTasksBaseline`), for
+  // a reason worth stating where a reader would come looking for it: this
+  // effect is passive, and `useTaskPeekHost`'s adoption of a `?peek=` deep link
+  // is a LAYOUT effect — it runs first, so a link-opened visit would freeze a
+  // baseline this observer had never had a chance to take. The store reads the
+  // page itself when it is asked for a number it does not have, and this watch
+  // is only the cheap path for the ordinary case.
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!peekable) return;
+    const frame = frameRef.current;
+    if (!frame) return;
+    const read = () => refreshPeekBaseline();
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(frame);
+    // The page's own sections arrive after the first fetch, so the element the
+    // measurement needs may not exist on the first tick.
+    const mo = new MutationObserver(read);
+    mo.observe(frame, { childList: true, subtree: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [peekable]);
   // ONE sentence for "there is nothing here", handed to all four views, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -1026,6 +1020,55 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         ? "No tasks for this app yet."
         : "No tasks yet. Everything Claude runs for you shows up here."
       : "Nothing matches these filters.";
+
+  // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
+  // the task it names and cannot do that under an open card. One function, so
+  // "closing keeps the draft" (design.md, Decisions) has one meaning: the
+  // modal's own autosave has already flushed on unmount either way.
+  const closeCard = () => {
+    setCreating(null);
+    setEditing(null);
+    setDraftSeed(null);
+  };
+
+  /**
+   * WHICH TASK THE OPEN CARD CAME OUT OF (design.md B, Option 1) — null for
+   * every other opening.
+   *
+   * Nothing stores a "source task": scheduling from a task travels as its
+   * SESSION, either on the hop (`?new=1&session_id=…`, the composer's Schedule
+   * button) or on the draft that hop saved (`session_id` in the stored form,
+   * which is what survives closing and reopening the card). Both name the same
+   * conversation, and the listing this page already holds is what turns it back
+   * into a row — no second fetch, and nothing new on the wire.
+   *
+   * `tasks` and not `inScope`: the source is a fact about this card, not about
+   * what the app page is filtered to, and a chip that vanished inside an app
+   * would be saying the task does not exist.
+   */
+  const sourceTask = useMemo(() => {
+    if (editing) return null;
+    const session = hop.session || seededDraftForm(draftSeed).sessionId || "";
+    if (!session) return null;
+    return tasks.find((t) => t.session_id === session) ?? null;
+  }, [editing, hop.session, draftSeed, tasks]);
+
+  /**
+   * …and where its chip goes: THE SIDE PEEK, which is the one door this page
+   * owns. It does not navigate — deliberately, and the page holds none of the
+   * tools for it (tasks-lib.test.ts pins that) — so where there is no peek to
+   * open, the chip stays a statement rather than becoming a dead control: the
+   * modal draws a button only for a card that hands it an `onOpen`.
+   *
+   * The card goes away first. The peek slides in BESIDE this page, which is
+   * currently behind a modal, so opening one under the card would look like the
+   * press did nothing. The draft survives that (`closeCard`), and its row is
+   * one press away.
+   */
+  const openSourceTask = (task: Task) => {
+    closeCard();
+    openPeek(task.key);
+  };
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -1064,7 +1107,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     setEditId(null);
   }, [editId, state]);
 
-  return (
+  // THE FRAME, and only a name for it while the peek is off: the page is
+  // exactly what it was, and the flex row below is added only on `/tasks`.
+  const page = (
     // `schedule-page` is not decoration: it is what lets the card sections opt
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
     // inside them stays at that measure. See styles/schedule.css.
@@ -1086,7 +1131,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
 
       {state && (
         <section className="prefs-section schedule-main">
-          <div className="schedule-toolbar">
+          {/* `data-fit` — how many of the toolbar's labels have had to fold for
+              the row to fit the width it has. Measured, never a breakpoint
+              (shell/row-fit.ts). */}
+          <div
+            className="schedule-toolbar"
+            ref={toolbarRef}
+            {...(peekOn ? { "data-fit": toolbar.level } : {})}
+          >
             {/* The view toggle leads, at the far left of every view — it is the
                 one control that must never change address, and anchoring it to
                 the start of the row is what guarantees that regardless of what
@@ -1109,19 +1161,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
               <button type="button"
                       data-view="list"
+                      title="List"
                       className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
                 {ICON_VIEW_LIST}
-                List
+                <span className="schedule-fit-lbl">List</span>
               </button>
               <button type="button"
                       data-view="board"
+                      title="Board"
                       className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
                 {ICON_VIEW_BOARD}
-                Board
+                <span className="schedule-fit-lbl">Board</span>
               </button>
               {/* Before the calendar (Akshil, 2026-09-03): the first three
                   answer "what is there" and "what is happening right now",
@@ -1129,19 +1183,21 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                   the same argument that made List the default. */}
               <button type="button"
                       data-view="cards"
+                      title="Cards"
                       className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
                       aria-pressed={view === "cards"}
                       onClick={() => pickView("cards")}>
                 {ICON_VIEW_CARDS}
-                Cards
+                <span className="schedule-fit-lbl">Cards</span>
               </button>
               <button type="button"
                       data-view="calendar"
+                      title="Calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
                 {ICON_VIEW_CALENDAR}
-                Calendar
+                <span className="schedule-fit-lbl">Calendar</span>
               </button>
             </div>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
@@ -1164,10 +1220,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
+              // The ladder's Project rung: one trigger instead of two, same rows
+              // inside it, each under its own heading (shell/row-fit.ts
+              // TOOLBAR_DROPS). Project loses its own control here and stays
+              // REACHABLE, which is the difference between folding a filter and
+              // taking it away.
+              merged={toolbar.level >= TOOLBAR_MERGE_LEVEL}
             />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
-              + New task
+              +<span className="schedule-fit-lbl"> New task</span>
             </button>
           </div>
 
@@ -1249,6 +1311,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               missing={missing}
+              // The rows NEVER fold their marks while the panel is up
+              // (Akshil, 2026-09-15): the moment the frame is narrower than the
+              // column, the list scrolls sideways to whatever the widest row
+              // needs instead of hiding anything. The same switch the frame
+              // writes as `data-floored` below, so the stylesheet and the fit
+              // ladder can never disagree.
+              floored={scrolls}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is
@@ -1335,6 +1404,24 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // `HopSeed` above. Null on every opening that did not come from a
           // composer, which is every opening but the Schedule hop.
           fromChatKey={hop.chatKey}
+          // SCOPED, THE PATH IS NOT A QUESTION (design.md §2): a task made from
+          // inside an app runs against that app, so the field states the target
+          // instead of asking for it. The unscoped `/tasks` page is untouched —
+          // there the folder is the first thing the card has to ask.
+          lockTarget={!!scope}
+          // WHICH TASK THIS CARD CAME OUT OF, and the way to it — see
+          // `sourceTask` above. The modal draws the chip; where a task opens
+          // stays this page's answer, because it is the one holding the peek.
+          sourceTask={
+            sourceTask
+              ? {
+                taskId: sourceTask.task_id,
+                // Pressable only where there is a peek to open — see
+                // `openSourceTask`.
+                onOpen: peekable ? () => openSourceTask(sourceTask) : null,
+              }
+              : null
+          }
           editing={editing}
           // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
           // the calendar (where "when" is the question the view itself asks),
@@ -1354,18 +1441,81 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // composer handoff's picture rode into every New task card opened
           // afterwards. The opening states its own hop now (`openForm`), so a
           // close has nothing to forget and no list to keep in step.
-          onClose={() => {
-            setCreating(null);
-            setEditing(null);
-            // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
-            // away, the draft stays — as its own row, or as the `Draft` chip on
-            // the conversation it is bound to — and the modal's own autosave has
-            // already flushed on unmount.
-            setDraftSeed(null);
-          }}
+          // CLOSING A DRAFT KEEPS IT (design.md, Decisions): the card is put
+          // away, the draft stays — as its own row, or as the `Draft` chip on
+          // the conversation it is bound to — and the modal's own autosave has
+          // already flushed on unmount. See `closeCard`, which the source chip
+          // takes too.
+          onClose={closeCard}
           onCreated={reload}
         />
       )}
+    </div>
+  );
+
+  if (!peekable) return page;
+
+  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
+  // peek as DOM siblings, the peek lifted out of flow over the row's right edge
+  // so its slide never reflows the frame under it. ONE number drives both
+  // halves of the 200ms — the frame's width is `100% − <what the peek takes>`,
+  // and the peek's own transform runs off the same value.
+  //
+  // In COVER mode the frame takes nothing off its width (rule 4): there is no
+  // usable frame left at that size, so the panel is laid over it whole rather
+  // than squeezing the view to a sliver.
+  const taken = peek.open && !peek.cover ? peek.width : 0;
+  // THE FLOOR, handed to the stylesheet as a length (design.md, Widths v2).
+  // `peek.floor` is a FRAME width — three quarters of a baseline that counts
+  // the page's gutters — and what the views need is the width of the content
+  // inside those gutters, so the gutters come back off here rather than being
+  // guessed at in CSS.
+  const contentFloor = Math.max(0, Math.round(peek.floor - peekGutter()));
+  return (
+    <div className="tasks-peek-host">
+      <div
+        ref={frameRef}
+        className={"tasks-frame" + (peek.instant ? " is-instant" : "")}
+        // `data-floored` is the switch and `--tasks-floor` the number: below the
+        // floor the views stop reflowing and scroll sideways inside the frame
+        // instead (styles/task-peek.css). The toolbar is deliberately NOT under
+        // it — it stays one line at every width and folds its own way.
+        data-floored={scrolls ? "1" : undefined}
+        // …and `data-tight` a little earlier: once the frame is narrower than
+        // the column plus its gutters there are no centred margins left to give
+        // and the page's side padding is just two dark bands (design.md, Polish
+        // batch 3). Written off the same baseline the floor is.
+        data-tight={peek.open && peek.tight ? "1" : undefined}
+        style={
+          {
+            width: `calc(100% - ${taken}px)`,
+            "--tasks-floor": `${contentFloor}px`,
+          } as CSSProperties
+        }
+        // CLICKING BLANK FRAME CLOSES (design.md, Close triggers — and Akshil's
+        // decision to keep Notion's behaviour). Everything that is a control or
+        // an item does its own thing: rows and cards carry the walk's own
+        // attribute, the toolbar's chips are buttons, and a menu or a dialog
+        // portalled over the page is neither. What is left is page background.
+        onClick={(e) => {
+          if (!peek.open) return;
+          if (frameClickCloses(e.target as Element | null)) closePeek();
+        }}
+      >
+        {page}
+      </div>
+      {/* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
+          statement about which conversation may be open, and narrowing the list
+          under an open panel must not close it (or, worse, make its task look
+          deleted to `settlePeek`). `loaded` is what turns "no such task" from a
+          wait into an answer. */}
+      <TaskPeek
+        tasks={inScope}
+        loaded={tasksLoaded}
+        home={home}
+        missing={missing}
+        onReload={reload}
+      />
     </div>
   );
 }
