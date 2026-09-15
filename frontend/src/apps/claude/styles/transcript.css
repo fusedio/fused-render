@@ -243,6 +243,27 @@
      nothing a reader selects or clicks inside a reply can shut it. */
   cursor: pointer;
 }
+/* ONE INLINE RUN out of whatever marked parsed the first line as — a
+   paragraph, a heading, a list item, a blockquote. Every block becomes inline
+   at the row's own size so the ellipsis still lands on THIS line, and inline
+   marks (bold, italic, code, links) keep their look. */
+.chat-root .turn.assistant .turn-collapsed-md,
+.chat-root .turn.assistant .turn-collapsed-md * {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: nowrap;
+}
+.chat-root .turn.assistant .turn-collapsed-md ul,
+.chat-root .turn.assistant .turn-collapsed-md ol {
+  list-style: none;
+}
+.chat-root .turn.assistant .turn-collapsed-md pre,
+.chat-root .turn.assistant .turn-collapsed-md hr {
+  display: none;
+}
 .chat-root .turn.assistant .turn-collapsed:hover {
   color: var(--c-fg);
 }

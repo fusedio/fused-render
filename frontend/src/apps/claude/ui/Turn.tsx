@@ -318,7 +318,22 @@ export const Turn = memo(function Turn({
               className={cn("turn-collapsed", line && line.muted && "is-muted")}
               onClick={() => onToggleCollapse!(turn.key)}
             >
-              {line ? line.text : ""}
+              {/* THE FIRST LINE IN ITS OWN TYPE (Akshil, 2026-09-15): a reply
+                  that opens on "**Done.** Two files…" folds to bold "Done.",
+                  not to a row of asterisks. Same renderer as the open body, no
+                  enhance pass (no code blocks on one line, and hljs per fold
+                  would be the per-frame cost MarkdownView exists to avoid); the
+                  stylesheet flattens whatever block it parses to one inline
+                  run. A MUTED line is a summary we wrote, never markdown. */}
+              {line ? (
+                line.muted ? (
+                  line.text
+                ) : (
+                  <MarkdownView className="turn-collapsed-md" text={line.text} enhance={false} />
+                )
+              ) : (
+                ""
+              )}
             </span>
           ) : segments.length ? (
             <SegmentView

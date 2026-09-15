@@ -61,6 +61,12 @@ function words(node: Json | null): string {
       out.push(n);
       return;
     }
+    // The folded line is RENDERED MARKDOWN now (Akshil, 2026-09-15): the text
+    // sits in `dangerouslySetInnerHTML`, so read it back with the tags
+    // stripped — the assertions below are about the words, not the markup.
+    const h = (n.props as { dangerouslySetInnerHTML?: { __html: string } } | undefined)
+      ?.dangerouslySetInnerHTML;
+    if (h) out.push(h.__html.replace(/<[^>]+>/g, "").trim());
     for (const k of n.children ?? []) go(k as Json | string);
   };
   go(node);
@@ -665,4 +671,22 @@ describe("the line a folded reply shows", () => {
     const r = mount(<Turn turn={assistant("a:1", { text: "" })} collapsed onToggleCollapse={() => {}} />);
     expect(folded(r)).toEqual([empty.text]);
   });
+});
+
+test("the folded line is the first line RENDERED, not its markdown source", () => {
+  // "**Done.** two files" folds to bold "Done." — never a row of asterisks.
+  const r = log([
+    assistant("a:1", { text: "**Done.** two files\nmore below" }),
+    assistant("a:2"),
+  ]);
+  const md = byClass(r, "turn-collapsed-md")[0]!;
+  const html = (md.props as { dangerouslySetInnerHTML: { __html: string } })
+    .dangerouslySetInnerHTML.__html;
+  // The test shim's `renderMd` wraps its input in <pre> rather than parsing
+  // it, so the check here is the wiring — the first line, and only the first
+  // line, goes through the renderer the open body uses. Bold-not-asterisks is
+  // that renderer's job, exercised by MarkdownView's own tests.
+  expect(html).toContain("**Done.** two files");
+  expect(html).not.toContain("more below");
+  expect(byClass(r, "turn-collapsed")[0]!.children).toHaveLength(1);
 });
