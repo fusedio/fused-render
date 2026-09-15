@@ -7,26 +7,34 @@ moved. What it never had was a *signal*. The page asked every 20 seconds, and a
 session started (or resumed) in a terminal outside the app surfaced up to a poll
 later. This module is that signal.
 
-Claude Code writes three things this can watch, all verified on a real
+Claude Code writes two things this can watch, both verified on a real
 machine (2026-08-27):
 
 * ``~/.claude/sessions/<pid>.json`` — one file per RUNNING ``claude`` process:
   ``sessionId``, ``cwd``, ``status`` (busy / shell / waiting / idle),
-  ``updatedAt``. Appears before the transcript exists, is rewritten on every
-  status change, and is deleted when the process exits. A resumed two-week-old
-  session gets a file under its OLD session id.
-* ``~/.claude/history.jsonl`` — one line appended per user prompt, across every
-  project, carrying ``sessionId``. Lands the same second the prompt is sent;
-  the transcript's assistant append follows seconds later.
+  ``updatedAt``. Rewritten on every status change and deleted when the process
+  exits. A resumed two-week-old session gets a file under its OLD session id.
 * the transcripts themselves — but only the ones the registry says are live
   are watched here (a couple of dozen files, not the machine's whole history).
   A session nobody is running cannot grow.
+
+`~/.claude/history.jsonl` is NOT one of them, though it was for a round: a
+chat sent from this app runs ``claude -p``, and ``-p`` never appends to it.
 
 Stat-poll on a daemon thread, once a second, rather than FSEvents/inotify:
 cross-platform, no ctypes, no dropped-event semantics to reason about, and
 ~25 ``stat`` calls per second is nothing. A real filesystem stream can replace
 ``_loop`` later behind the same two exports — ``generation()`` and ``wait()`` —
 without the router or the page noticing.
+
+What no file can say in time is that a turn has JUST started. A ``claude -p``
+run writes its registry row two to four seconds after the process starts, so
+the listing called every one of this app's own turns "done" for its first
+seconds — and a short turn for the whole of it (Akshil, 2026-09-15). The send
+is the earliest signal there is, and the page that made it says so directly:
+``mark_running`` (``POST /api/tasks/running``). It is a short-fused FLOOR under
+the liveness reading, not a status of its own — the registry takes over the
+moment it appears, and the mark expires by itself either way.
 
 Everything here degrades to "no news": an unreadable directory, a half-written
 registry file, a vanished transcript all produce no keys and no exception. The
@@ -46,7 +54,6 @@ from fused_render import session_liveness, tasks_store
 # session_liveness.py and tasks_store.py. Module-level so tests can point them
 # at a tmp dir.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-HISTORY_PATH = os.path.join(CLAUDE_DIR, "history.jsonl")
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 
 TICK_SEC = 1.0
@@ -71,32 +78,60 @@ _registry: dict[str, dict] = {}   # session_id -> parsed sessions/<pid>.json
 # four seconds paints a running badge for the 45s tail window after it exits.
 _departed: dict[str, float] = {}
 _primed = False
-_hist_size = -1
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
-# session_id -> when history.jsonl last named it. A chat sent from this app
-# runs `claude -p`, which writes history.jsonl and the transcript but NEVER a
-# sessions/<pid>.json — so the registry alone would watch none of our own
-# chats, and a row stayed "done" for the whole turn (Akshil, 2026-09-15). A
-# prompt is the one signal every kind of session gives, so a session is
-# watched for PROMPTED_WATCH_SEC after each one, registry or not.
-_prompted: dict[str, float] = {}
-PROMPTED_WATCH_SEC = 600.0
-# session_id -> the transcript mtime whose "window closed" bump was already
-# announced. A `-p` run leaves no registry departure to notice, so the only way
-# its row ever goes idle without a later write is the tail rule's 45s window
-# running out — a change no byte on disk marks. One bump per settled mtime, at
-# the moment the window closes, is what lets the poll see it (Bugbot, PR #1153).
-_tr_settled: dict[str, float] = {}
-# session_id -> when to look again for a transcript that was not there. A
-# prompted session's transcript is found by a glob across every project bucket
-# (`session_liveness.transcript_path`); a session with none yet — history.jsonl
-# names every project's prompts, not only this app's — must not pay that glob
-# once a second for the whole watch window.
-_tr_missing: dict[str, float] = {}
-MISSING_RETRY_SEC = 5.0
+# session_id -> when its "a turn just started here" mark runs out. See
+# `mark_running`.
+_marks: dict[str, float] = {}
+# session_id -> the client `turn` its CURRENT mark was set with, or absent if
+# that mark was set with `turn=None`. `mark_idle`'s side of the running/idle
+# race (bugbot #1163, round two): `mark_running` already refuses a `turn` that
+# is not newer than the last `mark_idle` saw, but nothing stopped the reverse
+# — a `mark_idle` for an OLDER turn arriving after a NEWER turn's
+# `mark_running` already landed, retiring a mark that has nothing to do with
+# it. Compared against an incoming `mark_idle`'s `turn`; cleared whenever the
+# mark it names is (a fresh `mark_running`, an expiry, a stand-down).
+_mark_turns: dict[str, float] = {}
+# How long a mark stands on its own. Long enough to cover the two to four
+# seconds a `claude -p` takes to write its registry row (measured), short
+# enough that a send whose run died on the spot — a bad model id, a refused
+# permission — is not left spinning for a noticeable time.
+MARK_TTL_SEC = 15.0
+# session_id -> was its registry row seen `busy`/`shell` (RUNNING_STATUSES)
+# while ITS CURRENT mark was alive? A mark this never happened for has nothing
+# to do with a registry row that goes idle or departs — that row belongs to
+# whatever turn came before the send, not this one (bugbot #1163's flicker
+# wore the opposite shape: `_verdict_outvotes_live` discounting a genuinely
+# fresh turn's OWN row). Cleared the moment the mark itself is: a new
+# `mark_running` on the same session starts this over, `_expire_marks` drops
+# it with the mark it timed out on, and a stood-down mark takes it along too.
+_mark_busy_seen: set[str] = set()
+# session_id -> the newest client `turn` a `mark_idle` call carried. Running
+# and idle are two independent POSTs (`run-controller.ts` `noteTurnRunning` /
+# `noteTurnIdle`), and nothing serializes their arrival at this process — a
+# short turn's idle can reach the server before its own running does. Without
+# this, that late `mark_running` reads as a FRESH send and clears the
+# stand-down `mark_idle` just made, leaving the row `in_progress` for the rest
+# of `MARK_TTL_SEC` (bugbot #1163). `mark_running` refuses a `turn` that is not
+# strictly newer than what is recorded here, on the theory that a running mark
+# can never be true information about a turn a caller has already told us
+# ended. Client-side awaiting closes the ordinary case; this is the net under
+# it, and under the one running ping that is never awaited (`resumeAttach`'s
+# untracked seat `0` — see `noteSessionId`).
+#
+# Nothing ever pops an entry outright — a session can always send one more
+# `mark_running` to race against — so `_expire_marks` drops any entry older
+# than `_LAST_IDLE_TURN_TTL_SEC` on every tick; otherwise this would keep one
+# float per session ever seen for the server's whole lifetime (bugbot
+# #4019069906).
+_last_idle_turn: dict[str, float] = {}
+# `turn` is the client's `Date.now()` — epoch milliseconds — and client and
+# server share a clock: this is one local desktop app. A few multiples of
+# `MARK_TTL_SEC`, comfortably longer than the running/idle race this guards,
+# short enough the dict cannot grow across the server's whole lifetime.
+_LAST_IDLE_TURN_TTL_SEC = MARK_TTL_SEC * 4
 _started = False
 
 
@@ -142,6 +177,21 @@ def live_from_registry(session_id: str,
     updated = row.get("updatedAt")
     active = float(updated) / 1000.0 if isinstance(updated, (int, float)) else 0.0
     return status in RUNNING_STATUSES, active
+
+
+def is_marked_running(session_id: str) -> bool:
+    """Is there a live "a turn just started here" mark on this session?
+
+    A floor under the liveness reading (`routers/tasks.py _live`), never a
+    status: a registry that says `busy` is saying the same thing louder, and one
+    that says `idle` is not yet entitled to be believed — the row it would flip
+    to done belongs to a turn whose process has not finished announcing itself.
+    """
+    if not session_id:
+        return False
+    with _cond:
+        until = _marks.get(session_id)
+    return until is not None and until > time.time()
 
 
 def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | None]:
@@ -196,48 +246,155 @@ def notify(keys: set[str] | None = None) -> None:
     _bump(set(keys or ()))
 
 
+def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | None = None) -> None:
+    """Say that a turn just started on this session, and announce it.
+
+    The client calls this the moment it sends (`POST /api/tasks/running`),
+    which is earlier than anything Claude Code writes — see the module note. The
+    bump is what makes the change-poll wake: without it the ring would be right
+    and still a listing behind.
+
+    Re-marking an already-marked session just moves the expiry, so a client that
+    says it twice costs one extra bump and nothing else. A NEW mark is a new
+    turn, so any stand-down bookkeeping the last one left behind — a
+    corroborating `busy` sighting — goes with it; nothing about how the
+    previous turn ended is entitled to an opinion about this one
+    (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark).
+
+    `turn` (the client's `Date.now()` at send) is compared against
+    `_last_idle_turn`: a value that is not strictly newer than the last
+    `mark_idle` this session saw is a running POST that lost the race to its
+    OWN turn's idle POST (running and idle are independent fetches; nothing
+    orders their arrival here) — a stale echo, not a new send, and it is
+    dropped whole: no mark, no bump, no touching `_mark_busy_seen`.
+    `turn=None` (a caller with nothing to compare, or a test) always proceeds,
+    exactly as if `_last_idle_turn` had nothing on file for it.
+
+    Records `turn` in `_mark_turns` — the floor `mark_idle` measures a LATER
+    idle call against, so a follow-up turn's mark cannot be retired by an
+    idle that names the turn before it."""
+    if not session_id:
+        return
+    with _cond:
+        if turn is not None:
+            last_idle_turn = _last_idle_turn.get(session_id)
+            if last_idle_turn is not None and turn <= last_idle_turn:
+                return
+        _marks[session_id] = time.time() + max(0.0, ttl_sec)
+        if turn is not None:
+            _mark_turns[session_id] = turn
+        else:
+            _mark_turns.pop(session_id, None)
+        _mark_busy_seen.discard(session_id)
+    _bump({session_id})
+
+
+def mark_idle(session_id: str, turn: float | None = None) -> None:
+    """Say that a turn just ENDED on this session, and announce it.
+
+    The other half of `mark_running` (`POST /api/tasks/idle`): the page that
+    sent a turn is also the first to know it landed — the final result, a
+    stop, an error — which is sooner than a registry row disappearing and far
+    sooner than the mark's own TTL. Retiring the mark here is what makes a
+    three-second turn read `done` in about a second instead of wearing a
+    running ring for the rest of `MARK_TTL_SEC`; the TTL remains the safety
+    net for a page that never gets to call this (closed tab, lost network).
+
+    Idempotent and announced whether or not a mark was actually standing —
+    the caller is reporting a fact about the TURN, not asking whether the
+    watcher had an opinion, and a duplicate or late call must cost one bump
+    and nothing else, the same contract `mark_running` keeps.
+
+    Records `turn` in `_last_idle_turn` (keeping the newer of the two, in case
+    a stale idle call ever arrives out of order itself) so a `mark_running`
+    that shows up afterward claiming that turn or an earlier one is recognized
+    as the late half of the turn THIS call already closed, not a new one —
+    see `mark_running`.
+
+    `turn` is ALSO compared against `_mark_turns`, the reverse of that same
+    race: `noteTurnIdle` awaits its seat's `mark_running` POST before firing,
+    which delays the stand-down rather than ordering it, so a FOLLOW-UP turn's
+    `mark_running` can still land first. Without this check, this call would
+    retire that newer mark — a stale idle standing down a turn that has not
+    happened yet — and the row would read `done` until the registry (or that
+    turn's own eventual `mark_idle`) caught up. A `turn` that is older than the
+    mark currently standing is dropped whole for `_marks`/`_mark_busy_seen`
+    (the live mark is left exactly as it was); it still updates
+    `_last_idle_turn` when it is the newer value there, so a `mark_running`
+    later claiming that same stale turn is refused by `mark_running`'s own
+    check, and it does not bump — nothing observable changed."""
+    if not session_id:
+        return
+    with _cond:
+        if turn is not None:
+            mark_turn = _mark_turns.get(session_id)
+            if mark_turn is not None and turn < mark_turn:
+                prev = _last_idle_turn.get(session_id)
+                if prev is None or turn > prev:
+                    _last_idle_turn[session_id] = turn
+                return
+        _marks.pop(session_id, None)
+        _mark_turns.pop(session_id, None)
+        _mark_busy_seen.discard(session_id)
+        if turn is not None:
+            prev = _last_idle_turn.get(session_id)
+            if prev is None or turn > prev:
+                _last_idle_turn[session_id] = turn
+    _bump({session_id})
+
+
+def _expire_marks(now: float) -> set[str]:
+    """Session ids whose mark has just run out — CHANGED KEYS, because they are.
+
+    A mark going away is the moment a row stops being running on our say-so, and
+    no byte on disk marks it. Announced once: the id is dropped here, so the
+    next tick has nothing left to expire.
+
+    Also evicts any `_last_idle_turn` entry old enough
+    (`_LAST_IDLE_TURN_TTL_SEC`) that nothing still racing against it could
+    plausibly arrive — that dict has no other way to shrink (bugbot
+    #4019069906): nothing pops an entry outright, since a session can always
+    send one more `mark_running` to compare against."""
+    with _cond:
+        gone = {sid for sid, until in _marks.items() if until <= now}
+        for sid in gone:
+            del _marks[sid]
+            _mark_turns.pop(sid, None)
+            _mark_busy_seen.discard(sid)
+        stale_cutoff = (now * 1000.0) - (_LAST_IDLE_TURN_TTL_SEC * 1000.0)
+        stale = [sid for sid, turn in _last_idle_turn.items() if turn < stale_cutoff]
+        for sid in stale:
+            del _last_idle_turn[sid]
+    return gone
+
+
+def _note_registry_status(sid: str, status: object) -> None:
+    """A registry sighting for `sid` — a fresh reparse, or a departure passing
+    `status=None`. Corroborates an active mark when the status is a running
+    one (`busy`/`shell`); retires the mark when it is not, but ONLY if a
+    running status was already seen for it while THIS mark was alive.
+
+    That qualifier is the whole fix (bugbot #1163's flicker, the opposite
+    shape of this one): a registry row that was already `idle`, or gone,
+    before the mark existed belongs to the turn before this send and has
+    nothing to say about it — only a row this mark can point to and say "that
+    was me, and now it isn't" is allowed to stand it down early. Without it,
+    `test_an_older_turns_row_departing_does_not_retire_a_fresh_mark` would see
+    a brand-new mark wiped out by the PREVIOUS turn's process finally being
+    reaped."""
+    running = isinstance(status, str) and status in RUNNING_STATUSES
+    with _cond:
+        if running:
+            if sid in _marks:
+                _mark_busy_seen.add(sid)
+            return
+        if sid in _mark_busy_seen:
+            _mark_busy_seen.discard(sid)
+            _marks.pop(sid, None)
+            _mark_turns.pop(sid, None)
+
+
 # --------------------------------------------------------------- one tick
-
-def _read_history_tail() -> set[str]:
-    """Session ids named by history lines appended since the last tick."""
-    global _hist_size
-    try:
-        size = os.path.getsize(HISTORY_PATH)
-    except OSError:
-        # No history yet (a fresh ~/.claude): the file's first line, when it
-        # comes, is news — so the baseline is "read from byte 0", not "unseen".
-        _hist_size = 0
-        return set()
-    if _hist_size < 0 or size < _hist_size:
-        # First sight, or the file was rotated/rewritten: baseline, no news.
-        _hist_size = size
-        return set()
-    if size == _hist_size:
-        return set()
-    keys: set[str] = set()
-    try:
-        with open(HISTORY_PATH, "rb") as f:
-            f.seek(_hist_size)
-            chunk = f.read(size - _hist_size)
-    except OSError:
-        return set()
-    cut = chunk.rfind(b"\n")
-    if cut < 0:
-        return set()  # a line still being written: read it whole next tick
-    _hist_size += cut + 1
-    for line in chunk[:cut + 1].decode("utf-8", "replace").split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        sid = obj.get("sessionId") if isinstance(obj, dict) else None
-        if isinstance(sid, str) and sid:
-            keys.add(sid)
-    return keys
-
 
 def _pid_alive(pid) -> bool:
     """Is there a process with this pid? Asked once a second per live session,
@@ -317,6 +474,7 @@ def _read_registry() -> set[str]:
                         _departed[sid] = time.time()
                     _tr_paths.pop(sid, None)
                     _tr_sizes.pop(sid, None)
+                    _note_registry_status(sid, None)
                     keys.add(sid)
             continue
         _sess_mtimes[path] = mtime
@@ -340,15 +498,18 @@ def _read_registry() -> set[str]:
                 with _cond:
                     _registry.pop(old_sid, None)
                     _departed[old_sid] = time.time()
+                _note_registry_status(old_sid, None)
                 keys.add(old_sid)
             continue
         if old_sid and old_sid != sid:
             _registry.pop(old_sid, None)
+            _note_registry_status(old_sid, None)
             keys.add(old_sid)
         _sess_sids[path] = sid
         with _cond:
             _registry[sid] = row
             _departed.pop(sid, None)
+        _note_registry_status(sid, row.get("status"))
         keys.add(sid)
     for path in list(_sess_mtimes):
         if path in seen:
@@ -361,7 +522,21 @@ def _read_registry() -> set[str]:
                 _departed[sid] = time.time()
             _tr_paths.pop(sid, None)
             _tr_sizes.pop(sid, None)
+            _note_registry_status(sid, None)
             keys.add(sid)
+    # Corroboration is invited every tick, not only when the file itself
+    # changed: a mark set against an ALREADY-busy row that never rewrites
+    # again must still count as seen once, or its eventual departure would
+    # read as the untouched-turn-before case
+    # (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark) instead
+    # of what it actually is — a row this mark can rightly be stood down by.
+    with _cond:
+        marked_sids = list(_marks)
+    for sid in marked_sids:
+        with _cond:
+            row = _registry.get(sid)
+        if row is not None:
+            _note_registry_status(sid, row.get("status"))
     return keys
 
 
@@ -369,35 +544,14 @@ def _read_live_transcripts() -> set[str]:
     """Session ids whose transcript grew — checked only for sessions a running
     `claude` holds, which is the only kind that can grow."""
     keys: set[str] = set()
-    now = time.time()
     with _cond:
-        registered = set(_registry)
-    for sid, at in list(_prompted.items()):
-        if now - at > PROMPTED_WATCH_SEC:
-            del _prompted[sid]
-            if sid not in registered:
-                # Nobody else is watching it: its bookkeeping goes too, the
-                # way `_read_registry` drops a departed session's, or every
-                # `-p` chat ever sent grows three dicts for the process's life.
-                _tr_paths.pop(sid, None)
-                _tr_sizes.pop(sid, None)
-                _tr_settled.pop(sid, None)
-                _tr_missing.pop(sid, None)
-    sids = registered | set(_prompted)
-    for sid in sorted(sids):
+        registered = sorted(_registry)
+    for sid in registered:
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
-            if _tr_missing.get(sid, 0.0) > now:
-                continue
             path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
             if not path:
-                # Only a PROMPTED-only session backs off: a registered one
-                # writes its transcript within a second of appearing, and its
-                # first row is news this tick must not miss.
-                if sid not in registered:
-                    _tr_missing[sid] = now + MISSING_RETRY_SEC
                 continue
-            _tr_missing.pop(sid, None)
             _tr_paths[sid] = path
         try:
             size = os.path.getsize(path)
@@ -405,55 +559,31 @@ def _read_live_transcripts() -> set[str]:
             continue
         last = _tr_sizes.get(sid)
         _tr_sizes[sid] = size
-        if last == size and sid in _prompted and sid not in registered:
-            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The listing's
-            # tail rule (`session_liveness.transcript_running`, the same call
-            # routers/tasks.py `_live` falls back to) stops calling this
-            # session running a while after its last REAL message — the
-            # instant no byte on disk marks. Announce it once per settled
-            # file, so a listing is not left wearing an in-progress ring until
-            # some unrelated poke. The very rule, not an mtime arithmetic of
-            # our own: housekeeping rows push the mtime past the last message,
-            # and a bump timed off the mtime would land late.
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if _tr_settled.get(sid) == mtime:
-                continue
-            running, _active = session_liveness.transcript_running(path, now)
-            if not running:
-                _tr_settled[sid] = mtime
-                keys.add(sid)
-            continue
         if last is None:
             # First sight of this transcript. News if it was born under a
-            # session we are already watching (the first prompt just landed);
-            # a baseline otherwise.
+            # session we are already watching (the first turn just landed); a
+            # baseline otherwise.
             if _primed:
                 keys.add(sid)
             continue
         if size != last:
             keys.add(sid)
-            # A turn is still writing: the watch window follows the WRITES, not
-            # only the prompt that opened it, or a turn longer than the window
-            # (an agent run) would stop being watched half-way through.
-            if sid in _prompted:
-                _prompted[sid] = now
     return keys
 
 
 def tick() -> set[str]:
-    """One pass over the three signals. Bumps the generation if anything moved
-    and returns the affected task keys. The first call is a baseline and
-    announces nothing — the page's first full listing already has it all."""
+    """One pass over the registry, the transcripts it names, and the marks that
+    have run out. Bumps the generation if anything moved and returns the
+    affected task keys. The first call is a baseline and announces nothing —
+    the page's first full listing already has it all."""
     global _primed
-    keys = _read_history_tail()
-    now = time.time()
-    for sid in keys:
-        _prompted[sid] = now
-    keys |= _read_registry()
+    keys = _read_registry()
     keys |= _read_live_transcripts()
+    # LAST, so a mark whose registry row arrived in the same tick is retired
+    # against a listing that already knows better. The row does not flicker
+    # either way — `_live` reads `busy` over a mark — but the announcement
+    # belongs after the fact that replaces it.
+    keys |= _expire_marks(time.time())
     if not _primed:
         _primed = True
         return set()
@@ -490,18 +620,18 @@ def start() -> None:
 
 def reset() -> None:
     """Forget everything. For tests."""
-    global _generation, _primed, _hist_size
+    global _generation, _primed
     with _cond:
         _generation = 0
         _changed.clear()
         _registry.clear()
         _departed.clear()
+        _marks.clear()
+        _mark_turns.clear()
+        _mark_busy_seen.clear()
+        _last_idle_turn.clear()
     _primed = False
-    _hist_size = -1
     _sess_mtimes.clear()
     _sess_sids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
-    _prompted.clear()
-    _tr_settled.clear()
-    _tr_missing.clear()

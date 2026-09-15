@@ -1810,28 +1810,67 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
 # ------------------------------------------------------------------ liveness
 
 
-def _live(path: str | None, now: float) -> tuple[bool, float]:
-    """(is this session running, when was it last active).
+def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
+    """(is this session running, when was it last active, did the SENDER say a
+    turn had just started here).
 
     The same 45-second rule as the sessions inbox, and the same tail read — a
     transcript's mtime alone lies, because Claude Code appends housekeeping
     records after the turn is over. Skipped entirely for a file nothing has
     touched in 90 seconds: it is stale either way, so the read would only be
-    deciding what kind of stale."""
+    deciding what kind of stale.
+
+    The third value is EVIDENCE vs TESTIMONY. The first two are inferred from
+    files — timestamps a later rule is entitled to re-read and discount
+    (`_verdict_outvotes_live`). The mark is the page that made the send saying
+    it made it, which no reading of the transcript can outvote, and a caller
+    that discounts it has thrown away the one fact this whole path exists to
+    carry.
+
+    It is the state of the mark, NOT which branch below won (Bugbot, PR #1163).
+    Reporting it only where the mark decided the answer meant it went false the
+    instant the registry caught up and said `busy` — so a row could show the
+    send, drop back to done two seconds later when the echo rule got its vote
+    back, and only return when the prompt reached the transcript. Same lag,
+    with a flicker in front of it. The send either happened in the last fifteen
+    seconds or it did not, and no other fact makes it un-happen.
+
+    True implies running: `is_marked_running` is the one thing consulted for
+    it, and every way a mark is stood down — its own TTL, a registry that went
+    `busy` then wasn't, or the sender itself saying the turn ended
+    (`mark_idle`, `POST /api/tasks/idle`) — lives there, not here. That last
+    one is what keeps a FAST turn from wearing the ring for the rest of the
+    mark's fifteen seconds: the reply landing is news the same page can say
+    the instant it knows it, same as the send was."""
     if not path:
-        return False, 0.0
+        return False, 0.0, False
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return False, 0.0
+        return False, 0.0, False
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    marked = tasks_watch.is_marked_running(session_id)
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
     # the tail's timestamps add up to, and `idle` is not, even if housekeeping
     # touched the file a second ago. Its last-active stamp is used only when it
     # is newer than the transcript's — a registry row is rewritten on status
     # changes, not on every message, so the file can know the later moment.
-    from_registry = tasks_watch.live_from_registry(
-        os.path.splitext(os.path.basename(path))[0], mtime)
+    from_registry = tasks_watch.live_from_registry(session_id, mtime)
+    # …EXCEPT IN THE FIRST SECONDS OF A TURN THIS APP SENT (tasks_watch
+    # `mark_running`). A chat here runs `claude -p`, whose registry row lands two
+    # to four seconds after the process starts — so both "no row at all" and "the
+    # previous turn's idle row" read as done, and every turn sent from this app
+    # wore a done ring for its first seconds; a short turn for the whole of it
+    # (Akshil, 2026-09-15).
+    #
+    # While the send's mark is alive, ONLY `busy` outranks it: a registry saying
+    # the turn is running is the same answer from a better source, and every
+    # other answer is a file that has not caught up. `now` is the honest
+    # last-active — the turn is happening as this is read — and the mark expires
+    # on its own, so a run that died on the spot settles without a write.
+    if marked and not (from_registry and from_registry[0]):
+        return True, now, True
     if from_registry is not None:
         running, active = from_registry
         if now - mtime <= sessions._STALE_TAIL_SEC:
@@ -1839,12 +1878,12 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
             file_active = last.timestamp() if last is not None else mtime
         else:
             file_active = mtime
-        return running, max(active, file_active)
+        return running, max(active, file_active), marked
     if now - mtime > sessions._STALE_TAIL_SEC:
-        return False, mtime
+        return False, mtime, marked
     activity, last = sessions._tail(path, mtime)
     running = (now - activity) < sessions._RUNNING_WINDOW_SEC
-    return running, (last.timestamp() if last is not None else mtime)
+    return running, (last.timestamp() if last is not None else mtime), marked
 
 
 # --------------------------------------------------------------- the endpoints
@@ -1962,7 +2001,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     inside a per-task `try` that swallows IO errors — a failed write would cost
     the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
-    live, active = _live(task["path"], now)
+    live, active, marked = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
     # The transcript's prompts already include every scheduled message that
     # fired, so only the ones that never reached a session are added — and with
@@ -1989,7 +2028,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `active` rides along because it is the tie-breaker the bug demanded:
     # a transcript still being written to meaningfully after the verdict is a
     # session that kept working, and only the verdict's own echo is set aside.
-    if live and _verdict_outvotes_live(merged, active):
+    #
+    # …AND A SEND IS NOT AN ECHO (`marked`, Bugbot PR #1163). This rule discounts
+    # TIMESTAMPS: it exists because a finished run's closing records look like a
+    # pulse, and the only thing it is entitled to set aside is the transcript's
+    # own vote. The mark is not that vote — it is the page that sent the message
+    # saying it sent it, a fact no reading of the file can outrank. Both windows
+    # are 15 seconds, so without this a follow-up typed into a task whose
+    # scheduled run had just reported would have been suppressed for the mark's
+    # entire life, and the row would have sat on `done` until the registry row
+    # landed — which is the exact lag the mark exists to close.
+    #
+    # `marked` is the mark's STATE, not the branch `_live` took, so this holds
+    # across the registry catching up mid-send as well — see its docstring.
+    if live and not marked and _verdict_outvotes_live(merged, active):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
@@ -3131,9 +3183,87 @@ def api_tasks_pulse():
     }
 
 
+class RunningPatch(BaseModel):
+    session_id: str
+    # The client's `Date.now()` at send (`run-controller.ts` `noteTurnRunning`).
+    # Optional so an older client, or a direct call, still works — see
+    # `tasks_watch.mark_running`'s stale-turn check, which only runs when this
+    # is present.
+    turn: float | None = None
+
+
+@router.post("/api/tasks/running")
+def api_task_running(patch: RunningPatch):
+    """A turn just started on this session — said by the page that sent it.
+
+    THE ONE FACT NO FILE CARRIES IN TIME. A chat sent from this app runs
+    `claude -p` through `/api/run`, which means the turn begins in another
+    process entirely: this server has no route it could hang the news on, and
+    the CLI's own registry row lands two to four seconds later. So the sender
+    says it, once, at the moment it sends — `run-controller.ts`, beside the
+    `announceTasksChanged` it already fires on both turn boundaries.
+
+    A FLOOR WITH A FUSE, not a status (tasks_watch.mark_running): it expires by
+    itself, and a registry that says `busy` replaces it the moment it appears.
+    Nothing here can pin a row open — the worst a wrong or malicious call can do
+    is spin one ring for fifteen seconds.
+
+    A session id with no task row yet is not an error: a brand-new chat's
+    transcript may not exist when its first turn starts, and the mark is simply
+    waiting for it. Hence no 404 and no lookup — this endpoint does not read the
+    listing at all.
+
+    `turn` lets `tasks_watch.mark_running` recognize a running POST that lost
+    the race to its own turn's `/api/tasks/idle` call (two independent
+    fetches; nothing here orders their arrival) and drop it, rather than
+    reopening a row a later idle call already closed (bugbot #1163).
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_running(session_id, turn=patch.turn)
+    return {"ok": True, "session_id": session_id}
+
+
+class IdlePatch(BaseModel):
+    session_id: str
+    # The other half of `RunningPatch.turn` — see `tasks_watch.mark_idle`.
+    turn: float | None = None
+
+
+@router.post("/api/tasks/idle")
+def api_task_idle(patch: IdlePatch):
+    """A turn just ENDED on this session — said by the page that sent it.
+
+    The other half of `/api/tasks/running`, and for the same reason: the CLI
+    running out of process means this server learns a turn is OVER from a
+    registry row disappearing (up to a tick late) or from the mark's own
+    fifteen-second fuse — both far slower than the page that watched the reply
+    arrive. `run-controller.ts` calls this at every turn boundary the poll
+    loop's own `finally` sees (a final result, a stop, an error), the same
+    place `noteChatActivity` already fires from.
+
+    Retires the send's mark at once (`tasks_watch.mark_idle`) — a FAST turn no
+    longer has to sit in a running ring for whatever was left of the mark's
+    window. Best-effort like its counterpart: a call that never arrives (a
+    closed tab) leaves the registry-corroborated stand-down and the TTL as the
+    fallback, so nothing here can pin a row running or wrongly mark one done —
+    the worst a wrong or malicious call does is retire a mark early, and the
+    registry/tail reading underneath is what a listing shows once it is gone.
+
+    `turn` is kept as the floor a later, out-of-order `mark_running` for this
+    same turn is measured against (`tasks_watch.mark_running`).
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    tasks_watch.mark_idle(session_id, turn=patch.turn)
+    return {"ok": True, "session_id": session_id}
+
+
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
-    live, _active = _live(task["path"], now)
+    live, _active, _marked = _live(task["path"], now)
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)
