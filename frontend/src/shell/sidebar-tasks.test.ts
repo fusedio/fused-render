@@ -256,18 +256,27 @@ describe("one poll behind both readers", () => {
   it("has the page publish its own rows instead of a second poll", () => {
     // Two polls of /api/tasks would be two answers, and the sidebar would show a
     // dot the page disagreed with for up to twenty seconds at a time.
-    expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
+    // THE LISTING FEED IS THE PAGE'S POLLER NOW (2026-09-15): the page
+    // subscribes and the STORE does the reading and the publishing, so there is
+    // still exactly one `/api/tasks` behind both readers — one fewer, in fact,
+    // because every chat card on the page shares it too.
+    expect(SCHEDULED).toContain("subscribeListing((ev) => {");
+    expect(SCHEDULED).not.toContain("getTasks(");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
     expect(STORE).toContain("getTasksPulse()");
-    expect(STORE).not.toContain("getTasks()");
+    expect(STORE).toContain("publishTasks(rows)");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
     expect(STORE).toContain("listeners.delete(setCurrent)");
     // Both reader sets count — the summary readers and the Current apps section's
     // row readers (D487) share the one poll, so either alone keeps it alive.
-    expect(STORE).toMatch(/if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0\) return;/);
+    // …and a listing feed counts as a feeder for the same reason: it publishes
+    // every row of every answer through publishTasks.
+    expect(STORE).toMatch(
+      /if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0 \|\| listingSubs\.size > 0\) return;/,
+    );
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
     expect(STORE).toContain("const IDLE_MS = 30_000");
@@ -591,9 +600,13 @@ describe("pokeTasks", () => {
     // While the Tasks page holds the feeder, this store must not call the
     // server — that is the double-poll the feeder exists to prevent. The poke
     // becomes a window event, and the PAGE's own reload publishes back.
-    expect(STORE).toMatch(
-      /export function pokeTasks\(\) \{\s*\n\s*if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
+    const poke = STORE.slice(STORE.indexOf("export function pokeTasks()"));
+    expect(poke).toMatch(
+      /if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
     );
+    // And the ROWS are answered by the shared listing feed, which is the only
+    // thing allowed to re-read /api/tasks while it is live.
+    expect(poke).toMatch(/if \(listingSubs\.size > 0\) refreshListing\(\);/);
   });
 
   it("polls itself immediately when unfed — through the guarded poll()", () => {
@@ -603,9 +616,14 @@ describe("pokeTasks", () => {
   });
 
   it("the Tasks page listens for the poke with its own reload", () => {
+    // `reloadFeeds`, not `reload`: the ROWS were answered by `pokeTasks` itself
+    // (it refreshes the shared listing feed), and this event is what still
+    // answers for the page's own two other endpoints — the schedule and the
+    // queue. Asking for the listing here as well would be a second full read for
+    // one poke.
     expect(SCHEDULED).toContain("TASKS_POKE_EVENT");
-    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reload\)/);
-    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
+    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
+    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reloadFeeds\)/);
   });
 
   it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {

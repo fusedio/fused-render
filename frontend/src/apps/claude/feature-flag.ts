@@ -24,6 +24,7 @@
 // markdown chunk) into its bundle for one boolean.
 import { useEffect, useState } from "react";
 import { getPrefs } from "@platform/lib/api";
+import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -60,14 +61,56 @@ function setRecap(next: boolean) {
   for (const listener of recapListeners) listener(next);
 }
 
+/**
+ * A PREFS READ THAT NEVER ANSWERS IS NOT A FAILURE — it is worse, because
+ * nothing catches it (2026-09-15).
+ *
+ * `getPrefs` rejects on a refused connection, and the retry and the `catch`
+ * below both handle that. What neither handles is a request the server ACCEPTS
+ * and never answers — a wedged worker, a machine that went to sleep mid-flight,
+ * a paused process — where the promise simply never settles. `enabled` then sits
+ * at `null` for the life of the page, and `null` is the state every chat MOUNT
+ * holds a placeholder over: no iframe, no chat, no error, for ever.
+ *
+ * So the read is raced with the same 8 s backstop every other gate in this app
+ * has (`platform/lib/clock.GATE_FALLBACK_MS`, `ChatFrame`'s original). Losing
+ * the race is treated exactly as a failed read is — `false`, the default the
+ * pref itself has — and `reading` is cleared either way, so the next mount asks
+ * again rather than inheriting a verdict taken while the server was away.
+ */
+function readPrefsWithin(ms: number): Promise<Awaited<ReturnType<typeof getPrefs>>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("prefs read timed out"));
+    }, ms);
+    getPrefs().then(
+      (p) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(p);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
+  reading = readPrefsWithin(GATE_FALLBACK_MS)
     // ONE BOUNDED RETRY, then a real answer either way. A prefs GET that fails
     // is usually a single dropped request (a reload racing the server's start),
     // so asking twice is worth one round trip.
-    .catch(() => getPrefs())
+    .catch(() => readPrefsWithin(GATE_FALLBACK_MS))
     .then((p) => {
       if (generation !== departed) return;
       set(p.chat?.native === true);

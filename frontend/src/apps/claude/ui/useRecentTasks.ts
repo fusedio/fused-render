@@ -9,6 +9,7 @@
 // (T:18411).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task } from "@platform/lib/api";
+import { useNow } from "@platform/lib/clock";
 import { sortForList } from "@shell/tasks-lib";
 import { subscribeTasks } from "../protocol/sessions";
 import { taskInPane } from "./list-rows";
@@ -102,16 +103,20 @@ export function useRecentTasks(
    * which is the input that function takes, not a second opinion about it: the
    * server's order still breaks every tie the lanes leave open.
    */
+  // THE CLOCK IS A DEP NOW (`useNow`, 2026-09-15). It used to read `Date.now()`
+  // inside the memo, on the argument that the only moment the question is about
+  // is the render doing the asking — which is true, and was the bug: nothing
+  // asked again. Half of what `sortForList` decides is "is this scheduled for
+  // LATER" (tasks-lib.groupByColumn), and that answer changes with the clock and
+  // nothing else, so a list left open sat in yesterday's lanes. One shared tick a
+  // MINUTE, which is the resolution these rows print.
+  const now = useNow();
   return useMemo(
     () =>
       rows === null
         ? null
-        : // `Date.now()` is read INSIDE the memo, not taken as a prop: the lanes
-          // it decides are "is this scheduled for later" (tasks-lib.groupByColumn),
-          // and the only moment that question is about is the render doing the
-          // asking. A clock in the deps would re-sort the list on every tick.
-          sortForList(rows.filter((t) => taskInPane(t, file)), Date.now()),
-    [rows, file],
+        : sortForList(rows.filter((t) => taskInPane(t, file)), now),
+    [rows, file, now],
   );
 }
 
@@ -344,16 +349,46 @@ export function useSessionTask(
    *  for the length of the `/api/tasks` round trip — a flash of the wrong
    *  identity on a task whose name we were already printing. */
   const painted = useRef(false);
+  /**
+   * …AND IT IS RESET WHEN THE SESSION CHANGES (2026-09-15).
+   *
+   * The flag says "this hook has real rows up", and rows read for the PREVIOUS
+   * session are not rows for this one. Left standing across a session swap it
+   * suppressed the new subscription's skeleton, so the header printed the OLD
+   * conversation's identity — or, once the memo below found nothing for the new
+   * id in the old rows, the `✻ Claude` fallback, which is a CLAIM that this chat
+   * has no task row and one we had not earned.
+   *
+   * ITS OWN REF and not `seedFor` above, which the seed block has already
+   * advanced by the time this line runs. On the SESSION only: `file` changing
+   * under one session re-subscribes to the same conversation, and the rows in
+   * hand are still that conversation's — the very case `painted` exists for.
+   */
+  const paintedFor = useRef(sessionId);
+  if (paintedFor.current !== sessionId) {
+    paintedFor.current = sessionId;
+    painted.current = false;
+  }
   useEffect(() => {
     if (!sessionId) return;
-    return subscribeRef.current(file, (next) => {
-      if (next === null) {
-        if (!painted.current) setRows(null);
-        return;
-      }
-      painted.current = true;
-      setRows(next);
-    });
+    return subscribeRef.current(
+      file,
+      (next) => {
+        if (next === null) {
+          if (!painted.current) setRows(null);
+          return;
+        }
+        painted.current = true;
+        setRows(next);
+      },
+      undefined,
+      false,
+      // AND THE WATCH IS ABOUT THIS SESSION, not only about `file`. A chat opened
+      // from the Tasks wall can be a task whose project is some other folder
+      // entirely, and a change scoped to `file` ancestry never concerned it — so
+      // the header's ring never heard its own session end.
+      sessionId,
+    );
   }, [sessionId, file]);
   return useMemo(() => {
     if (!sessionId) return NO_IDENTITY;

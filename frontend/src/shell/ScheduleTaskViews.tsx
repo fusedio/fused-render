@@ -44,6 +44,7 @@ import {
   unarchiveTask,
 } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
+import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
 import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
@@ -1703,13 +1704,17 @@ export function TaskList({
   // Memoised for the same reason `showProject` is: this runs on every keystroke of
   // the search box and the answer only moves when the rows do.
   //
-  // `now` is left to the default rather than threaded through a dep, exactly as the
-  // Board does with groupByColumn: the recency order can only change when a run
-  // does, and a run that happened is a new `tasks` from the poll — so the poll that
-  // makes the order stale is the same poll that re-runs this memo with a fresh
-  // clock. A ticking `now` in the deps would re-sort the list every second to
-  // produce the identical order.
-  const rows = useMemo(() => sortForList(tasks), [tasks]);
+  // `now` IS a dep, and it has to be (2026-09-15). The old note here said the
+  // order can only change when a run does — but half of what `sortForList` asks
+  // is "is this scheduled for LATER" (tasks-lib.groupByColumn), and that stops
+  // being true with nothing changing at all: a task due at 14:00 belongs in
+  // Upcoming at 13:59 and in a settled lane at 14:01, and the page sat on the
+  // wrong answer until something else happened to re-render it. `useNow` ticks
+  // once a MINUTE and is shared by every reader of that cadence, which is the
+  // resolution the rows print anyway — so this re-sorts sixty times an hour, not
+  // once a second.
+  const now = useNow();
+  const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2409,7 +2414,13 @@ function TaskNode({
   // row, beside the folder. Which of the two is tasks-lib.taskWhen's decision (it
   // reads LANE_SORTS, the same map the Board's lanes are ordered by), and null when
   // the task has neither, in which case nothing is drawn.
-  const when = taskWhen(task);
+  // ON THE SHARED MINUTE CLOCK (`useNow`), not on `Date.now()` read once at
+  // mount: this cell is the one thing in the row whose words go stale by
+  // themselves, and a chat left open for an hour still said "2m ago". Shared so
+  // every row in a list re-letters in ONE paint — two rows flipping "59m ago" to
+  // "1h ago" a second apart is two cells of one column disagreeing.
+  const now = useNow();
+  const when = taskWhen(task, now);
   // A run still ahead — the mark after the title, clock or circle arrows
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").

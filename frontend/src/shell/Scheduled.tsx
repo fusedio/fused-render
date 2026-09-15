@@ -55,8 +55,6 @@ import {
   getConfig,
   getSchedule,
   getScheduleQueue,
-  getTaskChanges,
-  getTasks,
 } from "@platform/lib/api";
 import type {
   ScheduledMessage,
@@ -96,18 +94,16 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
-  forgetListing,
-  publishTasks,
   readListing,
   readTasksRows,
-  rememberListing,
+  refreshListing,
+  subscribeListing,
   TASKS_POKE_EVENT,
   useTasksFeeder,
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
   isChatDraftTask,
-  mergeTaskChanges,
   provisionalTasks,
   viewFromSearch,
   viewUrl,
@@ -143,9 +139,13 @@ export interface TasksScope {
   entry?: string | null;
 }
 
-// How often the page re-reads itself. A `pending` message becomes `sent` on the
-// server's own tick (30s), so anything much slower than this shows a message as
-// still-waiting for a while after it went out.
+// How often the page re-reads the SCHEDULE and the QUEUE. A `pending` message
+// becomes `sent` on the server's own tick (30s), so anything much slower than
+// this shows a message as still-waiting for a while after it went out.
+//
+// The TASKS feed is no longer on this clock: it moved to the shared listing feed
+// (`tasksPulse.subscribeListing`), whose floor refresh is this same 20s — one
+// `/api/tasks` for the document rather than one per surface that wants the rows.
 const POLL_MS = 20000;
 
 // Which view is up, remembered across visits — a person who plans on the
@@ -334,15 +334,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [tasksLoaded, setTasksLoaded] = useState(
     () => readListing() !== null || tasks.length > 0,
   );
-  // The rows as the changes loop below last saw them, and the server
-  // generation they answer to. Refs, not state: the loop is one long-lived
-  // effect and must read the newest value without re-subscribing on every
-  // poll. Mirrored from `tasks` by the effect under it.
-  const tasksRef = useRef<Task[]>([]);
-  const generationRef = useRef(-1);
-  useEffect(() => {
-    tasksRef.current = tasks;
-  }, [tasks]);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -787,41 +778,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // so). The queue failing costs the Queued strip, and says nothing at all —
   // an empty queue and an unreadable one look the same to a user, and the
   // common case by far is that there is simply nothing waiting.
-  const reload = () => {
+  //
+  // TWO OF THEM HERE NOW, not three: the ROWS moved to the shared listing feed
+  // (`tasksPulse.subscribeListing`, subscribed below), which runs one
+  // `/api/tasks` and one change long-poll for the whole document — so this page
+  // and every chat card on it read the same listing off the same socket, and the
+  // sidebar's dot, which that feed publishes, cannot disagree with the rows under
+  // it. This pair keeps its own clock because it is its own pair of endpoints.
+  const reloadFeeds = () => {
     getSchedule().then(
       (r) => {
         setState(r);
         setLoadError(null);
       },
       (e: Error) => setLoadError(e.message),
-    );
-    getTasks().then(
-      (r) => {
-        // A full listing that left before a delta landed is OLDER than what
-        // is on screen; applying it would roll the rows back and the
-        // generation with them (bugbot #892). The next poll catches up.
-        if (typeof r.generation === "number" && r.generation < generationRef.current) return;
-        setTasks(r.tasks ?? []);
-        setTasksFailed(false);
-        setTasksLoaded(true);
-        if (typeof r.generation === "number") generationRef.current = r.generation;
-        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
-        // dot and the counts beside the label are this answer, not a second poll
-        // of their own — two polls would show a dot the page disagrees with for
-        // twenty seconds at a time. Publishing also restarts that module's own
-        // timer, so while this page is open nothing else calls /api/tasks.
-        publishTasks(r.tasks ?? []);
-        // And keep it for the next mount: this page is remounted on every
-        // navigation, and the seed above is what saves the trip back from
-        // paying for the listing twice.
-        rememberListing(r.tasks ?? []);
-      },
-      () => {
-        setTasks([]);
-        setTasksFailed(true);
-        setTasksLoaded(true);
-        forgetListing();
-      },
     );
     getScheduleQueue().then(
       (r) => {
@@ -834,94 +804,52 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       },
     );
   };
-  useEffect(reload, []);
+  /** "Re-read everything on this page NOW" — what a created task, a returned-to
+   *  tab or a finished run asks for. The rows answer through the feed's own
+   *  refresh, which is collapsed to one read for the document. */
+  const reload = () => {
+    reloadFeeds();
+    refreshListing();
+  };
+  useEffect(reloadFeeds, []);
   useRefreshOnReturn(reload);
   useEffect(() => {
-    const id = window.setInterval(reload, POLL_MS);
+    // The ROWS are deliberately not on this timer: the feed carries the same 20s
+    // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
+    // reads every twenty seconds for one answer.
+    const id = window.setInterval(reloadFeeds, POLL_MS);
     return () => window.clearInterval(id);
   }, []);
   // The corner card knows a run ended about a second after it does; this page's
   // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
-  // the feeder above means the shared store may not fetch on our behalf — and
-  // the page re-reads all three feeds, so the row flips the moment the popover
-  // does rather than up to a poll later.
+  // it has already refreshed the listing itself, so what this answers for is the
+  // schedule and the queue, and the row flips the moment the popover does rather
+  // than up to a poll later.
   useEffect(() => {
-    window.addEventListener(TASKS_POKE_EVENT, reload);
-    return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
+    window.addEventListener(TASKS_POKE_EVENT, reloadFeeds);
+    return () => window.removeEventListener(TASKS_POKE_EVENT, reloadFeeds);
   }, []);
-  // The fast lane. /api/tasks/changes long-polls the server's change watcher
-  // (tasks_watch.py) and answers the moment a session starts, resumes, takes
-  // a prompt or grows — so a `claude` typed into a terminal in some folder is
-  // a row here within a second, not up to a poll later. Only the rows that
-  // moved come back and are folded into place (mergeTaskChanges); the 20s
-  // full reload above stays as the truth underneath. Hidden tabs sit the loop
-  // out — useRefreshOnReturn reloads on the way back — and a failed call
-  // backs off rather than hammering a server that is restarting.
-  useEffect(() => {
-    let stopped = false;
-    let controller: AbortController | null = null;
-    const sleep = (ms: number) =>
-      new Promise<void>((resolve) => {
-        window.setTimeout(resolve, ms);
-      });
-    const untilVisible = () =>
-      new Promise<void>((resolve) => {
-        const onChange = () => {
-          if (document.visibilityState !== "visible") return;
-          document.removeEventListener("visibilitychange", onChange);
-          resolve();
-        };
-        document.addEventListener("visibilitychange", onChange);
-      });
-    const run = async () => {
-      while (!stopped) {
-        if (document.visibilityState !== "visible") {
-          await untilVisible();
-          continue;
-        }
-        if (generationRef.current < 0) {
-          // No full listing has answered yet; nothing to merge into.
-          await sleep(500);
-          continue;
-        }
-        controller = new AbortController();
-        try {
-          const r = await getTaskChanges(generationRef.current, 25, controller.signal);
-          if (stopped) return;
-          if (r.full) {
-            // "Reload everything" includes a server that restarted and counts
-            // from zero again: forget our generation FIRST, or the stale-listing
-            // guard in reload() would refuse the very listing that catches us
-            // up, forever (bugbot #892).
-            generationRef.current = -1;
-            reload();
-            await sleep(1000);
-            continue;
-          }
-          generationRef.current = r.generation;
-          const rows = r.rows ?? [];
-          const gone = r.gone ?? [];
-          if (rows.length || gone.length) {
-            const merged = mergeTaskChanges(tasksRef.current, rows, gone);
-            tasksRef.current = merged;
-            setTasks(merged);
-            publishTasks(merged);
-            // The merge is now the freshest full listing there is, so it — not
-            // the poll's older answer — is what a remount should seed from.
-            rememberListing(merged);
-          }
-        } catch {
-          if (stopped) return;
-          await sleep(3000);
-        }
-      }
-    };
-    void run();
-    return () => {
-      stopped = true;
-      controller?.abort();
-    };
-  }, []);
+  // THE ROWS, LIVE — one feed for the document (`tasksPulse.subscribeListing`).
+  //
+  // The fast lane is still `/api/tasks/changes`, long-polling the server's change
+  // watcher (tasks_watch.py) so a `claude` typed into a terminal in some folder is
+  // a row here within a second rather than up to a poll later; only the rows that
+  // moved come back and are folded into place, and a 20s floor read stays as the
+  // truth underneath. What changed is WHOSE loop it is: this page used to run one
+  // and every ClaudeChat mount on it ran another, so the cards wall with twelve
+  // chats open held thirteen sockets on a 25-second wait against a browser cap of
+  // six, and every other request on the page queued behind them. The feed also
+  // publishes to the sidebar and remembers the listing for the next mount, which
+  // is what this effect used to do by hand.
+  useEffect(
+    () =>
+      subscribeListing((ev) => {
+        setTasks(ev.rows);
+        setTasksFailed(ev.failed);
+        setTasksLoaded(true);
+      }),
+    [],
+  );
 
   // A folder chip pressed on a row or a card: filter the page to that
   // project, pressing the pinned one again clears it. It REPLACES the project
