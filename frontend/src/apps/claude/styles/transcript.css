@@ -357,13 +357,35 @@
    trigger, still bottom-right, drops into it. `.md-tablewrap` is named beside
    `table` because the enhance pass wraps a settled table in it (`markdown.ts`
    `wrapTables`), so after that pass the bare `table` selector matches nothing.
-   (A list needs no escape: the spacer lands after the last item, in the list's
-   own flow, so the trailing line it opens IS the room.) */
+
+   A LIST gets its spacer INSIDE THE LAST ITEM (Akshil, 2026-09-15). After the
+   `ul` itself the inline-block opens a line of its own under the list, and the
+   trigger — end-aligned to the prose box — dropped onto that empty line, a
+   row under a one-line bullet with the whole column free beside it. In the
+   last `li` the room comes out of the item's own last line, so the word sits
+   level with the sentence the way it does in a paragraph. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > pre:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > table:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > .md-tablewrap:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child::after {
   content: none;
+}
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: var(--c-run-trigger-w);
+  height: 0;
+}
+/* …AND LEVEL WITH IT. `li` carries `margin: 2px 0` (below), and the trigger is
+   end-aligned to the prose box, so with the margin the word sat 2px under the
+   bullet's line. The seat's last item gives that margin up; the list's own
+   bottom margin is already 0 as the prose's `:last-child`. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child {
+  margin-bottom: 0;
 }
 .chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
 .chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
@@ -398,6 +420,16 @@
   grid-row: 2;
   grid-column: 1;
   justify-self: start;
+}
+/* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
+   word on the FIRST SENTENCE of the prose that follows, not the paragraph's
+   last line: `SegmentView` draws that prose as two blocks (`leadSplit`), the
+   sentence with the trigger in its corner and the rest under it. The pair is
+   spaced as two paragraphs — the lead is a line the eye lands on, then the
+   reply. Nothing else in these blocks changes: the same `.seg-text`, the same
+   corner seat, the same reservation on the last line. */
+.chat-root .seg-block.is-lead + .seg-block.is-rest {
+  margin-top: 12px;
 }
 /* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
    call, or a run that follows a card. The trigger takes its own line, still

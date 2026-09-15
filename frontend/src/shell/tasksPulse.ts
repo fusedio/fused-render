@@ -109,9 +109,9 @@ async function poll() {
   const departed = generation;
   try {
     const answer = (await getTasksPulse()).tasks ?? [];
-    // A feeder took over, or a fresher publish landed, while this request was
-    // in the air: this answer is already history. Drop it.
-    if (feeders === 0 && generation === departed) publishTasks(answer);
+    // A feeder or the listing feed took over, or a fresher publish landed, while
+    // this request was in the air: this answer is already history. Drop it.
+    if (!fedElsewhere() && generation === departed) publishTasks(answer);
   } catch {
     // A failed read is not news: the sidebar keeps the last answer it had rather
     // than dropping a dot because one poll lost a race with a restart.
@@ -119,6 +119,24 @@ async function poll() {
     inFlight = false;
     schedule();
   }
+}
+
+/**
+ * IS SOMEBODY ELSE THE POLLER?
+ *
+ * Two owners can say yes, and every guard in this module has to ask BOTH
+ * (bugbot, 2026-09-15). The Tasks page's `useTasksFeeder` was the first, and
+ * `schedule`/`pokeTasks` learned about the listing feed when it landed — but
+ * `poll` and the two subscribe hooks were still asking only about feeders, so a
+ * sidebar remounting while a CHAT held the listing (no Tasks page anywhere)
+ * fired `/api/tasks/pulse` and published its thinner answer over the full rows
+ * the feed had just handed us: two reads, two sources, and a dot that disagreed
+ * with the rows under it until the next tick.
+ *
+ * One predicate so the next owner cannot be added to three of four places.
+ */
+function fedElsewhere(): boolean {
+  return feeders > 0 || listingSubs.size > 0;
 }
 
 /**
@@ -139,7 +157,7 @@ function schedule() {
   // every answer through publishTasks, so a pulse poll beside it is the same
   // double-poll the feeder rule exists to prevent — just spent on the smaller
   // endpoint.
-  if (listeners.size + rowListeners.size === 0 || feeders > 0 || listingSubs.size > 0) return;
+  if (listeners.size + rowListeners.size === 0 || fedElsewhere()) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
@@ -311,7 +329,11 @@ export function useTasksPulse(): TasksPulse {
     // second /api/tasks alongside the Tasks page's own on every trip to that
     // page — the same double-poll the feeder exists to prevent, just spent per
     // navigation instead of per tick. A feeder's answer is already on its way.
-    if (feeders === 0) void poll();
+    //
+    // AND A LISTING FEED COUNTS (`fedElsewhere`): a chat holding the feed
+    // publishes the same rows through the same door, with no Tasks page in
+    // sight, and this read would have landed a thinner answer over them.
+    if (!fedElsewhere()) void poll();
     else schedule();
     return () => {
       listeners.delete(setCurrent);
@@ -330,7 +352,7 @@ export function useTasksPulseRows(): TaskPulseTask[] {
   useEffect(() => {
     rowListeners.add(setRows);
     setRows(tasks);
-    if (feeders === 0) void poll();
+    if (!fedElsewhere()) void poll();
     else schedule();
     return () => {
       rowListeners.delete(setRows);
@@ -382,6 +404,10 @@ export const CHANGES_BACKOFF_MS = 3000;
  * 30s tick writes no transcript) and to the handshake window below.
  */
 export const LISTING_FLOOR_MS = 20_000;
+
+/** How long the watcher sits out after a `full` answer, so the catch-up listing
+ *  has the field to itself. The Tasks page's own loop waited exactly this. */
+export const CATCH_UP_SETTLE_MS = 1000;
 
 /** What `/api/tasks/changes` answers (fused_render/tasks_watch.py). */
 interface ChangesResponse {
@@ -514,6 +540,10 @@ function startFeed(env: ListingEnv) {
   let abort: AbortController | null = null;
   let waking: { cancel(): void } | null = null;
   let seat = 0;
+  /** A `full` answer has asked for a whole new listing and it has not landed
+   *  yet, so the rows in hand describe a server this session has stopped
+   *  believing. See the `r.full` branch below. */
+  let catchingUp = false;
   const read = env.tasks || getTasks;
 
   const load = async () => {
@@ -521,6 +551,8 @@ function startFeed(env: ListingEnv) {
     try {
       const res = await read();
       if (stopped || seat !== mine) return;
+      // The catch-up has landed (or this read superseded it): deltas count again.
+      catchingUp = false;
       const rows = (Array.isArray(res?.tasks) ? res.tasks : []).filter(
         (t): t is Task => !!t && !!t.key,
       );
@@ -537,6 +569,10 @@ function startFeed(env: ListingEnv) {
       emitListing({ rows, failed: false, delta: null });
     } catch {
       if (stopped || seat !== mine) return;
+      // A FAILED catch-up still ends it: holding deltas for ever behind a read
+      // that will never land is worse than folding them into whatever comes next,
+      // and the failure below forgets the rows anyway.
+      catchingUp = false;
       // A listing that cannot be read is "no rows" to the chat's list and a
       // quiet line on the Tasks page — never an error page, and never rows kept
       // over a server that has since gone away (#1079).
@@ -583,13 +619,34 @@ function startFeed(env: ListingEnv) {
         // "Reload everything" includes a server that restarted and counts from
         // zero again: forget our generation FIRST, or the stale-listing guard in
         // `load` would refuse the very read that catches us up, forever.
+        //
+        // AND NOTHING IS FOLDED IN UNTIL THAT READ LANDS (bugbot, 2026-09-15).
+        // The rows still held are the PRE-restart listing, and a delta arriving
+        // in the window behind the catch-up GET used to be merged into them AND
+        // to write `listingGen` — which then made the catch-up listing itself
+        // look older than what was on screen, so it was dropped and the page
+        // kept a mixture of pre-restart rows and post-restart deltas until
+        // somebody reloaded. The old Tasks-page loop did not have this hole: it
+        // refused to merge at all while its generation was `-1`. `catchingUp` is
+        // that rule, restored.
+        //
+        // The pause is the old loop's too. It is not what makes this correct —
+        // `catchingUp` is — but it keeps the watcher from spinning a round trip
+        // against a server that is still handing out changes while it restarts.
         listingGen = -1;
+        catchingUp = true;
         void load();
+        await env.sleep(CATCH_UP_SETTLE_MS);
         continue;
       }
       const rows = r.rows || [];
       const gone = r.gone || [];
       if (!rows.length && !gone.length) continue;
+      // A DELTA IS ABOUT ROWS WE NO LONGER TRUST. Dropped rather than queued: the
+      // listing on its way is read AFTER this change was recorded, so it already
+      // contains it, and the floor refresh plus every poke cover the sliver a
+      // change can land in between the server's snapshot and its arrival here.
+      if (catchingUp) continue;
       if (typeof r.generation === "number") listingGen = r.generation;
       const held = readListing();
       if (held === null) {
@@ -674,6 +731,26 @@ export function subscribeListing(
     if (listingSubs.size === 0) {
       feedStop?.();
       feedStop = null;
+      // AND THE GENERATION GOES WITH IT (bugbot, 2026-09-15). `listingGen` is
+      // the guard against a full read that left BEFORE a delta landing after
+      // it — a race that only exists inside one running feed. Kept across a
+      // teardown it becomes a claim about a server counter this session has
+      // stopped following: a server that restarted counts from zero again, so
+      // the next feed's very first listing would be "older" than the number we
+      // were holding, be dropped, and leave the page on the remembered rows
+      // with deltas folding into them for ever. The rows survive
+      // (`rememberListing`) because they are still the best answer we have; the
+      // number does not, because nothing is left to race it.
+      listingGen = -1;
+      // AND SO DOES THE FAILURE (bugbot, 2026-09-15). A failed read forgets the
+      // rows, so `readListing()` is null and the replay at the top of
+      // `subscribeListing` falls through to `{rows: [], failed: true}` — which
+      // the Tasks page draws as "could not be loaded" over an empty list,
+      // throwing away the provisional rows it had just seeded from the pulse
+      // store. That verdict was about a server we have since stopped asking; the
+      // new feed's own first read answers for the server as it is NOW, one round
+      // trip from here.
+      listingFailed = false;
       schedule();
     }
   };

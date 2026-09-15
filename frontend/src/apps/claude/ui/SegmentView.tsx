@@ -14,7 +14,7 @@ import { Fragment, memo, useMemo, useRef } from "react";
 
 import { cn } from "@platform/lib/utils";
 
-import { groupCollapsibles, isRun, seatTriggers } from "../protocol/segments";
+import { groupCollapsibles, isRun, leadSplit, seatTriggers } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
 import { Caret } from "./Caret";
@@ -164,9 +164,9 @@ export const SegmentView = memo(function SegmentView({
     // than emitted beside it: the map's node and the segment have to stay
     // one keyed child or React re-keys the whole list when a card resolves.
     const filed = cardsAfter?.get(i) ?? null;
-    const withFiled = (node: React.ReactNode) =>
+    const withFiled = (node: React.ReactNode, k: string = key) =>
       filed ? (
-        <Fragment key={key}>
+        <Fragment key={k}>
           {node}
           {filed}
         </Fragment>
@@ -191,7 +191,16 @@ export const SegmentView = memo(function SegmentView({
     const trigger = seated ? (
       <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} />
     ) : null;
-    if (tail && tail.index === i) {
+    // A LEADING run — one seated here from ABOVE (its row is before this one)
+    // — sits on the FIRST SENTENCE of this prose, not its last line (Akshil,
+    // 2026-09-15; `leadSplit`). The prose is drawn as two blocks: the lead
+    // sentence with the trigger in its corner, then the rest. A trailing run
+    // alone keeps the corner of the whole paragraph, as before.
+    const leading = !!held && held.some((run) => run < r);
+    const isTail = !!tail && tail.index === i;
+    const source = isTail ? tail.text : segText(seg);
+    const split = leading ? leadSplit(source) : null;
+    if (isTail) {
       // The typer's slice, and the caret AFTER the prose element rather than
       // inside it (T:15066 `bodyEl.after(cur)`) — in the trigger's own slot of
       // the block, which is what keeps the prose element the same element when
@@ -203,7 +212,28 @@ export const SegmentView = memo(function SegmentView({
       // BOTH, when a leading run is seated here (review #5): the word belongs
       // in this paragraph's corner from the first frame of it, and the caret
       // belongs after the last glyph — the slot holds the pair rather than
-      // choosing, so streaming loses neither.
+      // choosing, so streaming loses neither. Once the first sentence has
+      // closed (`split`), the word stays on it and the caret moves on to the
+      // rest, which is its own block from that frame.
+      if (split) {
+        nodes.push(
+          segBlock(
+            key,
+            <MarkdownView className="seg-text" text={split.lead} enhance={false} />,
+            trigger,
+            true,
+            "is-lead",
+          ),
+          segBlock(
+            key + ":rest",
+            <MarkdownView className="seg-text" text={split.rest} enhance={false} />,
+            tail.cursor ? <Caret /> : null,
+            false,
+            "is-rest",
+          ),
+        );
+        return;
+      }
       nodes.push(
         segBlock(
           key,
@@ -216,6 +246,26 @@ export const SegmentView = memo(function SegmentView({
           ) : null,
           !!seated,
         ),
+      );
+      return;
+    }
+    if (split) {
+      const rest = segBlock(
+        key + ":rest",
+        <MarkdownView className="seg-text" text={split.rest} enhance />,
+        null,
+        false,
+        "is-rest",
+      );
+      nodes.push(
+        segBlock(
+          key,
+          <MarkdownView className="seg-text" text={split.lead} enhance />,
+          trigger,
+          true,
+          "is-lead",
+        ),
+        filed ? withFiled(rest, key + ":rest") : rest,
       );
       return;
     }
@@ -246,9 +296,12 @@ function segBlock(
   /** `after` is the TRIGGER, not the caret: only then does the last line owe it
    *  room (`styles/transcript.css`, `.has-trigger`). */
   trigger = false,
+  /** `is-lead` / `is-rest` — the two halves a leading run splits a prose
+   *  segment into (`leadSplit`); the sheet spaces the pair. */
+  extra?: string,
 ): React.ReactElement {
   return (
-    <div key={key} className={cn("seg-block", trigger && "has-trigger")}>
+    <div key={key} className={cn("seg-block", trigger && "has-trigger", extra)}>
       {prose}
       {after}
     </div>

@@ -121,17 +121,15 @@ export interface PreviewBox {
    * THE VIRTUAL VIEWPORT HEIGHT to give the frame — an UNSCALED length, the
    * vertical twin of `PREVIEW_VW`'s 1280.
    *
-   * It is 720 while the box is at or under its natural 16:9 footprint, where a
-   * taller box than frame means the box CROPS and scrolls. Past that it is
-   * `height / scale`, so a box dragged taller hands the app a taller window
-   * instead of a band of its background (`previewBox` carries the argument).
-   * The drawn footprint is therefore `frameHeight * scale`, which is what the
-   * sized wrapper under the frame has to be.
+   * ALWAYS `card / scale` (Akshil, 2026-09-15): the frame is exactly as tall as
+   * the card it is drawn in, so the card never has anything to scroll and the
+   * app owns its own scrolling inside the frame. It used to floor at 720 and
+   * let the card crop-and-scroll below 16:9, which put a second pair of
+   * scrollbars (x from sub-pixel rounding, y from the crop) around a frame
+   * that already had its own. The drawn footprint is `frameHeight * scale`,
+   * which is what the sized wrapper under the frame has to be.
    */
   frameHeight: number;
-  /** Is the box showing less than the whole frame? (The caller turns on
-   *  `overflow: auto` either way; this is for the tests to name.) */
-  cropped: boolean;
 }
 
 function clamp(value: number, low: number, high: number): number {
@@ -165,39 +163,33 @@ export function previewBox(
   // height but a zero scale is a band of empty background where an app should
   // be. The width guard has to be its own: the height clamps below would
   // happily hand such a panel the 120px floor.
-  if (!(scale > 0)) return { height: 0, scale: 0, frameHeight: PREVIEW_VH, cropped: false };
+  if (!(scale > 0)) return { height: 0, scale: 0, frameHeight: 0 };
   // The BOX's natural height: the 16:9 card plus the air around it.
   const natural = PREVIEW_VH * scale + 2 * PREVIEW_PAD_Y;
   const ceiling = bodyHeight - PREVIEW_CHAT_MIN;
   if (!(ceiling > PREVIEW_MIN_H)) {
-    return { height: 0, scale, frameHeight: natural, cropped: natural > 0 };
+    return { height: 0, scale, frameHeight: 0 };
   }
   const height =
     dragged === null
       ? clamp(Math.min(natural, bodyHeight * PREVIEW_CAP_FRACTION), PREVIEW_MIN_H, ceiling)
       : clamp(dragged, PREVIEW_MIN_H, ceiling);
   /**
-   * THE APP GETS A TALLER WINDOW RATHER THAN A TALLER LETTERBOX (Akshil,
-   * 2026-09-14 — design.md, Polish batch 3).
+   * THE APP GETS A WINDOW THE SIZE OF THE CARD, NEVER A CROP (Akshil,
+   * 2026-09-14/15 — design.md, Polish batch 3, revised).
    *
    * The scale is the panel's and stays the panel's — `(peekWidth − 2 ×
    * PREVIEW_INSET) / 1280` — so dragging the horizontal seam never changes how
-   * big the app's text is. What
-   * the vertical seam changes is how much of the app there IS. Below the 16:9
-   * footprint that is a crop and the box scrolls, as it always did. Above it,
-   * the old shape had nothing left to show — the frame was 720 virtual pixels
-   * tall however far the seam went, so the drag bought a band of the app's
-   * background and a scrollbar with nothing to scroll.
-   *
-   * So past its natural height the FRAME grows instead: the virtual viewport
-   * becomes `height / scale`, the app lays out into a taller window, and the
-   * box is filled with more of the app at the same size. Floored at 720 so a
-   * short panel never hands the app a viewport no desktop layout expects.
+   * big the app's text is. What the vertical seam changes is how much of the
+   * app there IS: the virtual viewport is `card / scale`, the app lays out into
+   * exactly the window it is shown in, and scrolls its own content inside the
+   * frame. Nothing outside the frame scrolls — a card that cropped a 720-tall
+   * frame grew a second scrollbar beside the app's own.
    */
   // The CARD is what the app fills — the box minus its vertical padding.
   const card = Math.max(0, height - 2 * PREVIEW_PAD_Y);
-  const frameHeight = Math.max(PREVIEW_VH, card / (scale || 1));
-  return { height, scale, frameHeight, cropped: frameHeight * scale - card > 0.5 };
+  const frameHeight = card / (scale || 1);
+  return { height, scale, frameHeight };
 }
 
 // ---- the dragged height, in memory only --------------------------------------
