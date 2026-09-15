@@ -1256,23 +1256,6 @@ def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(
         supervisor.reset()
 
 
-# -- native chat (beta) flag ---------------------------------------------------
-
-
-def test_native_chat_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    # Default off: the legacy template iframe stays until someone opts in.
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    body = client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()
-    assert body["chat"]["native"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["native_chat_enabled"] is True
-    assert client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()[
-        "chat"
-    ]["native"] is False
-
-
 # -- task side peek (experimental) flag ----------------------------------------
 
 
@@ -1368,55 +1351,18 @@ def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
     assert stored["task_peek_enabled"] is True
 
 
-def test_native_chat_junk_value_reads_as_off(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"native_chat_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    assert prefs_mod.native_chat_enabled() is False
-
-
-def test_native_chat_env_override_beats_pref(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    # Env on beats a stored off (and a missing pref).
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "1")
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-    # Env off beats a stored on; the PUT still persists the pref.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "0")
-    body = client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()
-    assert body["chat"]["native"] is False
-    # Any other env value is ignored and the stored pref decides.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "yes")
-    assert client.get("/api/prefs").json()["chat"]["native"] is True
-
-
-def test_native_chat_reports_which_env_value_is_deciding(tmp_path, monkeypatch):
-    """`forced_by`, the same shape `engine_state()` uses: with the override in
-    force the stored switch cannot win, so the Preferences checkbox has to be
-    able to say what is deciding instead of silently snapping back."""
-    client, _ = _client(tmp_path, monkeypatch)
-    # Unset: nothing is forcing it, and the switch is the user's.
-    monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
-    for value in ("1", "0"):
-        monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", value)
-        chat = client.get("/api/prefs").json()["chat"]
-        assert chat["forced_by"] == value
-        assert chat["native"] is (value == "1")
-    # A value the override IGNORES is not "forcing" anything: the pref decides,
-    # so the switch stays live.
-    monkeypatch.setenv("FUSED_RENDER_NATIVE_CHAT", "yes")
-    assert client.get("/api/prefs").json()["chat"]["forced_by"] is None
-
-
 def test_chat_recap_defaults_on_and_toggles(tmp_path, monkeypatch):
     """THE ONE SWITCH HERE THAT DEFAULTS ON, so it needs the opposite idiom to
     every flag above: only a stored `false` turns the session-recap fold off.
+    It is also the whole of the `chat` payload block now that the native chat
+    is the only chat there is — there is no implementation switch left to
+    report beside it.
     Read `is not False` rather than `is True`, or every install that has never
     opened Preferences loses a feature it was never asked about."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["chat"]["recap"] is True
+    # The whole `chat` block, not just the one key: the implementation switch
+    # (`native`/`forced_by`) is gone and must not come back by accident.
+    assert client.get("/api/prefs").json()["chat"] == {"recap": True}
     body = client.put("/api/prefs", json={"chat_recap_enabled": False}, headers=FUSED).json()
     assert body["chat"]["recap"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
@@ -1437,11 +1383,3 @@ def test_put_rejects_bad_chat_recap_enabled(tmp_path, monkeypatch):
     )
     assert not (home / "prefs.json").exists()
 
-
-def test_put_rejects_bad_native_chat_enabled(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put("/api/prefs", json={"native_chat_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-    assert not (home / "prefs.json").exists()

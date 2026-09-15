@@ -34,11 +34,10 @@ import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { ChatMount, useNativeChatFlag } from "@apps/claude";
+import { ChatMount } from "@apps/claude";
 import { runAgent } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
@@ -47,7 +46,7 @@ import { runAgent } from "@apps/claude/protocol/agent";
 // Claude wordmark and the model/run cluster are facts about the TOOL, and this
 // panel is about a TASK. What is left is the task — its status, its number, its
 // title — with the panel's own controls either side.
-import { folderHref, peekFrameSrc } from "./schedule-lib";
+import { folderHref } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
 import {
   ICON_ARCHIVE,
@@ -506,19 +505,11 @@ export function TaskPeek({
   const gone = !!task && !!missing?.has(folder);
   const templates = useChatTemplates(task && !gone ? [task.target || task.project] : []);
   const template = task ? templates[task.target || task.project] : undefined;
-  const src =
-    task && task.session_id && template && !gone
-      // `_nofocus=1`, the shell's embedded-frame focus contract
-      // (platform/lib/frame-focus): without it the chat template focuses its
-      // own composer ~300ms after boot, which pulls the keyboard out of this
-      // page and takes ⌃⇧J / ⌃⇧K / Esc with it. A wrapper at the HOST, which is
-      // where every other framing site applies it (legacy-src.ts's header).
-      // `noFocus` below is the same fact for the native branch.
-      ? withNoFocus(
-          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
-        )
-      : null;
-  const resolving = !src && !gone && !!task?.session_id && template === undefined;
+  // Both halves have to be there before there is a conversation to show: no
+  // session means there is none yet, and no template means the folder's stat
+  // has not answered (or registers no chat for it).
+  const chattable = !!(task && task.session_id && template && !gone);
+  const resolving = !chattable && !gone && !!task?.session_id && template === undefined;
 
   // ---- the app preview -------------------------------------------------------
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:
@@ -720,72 +711,7 @@ export function TaskPeek({
     return () => document.removeEventListener("keydown", onKey);
   }, [key, peekKey]);
 
-  // THE SAME KEYS, FROM INSIDE THE LEGACY FRAME. Flag off the chat is another
-  // document, and every key the reader presses in it fires there — where the
-  // listener above cannot hear it. `_nofocus=1` (below) stops the template
-  // TAKING the keyboard on its own, but the reader is entitled to click into
-  // the chat and type, and ⌃⇧J / ⌃⇧K / Esc have to keep working when they do.
-  // Same origin, so the frame's document takes a listener of its own; a key the
-  // template already stopped never reaches it, which is the right precedence.
-  // Flag ON there is no frame and no second document.
-  //
-  // EVERY DOCUMENT IT ATTACHES TO IS TRACKED. The effect attaches at mount AND
-  // on every `load`, so an iframe that navigates more than once had one live
-  // listener per document and the cleanup removed only the last — the earlier
-  // documents kept a closure over a stale `step`/`openAsPage` for as long as
-  // they were alive.
-  //
-  // KEYED ON THE FLAG, and that is not decoration. The iframe does not exist on
-  // the render that mounts this panel: `ChatMount` holds a placeholder while
-  // the `native_chat_enabled` read is in flight and only then renders the
-  // frame. Without the flag in the deps, nothing this effect watches changed
-  // between "no frame" and "frame", so it ran once against a null ref and never
-  // again — the listener was simply never attached, and every shortcut pressed
-  // inside the chat was lost (including Esc).
   const previewRef = useRef<HTMLIFrameElement | null>(null);
-  const nativeChat = useNativeChatFlag();
-  // THE PARAM BOUNDARY, and the whole reason the panel showed the chat
-  // template's HOME screen instead of the task's conversation: `fused.params`
-  // inside the frame climbs to the topmost same-origin ancestor unless a window
-  // says stop, so the template read `/tasks` — which carries no `session_id` —
-  // rather than the `session_id` in its own `src`. The Cards wall marks the
-  // window for exactly this reason; the List, the Board and the Calendar never
-  // had a framed chat before, so nothing marked it for them.
-  //
-  // Held through the shared COUNT (platform/lib/param-boundary) so this and the
-  // Cards wall can both be up without one's unmount unmarking the other's.
-  useParamBoundary(nativeChat === false && !!src);
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  useEffect(() => {
-    if (key === null) return;
-    // `false` is the legacy branch; `null` is "not asked yet" and `true` has no
-    // second document to listen in.
-    if (nativeChat !== false) return;
-    const frame = frameRef.current;
-    if (!frame) return;
-    const seen = new Set<Document>();
-    const onKey = (e: KeyboardEvent) => {
-      const doc = (e.target as Node | null)?.ownerDocument;
-      peekKey(e, doc ?? document);
-    };
-    const attach = () => {
-      try {
-        const doc = frame.contentDocument;
-        if (!doc || seen.has(doc)) return;
-        seen.add(doc);
-        doc.addEventListener("keydown", onKey);
-      } catch {
-        /* not ours — /render is same-origin, but a listener is not worth a throw */
-      }
-    };
-    frame.addEventListener("load", attach);
-    attach();
-    return () => {
-      frame.removeEventListener("load", attach);
-      for (const doc of seen) doc.removeEventListener("keydown", onKey);
-      seen.clear();
-    };
-  }, [key, src, peekKey, nativeChat]);
 
   // ---- the seam --------------------------------------------------------------
   const panelRef = useRef<HTMLElement | null>(null);
@@ -1320,18 +1246,14 @@ export function TaskPeek({
             </>
           )}
           <div className="task-side-peek-chat">
-            {src && task && mounted ? (
+            {chattable && task && mounted ? (
               // KEYED ON THE TASK, which is what makes a SWAP a swap: the panel
               // itself never re-slides (design.md, Peek body), and the new
-              // conversation arrives behind ChatFrame's own 3-line shimmer —
+              // conversation arrives behind the chat's own 3-line shimmer —
               // the same cover the Cards wall and the explorer sidebar use —
               // because a remount restarts its wait.
               <ChatMount
                 key={task.key}
-                legacySrc={src}
-                legacyFrameRef={frameRef}
-                className="task-peek-frame"
-                title={`${task.task_id} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
                 // ONE TURN TO LAND ON, when the press that opened this was a

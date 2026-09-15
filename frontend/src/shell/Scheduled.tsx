@@ -20,7 +20,7 @@
 // the filters, the modal.
 //
 // Scheduling happens in two places, deliberately: the chat composer's Send now
-// pill (templates/claude/template.html) when a chat is already open — it knows
+// pill (apps/claude/ui/SchedButton) when a chat is already open — it knows
 // the folder and holds the message — and this page's New task modal when the
 // starting point is the calendar ("what should run Monday 9am?"), where no chat
 // exists yet to borrow from. A calendar slot click opens the modal with that
@@ -618,7 +618,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   }, []);
 
   // `?new=1&target=…` — the chat composer's Schedule button
-  // (templates/claude/template.html openScheduler). The chat knows the folder
+  // (apps/claude/ui/sched-draft `schedulerUrl`). The chat knows the folder
   // and nothing else, so the params carry only that, and this turns them into
   // an already-open form: landing on a page with a button still to press would
   // make one control read as two.

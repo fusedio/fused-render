@@ -52,7 +52,15 @@ export function RowEditorModal({
     alive.current = false;
   }, []);
 
-  const known = new Set(inventory.templates.map((t) => t.name));
+  // Every name that RESOLVES: the inventory's folders, plus the shell-rendered
+  // templates (`claude`) whose folder is real but ships no template.html and so
+  // never enters the inventory pool — the server names those in
+  // `shellRendered`. Without them the chip for the app's own chat read as a
+  // dangling pointer on ~every row.
+  const known = new Set([
+    ...inventory.templates.map((t) => t.name),
+    ...(inventory.shellRendered ?? []),
+  ]);
   // Names that resolve to no template folder (and aren't a "_" sentinel) —
   // dangling registry pointers. The old "..." splice token is no longer
   // special: it lands here like any other dangling name. We only surface them;

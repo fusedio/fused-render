@@ -187,7 +187,7 @@ _SCHEDULED_PERMISSION_MODE = "auto"
 # module-level `exec_module`) on every validation.
 #
 # Copying it is only safe because a TEST holds the copies together
-# (test_claude_schedule_pill.py, the technique agent.py's own SWITCHABLE_MODES
+# (test_claude_schedule_handoff_params.py, the technique agent.py's own SWITCHABLE_MODES
 # comment names). The first version of this line omitted `acceptEdits` while its
 # comment called the list four words long, and the failure mode is worth
 # recording: `_start` re-validating downstream means drift can never buy a
@@ -350,12 +350,14 @@ def shots_dir() -> str:
 
 
 #: The claude page's wire tag for a message's attachments — a SECOND COPY of
-#: `PANE_SHOT_TAG` in fused_render/templates/claude/template.html, which is the
-#: canonical one. It cannot be imported in either direction (a template may not
-#: import fused_render, SPEC PY-15 / D166), and it is already spelled a third
-#: time in `tasks_store._MACHINERY_STRIP` and a fourth in `agent.py`'s. The
-#: parity test in tests/test_schedule_images.py reads the page's constant out of
-#: template.html and compares this one to it.
+#: `PANE_SHOT_TAG` in frontend/src/apps/claude/protocol/wire.ts, which is the
+#: canonical one (the native chat writes the block). It cannot be imported in
+#: either direction (a template may not import fused_render, SPEC PY-15 / D166;
+#: and Python cannot import TypeScript at all), and it is already spelled a
+#: third time in `tasks_store._MACHINERY_STRIP` and a fourth in
+#: `fused_render/templates/claude/agent.py`. The parity test in
+#: tests/test_schedule_images.py reads the canonical constant out of
+#: protocol/wire.ts and compares this one to it.
 _PANE_SHOT_TAG = "pane-shot"
 
 
@@ -1586,8 +1588,9 @@ def _attachments_block(entry: dict) -> str:
     opening the viewer). Same files, two presentations, and the one the user
     could not read was the one they never chose.
 
-    The block the chat writes is the block that renders. `template.html` reads
-    it back on restore (`paneShotIn` → `shotRestoreReceipt`) and every reader of
+    The block the chat writes is the block that renders. The chat reads
+    it back on restore (`paneShotIn` in protocol/wire.ts → the receipt rows in
+    ui/Receipts.tsx) and every reader of
     a transcript already strips it from a row title (`tasks_store`,
     `agent.py::_strip_machinery`, `sessionTitle`), because `pane-shot` has been
     in `_MACHINERY_STRIP` all along. Nothing new had to learn anything; the
@@ -1600,10 +1603,11 @@ def _attachments_block(entry: dict) -> str:
 
     THE TAG AND THE PAYLOAD SHAPE ARE DUPLICATED, not imported: a template may
     not import fused_render and fused_render may not import a template (SPEC
-    PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the page's
-    `PANE_SHOT_TAG` and the entries are hand-written to the shape `paneShotIn`
-    parses. A parity test reads the page's constant out of template.html and
-    compares (D146: the duplicated rule gets a test, not a comment).
+    PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the chat's
+    `PANE_SHOT_TAG` (frontend/src/apps/claude/protocol/wire.ts) and the entries
+    are hand-written to the shape `paneShotIn` parses. A parity test reads the
+    canonical constant out of that file and compares (D146: the duplicated rule
+    gets a test, not a comment).
 
     What the payload leaves out, and why that is safe: `viewNote` is "" (there
     is nothing this picture fails to show — nobody cropped it), and there is no
@@ -1656,7 +1660,8 @@ def _composed(entry: dict) -> str:
     """Everything the scheduler prepends to the user's words, in the claude
     page's own reading order — state block, attachments block, message.
 
-    The inverse of `composeOutgoing` in template.html, and the order is that
+    The inverse of `composeOutgoing` in
+    frontend/src/apps/claude/protocol/wire.ts, and the order is that
     function's: the machinery first, the words last. It matters for more than
     tidiness — `tasks_store`'s and `agent.py`'s strips only peel a LEADING
     block, so a block wedged after the message would be read as something the

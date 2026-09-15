@@ -55,11 +55,19 @@ export function TemplatePicker({
       items: inventory.templates.filter((t) => t.source === s.id && !excludeSet.has(t.name)),
     }))
     .filter((g) => g.items.length > 0);
-  // Shell sentinels (PT-12) are valid registry names but back no template
-  // folder, so they aren't in the inventory — offer them explicitly so a
-  // removed `_render`/`_listing` can be added back from the UI.
-  const sentinels = ["_render", "_listing"].filter((n) => !excludeSet.has(n));
-  const empty = groups.length === 0 && sentinels.length === 0;
+  // NAMES WITH NO TEMPLATE FOLDER BEHIND THEM, which the inventory therefore
+  // cannot carry — and which the picker must still offer, or a name removed
+  // from a key's mode list could never be added back from the UI. Two kinds,
+  // one list because they read the same way to the person picking:
+  //   * the shell SENTINELS (PT-12), `_render` / `_listing`;
+  //   * the SHELL-RENDERED templates (server.templates.SHELL_RENDERED, today
+  //     `claude`), whose folder is real but whose UI is the shell's own React
+  //     surface, so it ships no template.html and never enters the pool
+  //     (`_folders_with_template`). The server names them in `shellRendered`.
+  const builtins = [...(inventory.shellRendered ?? []), "_render", "_listing"].filter(
+    (n) => !excludeSet.has(n)
+  );
+  const empty = groups.length === 0 && builtins.length === 0;
   return (
     <div
       className="templates-picker"
@@ -91,16 +99,16 @@ export function TemplatePicker({
             ))}
           </div>
         ))}
-        {sentinels.length > 0 && (
+        {builtins.length > 0 && (
           <div className="templates-picker-group">
             <div className="templates-picker-cat">Special modes</div>
-            {sentinels.map((name) => (
+            {builtins.map((name) => (
               <button
                 key={name}
                 type="button"
                 className="templates-picker-cell"
                 onClick={() => onPick(name)}
-                title="Shell built-in mode (no template folder)"
+                title="Built into the app (no template folder to edit)"
               >
                 <span>{name}</span>
               </button>

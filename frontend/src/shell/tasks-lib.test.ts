@@ -8,10 +8,8 @@ import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import {
   BOARD_COLUMNS,
   BOARD_LANES,
-  cardFrameSrc,
   chatPaneUrl,
   laneOf,
-  peekFrameSrc,
 } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
@@ -2055,10 +2053,11 @@ const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
 /** The page that owns the poll and hands the three views their tasks — read for
  *  the claims that are about what it PASSES DOWN, which no view can check alone. */
 const SCHEDULED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
-const BOUNDARY = readFileSync(
-  join(SHELL, "../platform/lib/param-boundary.ts"),
-  "utf8",
-);
+/** The two shells that DO claim the param boundary (D72): the detached tab and
+ *  the panel. Read here for the one claim below that is about what the cards
+ *  wall must NOT do — a negative is only worth pinning if the positive still
+ *  exists somewhere. */
+const TABS = readFileSync(join(SHELL, "../apps/explorer/Tabs.tsx"), "utf8");
 
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
@@ -8469,30 +8468,29 @@ describe("cardsForTasks", () => {
   });
 });
 
-describe("the Cards view's frame", () => {
-  it("frames the chat DIRECTLY, compact, with the session on the src", () => {
+describe("the Cards view's chat", () => {
+  it("mounts the chat DIRECTLY, compact, on the card's own session", () => {
     // Not `/explorer/embed/<dir>?_side=claude`: that is a whole shell, and a
     // 420px tile would spend itself on a folder listing with the chat in the
-    // strip beside it. The template is framed the way the explorer's own
-    // sidebar frames it, plus the param that takes the chrome away.
-    expect(cardFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
-      "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj" +
-        "&chat_only=1&compact=1&session_id=sess-9",
-    );
+    // strip beside it. The chat is mounted the way the explorer's own sidebar
+    // mounts it, plus the cut that takes the chrome away — and `session_id`
+    // goes into a MEMORY param store per card, so twelve cards on one `/tasks`
+    // URL each read the one session they were given.
+    expect(CARDS).toContain("sessionId={task.session_id}");
+    expect(CARDS).toContain('paramsSource="memory"');
+    expect(CARDS).toContain("compact");
   });
 
-  it("marks the host a param boundary while the grid is up", () => {
-    // Without it every card's runtime climbs past its own frame to `/tasks` and
-    // twelve documents share one `session_id` (static/runtime.js findTarget).
-    // Set on mount and REMOVED on unmount — the flag is a fact about a window
-    // that is currently hosting param-owning frames, not about the app.
-    // Through the shared HOLD rather than a bare set/delete here (2026-09-13):
-    // the side peek frames a chat on this same page, and two surfaces each
-    // deleting the flag on unmount took the boundary away from whichever was
-    // still up. `platform/lib/param-boundary` counts the holders.
-    expect(CARDS).toContain("useParamBoundary(nativeChatState === false)");
-    expect(BOUNDARY).toContain("window._fusedParamBoundary = true;");
-    expect(BOUNDARY).toContain("delete window._fusedParamBoundary;");
+  it("marks NO param boundary: there are no param-owning frames left", () => {
+    // The flag said "frames under this window own their own params" (static/
+    // runtime.js findTarget). Every card's chat is part of THIS document now
+    // and reads a memory store of its own, so setting it would be a claim about
+    // this window that is not true.
+    expect(CARDS).not.toContain("_fusedParamBoundary");
+    // The hold itself stays — it is the tab/panel shell's contract, not
+    // chat-only, and each of those shells sets it on its own window.
+    expect(TABS).toContain("window._fusedParamBoundary = true;");
+    expect(TABS).toContain("delete window._fusedParamBoundary;");
   });
 
   it("keys a card on the task's IDENTITY, so a poll is a re-render and not a reload", () => {
@@ -8544,13 +8542,12 @@ describe("the Cards view's frame", () => {
     expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards-scroll) {\n  flex: 1 1 auto;\n}");
     expect(block(CARDS_CSS, ".schedule-page .schedule-main > .task-cards-scroll")).toContain("container-type: size");
     expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
-    // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
-    // exactly the body — no clipping, no gap, readable at a third of the width.
-    const frame = block(CARDS_CSS, ".task-card-frame");
-    expect(frame).toContain("transform: scale(0.75)");
-    expect(frame).toContain("width: 133.3334%");
-    expect(frame).toContain("height: 133.3334%");
-    expect(frame).toContain("transform-origin: 0 0");
+    // The 133.33%/scale(0.75) fit an IFRAME needed to be readable at a third of
+    // the width is gone with the iframe: the native compact variant is a type
+    // scale (apps/claude/styles/chat.css), and stamping both would shrink the
+    // card twice.
+    expect(CARDS_CSS).not.toContain(".task-card-frame");
+    expect(CARDS).not.toContain("task-card-frame");
     // The full title rides the app's own hint (hints.ts), like a List row's,
     // not a native `title` that arrives a second later — and, with the last-
     // message experiment on, the hint is the message's own full text instead
@@ -8848,9 +8845,11 @@ describe("the Cards view's frame", () => {
     expect(CARDS.split("const gone = folderMissing;").length).toBe(3);
     // ...and a gone folder never wears the resolving skeleton while its template
     // stat is still out (Bugbot): the sentence wins the moment the page knows.
-    expect(CARDS.split("const resolving = !src && !folderMissing && !!task.session_id && template === undefined;").length).toBe(3);
-    expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? cardFrameSrc(");
-    expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? peekFrameSrc(");
+    expect(CARDS.split("const resolving = !chattable && !folderMissing && !!task.session_id && template === undefined;").length).toBe(3);
+    // Both halves before anything is mounted: no session is no conversation,
+    // and no template is a folder whose stat has not answered (or offers no
+    // chat at all). Once on the card, once in the popup.
+    expect(CARDS.split("const chattable = !!(task.session_id && template && !folderMissing);").length).toBe(3);
     // ...and the folder door goes DISABLED, saying why on hover and on press, on
     // the card and in the popup — never a live href into the dead folder (Bugbot).
     expect(CARDS.split("const explorer = gone ? null : (taskHref(task) ?? folderHref(task));").length).toBe(3);
@@ -8930,13 +8929,14 @@ describe("the Cards view's frame", () => {
     // Narrower than it is tall (Akshil, 2026-09-05: "reduce the width a little
     // bit but increase it in height").
     expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("height: 82vh");
-    // Full-size chat WITH the composer: chat_only, never compact (compact hides
-    // the template's input box — it is the card's read-only cut).
-    // ...and `peek=1`, which takes the template's own strip and top bar away
-    // (the popup's head says all of that already).
-    expect(peekFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
-      "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj&chat_only=1&peek=1&session_id=sess-9",
-    );
+    // Full-size chat WITH the composer: `chatOnly`, never `compact` (compact
+    // hides the input box — it is the card's read-only cut) — and `peek`, which
+    // takes the chat's own strip and top bar away (the popup's head says all of
+    // that already).
+    const body = CARDS.slice(CARDS.indexOf("footer={"));
+    expect(body).toContain("chatOnly");
+    expect(body).toContain("peek");
+    expect(body).not.toContain("compact");
     // The two doors, Archive then folder, in the head beside the ✕ as the app's
     // own buttons — icon AND word (Akshil, 2026-09-05: an icon alone "is not
     // clear"). No "Open in Tasks": we are already in Tasks.
@@ -9000,13 +9000,13 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain("setPeek(peekLive);");
     const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
     expect(emptyBranch).toContain("{popup}");
-    // FLAG-AWARE since the native chat landed (apps/claude/ChatMount): with the
-    // native chat there is no frame, and the thing worth focusing is the
-    // composer's own textarea — which is where the reader wanted the caret all
-    // along. The legacy branch still hands the chassis the iframe.
-    expect(CARDS).toContain("initialFocus={native ? boxRef : frameRef}");
-    expect(readFileSync(join(SHELL, "../platform/ui/modal/Modal.tsx"), "utf8")).toContain("select:not([disabled]),iframe,");
-    // The dialog clips its own corners: the frame must not paint over the radius.
+    // THE CARET GOES TO THE COMPOSER — the textarea inside the chat, which is
+    // where the reader wanted it all along, and which the chassis can only take
+    // once the chunk has resolved (hence `focusSignal`).
+    expect(CARDS).toContain("initialFocus={boxRef}");
+    expect(CARDS).toContain("focusSignal={chatReady}");
+    expect(CARDS).toContain("onReady={() => setChatReady((n) => n + 1)}");
+    // The dialog clips its own corners: nothing may paint over the radius.
     expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("overflow: hidden");
     // The title shrinks to its words, so the hint is not over empty head.
     expect(block(CARDS_CSS, ".task-card-title")).toContain("width: fit-content");
@@ -9014,15 +9014,12 @@ describe("the Cards view's frame", () => {
     // Archive is the List row's own decision (filingIntent) and calls.
     expect(CARDS).toContain("const filing = filingIntent(task);");
     expect(CARDS).toContain('if (filing.kind === "archive") await archiveTask(task.key);');
-    // Esc closes even with the caret in the chat: the frame's own document gets
-    // the listener, since the chassis's listener on this document never hears
-    // a key pressed inside the frame (measured, 2026-09-05).
-    expect(CARDS).toContain('doc?.addEventListener("keydown", onKey);');
-    expect(CARDS).toContain('if (e.key === "Escape") onClose();');
-    // ...and that whole hop is LEGACY-ONLY: the native chat is in this document,
-    // so its root hands Escape back up through `onEscape` instead.
-    expect(CARDS).toContain("if (native) return;");
+    // Esc closes even with the caret in the chat — and with the chat in THIS
+    // document there is no second document to listen inside any more: its root
+    // hands the press back up through `onEscape` (measured, 2026-09-05: the
+    // chassis's own listener never heard a key pressed inside the old frame).
     expect(CARDS).toContain("onEscape={onClose}");
+    expect(CARDS).not.toContain('doc?.addEventListener("keydown", onKey);');
   });
 });
 

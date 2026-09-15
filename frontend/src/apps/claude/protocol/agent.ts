@@ -54,16 +54,16 @@ const superseded = new WeakSet<AbortController>();
 
 // ---- call-log attribution (SPEC CL-5, `fused_render/calls.py`) --------------
 //
-// FLAG-ON, A CHAT'S CALLS WERE ANONYMOUS. `runtime.js` builds these headers
-// (R:1434-1448) off the EMBEDDED PAGE's own URL — `ownQuery("path")` and
-// `ownQuery("_file")` — and the native chat has no such URL, so nothing set
-// them: `fused-render calls`, `--page <chat template>` and the `.calls.jsonl`
-// viewer all showed an empty history for a conversation, and the failed-call
-// digests for the chat went with it. Observability only; no behaviour depends
-// on it, which is exactly why it was easy to lose.
+// A CHAT'S CALLS WOULD OTHERWISE BE ANONYMOUS. `runtime.js` builds these
+// headers (R:1434-1448) off the EMBEDDED PAGE's own URL — `ownQuery("path")`
+// and `ownQuery("_file")` — and the chat is not an embedded page, so nothing
+// set them: `fused-render calls`, `--page …` and the `.calls.jsonl` viewer all
+// showed an empty history for a conversation, and the failed-call digests for
+// the chat went with it. Observability only; no behaviour depends on it, which
+// is exactly why it was easy to lose.
 //
-// The page is the template's own `template.html`, which is what `--page` names
-// and what a reader looking for "the chat's calls" would type.
+// The page is the chat's own `agent.py` — the file that actually runs, and what
+// a reader looking for "the chat's calls" has to name.
 
 /** The correlation id, `runtime.js`'s shape (R:1442's `newCallId`). */
 function newCallId(): string {
@@ -138,10 +138,10 @@ export async function runScript<T>(py: string, params: Record<string, unknown>, 
     const data = await runPy(py, params, {
       signal: controller.signal,
       attribution: {
-        // `<templateDir>/template.html` — the page `--page` names, derived from
-        // the script's own dir so every script under a template attributes to
-        // one page rather than to itself.
-        page: py.replace(/\/[^/]+$/, "") + "/template.html",
+        // `<templateDir>/agent.py` — the page `--page` names, derived from the
+        // script's own dir so every script under a template (app.py,
+        // artifacts.py) attributes to the ONE page rather than to itself.
+        page: py.replace(/\/[^/]+$/, "") + "/agent.py",
         ...(opts.target ? { target: opts.target } : {}),
         callId,
         ...(() => {

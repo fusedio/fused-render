@@ -2,7 +2,7 @@
 // of navigating to the Explorer — the `task_peek_enabled` pref
 // (fused_render/shell/prefs.py), experimental and default OFF.
 //
-// A CLONE OF `apps/claude/feature-flag.ts`, deliberately down to the shape: one
+// A CLONE OF `apps/canvases/feature-flag.ts`, deliberately down to the shape: one
 // shared GET, a generation guard so a publish beats a slower in-flight read, and
 // `null` meaning "not asked yet". Two flags that gate a whole behaviour should
 // not have two different idioms for the same three states.
