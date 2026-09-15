@@ -520,6 +520,9 @@ export interface ControllerDeps {
   historyCache?: {
     get(file: string, sessionId: string): import("./types").HistoryResponse | undefined;
     set(file: string, sessionId: string, res: import("./types").HistoryResponse): void;
+    /** Forget one conversation — its history answer said `deleted`. Optional:
+     *  a host cache without it simply keeps the entry. */
+    delete?(file: string, sessionId: string): void;
   };
   /** ADDED: the comeback after a usage limit. Injectable so bun tests see the
    *  body without a server; defaults to `@platform/lib/api`'s `scheduleMessage`

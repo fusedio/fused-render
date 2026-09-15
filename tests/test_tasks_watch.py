@@ -331,3 +331,30 @@ def test_a_prompted_session_is_watched_without_a_registry_row(claude_home):
     _transcript(claude_home, SID, lines=1)
     assert tasks_watch.tick() == set()
     assert path.exists()
+
+
+def test_a_prompted_session_going_quiet_is_announced_once(claude_home, monkeypatch):
+    """A `-p` run never registers, so nothing marks it idle: the row leaves
+    in-progress only when the tail rule's window closes, which no byte on disk
+    records. The watcher announces that instant — once per settled transcript
+    (Bugbot, PR #1153)."""
+    path = _transcript(claude_home, SID)
+    tasks_watch.tick()
+    _history(claude_home, SID)
+    tasks_watch.tick()
+    # Fresh, unchanged: quiet.
+    assert tasks_watch.tick() == set()
+    # The window closes on that write: one bump…
+    old = time.time() - tasks_watch.session_liveness.RUNNING_WINDOW_SEC - 1
+    os.utime(path, (old, old))
+    assert tasks_watch.tick() == {SID}
+    # …and only one.
+    assert tasks_watch.tick() == set()
+    assert tasks_watch.tick() == set()
+    # A registered session is the registry's to call idle — not announced here.
+    _registry(claude_home, SID2, status="busy")
+    path2 = _transcript(claude_home, SID2)
+    _history(claude_home, SID2)
+    tasks_watch.tick()
+    os.utime(path2, (old, old))
+    assert tasks_watch.tick() == set()

@@ -2361,7 +2361,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // this with the same empty payload a not-yet-written chat gets, and
         // the page opened a blank conversation with nothing to say why
         // (Akshil, 2026-09-15). Not cached: the answer is about a task that is
-        // gone, and a cache entry for it would outlive the listing's memory.
+        // gone, and a cache entry for it would outlive the listing's memory —
+        // and one already there (this chat was open before it was erased) goes
+        // for the same reason: painted warm on the next open, it would show a
+        // destroyed transcript as if it stood.
+        deps.historyCache?.delete?.(FILE || "", sessionId);
         landHistory(res, false);
         addError("This task was deleted. Its conversation is gone; pick another chat or start a new one.");
         return;

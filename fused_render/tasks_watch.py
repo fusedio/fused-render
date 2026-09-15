@@ -84,6 +84,12 @@ _tr_sizes: dict[str, int] = {}        # session_id -> size
 # watched for PROMPTED_WATCH_SEC after each one, registry or not.
 _prompted: dict[str, float] = {}
 PROMPTED_WATCH_SEC = 600.0
+# session_id -> the transcript mtime whose "window closed" bump was already
+# announced. A `-p` run leaves no registry departure to notice, so the only way
+# its row ever goes idle without a later write is the tail rule's 45s window
+# running out — a change no byte on disk marks. One bump per settled mtime, at
+# the moment the window closes, is what lets the poll see it (Bugbot, PR #1153).
+_tr_settled: dict[str, float] = {}
 _started = False
 
 
@@ -375,6 +381,20 @@ def _read_live_transcripts() -> set[str]:
             continue
         last = _tr_sizes.get(sid)
         _tr_sizes[sid] = size
+        if last == size and sid in _prompted and sid not in _registry:
+            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The tail rule
+            # stops calling this session running RUNNING_WINDOW_SEC after its
+            # last real write; announce that instant once, so a listing is not
+            # left wearing an in-progress ring until some unrelated poke.
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if (now - mtime > session_liveness.RUNNING_WINDOW_SEC
+                    and _tr_settled.get(sid) != mtime):
+                _tr_settled[sid] = mtime
+                keys.add(sid)
+            continue
         if last is None:
             # First sight of this transcript. News if it was born under a
             # session we are already watching (the first prompt just landed);
@@ -447,3 +467,4 @@ def reset() -> None:
     _tr_paths.clear()
     _tr_sizes.clear()
     _prompted.clear()
+    _tr_settled.clear()

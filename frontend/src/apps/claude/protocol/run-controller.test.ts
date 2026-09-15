@@ -3390,6 +3390,39 @@ describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
     expect(store.size).toBe(0);
   });
 
+  test("a conversation cached BEFORE the erase is evicted, not painted warm again", async () => {
+    // The cache answers for whatever key the controller asks by, and records
+    // what it is asked to forget: the eviction must name the same entry.
+    const asked: string[] = [];
+    const deleted: string[] = [];
+    let stale: HistoryResponse | undefined = {
+      turns: [{ role: "user", text: "old words", uuid: "u1" }],
+      transcript: null,
+    } as unknown as HistoryResponse;
+    const historyCache = {
+      get: (f: string, s: string) => {
+        asked.push(f + "|" + s);
+        return stale;
+      },
+      set: () => {},
+      delete: (f: string, s: string) => {
+        deleted.push(f + "|" + s);
+        stale = undefined;
+      },
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    expect(deleted).toEqual([asked[0]]);
+    const st = made.controller.getState();
+    // The warm paint of the destroyed transcript is gone with the fetch.
+    expect(st.turns.some((t) => t.role === "user")).toBe(false);
+    expect(st.turns.filter((t) => t.role === "error").length).toBe(1);
+  });
+
   test("an EMPTY answer without the mark is a chat not written yet — no error", async () => {
     const made = makeController({
       history: () => ({ turns: [], transcript: null }),
