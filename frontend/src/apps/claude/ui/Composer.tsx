@@ -41,6 +41,7 @@ import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { SchedButton } from "./SchedButton";
 import { takeAttachments, takeDraft } from "./sched-draft";
+import { joinIntoBox } from "./list-rows";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -698,7 +699,11 @@ export function ComposerCard({
     if (!restore || !restore.text || restore.seq === delivered.current) return;
     delivered.current = restore.seq;
     const back = restore.text;
-    setText((prev) => (prev.trim() ? prev.replace(/\s*$/, "\n") + back : back));
+    // ONE COPY OF THE JOIN (`list-rows.joinIntoBox`): a MOVE out of the Recent
+    // list writes the destination draft to the server before it drops the
+    // source, and what it writes has to be exactly what this line is about to
+    // put in the box (Bugbot #1166).
+    setText((prev) => joinIntoBox(prev, back));
     boxRef.current?.focus({ preventScroll: true });
     grow();
   }, [restore, boxRef, grow]);

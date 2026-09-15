@@ -57,6 +57,7 @@ import {
 } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 import { onGone } from "./tasksPulse";
+import { onTaskDraftSpent } from "@platform/lib/drafts";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -3440,7 +3441,30 @@ export default function NewJobModal({
    *
    * `draft:<id>` is the key a task draft's row is listed under
    * (`fused_render/drafts.task_key`).
+   *
+   * TWO DOORS, because the news arrives two different ways and only one of them
+   * can be waited on (Bugbot #1166):
+   *
+   *   * `onTaskDraftSpent` is the discard IN THIS DOCUMENT saying so BEFORE it
+   *     deletes, and what this hands back is the card's in-flight write
+   *     settling — `stop` disarms the next write, never the one already on the
+   *     wire, and that one lands after the DELETE and puts the row back. It also
+   *     RESUMES: a DELETE that failed leaves the draft on the server and the row
+   *     on the page, and a card that went on collecting edits it silently never
+   *     saved would be the worse half of the same bug.
+   *   * `onGone` is the listing reporting a row that left — another window's
+   *     discard, a send that spent it — where there is nobody to wait for and
+   *     nothing to resume.
    */
+  useEffect(() => onTaskDraftSpent((id, spent) => {
+    if (!id || id !== draftIdRef.current) return;
+    if (!spent) {
+      autosaveRef.current.resume();
+      return;
+    }
+    autosaveRef.current.stop();
+    return autosaveRef.current.settle();
+  }), []);
   useEffect(() => onGone((keys) => {
     const id = draftIdRef.current;
     if (id && keys.includes(`draft:${id}`)) autosaveRef.current.stop();

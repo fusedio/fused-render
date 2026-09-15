@@ -609,15 +609,16 @@ export default function App({ config }: { config: Config }) {
   // import up into shell. App is the one place that may hold both.
   //
   // AND IT IS VERIFIED BEFORE ANYTHING IS CLEARED, which is not optional.
-  // `gone` means "this key is not a row", and since the content floor
-  // (`routers/tasks._listable_chat_draft`) that is ALSO what a two-character
-  // draft looks like: type "ru", the PUT announces the key, the changes
-  // endpoint has no row to rebuild and reports it gone. Spending on that alone
-  // would empty a box while somebody was typing in it — the one thing this
-  // store may never do. So the drafts are read back, and only a key the server
-  // no longer holds is spent. A read that FAILS spends nothing: "could not find
-  // out" is not "it is gone" (`fetchDrafts`, which answers null for exactly
-  // this distinction).
+  // `gone` does not mean "this draft was deleted", it means "this key is not a
+  // row" — and a live draft can answer to that too. A chat draft filed under a
+  // session the listing carries no task for is the standing case: the PUT
+  // announces the session key, the changes endpoint has no row to rebuild, and
+  // it reports the key gone while the words are sitting in the store. Spending
+  // on that alone would empty a box somebody is typing in, which is the one
+  // thing this store may never do. So the drafts are read back, and only a key
+  // the server no longer holds is spent. A read that FAILS spends nothing:
+  // "could not find out" is not "it is gone" (`fetchDrafts`, which answers null
+  // for exactly this distinction).
   //
   // One read for the whole burst, and `gone` is empty on almost every poll.
   //

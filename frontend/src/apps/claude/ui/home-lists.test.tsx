@@ -33,7 +33,7 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { draftMovesOut, draftTextOf, sessionTitle: rowsSessionTitle, taskInPane, taskPane } =
+const { draftContentOf, draftMovesOut, joinIntoBox, sessionTitle: rowsSessionTitle, taskInPane, taskPane } =
   await import("./list-rows");
 const { onChatDraftSpent } = await import("@platform/lib/drafts");
 const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
@@ -986,16 +986,75 @@ test("a LOCKED block still refuses every draft row", () => {
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
+test("A MOVE READS THE WHOLE RECORD, never the row's clipped preview", async () => {
+  // Bugbot #1166. The row carries a 120-character `preview`; the record carries
+  // the text AND the tray. A press that MOVES deletes what it read, so it has to
+  // have read the record — the old reader answered the preview on a failed fetch
+  // and the full draft was deleted behind it.
+  const real = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        chat: {
+          "new:/repo/x.py": {
+            text: "ship the thing, and all of the rest of the sentence",
+            attachments: [{ path: "/shots/a1.png", name: "a1.png", kind: "image" }],
+            updated_at: 1,
+          },
+        },
+        task: {},
+      }),
+    }) as unknown as Response;
+  try {
+    const got = await draftContentOf(chatDraft());
+    expect(got.text).toBe("ship the thing, and all of the rest of the sentence");
+    expect(got.attachments.map((a) => a.path)).toEqual(["/shots/a1.png"]);
+    expect(got.whole).toBe(true);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = real;
+  }
+});
+
+test("…and a read that never answered is a STAND-IN, which a move may not act on", async () => {
+  const real = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({ ok: false, status: 500, json: async () => ({}) }) as unknown as Response;
+  try {
+    const got = await draftContentOf(chatDraft({ key: "new:/repo/gone.py" }));
+    // The preview is still offered — a copy loses nothing by it — but `whole`
+    // says it is not the record, and `ClaudeChat.onFillDraft` copies nothing and
+    // keeps the source on that answer.
+    expect(got.whole).toBe(false);
+    expect(got.text).toBe("ship the thing");
+    expect(got.attachments).toEqual([]);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = real;
+  }
+});
+
+test("the box's join is spelled once, and the move predicts it", () => {
+  // `Composer`'s restore seat appends; the move has to write the destination
+  // draft with what the box is ABOUT to hold, so both read this one function.
+  expect(joinIntoBox("", "second")).toBe("second");
+  expect(joinIntoBox("first", "second")).toBe("first\nsecond");
+  expect(joinIntoBox("first   \n\n", "second")).toBe("first\nsecond");
+  expect(joinIntoBox("   ", "second")).toBe("second");
+  expect(joinIntoBox("first", "")).toBe("first");
+});
+
 test("a TASK draft's words come off the form already on the row", async () => {
   // No fetch for this kind: the whole stored form rides on the row (it is what
   // the modal used to reopen on), so the description is read straight off it
   // and the title stands in for a title-only form.
   const form = (f: Record<string, unknown>) =>
     chatDraft({ draft_kind: "task", draft_id: "d-1", draft: null, form: f } as Partial<Task>);
-  expect(await draftTextOf(form({ title: "Ship it", description: "and run the tests" })))
+  expect((await draftContentOf(form({ title: "Ship it", description: "and run the tests" }))).text)
     .toBe("and run the tests");
-  expect(await draftTextOf(form({ title: "Ship it" }))).toBe("Ship it");
-  expect(await draftTextOf(form({ title: "Ship it", description: "   " }))).toBe("Ship it");
+  expect((await draftContentOf(form({ title: "Ship it" }))).text).toBe("Ship it");
+  expect((await draftContentOf(form({ title: "Ship it", description: "   " }))).text)
+    .toBe("Ship it");
 });
 
 test("A DRAFT ROW CARRIES THE DISCARD, and no other row does", () => {

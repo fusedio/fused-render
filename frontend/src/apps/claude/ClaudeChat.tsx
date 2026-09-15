@@ -100,9 +100,10 @@ import {
   CardPolicyProvider,
   Composer,
   createCardPolicy,
+  draftContentOf,
   draftMovesOut,
-  draftTextOf,
   Home,
+  joinIntoBox,
   openCardIds,
   resetCardPolicy,
   liveViewable,
@@ -137,6 +138,8 @@ import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness, type Task } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import { discardDraft } from "@shell/ScheduleTaskViews";
+import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
+import { notify } from "@platform/lib/notifications";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -2217,27 +2220,79 @@ function ChatBody(props: ChatBodyProps) {
    * be — the reader is asking for the box.
    */
   const fillSeq = useRef(0);
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
   const onFillDraft = useCallback((task: Task) => {
-    void draftTextOf(task).then((text) => {
-      const box = boxRef.current;
-      if (text && !(box && box.value.includes(text))) {
-        fillSeq.current += 1;
-        setLandingFill({ text, seq: fillSeq.current });
-      }
+    void (async () => {
       // …AND IT IS A MOVE, NOT A COPY (design.md, PR C).
       //
-      // The words are now in this box, and this box has a draft key of its own
-      // — the folder it is mounted on — which its next autosave writes them
-      // under. Leaving the source draft where it was would make one sentence two
+      // The words are about to be in this box, and this box has a draft key of
+      // its own — the folder it is mounted on — which its next autosave writes
+      // them under. Leaving the source where it was would make one sentence two
       // rows, under two folders, with two TASK numbers, and whichever the reader
       // finished the other would still be sitting there unsent.
       //
-      // ONLY A CHAT DRAFT, and only somebody else's. A TASK draft is a FORM —
-      // a folder, a time, a repeat rule, a model — and reading its words into a
-      // composer is not the same as throwing the form away, so it stands. And
-      // this folder's OWN draft is the one this composer is already the door
-      // onto: pressing that row is a request for the box, not a move out of it.
-      if (draftMovesOut(task, file)) void discardDraft(task);
+      // ONLY A CHAT DRAFT, and only somebody else's. A TASK draft is a FORM — a
+      // folder, a time, a repeat rule, a model — and reading its words into a
+      // composer is not the same as throwing the form away. And this folder's
+      // OWN draft is the one this composer is already the door onto: pressing
+      // that row is a request for the box, not a move out of it.
+      const moving = draftMovesOut(task, file);
+      // THE WHOLE RECORD, text AND tray, rather than the row's clipped preview
+      // (Bugbot #1166). A move destroys what it reads, so it may only act on
+      // something it actually read: a fetch that never answered used to fall
+      // back to the 120-character preview and delete the full draft behind it.
+      const content = await draftContentOf(task);
+      if (moving && !content.whole) {
+        notify({
+          title: "Couldn't read that draft",
+          detail: "It was left where it is — try again in a moment.",
+          tone: "error",
+        });
+        setFocusReq((n) => n + 1);
+        return;
+      }
+      const box = boxRef.current;
+      const before = box?.value ?? "";
+      // ALREADY IN THE BOX IS NOT FILLED AGAIN. The landing composer seeds
+      // itself from this folder's own `new:<file>` draft, so the row for THIS
+      // folder names words that are already on screen; filling would print them
+      // twice. That case is a focus request and nothing more, which is also
+      // exactly what it should be — the reader is asking for the box.
+      const fills = !!content.text && !before.includes(content.text);
+      if (fills) {
+        fillSeq.current += 1;
+        setLandingFill({ text: content.text, seq: fillSeq.current });
+      }
+      if (moving) {
+        // THE TRAY MOVES TOO (Bugbot #1166 — it used to be deleted with the
+        // source and never arrive). Registered by path, never re-uploaded: the
+        // same door "Back to chat" and the composer's own seed both use. Awaited,
+        // so the chips are in hand before the record below claims them.
+        if (content.attachments.length) {
+          await attachRef.current.addPaths(content.attachments.map((a) => a.path));
+        }
+        // THE DESTINATION IS WRITTEN BEFORE THE SOURCE IS DROPPED, and the
+        // source is dropped only if it landed. The composer's own autosave gets
+        // there on its own debounce, which is a window in which closing the tab
+        // loses the words outright — so the move does not rest on it. What is
+        // written is what the box is about to hold (`joinIntoBox`, the restore
+        // seat's own join), so the record and the box cannot disagree in between.
+        const merged = fills ? joinIntoBox(before, content.text) : before;
+        const landed = await saveChatDraft(
+          chatDraftKey(null, file),
+          merged,
+          content.attachments,
+        );
+        if (landed) void discardDraft(task);
+        else {
+          notify({
+            title: "Couldn't move that draft",
+            detail: "The words are in the box; the row was left where it is.",
+            tone: "error",
+          });
+        }
+      }
       // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
       // That prop is ambient policy — "may this composer take the keyboard merely
       // by appearing" — and the explorer's folder pane says no on purpose
@@ -2247,7 +2302,7 @@ function ChatBody(props: ChatBodyProps) {
       // words are in, or the promise the row makes (press Enter and this sends)
       // is one the reader has to click to collect (Akshil QA, 2026-09-14).
       setFocusReq((n) => n + 1);
-    });
+    })();
   }, [boxRef, file]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs

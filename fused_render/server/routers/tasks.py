@@ -2453,45 +2453,6 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     }
 
 
-#: THE CONTENT FLOOR, in characters and in words (design.md, PR C).
-#:
-#: An unsent chat becomes a ROW — a title, a folder, a TASK number minted and
-#: spent for ever — and until now it became one on the FIRST KEYSTROKE. Open a
-#: folder's chat, type "h", look away, and Upcoming had a new task in it called
-#: "h" holding a number the next real task would never get. The composer saves
-#: on a debounce, so this happened to everyone who started a sentence and
-#: changed their mind.
-#:
-#: Two ways over the floor rather than one, because one measure is wrong at both
-#: ends: "deploy" is six characters and a whole instruction, "aaaaaaaaaaaa" is
-#: twelve and nothing. Twelve characters OR three words, so a short real request
-#: ("run the tests") lists and a fidget does not.
-_CHAT_ROW_MIN_CHARS = 12
-_CHAT_ROW_MIN_WORDS = 3
-
-
-def _listable_chat_draft(record: dict) -> bool:
-    """Has this unsent chat enough in it to be a row of its own?
-
-    BELOW THE FLOOR IT IS STORED AND NOT LISTED, which is the whole shape of the
-    rule: the composer still restores every character on the next mount — that
-    is what the store is for and nothing about it changes — but the Tasks page
-    does not grow a row, and `_draft_numbers` does not spend a number, until
-    there is something a reader would recognise as a task.
-
-    ATTACHMENTS CLEAR IT OUTRIGHT. A tray with a file in it is a deliberate act
-    with no character count to measure, and a row is the only place its owner
-    could see it from.
-
-    Only `new:<file>` drafts are asked: a chat draft on a real session is a chip
-    on a row that exists whatever it holds, and a task draft is a form somebody
-    opened on purpose and can only reopen from its row."""
-    if record.get("attachments"):
-        return True
-    text = str(record.get("text") or "").strip()
-    return len(text) >= _CHAT_ROW_MIN_CHARS or len(text.split()) >= _CHAT_ROW_MIN_WORDS
-
-
 def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
     """TASK numbers for every draft, allocating what is missing.
 
@@ -2546,8 +2507,6 @@ def _draft_numbers(task_drafts: dict, chat_drafts: dict) -> dict[str, str]:
     for key, record in chat_drafts.items():
         if not drafts.is_new_chat_key(key):
             continue  # a chat draft on a real session is a chip, not a row
-        if not _listable_chat_draft(record):
-            continue  # below the content floor: no row, and so no number to mint
         items.append((key,
                       tasks_store.project_of(_workdir(drafts.new_chat_file(key))),
                       float(record.get("updated_at") or 0.0)))
@@ -2835,10 +2794,6 @@ def _draft_rows(only: frozenset | set | None = None,
         if not drafts.is_new_chat_key(key):
             continue
         if only is not None and key not in only:
-            continue
-        # THE CONTENT FLOOR (`_listable_chat_draft`): half a word typed into a
-        # composer is stored, so the box refills, and is not a task.
-        if not _listable_chat_draft(record):
             continue
         rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
     return rows

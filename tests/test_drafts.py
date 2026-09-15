@@ -769,7 +769,7 @@ def test_a_new_chat_draft_on_a_folder_is_numbered_in_that_folder(client, tmp_pat
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
-    client.put(_chat_url(key), json={"text": "start here, please"})
+    client.put(_chat_url(key), json={"text": "start here"})
     row = _by_key(client)[key]
     assert row["project"] == canonical_fs_path(str(folder)) == row["target"]
     assert row["task_id"] == "TASK-001"
@@ -785,69 +785,6 @@ def test_a_new_chat_draft_with_no_text_still_has_a_name(client, tmp_path):
                json={"text": "", "attachments": [
                    {"path": "/shots/a1.png", "name": "a1.png", "kind": "image"}]})
     assert _by_key(client)[key]["title"] == "Untitled chat"
-
-
-def test_half_a_word_in_a_composer_is_not_a_task(client, tmp_path):
-    """THE CONTENT FLOOR (design.md, PR C).
-
-    The composer autosaves on a debounce, so every reader who started a sentence
-    and changed their mind used to mint a row in Upcoming called "h" — and a
-    TASK number, spent for ever, that the next real task would never get. Below
-    the floor the draft is STORED, so the box refills on the next mount; what it
-    is not is a task."""
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    key = "new:" + str(folder)
-
-    client.put(_chat_url(key), json={"text": "ru"})
-    assert key not in _by_key(client), "no row"
-    assert key not in tasks_store.task_ids(), "and no number spent on it"
-    assert drafts.get_chat(key)["text"] == "ru", "but the words are kept"
-
-    # THREE WORDS is one way over, even when they are short…
-    client.put(_chat_url(key), json={"text": "run the tests"})
-    assert _by_key(client)[key]["title"] == "run the tests"
-
-    # …and TWELVE CHARACTERS is the other, for a two-word instruction.
-    client.put(_chat_url(key), json={"text": "deploy staging"})
-    assert _by_key(client)[key]["title"] == "deploy staging"
-
-    # Back under the floor and the row goes again — the words stay behind it.
-    client.put(_chat_url(key), json={"text": "ru"})
-    assert key not in _by_key(client)
-    assert drafts.get_chat(key)["text"] == "ru"
-
-
-def test_an_attachment_clears_the_content_floor_on_its_own(client, tmp_path):
-    """A file dropped into an empty composer is a deliberate act with no
-    character count to measure, and the row is the only place its owner could
-    ever see it from."""
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    key = "new:" + str(folder)
-    client.put(_chat_url(key),
-               json={"text": "ru", "attachments": [
-                   {"path": "/shots/a1.png", "name": "a1.png", "kind": "image"}]})
-    assert _by_key(client)[key]["title"] == "ru"
-
-
-def test_the_floor_is_asked_only_of_chats_with_no_session(client, tmp_path,
-                                                          projects_dir):
-    """A chat draft on a REAL session is a chip on a row that exists whatever it
-    holds, and a task draft is a form somebody opened on purpose and can only
-    reopen from its own row. Neither is measured."""
-    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
-    target = tmp_path / "project"
-    target.mkdir()
-
-    client.put(_chat_url("sess-a"), json={"text": "ru"})
-    client.put("/api/drafts/task/draft-0001",
-               json={"title": "ru", "target": str(target)})
-
-    rows = _by_key(client)
-    assert rows["sess-a"]["draft"]["preview"] == "ru"
-    assert rows["draft:draft-0001"]["title"] == "ru"
-    assert rows["draft:draft-0001"]["task_id"], "and numbered like any other"
 
 
 def test_a_new_chat_draft_title_is_clipped(client, tmp_path):
@@ -868,7 +805,7 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
     key = "new:" + str(folder)
 
     before = client.get("/api/tasks").json()["generation"]
-    client.put(_chat_url(key), json={"text": "unsent, and worth a row"})
+    client.put(_chat_url(key), json={"text": "unsent"})
 
     body = client.get(f"/api/tasks/changes?since={before}&wait=0").json()
     assert [row["key"] for row in body["rows"]] == [key]
@@ -881,7 +818,7 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
     assert body["gone"] == [key]
 
     # ...and never in the pulse. A form nobody has finished is not news.
-    client.put(_chat_url(key), json={"text": "unsent again, and again"})
+    client.put(_chat_url(key), json={"text": "unsent again"})
     assert [t["key"] for t in client.get("/api/tasks/pulse").json()["tasks"]] == []
 
 
@@ -2274,11 +2211,11 @@ def test_the_full_listing_is_unchanged_by_the_narrowing(client, projects_dir,
     client.put("/api/drafts/task/draft-0001",
                json={"title": "Nightly report", "target": str(tmp_path)})
     client.put(f"/api/drafts/chat/{quote('new:' + str(tmp_path), safe='')}",
-               json={"text": "never sent, never will be"})
+               json={"text": "never sent"})
 
     rows = _by_key(client)
     assert rows["draft:draft-0001"]["title"] == "Nightly report"
     assert rows["draft:draft-0001"]["task_id"]
     chat_key = "new:" + str(tmp_path)
-    assert rows[chat_key]["title"] == "never sent, never will be"
+    assert rows[chat_key]["title"] == "never sent"
     assert rows[chat_key]["task_id"]

@@ -52,9 +52,12 @@ import {
   deleteChatDraft,
   deleteTaskDraft,
   markChatDraftSpent,
+  markTaskDraftSpent,
+  unmarkChatDraftSpent,
+  unmarkTaskDraftSpent,
 } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
-import { dropListingKeys } from "./tasksPulse";
+import { dropListingKeys, restoreListingRows } from "./tasksPulse";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
@@ -1421,46 +1424,67 @@ async function performRun(intent: Pick<TaskRunIntent, "kind" | "entryId">): Prom
 }
 
 /**
- * DISCARD ONE DRAFT — the trash on a draft row, in every view.
+ * DISCARD ONE DRAFT — the trash on a draft row, in every view. True if the
+ * draft is actually gone.
  *
  * A draft is text nobody has sent, so there is no confirm step: the New task
  * modal's own Discard has never had one either, and a dialog over an unfinished
  * sentence is a ceremony about nothing (design.md, PR C).
  *
  * THE ORDER IS NewJobModal's DISCARD ORDER (`discard`, NewJobModal.tsx), for its
- * reason: a write still in the air lands AFTER the DELETE and puts the draft
- * back. There the writer to stop is the card's own autosave; here it is a
- * COMPOSER somewhere else on the page, mounted on the same key, holding the same
- * sentence with its debounce armed. `markChatDraftSpent` is the call that reaches
- * it — the key goes spent so nothing re-reads those words, the composer empties
- * itself the way its own Send does, and the promise it hands back is its
- * in-flight PUT settling. Only then may the DELETE go out.
+ * reason: a write already on the wire cannot be cancelled, so it lands AFTER the
+ * DELETE and puts the draft back. There the writer to stand down is the card's
+ * own autosave, reached directly. Here the writer is somewhere else on the page
+ * entirely — a COMPOSER mounted on the same key, or the New task MODAL open on
+ * this very form — so each kind has a signal that reaches its writer and hands
+ * back the promise of its in-flight write settling:
  *
- * A TASK draft has no second door of that shape: its only writer is the New task
- * modal, which hears the row leave through `tasksPulse.onGone` and stands its own
- * autosave down. So the delete goes straight out.
+ *   * a CHAT draft: `markChatDraftSpent`, which also makes the key read as spent
+ *     so nothing re-seeds from it;
+ *   * a TASK draft: `markTaskDraftSpent`, whose one listener is the modal
+ *     (Bugbot #1166 — the delete used to go out over a live debounce, and the
+ *     row came back).
+ *
+ * Only once that has settled may the DELETE go out.
+ *
+ * AND IF THE DELETE FAILS, EVERY OPTIMISTIC STEP IS UNDONE (Bugbot #1166). The
+ * draft is still on the server, so the row goes back (`restoreListingRows`), the
+ * chat key stops reading as spent (`unmarkChatDraftSpent` — otherwise every
+ * composer on it answers empty and refuses to restore until a reload), and the
+ * modal's autosave comes back up. The alternative is a page that says the draft
+ * is gone while the store still holds it, and a composer that will not give it
+ * back.
  *
  * `dropListingKeys` takes the row off every surface at once — the List, the Board
  * and the chat's Recent list all read one held listing — and
- * `announceTasksChanged` afterwards is the reconciliation: the server is re-read,
- * and a DELETE that failed puts the row back, which is the honest answer.
+ * `announceTasksChanged` at the end is the reconciliation against the server
+ * either way.
  *
  * EXPORTED for the chat's landing list, where pressing a `new:<file>` draft row
  * MOVES its words into the composer (`ClaudeChat.onFillDraft`) — and a move is
  * this same gesture on the source. One function, so "the draft is gone" cannot
  * come to mean two different sequences.
  */
-export async function discardDraft(task: Task): Promise<void> {
-  if (isChatDraftTask(task)) {
-    // A chat draft's row key IS the key it is filed under (`new:<file>`).
-    await markChatDraftSpent(task.key);
-    dropListingKeys([task.key]);
-    await deleteChatDraft(task.key);
-  } else {
-    dropListingKeys([task.key]);
-    if (task.draft_id) await deleteTaskDraft(task.draft_id);
+export async function discardDraft(task: Task): Promise<boolean> {
+  const chat = isChatDraftTask(task);
+  // A chat draft's row key IS the key it is filed under (`new:<file>`); a task
+  // draft's row is `draft:<id>` and the id is what the routes take.
+  const id = chat ? "" : task.draft_id;
+  if (chat) await markChatDraftSpent(task.key);
+  else if (id) await markTaskDraftSpent(id);
+  dropListingKeys([task.key]);
+  // A task row with no `draft_id` is a row this build cannot delete — nothing is
+  // sent, and the row goes back rather than silently vanishing.
+  const gone = chat
+    ? await deleteChatDraft(task.key)
+    : !!id && (await deleteTaskDraft(id));
+  if (!gone) {
+    if (chat) unmarkChatDraftSpent(task.key);
+    else if (id) unmarkTaskDraftSpent(id);
+    restoreListingRows([task]);
   }
   announceTasksChanged();
+  return gone;
 }
 
 /**

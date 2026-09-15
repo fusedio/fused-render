@@ -34,6 +34,10 @@ import {
   markChatDraftSpent,
   newChatFile,
   onChatDraftSpent,
+  onTaskDraftSpent,
+  markTaskDraftSpent,
+  readChatDraft,
+  unmarkTaskDraftSpent,
   saveChatDraft,
   saveTaskDraft,
   useAutosave,
@@ -354,6 +358,99 @@ function recordFetch(): { calls: { url: string; init: RequestInit }[]; restore: 
   }) as typeof fetch;
   return { calls, restore: () => { globalThis.fetch = real; } };
 }
+
+describe("readChatDraft", () => {
+  // Bugbot #1166: `fetchChatDraft` answers null for BOTH "there is none" and
+  // "could not find out", which is right for a composer seeding itself (already
+  // empty, nothing to lose) and catastrophic for the one caller that is about to
+  // DESTROY what it read — the move out of the chat's Recent list.
+  test("tells an empty key from a read that never answered", async () => {
+    const real = globalThis.fetch;
+    try {
+      globalThis.fetch = ((() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ chat: { "new:/a": { text: "words", attachments: [] } }, task: {} }),
+        } as Response)) as unknown) as typeof fetch;
+      expect((await readChatDraft("new:/a")).draft?.text).toBe("words");
+      expect(await readChatDraft("new:/b")).toEqual({ draft: null, read: true });
+
+      globalThis.fetch = ((() => Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
+      expect(await readChatDraft("new:/a")).toEqual({ draft: null, read: false });
+      // …and the old door still collapses the two, which is what its callers want.
+      expect(await fetchChatDraft("new:/a")).toBe(null);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test("a spent key is an ANSWER, not an unknown", async () => {
+    const real = globalThis.fetch;
+    try {
+      globalThis.fetch = ((() =>
+        Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
+      await markChatDraftSpent("new:/spent");
+      // Even with the server unreachable: those words are sent, and that is the
+      // whole answer — a caller must not read "unknown" and keep the source.
+      expect(await readChatDraft("new:/spent")).toEqual({ draft: null, read: true });
+    } finally {
+      unmarkChatDraftSpent("new:/spent");
+      globalThis.fetch = real;
+    }
+  });
+});
+
+describe("the task draft's spent signal", () => {
+  // The chat half has existed since PR #1140; this is its twin, and it exists
+  // for the race the row's trash opened (Bugbot #1166): the New task modal is
+  // open on the very form being discarded, with a PUT already on the wire.
+  test("is awaited, and can be taken back when the DELETE fails", async () => {
+    const heard: string[] = [];
+    let released = false;
+    const off = onTaskDraftSpent((id, spent) => {
+      heard.push(`${id}:${spent}`);
+      if (!spent) return;
+      return new Promise<void>((r) =>
+        setTimeout(() => {
+          released = true;
+          r();
+        }, 0),
+      );
+    });
+    await markTaskDraftSpent("d-7");
+    expect(heard).toEqual(["d-7:true"]);
+    expect(released).toBe(true); // AWAITED — the caller may not delete before this
+
+    unmarkTaskDraftSpent("d-7");
+    expect(heard).toEqual(["d-7:true", "d-7:false"]);
+    off();
+    // Nobody left listening is not an error.
+    await markTaskDraftSpent("d-7");
+    expect(heard.length).toBe(2);
+  });
+});
+
+describe("useAutosave().resume()", () => {
+  test("a stopped autosave writes again once its reason to stop is withdrawn", () => {
+    // A card stands down when its row is discarded and comes back up when that
+    // DELETE fails — otherwise it collects edits it silently never saves.
+    const calls: string[] = [];
+    const box = renderAutosave({ n: 0 }, (value) => {
+      calls.push(JSON.stringify(value));
+      return true;
+    });
+    box.current().stop();
+    box.rerender({ n: 1 });
+    box.current().flush();
+    expect(calls).toEqual([]);
+
+    box.current().resume();
+    box.rerender({ n: 2 });
+    box.current().flush();
+    expect(calls).toEqual(['{"n":2}']);
+    box.unmount();
+  });
+});
 
 describe("saveTaskDraft's from_chat_key", () => {
   test("is absent unless the caller names one", async () => {

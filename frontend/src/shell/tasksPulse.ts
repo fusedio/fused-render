@@ -811,6 +811,33 @@ export function dropListingKeys(keys: readonly string[]): void {
   emitListing({ rows: merged, failed: false, delta: { rows: [], gone: [...gone] } });
 }
 
+/**
+ * …AND BACK, when the write the drop was optimistic about FAILED.
+ *
+ * `dropListingKeys` takes a row off the page before the server has been asked.
+ * If the DELETE then does not land, the draft is still there — and leaving the
+ * page saying otherwise until the next floor refresh is the page lying about
+ * what the reader still has (Bugbot #1166). The rows go back into the held
+ * listing through the same merge a change-poll uses, so they land in the right
+ * order rather than at the end.
+ *
+ * `listingGen` is untouched for `dropListingKeys`' reason: neither of these is
+ * news from the server, and neither may make the server's next answer look
+ * stale.
+ */
+export function restoreListingRows(rows: readonly Task[]): void {
+  const back = rows.filter((row) => !!row && !!row.key);
+  if (!back.length) return;
+  const held = readListing();
+  // Nothing is being held, so there is nothing to put a row back INTO — the
+  // next read answers with it anyway, which is the state a failed drop wanted.
+  if (held === null) return;
+  const merged = mergeTaskChanges(held, [...back], []);
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [...back], gone: [] } });
+}
+
 /** "Something just changed — re-read the listing NOW." Collapsed to one read
  *  per tick and one per DOCUMENT; a no-op when nobody is following. */
 export function refreshListing() {
