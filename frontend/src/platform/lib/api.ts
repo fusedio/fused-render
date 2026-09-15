@@ -2239,6 +2239,24 @@ export interface AppFileCloneTarget {
   /** Absolute destination, forward-slashed. */
   path: string;
   cloned: boolean;
+  /** The file's UTC export stamp (null: v1 zip or exported before the stamp). */
+  exported_at?: string | null;
+  /** What the existing clone was last built from (null: unknown/pre-stamp). */
+  local_exported_at?: string | null;
+  /** Cloned AND this file is a newer export than the clone (D883). */
+  upgradable?: boolean;
+}
+
+// Overlay a newer export onto the existing clone (D883): payload files
+// written, files the old payload had and this one lacks removed, `.fused/`
+// (the user's data) untouched, edits snapshotted in the workspace repo first.
+export function upgradeAppFileClone(
+  file: string,
+): Promise<AppFileCloneTarget & { written: number; removed: number }> {
+  return postJson<AppFileCloneTarget & { written: number; removed: number }>(
+    "/api/appfile/upgrade",
+    { file },
+  );
 }
 
 export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {

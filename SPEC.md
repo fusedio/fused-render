@@ -10911,6 +10911,41 @@ else: no editor, no Claude, no explorer chrome.
   Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+- **AF-13** (D883) VERSIONS of one app keep the user's data. The extract cache
+  is content-addressed and `.fused/data` (D548) lives inside the extract, so a
+  re-exported app used to land beside its predecessor with empty data. Two
+  mechanics, keyed on the SLUG (D397's identity) and recorded in one stamp we
+  own, `.fused/appfile.json` (`source`, `exported_at`, `opened_at`, and per
+  surface `data_decision` / `cloned_at` / `upgraded_at` / `files`):
+  **migrate-on-open** — `open_app_file` stamps every real open (previews
+  never); the `fusedapp` template then asks `POST /api/appfile/data` for
+  `{has_data, decided, prior}`, where `prior` is the same-slug sibling extract
+  the user OPENED LAST that holds data (stamp `opened_at`, mtime fallback for
+  pre-stamp extracts), and when there is one, nothing is decided and the new
+  extract has no data yet, shows a two-button card BEFORE framing the entry
+  page — "Copy my data" / "Start fresh" — posting `decision` to the same
+  route; copy brings `data/` only (never `cache/`), never overwrites, and
+  either answer is recorded so the question is asked once per extract. The
+  prior is recomputed server-side; a client never names a source dir. Any
+  failure on this path opens the app plainly: courtesy, not gate.
+  **Clone upgrade** — the clone is stamped in staging with its origin and
+  payload file list; `GET /api/appfile/clone` adds `exported_at`,
+  `local_exported_at`, `upgradable` (string-compared ISO stamps; a stamp with
+  no date is not upgradable — an undated v1 export must not read as newer
+  forever; a folder with no stamp FILE is compared byte-for-byte against the
+  file's per-file sha256 index, the folder walked by the exporter's own rules
+  and a capture-only `preview.png` tolerated, capped at 64 MB — equal reads as
+  current on every probe and the GET writes nothing (it stays read-only),
+  only a differing one is offered the upgrade; export stamps its SOURCE folder
+  too, so an app living at `local/<slug>` never sees its own export as an
+  upgrade); X-Fused `POST /api/appfile/upgrade` snapshots the
+  clone's edits in the shared `local` repo (refuses if it cannot), overlays
+  the payload writable, removes files the old list had and the new lacks,
+  leaves `.fused/` untouched, restamps, commits. The header/strip button is
+  now an `ActionMenu` — Clone / Upgrade to this version / Open in local —
+  trigger naming the primary for the state, the other rows listed disabled
+  with the reason. Amends AF-12: a clone now carries a record, and a second
+  Clone of a NEWER export is an Upgrade rather than a reporting no-op.
 
 ## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 

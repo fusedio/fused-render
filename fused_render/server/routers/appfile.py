@@ -15,8 +15,11 @@ answers with. No gate anywhere (D389's owner call stands).
 
 Clone (D397) is the way OUT of the read-only artifact: GET reports where the
 file would land in the workspace and whether it is already there, POST does the
-copy. The pair backs one button in the preview header, which flips between
-"Clone" and "Go to local version" on the GET's ``cloned``.
+copy. The pair backs one control in the preview header (an ActionMenu since D883:
+Clone / Upgrade to this version / Open in local), whose state follows the
+GET's ``cloned`` and ``upgradable``. ``POST /api/appfile/upgrade`` overlays a
+newer export onto the clone; ``POST /api/appfile/data`` is the fusedapp
+template's migrate-on-open question and answer (D883).
 """
 
 from __future__ import annotations
@@ -179,6 +182,48 @@ def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error("file must be an absolute .fused file path")
     try:
         return appfile.clone_app_file(file)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+
+
+@router.post("/api/appfile/upgrade")
+def api_appfile_upgrade(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Overlay the payload of the ``.fused`` at ``file`` onto its existing
+    clone at ``local/<slug>`` (D883): `.fused/` (the user's data) untouched,
+    edits snapshotted in the workspace repo before and after. Answers the
+    clone target plus ``written``/``removed`` counts. X-Fused-guarded: writes."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    file = str(body.get("file") or "")
+    if not file or not os.path.isabs(file):
+        return _error("file must be an absolute .fused file path")
+    try:
+        return appfile.upgrade_clone(file)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+
+
+@router.post("/api/appfile/data")
+def api_appfile_data(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """The migrate-on-open half of D883, one route, two verbs. Without a
+    ``decision``: report the extract's data state — ``{has_data, decided,
+    prior}`` — where ``prior`` names the same-app extract the user opened last
+    that holds `.fused/data`. With ``decision: "copy" | "fresh"``: record the
+    answer, and for ``copy`` bring that prior data across. The prior is always
+    recomputed server-side; the client never names a source dir. The one
+    caller is the ``fusedapp`` template, after ``/api/appfile/open``."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    file = str(body.get("file") or "")
+    if not file or not os.path.isabs(file):
+        return _error("file must be an absolute .fused file path")
+    decision = body.get("decision")
+    try:
+        if decision is None:
+            return appfile.data_state(file)
+        return appfile.migrate_data(file, str(decision))
     except appfile.AppFileError as exc:
         return _error(str(exc))
 

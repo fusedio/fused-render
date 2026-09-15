@@ -102,12 +102,18 @@ def test_clone_lands_the_payload_writable_in_the_workspace(tmp_path):
     assert r["cloned"] is False
     dest = r["path"]
     assert os.path.isdir(dest)
-    # Every payload member, at the same relative paths.
+    # Every payload member, at the same relative paths. `.fused/` is the
+    # clone's own state folder (D548) and carries the D883 origin stamp, not
+    # payload.
     assert sorted(
         os.path.relpath(os.path.join(dp, f), dest).replace(os.sep, "/")
         for dp, _dn, fs in os.walk(dest)
         for f in fs
+        if os.path.relpath(dp, dest).split(os.sep)[0] != ".fused"
     ) == ["assets/logo.svg", "data.py", "index.html"]
+    stamp = appfile.read_stamp(dest)
+    assert stamp is not None and stamp["source"] == os.path.abspath(str(out))
+    assert stamp["files"] == ["assets/logo.svg", "data.py", "index.html"]
     assert "fused-app" in open(os.path.join(dest, "index.html")).read()
     # THE point of the feature: the extract is 0o444 and copytree carries mode
     # across, so a clone that skipped the lift would be an uneditable
