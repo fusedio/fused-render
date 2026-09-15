@@ -399,6 +399,16 @@
   grid-column: 1;
   justify-self: start;
 }
+/* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
+   word on the FIRST SENTENCE of the prose that follows, not the paragraph's
+   last line: `SegmentView` draws that prose as two blocks (`leadSplit`), the
+   sentence with the trigger in its corner and the rest under it. The pair is
+   spaced as two paragraphs — the lead is a line the eye lands on, then the
+   reply. Nothing else in these blocks changes: the same `.seg-text`, the same
+   corner seat, the same reservation on the last line. */
+.chat-root .seg-block.is-lead + .seg-block.is-rest {
+  margin-top: 12px;
+}
 /* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
    call, or a run that follows a card. The trigger takes its own line, still
    right-aligned, still the same component. */

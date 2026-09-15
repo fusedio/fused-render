@@ -5,6 +5,7 @@ import {
   cardKey,
   groupCollapsibles,
   isRun,
+  leadSplit,
   seatTriggers,
   type GroupedRow,
   finishedTailText,
@@ -534,5 +535,71 @@ describe("seatTriggers (design.md §A, Q1 revised 2026-09-15)", () => {
       cardsAfter: new Map<number, unknown>([[0, "card"]]),
     });
     expect([...carded.bare]).toEqual([1]);
+  });
+});
+
+describe("leadSplit — where a leading run's trigger sits (Akshil, 2026-09-15)", () => {
+  test("cuts a paragraph after its first sentence", () => {
+    expect(leadSplit("Fixed the bug. It was in auth.\n\nMore here.")).toEqual({
+      lead: "Fixed the bug.",
+      rest: "It was in auth.\n\nMore here.",
+    });
+    expect(leadSplit("Really? Yes! Done.")).toEqual({ lead: "Really?", rest: "Yes! Done." });
+  });
+
+  test("keeps closing quotes and brackets with the sentence", () => {
+    expect(leadSplit('He said "go." Then left.')).toEqual({
+      lead: 'He said "go."',
+      rest: "Then left.",
+    });
+    expect(leadSplit("See (above). Next.")).toEqual({ lead: "See (above).", rest: "Next." });
+  });
+
+  test("a dot before a lowercase word, a digit or inside code is not an end", () => {
+    expect(leadSplit("Edit e.g. the file. Then run.")).toEqual({
+      lead: "Edit e.g. the file.",
+      rest: "Then run.",
+    });
+    expect(leadSplit("Took 3.5 seconds. Fine.")).toEqual({ lead: "Took 3.5 seconds.", rest: "Fine." });
+    expect(leadSplit("Open `a.b. c` now. Then go.")).toEqual({
+      lead: "Open `a.b. c` now.",
+      rest: "Then go.",
+    });
+  });
+
+  test("a single-sentence paragraph is the lead; the next paragraph is the rest", () => {
+    expect(leadSplit("One line without a stop\n\nSecond para.")).toEqual({
+      lead: "One line without a stop",
+      rest: "Second para.",
+    });
+  });
+
+  test("a heading, list item or quote cuts after its first line", () => {
+    expect(leadSplit("## Title\nBody. More.")).toEqual({ lead: "## Title", rest: "Body. More." });
+    expect(leadSplit("- first. item\n- second")).toEqual({ lead: "- first. item", rest: "- second" });
+    expect(leadSplit("1. one\n2. two")).toEqual({ lead: "1. one", rest: "2. two" });
+    expect(leadSplit("> quoted. words\n> more")).toEqual({ lead: "> quoted. words", rest: "> more" });
+  });
+
+  test("a fence or a table is not a sentence: no split", () => {
+    expect(leadSplit("```js\nx. y\n```\n\nAfter.")).toBeNull();
+    expect(leadSplit("| a | b |\n|---|---|\n\nAfter.")).toBeNull();
+  });
+
+  test("nothing left after the lead means no split", () => {
+    expect(leadSplit("")).toBeNull();
+    expect(leadSplit("Just one sentence.")).toBeNull();
+    expect(leadSplit("One sentence.   ")).toBeNull();
+    expect(leadSplit("# Heading only")).toBeNull();
+  });
+
+  test("while the tail streams, the cut lands when the boundary's whitespace does", () => {
+    // Mid-word: whole text is the lead, nothing to split.
+    expect(leadSplit("Fixed the bu")).toBeNull();
+    // The stop has arrived but not what follows it — still no split.
+    expect(leadSplit("Fixed the bug.")).toBeNull();
+    expect(leadSplit("Fixed the bug. ")).toBeNull();
+    // The next word's first glyph decides.
+    expect(leadSplit("Fixed the bug. I")).toEqual({ lead: "Fixed the bug.", rest: "I" });
   });
 });

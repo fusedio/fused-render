@@ -769,11 +769,11 @@ body.tasks-peek-dragging {
    interactive, above the conversation (.claude-design/task-side-peek/design.md,
    "App preview in the peek"; the geometry is shell/peek-preview.ts).
 
-   THE BOX CROPS, IT DOES NOT SQUASH. The frame inside lays out at a virtual
-   1280×720 and is drawn at `scale(peekWidth / 1280)`, so the app sees a desktop
-   window however narrow the panel is — and the wrapper around it is that
-   scaled size, which is what gives this box something real to scroll when the
-   50% cap (or the reader's own drag) is shorter than 16:9. */
+   THE BOX NEITHER CROPS NOR SQUASHES. The frame inside lays out at a virtual
+   1280-wide viewport and is drawn at `scale(inner / 1280)`, so the app sees a
+   desktop-width window however narrow the panel is — and its virtual height is
+   whatever fills the card at that scale, so the app scrolls itself and nothing
+   around it grows a scrollbar. */
 .task-side-peek-preview {
   position: relative;
   flex: 0 0 auto;
@@ -828,13 +828,17 @@ body.tasks-peek-dragging .task-side-peek-preview {
   transition: box-shadow 0.12s ease;
 }
 
-/* The scroller is a child of the card, not the card: an absolutely positioned
-   overlay inside a scroll container scrolls with the content, and the border
-   would leave with the first pixel of crop. This one stays put. */
+/* NOT A SCROLLER ANY MORE (Akshil, 2026-09-15). The frame is sized to the card
+   (`shell/peek-preview.ts` `previewBox`, `frameHeight = card / scale`), so
+   there is nothing here to scroll; the app scrolls itself inside the iframe.
+   `overflow: auto` on this box drew a second pair of scrollbars — x from the
+   scaled frame landing a sub-pixel wide, y from the crop — around a frame that
+   already had its own. The wrapper stays so the border overlay on the card
+   never has content moving under it. */
 .task-side-peek-preview-scroll {
   position: relative;
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .task-side-peek-preview-card::after {
