@@ -1,0 +1,131 @@
+/* HOVER-ONLY SCROLLBARS (Akshil, 2026-09-15: "show the scrollbar only when we
+   are hovering over the element" — Tasks, the side peek, Home and AI Models).
+
+   ONE LIST, ONE RULE. Every scroller that should hide its bar at rest is named
+   here, so the pages cannot drift into three different fades. The bar keeps its
+   track and its layout space — nothing moves when the pointer arrives — and
+   only the thumb's ink comes and goes.
+
+   WHY `scrollbar-color` AND NOT ONLY `::-webkit-scrollbar-thumb`. The first cut
+   painted the pseudo-element transparent under `:not(:hover)`, and it flickered:
+   Chromium paints the pseudo scrollbar outside the ordinary style pass, and a
+   `:hover` flip on the container does not reliably invalidate it, so the thumb
+   sometimes stayed hidden under the pointer and sometimes stayed lit after it
+   left. `scrollbar-color` is a real property on the scroller itself: a change
+   to it is a style change, and the bar repaints like any other box would. When
+   `scrollbar-color`/`scrollbar-width` are set, Chromium ignores the
+   `::-webkit-scrollbar*` rules for that element outright, so the pseudo rules
+   below are the WebKit-only fallback (Safari has no `scrollbar-color`), not a
+   second layer that could disagree.
+
+   `scrollbar-width: thin` is what keeps the bar a non-overlay one: an overlay
+   bar paints over content (the Board's cards sat under it, 2026-08-18), a
+   custom one takes its own column — the same reason schedule.css styled the
+   bar at all. `--fg-muted` mixed to a weight, as schedule.css did, so it lands
+   the same over both themes' fills. */
+.tasks-list,
+.task-cards-scroll,
+.schedule-tv-lane-body,
+.schedule-tv-tree,
+.schedule-tv-board,
+.schedule-cal-thread,
+.task-side-peek-preview,
+.task-side-peek-chat .chat-logwrap,
+.home-page,
+.home-composer-input,
+.tp-pane,
+.tp .dd,
+.am-engine-popup,
+.pg-side,
+.pg-stage,
+.pg-segments {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.tasks-list:hover,
+.task-cards-scroll:hover,
+.schedule-tv-lane-body:hover,
+.schedule-tv-tree:hover,
+.schedule-tv-board:hover,
+.schedule-cal-thread:hover,
+.task-side-peek-preview:hover,
+.task-side-peek-chat .chat-logwrap:hover,
+.home-page:hover,
+.home-composer-input:hover,
+.tp-pane:hover,
+.tp .dd:hover,
+.am-engine-popup:hover,
+.pg-side:hover,
+.pg-stage:hover,
+.pg-segments:hover {
+  scrollbar-color: color-mix(in srgb, var(--fg-muted) 34%, transparent) transparent;
+}
+
+/* WebKit fallback (no `scrollbar-color`): same shape as schedule.css's bar,
+   thumb painted out until the scroller is hovered. Inert in Chromium, which
+   drops these once `scrollbar-color` is set above. */
+.home-page::-webkit-scrollbar,
+.home-composer-input::-webkit-scrollbar,
+.tp-pane::-webkit-scrollbar,
+.tp .dd::-webkit-scrollbar,
+.am-engine-popup::-webkit-scrollbar,
+.pg-side::-webkit-scrollbar,
+.pg-stage::-webkit-scrollbar,
+.pg-segments::-webkit-scrollbar,
+.schedule-tv-tree::-webkit-scrollbar,
+.schedule-tv-board::-webkit-scrollbar,
+.task-side-peek-preview::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.home-page::-webkit-scrollbar-track,
+.home-composer-input::-webkit-scrollbar-track,
+.tp-pane::-webkit-scrollbar-track,
+.tp .dd::-webkit-scrollbar-track,
+.am-engine-popup::-webkit-scrollbar-track,
+.pg-side::-webkit-scrollbar-track,
+.pg-stage::-webkit-scrollbar-track,
+.pg-segments::-webkit-scrollbar-track,
+.schedule-tv-tree::-webkit-scrollbar-track,
+.schedule-tv-board::-webkit-scrollbar-track,
+.task-side-peek-preview::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.home-page::-webkit-scrollbar-thumb,
+.home-composer-input::-webkit-scrollbar-thumb,
+.tp-pane::-webkit-scrollbar-thumb,
+.tp .dd::-webkit-scrollbar-thumb,
+.am-engine-popup::-webkit-scrollbar-thumb,
+.pg-side::-webkit-scrollbar-thumb,
+.pg-stage::-webkit-scrollbar-thumb,
+.pg-segments::-webkit-scrollbar-thumb,
+.schedule-tv-tree::-webkit-scrollbar-thumb,
+.schedule-tv-board::-webkit-scrollbar-thumb,
+.task-side-peek-preview::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.tasks-list:not(:hover)::-webkit-scrollbar-thumb,
+.task-cards-scroll:not(:hover)::-webkit-scrollbar-thumb,
+.schedule-tv-lane-body:not(:hover)::-webkit-scrollbar-thumb,
+.schedule-tv-tree:not(:hover)::-webkit-scrollbar-thumb,
+.schedule-tv-board:not(:hover)::-webkit-scrollbar-thumb,
+.schedule-cal-thread:not(:hover)::-webkit-scrollbar-thumb,
+.task-side-peek-preview:not(:hover)::-webkit-scrollbar-thumb,
+.task-side-peek-chat .chat-logwrap:not(:hover)::-webkit-scrollbar-thumb,
+.home-page:not(:hover)::-webkit-scrollbar-thumb,
+.home-composer-input:not(:hover)::-webkit-scrollbar-thumb,
+.tp-pane:not(:hover)::-webkit-scrollbar-thumb,
+.tp .dd:not(:hover)::-webkit-scrollbar-thumb,
+.am-engine-popup:not(:hover)::-webkit-scrollbar-thumb,
+.pg-side:not(:hover)::-webkit-scrollbar-thumb,
+.pg-stage:not(:hover)::-webkit-scrollbar-thumb,
+.pg-segments:not(:hover)::-webkit-scrollbar-thumb {
+  background: transparent;
+}

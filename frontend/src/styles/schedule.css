@@ -3442,13 +3442,11 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
-.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
-.tasks-list::-webkit-scrollbar-thumb:hover,
-.task-cards-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
-  background-clip: padding-box;
-}
+/* HOVER-ONLY INK for these bars lives in styles/scrollbars.css (Akshil,
+   2026-09-15) — one list for every scroller on Tasks, the side peek, Home and
+   AI Models. The rules above still state the bar's shape and colour for the
+   parity tests and for WebKit; scrollbars.css's `scrollbar-color` is what the
+   browser actually paints at rest and under the pointer. */
 
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
