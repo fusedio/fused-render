@@ -193,6 +193,50 @@ describe("subscribeListing", () => {
     expect(readListing()?.map((t) => t.key)).toEqual(["b", "a"]);
   });
 
+  test("THE GENERATION DIES WITH THE FEED, so a restarted server is caught up", async () => {
+    // BUGBOT, 2026-09-15. `listingGen` guards against a full read that left
+    // BEFORE a delta which landed after it — a race that only exists inside one
+    // running feed. Carried across a teardown it is a claim about a counter this
+    // session has stopped following: a server that restarted counts from zero
+    // again, so the next feed's first listing is "older" than the number we were
+    // holding, gets dropped, and the page keeps the remembered pre-restart rows
+    // with every later delta folding into them.
+    const first = env([{ generation: 1 }, { generation: 9, rows: [row("b", 9)] }], [
+      { tasks: [row("a")], generation: 9 },
+    ]);
+    const off = subscribeListing(() => {}, first);
+    await settle();
+    off();
+
+    // The server came back and counts from 1 again.
+    const second = env([], [{ tasks: [row("c")], generation: 1 }]);
+    const seen: ListingEvent[] = [];
+    const off2 = subscribeListing((ev) => seen.push(ev), second);
+    await settle();
+    off2();
+    // The replay of the remembered rows first, then the new server's listing —
+    // which must WIN rather than be dropped as stale.
+    expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["c"]);
+    expect(readListing()?.map((t) => t.key)).toEqual(["c"]);
+  });
+
+  test("…and the guard still holds INSIDE one feed", async () => {
+    // The teardown reset must not become "no guard at all": within a live feed a
+    // full read older than a folded-in delta is still dropped (bugbot #892, the
+    // case above it).
+    const e = env([{ generation: 1 }, { generation: 5, rows: [row("b", 9)] }], [
+      { tasks: [row("a", 1)], generation: 5 },
+      { tasks: [row("a", 1)], generation: 4 },
+    ]);
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    refreshListing();
+    await settle();
+    off();
+    expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["b", "a"]);
+  });
+
   test("`full` forgets the generation first, so the catch-up read is accepted", async () => {
     const e = env(
       [{ generation: 1 }, { generation: 9, rows: [row("b", 9)] }, { generation: 2, full: true }],

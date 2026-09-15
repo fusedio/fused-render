@@ -109,9 +109,9 @@ async function poll() {
   const departed = generation;
   try {
     const answer = (await getTasksPulse()).tasks ?? [];
-    // A feeder took over, or a fresher publish landed, while this request was
-    // in the air: this answer is already history. Drop it.
-    if (feeders === 0 && generation === departed) publishTasks(answer);
+    // A feeder or the listing feed took over, or a fresher publish landed, while
+    // this request was in the air: this answer is already history. Drop it.
+    if (!fedElsewhere() && generation === departed) publishTasks(answer);
   } catch {
     // A failed read is not news: the sidebar keeps the last answer it had rather
     // than dropping a dot because one poll lost a race with a restart.
@@ -119,6 +119,24 @@ async function poll() {
     inFlight = false;
     schedule();
   }
+}
+
+/**
+ * IS SOMEBODY ELSE THE POLLER?
+ *
+ * Two owners can say yes, and every guard in this module has to ask BOTH
+ * (bugbot, 2026-09-15). The Tasks page's `useTasksFeeder` was the first, and
+ * `schedule`/`pokeTasks` learned about the listing feed when it landed — but
+ * `poll` and the two subscribe hooks were still asking only about feeders, so a
+ * sidebar remounting while a CHAT held the listing (no Tasks page anywhere)
+ * fired `/api/tasks/pulse` and published its thinner answer over the full rows
+ * the feed had just handed us: two reads, two sources, and a dot that disagreed
+ * with the rows under it until the next tick.
+ *
+ * One predicate so the next owner cannot be added to three of four places.
+ */
+function fedElsewhere(): boolean {
+  return feeders > 0 || listingSubs.size > 0;
 }
 
 /**
@@ -139,7 +157,7 @@ function schedule() {
   // every answer through publishTasks, so a pulse poll beside it is the same
   // double-poll the feeder rule exists to prevent — just spent on the smaller
   // endpoint.
-  if (listeners.size + rowListeners.size === 0 || feeders > 0 || listingSubs.size > 0) return;
+  if (listeners.size + rowListeners.size === 0 || fedElsewhere()) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
@@ -311,7 +329,11 @@ export function useTasksPulse(): TasksPulse {
     // second /api/tasks alongside the Tasks page's own on every trip to that
     // page — the same double-poll the feeder exists to prevent, just spent per
     // navigation instead of per tick. A feeder's answer is already on its way.
-    if (feeders === 0) void poll();
+    //
+    // AND A LISTING FEED COUNTS (`fedElsewhere`): a chat holding the feed
+    // publishes the same rows through the same door, with no Tasks page in
+    // sight, and this read would have landed a thinner answer over them.
+    if (!fedElsewhere()) void poll();
     else schedule();
     return () => {
       listeners.delete(setCurrent);
@@ -330,7 +352,7 @@ export function useTasksPulseRows(): TaskPulseTask[] {
   useEffect(() => {
     rowListeners.add(setRows);
     setRows(tasks);
-    if (feeders === 0) void poll();
+    if (!fedElsewhere()) void poll();
     else schedule();
     return () => {
       rowListeners.delete(setRows);
@@ -674,6 +696,17 @@ export function subscribeListing(
     if (listingSubs.size === 0) {
       feedStop?.();
       feedStop = null;
+      // AND THE GENERATION GOES WITH IT (bugbot, 2026-09-15). `listingGen` is
+      // the guard against a full read that left BEFORE a delta landing after
+      // it — a race that only exists inside one running feed. Kept across a
+      // teardown it becomes a claim about a server counter this session has
+      // stopped following: a server that restarted counts from zero again, so
+      // the next feed's very first listing would be "older" than the number we
+      // were holding, be dropped, and leave the page on the remembered rows
+      // with deltas folding into them for ever. The rows survive
+      // (`rememberListing`) because they are still the best answer we have; the
+      // number does not, because nothing is left to race it.
+      listingGen = -1;
       schedule();
     }
   };

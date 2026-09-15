@@ -273,9 +273,10 @@ describe("one poll behind both readers", () => {
     // Both reader sets count — the summary readers and the Current apps section's
     // row readers (D487) share the one poll, so either alone keeps it alive.
     // …and a listing feed counts as a feeder for the same reason: it publishes
-    // every row of every answer through publishTasks.
+    // every row of every answer through publishTasks. ONE predicate for both
+    // owners (`fedElsewhere`) — see the case below.
     expect(STORE).toMatch(
-      /if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0 \|\| listingSubs\.size > 0\) return;/,
+      /if \(listeners\.size \+ rowListeners\.size === 0 \|\| fedElsewhere\(\)\) return;/,
     );
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
@@ -293,7 +294,7 @@ describe("one poll behind both readers", () => {
     // Including the sidebar's own mount read: it remounts on every navigation
     // (App keys it on the nav epoch), so an unconditional fetch there would
     // spend the same double-poll per trip to /tasks instead of per tick.
-    expect(STORE).toContain("if (feeders === 0) void poll();");
+    expect(STORE).toContain("if (!fedElsewhere()) void poll();");
     expect(STORE).toContain("feeders++");
     expect(STORE).toContain("feeders--");
     expect(SCHEDULED).toContain("useTasksFeeder();");
@@ -305,6 +306,32 @@ describe("one poll behind both readers", () => {
     );
   });
 
+  it("EVERY guard asks about BOTH owners, not just the feeder (bugbot #1162)", () => {
+    // `schedule` and `pokeTasks` learned about the listing feed when it landed,
+    // but `poll` and the two subscribe hooks still keyed off `feeders` alone —
+    // so a sidebar remounting while a CHAT held the listing (no Tasks page
+    // anywhere) fired /api/tasks/pulse and published its thinner answer over the
+    // full rows the feed had just handed over. Two reads, two sources, and a dot
+    // that disagreed with the rows under it until the next tick.
+    //
+    // One predicate, so the next owner cannot be added to three places out of
+    // four.
+    expect(STORE).toContain("function fedElsewhere(): boolean {");
+    expect(STORE).toMatch(/return feeders > 0 \|\| listingSubs\.size > 0;/);
+    // Four guards, and none of them may still be asking the old question. The
+    // `feeders` reads that legitimately REMAIN are the counter's own
+    // (`feeders++`/`feeders--`) and pokeTasks' window event, which is about the
+    // Tasks page's OTHER two feeds and not about who polls.
+    const guarded = ["schedule", "poll", "useTasksPulse", "useTasksPulseRows"];
+    for (const name of guarded) {
+      const start = STORE.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = STORE.slice(start, STORE.indexOf("\n}", start));
+      expect(body).toContain("fedElsewhere()");
+      expect(body).not.toContain("feeders === 0");
+    }
+  });
+
   it("drops a stale self-poll that resolves after a fresher publish", () => {
     // BUGBOT, 2026-08-18: a self-poll already in the air when the page starts
     // feeding (or when a fresher publish lands) must LOSE, not overwrite. The
@@ -312,7 +339,7 @@ describe("one poll behind both readers", () => {
     // moved it while the request was in flight.
     expect(STORE).toContain("const departed = generation;");
     expect(STORE).toMatch(
-      /if \(feeders === 0 && generation === departed\) publishTasks\(answer\);/,
+      /if \(!fedElsewhere\(\) && generation === departed\) publishTasks\(answer\);/,
     );
     // Every publish — the page's or a poll's own — is a new generation, so two
     // racing polls can't both win either.
