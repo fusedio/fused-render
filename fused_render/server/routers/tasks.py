@@ -1810,20 +1810,29 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
 # ------------------------------------------------------------------ liveness
 
 
-def _live(path: str | None, now: float) -> tuple[bool, float]:
-    """(is this session running, when was it last active).
+def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
+    """(is this session running, when was it last active, was that the SENDER's
+    own word).
 
     The same 45-second rule as the sessions inbox, and the same tail read — a
     transcript's mtime alone lies, because Claude Code appends housekeeping
     records after the turn is over. Skipped entirely for a file nothing has
     touched in 90 seconds: it is stale either way, so the read would only be
-    deciding what kind of stale."""
+    deciding what kind of stale.
+
+    The third value separates the two KINDS of yes this can answer, because one
+    of them is evidence and the other is testimony. Everything but the mark is
+    inferred from a file — timestamps a later rule is entitled to re-read and
+    discount (`_verdict_outvotes_live`). The mark is the page that made the send
+    saying it made it, which no reading of the transcript can outvote, and a
+    caller that discounts it has thrown away the one fact this whole path exists
+    to carry. False for every answer that is not running at all."""
     if not path:
-        return False, 0.0
+        return False, 0.0, False
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return False, 0.0
+        return False, 0.0, False
     session_id = os.path.splitext(os.path.basename(path))[0]
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
@@ -1846,7 +1855,7 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
     # on its own, so a run that died on the spot settles without a write.
     if tasks_watch.is_marked_running(session_id) and not (
             from_registry and from_registry[0]):
-        return True, now
+        return True, now, True
     if from_registry is not None:
         running, active = from_registry
         if now - mtime <= sessions._STALE_TAIL_SEC:
@@ -1854,12 +1863,12 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
             file_active = last.timestamp() if last is not None else mtime
         else:
             file_active = mtime
-        return running, max(active, file_active)
+        return running, max(active, file_active), False
     if now - mtime > sessions._STALE_TAIL_SEC:
-        return False, mtime
+        return False, mtime, False
     activity, last = sessions._tail(path, mtime)
     running = (now - activity) < sessions._RUNNING_WINDOW_SEC
-    return running, (last.timestamp() if last is not None else mtime)
+    return running, (last.timestamp() if last is not None else mtime), False
 
 
 # --------------------------------------------------------------- the endpoints
@@ -1977,7 +1986,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     inside a per-task `try` that swallows IO errors — a failed write would cost
     the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
-    live, active = _live(task["path"], now)
+    live, active, marked = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
     # The transcript's prompts already include every scheduled message that
     # fired, so only the ones that never reached a session are added — and with
@@ -2004,7 +2013,17 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `active` rides along because it is the tie-breaker the bug demanded:
     # a transcript still being written to meaningfully after the verdict is a
     # session that kept working, and only the verdict's own echo is set aside.
-    if live and _verdict_outvotes_live(merged, active):
+    #
+    # …AND A SEND IS NOT AN ECHO (`marked`, Bugbot PR #1163). This rule discounts
+    # TIMESTAMPS: it exists because a finished run's closing records look like a
+    # pulse, and the only thing it is entitled to set aside is the transcript's
+    # own vote. The mark is not that vote — it is the page that sent the message
+    # saying it sent it, a fact no reading of the file can outrank. Both windows
+    # are 15 seconds, so without this a follow-up typed into a task whose
+    # scheduled run had just reported would have been suppressed for the mark's
+    # entire life, and the row would have sat on `done` until the registry row
+    # landed — which is the exact lag the mark exists to close.
+    if live and not marked and _verdict_outvotes_live(merged, active):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
@@ -3180,7 +3199,7 @@ def api_task_running(patch: RunningPatch):
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
-    live, _active = _live(task["path"], now)
+    live, _active, _marked = _live(task["path"], now)
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)

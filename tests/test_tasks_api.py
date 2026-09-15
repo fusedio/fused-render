@@ -19,7 +19,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import schedule, tasks_store
+from fused_render import schedule, tasks_store, tasks_watch
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -2004,6 +2004,38 @@ def test_a_stamped_verdicts_own_echo_is_still_set_aside(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["live"] is False
     assert task["status"] == "done"
+
+
+def test_a_send_mark_is_not_the_verdicts_echo(client, projects_dir):
+    """A SEND IS TESTIMONY, NOT A TIMESTAMP (Bugbot, PR #1163).
+
+    The row above is the echo rule working: a scheduled run reported, and the
+    closing records it wrote in the same breath are not a pulse. Now the user
+    types a follow-up into that very task. `tasks_watch.mark_running` says so
+    the instant it is sent — earlier than the transcript, earlier than the
+    CLI's registry row — and the echo rule would have thrown it away, because
+    it measures the transcript's freshness against the verdict and the mark
+    lands inside that window by construction: both are 15 seconds wide.
+
+    So the row would have gone on saying `done` until the registry row appeared,
+    which is the exact lag the mark exists to close. The echo rule may discount
+    what it can re-read off the file; it has no jurisdiction over the page that
+    made the send."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    # After the seeding, before the listing: `reset_cache` (the autouse
+    # fixture) clears the marks along with the scans, so a mark set any earlier
+    # would not survive to be tested.
+    tasks_watch.mark_running("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True, "the send outranks the verdict's echo"
+    assert task["status"] == "in_progress"
 
 
 def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
