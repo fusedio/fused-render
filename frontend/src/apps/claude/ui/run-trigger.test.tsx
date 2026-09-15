@@ -445,10 +445,18 @@ describe("the trigger's column", () => {
     const block = ruleFor(".chat-root .seg-block");
     expect(block).toContain("width: 100%");
     expect(block).toContain("display: block");
-    // The trigger itself is unmoved: bottom-right of the block it belongs to.
+    // The trigger is ANCHORED TO THE PROSE BOX, not to the block (Bugbot on
+    // c20a913): the block also holds the streaming caret, which opens a row
+    // of its own under `.seg-text`, and a `bottom: 0` against the block sat
+    // the word on the caret's row. Grid: prose and trigger share cell (1,1),
+    // end-aligned both ways; the caret takes row 2.
+    expect(ruleFor(".chat-root .seg-block.has-trigger")).toContain("display: grid");
     const trigger = ruleFor(".chat-root .seg-block > .run-trigger");
-    expect(trigger).toContain("right: 0");
-    expect(trigger).toContain("bottom: 0");
+    expect(trigger).toContain("grid-row: 1");
+    expect(trigger).toContain("align-self: end");
+    expect(trigger).toContain("justify-self: end");
+    expect(trigger).not.toContain("position: absolute");
+    expect(ruleFor(".chat-root .seg-block.has-trigger > .cursor")).toContain("grid-row: 2");
   });
 
   test("the word is set in the PROSE's type, and the last line reserves room for it", () => {
@@ -497,7 +505,7 @@ describe("the trigger's column", () => {
     // exactly where the positioned one does.
     expect(ruleFor(".chat-root .seg-block.is-bare")).toContain("text-align: right");
     expect(ruleFor(".chat-root .seg-block.is-bare > .run-trigger")).toContain(
-      "position: static",
+      "justify-self: end",
     );
   });
 });

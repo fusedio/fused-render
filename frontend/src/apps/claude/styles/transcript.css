@@ -337,10 +337,33 @@
 .chat-root .seg-block.has-trigger:has(> .seg-text > blockquote:last-child) {
   padding-bottom: var(--c-run-trigger-h);
 }
+/* THE TRIGGER IS ANCHORED TO THE PROSE BOX, NOT TO THE BLOCK (Bugbot on
+   c20a913). While a turn streams the block also holds the caret, which sits
+   AFTER the block-level `.seg-text` and so opens a line box of its own below
+   it; `bottom: 0` against the block then parked the word on the caret's row
+   and let it jump up a line when the caret unmounted. A one-column grid puts
+   `.seg-text` and the trigger in the SAME cell — end-aligned both ways — and
+   the caret in the row under, so the word sits on the prose's last line from
+   the first frame and never moves. Same DOM, same element identity. */
+.chat-root .seg-block.has-trigger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.chat-root .seg-block.has-trigger > .seg-text {
+  grid-row: 1;
+  grid-column: 1;
+  min-width: 0;
+}
 .chat-root .seg-block > .run-trigger {
-  position: absolute;
-  right: 0;
-  bottom: 0;
+  grid-row: 1;
+  grid-column: 1;
+  align-self: end;
+  justify-self: end;
+}
+.chat-root .seg-block.has-trigger > .cursor {
+  grid-row: 2;
+  grid-column: 1;
+  justify-self: start;
 }
 /* NO PROSE BEFORE THE RUN (design.md §A, Q1) — a turn that opens on a tool
    call, or a run that follows a card. The trigger takes its own line, still
@@ -349,7 +372,7 @@
   text-align: right;
 }
 .chat-root .seg-block.is-bare > .run-trigger {
-  position: static;
+  justify-self: end;
 }
 /* THE PROSE'S OWN TYPE (Akshil, 2026-09-15). `font: inherit` takes the block's
    family, size AND weight — and `line-height: inherit` is restated because the
