@@ -67,6 +67,13 @@ export const PREVIEW_CHAT_MIN = 180;
  */
 export const PREVIEW_INSET = 38;
 
+/** Air above and below the preview CARD inside the box — `padding-top` /
+ *  `padding-bottom` of `.task-side-peek-preview` (styles/task-peek.css). The
+ *  box's `height` includes it, so the card the app is drawn in is this much
+ *  shorter, twice — and the virtual viewport has to be sized to the CARD, or
+ *  the app is 24px taller than its frame and scrolls under the border. */
+export const PREVIEW_PAD_Y = 12;
+
 /** One arrow press on the horizontal seam, matching the vertical one's. */
 export const PREVIEW_KEY_STEP = 10;
 
@@ -159,7 +166,8 @@ export function previewBox(
   // be. The width guard has to be its own: the height clamps below would
   // happily hand such a panel the 120px floor.
   if (!(scale > 0)) return { height: 0, scale: 0, frameHeight: PREVIEW_VH, cropped: false };
-  const natural = PREVIEW_VH * scale;
+  // The BOX's natural height: the 16:9 card plus the air around it.
+  const natural = PREVIEW_VH * scale + 2 * PREVIEW_PAD_Y;
   const ceiling = bodyHeight - PREVIEW_CHAT_MIN;
   if (!(ceiling > PREVIEW_MIN_H)) {
     return { height: 0, scale, frameHeight: natural, cropped: natural > 0 };
@@ -186,8 +194,10 @@ export function previewBox(
    * box is filled with more of the app at the same size. Floored at 720 so a
    * short panel never hands the app a viewport no desktop layout expects.
    */
-  const frameHeight = Math.max(PREVIEW_VH, height / (scale || 1));
-  return { height, scale, frameHeight, cropped: frameHeight * scale - height > 0.5 };
+  // The CARD is what the app fills — the box minus its vertical padding.
+  const card = Math.max(0, height - 2 * PREVIEW_PAD_Y);
+  const frameHeight = Math.max(PREVIEW_VH, card / (scale || 1));
+  return { height, scale, frameHeight, cropped: frameHeight * scale - card > 0.5 };
 }
 
 // ---- the dragged height, in memory only --------------------------------------

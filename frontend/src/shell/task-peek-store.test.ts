@@ -46,7 +46,11 @@ const {
   PEEK_COVER_FLOOR,
   PEEK_MIN_WIDTH,
   PEEK_WIDTH_KEY,
+  MIDDLE_FLOOR,
+  SIDEBAR_COLLAPSE_MIDDLE,
   SIDEBAR_HYSTERESIS,
+  expandUncovers,
+  middleWithSidebar,
   clampPeekWidth,
   defaultPeekWidth,
   middleFloor,
@@ -115,7 +119,7 @@ const SIDEBAR_RAIL = sidebar.SIDEBAR_RAIL_WIDTH;
 const BASELINE = 906;
 /** 906 × ¾, rounded — stated here so a test reads as arithmetic rather than as
  *  a magic number, and pinned against the implementation below. */
-const FLOOR = 680;
+const FLOOR = 500;
 
 function windowWidth(px: number): void {
   (globalThis as { window: { innerWidth: number } }).window.innerWidth = px;
@@ -149,9 +153,11 @@ describe("the width", () => {
   });
 
   it("floors the middle pane at three quarters of its baseline", () => {
+    // A flat 500 since 2026-09-15 (Akshil): the baseline has no say in it.
+    expect(MIDDLE_FLOOR).toBe(500);
     expect(middleFloor(BASELINE)).toBe(FLOOR);
-    expect(middleFloor(1000)).toBe(750);
-    expect(middleFloor(0)).toBe(0);
+    expect(middleFloor(1000)).toBe(500);
+    expect(middleFloor(0)).toBe(500);
   });
 
   it("keeps a dragged width that fits", () => {
@@ -491,11 +497,13 @@ describe("planRoom", () => {
     expect(plan.floored).toBe(false);
   });
 
-  it("FLOORS the middle pane once it would drop under three quarters", () => {
-    // 1306 − 700 = 606, under the 680 floor: the rows stop shrinking and the
-    // pane scrolls sideways instead.
-    const plan = planRoom({ ...open, chosenWidth: 700 });
-    expect(plan.frameAfter).toBe(606);
+  it("FLOORS the middle pane once it would drop under 500", () => {
+    // 1306 − 900 = 406, under the 500 floor: the rows stop shrinking and the
+    // pane scrolls sideways instead. (1306 − 700 = 606 is NOT floored: the ¾
+    // rule that would have floored it went on 2026-09-15.)
+    expect(planRoom({ ...open, chosenWidth: 700 }).floored).toBe(false);
+    const plan = planRoom({ ...open, chosenWidth: 900 });
+    expect(plan.frameAfter).toBe(406);
     expect(plan.floored).toBe(true);
     expect(plan.contentFloor).toBe(FLOOR);
     expect(plan.cover).toBe(false);
@@ -530,42 +538,86 @@ describe("openTimeCollapse — the ONE thing an open may do to the sidebar", () 
   const at = (viewport: number) => ({
     viewport,
     baseline: BASELINE,
+    chosenWidth: null as number | null,
     sidebarExpanded: 232,
     sidebarCollapsed: false,
   });
 
+  it("is the crossing's own line, read at the open (Akshil, 2026-09-15)", () => {
+    // The sidebar used to go the moment the column could not keep its full
+    // baseline beside a minimum panel — on a laptop, every open. Now it goes
+    // only when the middle pane the open leaves is under 500.
+    expect(SIDEBAR_COLLAPSE_MIDDLE).toBe(500);
+  });
+
   it("leaves a wide window alone: there is already room for a full peek", () => {
-    // 1538 − 232 = 1306 of content, less a 906 baseline → exactly the minimum.
+    // 1538 − 232 = 1306 of content, less a 906 baseline → a 400 panel and a
+    // 906 middle pane. Nowhere near the line.
+    expect(middleWithSidebar(at(VIEWPORT))).toBe(906);
     expect(openTimeCollapse(at(VIEWPORT))).toBe(false);
   });
 
-  it("COLLAPSES when the column and a minimum peek will not both fit", () => {
-    // 1400 − 232 = 1168, less 906 → 262 spare, under the panel's minimum. The
-    // rail gives 1400 − 44 = 1356, less 906 → 450. Worth spending.
-    expect(openTimeCollapse(at(1400))).toBe(true);
+  it("leaves a LAPTOP alone too: a floored list is not a reason to take the sidebar", () => {
+    // 1400 − 232 = 1168, less the panel's 400 minimum → 768 for the list. Under
+    // its ¾ floor (680)? No — and even if it were, the list would scroll
+    // sideways; the sidebar is not asked for its room until 500.
+    expect(middleWithSidebar(at(1400))).toBe(768);
+    expect(openTimeCollapse(at(1400))).toBe(false);
+    // 1100 − 232 − 400 = 468: now the list is under the line, and the sidebar goes.
+    expect(middleWithSidebar(at(1100))).toBe(468);
+    expect(openTimeCollapse(at(1100))).toBe(true);
+  });
+
+  it("reads the width the reader DRAGGED, when there is one", () => {
+    // A remembered 700px panel on the same 1400 window: 1168 − 700 = 468.
+    expect(openTimeCollapse({ ...at(1400), chosenWidth: 700 })).toBe(true);
+    expect(openTimeCollapse({ ...at(1400), chosenWidth: 600 })).toBe(false);
   });
 
   it("does NOT move a sidebar the reader has already collapsed", () => {
-    expect(openTimeCollapse({ ...at(1400), sidebarCollapsed: true })).toBe(false);
-  });
-
-  it("does not move it for NOTHING — a window too narrow either way", () => {
-    // 1200 − 44 = 1156, less 906 → 250, still under the minimum. The collapse
-    // would buy a panel that still cannot have its minimum, so the middle pane
-    // gives way exactly as it did before and the sidebar stays put.
-    expect(openTimeCollapse(at(1200))).toBe(false);
+    expect(openTimeCollapse({ ...at(1100), sidebarCollapsed: true })).toBe(false);
   });
 
   it("reads the sidebar's EXPANDED width, whatever it has been dragged to", () => {
-    // A reader who widened their sidebar to 400 hits the condition sooner.
-    expect(openTimeCollapse({ ...at(1500), sidebarExpanded: 400 })).toBe(true);
-    expect(openTimeCollapse({ ...at(1500), sidebarExpanded: 180 })).toBe(false);
+    // A reader who widened their sidebar to 400 hits the line sooner:
+    // 1300 − 400 − 400 = 500 is ON the line (not under), 1290 is under it.
+    expect(openTimeCollapse({ ...at(1300), sidebarExpanded: 400 })).toBe(false);
+    expect(openTimeCollapse({ ...at(1290), sidebarExpanded: 400 })).toBe(true);
+    expect(openTimeCollapse({ ...at(1290), sidebarExpanded: 180 })).toBe(false);
+  });
+});
+
+describe("expandUncovers — a hand-opened sidebar over a COVERING panel shrinks it", () => {
+  const at = (viewport: number, chosenWidth: number | null = null) => ({
+    open: true,
+    viewport,
+    baseline: BASELINE,
+    chosenWidth,
+    sidebarExpanded: 232,
+  });
+
+  it("fires when the sidebar's return would leave no middle pane (cover)", () => {
+    // Akshil, 2026-09-15: "if the middle pane is not visible… when I expand
+    // the left side pane it should default [shrink] the preview pane as well".
+    // 1538 − 232 = 1306, less a dragged 1000 → 306: under the 360 cover floor.
+    expect(expandUncovers(at(VIEWPORT, 1000))).toBe(true);
+    expect(expandUncovers(at(800))).toBe(true); // 568 − 400 = 168
+  });
+
+  it("leaves a panel that was not covering exactly as it was", () => {
+    expect(expandUncovers(at(VIEWPORT, 900))).toBe(false); // 406, a floored list
+    expect(expandUncovers(at(1100))).toBe(false); // 468
+  });
+
+  it("has nothing to shrink with no panel open", () => {
+    expect(expandUncovers({ ...at(800), open: false })).toBe(false);
   });
 });
 
 describe("planCrossing", () => {
   // Everything measured with the sidebar EXPANDED, which is the whole reason
-  // the expand cannot be re-triggered into a collapse: one variable, one floor.
+  // the expand cannot be re-triggered into a collapse: one variable, one line.
+  // 1538 − 232 = 1306 of content; the middle pane is 1306 less the panel.
   const at = (peek: number) => ({
     viewport: VIEWPORT,
     chosenWidth: peek,
@@ -573,6 +625,13 @@ describe("planCrossing", () => {
     sidebarExpanded: 232,
     sidebarCollapsed: false,
     side: "above" as "above" | "below" | null,
+  });
+  const LINE = SIDEBAR_COLLAPSE_MIDDLE;
+
+  it("is the list's floor — one line for the scroll and the sidebar", () => {
+    // Akshil, 2026-09-15: the ¾ trigger is REPLACED by 500px, not joined by it.
+    expect(LINE).toBe(500);
+    expect(LINE).toBe(FLOOR);
   });
 
   it("establishes a side on the first read and fires nothing", () => {
@@ -583,23 +642,32 @@ describe("planCrossing", () => {
     expect(plan.middleIfExpanded).toBe(906);
   });
 
-  it("collapses on a DOWNWARD crossing", () => {
+  it("does NOT collapse for a list that is merely floored", () => {
+    // 1306 − 700 = 606: under the 680 floor, so the list scrolls sideways —
+    // and the sidebar stays exactly where it is.
     const plan = planCrossing(at(700));
     expect(plan.middleIfExpanded).toBe(606);
+    expect(plan.sidebar).toBeNull();
+    expect(plan.side).toBe("above");
+  });
+
+  it("collapses on a DOWNWARD crossing of 500", () => {
+    const plan = planCrossing(at(900));
+    expect(plan.middleIfExpanded).toBe(406);
     expect(plan.sidebar).toBe(true);
     expect(plan.side).toBe("below");
   });
 
   it("collapses even a sidebar the reader opened deliberately", () => {
-    // The one place the floor rule overrules them, and Akshil asked for it by
-    // name: the middle pane is about to overflow and the 188px is the only
-    // room left to give it.
-    const plan = planCrossing({ ...at(700), side: "above", sidebarCollapsed: false });
+    // The one place the rule overrules them, and Akshil asked for it by name:
+    // the middle pane is about to be a sliver and the 188px is the only room
+    // left to give it.
+    const plan = planCrossing({ ...at(900), side: "above", sidebarCollapsed: false });
     expect(plan.sidebar).toBe(true);
   });
 
   it("asks for nothing when the sidebar is already where the crossing wants it", () => {
-    expect(planCrossing({ ...at(700), sidebarCollapsed: true }).sidebar).toBeNull();
+    expect(planCrossing({ ...at(900), sidebarCollapsed: true }).sidebar).toBeNull();
     expect(planCrossing({ ...at(400), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
   });
 
@@ -610,36 +678,36 @@ describe("planCrossing", () => {
   });
 
   it("does NOTHING while the pane stays on the side it was already on", () => {
-    // Narrower still, below the floor throughout: no second crossing, so a
+    // Narrower still, below the line throughout: no second crossing, so a
     // sidebar the reader re-opened in between is simply left alone.
-    const plan = planCrossing({ ...at(800), side: "below", sidebarCollapsed: false });
+    const plan = planCrossing({ ...at(1000), side: "below", sidebarCollapsed: false });
     expect(plan.sidebar).toBeNull();
     expect(plan.side).toBe("below");
   });
 
-  it("holds the reader's override until the floor is crossed the OTHER way", () => {
-    // They re-opened the sidebar while below the floor. Resizing about below
-    // the floor changes nothing…
-    expect(planCrossing({ ...at(750), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
+  it("holds the reader's override until the line is crossed the OTHER way", () => {
+    // They re-opened the sidebar while below the line. Resizing about below
+    // the line changes nothing…
+    expect(planCrossing({ ...at(950), side: "below", sidebarCollapsed: false }).sidebar).toBeNull();
     // …until the pane comes back up (nothing to do, it is already open)…
     const up = planCrossing({ ...at(400), side: "below", sidebarCollapsed: false });
     expect(up.sidebar).toBeNull();
     expect(up.side).toBe("above");
     // …and then goes down again, which IS a crossing and does collapse it.
-    expect(planCrossing({ ...at(700), side: up.side, sidebarCollapsed: false }).sidebar).toBe(true);
+    expect(planCrossing({ ...at(900), side: up.side, sidebarCollapsed: false }).sidebar).toBe(true);
   });
 
-  it("holds a manual CLOSE until the floor is crossed upward", () => {
-    // They collapsed it themselves while above the floor. Widening is not a
+  it("holds a manual CLOSE until the line is crossed upward", () => {
+    // They collapsed it themselves while above the line. Widening is not a
     // crossing, so it stays shut…
     expect(planCrossing({ ...at(350), side: "above", sidebarCollapsed: true }).sidebar).toBeNull();
     // …and it only comes back when the pane actually crosses up from below.
     expect(planCrossing({ ...at(400), side: "below", sidebarCollapsed: true }).sidebar).toBe(false);
   });
 
-  it("treats COVER as below the floor, and coming back out as a crossing up", () => {
+  it("treats COVER as below the line, and coming back out as a crossing up", () => {
     // Dragged until the middle pane is gone: `middleIfExpanded` goes to nothing
-    // (or past it), which is emphatically below the floor.
+    // (or past it), which is emphatically below the line.
     const covered = planCrossing({ ...at(1306), side: "above" });
     expect(covered.middleIfExpanded).toBeLessThanOrEqual(0);
     expect(covered.side).toBe("below");
@@ -655,25 +723,25 @@ describe("planCrossing", () => {
     ).toBeNull();
   });
 
-  it("keeps a 16px band around the floor so the seam cannot make it flap", () => {
+  it("keeps a 16px band around the line so the seam cannot make it flap", () => {
     expect(SIDEBAR_HYSTERESIS).toBe(16);
-    // Middle pane at exactly the floor, coming up from below: inside the band,
+    // Middle pane at exactly the line, coming up from below: inside the band,
     // so it is still "below" and the sidebar is not handed back yet.
     const inBand = planCrossing({
-      ...at(VIEWPORT - 232 - FLOOR),
+      ...at(VIEWPORT - 232 - LINE),
       side: "below",
       sidebarCollapsed: true,
     });
-    expect(inBand.middleIfExpanded).toBe(FLOOR);
+    expect(inBand.middleIfExpanded).toBe(LINE);
     expect(inBand.side).toBe("below");
     expect(inBand.sidebar).toBeNull();
     // 16px past it, and it is.
     const past = planCrossing({
-      ...at(VIEWPORT - 232 - FLOOR - SIDEBAR_HYSTERESIS),
+      ...at(VIEWPORT - 232 - LINE - SIDEBAR_HYSTERESIS),
       side: "below",
       sidebarCollapsed: true,
     });
-    expect(past.middleIfExpanded).toBe(FLOOR + SIDEBAR_HYSTERESIS);
+    expect(past.middleIfExpanded).toBe(LINE + SIDEBAR_HYSTERESIS);
     expect(past.sidebar).toBe(false);
   });
 });
@@ -847,8 +915,10 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("does NOT move it on an open, however narrow the middle pane lands", () => {
     // The rule of 2026-09-14 (design.md, Widths v2): open/close/swap have no
-    // say at all. A width the reader dragged last week is restored and the
-    // sidebar is simply left where they had it.
+    // say at all. A width the reader dragged last week is restored — 1306 −
+    // 700 = 606, under the list's ¾ floor, so the list scrolls sideways — and
+    // the sidebar is simply left where they had it. (The one exception is the
+    // 500 line, spent at the open: see "collapses the sidebar on a first open".)
     setPeekWidth(700);
     arm();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
@@ -857,7 +927,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("collapses it when a RESIZE takes the middle pane under its floor", () => {
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(getPeekState().autoCollapsed).toBe(true);
@@ -868,7 +938,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("remembers across a reload that the collapse was ours", () => {
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     let stored: string | null = null;
     try {
@@ -881,7 +951,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("puts it back when a resize brings the middle pane up again", () => {
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     setPeekWidth(400);
@@ -892,20 +962,20 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("leaves the reader's own chevron alone until the floor is crossed again", () => {
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     // They press the rail's chevron.
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
     expect(getPeekState().autoCollapsed).toBe(false);
     // Further narrowing, still below the floor: NOT a crossing, so it stands.
-    setPeekWidth(750);
+    setPeekWidth(920);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     // Up over the floor and back down under it — that IS one, and it collapses
     // even though they opened it deliberately.
     setPeekWidth(400);
     applyResize();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
   });
@@ -918,7 +988,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // it. The trigger overwrote a decision they can see; it has to be written
     // down like one.
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     // They shut it themselves while the pane is below the floor.
     sidebar.setSidebarState((s) => ({ ...s, collapsed: true }));
@@ -935,7 +1005,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // left exactly as they last set it.
     arm();
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
@@ -951,16 +1021,21 @@ describe("the sidebar, and the only thing that moves it", () => {
     // nothing of theirs was being overridden. DOM 232, storage `true`, reload
     // → 44. What a write persists has to be decided by what it OVERWRITES, and
     // a collapse we wrote down is one of those things.
+    //
+    // Since 2026-09-15 a hand-expand BELOW the line closes the panel instead,
+    // so the override now happens on a WINDOW resize: they touch the sidebar
+    // while the list is still 606 wide, and the window then shrinks under it.
     arm();
     setPeekWidth(700);
-    applyResize(); //  (1) our own collapse, silent
-    sidebar.setSidebarState((s) => ({ ...s, collapsed: false })); // they expand
-    setPeekWidth(400);
-    applyResize();
-    setPeekWidth(700);
-    applyResize(); //  (2) overrides their expand → persisted collapse
+    applyResize(); //  606 for the list: above the line, nothing moves
+    sidebar.setSidebarState((s) => ({ ...s, collapsed: true })); // they shut it…
+    sidebar.setSidebarState((s) => ({ ...s, collapsed: false })); // …and open it
+    expect(getPeekState().key).toBe("sess-1");
+    windowWidth(1300);
+    applyResize(); //  (2) 1068 − 700 = 368: overrides their expand → persisted collapse
+    expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(sidebar.loadSidebarState().collapsed).toBe(true);
-    setPeekWidth(400);
+    windowWidth(VIEWPORT);
     applyResize(); //  (3) undoes (2) → must be persisted too
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
@@ -968,14 +1043,14 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("hands back a PERSISTED collapse the same way it was written", () => {
     arm();
-    // They open it themselves…
+    // They touch it themselves while the list is still wide enough…
     setPeekWidth(700);
     applyResize();
+    sidebar.setSidebarState((s) => ({ ...s, collapsed: true }));
     sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
-    // …and a later downward crossing overrides that, persistently.
-    setPeekWidth(400);
-    applyResize();
-    setPeekWidth(700);
+    // …and a later downward crossing (the window shrinking) overrides that,
+    // persistently.
+    windowWidth(1300);
     applyResize();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
     expect(sidebar.loadSidebarState().collapsed).toBe(true);
@@ -991,7 +1066,7 @@ describe("the sidebar, and the only thing that moves it", () => {
     // exactly where the last crossing left it; what puts it back is leaving
     // /tasks, below.
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     closePeek();
     expect(sidebar.getSidebarState().collapsed).toBe(true);
@@ -999,7 +1074,7 @@ describe("the sidebar, and the only thing that moves it", () => {
 
   it("hands it back when the page goes away", () => {
     arm();
-    setPeekWidth(700);
+    setPeekWidth(900);
     applyResize();
     // Navigating away from /tasks: there is no middle pane out here for the
     // floor rule to be about, so the reader must not be stranded with a rail
@@ -1061,12 +1136,11 @@ describe("the sidebar, and the only thing that moves it", () => {
     expect(getPeekState().baseline).toBe(BASELINE);
   });
 
-  it("collapses the sidebar on a first open too narrow for a 220 peek", () => {
-    // The ONE open-time exception (Akshil, 2026-09-14). 1400 − 232 = 1168
-    // against a 1006 baseline leaves 162 — under the panel's minimum — and the
-    // rail buys 350, so the chrome nobody is looking at gives way instead of
-    // the column the reader is reading.
-    windowWidth(1400);
+  it("collapses the sidebar on a first open that leaves the list under 500", () => {
+    // The ONE open-time exception, on the crossing's own line (Akshil,
+    // 2026-09-15). 1100 − 232 = 868, less the panel's 400 minimum → 468 for
+    // the list: under 500, so the chrome nobody is looking at gives way.
+    windowWidth(1100);
     setPeekHost(true);
     setPeekBaselineCandidate(BASELINE);
     openPeek("sess-1");
@@ -1074,31 +1148,62 @@ describe("the sidebar, and the only thing that moves it", () => {
     expect(getPeekState().autoCollapsed).toBe(true);
     // Ours, and not written to the reader's preference.
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
-    // …and the default width is re-derived against the area it actually got.
-    expect(currentRoom().peekWidth).toBe(1400 - 44 - BASELINE);
-    expect(currentRoom().frameAfter).toBe(BASELINE);
+    // …and the split is re-derived against the area it actually got:
+    // 1100 − 44 = 1056, a 400 panel, 656 for the list.
+    expect(currentRoom().peekWidth).toBe(PEEK_MIN_WIDTH);
+    expect(currentRoom().frameAfter).toBe(1100 - 44 - PEEK_MIN_WIDTH);
   });
 
-  it("…and falls back to giving way when the collapse would not buy the 220", () => {
-    windowWidth(1200);
+  it("…and leaves a LAPTOP's sidebar alone: a floored list is not a reason", () => {
+    // 1400 − 232 = 1168, less 400 → 768. The column cannot keep its 906
+    // baseline, so the list is floored and scrolls sideways — and the sidebar
+    // stays exactly where it is (Akshil, 2026-09-15: "allow the middle to
+    // shrink all the way to 500 before pushing the left panel to collapse").
+    windowWidth(1400);
     setPeekHost(true);
     setPeekBaselineCandidate(BASELINE);
     openPeek("sess-1");
     expect(sidebar.getSidebarState().collapsed).toBe(false);
     expect(getPeekState().autoCollapsed).toBe(false);
-    // The middle pane gives way instead, exactly as it did before.
     expect(currentRoom().peekWidth).toBe(PEEK_MIN_WIDTH);
+    expect(currentRoom().tight).toBe(true);
   });
 
   it("spends the open-time exception ONCE — a swap does not re-argue it", () => {
-    windowWidth(1400);
+    windowWidth(1100);
     setPeekHost(true);
     setPeekBaselineCandidate(BASELINE);
     openPeek("sess-1");
-    // The reader opens the sidebar again; a swap must not shut it.
-    sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
+    expect(getPeekState().autoCollapsed).toBe(true);
     openPeek("sess-2");
+    expect(sidebar.getSidebarState().collapsed).toBe(true);
+    expect(getPeekState().autoCollapsed).toBe(true);
+    expect(sidebar.loadSidebarState().collapsed).toBe(false);
+  });
+
+  it("SHRINKS a covering panel to the default when the reader re-opens the sidebar", () => {
+    // Akshil, 2026-09-15. Their sidebar wins; the panel that was covering the
+    // list hands its width back so the list is on screen beside it again.
+    arm();
+    setPeekWidth(1200);
+    applyResize(); // the crossing took the sidebar; 1494 − 1200 = 294: cover
+    expect(currentRoom().cover).toBe(true);
+    expect(sidebar.getSidebarState().collapsed).toBe(true);
+    sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
+    expect(getPeekState().key).toBe("sess-1");
+    expect(getPeekState().width).toBeNull(); // back to the default split
+    expect(currentRoom().cover).toBe(false);
+    expect(currentRoom().peekWidth).toBe(1306 - BASELINE);
     expect(sidebar.getSidebarState().collapsed).toBe(false);
+  });
+
+  it("…and leaves a panel that was only FLOORING the list exactly as it was", () => {
+    arm();
+    setPeekWidth(900);
+    applyResize(); // 406: under the floor, not cover; the sidebar collapsed
+    sidebar.setSidebarState((s) => ({ ...s, collapsed: false }));
+    expect(getPeekState().key).toBe("sess-1");
+    expect(getPeekState().width).toBe(900);
   });
 
   it("adopts the first measurement even when the peek is ALREADY open", () => {
@@ -1148,11 +1253,12 @@ describe("the sidebar, and the only thing that moves it", () => {
   });
 
   it("…and lets the window itself win when even the clamp cannot help", () => {
-    // 900 less a 232 sidebar is 668 of content: a 400 panel and a 360 middle
-    // pane do not both fit at any width, so cover is the honest answer rather
-    // than a sliver of list nobody can read.
+    // 800 less a 232 sidebar is 568 of content — under the 500 line, so the
+    // open spends the sidebar; 756 on the rail is still short of a 400 panel
+    // beside a 360 middle pane, so cover is the honest answer rather than a
+    // sliver of list nobody can read.
     setPeekWidth(1400);
-    windowWidth(900);
+    windowWidth(800);
     setPeekHost(true);
     setPeekBaselineCandidate(BASELINE);
     openPeek("sess-1");
@@ -1233,11 +1339,12 @@ describe("the sidebar, and the only thing that moves it", () => {
       setPeekHost(true);
       setPeekBaselineCandidate(BASELINE);
       openPeek("sess-1");
-      // The open-time exception does not fire here (the collapse would not buy
-      // the panel its minimum beside an untouched column), so the sidebar is
-      // still open and the panel is covering.
-      expect(sidebar.getSidebarState().collapsed).toBe(false);
-      expect(currentRoom().cover).toBe(true);
+      // Since 2026-09-15 the open itself spends the collapse (900 − 232 − 400
+      // = 268 for the list, under the 500 line), so the panel never covers
+      // here: 856 − 400 = 456 for the list. "Resize panel" then has nothing to
+      // move and moves nothing.
+      expect(sidebar.getSidebarState().collapsed).toBe(true);
+      expect(currentRoom().cover).toBe(false);
       expect(canShowList()).toBe(true);
       showListBesidePeek();
       expect(sidebar.getSidebarState().collapsed).toBe(true);
@@ -1259,8 +1366,11 @@ describe("the sidebar, and the only thing that moves it", () => {
       showListBesidePeek();
       // Nothing moved — which is why the header draws the control disabled with
       // "Window too narrow to show the list" rather than offering the press.
+      // (The sidebar is a rail already: the open spent it, 700 − 232 − 400
+      // being far under 500 — and the panel covers even so.)
       expect(getPeekState().width).toBe(before);
-      expect(sidebar.getSidebarState().collapsed).toBe(false);
+      expect(sidebar.getSidebarState().collapsed).toBe(true);
+      expect(currentRoom().cover).toBe(true);
     });
 
     it("has nothing to offer with no panel open", () => {
