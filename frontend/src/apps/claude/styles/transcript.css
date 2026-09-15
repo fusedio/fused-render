@@ -357,13 +357,27 @@
    trigger, still bottom-right, drops into it. `.md-tablewrap` is named beside
    `table` because the enhance pass wraps a settled table in it (`markdown.ts`
    `wrapTables`), so after that pass the bare `table` selector matches nothing.
-   (A list needs no escape: the spacer lands after the last item, in the list's
-   own flow, so the trailing line it opens IS the room.) */
+
+   A LIST gets its spacer INSIDE THE LAST ITEM (Akshil, 2026-09-15). After the
+   `ul` itself the inline-block opens a line of its own under the list, and the
+   trigger — end-aligned to the prose box — dropped onto that empty line, a
+   row under a one-line bullet with the whole column free beside it. In the
+   last `li` the room comes out of the item's own last line, so the word sits
+   level with the sentence the way it does in a paragraph. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > pre:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > table:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > .md-tablewrap:last-child::after,
 .chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child::after {
   content: none;
+}
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child::after,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: var(--c-run-trigger-w);
+  height: 0;
 }
 .chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
 .chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
