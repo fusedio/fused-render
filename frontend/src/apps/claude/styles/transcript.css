@@ -379,6 +379,14 @@
   width: var(--c-run-trigger-w);
   height: 0;
 }
+/* …AND LEVEL WITH IT. `li` carries `margin: 2px 0` (below), and the trigger is
+   end-aligned to the prose box, so with the margin the word sat 2px under the
+   bullet's line. The seat's last item gives that margin up; the list's own
+   bottom margin is already 0 as the prose's `:last-child`. */
+.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child,
+.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child {
+  margin-bottom: 0;
+}
 .chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
 .chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
 .chat-root .seg-block.has-trigger:has(> .seg-text > .md-tablewrap:last-child),
