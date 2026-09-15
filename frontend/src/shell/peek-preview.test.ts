@@ -14,6 +14,7 @@ const {
   PREVIEW_CAP_FRACTION,
   PREVIEW_CHAT_MIN,
   PREVIEW_INSET,
+  PREVIEW_PAD_Y,
   PREVIEW_MIN_H,
   PREVIEW_VH,
   PREVIEW_VW,
@@ -75,8 +76,8 @@ describe("previewBox", () => {
     );
     expect(wide.frameHeight * wide.scale).toBeGreaterThan(narrow.frameHeight * narrow.scale);
     // 16:9 on the INNER width — 508 wide is 285.75 tall, and on a body with
-    // room it is shown whole.
-    expect(narrow.height).toBeCloseTo(inner(564) * (9 / 16), 4);
+    // room it is shown whole, with the card's 12px of air above and below.
+    expect(narrow.height).toBeCloseTo(inner(564) * (9 / 16) + 2 * PREVIEW_PAD_Y, 4);
     expect(narrow.cropped).toBe(false);
   });
 
@@ -102,12 +103,15 @@ describe("previewBox", () => {
     // 716 wide is 640 inside its 38px gutters, so the scale is a round 0.5.
     const natural = previewBox(716, 2000, null);
     expect(natural.frameHeight).toBe(PREVIEW_VH);
-    const taller = previewBox(716, 2000, 600);
+    // 12px of air above and below the card (`--peek-preview-pad-y`), so a
+    // 624px box is a 600px card.
+    expect(PREVIEW_PAD_Y).toBe(12);
+    const taller = previewBox(716, 2000, 600 + 2 * PREVIEW_PAD_Y);
     expect(taller.scale).toBe(natural.scale);
-    expect(taller.height).toBe(600);
-    // 640 / 1280 = 0.5, so a 600px box is a 1200px window.
+    expect(taller.height).toBe(624);
+    // 640 / 1280 = 0.5, so a 600px card is a 1200px window.
     expect(taller.frameHeight).toBe(1200);
-    // …and it is not "cropped": the drawn frame is exactly the box.
+    // …and it is not "cropped": the drawn frame is exactly the card.
     expect(taller.frameHeight * taller.scale).toBeCloseTo(600, 6);
     expect(taller.cropped).toBe(false);
   });

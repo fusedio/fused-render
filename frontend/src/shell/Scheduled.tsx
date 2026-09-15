@@ -1010,6 +1010,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const peekable = !scope && peekOn;
   useTaskPeekHost(peekable);
   const peek = useTaskPeekLayout(peekable);
+  // SCROLL, DON'T FOLD (Akshil, 2026-09-15). `data-floored` used to switch on
+  // at the middle pane's floor only, and the row ladder folded marks on the way
+  // down to it. With the floor at a flat 500 that meant hiding meta across the
+  // whole 1094→500 range — so the switch is now `tight` (frame narrower than
+  // the column): under it the list's content is held at the widest row's need
+  // and the pane scrolls sideways. Floored is a subset of tight (500 < any
+  // baseline), so nothing the floor did is lost.
+  const scrolls = peek.open && peek.tight;
   // THE MIDDLE PANE'S BASELINE (design.md, Widths v2). What is kept here is the
   // WATCH; the measurement itself is the store's (`measureTasksBaseline`), for
   // a reason worth stating where a reader would come looking for it: this
@@ -1338,12 +1346,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               missing={missing}
-              // At the floor the rows stop folding their marks and the list
-              // scrolls to them instead (design.md, Fix batch 6 §2) — the same
-              // `floored` the frame writes as `data-floored` below, so the
-              // stylesheet and the fit ladder can never disagree about which
-              // side of the floor the pane is on.
-              floored={peek.floored}
+              // The rows NEVER fold their marks while the panel is up
+              // (Akshil, 2026-09-15): the moment the frame is narrower than the
+              // column, the list scrolls sideways to whatever the widest row
+              // needs instead of hiding anything. The same switch the frame
+              // writes as `data-floored` below, so the stylesheet and the fit
+              // ladder can never disagree.
+              floored={scrolls}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is
@@ -1502,7 +1511,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // floor the views stop reflowing and scroll sideways inside the frame
         // instead (styles/task-peek.css). The toolbar is deliberately NOT under
         // it — it stays one line at every width and folds its own way.
-        data-floored={peek.floored ? "1" : undefined}
+        data-floored={scrolls ? "1" : undefined}
         // …and `data-tight` a little earlier: once the frame is narrower than
         // the column plus its gutters there are no centred margins left to give
         // and the page's side padding is just two dark bands (design.md, Polish

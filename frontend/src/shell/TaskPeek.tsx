@@ -1290,7 +1290,14 @@ export function TaskPeek({
                     Preview unavailable
                   </p>
                 ) : (
-                  <>
+                  // THE CARD (Akshil, 2026-09-15): the same bordered, rounded
+                  // well the Home grid's app cards use for their thumbs, minus
+                  // the card's head row — the app is framed as something the
+                  // panel is showing, and the frame answers a hover the way
+                  // those cards do (styles/task-peek.css). The scroller is the
+                  // card's child so the border never scrolls with the crop.
+                  <div className="task-side-peek-preview-card">
+                    <div className="task-side-peek-preview-scroll">
                     <div
                       className="task-side-peek-preview-scale"
                       // The scaled frame's real footprint, and it tracks the
@@ -1323,7 +1330,8 @@ export function TaskPeek({
                         <SkeletonLines rows={2} label="Loading the app" />
                       </div>
                     )}
-                  </>
+                    </div>
+                  </div>
                 )}
               </div>
               <div

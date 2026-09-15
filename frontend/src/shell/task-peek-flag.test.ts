@@ -689,7 +689,11 @@ describe("the middle pane's floor", () => {
   // a switch nothing listens for, or a rule keyed on an attribute nobody
   // writes. Neither needs a mounted list to catch.
   it("writes the switch and the number onto the frame, and only there", () => {
-    expect(PAGE).toContain('data-floored={peek.floored ? "1" : undefined}');
+    // Since 2026-09-15 the switch is `tight`, not `floored`: the list scrolls
+    // rather than folding its marks from the first pixel the frame is under
+    // the column (Scheduled.tsx `scrolls`).
+    expect(PAGE).toContain("const scrolls = peek.open && peek.tight;");
+    expect(PAGE).toContain('data-floored={scrolls ? "1" : undefined}');
     expect(PAGE).toContain('"--tasks-floor": `${contentFloor}px`');
     // The number is a CONTENT width: the frame's ¾ baseline counts the page's
     // gutters, and the views live inside them.
@@ -746,7 +750,7 @@ describe("the middle pane's floor", () => {
     expect(VIEWS).toContain("useRowFit(listRef, peekOn, floored)");
     // …and the page hands the pane's own state down, so the stylesheet and the
     // ladder cannot disagree about which side of the floor it is on.
-    expect(PAGE).toContain("floored={peek.floored}");
+    expect(PAGE).toContain("floored={scrolls}");
   });
 
   it("leaves the toolbar out of it — the toolbar is exempt at every width", () => {
