@@ -168,9 +168,10 @@ describe("the markup adds nothing when the feature is off", () => {
   it("mounts no panel: the host is the flag AND the page", () => {
     expect(PAGE).toContain("const peekable = !scope && peekOn;");
     expect(PAGE).toContain("if (!peekable) return page;");
-    // Which also means no param-boundary claim from this page: the claim lives
-    // in TaskPeek, and TaskPeek is inside the branch above.
-    expect(read("TaskPeek.tsx")).toContain("useParamBoundary(nativeChat === false && !!src)");
+    // And no param-boundary claim from anywhere on this page any more: the
+    // panel's chat is part of THIS document and reads a store of its own, so
+    // the flag would be a claim about the window that is not true.
+    expect(read("TaskPeek.tsx")).not.toContain("_fusedParamBoundary");
   });
 
   it("keeps the nav epoch's ignore list empty", () => {
@@ -378,9 +379,8 @@ describe("the peek header", () => {
     // surface again (design.md, Polish batch 5).
     expect(PEEK_CSS).toContain("background: var(--peek-chat-bg);");
     // AND THE VALUE IS THE CHAT'S OWN, both themes. It is a literal here
-    // because `apps/claude/styles/chat.css` arrives with a `lazy()` import and
-    // is not loaded at all for a reader on the legacy iframe chat, so
-    // `var(--c-panel)` would resolve to nothing exactly half the time. The two
+    // because `apps/claude/styles/chat.css` arrives with a `lazy()` import, so
+    // `var(--c-panel)` resolves to nothing until the chunk has landed. The two
     // files are pinned to each other here instead.
     const chat = read("../apps/claude/styles/chat.css");
     const panel = (from: number) => /--c-panel: (#[0-9a-f]{6});/.exec(chat.slice(from))?.[1];
@@ -440,11 +440,8 @@ describe("the peek header", () => {
     // navigation it has always been.
     expect(VIEWS).toContain("if (openPeek(task.key, { anchor: m.anchor || null })) {");
     expect(VIEWS).toContain("navigateUrl(to);");
-    // The anchor reaches BOTH chats: the legacy template takes it on its URL,
-    // the native one as a seeded param.
-    expect(read("../apps/claude/legacy-src.ts")).toContain(
-      'msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : ""',
-    );
+    // The anchor reaches the chat as a seeded param, and is spent the moment
+    // the turn it names is on screen.
     expect(HEAD).toContain("{...(anchor ? { msgAnchor: anchor } : {})}");
     expect(read("../apps/claude/ChatMount.tsx")).toContain(
       'if (msgAnchor && memory.get("msg") !== msgAnchor) memory.set({ msg: msgAnchor });',

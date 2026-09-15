@@ -86,7 +86,9 @@ def test_both_hosts_install_and_use_the_shared_take_primitive(preview, listing):
     for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
         assert '"@apps/explorer/lib/claude-ask"' in src, label
         assert "takeClaudeAsk" in src, label
-        assert "window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);" in src, label
+        # The `window._fusedClaudeAskTake` pull global went with the legacy chat
+        # template (D883); the native chat receives the ask as `initialAsk`.
+        assert "_fusedClaudeAskTake" not in src, label
 
 
 def test_both_hosts_use_the_shared_readiness_check(preview, listing):
@@ -146,19 +148,53 @@ def test_the_shared_take_primitive_reads_and_clears_in_one_step():
 
 # ------------------------------------------------ forcing a remount to pull
 
-def test_preview_keys_the_claude_iframe_separately_from_the_mode(preview, preview_sidebar):
+def test_preview_keys_the_claude_mount_on_the_delivered_ask(preview, preview_sidebar):
     """A second ask while the sidebar is ALREADY on claude changes neither
     `activeSide` nor `fsPath` — the ordinary `key={active}` a mode switch uses
-    would not remount, and the claude template would never reboot to pull the
-    new text. `claudeFrameKey` closes that gap; `PreviewSidebar` must actually
-    use it for the iframe's key."""
-    assert "const claudeFrameKey = (m: string) => (m === \"claude\" ? `claude:${claudeAskInstance}` : m);" in preview
-    assert "frameKey={claudeFrameKey(activeSide)}" in preview
+    would not remount, and the native chat would never boot with the new
+    `initialAsk`. The mount key closes that gap by folding the delivered ask's
+    `seq` into it (D883: it used to be the legacy iframe's `claudeFrameKey`);
+    `PreviewSidebar` must actually use it for the mount's key."""
+    assert "const claudeSeatKey = (seat: \"side\" | \"content\") =>" in preview
+    assert (
+        "`claude:${askDelivery && askDelivery.route === seat ? askDelivery.seq : 0}`"
+    ) in preview
+    assert "key={claudeMountKey(m)}" in preview
+    assert "key={claudeSideMountKey}" in preview
     assert "key={frameKey}" in preview_sidebar
     # And PreviewSidebar's prop must actually be read from a variable frameKey
     # defaults to `active`, not hardcoded — ordinary mode switches still key
     # off the mode alone when the caller passes nothing special.
     assert "frameKey = active" in preview_sidebar
+
+
+def test_preview_keys_each_claude_seat_on_its_own_deliveries(preview):
+    """TWO KEYS, one per seat. The sidebar's chat and the content pane's chat
+    can both be mounted at once, and a single shared key remounted BOTH whenever
+    either was handed an ask — a remount re-restores the transcript from disk
+    and drops the scroll, so an ask routed to the sidebar threw away where the
+    reader was in the content pane, and the reverse.
+
+    The seat is carried by the DELIVERY (`askDelivery.route`), written from the
+    same `claudeAskRoute` verdict the action already used to decide which seat
+    to switch to — so the seat that remounts and the seat handed `initialAsk`
+    can never come apart."""
+    # The route is recorded with the seed, in the action, and travels with the
+    # delivery the pull produces.
+    assert 'const claudeSeedRouteRef = useRef<"side" | "content">("content");' in preview
+    assert "claudeSeedRouteRef.current = claudeAskRoute;" in preview
+    assert (
+        "setAskDelivery({ text, seq: claudeAskInstance, route: claudeSeedRouteRef.current });"
+    ) in preview
+    # Two derived keys, each reading only its own seat's deliveries.
+    assert 'const claudeMountKey = (m: string) => (m === CHAT_MODE ? claudeSeatKey("content") : m);' in preview
+    assert 'const claudeSideMountKey = claudeSeatKey("side");' in preview
+    # And both mounts hand `initialAsk` over on the delivery's OWN seat, not on
+    # this render's live `claudeAskRoute` (which can move under them).
+    assert "const nativeAskSeat = askDelivery ? askDelivery.route : null;" in preview
+    assert 'nativeAsk && nativeAskSeat === "content"' in preview
+    assert 'nativeAsk && nativeAskSeat === "side"' in preview
+    assert 'claudeAskRoute === "content"' not in preview
 
 
 def test_preview_bumps_the_claude_instance_on_every_incoming_ask(preview):
@@ -206,10 +242,15 @@ def test_listing_folds_the_claude_instance_into_the_pane_key(listing):
     action = listing[listing.index("claudeAskActionRef.current = (text: string) => {"):]
     action = action[:action.index("\n    };")]
     assert "setClaudeAskInstance((n) => n + 1);" in action
+    # The instance reaches the key through the delivered ask (`askDelivery.seq`
+    # is set from `claudeAskInstance` when a pull finds text), so the pane
+    # remounts exactly when there is a new ask to boot with — not on every
+    # bump that found nothing.
+    assert "if (text) setAskDelivery({ text, seq: claudeAskInstance });" in listing
     key_site = listing[listing.index("<ListingPreviewPane"):]
     key_site = key_site[:key_site.index("/>")]
     assert 'paneSide === "claude"' in key_site
-    assert "claudeAskInstance" in key_site
+    assert "askDelivery ? askDelivery.seq : 0" in key_site
 
 
 def test_listing_never_stores_a_seed_it_has_not_confirmed_can_be_shown(listing):

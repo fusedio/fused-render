@@ -3,9 +3,10 @@
 The pane is a same-origin iframe, so a page that focuses an input on boot pulls
 document focus out of the shell — and the listing's arrow keys stand down the
 moment focus leaves it, so previewing a file stopped the user browsing file to
-file from the keyboard. It surfaced with the claude template, whose composer
-autofocused, but nothing about it was claude-specific: any template with an
-input would do the same.
+file from the keyboard. It surfaced with the legacy claude chat template, whose
+composer autofocused, but nothing about it was claude-specific: any template
+with an input would do the same. (That template is gone — the chat is the
+shell's own React surface now — but the contract is not about it.)
 
 So it is a CONTRACT, and this pins the three pieces of it that live outside the
 shell's own TypeScript (frontend/.../platform/lib/frame-focus.test.ts covers that
@@ -15,9 +16,6 @@ half):
     typed here a second time — runtime.js and the shell agree or this fails;
   * runtime.js's reader answers the way the shell's does, run for real under
     node rather than eyeballed;
-  * the claude template carries no `autofocus` attribute — the one thing no
-    gate inside the page can catch, since the browser queues the candidate when
-    the element is inserted;
   * every live thumbnail frame is built by the one helper that makes a frame a
     picture (`thumbFrame`), counted against the iframes in the file.
 
@@ -34,7 +32,6 @@ import subprocess
 
 import pytest
 
-TEMPLATE = os.path.join("fused_render", "templates", "claude", "template.html")
 RUNTIME = os.path.join("fused_render", "static", "runtime.js")
 SHELL = os.path.join("frontend", "src", "platform", "lib", "frame-focus.ts")
 
@@ -85,13 +82,6 @@ def test_the_runtime_reads_the_signal_the_way_the_shell_writes_it():
         fn + "\nconsole.log(JSON.stringify(%s.map((s) => noFocusRequested(s))));" % json.dumps(cases)
     )
     assert got == [True, True, False, False, False]
-
-
-def test_the_claude_composer_no_longer_autofocuses():
-    """The attribute is browser-applied, so no gate can catch it — it has to be
-    gone. Its job is done by the boot path's own (gated) focus instead."""
-    html = open(TEMPLATE, encoding="utf-8").read()
-    assert "autofocus" not in html
 
 
 # -- The card grids (D348) -----------------------------------------------------

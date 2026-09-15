@@ -86,7 +86,39 @@ def test_builtin_html_default_is_render_sentinel():
     # separators — this internal field is never run through the app's
     # canonical_fs_path), so normalize before a forward-slash suffix check.
     assert entries[1]["path"].replace(os.sep, "/").endswith("code/template.html")
-    assert entries[2]["path"].replace(os.sep, "/").endswith("claude/template.html")
+    # `claude` is SHELL_RENDERED: the chat's UI is the shell's own React
+    # surface, so the folder ships no template.html and the entry's path is the
+    # backend file every host dirname()s to find (agent.py, app.py, …).
+    assert entries[2]["path"].replace(os.sep, "/").endswith("claude/agent.py")
+
+
+def test_shell_rendered_name_resolves_to_its_backend_file():
+    """`claude` has no template.html — the native chat (frontend/src/apps/claude)
+    IS its UI. It still has to resolve, because that entry's `path` is how every
+    host finds the folder: dirname() -> agent.py / app.py / artifacts.py /
+    condition.py / icon.svg."""
+    path, err = server._resolve_name("claude")
+    assert err is None, err
+    assert path.replace(os.sep, "/").endswith("claude/agent.py")
+    assert os.path.isfile(path)
+    assert not os.path.exists(
+        os.path.join(os.path.dirname(path), "template.html"))
+    # The folder's other files are reachable off the same entry.
+    assert server._icon_for(path) is not None
+    assert server._condition_file(path) is not None
+
+
+def test_a_user_template_html_does_not_shadow_a_shell_rendered_name(user_dir):
+    """The user override channel is deliberately CLOSED for a shell-rendered
+    name. A `~/.fused-render/templates/claude/template.html` would not be
+    loaded by anything (the shell never frames this mode) while re-pointing
+    every host's dirname() at a folder with no agent.py in it."""
+    user_dir.template("claude")
+    assert (user_dir.path / "claude" / "template.html").is_file()
+    path, err = server._resolve_name("claude")
+    assert err is None, err
+    assert path.replace(os.sep, "/").endswith("claude/agent.py")
+    assert not path.startswith(str(user_dir.path))
 
 
 def test_builtin_parquet_default_is_duckdb():

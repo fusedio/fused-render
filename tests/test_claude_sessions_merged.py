@@ -7,7 +7,7 @@ started in this page or in a terminal, Claude Code wrote its transcript into
 the same project dir, so ONE reader answers for both.
 
 The whole reason this needs no resume path of its own is the fact these tests
-exist to protect: a session's home is its cwd's project dir, and the template
+exist to protect: a session's home is its cwd's project dir, and the chat
 keys on EXACTLY the same dir (`_munge(_workdir(file))`), so a transcript found
 this way is already where `_history` reads and where `--resume` looks from.
 Break that identity and the rows still render while nothing opens.
@@ -23,11 +23,17 @@ fused_render — SPEC PY-15 / D166).
 import importlib.util
 import json
 import os
+import re
 
 import pytest
 
 from fused_render import tasks_store
 from tests import _machinery_records as records
+
+#: The native chat's wire vocabulary — the TypeScript half of the tag parity
+#: `tasks_store._MACHINERY_STRIP` depends on (03 §4e).
+_WIRE_TS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "frontend", "src", "apps", "claude", "protocol", "wire.ts")
 
 
 def _load_agent():
@@ -440,24 +446,29 @@ def test_the_two_copies_carry_the_same_tag_lists(agent):
     assert agent._MACHINERY_STRIP == tasks_store._MACHINERY_STRIP
 
 
-def test_the_strip_list_names_the_tags_the_page_actually_writes(agent, template):
+def test_the_strip_list_names_the_tags_the_chat_actually_writes(agent):
     """The other end of the same duplication, and the one that would fail
     SILENTLY: the STRIP list is only correct because those are the exact tags
-    `composeOutgoing` prepends. Rename a wire tag in the page and every reader
-    starts titling rows with it again — with nothing failing, because both Python
-    copies would still agree with each other.
+    `mergeOutgoing` prepends. Rename a wire tag in `apps/claude/protocol/wire.ts`
+    and every reader starts titling rows with it again — with nothing failing,
+    because both Python copies would still agree with each other.
 
     D146's rule (a duplicated constant needs a test, not a comment) already pins
-    APP_STATE_TAG; this pins the pair as a SET, so a third prepended block cannot
-    be added to the page without being classified here too."""
+    APP_STATE_TAG; this pins the set, so a third prepended block cannot be added
+    to the chat without being classified here too. Read as TEXT because a Python
+    test cannot import TypeScript — the same pattern as test_trouble_parity.py."""
+    src = open(_WIRE_TS, encoding="utf-8").read()
+    order = re.search(r"export\s+const\s+BLOCK_ORDER[^=]*=\s*\[(.*?)\]", src, re.S)
+    assert order, "BLOCK_ORDER moved out of wire.ts — this test reads nothing"
     written = set()
-    for line in template.splitlines():
-        for const in ("APP_STATE_TAG", "PANE_SHOT_TAG", "ANN_TAG"):
-            prefix = "const %s = \"" % const
-            if line.strip().startswith(prefix):
-                written.add(line.strip()[len(prefix):].split('"')[0])
+    for const in re.findall(r"[A-Z_]+", order.group(1)):
+        value = re.search(
+            r"""(?m)^\s*export\s+const\s+%s\s*(?::[^=]*)?=\s*['"]([^'"]+)['"]"""
+            % const, src)
+        assert value, f"{const} is in BLOCK_ORDER but has no literal in wire.ts"
+        written.add(value.group(1))
     assert written == set(agent._MACHINERY_STRIP), (
-        "the page prepends %s; the readers strip %s" % (
+        "the chat prepends %s; the readers strip %s" % (
             sorted(written), sorted(agent._MACHINERY_STRIP)))
 
 
@@ -694,297 +705,6 @@ def test_a_terminal_session_replays_through_the_ordinary_history_action(agent, t
     turns = agent.main(action="history", file=file, session_id=listed)["turns"]
     assert [t["role"] for t in turns] == ["user", "assistant"]
     assert turns[0]["text"] == "what does this file do"
-
-
-# ------------------------------------------------------ what the page renders
-
-
-@pytest.fixture(scope="module")
-def template():
-    with open(os.path.join("fused_render", "templates", "claude", "template.html"),
-              encoding="utf-8") as f:
-        return f.read()
-
-
-def test_one_row_shape_and_one_list(template):
-    """One row renderer, one loop over the one list."""
-    assert template.count("function addChatRow(") == 1
-    # one call site, in the one loop over the list (the second hit on the
-    # signature is the definition itself)
-    assert template.count("addChatRow(list, s)") == 2
-
-
-def test_the_row_click_does_not_branch_on_provenance(template):
-    """No branch on where a session came from in the open path — that is the
-    whole payoff of the page and the CLI sharing a project dir. A special case
-    here would be the first sign the identity in agent.py `_cli_sessions` had
-    been broken."""
-    body = template[template.index("function addChatRow("):]
-    body = body[:body.index("\n}")]
-    open_fn = body[body.index("const open ="):]
-    assert "source" not in open_fn
-    assert 'fused.params.set("session_id", s.id)' in open_fn
-    assert "loadHistory(s.id)" in open_fn
-
-
-def test_the_row_names_the_other_file_only_when_there_is_one(template):
-    """`rowPane` is the whole rule: a chat opened on THIS target has nothing to
-    add, and on a file target that is every row — naming the same file all the
-    way down the list would cost every row its timestamp for no information."""
-    body = template[template.index("function rowPane("):]
-    body = body[:body.index("\n}")]
-    assert "paneSlashes(pane) === paneSlashes(FILE)" in body
-    assert 'return ""' in body
-
-
-def test_a_row_with_another_file_opens_the_host_on_it(template):
-    """Resuming a chat about another file HERE would sit its transcript beside
-    a preview of a file it never mentions. The host is sent to that file with
-    the session attached instead — the same URL "open this task" uses."""
-    body = template[template.index("function openPaneChat("):]
-    body = body[:body.index("\n}")]
-    assert '"/explorer/view/"' in body
-    assert '"?_side=claude&session_id="' in body
-    assert "encodeURIComponent(sessionId)" in body
-    # The in-app move, with a real navigation as the fallback for an absent or
-    # foreign parent — the same pair openTaskOnCalendar makes.
-    assert 'host.history.pushState(null, "", url)' in body
-    assert 'new Event("fused:navigate")' in body
-    assert "window.top.location.href = url" in body
-
-
-def test_the_time_is_never_traded_away(template):
-    """The right end reads [icon] [name] [time], and the TIME IS LAST and is
-    always drawn. It began as a cross-fade that swapped the time OUT for the
-    name; a row that answers "when" only while you are NOT pointing at it
-    answers at the wrong moment, and the two facts are not alternatives."""
-    body = template[template.index("function addChatRow("):]
-    body = body[:body.index("\n}")]
-    icon = body.index('class="row-fileic"')
-    name = body.index('class="row-file"')
-    time = body.index('class="row-sub"')
-    assert icon < name < time, "the order is icon, name, time"
-
-
-def test_the_name_opens_out_rather_than_appearing(template):
-    """It animates on `max-width`, growing the box the text already lives in.
-    A name laid out from `display: none` shoves the time sideways in one
-    frame; one positioned out of flow overlaps the title instead of making
-    room for itself."""
-    # Anchored on the .row-file rule itself, not on .row-right: the running
-    # mark sits between them and brings its own reduced-motion block.
-    css = template[template.index("  .chat-row .row-file {"):]
-    css = css[:css.index("@media (prefers-reduced-motion")]
-    assert "max-width: 0;" in css
-    assert "max-width: 180px;" in css
-    assert "transition: max-width" in css
-    # Nothing hides the time any more — it carries no opacity rule at all.
-    assert ".row-sub { opacity" not in css
-
-
-def test_the_icon_marks_the_row_at_rest(template):
-    """At rest the icon alone says "this chat was about a file" — enough to
-    pick those rows out without a column of filenames drowning the titles.
-    Drawn only on a row that HAS one, and answering with the whole path when
-    pointed at, because at rest it is the only part of this on screen."""
-    assert ".chat-row.has-pane .row-fileic { display: block; }" in template
-    css = template[template.index(".chat-row .row-fileic {"):]
-    css = css[:css.index(".chat-row .row-file {")]
-    assert "display: none;" in css
-    body = template[template.index("function addChatRow("):]
-    body = body[:body.index("\n}")]
-    assert 'row.classList.add("has-pane")' in body
-    assert "label.title = pane;" in body
-    assert 'row.querySelector(".row-fileic").title = pane;' in body
-
-
-# ------------------------------------- the chat's own state and filing verbs
-
-
-def test_running_says_so_at_the_top_of_the_conversation(template):
-    """The composer's arrow already swaps for a stop square while a turn is
-    live, but that is at the BOTTOM of the pane and says "you can stop this"
-    rather than "this is working". Same body class drives both, so there is one
-    source of truth and no second flag to fall out of step."""
-    assert '<span id="runmark" class="tb-run" aria-live="polite">running</span>' \
-        in template
-    assert "body.running #topbar .tb-run { display: inline-block; }" in template
-    # Hidden by default — the state is the exception, not the resting shape.
-    css = template[template.index("  #topbar .tb-run,"):]
-    css = css[:css.index("\n  }")]
-    assert "display: none;" in css
-
-
-def test_the_shimmer_is_clipped_to_the_word_and_stoppable(template):
-    """A gradient through the text, not a spinner: the strip is 43px tall and
-    already carries a spark, a name, a file and an id, and a rotating glyph
-    beside all that reads as a fifth object rather than a state of the fourth.
-
-    Reduced motion keeps the WORD and drops only the movement — the word is the
-    information, the shimmer only draws the eye to it."""
-    css = template[template.index("  #topbar .tb-run,"):]
-    css = css[:css.index("@keyframes claude-running-shimmer")]
-    assert "background-clip: text;" in css
-    assert "-webkit-text-fill-color: transparent;" in css
-    assert "animation: claude-running-shimmer" in css
-    quiet = template[template.index("@media (prefers-reduced-motion: reduce) {",
-                                    template.index("  #topbar .tb-run,")):]
-    quiet = quiet[:quiet.index("\n  }")]
-    assert "animation: none;" in quiet
-    assert "-webkit-text-fill-color: var(--status-progress);" in quiet
-
-
-def test_the_kebab_can_file_this_conversations_task(template):
-    """Below the terminal item, and keyed by the SESSION ID — the Tasks page
-    keys a task by exactly that (`task.key`), so "which task is this chat"
-    needs no new endpoint and no second identity."""
-    pop = template[template.index('<div id="kebabpop"'):]
-    pop = pop[:pop.index("</div>")]
-    assert pop.index("terminalopt") < pop.index("archiveopt"), "terminal first"
-    assert 'id="archiveopt"' in pop
-    # HIDDEN, not disabled, when the chat has no task: a disabled row asks the
-    # reader to work out what would enable it, and the answer is not something
-    # they can act on from this menu.
-    assert "hidden></button>" in pop
-    # The HIDING lives in `applyArchiveOpt` since 2026-08-24, when this item was
-    # split into a synchronous paint and an async correction — see
-    # test_the_archive_item_paints_with_its_siblings for why. `refreshArchiveOpt`
-    # deliberately hides nothing now; that was the flicker.
-    paint = template[template.index("function applyArchiveOpt() {"):]
-    paint = paint[:paint.index("\n}")]
-    assert "archiveOpt.hidden = true;" in paint
-    body = template[template.index("async function refreshArchiveOpt("):]
-    body = body[:body.index("\n}")]
-    assert 't.key === id' in body
-    assert 'task.status === "archived"' in body
-
-
-def test_the_archive_item_paints_with_its_siblings(template):
-    """It used to appear a beat after the menu did, and the menu grew under the
-    pointer — Akshil, 2026-08-24: "the archive button in kebab menu shows a bit
-    late and the whole dropdown shifts/flickers … just show it instantly with
-    other options".
-
-    The fix is that the answer is already in hand when the menu opens: the
-    /api/tasks read this page already does on every `showSession` (for the task
-    NUMBER) now also records whether there is a task and which way it is filed,
-    so opening the menu is a synchronous paint from that cache."""
-    # The cache is filled by the read that was already happening, not by a second
-    # one, and it is written BEFORE that function's `!num` bail — a task with no
-    # number yet is still a task this menu can file.
-    loader = template[template.index("async function loadTaskId(id) {"):]
-    loader = loader[:loader.index("\n}")]
-    assert "archiveStates.set(id, task ? task.status === \"archived\" : null);" in loader
-    assert loader.index("archiveStates.set(") < loader.index("if (!num) return;")
-    # Opening paints from the cache FIRST and corrects after, in that order.
-    opener = template[template.index("function kebabOpen() {"):]
-    opener = opener[:opener.index("\n}")]
-    assert opener.index("applyArchiveOpt()") < opener.index("refreshArchiveOpt()")
-    # Three states, and unknown is not the same as absent: only a confirmed "no
-    # task" hides the item, so an unread listing never invents a verb.
-    paint = template[template.index("function applyArchiveOpt() {"):]
-    paint = paint[:paint.index("\n}")]
-    assert "filed === undefined || filed === null" in paint
-    # A press in flight owns the button — its confirmation must not be wiped by a
-    # listing read landing in the same window.
-    assert "if (archiveBusy) return;" in paint
-
-
-def test_the_filing_verb_is_read_fresh_every_time_the_menu_opens(template):
-    """The Tasks page can archive the same task while this menu sits closed, so
-    a label written once would offer the wrong verb — and the wrong verb here
-    files something the reader meant to unfile."""
-    opener = template[template.index("function kebabOpen() {"):]
-    opener = opener[:opener.index("\n}")]
-    assert "refreshArchiveOpt()" in opener
-    # A session swapped mid-flight must not label the item for a conversation
-    # nobody is looking at any more.
-    body = template[template.index("async function refreshArchiveOpt("):]
-    body = body[:body.index("\n}")]
-    assert 'if (fused.params.get("session_id") !== id) return;' in body
-
-
-def test_archiving_says_what_it_actually_did(template):
-    """Archiving CANCELS the task's pending work as well as filing it
-    (routers/tasks.py api_task_archive returns the count), and that is a fact
-    about the schedule — not something to leave in a status the reader has to
-    go and look for."""
-    handler = template[template.index('archiveOpt.addEventListener("click"'):]
-    handler = handler[:handler.index("\n});")]
-    assert '"/api/tasks/unarchive" : "/api/tasks/archive"' in handler
-    assert '"X-Fused": "1"' in handler
-    assert "body.cancelled" in handler
-    assert "pending run" in handler
-    # A failed call leaves the item usable and puts the verb back.
-    assert "archiveOpt.disabled = false;" in handler
-    assert "refreshArchiveOpt()" in handler
-
-
-def test_a_hidden_menu_item_takes_no_space(template):
-    """`.kebab-opt` sets `display: block`, which beats the UA sheet's
-    `[hidden] { display: none }` — so an item hidden in markup still took its
-    full height and left a blank row under the one visible option, reading as a
-    menu still loading something. `#kebabpop[hidden]` already needed the same
-    fix one level up."""
-    assert ".kebab-opt[hidden] { display: none; }" in template
-    assert "#kebabpop[hidden] { display: none; }" in template
-
-
-def test_a_row_whose_turn_is_live_says_running(template):
-    """The list's only clue used to be a timestamp reading "now", which is
-    equally true of a chat that finished a second ago — so the one row worth
-    opening looked like all the others. Same word and same shimmer as the top
-    strip: one fact, one vocabulary, shared keyframes."""
-    body = template[template.index("function addChatRow("):]
-    body = body[:body.index("\n}")]
-    assert '<span class="row-run">running</span>' in body
-    assert 'row.classList.add("is-running")' in body
-    # It REPLACES the timestamp: "running" already says when, and the two side
-    # by side spend the row's last inch saying one thing twice.
-    assert 'row.querySelector(".row-sub").hidden = true;' in body
-    assert ".chat-row.is-running .row-run { display: inline-block; }" in template
-
-
-def test_the_name_reveal_is_eased_both_ways(template):
-    """A linear snap read as a jump. The fade trails the width on the way in so
-    the name is never text in a box that has not finished opening, and the two
-    run together on the way out so it does not linger like a stuck tooltip."""
-    css = template[template.index(".chat-row.has-pane .row-file {"):]
-    css = css[:css.index("@media (prefers-reduced-motion")]
-    assert "cubic-bezier(0.22, 0.61, 0.36, 1)" in css
-    assert "opacity .2s ease .06s" in css      # trails, entering
-    assert "opacity .14s ease" in css          # together, leaving
-
-
-def test_the_running_mark_is_the_shells_own_shimmer(template):
-    """Ported from sidebar.css `.sidebar-running`, not reinvented: same hue
-    (`--status-progress`, declared in BOTH template palettes), same 2.2s pace,
-    same geometry — every "running" in the app is one mark.
-
-    Two of those numbers are load-bearing, and the first pass here got both
-    wrong. The travel must stay inside 100% → 0% over a 300%-wide background,
-    or a frame exposes bare box — and under `background-clip: text` an
-    unpainted spot is a MISSING letter, not a dim one. And the clip box has to
-    hold the glyph, or the descender of the "g" is chipped off."""
-    assert "--status-progress: #facc15;" in template   # dark
-    assert "--status-progress: #ca8a04;" in template   # light
-    css = template[template.index("  #topbar .tb-run,"):]
-    css = css[:css.index("@media (prefers-reduced-motion")]
-    assert "background-size: 300% 100%;" in css
-    assert "line-height: 1.6;" in css
-    kf = template[template.index("@keyframes claude-running-shimmer {"):]
-    kf = kf[:kf.index("\n  }")]
-    assert "from { background-position: 100% 0; }" in kf
-    assert "to   { background-position: 0% 0; }" in kf
-    assert "-100%" not in kf, "the travel must not leave the painted range"
-
-
-def test_the_two_running_marks_are_one_rule(template):
-    """Declared together, so the strip's and the row's cannot drift into two
-    shimmers. Only the visibility switch differs."""
-    assert "  #topbar .tb-run,\n  .chat-row .row-run {" in template
-    assert "body.running #topbar .tb-run { display: inline-block; }" in template
-    assert ".chat-row.is-running .row-run { display: inline-block; }" in template
 
 
 # ------------------------------------------------- the registry's running mark

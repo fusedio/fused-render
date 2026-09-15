@@ -1158,23 +1158,17 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
-  // Whether chat embeds render the native React chat (beta) instead of the
-  // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
-  // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
-  // switch cannot win then, so the UI disables itself and says so
-  // (shell/prefs.py `native_chat_enabled`, same shape as `engine.forced_by`).
+  // The chat's own switches. `recap` is the "While you were away" fold, and it
+  // is the ONE pref here that defaults ON (shell/prefs.py
+  // `chat_recap_enabled`), so every reader asks `chat?.recap !== false` rather
+  // than `=== true`: an older server answers without the field and that
+  // server's chat still shows the fold.
   //
-  // OPTIONAL, because the readers treat it as optional: `feature-flag.ts` reads
-  // `p.chat?.native`, and an older server (or a test fixture built before this
-  // field existed) answers without it. A required field here would only make
-  // every `Prefs` literal in the suites over-constrained while the runtime read
-  // stayed defensive anyway.
-  //
-  // `recap` is the native chat's "While you were away" fold — the ONE pref
-  // here that defaults ON (shell/prefs.py `chat_recap_enabled`), so every
-  // reader asks `chat?.recap !== false` rather than `=== true`: an older
-  // server answers without the field and that server's chat still shows it.
-  chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  // OPTIONAL, because the readers treat it as optional: an older server (or a
+  // test fixture built before the field existed) answers without it, and a
+  // required field here would only over-constrain every `Prefs` literal in the
+  // suites while the runtime read stayed defensive anyway.
+  chat?: { recap?: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
    *  experimental, default off). Optional because a server that predates the
@@ -1401,10 +1395,6 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
-}
-
-export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
 }
 
 /** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
@@ -2039,6 +2029,16 @@ export interface InventoryTemplate {
 export interface TemplateInventory {
   sources: TemplateSource[];
   templates: InventoryTemplate[];
+  /**
+   * Names the SHELL renders itself (server.templates.SHELL_RENDERED, today
+   * `claude`). They back no template folder the management UI can preview,
+   * edit or export — so they are deliberately absent from `templates` — but
+   * they ARE legal registry values, and the binding picker has to be able to
+   * name one or a `claude` removed from a key's mode list could never be put
+   * back from the UI. Optional only so an older server (or a fixture written
+   * before the field existed) still parses.
+   */
+  shellRendered?: string[];
 }
 
 export function getTemplateInventory(): Promise<TemplateInventory> {

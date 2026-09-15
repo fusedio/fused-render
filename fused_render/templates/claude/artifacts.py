@@ -1,4 +1,5 @@
-"""runPython target for claude/template.html's Artifacts section: the pages
+"""runPython target for the native chat's Artifacts section
+(frontend/src/apps/claude): the pages
 Claude PUBLISHED while working on this target.
 
 An artifact is the one thing a chat produces that outlives the chat and does not

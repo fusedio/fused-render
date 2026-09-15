@@ -499,27 +499,34 @@ def test_a_recurring_occurrence_carries_the_attachments_and_their_names(tmp_path
 # ---- the duplicated wire constants --------------------------------------------
 
 
-def _template_html() -> str:
-    return open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "fused_render", "templates", "claude",
-        "template.html"), encoding="utf-8").read()
+_WIRE_TS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "frontend", "src", "apps", "claude", "protocol", "wire.ts")
+
+
+def _ts_const(name: str) -> str:
+    """The string value of an `export const <name> = "…"` in wire.ts.
+
+    Read as TEXT on purpose — a Python test cannot import TypeScript, the same
+    reason tests/test_trouble_parity.py reads the shell's constants this way.
+    """
+    src = open(_WIRE_TS, encoding="utf-8").read()
+    found = re.findall(
+        r"""(?m)^\s*export\s+const\s+%s\s*(?::[^=]*)?=\s*['"]([^'"]+)['"]""" % name,
+        src)
+    assert len(found) == 1, f"one writer of {name} in wire.ts, or this is stale"
+    return found[0]
 
 
 def test_the_tag_matches_the_page_that_reads_it():
-    """D146 / PY-15. `schedule.py` may not import a template and a template may
-    not import `fused_render`, so the tag is spelled twice. This is the test the
-    comment is not: rename `PANE_SHOT_TAG` in the page and the scheduler starts
-    writing a block nothing renders — silently, because every reader answers an
-    unparseable block with an empty list rather than a throw."""
-    page = _template_html()
-    written = [line.strip() for line in page.splitlines()
-               if line.strip().startswith('const PANE_SHOT_TAG = "')]
-    assert len(written) == 1, "one writer of the tag in the page, or this is stale"
-    tag = written[0].split('"')[1]
-    assert schedule._PANE_SHOT_TAG == tag
+    """D146 / PY-15. `schedule.py` may not import the chat's TypeScript and the
+    chat may not import `fused_render`, so the tag is spelled twice. This is the
+    test the comment is not: rename `PANE_SHOT_TAG` in `protocol/wire.ts` and the
+    scheduler starts writing a block nothing renders — silently, because every
+    reader answers an unparseable block with an empty list rather than a throw."""
+    assert schedule._PANE_SHOT_TAG == _ts_const("PANE_SHOT_TAG")
     # And the tag is in the strip lists, which is what keeps the block out of a
-    # row title (`sessionTitle`, tasks_store, agent.py).
-    assert tag in tasks_store._MACHINERY_STRIP
+    # row title (`sessionTitle`/`list-rows.ts`, tasks_store, agent.py).
+    assert schedule._PANE_SHOT_TAG in tasks_store._MACHINERY_STRIP
 
 
 def test_the_kind_guess_matches_the_cards_own_drawable_list():
