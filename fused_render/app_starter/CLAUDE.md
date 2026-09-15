@@ -30,7 +30,7 @@ Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
 Don't push, don't add remotes, don't rewrite history, don't touch paths
 outside this folder — the repo is purely local undo history for the apps.
 
-Any CSS/UI work: app opens in whatever browser the user has (Chrome, Firefox, Safari) and in WKWebView — invoke **`fused-render-cross-browser`** before styling: Baseline-only features, hand-written `-webkit-` prefixes, paste-in reset, per-engine trap table, two-engine check.
+**Every view must render the same in Chrome, Firefox, Safari and WKWebView** — the authoring skill's Cross-browser section (Baseline-only features, hand-written `-webkit-` prefixes, paste-in reset, form-control rules, second-engine check) applies to all CSS/JS you write, not on request. Something wrong in one browser only → `fused-render-cross-browser`.
 
 App reads machine-wide **file index** (search box, disk-usage/file-type breakdown, repos list, SQL over filesystem)? Invoke **`fused-render-index`**: `fused.fileIndex.search/query`, readiness envelope, direct-parquet reader for bulk Python.
 

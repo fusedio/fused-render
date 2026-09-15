@@ -1,6 +1,6 @@
 ---
 name: fused-render-cross-browser
-description: Use when writing or fixing CSS/JS for a fused-render view so it renders the same in Chrome, Firefox and Safari/WebKit — or when a view looks wrong in one browser only.
+description: Use when a fused-render view looks or behaves wrong in one browser only (Chrome, Firefox, Safari/WebKit), or to check support for a CSS/JS feature before using it — deep reference behind the authoring skill's mandatory Cross-browser section.
 ---
 
 # Cross-browser views
