@@ -17,9 +17,19 @@ step, in ways this module's own facts describe:
   transformer file (`runners.formats.distilled_transformer_filename`);
   everything else (a Diffusers or torch LTX repo) refuses (`ltx_video/
   worker.py::download`'s own refusal, mirrored here at search time).
+* `diffusers-image`/`-cuda`/`-rocm` (`runners.formats.DIFFUSERS_RUNNERS`)
+  only open a genuine Diffusers repo — `hub_architecture.is_diffusers_repo`'s
+  predicate, shared verbatim with `hub_architecture._resolve_engine` so the
+  "what engine is this" and "would Diffusers actually load it" questions
+  can never disagree. Before this (round: "Diffusers admission is
+  unconditional"), these three fell through to the `"any"` default below
+  and rubber-stamped EVERY row in the image capability, unconditionally —
+  including rows with no Diffusers manifest at all (e.g. an MLX-only repo
+  that merely widened into the image slice via the `image-to-image`
+  pipeline tag, D1235).
 
 Every other runner opens any repo of its format — GGUF/llama.cpp chief among
-them — so the fourth kind, `"any"`, is the default and the common case.
+them — so the fifth kind, `"any"`, is the default and the common case.
 
 **Judged against every AVAILABLE runner for the capability, not only the
 ACTIVE one (D1287, item 3 of the architecture-detection brief).**
@@ -59,9 +69,9 @@ from __future__ import annotations
 import glob
 import os
 
-from fused_render.ai.hub_architecture import Architecture
+from fused_render.ai.hub_architecture import Architecture, is_diffusers_repo
 from fused_render.ai.runners import formats
-from fused_render.ai.runners.formats import MFLUX_VARIANTS
+from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS, MFLUX_VARIANTS
 
 #: runner venv dir -> the `model_type`s its installed `mlx_vlm.models`
 #: package can open, or `None` if that venv is not installed yet. Cached
@@ -123,8 +133,9 @@ def mlx_vlm_model_types() -> frozenset | None:
 
 def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
     """`("allowlist", frozenset[str])` | `("model_types", frozenset[str] | None)`
-    | `("file_layout", None)` | `("any", None)` for runner `code` — the one
-    fact `admission()` checks a row against. Declared here rather than
+    | `("file_layout", None)` | `("diffusers", None)` | `("any", None)` for
+    runner `code` — the one fact `admission()` checks a row against.
+    Declared here rather than
     hard-coded per capability in `hub_models.py`, for `Runner.hub_filter_
     tags`'s own reason: a future runner with its own narrower loadable set
     should not require editing the search module, only this function.
@@ -135,11 +146,14 @@ def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
         return ("model_types", mlx_vlm_model_types())
     if code == "ltx-video":
         return ("file_layout", None)
+    if code in DIFFUSERS_RUNNERS:
+        return ("diffusers", None)
     return ("any", None)
 
 
 def _admits(kind: str, data, *, model_id: str, model_type: str | None,
-            names: frozenset[str]) -> tuple[bool, str | None]:
+            names: frozenset[str],
+            library_name: str | None = None) -> tuple[bool, str | None]:
     """Whether ONE runner (already reduced to its `loadable_kind`) would open
     this row, and the bespoke reason to use IF this turns out to be the only
     available runner and it refuses (see `admission`'s own handling of the
@@ -156,6 +170,23 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
     if kind == "file_layout":
         if (formats.has_ltx_split_layout(names)
                 and formats.distilled_transformer_filename(names) is not None):
+            return True, None
+        return False, None
+    if kind == "diffusers":
+        # A Diffusers runner admits a repo the SAME way `hub_architecture.
+        # _resolve_engine` recognises one — `model_index.json`,
+        # `modular_model_index.json`, or `library_name == "diffusers"`
+        # (`is_diffusers_repo`, shared with that module so the two can
+        # never drift). The catch: `names`/`library_name` being absent must
+        # NEVER read as "therefore not Diffusers" — that would flag every
+        # row a caller has not yet read siblings/library for, exactly the
+        # module docstring's "never drops a row" guarantee this would
+        # otherwise break. Only refuse when at least one of the two signals
+        # was actually supplied; both absent (the empty-`names`-default
+        # PLUS no `library_name`) stays loadable instead.
+        if not names and library_name is None:
+            return True, None
+        if is_diffusers_repo(names, library_name):
             return True, None
         return False, None
     return True, None
@@ -219,6 +250,7 @@ def _engine_name(code: str) -> str | None:
 def admission(*, runner_codes: tuple[str, ...], model_id: str,
               model_type: str | None,
               names: frozenset[str] = frozenset(),
+              library_name: str | None = None,
               architecture: Architecture | None = None,
               active_runner_code: str | None = None,
               ) -> tuple[bool, str | None, str | None]:
@@ -250,8 +282,15 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
     ranking/sorting/facets/hidden counts/family pull-in.
 
     `names`: the row's own sibling filenames (top-level), needed for
-    `ltx-video`'s `"file_layout"` kind — empty for a caller that has not
-    read a repo's file listing (every OTHER kind ignores it).
+    `ltx-video`'s `"file_layout"` kind and the Diffusers runners' own
+    `"diffusers"` kind — empty for a caller that has not read a repo's file
+    listing (every OTHER kind ignores it).
+
+    `library_name`: the row's own `raw["library_name"]`, needed ONLY by the
+    Diffusers runners' `"diffusers"` kind (round: "Diffusers admission is
+    unconditional") — `None` for a caller that has not read it. Neither
+    `names` nor `library_name` being absent flags a row; see `_admits`'s
+    own `"diffusers"` branch for the explicit never-drops-a-row guard.
 
     `architecture`: `hub_architecture.resolve(raw)`'s own reading of the
     row, used ONLY to build the reason when every available runner refused
@@ -272,7 +311,8 @@ def admission(*, runner_codes: tuple[str, ...], model_id: str,
     for code in runner_codes:
         kind, data = loadable_kind(code)
         loadable, bespoke_reason = _admits(
-            kind, data, model_id=model_id, model_type=model_type, names=names)
+            kind, data, model_id=model_id, model_type=model_type, names=names,
+            library_name=library_name)
         if loadable:
             admitting.append(code)
         else:

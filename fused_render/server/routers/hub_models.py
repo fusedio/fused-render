@@ -1606,10 +1606,18 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # `loadable`/`loadable_reason` are unaffected by this addition, and
         # `supervisor.load`'s own download routing (via `_runner_or_raise`)
         # is untouched — this is a display-only fact.
+        #
+        # Round "Diffusers admission is unconditional": `library_name` is
+        # ALSO threaded through now, for the Diffusers runners' own
+        # `"diffusers"` admission kind (`hub_loadable.loadable_kind`) — the
+        # same `raw["library_name"]` `architecture` above already reads via
+        # `hub_architecture.resolve`, no new fact, no extra Hub request.
+        library_name = raw.get("library_name")
+        library_name = library_name if isinstance(library_name, str) else None
         loadable, loadable_reason, runs_on = hub_loadable.admission(
             runner_codes=runner_codes, model_id=model_id, model_type=model_type,
-            names=sibling_names, architecture=architecture,
-            active_runner_code=runner.code)
+            names=sibling_names, library_name=library_name,
+            architecture=architecture, active_runner_code=runner.code)
     else:
         loadable, loadable_reason, runs_on = True, None, None
     return {

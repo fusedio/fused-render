@@ -35,7 +35,15 @@ def test_ltx_video_is_a_file_layout_kind():
 
 def test_any_other_runner_is_the_any_kind_with_no_data():
     assert hub_loadable.loadable_kind("llamacpp-text") == ("any", None)
-    assert hub_loadable.loadable_kind("diffusers-image") == ("any", None)
+
+
+def test_diffusers_runners_are_the_diffusers_kind():
+    """Round: "Diffusers admission is unconditional" — the three Diffusers
+    runner codes get a real admission rule now, not the `"any"` default
+    that used to rubber-stamp every row (D1302)."""
+    assert hub_loadable.loadable_kind("diffusers-image") == ("diffusers", None)
+    assert hub_loadable.loadable_kind("diffusers-image-cuda") == ("diffusers", None)
+    assert hub_loadable.loadable_kind("diffusers-image-rocm") == ("diffusers", None)
 
 
 def test_admission_admits_when_any_available_runner_would_load_it():
@@ -229,6 +237,91 @@ def test_admission_file_layout_kind_flags_a_repo_missing_the_layout():
     assert loadable is False
     assert reason == "needs Diffusers (LTXPipeline)"
     assert runs_on is None
+
+
+# Round: "Diffusers admission is unconditional" (D1302) ---------------------
+
+
+def test_lance_3b_is_not_loadable_by_diffusers_and_names_the_architecture():
+    """The proof case: `mlx-community/Lance-3B-bf16`'s real shape — `mlx`
+    library, no `model_index.json`/`modular_model_index.json`, runs on
+    `lance-mlx` (not shipped, not on PyPI). Reaches the image capability via
+    the deliberate `image-to-image` widening (D1235, untouched here). Every
+    available runner must refuse: `mflux-image`'s allowlist (this id is not
+    one of the two Klein repos) AND `diffusers-image`'s new rule (no
+    Diffusers signal in `library_name` or `names`)."""
+    names = frozenset({"config.json", "llm_config.json", "generation_config.json",
+                        "model.safetensors", "vae.safetensors", "vit.safetensors",
+                        "tokenizer.json"})
+    architecture = Architecture(name="Qwen2_5_VLForConditionalGeneration",
+                                 engine=None, shipped=False)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="mlx-community/Lance-3B-bf16", model_type="qwen2_5_vl",
+        names=names, library_name="mlx", architecture=architecture)
+    assert loadable is False
+    assert reason == "no engine loads Qwen2_5_VLForConditionalGeneration yet"
+    assert runs_on is None
+
+
+def test_genuine_diffusers_repo_with_model_index_stays_loadable():
+    """A real Diffusers repo (`model_index.json` sibling) — `diffusers-image`
+    must still admit it, and `runs_on` still names it when the ACTIVE
+    runner is `mflux-image` (which refuses everything but its 2-entry
+    allowlist)."""
+    names = frozenset({formats.DIFFUSERS_INDEX, "model_index.json_meta"})
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="stabilityai/sd-xl", model_type=None,
+        names=names, active_runner_code="mflux-image")
+    assert loadable is True
+    assert reason is None
+    assert runs_on == "Diffusers"
+
+
+def test_modular_diffusers_repo_with_only_the_modular_index_stays_loadable():
+    """A modular Diffusers pipeline ships `modular_model_index.json` with NO
+    flat `model_index.json` — must still admit via `diffusers-image`."""
+    names = frozenset({formats.DIFFUSERS_MODULAR_INDEX})
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("diffusers-image",),
+        model_id="OzzyGT/MiniMax_H3_sdnq_4bit_pruned", model_type=None,
+        names=names)
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_library_name_diffusers_with_no_index_file_stays_loadable():
+    """`library_name: "diffusers"` alone (no `names` at all, or a `names`
+    set with no index file) is a real, independent Diffusers signal —
+    `is_diffusers_repo` honors it even without a manifest sibling."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("diffusers-image",),
+        model_id="some-org/diffusers-lib-repo", model_type=None,
+        names=frozenset(), library_name="diffusers")
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_caller_with_neither_names_nor_library_name_never_flags_a_diffusers_row():
+    """The never-drops-a-row guarantee: a caller that has not read either
+    signal (both left at their defaults) must not have that absence read as
+    "not Diffusers" — it must stay loadable, exactly like every other kind's
+    unknown-reading convention in this module."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("diffusers-image",),
+        model_id="some-org/unknown-shape-repo", model_type=None)
+    assert (loadable, reason, runs_on) == (True, None, None)
+
+
+def test_both_flux2_klein_variants_stay_loadable_with_no_chip_via_mflux():
+    """Both FLUX.2 Klein ids in `MFLUX_VARIANTS` — unchanged by this round:
+    `mflux-image` admits them directly via its own allowlist, so no chip,
+    regardless of what `diffusers-image` would say about them."""
+    for variant_id in formats.MFLUX_VARIANTS:
+        loadable, reason, runs_on = hub_loadable.admission(
+            runner_codes=("mflux-image", "diffusers-image"),
+            model_id=variant_id, model_type=None,
+            active_runner_code="mflux-image")
+        assert (loadable, reason, runs_on) == (True, None, None)
 
 
 def test_any_kind_never_flags_regardless_of_model_type_or_id():
