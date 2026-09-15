@@ -235,10 +235,11 @@ export function groupCollapsibles(
  * the members of each render at their own chronological position, the leading
  * run's above the prose and the trailing run's below it.
  *
- * A prose block is not a seat when it is the STREAMING TAIL (the typer rewrites
- * that element every frame) or, looking BACKWARD, when it has a card filed
+ * Looking BACKWARD, a prose block is not a seat when it is the STREAMING TAIL
+ * (the corner of a paragraph still being written) or when it has a card filed
  * after it (the card is between the prose and the run). Those runs keep the
- * bare own-line trigger, as does a turn with no prose in it at all.
+ * bare own-line trigger, as does a turn with no prose in it at all. Looking
+ * FORWARD the tail IS a seat — see `seat()` below.
  */
 export interface TriggerSeats {
   /** prose ROW index → the run ROW indices whose trigger it carries, earliest
@@ -266,10 +267,24 @@ export function seatTriggers(
   const cards = opts?.cardsAfter ?? null;
   const seats = new Map<number, number[]>();
   const bare = new Set<number>();
-  /** Is row `r` a settled prose block — a seat a trigger can be drawn in? */
-  const seat = (r: number): boolean => {
+  /** Is row `r` a prose block a trigger can be drawn in?
+   *
+   *  `forward` is the leading run reaching DOWN to the paragraph after it, and
+   *  that paragraph is allowed to be the STREAMING TAIL (PR5 review #5). The
+   *  tail is rewritten per frame, but only its PROSE slot is: the block around
+   *  it is the same keyed element with the trigger in slot 1 beside the caret
+   *  (`SegmentView.segBlock`), so seating there costs nothing — while refusing
+   *  it cost the reader a word parked on a bare line above the answer for as
+   *  long as it streamed, teleporting into the corner when the turn settled.
+   *
+   *  Looking BACKWARD it still refuses: a run behind the tail means the tail is
+   *  not the turn's last row — the shape `tailIndex` never produces — and a
+   *  word in the corner of a paragraph that is still growing would ride its
+   *  last line down the screen. */
+  const seat = (r: number, forward = false): boolean => {
     const row = rows[r];
-    return !!row && !isRun(row) && viewKind(row.seg) === "text" && row.index !== tailAt;
+    if (!row || isRun(row) || viewKind(row.seg) !== "text") return false;
+    return forward || row.index !== tailAt;
   };
   const sit = (at: number, run: number) => {
     const held = seats.get(at);
@@ -287,7 +302,7 @@ export function seatTriggers(
       sit(r - 1, r);
       return;
     }
-    if (!sawProse && seat(r + 1)) {
+    if (!sawProse && seat(r + 1, true)) {
       sit(r + 1, r);
       return;
     }

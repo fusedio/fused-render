@@ -512,10 +512,20 @@ describe("seatTriggers (design.md §A, Q1 revised 2026-09-15)", () => {
     expect([...s.seats]).toEqual([[1, [0, 2]]]);
   });
 
+  test("A LEADING RUN SEATS ON THE TAIL WHILE IT STREAMS (review #5)", () => {
+    // rows: [run(0), text(1)] with row 1 still growing. Looking FORWARD the
+    // tail is a seat — the word belongs in that paragraph's corner from its
+    // first frame, not parked on a bare line above it until the turn settles.
+    const s = seat([named("t1"), text("Done so f")], { tailIndex: 1 });
+    expect(s.bare.size).toBe(0);
+    expect([...s.seats]).toEqual([[1, [0]]]);
+  });
+
   test("no prose in the turn at all → the bare own-line trigger stays", () => {
     expect([...seat([named("t1"), named("t2")]).bare]).toEqual([0]);
-    // …as does a run that can only look BACKWARD: prose has been seen, so the
-    // forward reach is off, and the prose before it is the streaming tail.
+    // …as does a run that can only look BACKWARD onto the streaming tail: the
+    // forward reach is off (prose has been seen), and a word in the corner of a
+    // paragraph still being written rides its last line down the screen.
     const live = seat([text("a"), named("t1")], { tailIndex: 0 });
     expect([...live.bare]).toEqual([1]);
     expect(live.seats.size).toBe(0);

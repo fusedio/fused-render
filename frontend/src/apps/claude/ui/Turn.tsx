@@ -302,21 +302,19 @@ export const Turn = memo(function Turn({
                is not a second control, it is a bigger target for the one that
                is already there. ONE WAY ONLY: the open body is not a control,
                or every click inside a reply — a selection, a code block's copy
-               button — would be a click that shuts it. */
+               button — would be a click that shuts it.
+
+               A POINTER TARGET, AND NOTHING MORE (PR5 review #7). It carried
+               `role="button"`, a tab stop and `aria-expanded` — a SECOND
+               announced control for the one action, so a keyboard reader met
+               "collapsed, button" twice per reply and a screen reader read the
+               reply's own first sentence as a control's label. The keyboard
+               already has this: the mark beside it, which is a real `<button>`
+               with the state on it. This span only widens where the MOUSE may
+               land. */
             <span
               className={cn("turn-collapsed", line && line.muted && "is-muted")}
-              role="button"
-              tabIndex={0}
-              aria-expanded={false}
               onClick={() => onToggleCollapse!(turn.key)}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter" && e.key !== " ") return;
-                // SPACE WOULD SCROLL THE LOG, and Enter inside a form would
-                // submit it: a `role="button"` owes the keyboard what a real
-                // `<button>` gives it for free.
-                e.preventDefault();
-                onToggleCollapse!(turn.key);
-              }}
             >
               {line ? line.text : ""}
             </span>

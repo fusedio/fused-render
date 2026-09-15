@@ -10,6 +10,9 @@ installDomShim();
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { ChatState, Turn as TurnRow } from "../protocol/controller-api";
 import type { Segment, ToolSegment } from "../protocol/types";
 import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
@@ -498,25 +501,34 @@ describe("the toggle", () => {
     const hit: string[] = [];
     const shut = mount(<Turn turn={turn} collapsed onToggleCollapse={(k) => hit.push(k)} />);
     const line = byClass(shut, "turn-collapsed")[0]!.props as Record<string, unknown>;
-    expect(line["role"]).toBe("button");
-    expect(line["tabIndex"]).toBe(0);
     act(() => (line["onClick"] as () => void)());
     expect(hit).toEqual(["a:1"]);
-    // Enter and Space work it too, and neither scrolls the log.
-    for (const key of ["Enter", " "]) {
-      let prevented = 0;
-      act(() =>
-        (line["onKeyDown"] as (e: unknown) => void)({ key, preventDefault: () => prevented++ }),
-      );
-      expect(prevented).toBe(1);
-    }
-    expect(hit).toEqual(["a:1", "a:1", "a:1"]);
-    act(() => (line["onKeyDown"] as (e: unknown) => void)({ key: "a", preventDefault() {} }));
-    expect(hit).toHaveLength(3);
+    // A POINTER TARGET AND NOTHING MORE (PR5 review #7). The mark beside it is
+    // a real `<button>` carrying the state; announcing the words as a SECOND
+    // button gave a keyboard reader two stops for one action and read the
+    // reply's own first sentence out as a control's label.
+    expect("role" in line).toBe(false);
+    expect("tabIndex" in line).toBe(false);
+    expect("aria-expanded" in line).toBe(false);
+    expect("onKeyDown" in line).toBe(false);
     // ONE WAY ONLY: the open body is not a control — only the mark folds.
     const open = mount(<Turn turn={turn} onToggleCollapse={(k) => hit.push(k)} />);
     expect((byClass(open, "body")[0]!.props as Record<string, unknown>)["onClick"]).toBe(undefined);
     expect(byClass(open, "turn-collapsed")).toHaveLength(0);
+  });
+
+  test("the muted line still answers the pointer (review #4)", () => {
+    // `.is-muted` outranked `.turn-collapsed:hover`, so the one row whose words
+    // are its only affordance was the one row that looked dead under the
+    // cursor — an all-tool-calls reply.
+    const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
+    const at = sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted:hover {");
+    expect(at).toBeGreaterThan(-1);
+    expect(sheet.slice(at, sheet.indexOf("}", at))).toContain("color: var(--c-dim)");
+    // …and it comes AFTER the rule it has to beat.
+    expect(at).toBeGreaterThan(
+      sheet.indexOf(".chat-root .turn.assistant .turn-collapsed.is-muted {"),
+    );
   });
 
   test("with no handler at all the mark is inert — the fold is the log's to offer", () => {

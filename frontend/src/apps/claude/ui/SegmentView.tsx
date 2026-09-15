@@ -14,12 +14,7 @@ import { Fragment, memo, useMemo, useRef } from "react";
 
 import { cn } from "@platform/lib/utils";
 
-import {
-  groupCollapsibles,
-  isRun,
-  seatTriggers,
-  type CollapsibleRun,
-} from "../protocol/segments";
+import { groupCollapsibles, isRun, seatTriggers } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
 import { Caret } from "./Caret";
@@ -116,16 +111,21 @@ export const SegmentView = memo(function SegmentView({
     () => seatTriggers(rows, { tailIndex: tail ? tail.index : -1, cardsAfter }),
     [rows, tail, cardsAfter],
   );
-  // THE KEY A TRIGGER TOGGLES. Two runs seated on one prose block (the turn
-  // opened on tool calls and made more after the paragraph) share ONE word and
-  // therefore one state: the LEADING run's key, so the pair's identity does not
-  // change on the poll the trailing run lands in.
+  // THE KEY A TRIGGER TOGGLES — THE SEAT'S, not a member's (PR5 review #6).
+  // Two runs seated on one prose block (the turn opened on tool calls and made
+  // more after the paragraph) share ONE word and therefore one state, and that
+  // state has to survive the polls in which the pair is still assembling. Keyed
+  // off the LEADING RUN's first chip it did not: a live turn suppresses the
+  // trailing run, a filed card splits one in two, and either way the run that
+  // is "first" changes under the reader — the word they opened shut itself.
+  // The SEAT cannot change: it is the paragraph the word is drawn in.
   const runKeys = useMemo(() => {
     const keys = new Map<number, string>();
-    for (const held of seats.values()) {
-      const first = rows[held[0]!] as CollapsibleRun;
-      const key = runKey(seq, first.segs[0], first.start);
-      for (const at of held) keys.set(at, key);
+    for (const [at, held] of seats) {
+      const row = rows[at];
+      if (!row || isRun(row)) continue;
+      const key = "run:seat:" + cardKey(seq, row.seg, row.index);
+      for (const r of held) keys.set(r, key);
     }
     return keys;
   }, [rows, seats, seq]);
@@ -186,6 +186,11 @@ export const SegmentView = memo(function SegmentView({
       return;
     }
     // "text", and anything a newer agent.py invents (T:15630-15635).
+    const held = seats.get(r);
+    const seated = held ? (runKeys.get(held[0]!) ?? null) : null;
+    const trigger = seated ? (
+      <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} />
+    ) : null;
     if (tail && tail.index === i) {
       // The typer's slice, and the caret AFTER the prose element rather than
       // inside it (T:15066 `bodyEl.after(cur)`) — in the trigger's own slot of
@@ -194,21 +199,30 @@ export const SegmentView = memo(function SegmentView({
       // and the copy button must never run per frame (T:14998-15055) — the pass
       // lands once the tail moves on, or at the end of the run (T:16336), both
       // of which flip this branch off and re-render with `enhance`.
+      //
+      // BOTH, when a leading run is seated here (review #5): the word belongs
+      // in this paragraph's corner from the first frame of it, and the caret
+      // belongs after the last glyph — the slot holds the pair rather than
+      // choosing, so streaming loses neither.
       nodes.push(
         segBlock(
           key,
           <MarkdownView className="seg-text" text={tail.text} enhance={false} />,
-          tail.cursor ? <Caret /> : null,
+          trigger || tail.cursor ? (
+            <>
+              {trigger}
+              {tail.cursor ? <Caret /> : null}
+            </>
+          ) : null,
+          !!seated,
         ),
       );
       return;
     }
-    const held = seats.get(r);
-    const seated = held ? (runKeys.get(held[0]!) ?? null) : null;
     const block = segBlock(
       key,
       <MarkdownView className="seg-text" text={segText(seg)} enhance />,
-      seated ? <RunTrigger open={isRunOpen(seated)} onToggle={() => toggleRun(seated)} /> : null,
+      trigger,
       !!seated,
     );
     nodes.push(filed ? withFiled(block) : block);
