@@ -3505,6 +3505,20 @@ export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
 
+/**
+ * IS THIS ROW THE ONE `groupByColumn` FILES UNDER UPCOMING — a scheduled-for-
+ * later task or either kind of draft (`kind: "draft"`, hoisted to that lane's
+ * head rather than given one of its own, see `laneOf`). One test, so a host
+ * that hides the whole lane (the explorer's Claude side panel — a folder or
+ * file's `?_side=claude` companion — asks the reader to look at a chat about
+ * the thing on screen, not a queue of unstarted work) filters against exactly
+ * the bucket `sortForList` itself would have put the row in, rather than a
+ * second opinion that could drift from it.
+ */
+export function isUpcomingLane(task: Pick<Task, "status" | "kind">): boolean {
+  return laneOf(taskColumn(task)) === "upcoming";
+}
+
 /** One lane, drafts first, everything in the order it arrived in. Applied by
  *  `groupByColumn`, which every view's order now comes out of: a row carrying
  *  unsent words is at the top of its lane wherever it is drawn, so it is inside
