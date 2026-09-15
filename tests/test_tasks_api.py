@@ -3678,3 +3678,43 @@ def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
 
     r = client.post("/api/tasks/delete", json={"key": "sess-a"})
     assert r.status_code == 409, r.text
+
+
+# ---- a number is never minted from a GUESSED project ---------------------------
+# `_place` falls back to decoding the transcript's directory name when the file
+# has not recorded its cwd yet — and the decode is lossy: every hyphen becomes a
+# separator, so `-private-tmp-pqueue-qa-alpha` reads as `/private/tmp/pqueue/qa/alpha`.
+# A number allocated against THAT project lives in a counter of its own, and the
+# folder's real counter hands the same number out again a second later: two
+# TASK-002s in one folder (browser QA, 2026-09-16, after #1163 started listing a
+# row the instant a send is made, before the CLI's first row lands).
+
+
+def test_a_transcript_with_no_cwd_yet_gets_no_number_until_it_has_one(
+        client, projects_dir):
+    encoded = "-private-tmp-pqueue-qa-alpha"
+    real = "/private/tmp/pqueue-qa/alpha"
+    # A sibling in the same folder that has said where it is.
+    _write_transcript(projects_dir, "sess-old", real, [_user("earlier", T9)],
+                      encoded=encoded)
+    # …and a brand-new one whose only row so far carries no cwd at all.
+    _write_transcript(projects_dir, "sess-new", None, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-old"]["task_id"] == "TASK-001"
+    # The guessed project is still what the row is filed under for display…
+    assert rows["sess-new"]["project"].startswith("/private/tmp/pqueue")
+    # …but it is a GUESS, and a guess mints nothing.
+    assert rows["sess-new"]["task_id"] == ""
+
+    # The first real row lands, with the cwd, and the number follows from the
+    # folder's own counter — the next free one, not a second TASK-001.
+    _write_transcript(projects_dir, "sess-new", real, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T10},
+        _user("hello", T11),
+    ], encoded=encoded)
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-new"]["project"] == real
+    assert rows["sess-new"]["task_id"] == "TASK-002"
+    assert rows["sess-old"]["task_id"] == "TASK-001"

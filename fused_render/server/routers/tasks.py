@@ -2293,10 +2293,22 @@ def _place(task: dict) -> None:
     task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
+    # A GUESSED project mints no number (`_numbers`). The directory-name
+    # decode below is lossy — every hyphen reads as a separator, so
+    # `-private-tmp-pqueue-qa-alpha` comes back as `/private/tmp/pqueue/qa/alpha`
+    # — and a number allocated against that string lives in a counter of its
+    # own; the folder's real counter then hands the same number out again the
+    # moment the transcript says where it is (two TASK-002s in one folder,
+    # browser QA 2026-09-16). The row is still FILED under the guess for this
+    # one listing, so it has a lane and a folder chip; only the allocation
+    # waits for the first row that carries a cwd, which is seconds away.
+    task["project_guessed"] = False
     if not cwd:
-        cwd = _workdir(target) or (
-            sessions._decode_project_dir(os.path.basename(os.path.dirname(
-                task["path"]))) if task["path"] else "")
+        cwd = _workdir(target)
+        if not cwd and task["path"]:
+            cwd = sessions._decode_project_dir(
+                os.path.basename(os.path.dirname(task["path"])))
+            task["project_guessed"] = bool(cwd)
     task["project"] = tasks_store.project_of(cwd or "")
     task["target"] = target or (
         pane if pane and os.path.isfile(pane) else task["project"])
@@ -2357,8 +2369,14 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
             if old in store and task["key"] not in store:
                 rekeys.append((old, task["key"]))
                 break
+    # A task whose project is only a GUESS (`_place`) is left out of the
+    # allocation — its number is "" for this listing and is minted, from the
+    # right counter, by the first listing that reads its cwd. A task that
+    # already HAS a number is unaffected either way: allocate-once means the
+    # store answers for it without allocating.
     items = [(task["key"], task["project"], task["order"])
-             for task in tasks.values()]
+             for task in tasks.values()
+             if not task.get("project_guessed")]
     try:
         return tasks_store.ensure_ids(items, rekeys)
     except OSError:
