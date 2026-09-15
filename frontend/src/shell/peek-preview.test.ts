@@ -64,10 +64,10 @@ describe("previewBox", () => {
     expect(PREVIEW_INSET).toBe(38); // `--peek-preview-inset`, styles/task-peek.css
     expect(narrow.scale).toBeCloseTo(inner(564) / PREVIEW_VW, 6);
     expect(wide.scale).toBeCloseTo(inner(900) / PREVIEW_VW, 6);
-    // `frameHeight` is the VIRTUAL viewport, unscaled — 720 whenever the box is
-    // at or under its natural footprint, which both of these are.
-    expect(narrow.frameHeight).toBe(PREVIEW_VH);
-    expect(wide.frameHeight).toBe(PREVIEW_VH);
+    // `frameHeight` is the VIRTUAL viewport, unscaled — 720 when the box is
+    // shown at its natural 16:9 footprint, which both of these are.
+    expect(narrow.frameHeight).toBeCloseTo(PREVIEW_VH, 6);
+    expect(wide.frameHeight).toBeCloseTo(PREVIEW_VH, 6);
     // What grows with the width is the DRAWN footprint, which is that viewport
     // at the panel's scale.
     expect(narrow.frameHeight * narrow.scale).toBeCloseTo(
@@ -78,19 +78,19 @@ describe("previewBox", () => {
     // 16:9 on the INNER width — 508 wide is 285.75 tall, and on a body with
     // room it is shown whole, with the card's 12px of air above and below.
     expect(narrow.height).toBeCloseTo(inner(564) * (9 / 16) + 2 * PREVIEW_PAD_Y, 4);
-    expect(narrow.cropped).toBe(false);
   });
 
-  it("caps at half the body and crops rather than squashing", () => {
+  it("caps at half the body and gives the app a shorter window, never a crop", () => {
     // A 564 peek is 508 inside its gutters and wants 285 of height; a 400px
-    // body allows 200.
+    // body allows 200. The frame is sized to the 176px card that is left —
+    // the app lays out into it and scrolls itself. Nothing outside the frame
+    // has anything to scroll (Akshil, 2026-09-15: the crop drew a second pair
+    // of scrollbars around a frame that already had its own).
     const box = previewBox(564, 400, null);
     expect(box.height).toBe(400 * PREVIEW_CAP_FRACTION);
-    // The frame is still its full 16:9 self — the box simply shows less of it,
-    // which is what `overflow: auto` on the box is for.
-    expect(box.frameHeight).toBe(PREVIEW_VH);
-    expect(box.frameHeight * box.scale).toBeCloseTo((564 - 2 * PREVIEW_INSET) * (9 / 16), 4);
-    expect(box.cropped).toBe(true);
+    const card = box.height - 2 * PREVIEW_PAD_Y;
+    expect(box.frameHeight * box.scale).toBeCloseTo(card, 6);
+    expect(box.frameHeight).toBeLessThan(PREVIEW_VH);
   });
 
   it("gives the APP a taller window when the box is dragged past 16:9", () => {
@@ -102,7 +102,7 @@ describe("previewBox", () => {
     // app's background under a scrollbar with nothing to scroll.
     // 716 wide is 640 inside its 38px gutters, so the scale is a round 0.5.
     const natural = previewBox(716, 2000, null);
-    expect(natural.frameHeight).toBe(PREVIEW_VH);
+    expect(natural.frameHeight).toBeCloseTo(PREVIEW_VH, 6);
     // 12px of air above and below the card (`--peek-preview-pad-y`), so a
     // 624px box is a 600px card.
     expect(PREVIEW_PAD_Y).toBe(12);
@@ -111,19 +111,16 @@ describe("previewBox", () => {
     expect(taller.height).toBe(624);
     // 640 / 1280 = 0.5, so a 600px card is a 1200px window.
     expect(taller.frameHeight).toBe(1200);
-    // …and it is not "cropped": the drawn frame is exactly the card.
+    // …and the drawn frame is exactly the card.
     expect(taller.frameHeight * taller.scale).toBeCloseTo(600, 6);
-    expect(taller.cropped).toBe(false);
   });
 
-  it("never hands the app a viewport shorter than a desktop's", () => {
-    // Below the natural footprint the box crops, and the app keeps its 720 —
-    // a layout built for a desktop must not be asked to render into 200px
-    // just because the reader dragged the seam up.
+  it("a box dragged short hands the app a short window, drawn exactly to the card", () => {
+    // 696 wide is 620 inside its gutters; a 200px box is a 176px card, and the
+    // frame is that card at the panel's scale — no crop, no scrollbar.
     const short = previewBox(696, 2000, 200);
     expect(short.height).toBe(200);
-    expect(short.frameHeight).toBe(PREVIEW_VH);
-    expect(short.cropped).toBe(true);
+    expect(short.frameHeight * short.scale).toBeCloseTo(200 - 2 * PREVIEW_PAD_Y, 6);
   });
 
   it("never takes the composer's room, however hard the seam is dragged", () => {
