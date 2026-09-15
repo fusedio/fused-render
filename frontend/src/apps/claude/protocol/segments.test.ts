@@ -577,6 +577,12 @@ describe("leadSplit — where a leading run's trigger sits (Akshil, 2026-09-15)"
   test("a heading, list item or quote cuts after its first line", () => {
     expect(leadSplit("## Title\nBody. More.")).toEqual({ lead: "## Title", rest: "Body. More." });
     expect(leadSplit("- first. item\n- second")).toEqual({ lead: "- first. item", rest: "- second" });
+    // An indented continuation belongs to the item above it (Bugbot on d7458fe).
+    expect(leadSplit("- first\n  more of first\n- second")).toEqual({
+      lead: "- first\n  more of first",
+      rest: "- second",
+    });
+    expect(leadSplit("- only item\n  continued")).toBeNull();
     expect(leadSplit("1. one\n2. two")).toEqual({ lead: "1. one", rest: "2. two" });
     expect(leadSplit("> quoted. words\n> more")).toEqual({ lead: "> quoted. words", rest: "> more" });
   });
@@ -584,6 +590,12 @@ describe("leadSplit — where a leading run's trigger sits (Akshil, 2026-09-15)"
   test("a fence or a table is not a sentence: no split", () => {
     expect(leadSplit("```js\nx. y\n```\n\nAfter.")).toBeNull();
     expect(leadSplit("| a | b |\n|---|---|\n\nAfter.")).toBeNull();
+  });
+
+  test("leading blank lines are nobody's lead (Bugbot on d7458fe)", () => {
+    expect(leadSplit("\n\nFirst. Second.")).toEqual({ lead: "\n\nFirst.", rest: "Second." });
+    expect(leadSplit("\n\n")).toBeNull();
+    expect(leadSplit("   \nOnly.")).toBeNull();
   });
 
   test("nothing left after the lead means no split", () => {

@@ -325,7 +325,8 @@ export function seatTriggers(
  *   * The cut is inside the FIRST PARAGRAPH only (up to the first blank line).
  *   * A paragraph that is a fenced block or a table is not a sentence: no
  *     split, the whole block keeps the corner seat it had.
- *   * A heading, list item or quote's first LINE is the lead.
+ *   * A heading's line is the lead; a list's or quote's first ITEM is — up to
+ *     the next marker at column 0, so an indented continuation stays with it.
  *   * Prose cuts at the first `.`, `!` or `?` (closing quotes/brackets kept)
  *     that is followed by whitespace and then something that is not a
  *     lowercase letter — `e.g. the`, `file.ts is` and `3.5 seconds` are not
@@ -347,22 +348,39 @@ export interface LeadSplit {
 }
 
 const LEAD_NOT_PROSE = /^(```|~~~|\|)/;
-const LEAD_ONE_LINE = /^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>)/;
+const LEAD_HEADING = /^#{1,6}\s/;
+const LEAD_ONE_LINE = /^([-*+]\s|\d+[.)]\s|>)/;
 const SENTENCE_END = /[.!?]["'\u2019\u201d)\]]*(?=\s)/g;
 
 export function leadSplit(text: string): LeadSplit | null {
-  if (!text) return null;
-  const blank = text.search(/\r?\n[ \t]*\r?\n/);
-  const para = blank === -1 ? text : text.slice(0, blank);
+  // Leading blank lines belong to nobody: skipped, so a text that opens on
+  // `\n\n` does not hand the trigger an empty lead (Bugbot on d7458fe).
+  const start = text.length - text.trimStart().length;
+  if (start >= text.length) return null;
+  const body = text.slice(start);
+  const blank = body.search(/\r?\n[ \t]*\r?\n/);
+  const para = blank === -1 ? body : body.slice(0, blank);
   if (LEAD_NOT_PROSE.test(para)) return null;
   const cut = (at: number): LeadSplit | null => {
-    const lead = text.slice(0, at);
-    const rest = text.slice(at).replace(/^\s+/, "");
-    return rest ? { lead, rest } : null;
+    const lead = text.slice(0, start + at);
+    const rest = text.slice(start + at).replace(/^\s+/, "");
+    return lead.trim() && rest ? { lead, rest } : null;
   };
-  if (LEAD_ONE_LINE.test(para)) {
+  if (LEAD_HEADING.test(para)) {
     const nl = para.indexOf("\n");
     return cut(nl === -1 ? para.length : nl);
+  }
+  if (LEAD_ONE_LINE.test(para)) {
+    // The first ITEM, not the first line: an indented continuation (or a
+    // quote's lazy continuation) belongs to the item above it, and parsed on
+    // its own it would come out as a paragraph (Bugbot on d7458fe). The cut is
+    // at the first line that opens a SIBLING — another marker at column 0.
+    let at = para.indexOf("\n");
+    while (at !== -1) {
+      if (LEAD_ONE_LINE.test(para.slice(at + 1))) return cut(at);
+      at = para.indexOf("\n", at + 1);
+    }
+    return cut(para.length);
   }
   SENTENCE_END.lastIndex = 0;
   let m: RegExpExecArray | null;
