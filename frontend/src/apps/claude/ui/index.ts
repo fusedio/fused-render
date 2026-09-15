@@ -12,6 +12,7 @@ export type {
   ComposerProps,
   ComposerCardProps,
   ComposerControls,
+  ComposerAutosave,
 } from "./Composer";
 export { ModelSelect } from "./ModelSelect";
 export { EffortSelect } from "./EffortSelect";
