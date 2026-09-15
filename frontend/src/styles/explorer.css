@@ -2574,6 +2574,23 @@ table.listing-table tr.skel-row:hover {
   text-overflow: ellipsis;
 }
 
+/* The item's own name (plain listing, not a search hit) — sibling of
+   .search-path above and the same flex child of .row-handle, so it needs the
+   same overflow/ellipsis pair: without `overflow` set here, this span had no
+   automatic minimum size (the flexbox "automatic minimum size" rule only
+   zeroes a flex item's min-width when ITS OWN overflow isn't visible), so it
+   never shrank below its full text width. `.row-handle`'s own overflow:hidden
+   then had to hard-clip the overflowing box from outside, which clips
+   mid-character with no ellipsis — exactly the bug this fixes. `white-space`
+   is inherited from `.row-handle`, but set explicitly here too since this
+   span, unlike `.search-path`, is the one every plain row actually renders. */
+.name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* Space and mute the "/" segment separators in a multi-segment search-hit
    path, so it reads as layered folders rather than one long run of
    characters (renderHighlightPath, listing/bits.tsx). Margin, not a literal
