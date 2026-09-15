@@ -2038,6 +2038,39 @@ def test_a_send_mark_is_not_the_verdicts_echo(client, projects_dir):
     assert task["status"] == "in_progress"
 
 
+def test_the_registry_catching_up_does_not_reopen_the_echo_gap(
+        client, projects_dir, monkeypatch):
+    """The same row, two seconds later (Bugbot, PR #1163 round 2).
+
+    `claude -p` publishes its registry row two to four seconds into the turn,
+    and from that moment `_live` answers off the registry rather than off the
+    mark. If the third value meant "the mark is what decided this" it would go
+    false right there, the echo rule would get its vote back, and the row would
+    drop from In Progress to Done — returning only once the new prompt reached
+    the transcript. The same lag the mark exists to close, now with a flicker in
+    front of it.
+
+    So the flag is the mark's STATE. The send either happened in the last
+    fifteen seconds or it did not; the registry agreeing does not un-happen it.
+    """
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    # The CLI has published its row: the turn is running, and `_live` now takes
+    # the registry branch instead of the mark's.
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, mtime=None: (True, 0.0))
+    tasks_watch.mark_running("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True, "the send still outranks the echo"
+    assert task["status"] == "in_progress"
+
+
 def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
         client, projects_dir):
     """A message that says it is running by its OWN state — sending, or sent

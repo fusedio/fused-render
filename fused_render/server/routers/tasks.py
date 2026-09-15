@@ -1811,8 +1811,8 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
 
 
 def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
-    """(is this session running, when was it last active, was that the SENDER's
-    own word).
+    """(is this session running, when was it last active, did the SENDER say a
+    turn had just started here).
 
     The same 45-second rule as the sessions inbox, and the same tail read — a
     transcript's mtime alone lies, because Claude Code appends housekeeping
@@ -1820,13 +1820,23 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
     touched in 90 seconds: it is stale either way, so the read would only be
     deciding what kind of stale.
 
-    The third value separates the two KINDS of yes this can answer, because one
-    of them is evidence and the other is testimony. Everything but the mark is
-    inferred from a file — timestamps a later rule is entitled to re-read and
-    discount (`_verdict_outvotes_live`). The mark is the page that made the send
-    saying it made it, which no reading of the transcript can outvote, and a
-    caller that discounts it has thrown away the one fact this whole path exists
-    to carry. False for every answer that is not running at all."""
+    The third value is EVIDENCE vs TESTIMONY. The first two are inferred from
+    files — timestamps a later rule is entitled to re-read and discount
+    (`_verdict_outvotes_live`). The mark is the page that made the send saying
+    it made it, which no reading of the transcript can outvote, and a caller
+    that discounts it has thrown away the one fact this whole path exists to
+    carry.
+
+    It is the state of the mark, NOT which branch below won (Bugbot, PR #1163).
+    Reporting it only where the mark decided the answer meant it went false the
+    instant the registry caught up and said `busy` — so a row could show the
+    send, drop back to done two seconds later when the echo rule got its vote
+    back, and only return when the prompt reached the transcript. Same lag,
+    with a flicker in front of it. The send either happened in the last fifteen
+    seconds or it did not, and no other fact makes it un-happen.
+
+    True implies running: the mark is only stood down by a registry that says
+    `busy`, which is running too."""
     if not path:
         return False, 0.0, False
     try:
@@ -1834,6 +1844,7 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
     except OSError:
         return False, 0.0, False
     session_id = os.path.splitext(os.path.basename(path))[0]
+    marked = tasks_watch.is_marked_running(session_id)
     # The live registry (tasks_watch) knows what a running `claude` SAYS it is
     # doing, which beats inferring it from the file: `busy` is running whatever
     # the tail's timestamps add up to, and `idle` is not, even if housekeeping
@@ -1853,8 +1864,7 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
     # other answer is a file that has not caught up. `now` is the honest
     # last-active — the turn is happening as this is read — and the mark expires
     # on its own, so a run that died on the spot settles without a write.
-    if tasks_watch.is_marked_running(session_id) and not (
-            from_registry and from_registry[0]):
+    if marked and not (from_registry and from_registry[0]):
         return True, now, True
     if from_registry is not None:
         running, active = from_registry
@@ -1863,12 +1873,12 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
             file_active = last.timestamp() if last is not None else mtime
         else:
             file_active = mtime
-        return running, max(active, file_active), False
+        return running, max(active, file_active), marked
     if now - mtime > sessions._STALE_TAIL_SEC:
-        return False, mtime, False
+        return False, mtime, marked
     activity, last = sessions._tail(path, mtime)
     running = (now - activity) < sessions._RUNNING_WINDOW_SEC
-    return running, (last.timestamp() if last is not None else mtime), False
+    return running, (last.timestamp() if last is not None else mtime), marked
 
 
 # --------------------------------------------------------------- the endpoints
@@ -2023,6 +2033,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # scheduled run had just reported would have been suppressed for the mark's
     # entire life, and the row would have sat on `done` until the registry row
     # landed — which is the exact lag the mark exists to close.
+    #
+    # `marked` is the mark's STATE, not the branch `_live` took, so this holds
+    # across the registry catching up mid-send as well — see its docstring.
     if live and not marked and _verdict_outvotes_live(merged, active):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
