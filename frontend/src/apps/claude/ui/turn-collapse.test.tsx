@@ -21,7 +21,7 @@ import { CardPolicyProvider, createCardPolicy } from "./cardPolicy";
 // `location` at module init — static imports are hoisted above the
 // `installDomShim()` call above.
 const { Transcript } = await import("./Transcript");
-const { collapsedLine, INTERRUPT_MARK, isOneLiner, Turn } = await import("./Turn");
+const { collapsedLine, firstLine, INTERRUPT_MARK, isOneLiner, Turn } = await import("./Turn");
 const { historyToTurns } = await import("../protocol/history");
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -689,4 +689,18 @@ test("the folded line is the first line RENDERED, not its markdown source", () =
   expect(html).toContain("**Done.** two files");
   expect(html).not.toContain("more below");
   expect(byClass(r, "turn-collapsed")[0]!.children).toHaveLength(1);
+});
+
+test("the folded line skips scaffolding and drops link targets (bugbot on 69cdcb9)", () => {
+  // A reply that opens on a fence folds to the first WORDS, not to an empty
+  // <pre>; a thematic break likewise.
+  expect(firstLine("```python\nprint(1)\n```\nDone.")).toBe("print(1)");
+  expect(firstLine("---\n\nSummary here")).toBe("Summary here");
+  // Links keep their words and lose the <a>: the row is one pointer target.
+  expect(firstLine("See [the docs](https://x.y/z) and <https://a.b>")).toBe(
+    "See the docs and https://a.b",
+  );
+  expect(firstLine("![alt text](img.png) after")).toBe("alt text after");
+  // Bold survives — it is words, not scaffolding.
+  expect(firstLine("**Done.** two files")).toBe("**Done.** two files");
 });

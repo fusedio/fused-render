@@ -481,10 +481,28 @@ export function collapsedLine(turn: TurnRow): CollapsedLine {
 }
 
 /** The first line with anything on it, trimmed. */
-function firstLine(text: string): string {
+/** Markdown that is SCAFFOLDING, not words: a fence opener/closer, a thematic
+ *  break, a bare heading/list marker, a table rule. A folded row built from one
+ *  of these renders as an empty <pre>/<hr> — a blank line (Bugbot on 69cdcb9). */
+const SCAFFOLD = /^(`{3,}|~{3,})[\w-]*$|^([-*_]\s*){3,}$|^#{1,6}$|^[-*+]$|^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
+
+/** A markdown link's text with its target dropped, an image's alt text, a bare
+ *  autolink's address. The folded row is one pointer target that OPENS the
+ *  reply; a live <a> inside it would navigate AND bubble to the expand, and be
+ *  a second tab stop (Bugbot on 69cdcb9; PR5 review #7). */
+function delink(line: string): string {
+  return line
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
+    .replace(/<(https?:\/\/[^>\s]+)>/g, "$1");
+}
+
+export function firstLine(text: string): string {
   for (const raw of String(text ?? "").split("\n")) {
     const line = raw.trim();
-    if (line) return line;
+    if (!line || SCAFFOLD.test(line)) continue;
+    return delink(line);
   }
   return "";
 }

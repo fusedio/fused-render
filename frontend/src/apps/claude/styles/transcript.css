@@ -267,7 +267,12 @@
 .chat-root .turn.assistant .turn-collapsed-md ol {
   list-style: none;
 }
-.chat-root .turn.assistant .turn-collapsed-md pre,
+/* Scaffolding lines never reach this row (Turn.firstLine skips them), so a
+   <pre> here is renderMd's own fallback for prose it could not parse — keep it
+   VISIBLE as the plain line it is rather than hiding the whole row. */
+.chat-root .turn.assistant .turn-collapsed-md pre {
+  font: inherit;
+}
 .chat-root .turn.assistant .turn-collapsed-md hr {
   display: none;
 }
