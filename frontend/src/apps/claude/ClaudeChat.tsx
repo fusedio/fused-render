@@ -134,6 +134,7 @@ import { useChatRecapEnabled } from "./feature-flag";
 import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness, type Task } from "@platform/lib/api";
+import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -242,6 +243,13 @@ function stampChatActivity(): void {
   } catch {
     // The shell's 20-30 s task polls remain the fallback.
   }
+}
+
+/** A promise that resolves after `ms`, for racing a wait that has no timeout of
+ *  its own. Resolves rather than rejects: losing the race is not an error, it is
+ *  "stop waiting and show what we have". */
+function deadline(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">): string {
@@ -1535,7 +1543,20 @@ function ChatBody(props: ChatBodyProps) {
         setEntered(true);
         if (sessionId) {
           resetCardPolicy(cardPolicy);
-          await controller.openSession(sessionId);
+          // RACED, because `markReady` is below it and the host keeps this pane
+          // covered until it fires. `openSession` awaits a history round trip,
+          // and a request the server accepts and never answers (a wedged worker,
+          // a machine asleep mid-flight) never rejects either — so the cover
+          // stayed on for the life of the page. After the same 8 s every other
+          // gate waits we stop waiting and uncover: the restore is still running
+          // and still paints when it lands, and what the reader gets meanwhile is
+          // the chat's own empty log — which is exactly what a restore that FAILS
+          // already leaves (run-controller.openSession swallows the error by
+          // design, T:18057-18059). Never a blank box.
+          await Promise.race([
+            controller.openSession(sessionId),
+            deadline(GATE_FALLBACK_MS),
+          ]);
           if (cancelled) return;
         }
         // A bare `run` has nothing to restore, and a restored session is on
@@ -1824,11 +1845,20 @@ function ChatBody(props: ChatBodyProps) {
    * the pane would stay covered for the life of the page. Entering a chat is
    * itself a reason to uncover it, and a target with no list has answered "no
    * list" — so both count.
+   *
+   * AND NEVER FOR EVER (2026-09-15), which is the third road. `recent` stays
+   * `null` while the listing is in flight, and a listing that never answers — a
+   * wedged worker, a request the browser is still holding — left the cover on
+   * for the life of the page with nothing to take it off. `recentLate` is the
+   * same 8 s backstop every other gate in the app waits (`platform/lib/clock`),
+   * after which a landing wearing its list's skeleton is a better thing to show
+   * than a covered box.
    */
+  const recentLate = useFallbackAfter(GATE_FALLBACK_MS, landingReady && recent === null);
   useEffect(() => {
     if (!landingReady) return;
-    if (recent !== null || inChat || !agentDir) markReady();
-  }, [landingReady, recent, inChat, agentDir, markReady]);
+    if (recent !== null || recentLate || inChat || !agentDir) markReady();
+  }, [landingReady, recent, recentLate, inChat, agentDir, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
@@ -2795,7 +2825,17 @@ function ChatBody(props: ChatBodyProps) {
    * header's skeleton, so a deep link no longer wears the wrong identity for
    * the length of an 800-row listing read (Akshil, 2026-09-14).
    */
-  const head = useSessionTask(inChat ? (state.sessionId ?? null) : null, file);
+  //
+  // AND ONLY WHERE THE HEADER IS DRAWN (2026-09-15). The Topbar this feeds is
+  // taken away by the compact and peek cuts (`{!compact && !peek ? …}` below),
+  // so a cards wall of twelve tiles held twelve subscriptions for a header none
+  // of them renders. The rows are one shared feed now, so the cost is no longer
+  // twelve sockets — but it is still twelve listings narrowed and twelve
+  // re-renders per change for nothing.
+  const head = useSessionTask(
+    inChat && !compact && !peek ? (state.sessionId ?? null) : null,
+    file,
+  );
 
   return (
    <CardPolicyProvider value={cardPolicy}>
