@@ -3444,9 +3444,16 @@ input.schedule-when-field {
 
 /* HOVER-ONLY INK for these bars lives in styles/scrollbars.css (Akshil,
    2026-09-15) — one list for every scroller on Tasks, the side peek, Home and
-   AI Models. The rules above still state the bar's shape and colour for the
-   parity tests and for WebKit; scrollbars.css's `scrollbar-color` is what the
-   browser actually paints at rest and under the pointer. */
+   AI Models, so the pages cannot drift into three different fades. The rules
+   above are unchanged and still own the bar's shape, width and colour; that
+   file only paints the thumb out while the scroller is unhovered, which is why
+   it must stay on `::-webkit-scrollbar-thumb` — anything set through
+   `scrollbar-color` would make Chromium drop the width rule above, and with it
+   the overlay opt-out this whole block exists for.
+
+   The thumb's own `:hover` brightening (48%) went with it: hover state on the
+   thumb is the one Chromium leaves stuck after the pointer leaves, and a bar
+   that only appears on hover has nothing to brighten from. */
 
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
