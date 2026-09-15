@@ -1462,6 +1462,11 @@ export default function Listing({
                       {renderHighlightPath(entry.rel, positions)}
                     </span>
                   </span>
+                  {/* Guaranteed sweep-start strip — see explorer.css's
+                      .sweep-anchor comment. Before ClipMark in the DOM so a
+                      cut/copied badge, when present, still wins the overlap
+                      at the very right edge. */}
+                  <span className="sweep-anchor" aria-hidden="true" />
                   <ClipMark
                     cut={cutSet.has(childPath)}
                     copied={copiedSet.has(childPath)}
@@ -1656,6 +1661,11 @@ export default function Listing({
               <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
+            {/* Guaranteed sweep-start strip — see explorer.css's
+                .sweep-anchor comment. Before ClipMark in the DOM so a
+                cut/copied badge, when present, still wins the overlap at
+                the very right edge. */}
+            <span className="sweep-anchor" aria-hidden="true" />
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}

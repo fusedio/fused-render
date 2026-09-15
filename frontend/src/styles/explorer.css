@@ -3054,19 +3054,29 @@ table.listing-table td.name {
  * it is a promise about what a press DOES, and only a press on this span
  * moves anything.
  *
- * max-width is capped short of the cell's full width — not 100% — so a name
- * long enough to fill the cell still leaves real dead space beside it. Without
- * that, the row's only sweep-able pixels would be wherever the name happened
- * to end, and a long enough name could claim the whole row for the drag
- * source, leaving nowhere in it to start a sweep from.
+ * THIS USED TO carry `max-width: max(52px, calc(100% - 48px))` to guarantee a
+ * dead-space strip beside a name long enough to fill the cell — without one,
+ * the row's only sweep-able pixels would be wherever that name happened to
+ * end, and a long enough name could claim the whole row for the drag source,
+ * leaving nowhere in it to start a sweep from. But the 48px came straight out
+ * of the FILENAME's own budget: stacked with td.name's 32px of padding (16px
+ * each side, `table.listing-table td`) and the icon+gap's 24px (both also
+ * inside td.name, both also unavailable to the text), names were ellipsizing
+ * with something like 100 CSS px of the Name column still empty and unused —
+ * exactly the complaint this rule exists to fix. Measured on a ~540px listing
+ * table: names capped near 205px of column while the column itself ran to
+ * ~305px.
  *
- * The `calc(100% - 48px)` clamp is computed against `td.name`'s CONTENT box,
- * which at the documented minimum list-column width (LIST_MIN_W, pane-math.ts)
- * is itself only a few dozen pixels once the cell's own padding comes out —
- * so the bare calc alone can go negative and clamp to 0, erasing the icon and
- * name entirely with the preview pane dragged wide. `max(52px, ...)` keeps a
- * floor under that: the row always renders its handle, at the cost of the
- * dead-space guarantee only in a column already too narrow to spare any.
+ * The fix is to stop taking the dead zone out of layout width at all. There
+ * is no max-width here any more: this span is free to use every pixel the
+ * flexbox (td.name, `display:flex`) gives it, same as `.git-mark` already
+ * assumes (its own comment: "the name has min-width:0 and ellipsizes" — it
+ * was always meant to be the one flexible child). The guaranteed sweep-start
+ * strip moves to `.sweep-anchor` below: an absolutely-positioned sibling
+ * pinned to the cell's right edge, invisible and out of flow, so it costs
+ * the text nothing but still wins the hit test for any press that lands in
+ * its strip — regardless of how far the (possibly full-width) name or this
+ * span actually renders under it.
  *
  * inline-flex so it hugs its contents rather than filling the cell, and
  * min-width:0 so a long name still ellipsizes inside it (the .search-path
@@ -3076,11 +3086,33 @@ table.listing-table td.name .row-handle {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  max-width: max(52px, calc(100% - 48px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: grab;
+}
+
+/* The guaranteed sweep-start strip `.row-handle` used to carve out of its own
+ * width (see the comment above). Absolutely positioned against td.name
+ * (`position: relative` above), so it costs nothing from the flex layout —
+ * `.row-handle` and the filename inside it can run the full remaining width
+ * of the cell, right underneath this strip, and nothing looks different: the
+ * strip has no background, border, or content of its own.
+ *
+ * What it buys is a press target that exists NO MATTER how long the name is.
+ * It is a sibling of `.row-handle`, not a descendant, which is what keeps it
+ * off the drag source: useMarquee's `pressedRow` decides `onHandle` with
+ * `el.closest('[data-fs-drag-handle]')`, and this element never matches that
+ * selector, so a press here is marquee ground exactly like the empty cell
+ * used to be. 20px is plenty of target for a mouse or a finger, and small
+ * enough to read as ordinary trailing whitespace rather than a dead band —
+ * a small fraction of the ~100px this column used to waste. */
+table.listing-table td.name .sweep-anchor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 20px;
 }
 
 /* A SELECTED row is draggable across its full width, not just the handle: a
