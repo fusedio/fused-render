@@ -511,7 +511,19 @@ def api_claude_session_history(file: str, session_id: str, native: str = ""):
         raise HTTPException(status_code=400, detail="file and session_id are required")
     # `native=1`: the React page wants the app-state reads on record as
     # in-stream notices (agent.py `_segments_from_rows`, `app_reads`).
-    return agent._history(file, session_id, app_reads=native == "1")
+    out = agent._history(file, session_id, app_reads=native == "1")
+    # A MISSING TRANSCRIPT HAS TWO MEANINGS and the page needs to tell them
+    # apart: a chat seconds old that has not written its first row, and a task
+    # the reader ERASED whose stale row was pressed. `_history` answers both
+    # with an empty payload (agent.py must not read the tombstone store — a
+    # template imports nothing of fused_render), so the distinction is drawn
+    # here, from the one store that knows: the erase endpoint tombstones the
+    # key it destroyed (`tasks_store.mark_deleted`, routers/tasks.py).
+    if (isinstance(out, dict) and not out.get("turns")
+            and not (out.get("transcript") or {}).get("size")
+            and str(session_id) in tasks_store.deleted_state()):
+        out["deleted"] = True
+    return out
 
 
 # ------------------------------------------------------- session recap (D-recap)

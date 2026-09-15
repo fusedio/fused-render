@@ -255,3 +255,72 @@ test("a task always outranks `pending` — the placeholder never covers its own 
   expect(v.has("c-tb-skel").length).toBe(0);
   expect(v.has("task-side-peek-who").length).toBe(1);
 });
+
+// ── the ring and the title follow the page, not only the row (Akshil, 2026-09-15)
+
+const { publishTaskCardTitleMode } = await import("@shell/task-card-title-flag");
+// PUBLISHED, NOT LEFT TO THE READ: `useTaskCardTitleFlag` otherwise asks
+// `/api/prefs` on mount and settles the answer after the test's own render —
+// a state update outside `act`, and a header that could flip under an assert.
+// A publish stands in for the answer and stops the read. The pref starts OFF,
+// which is its shipping default.
+publishTaskCardTitleMode(false);
+
+test("a live turn draws an in-progress ring over a row that still reads done", () => {
+  // A chat sent from this app runs `claude -p`; the server learns of the turn
+  // from the transcript a poll or two later, so the row said "done" for the
+  // first seconds — or for a short turn, all of it. The controller knows now.
+  const v = render({ sessionId: "sess-1", task: task({ status: "done" }), running: true });
+  expect(v.has("schedule-ring--in_progress").length).toBe(1);
+  expect(v.has("schedule-ring--done").length).toBe(0);
+  // ...and once the turn is over, the row's own word stands again.
+  const idle = render({ sessionId: "sess-1", task: task({ status: "done" }), running: false });
+  expect(idle.has("schedule-ring--done").length).toBe(1);
+});
+
+test("a blocked row is not painted broken while a new turn is running", () => {
+  const v = render({
+    sessionId: "sess-1",
+    task: task({ status: "blocked", blocked_reason: "failed" }),
+    running: true,
+  });
+  expect(v.has("schedule-ring--failed").length).toBe(0);
+  expect(v.has("schedule-ring--in_progress").length).toBe(1);
+});
+
+test("with 'Title a task by its last message' on, the header prints the same line as the row", () => {
+  try {
+    publishTaskCardTitleMode(true);
+    const v = render({
+      sessionId: "sess-1",
+      task: task({ last_message: { role: "assistant", text: "Renamed it.\nMore below", at: 1 } } as Partial<Task>),
+      running: false,
+    });
+    expect(v.text()).toContain("Renamed it.");
+    expect(v.text()).not.toContain("Rename the pane noun");
+    // A task nothing has been said in keeps its own name — the row does too.
+    const quiet = render({ sessionId: "sess-1", task: task(), running: false });
+    expect(quiet.text()).toContain("Rename the pane noun");
+  } finally {
+    // Inside `act`: the publish notifies every mounted header, and the
+    // renders of this test are still up until `afterEach` unmounts them.
+    act(() => publishTaskCardTitleMode(false));
+  }
+});
+
+test("with the pref off the header is the task's title, as it always was", () => {
+  try {
+    publishTaskCardTitleMode(false);
+    const v = render({
+      sessionId: "sess-1",
+      task: task({ last_message: { role: "user", text: "do the thing", at: 1 } } as Partial<Task>),
+      running: false,
+    });
+    expect(v.text()).toContain("Rename the pane noun");
+    expect(v.text()).not.toContain("do the thing");
+  } finally {
+    // Inside `act`: the publish notifies every mounted header, and the
+    // renders of this test are still up until `afterEach` unmounts them.
+    act(() => publishTaskCardTitleMode(false));
+  }
+});

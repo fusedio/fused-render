@@ -25,6 +25,7 @@
 // "OK".
 import { useState } from "react";
 import { eraseTask } from "@platform/lib/api";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import type { Task } from "@platform/lib/api";
 import { Modal } from "@platform/ui/modal/Modal";
 
@@ -71,6 +72,13 @@ export function EraseTaskModal({
     setErr("");
     try {
       await eraseTask(task.key);
+      // EVERY LISTING ON THIS PAGE RELOADS NOW, not on its next incidental
+      // poke. The server's own `tasks_watch.notify()` wakes only a long-poll
+      // that is in flight, and a backgrounded landing parks its poll until
+      // the tab is visible again — so a row erased from the chat's menu kept
+      // standing in the Recent list, and a press on it opened a blank chat
+      // (Akshil, 2026-09-15). Same wall-throw the Home hero uses at creation.
+      announceTasksChanged();
       onDone();
     } catch (e) {
       setErr((e as Error).message);

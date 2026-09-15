@@ -310,3 +310,24 @@ def test_registry_status_decides_the_running_badge(claude_home):
         tasks_watch.tick()
         row = client.get("/api/tasks").json()["tasks"][0]
         assert row["live"] is False
+
+
+def test_a_prompted_session_is_watched_without_a_registry_row(claude_home):
+    """A chat sent from this app runs `claude -p`, which writes history.jsonl
+    and the transcript but never a sessions/<pid>.json. The transcript still
+    has to be watched, or the row reads "done" for the whole turn (Akshil,
+    2026-09-15): a history line puts the session under watch for a while."""
+    path = _transcript(claude_home, SID)
+    tasks_watch.tick()
+    _history(claude_home, SID)
+    assert tasks_watch.tick() == {SID}
+    gen = tasks_watch.generation()
+    # The transcript grows — the assistant's reply — with no registry row.
+    _transcript(claude_home, SID, lines=1)
+    assert tasks_watch.tick() == {SID}
+    assert tasks_watch.generation() == gen + 1
+    # ...and once the watch window has passed, it is no longer watched.
+    tasks_watch._prompted[SID] -= tasks_watch.PROMPTED_WATCH_SEC + 1
+    _transcript(claude_home, SID, lines=1)
+    assert tasks_watch.tick() == set()
+    assert path.exists()

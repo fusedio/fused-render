@@ -650,6 +650,40 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
     assert said["text"] == "now do the other one"
 
 
+def test_a_newer_prompt_drops_the_reply_whatever_the_timestamps_say(
+        client, projects_dir, card_titles):
+    """The file is append-only, so a prompt read after a reply is the newer
+    turn. That used to be settled by comparing timestamps, and a prompt whose
+    timestamp did not parse (read as 0.0) lost to a days-old reply — a row
+    titled by something Claude said long ago (Akshil, 2026-09-15). The reply
+    is dropped outright now; no clock is consulted."""
+    prompt = _user("now the newest thing", None)
+    del prompt["timestamp"]
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("first", T9), _assistant("an old answer", T10), prompt,
+    ])
+
+    said = _tasks(client)[0]["last_message"]
+    assert said["role"] == "user"
+    assert said["text"] == "now the newest thing"
+
+
+def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
+    """`isSidechain` is a prompt written FOR a subagent. Every other reader of
+    a transcript's prompts skips it (tasks_store.head, agent.py); the listing's
+    own reader did not, so a brief could be the row's newest message and its
+    count — a message the chat never shows."""
+    brief = _user("You are a subagent. Investigate the cache.", T10)
+    brief["isSidechain"] = True
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("look into the cache", T9), brief,
+    ])
+
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "look into the cache"
+
+
 def test_a_tool_only_turn_is_not_something_claude_said(
         client, projects_dir, card_titles):
     # A row whose content is pure tool_use has no words in it. The substring
@@ -2636,6 +2670,43 @@ def test_deleting_without_a_key_is_a_400(client):
 # `POST /api/tasks/erase` — delete's cancel-and-tombstone, and then the
 # session itself: transcript, sidecars, triage, read marks (D740). The softer
 # verb above is unchanged and still keeps the transcript (D306).
+
+
+def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
+                                            tmp_path, monkeypatch):
+    """A stale row pressed after its task was erased used to open a BLANK chat:
+    `_history` answers a missing transcript with the same empty payload a
+    not-yet-written chat gets. The endpoint marks the erased case from the
+    tombstone store, so the page can say what happened (Akshil, 2026-09-15)."""
+    import importlib.util
+    import os as _os
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_deleted",
+        _os.path.join("fused_render", "templates", "claude", "agent.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "PROJECTS", str(projects_dir))
+    monkeypatch.setattr(mod, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: mod)
+    target = tmp_path / "p"
+    target.mkdir()
+    encoded = mod._munge(str(target))
+    _write_transcript(projects_dir, "sess-a", str(target), [_user("hi", T9)],
+                      encoded=encoded)
+    params = {"file": str(target), "session_id": "sess-a", "native": "1"}
+
+    before = client.get("/api/claude-sessions/history", params=params).json()
+    assert before["turns"] and "deleted" not in before
+
+    assert client.post("/api/tasks/erase", json={"key": "sess-a"}).status_code == 200
+    after = client.get("/api/claude-sessions/history", params=params).json()
+    assert after["turns"] == []
+    assert after["deleted"] is True
+
+    # A chat that simply has not written its first row is NOT deleted.
+    fresh = client.get("/api/claude-sessions/history",
+                       params={**params, "session_id": "sess-new"}).json()
+    assert fresh["turns"] == [] and "deleted" not in fresh
 
 
 def test_erasing_takes_the_session_off_the_disk_and_out_of_state(

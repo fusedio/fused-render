@@ -76,6 +76,14 @@ _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
+# session_id -> when history.jsonl last named it. A chat sent from this app
+# runs `claude -p`, which writes history.jsonl and the transcript but NEVER a
+# sessions/<pid>.json — so the registry alone would watch none of our own
+# chats, and a row stayed "done" for the whole turn (Akshil, 2026-09-15). A
+# prompt is the one signal every kind of session gives, so a session is
+# watched for PROMPTED_WATCH_SEC after each one, registry or not.
+_prompted: dict[str, float] = {}
+PROMPTED_WATCH_SEC = 600.0
 _started = False
 
 
@@ -348,9 +356,13 @@ def _read_live_transcripts() -> set[str]:
     """Session ids whose transcript grew — checked only for sessions a running
     `claude` holds, which is the only kind that can grow."""
     keys: set[str] = set()
+    now = time.time()
+    for sid, at in list(_prompted.items()):
+        if now - at > PROMPTED_WATCH_SEC:
+            del _prompted[sid]
     with _cond:
-        sids = list(_registry)
-    for sid in sids:
+        sids = set(_registry) | set(_prompted)
+    for sid in sorted(sids):
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
             path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
@@ -381,6 +393,9 @@ def tick() -> set[str]:
     announces nothing — the page's first full listing already has it all."""
     global _primed
     keys = _read_history_tail()
+    now = time.time()
+    for sid in keys:
+        _prompted[sid] = now
     keys |= _read_registry()
     keys |= _read_live_transcripts()
     if not _primed:
@@ -431,3 +446,4 @@ def reset() -> None:
     _sess_sids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
+    _prompted.clear()

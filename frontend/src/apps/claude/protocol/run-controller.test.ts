@@ -3364,3 +3364,39 @@ describe("cards ride on the history answer (Akshil 2026-09-11, Tasks cards wall)
     expect(cached.live_run).toBe("r9");
   });
 });
+
+describe("a row pressed after its task was erased (Akshil 2026-09-15)", () => {
+  const gone = () => ({ turns: [], transcript: null, deleted: true });
+
+  test("says the task was deleted instead of opening a blank chat, and caches nothing", async () => {
+    const store = new Map<string, HistoryResponse>();
+    const historyCache = {
+      get: (f: string, s: string) => store.get(f + "|" + s),
+      set: (f: string, s: string, r: HistoryResponse) => void store.set(f + "|" + s, r),
+    };
+    const made = makeController(
+      { history: () => gone(), live_run: () => ({ run_id: "" }) },
+      createMemoryParamsStore(),
+      { historyCache },
+    );
+    await made.controller.openSession("s-gone");
+    const st = made.controller.getState();
+    const errors = st.turns.filter((t) => t.role === "error");
+    expect(errors.length).toBe(1);
+    expect((errors[0] as { text: string }).text).toContain("deleted");
+    expect(st.trouble?.message).toContain("deleted");
+    expect(st.historyLoading).toBe(false);
+    // An answer about a task that no longer exists is not worth remembering.
+    expect(store.size).toBe(0);
+  });
+
+  test("an EMPTY answer without the mark is a chat not written yet — no error", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.openSession("s-new");
+    expect(made.controller.getState().turns.filter((t) => t.role === "error")).toEqual([]);
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});

@@ -253,7 +253,11 @@ def _prompt(obj) -> dict | None:
     they are different questions: is the record machinery WHOLE, and if not, what
     is left once the prefixes come off.
     """
-    if obj.get("type") != "user" or obj.get("isMeta"):
+    # `isSidechain` is a subagent's brief, which the user never typed — skipped
+    # by every other reader of a transcript's prompts (tasks_store.head,
+    # claude_sessions, agent.py) and, until 2026-09-15, not by this one.
+    if (obj.get("type") != "user" or obj.get("isMeta")
+            or obj.get("isSidechain")):
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -403,8 +407,13 @@ def _absorb(rec: dict, line: str) -> None:
         return
     prompt["body"] = prompt["body"][:_BODY_MAX]
     # A prompt read AFTER the kept reply is the later turn, whatever the two
-    # timestamps say — the file is append-only. `_last_message` leans on this
-    # for the tie it cannot break from timestamps alone.
+    # timestamps say — the file is append-only. So the reply is DROPPED, not
+    # merely outranked: it answered an older prompt and can never again be the
+    # newest thing said. Deciding that by timestamp instead let a reply with a
+    # real `at` beat a prompt whose timestamp did not parse (read as 0.0), and
+    # a row wore a days-old reply as its title (Akshil, 2026-09-15).
+    rec["reply"] = None
+    rec["reply_line"] = ""
     rec["reply_last"] = False
     rec["count"] += 1
     rec["tail"].append(prompt)
