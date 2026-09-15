@@ -88,11 +88,19 @@ export function useListingSelection({
   //     provisional Listing survives the swap to the resolved one
   //     (recallSelection) — it is the LIVE selection, and always outranks;
   //   • otherwise `?sel=` from the URL, which is how a reload or a shared link
-  //     comes back to the row it was on, with the pane already showing it.
+  //     comes back to the row it was on, with the pane already showing it —
+  //     and also how an upward hop (breadcrumb crumb, Mod+Up) lands with the
+  //     folder just left highlighted (cameFromSelParam, router.ts navigate).
   // A `?sel=` naming a row this folder does not have — a bookmark or a link to a
   // file since deleted or renamed — seeds a lead that the reconcile effect then
   // finds among no rows, and it resolves that to NOTHING SELECTED rather than to
   // a row (selectionAfterVanish, D279). A link that misses is a link that missed.
+  //
+  // This initializer only runs at MOUNT. `Listing` is rendered unkeyed across a
+  // folder navigation (see the block below, right after `lastSelIndexRef`),
+  // so the same two seeds, in the same order, are re-applied there every time
+  // `fsPath` changes on an already-mounted instance — which is the case that
+  // actually matters, since a fresh mount is comparatively rare.
   const [sel, setSel] = useState<Selection>(() => {
     const recalled = recallSelection(fsPath);
     if (recalled.paths.length || !globalKeys) return recalled;
@@ -181,6 +189,46 @@ export function useListingSelection({
   // row one (selectionAfterVanish, D279). So the -1 must reach that decision
   // intact; clamping it to 0 on the way is exactly the bug.
   const lastSelIndexRef = useRef<number>(-1);
+
+  // `Listing` renders UNKEYED across a folder navigation (App.tsx, D443 — a
+  // keyed remount would respawn any iframe an open app or file hosts), so this
+  // hook never remounts when `fsPath` changes either. The two seeds above only
+  // ran through the `useState` initializer, which fires exactly once per
+  // MOUNT — so every navigation after the first arrived with whatever
+  // selection the PREVIOUS folder had, and the reconcile effect below (which
+  // does not know about folders, only rows) papered over it by re-anchoring to
+  // the old folder's row INDEX. That is the breadcrumb-up / Mod+Up bug: leave
+  // row 5, land on row 5 of the parent instead of the child folder you exited.
+  //
+  // This re-runs the same precedence — recall, then `?sel=` — the instant
+  // `fsPath` changes, DURING RENDER rather than in an effect (React's
+  // documented pattern for deriving state from a changed prop: calling
+  // `setSel` here discards this render and restarts immediately with the
+  // seeded selection already in place). That matters because the reconcile
+  // effect below is keyed on `sel`/`selectedPath`, not on `fsPath` — if the
+  // seed instead arrived a tick later, via an effect, the reconcile effect
+  // would run first, see the OLD folder's `selectedPath` against the NEW
+  // folder's rows, and re-anchor by index exactly as it does today.
+  const seededForRef = useRef(fsPath);
+  if (seededForRef.current !== fsPath) {
+    seededForRef.current = fsPath;
+    const recalled = recallSelection(fsPath);
+    let seed = recalled;
+    if (!recalled.paths.length && globalKeys) {
+      const path = pathFromSelParam(
+        base,
+        new URLSearchParams(location.search).get("sel"),
+      );
+      if (path) seed = oneSelected(path);
+    }
+    setSel(seed);
+    // Both named a row in the folder just left, not this one: the carried-over
+    // slot would re-anchor a vanish here to the WRONG folder's neighbour, and a
+    // pending rename/duplicate target that never resolved there has nothing to
+    // resolve to here.
+    lastSelIndexRef.current = -1;
+    pendingSelectRef.current = null;
+  }
 
   // --- selection mutators ---------------------------------------------------
   // Every one of these closes over nothing but setSel and navRowsRef (both
