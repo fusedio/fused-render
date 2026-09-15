@@ -990,13 +990,20 @@ def _eos_token_for_template(llm):
     return _token_text(llm, llm.token_eos())
 
 
-def _render_chat(template_str, llm, messages):
+def _render_chat(template_str, llm, messages, tools=None):
     """The model's own chat template, with reasoning OFF by default.
 
     See the module docstring for why `enable_thinking=False` needs no retry
     here, where the removed `torch_text._apply_template` needed one: a Jinja
     template that never reads the variable simply never sees it, where
     transformers' `apply_chat_template` can raise on an unexpected keyword.
+    The same fact is why `tools` (a JSON-schema list, `tool_calls.
+    build_tool_schema` in `server/ai.py`) is always passed into the render
+    context rather than only when non-empty: a template with no notion of
+    tools simply never reads the variable, and one that does — the
+    tool-trained families `tool_calls.py`'s module docstring names — renders
+    the tool list transformers' own convention puts a `{% if tools %}` guard
+    around, so an empty list there is already the no-op this needs.
     """
     from jinja2 import Environment
 
@@ -1009,7 +1016,8 @@ def _render_chat(template_str, llm, messages):
     return template.render(
         messages=messages, add_generation_prompt=True,
         bos_token=_bos_token_for_template(llm),
-        eos_token=_eos_token_for_template(llm), enable_thinking=False)
+        eos_token=_eos_token_for_template(llm), enable_thinking=False,
+        tools=tools or [])
 
 
 def _content_text(content):
@@ -1031,7 +1039,7 @@ def _content_text(content):
     return ""
 
 
-def _prompt_text(llm, messages, raw_prompt):
+def _prompt_text(llm, messages, raw_prompt, tools=None):
     """The text to hand `create_completion`: raw, templated, or a plain join.
 
     Three paths, in the order the removed `torch_text._encode` tried them
@@ -1060,7 +1068,7 @@ def _prompt_text(llm, messages, raw_prompt):
         import jinja2.exceptions
 
         try:
-            return _render_chat(template_str, llm, messages)
+            return _render_chat(template_str, llm, messages, tools=tools)
         except jinja2.exceptions.TemplateError as error:
             print(f"llamacpp-text: chat template failed to render, falling back "
                   f"to a plain join: {error}", file=sys.stderr)
@@ -1133,7 +1141,8 @@ def generate(body, write):
         return
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-    prompt = _prompt_text(llm, messages, body.get("prompt") or "")
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else None
+    prompt = _prompt_text(llm, messages, body.get("prompt") or "", tools=tools)
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted
     # before the first token, so a cancelled generation still reports it.
     prompt_tokens = _prompt_tokens(llm, prompt)
