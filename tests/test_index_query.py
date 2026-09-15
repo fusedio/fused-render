@@ -242,6 +242,60 @@ def test_resolve_with_no_guard_behaves_exactly_as_before(_home):
     assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
 
 
+def test_resolve_an_uncancelled_token_changes_nothing(_home):
+    """`token=CancelToken()` (never cancelled) must resolve identically to
+    `token=None` — every existing caller of `resolve_query`/`_walk_from`
+    omits it, so an uncancelled token cannot be allowed to change the
+    walk's outcome."""
+    token = CancelToken()
+    with_token = resolve_query("/box", "~/a/b/*.c", token=token)
+    without_token = resolve_query("/box", "~/a/b/*.c")
+    assert with_token == without_token
+
+
+def test_resolve_a_token_cancelled_before_the_call_raises_promptly(_home):
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        resolve_query("/box", "~/a/b/*.c", token=token)
+
+
+def test_walk_from_a_token_cancelled_before_the_call_raises_promptly(_home):
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        index_query._walk_from(_home, "a/b", token=token)
+
+
+def test_resolve_cancels_between_segments_not_mid_segment(_home, monkeypatch):
+    """The token is checked BETWEEN segments, before each `os.path.isdir` —
+    never during one, since a single `isdir` call cannot be interrupted
+    (this is the walk's honest, documented limit). Cancelling the token from
+    inside the FIRST `isdir` call must still let that first segment finish
+    (`a` gets consumed) and only stop the walk before the second
+    (`b`'s `isdir` must never run)."""
+    token = CancelToken()
+    real_isdir = os.path.isdir
+
+    def fake_isdir(p, _r=real_isdir):
+        if str(p).rstrip("/").endswith("/a"):
+            result = _r(p)
+            token.cancel()
+            return result
+        pytest.fail(f"os.path.isdir ran on {p} after cancellation")
+
+    monkeypatch.setattr(os.path, "isdir", fake_isdir)
+    with pytest.raises(Cancelled):
+        resolve_query("/box", "~/a/b/*.c", token=token)
+
+
+def test_resolve_with_no_token_behaves_exactly_as_before(_home):
+    """The default (`token=None`) must preserve today's behaviour exactly —
+    every existing caller of `resolve_query` omits it."""
+    out = resolve_query("/box", "~/a/b/*.c")
+    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+
+
 def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
     etc = tmp_path / "etc"
     etc.mkdir()
