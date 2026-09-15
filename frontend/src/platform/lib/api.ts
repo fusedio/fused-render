@@ -3291,10 +3291,18 @@ export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
  * BEST-EFFORT BY CONTRACT: the mark is a short-lived floor the registry
  * overrides, so a failed call costs the first seconds of one ring and nothing
  * else. Callers swallow the rejection rather than surfacing it.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided a turn had started —
+ * belt-and-suspenders against this call's own POST arriving at the server
+ * AFTER a later `markTaskIdle` for the same session (a race the client also
+ * guards against by awaiting this call before firing that one; see
+ * `run-controller.ts` `noteTurnIdle`). `tasks_watch.mark_running` ignores a
+ * mark whose `turn` is not newer than the last `mark_idle` it saw.
  */
-export function markTaskRunning(sessionId: string): Promise<{ ok: boolean }> {
+export function markTaskRunning(sessionId: string, turn: number): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/tasks/running", {
     session_id: sessionId,
+    turn,
   });
 }
 
@@ -3313,10 +3321,17 @@ export function markTaskRunning(sessionId: string): Promise<{ ok: boolean }> {
  * BEST-EFFORT BY CONTRACT, same as `markTaskRunning`: retiring the mark early
  * is a nicety, not a guarantee — the registry-corroborated stand-down and the
  * TTL both still apply if this never lands.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided the turn had ended —
+ * the other half of `markTaskRunning`'s `turn`. `tasks_watch.mark_idle` keeps
+ * the newest one it has seen, so a `mark_running` that later arrives claiming
+ * an earlier or equal `turn` is recognized as the SAME turn's late running
+ * POST, not a fresh send, and is ignored.
  */
-export function markTaskIdle(sessionId: string): Promise<{ ok: boolean }> {
+export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/tasks/idle", {
     session_id: sessionId,
+    turn,
   });
 }
 

@@ -3185,6 +3185,11 @@ def api_tasks_pulse():
 
 class RunningPatch(BaseModel):
     session_id: str
+    # The client's `Date.now()` at send (`run-controller.ts` `noteTurnRunning`).
+    # Optional so an older client, or a direct call, still works — see
+    # `tasks_watch.mark_running`'s stale-turn check, which only runs when this
+    # is present.
+    turn: float | None = None
 
 
 @router.post("/api/tasks/running")
@@ -3207,16 +3212,23 @@ def api_task_running(patch: RunningPatch):
     transcript may not exist when its first turn starts, and the mark is simply
     waiting for it. Hence no 404 and no lookup — this endpoint does not read the
     listing at all.
+
+    `turn` lets `tasks_watch.mark_running` recognize a running POST that lost
+    the race to its own turn's `/api/tasks/idle` call (two independent
+    fetches; nothing here orders their arrival) and drop it, rather than
+    reopening a row a later idle call already closed (bugbot #1163).
     """
     session_id = patch.session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
-    tasks_watch.mark_running(session_id)
+    tasks_watch.mark_running(session_id, turn=patch.turn)
     return {"ok": True, "session_id": session_id}
 
 
 class IdlePatch(BaseModel):
     session_id: str
+    # The other half of `RunningPatch.turn` — see `tasks_watch.mark_idle`.
+    turn: float | None = None
 
 
 @router.post("/api/tasks/idle")
@@ -3238,11 +3250,14 @@ def api_task_idle(patch: IdlePatch):
     fallback, so nothing here can pin a row running or wrongly mark one done —
     the worst a wrong or malicious call does is retire a mark early, and the
     registry/tail reading underneath is what a listing shows once it is gone.
+
+    `turn` is kept as the floor a later, out-of-order `mark_running` for this
+    same turn is measured against (`tasks_watch.mark_running`).
     """
     session_id = patch.session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
-    tasks_watch.mark_idle(session_id)
+    tasks_watch.mark_idle(session_id, turn=patch.turn)
     return {"ok": True, "session_id": session_id}
 
 

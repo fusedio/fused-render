@@ -419,3 +419,38 @@ def test_an_older_turns_row_departing_does_not_retire_a_fresh_mark(claude_home):
     os.remove(os.path.join(tasks_watch.SESSIONS_DIR, "p.json"))
     tasks_watch.tick()
     assert tasks_watch.is_marked_running(SID), "a stale row's exit is not news"
+
+
+# --------------------------------------- running and idle can race (bugbot #1163)
+
+def test_a_running_mark_that_loses_the_race_to_its_own_idle_is_ignored(claude_home):
+    """`noteTurnRunning` and `noteTurnIdle` are two independent fetches — nothing
+    here orders their arrival — so a short turn's idle POST can reach the
+    server before its own running POST does. Without the `turn` check that late
+    running mark would read as a FRESH send and clear the stand-down `mark_idle`
+    just made, leaving the row `in_progress` for the rest of `MARK_TTL_SEC`: the
+    exact leftover ring `mark_idle` exists to prevent."""
+    tasks_watch.mark_running(SID, ttl_sec=60, turn=100)
+    assert tasks_watch.is_marked_running(SID)
+
+    tasks_watch.mark_idle(SID, turn=200)
+    assert not tasks_watch.is_marked_running(SID)
+
+    # The running POST for THAT SAME turn (turn=100) finally lands, having lost
+    # the race to the idle POST (turn=200) that already closed it. Its turn is
+    # not newer than the idle it trails, so it is dropped whole: no mark, no
+    # bump — the row stays idle.
+    gen = tasks_watch.generation()
+    tasks_watch.mark_running(SID, ttl_sec=60, turn=100)
+    assert not tasks_watch.is_marked_running(SID)
+    assert tasks_watch.generation() == gen, "a stale running mark must not bump"
+
+    # A running mark for turn 200 itself — the idle's own value — is just as
+    # stale (a turn already reported ended cannot also be reported starting).
+    tasks_watch.mark_running(SID, ttl_sec=60, turn=200)
+    assert not tasks_watch.is_marked_running(SID)
+
+    # A GENUINELY NEW turn (a `turn` newer than the idle it follows) is not
+    # stale, and marks running exactly as it would have with no `turn` at all.
+    tasks_watch.mark_running(SID, ttl_sec=60, turn=201)
+    assert tasks_watch.is_marked_running(SID)

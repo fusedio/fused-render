@@ -108,6 +108,19 @@ _mark_busy_seen: set[str] = set()
 # got) still returns None rather than looking like a stand-down that never
 # happened.
 _idle: dict[str, float] = {}
+# session_id -> the newest client `turn` a `mark_idle` call carried. Running
+# and idle are two independent POSTs (`run-controller.ts` `noteTurnRunning` /
+# `noteTurnIdle`), and nothing serializes their arrival at this process — a
+# short turn's idle can reach the server before its own running does. Without
+# this, that late `mark_running` reads as a FRESH send and clears the
+# stand-down `mark_idle` just made, leaving the row `in_progress` for the rest
+# of `MARK_TTL_SEC` (bugbot #1163). `mark_running` refuses a `turn` that is not
+# strictly newer than what is recorded here, on the theory that a running mark
+# can never be true information about a turn a caller has already told us
+# ended. Client-side awaiting closes the ordinary case; this is the net under
+# it, and under the one running ping that is never awaited (`resumeAttach`'s
+# untracked seat `0` — see `noteSessionId`).
+_last_idle_turn: dict[str, float] = {}
 # A stand-down is news once. Kept only long enough that a caller reading it a
 # beat later still finds it — well past any poll interval, short enough that a
 # session's whole history is not remembered in a dict that only ever grows.
@@ -226,7 +239,7 @@ def notify(keys: set[str] | None = None) -> None:
     _bump(set(keys or ()))
 
 
-def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC) -> None:
+def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC, turn: float | None = None) -> None:
     """Say that a turn just started on this session, and announce it.
 
     The client calls this the moment it sends (`POST /api/tasks/running`),
@@ -239,17 +252,30 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC) -> None:
     turn, so any stand-down bookkeeping the last one left behind — a
     corroborating `busy` sighting, an `idle_at` stamp — goes with it; nothing
     about how the previous turn ended is entitled to an opinion about this
-    one (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark)."""
+    one (test_an_older_turns_row_departing_does_not_retire_a_fresh_mark).
+
+    `turn` (the client's `Date.now()` at send) is compared against
+    `_last_idle_turn`: a value that is not strictly newer than the last
+    `mark_idle` this session saw is a running POST that lost the race to its
+    OWN turn's idle POST (running and idle are independent fetches; nothing
+    orders their arrival here) — a stale echo, not a new send, and it is
+    dropped whole: no mark, no bump, no touching `_mark_busy_seen` / `_idle`.
+    `turn=None` (a caller with nothing to compare, or a test) always proceeds,
+    exactly as if `_last_idle_turn` had nothing on file for it."""
     if not session_id:
         return
     with _cond:
+        if turn is not None:
+            last_idle_turn = _last_idle_turn.get(session_id)
+            if last_idle_turn is not None and turn <= last_idle_turn:
+                return
         _marks[session_id] = time.time() + max(0.0, ttl_sec)
         _mark_busy_seen.discard(session_id)
         _idle.pop(session_id, None)
     _bump({session_id})
 
 
-def mark_idle(session_id: str) -> None:
+def mark_idle(session_id: str, turn: float | None = None) -> None:
     """Say that a turn just ENDED on this session, and announce it.
 
     The other half of `mark_running` (`POST /api/tasks/idle`): the page that
@@ -263,13 +289,23 @@ def mark_idle(session_id: str) -> None:
     Idempotent and announced whether or not a mark was actually standing —
     the caller is reporting a fact about the TURN, not asking whether the
     watcher had an opinion, and a duplicate or late call must cost one bump
-    and nothing else, the same contract `mark_running` keeps."""
+    and nothing else, the same contract `mark_running` keeps.
+
+    Records `turn` in `_last_idle_turn` (keeping the newer of the two, in case
+    a stale idle call ever arrives out of order itself) so a `mark_running`
+    that shows up afterward claiming that turn or an earlier one is recognized
+    as the late half of the turn THIS call already closed, not a new one —
+    see `mark_running`."""
     if not session_id:
         return
     with _cond:
         _marks.pop(session_id, None)
         _mark_busy_seen.discard(session_id)
         _idle[session_id] = time.time()
+        if turn is not None:
+            prev = _last_idle_turn.get(session_id)
+            if prev is None or turn > prev:
+                _last_idle_turn[session_id] = turn
     _bump({session_id})
 
 
@@ -564,6 +600,7 @@ def reset() -> None:
         _marks.clear()
         _mark_busy_seen.clear()
         _idle.clear()
+        _last_idle_turn.clear()
     _primed = False
     _sess_mtimes.clear()
     _sess_sids.clear()
