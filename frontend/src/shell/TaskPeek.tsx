@@ -59,7 +59,7 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekProject, TaskPeekWho, peekTitle } from "./TaskPeekWho";
+import { TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -1060,7 +1060,8 @@ export function TaskPeek({
     return items;
   };
 
-  const title = task ? peekTitle(task) : "";
+  // The same line the row and the chat header print (TaskPeekWho).
+  const title = useTaskHeadline(task);
 
   return (
     <>

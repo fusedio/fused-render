@@ -517,11 +517,13 @@ def api_claude_session_history(file: str, session_id: str, native: str = ""):
     # the reader ERASED whose stale row was pressed. `_history` answers both
     # with an empty payload (agent.py must not read the tombstone store — a
     # template imports nothing of fused_render), so the distinction is drawn
-    # here, from the one store that knows: the erase endpoint tombstones the
-    # key it destroyed (`tasks_store.mark_deleted`, routers/tasks.py).
+    # here, from the one store that knows: `tasks_store.erased`, stamped ONLY
+    # by the erase endpoint's `forget_session`. Not the `deleted.json`
+    # tombstone — the soft `/api/tasks/delete` writes that too, with the
+    # transcript intact and the row revivable, and it must not be told gone.
     if (isinstance(out, dict) and not out.get("turns")
             and not (out.get("transcript") or {}).get("size")
-            and str(session_id) in tasks_store.deleted_state()):
+            and tasks_store.erased(str(session_id))):
         out["deleted"] = True
     return out
 

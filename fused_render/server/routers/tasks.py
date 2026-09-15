@@ -313,6 +313,11 @@ _API_ERROR_HINTS = ('"isApiErrorMessage":true', '"isApiErrorMessage": true')
 _ASSISTANT_HINTS = ('"type":"assistant"', '"type": "assistant"')
 _TEXT_HINTS = ('"type":"text"', '"type": "text"')
 _USER_HINTS = ('"type":"user"', '"type": "user"')
+# A subagent's rows — its brief AND its replies — ride the same transcript
+# with `isSidechain: true`. `_prompt` refuses the brief; this screen refuses
+# the reply, so a subagent's prose is never the row's `last_message` and its
+# API error is never pinned on the user's own prompt.
+_SIDECHAIN_HINTS = ('"isSidechain":true', '"isSidechain": true')
 
 
 def _reply_fate(line: str) -> bool | None:
@@ -339,6 +344,8 @@ def _reply_fate(line: str) -> bool | None:
     """
     if any(hint in line for hint in _USER_HINTS):
         return None
+    if any(hint in line for hint in _SIDECHAIN_HINTS):
+        return None  # a subagent's reply: not this conversation's turn
     if any(hint in line for hint in _API_ERROR_HINTS):
         return True  # checked first: an error row is a text row as well
     if (any(hint in line for hint in _ASSISTANT_HINTS)
@@ -567,16 +574,16 @@ def _last_message(rec: dict | None) -> dict | None:
     whole claim the field makes — a card titled by it is showing the last turn
     of the conversation, whoever took it.
 
-    `>=` and not `>`, so a reply with no usable timestamp (0.0, beside a prompt
-    with the same) still beats the prompt it answers: a transcript is
-    append-only, so the later line is the later turn. But that is a claim about
-    the LINE, so it holds only while the reply is still the newest one that
-    said anything — `reply_last`, set by the scan that kept it and cleared by
-    the next prompt or by a turn with no words in it. Once it is gone the tie
-    goes the other way, which is the correct reading: the prompt is the newer
-    turn and the reply is the answer to an older one. A record from before the
-    key existed reads as False and takes the stricter test, which loses nothing
-    a timestamp can settle.
+    A prompt read AFTER the reply DROPS it in `_absorb` — the file is
+    append-only, so the later line is the later turn and no clock is asked —
+    which is why the comparison below never sees that case. What it still
+    settles is the other way a kept reply stops being newest: a later turn
+    with NO words in it (`_condense_reply` clears `reply_last`, keeps `reply`).
+    `>=` while `reply_last` holds, so a reply with no usable timestamp (0.0,
+    beside a prompt with the same) still beats the prompt it answers; `>` once
+    it is gone, so the tie goes to the prompt. A record from before the key
+    existed reads as False and takes the stricter test, which loses nothing a
+    timestamp can settle.
     """
     if rec is None:
         return None

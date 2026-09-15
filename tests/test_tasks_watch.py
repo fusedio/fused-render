@@ -333,27 +333,47 @@ def test_a_prompted_session_is_watched_without_a_registry_row(claude_home):
     assert path.exists()
 
 
+def _fresh_transcript(root, sid, lines=1):
+    """A transcript whose rows are stamped NOW — the tail rule reads message
+    timestamps, so `_transcript`'s 2026-08-27 rows already read as idle."""
+    import datetime as _dt
+    path = root / "projects" / "-proj" / f"{sid}.jsonl"
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    with open(path, "a", encoding="utf-8") as f:
+        for i in range(lines):
+            f.write(json.dumps({
+                "type": "user", "cwd": "/proj", "timestamp": stamp,
+                "message": {"role": "user", "content": f"prompt {i}"},
+            }) + "\n")
+    return path
+
+
 def test_a_prompted_session_going_quiet_is_announced_once(claude_home, monkeypatch):
     """A `-p` run never registers, so nothing marks it idle: the row leaves
     in-progress only when the tail rule's window closes, which no byte on disk
     records. The watcher announces that instant — once per settled transcript
     (Bugbot, PR #1153)."""
-    path = _transcript(claude_home, SID)
+    path = _fresh_transcript(claude_home, SID)
     tasks_watch.tick()
     _history(claude_home, SID)
     tasks_watch.tick()
     # Fresh, unchanged: quiet.
     assert tasks_watch.tick() == set()
-    # The window closes on that write: one bump…
+    # The window closes on that write: one bump… The tail rule reads the
+    # newest MESSAGE's timestamp, so the rows are aged, not only the mtime.
     old = time.time() - tasks_watch.session_liveness.RUNNING_WINDOW_SEC - 1
+    aged = json.loads(path.read_text().splitlines()[0])
+    aged["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(old))
+    path.write_text(json.dumps(aged) + "\n")
     os.utime(path, (old, old))
+    tasks_watch._tr_sizes[SID] = os.path.getsize(path)  # same size: no growth vote
     assert tasks_watch.tick() == {SID}
     # …and only one.
     assert tasks_watch.tick() == set()
     assert tasks_watch.tick() == set()
     # A registered session is the registry's to call idle — not announced here.
     _registry(claude_home, SID2, status="busy")
-    path2 = _transcript(claude_home, SID2)
+    path2 = _transcript(claude_home, SID2)  # rows already old: idle by the tail rule
     _history(claude_home, SID2)
     tasks_watch.tick()
     os.utime(path2, (old, old))

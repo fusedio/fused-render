@@ -2694,6 +2694,10 @@ def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
     _write_transcript(projects_dir, "sess-a", str(target), [_user("hi", T9)],
                       encoded=encoded)
     params = {"file": str(target), "session_id": "sess-a", "native": "1"}
+    # Listed first, as any row a person can press has been: the listing is
+    # what hands the session its TASK number, and the erase stamps THAT record
+    # (`forget_session`) — the mark the history endpoint reads.
+    assert _tasks(client)[0]["key"] == "sess-a"
 
     before = client.get("/api/claude-sessions/history", params=params).json()
     assert before["turns"] and "deleted" not in before
@@ -2707,6 +2711,14 @@ def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
     fresh = client.get("/api/claude-sessions/history",
                        params={**params, "session_id": "sess-new"}).json()
     assert fresh["turns"] == [] and "deleted" not in fresh
+
+    # A SOFT delete (row tombstoned, transcript kept, revivable) is not "gone"
+    # either — even for a session that has nothing written yet. The mark reads
+    # the erase store, not `deleted.json`, which both verbs write.
+    tasks_store.mark_deleted("sess-new")
+    soft = client.get("/api/claude-sessions/history",
+                      params={**params, "session_id": "sess-new"}).json()
+    assert soft["turns"] == [] and "deleted" not in soft
 
 
 def test_erasing_takes_the_session_off_the_disk_and_out_of_state(

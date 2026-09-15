@@ -78,8 +78,12 @@ export function EraseTaskModal({
       // the tab is visible again — so a row erased from the chat's menu kept
       // standing in the Recent list, and a press on it opened a blank chat
       // (Akshil, 2026-09-15). Same wall-throw the Home hero uses at creation.
-      announceTasksChanged();
+      // AFTER `onDone`: the event is dispatched synchronously and its
+      // listeners start their reads at once, while `onDone` is where callers
+      // clear their per-session caches — the reads must not land into caches
+      // that are about to be wiped.
       onDone();
+      announceTasksChanged();
     } catch (e) {
       setErr((e as Error).message);
     } finally {

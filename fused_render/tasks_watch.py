@@ -90,6 +90,13 @@ PROMPTED_WATCH_SEC = 600.0
 # running out — a change no byte on disk marks. One bump per settled mtime, at
 # the moment the window closes, is what lets the poll see it (Bugbot, PR #1153).
 _tr_settled: dict[str, float] = {}
+# session_id -> when to look again for a transcript that was not there. A
+# prompted session's transcript is found by a glob across every project bucket
+# (`session_liveness.transcript_path`); a session with none yet — history.jsonl
+# names every project's prompts, not only this app's — must not pay that glob
+# once a second for the whole watch window.
+_tr_missing: dict[str, float] = {}
+MISSING_RETRY_SEC = 5.0
 _started = False
 
 
@@ -363,17 +370,34 @@ def _read_live_transcripts() -> set[str]:
     `claude` holds, which is the only kind that can grow."""
     keys: set[str] = set()
     now = time.time()
+    with _cond:
+        registered = set(_registry)
     for sid, at in list(_prompted.items()):
         if now - at > PROMPTED_WATCH_SEC:
             del _prompted[sid]
-    with _cond:
-        sids = set(_registry) | set(_prompted)
+            if sid not in registered:
+                # Nobody else is watching it: its bookkeeping goes too, the
+                # way `_read_registry` drops a departed session's, or every
+                # `-p` chat ever sent grows three dicts for the process's life.
+                _tr_paths.pop(sid, None)
+                _tr_sizes.pop(sid, None)
+                _tr_settled.pop(sid, None)
+                _tr_missing.pop(sid, None)
+    sids = registered | set(_prompted)
     for sid in sorted(sids):
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
+            if _tr_missing.get(sid, 0.0) > now:
+                continue
             path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
             if not path:
+                # Only a PROMPTED-only session backs off: a registered one
+                # writes its transcript within a second of appearing, and its
+                # first row is news this tick must not miss.
+                if sid not in registered:
+                    _tr_missing[sid] = now + MISSING_RETRY_SEC
                 continue
+            _tr_missing.pop(sid, None)
             _tr_paths[sid] = path
         try:
             size = os.path.getsize(path)
@@ -381,17 +405,24 @@ def _read_live_transcripts() -> set[str]:
             continue
         last = _tr_sizes.get(sid)
         _tr_sizes[sid] = size
-        if last == size and sid in _prompted and sid not in _registry:
-            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The tail rule
-            # stops calling this session running RUNNING_WINDOW_SEC after its
-            # last real write; announce that instant once, so a listing is not
-            # left wearing an in-progress ring until some unrelated poke.
+        if last == size and sid in _prompted and sid not in registered:
+            # UNCHANGED, AND NOBODY REGISTERED TO SAY "IDLE". The listing's
+            # tail rule (`session_liveness.transcript_running`, the same call
+            # routers/tasks.py `_live` falls back to) stops calling this
+            # session running a while after its last REAL message — the
+            # instant no byte on disk marks. Announce it once per settled
+            # file, so a listing is not left wearing an in-progress ring until
+            # some unrelated poke. The very rule, not an mtime arithmetic of
+            # our own: housekeeping rows push the mtime past the last message,
+            # and a bump timed off the mtime would land late.
             try:
                 mtime = os.path.getmtime(path)
             except OSError:
                 continue
-            if (now - mtime > session_liveness.RUNNING_WINDOW_SEC
-                    and _tr_settled.get(sid) != mtime):
+            if _tr_settled.get(sid) == mtime:
+                continue
+            running, _active = session_liveness.transcript_running(path, now)
+            if not running:
                 _tr_settled[sid] = mtime
                 keys.add(sid)
             continue
@@ -404,6 +435,11 @@ def _read_live_transcripts() -> set[str]:
             continue
         if size != last:
             keys.add(sid)
+            # A turn is still writing: the watch window follows the WRITES, not
+            # only the prompt that opened it, or a turn longer than the window
+            # (an agent run) would stop being watched half-way through.
+            if sid in _prompted:
+                _prompted[sid] = now
     return keys
 
 
@@ -468,3 +504,4 @@ def reset() -> None:
     _tr_sizes.clear()
     _prompted.clear()
     _tr_settled.clear()
+    _tr_missing.clear()

@@ -32,6 +32,20 @@ export function peekTitle(task: Task): string {
 }
 
 /**
+ * THE ONE LINE EVERY SURFACE NAMES A TASK BY — the list row, the chat header,
+ * the peek panel, the cards popup (Akshil, 2026-09-15: "show the same title
+ * everywhere"). `cardTitleLine`'s rule, subscribed to the pref: the newest
+ * message while "Title a task by its last message" is on, else the task's own
+ * title, and the card's "(untitled)" word for a task that has neither.
+ * Takes `null` so a panel with no task yet can still call it unconditionally.
+ */
+export function useTaskHeadline(task: Task | null | undefined): string {
+  const titleMode = useTaskCardTitleMode();
+  if (!task) return "";
+  return cardTitleLine(task, titleMode).text || peekTitle(task);
+}
+
+/**
  * STATUS · NUMBER · TITLE, in one flexing box (`.task-side-peek-who`).
  *
  * The ring is the LIST's ring, the same component and the same vocabulary — a
@@ -58,10 +72,13 @@ export function TaskPeekWho({ task, running = false }: {
   // on, the row under this header shows the newest thing said; a header still
   // showing the task's name was two surfaces naming one chat two ways
   // (Akshil, 2026-09-15: "header also shows last message").
-  const titleMode = useTaskCardTitleMode();
-  const line = cardTitleLine(task, titleMode);
-  const title = line.text || peekTitle(task);
-  const status = running ? "in_progress" : taskColumn(task);
+  const title = useTaskHeadline(task);
+  // …EXCEPT A ROW PARKED ON A CARD. `running` stays true while a permission
+  // or plan card is open — the run clock has no waiting state — and the list
+  // row says needs-attention for exactly that; the header must not spin over
+  // a question the reader is being asked (StatusIcon's own note on `failed`).
+  const column = taskColumn(task);
+  const status = running && column !== "needs_attention" ? "in_progress" : column;
   return (
     <div className="task-side-peek-who">
       <span
