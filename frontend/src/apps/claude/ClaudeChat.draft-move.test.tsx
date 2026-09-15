@@ -24,7 +24,13 @@ const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
+// SAME OBJECT `useAttachments`' default resolves to (`ui/attachApi.ts` — a
+// plain object, not a frozen module namespace), so patching one property here
+// reaches the real component's tray without `mock.module`, which would leak
+// into every suite bun loads after this one in the same process.
+const { ATTACH_API } = await import("./ui");
 type Task = import("@platform/lib/api").Task;
+type DraftAttachment = import("@platform/lib/drafts").DraftAttachment;
 
 // `DEST_FILE`/`DEST_KEY` are fixed — `baseProps` below closes over `DEST_FILE`
 // once, at module load, so ClaudeChat always mounts on this same file. `SRC_
@@ -38,6 +44,10 @@ type Task = import("@platform/lib/api").Task;
 const DEST_FILE = "/w/p";
 const DEST_KEY = "new:/w/p";
 let SRC_KEY = "new:/w/p/other.py";
+// The source draft's tray, as `/api/drafts` answers it — empty for every
+// existing test, and set per-test where a move has to carry attachments
+// through `addPaths` (the exception test below).
+let SRC_ATTACHMENTS: DraftAttachment[] = [];
 
 /** The one foreign chat draft row the fixtures draw — same shape
  *  `home-lists.test.tsx`'s own `chatDraft()` uses. */
@@ -119,7 +129,7 @@ function stubFetch(): void {
         chat: {
           [SRC_KEY]: {
             text: "the whole sentence from the other file",
-            attachments: [],
+            attachments: SRC_ATTACHMENTS,
             updated_at: 1,
           },
         },
@@ -148,9 +158,18 @@ beforeEach(() => {
   calls.length = 0;
   holdDestPut = false;
   releaseDestPut = () => {};
+  SRC_ATTACHMENTS = [];
   resetAgentDirCacheForTests();
   resetListingFeedForTests();
   stubFetch();
+});
+
+// Patched onto the one shared `ATTACH_API` object by the exception test below,
+// and always put back — the next test's move has to reach the real tray, not
+// whatever the previous test made it throw.
+const realAttachPaths = ATTACH_API.attachPaths;
+afterEach(() => {
+  ATTACH_API.attachPaths = realAttachPaths;
 });
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -263,4 +282,45 @@ test("bug 4 + Bugbot #1166: a move settles this box's own in-flight write first,
   });
   expect(box(r).props.value).toBe("the whole sentence from the other file");
   expect(deletesTo(`/api/drafts/chat/${SRC_KEY}`).length).toBe(1);
+});
+
+test("Bugbot #1166: a throw mid-move still resumes autosave — the next keystroke writes", async () => {
+  SRC_KEY = "new:/w/p/other-throw.py";
+  // NON-EMPTY, so the move actually reaches `addPaths` — an empty tray skips
+  // that call outright and this test would throw nothing at all.
+  SRC_ATTACHMENTS = [{ path: "/tmp/pic.png", name: "pic.png", kind: "image" }];
+  let threw = false;
+  // THE THROW ITSELF: the tray's own pipeline call, made to fail — the shape
+  // Bugbot #1166 named ("an exception anywhere in that window skips both
+  // resumes"). A plain object property, not `mock.module` (see the import
+  // above) — put back by the top-level `afterEach` regardless of how this
+  // test ends.
+  ATTACH_API.attachPaths = () => {
+    threw = true;
+    throw new Error("tray pipeline exploded");
+  };
+
+  const r = await mountChat();
+  const press = () => (taskRow(r).props as { onClick(): void }).onClick();
+  await act(async () => {
+    press();
+    await new Promise((done) => setTimeout(done, 30));
+  });
+  expect(threw).toBe(true);
+  // The throw landed before `saveChatDraft` was ever reached, so nothing
+  // moved — the write itself is `bug 4`'s suite above. What this test is
+  // about is whether the box's OWN autosave is still alive afterward.
+  expect(putsTo(`/api/drafts/chat/${DEST_KEY}`).length).toBe(0);
+
+  // THE NEXT KEYSTROKE, same shape as `bug 4`'s own. With the fix, `resume()`
+  // ran in the `finally` regardless of the throw, so this debounces and
+  // writes same as any ordinary keystroke. Before the fix, `stop()` was never
+  // undone for this mount and the write never happens (RED).
+  await act(async () => {
+    box(r).props.onChange({ currentTarget: { value: "one more word" } });
+  });
+  await settle(650);
+  const puts = putsTo(`/api/drafts/chat/${DEST_KEY}`);
+  expect(puts.length).toBe(1);
+  expect(puts[0]!.body).toEqual({ text: "one more word", attachments: [] });
 });

@@ -2302,32 +2302,46 @@ function ChatBody(props: ChatBodyProps) {
           // next keystroke autosaves same as ever.
           destAutosave?.stop();
           await destAutosave?.settle();
-          // THE TRAY REPLACES TOO, the same rule as the text: whatever this
-          // box's own tray held is not carried into a row that is about to
-          // become somebody else's words, so it is cleared before the
-          // source's own tray is registered in its place (Bugbot #1166 — it
-          // used to be deleted with the source and never arrive at all).
-          attachRef.current.discard();
-          if (content.attachments.length) {
-            await attachRef.current.addPaths(content.attachments.map((a) => a.path));
-          }
-          // THE DESTINATION IS WRITTEN BEFORE THE SOURCE IS DROPPED, and the
-          // source is dropped only if it landed. The composer's own autosave
-          // gets there on its own debounce, which is a window in which
-          // closing the tab loses the words outright — so the move does not
-          // rest on it.
-          const landed = await saveChatDraft(destKey, content.text, content.attachments);
-          if (landed) {
-            // THE COMPOSER'S OWN BASELINE MOVES TOO, to what just landed, so
-            // its next debounce compares against the server's actual record
-            // instead of the pre-move box — a stale baseline here autosaves
-            // right back over this write the moment the reader so much as
-            // blurs the box.
-            destAutosave?.reset({ text: content.text, attachments: content.attachments });
+          let landed = false;
+          try {
+            // THE TRAY REPLACES TOO, the same rule as the text: whatever this
+            // box's own tray held is not carried into a row that is about to
+            // become somebody else's words, so it is cleared before the
+            // source's own tray is registered in its place (Bugbot #1166 — it
+            // used to be deleted with the source and never arrive at all).
+            attachRef.current.discard();
+            if (content.attachments.length) {
+              await attachRef.current.addPaths(content.attachments.map((a) => a.path));
+            }
+            // THE DESTINATION IS WRITTEN BEFORE THE SOURCE IS DROPPED, and the
+            // source is dropped only if it landed. The composer's own autosave
+            // gets there on its own debounce, which is a window in which
+            // closing the tab loses the words outright — so the move does not
+            // rest on it.
+            landed = await saveChatDraft(destKey, content.text, content.attachments);
+            if (landed) {
+              // THE COMPOSER'S OWN BASELINE MOVES TOO, to what just landed, so
+              // its next debounce compares against the server's actual record
+              // instead of the pre-move box — a stale baseline here autosaves
+              // right back over this write the moment the reader so much as
+              // blurs the box.
+              destAutosave?.reset({ text: content.text, attachments: content.attachments });
+            }
+          } finally {
+            // RESUME NO MATTER WHAT (Bugbot #1166: "move leaves autosave
+            // stopped on throw"). `stop()` is permanent for this mount until
+            // something calls `resume()` — an exception out of `addPaths` or
+            // `saveChatDraft` used to skip both call sites this replaced and
+            // leave the box's own autosave dead for the rest of its life: no
+            // write on the next keystroke, on blur, or on unmount. A throw
+            // resumes WITHOUT the reset above, so the next keystroke re-saves
+            // whatever is actually sitting in the box rather than trusting a
+            // move that never finished.
             destAutosave?.resume();
+          }
+          if (landed) {
             void discardDraft(task);
           } else {
-            destAutosave?.resume();
             notify({
               title: "Couldn't move that draft",
               detail: "The words are in the box; the row was left where it is.",
@@ -2348,7 +2362,13 @@ function ChatBody(props: ChatBodyProps) {
       } finally {
         if (moving) movingKeys.current.delete(task.key);
       }
-    })();
+    })().catch(() => {
+      // NOTHING FIRST-CLASS LEFT TO DO with a throw this deep (Bugbot #1166) —
+      // the `finally` above and the one around the stopped autosave window
+      // have already put `movingKeys` and the box's own autosave back to
+      // normal. This exists only so that failure does not surface as an
+      // unhandled rejection out of a fire-and-forget press handler.
+    });
   }, [boxRef, file]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
