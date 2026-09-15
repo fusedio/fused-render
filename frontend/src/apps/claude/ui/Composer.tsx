@@ -19,6 +19,7 @@ import {
   onChatDraftSpent,
   fetchChatDraft,
   saveChatDraft,
+  unmarkChatDraftSpent,
   useAutosave,
   type Autosave,
   type DraftAttachment,
@@ -901,7 +902,22 @@ export function ComposerCard({
           disabled={blocked}
           value={text}
           onChange={(ev) => {
-            setText(ev.currentTarget.value);
+            const value = ev.currentTarget.value;
+            setText(value);
+            // A SPENT KEY MUST NOT BE A PERMANENT BLOCK ON TYPING (bugbot /
+            // live repro, 2026-09-15). `spent` exists to close the window
+            // between a send and this composer's next remount — but nothing
+            // before this ever reopened that window once the reader started
+            // a NEW message on the same key, and a stray or duplicate
+            // `markChatDraftSpent` landing after they resumed typing (a slow
+            // `fetchDrafts` round trip from App's `onGone`, or — the actual
+            // live incident — a server that kept re-announcing one key as
+            // `gone` forever) wiped every keystroke as fast as it arrived,
+            // which read as "I cannot type in this box at all". Un-spend the
+            // instant a keystroke lands, same as `saveChatDraft` does once its
+            // debounced write actually fires — this just does not wait for
+            // the debounce, so nothing in between reads the key as spent.
+            if (value.trim()) unmarkChatDraftSpent(draftKeyRef.current);
             grow();
           }}
           onKeyDown={onKeyDown}

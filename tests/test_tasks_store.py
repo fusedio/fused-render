@@ -157,6 +157,46 @@ def test_rekey_of_something_that_has_no_number_does_nothing():
     assert tasks_store.task_ids() == {}
 
 
+def test_rekey_moved_reports_a_real_move_and_a_no_op_alike():
+    """`rekey`'s callers (`schedule.py`, twice) fire-and-forget and never read
+    its return; `_settle_new_chats` is the one caller that has to tell a real
+    move apart from "already there", to stay idempotent (bugbot / live repro,
+    2026-09-15)."""
+    pending = tasks_store.pending_key("first")
+    tasks_store.ensure_ids([(pending, "/p", 1.0)])
+    assert tasks_store.rekey_moved(pending, "session-a") is True
+    assert tasks_store.task_number("session-a") == "TASK-001"
+    assert tasks_store.task_number(pending) == ""
+
+    # session-b already has its own number: nothing to move.
+    tasks_store.ensure_ids([("session-b", "/p", 2.0)])
+    second = tasks_store.pending_key("second")
+    tasks_store.ensure_ids([(second, "/p", 3.0)])
+    assert tasks_store.rekey_moved(second, "session-b") is False
+    assert tasks_store.task_number(second) == "TASK-003", \
+        "the spent number stays spent, exactly like a plain rekey"
+
+
+def test_a_no_op_rekey_stamps_the_old_key_spent_so_it_is_asked_once():
+    """The fix for the settle loop (bugbot / live repro, 2026-09-15): before
+    this, a rekey onto an already-numbered target left the old record
+    unchanged, and `task_ids()` went on returning it as if it were still a
+    live reservation forever. Now it is stamped, and asking again is a no-op
+    that changes nothing further."""
+    tasks_store.ensure_ids([("session", "/p", 1.0)])
+    pending = tasks_store.pending_key("second")
+    tasks_store.ensure_ids([(pending, "/p", 2.0)])
+
+    assert tasks_store.rekey_moved(pending, "session") is False
+    rec = tasks_store.task_ids()[pending]
+    assert rec == {"project": "/p", "n": 2, "spent": True, "moved_to": "session"}
+
+    # Idempotent: asking again reports the same "nothing moved" and leaves the
+    # stamped record exactly as it is.
+    assert tasks_store.rekey_moved(pending, "session") is False
+    assert tasks_store.task_ids()[pending] == rec
+
+
 # --------------------------------------------------- a draft that moves house
 
 

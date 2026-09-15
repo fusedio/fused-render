@@ -2246,12 +2246,13 @@ function ChatBody(props: ChatBodyProps) {
   const movingKeys = useRef<Set<string>>(new Set());
   const onFillDraft = useCallback((task: Task) => {
     const destKey = chatDraftKey(null, file);
-    // ONLY A CHAT DRAFT MOVES, and only somebody else's. A TASK draft is a
-    // FORM — a folder, a time, a repeat rule, a model — and reading its words
-    // into a composer is not the same as throwing the form away. And this
-    // folder's OWN draft is the one this composer is already the door onto:
-    // pressing that row is a request for the box, not a move out of it
-    // (design.md, PR C).
+    // EVERY OTHER DRAFT MOVES — chat or task alike (bugbot, 2026-09-15: a
+    // build that special-cased task drafts as read-only left the row behind
+    // AND minted a second, duplicate chat draft under the words it had just
+    // copied — two records for one press). This folder's OWN chat draft is
+    // the one exception: it is the box already on screen, drawn as a row, so
+    // pressing it is a request for the box, not a move out of it (design.md,
+    // PR C).
     const moving = draftMovesOut(task, file);
     if (isChatDraftTask(task) && !moving) {
       setFocusReq((n) => n + 1);
@@ -2276,6 +2277,20 @@ function ChatBody(props: ChatBodyProps) {
             detail: "It was left where it is — try again in a moment.",
             tone: "error",
           });
+          setFocusReq((n) => n + 1);
+          return;
+        }
+        // A SPENT OR TRULY EMPTY SOURCE IS NOTHING TO MOVE (bugbot HIGH
+        // 4018903486, "second press wipes a completed move"). A second press
+        // that lands after the first one's own `discardDraft` has already
+        // spent (or deleted) this very key reads back `{text: "", whole:
+        // true}` — an ANSWER, not a stand-in, so the guard above never catches
+        // it — and blindly filling from it would overwrite a box that already
+        // holds the words the first press just moved there, and saving it
+        // would write an empty record over the destination and could delete
+        // the draft that had just landed. Nothing here to move, so nothing
+        // here to do but ask for the box, same as any other press.
+        if (moving && !content.text.trim() && !content.attachments.length) {
           setFocusReq((n) => n + 1);
           return;
         }
@@ -2340,7 +2355,14 @@ function ChatBody(props: ChatBodyProps) {
             destAutosave?.resume();
           }
           if (landed) {
-            void discardDraft(task);
+            // AWAITED (bugbot HIGH 4018903486, "second press wipes a
+            // completed move"). `movingKeys` is released in the `finally`
+            // below, and it must stay held until the source is actually
+            // spent and dropped — a fire-and-forget here let a second press
+            // through while the DELETE was still on the wire, and that press
+            // read the not-yet-spent source as live content and moved it
+            // again, over the words the first press had only just landed.
+            await discardDraft(task);
           } else {
             notify({
               title: "Couldn't move that draft",

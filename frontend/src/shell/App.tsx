@@ -59,7 +59,7 @@ import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
-import { onGone, pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { coalesceLatest, onGone, pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { fetchDrafts, isChatDraftKey, markChatDraftSpent } from "@platform/lib/drafts";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
@@ -625,16 +625,38 @@ export default function App({ config }: { config: Config }) {
   // Only the two CHAT shapes are asked. `draft:<id>` is a task draft, whose
   // only writer is the New task modal, and that modal stands its own autosave
   // down when it hears its own id leave (NewJobModal).
-  useEffect(() => onGone((keys) => {
-    const chats = keys.filter(isChatDraftKey);
-    if (!chats.length) return;
-    void fetchDrafts().then((snapshot) => {
-      if (!snapshot) return;
-      for (const key of chats) {
-        if (!snapshot.chat[key]) void markChatDraftSpent(key);
-      }
-    });
-  }), []);
+  //
+  // A SERVER STORM MUST NOT BECOME A CLIENT STORM (bugbot / live repro,
+  // 2026-09-15). Every `onGone` fire used to start its OWN `fetchDrafts()` —
+  // harmless while `gone` really does carry news only once in a while, but a
+  // server bug that kept re-announcing one key as `gone` on every long-poll
+  // turned this into hundreds of `GET /api/drafts` a second, each trailed by
+  // its own `markChatDraftSpent` (see that call's own note on why a spent key
+  // must not be a permanent block on typing — this is the other half of that
+  // fix, closing the amplifier rather than only the symptom). `coalesceLatest`
+  // (tasksPulse) is the general shape of "one run in flight, a burst drops
+  // into the newest argument and the run repeats for it once" — pulled out of
+  // this effect and onto its own so it has a test that never has to mount
+  // this component (bugbot #1166, same reasoning as `useAppPageSnapshot`'s
+  // extraction out of AppPage.tsx).
+  const settleGone = useRef(
+    coalesceLatest((chats: string[]) =>
+      fetchDrafts().then((snapshot) => {
+        if (!snapshot) return;
+        for (const key of chats) {
+          if (!snapshot.chat[key]) void markChatDraftSpent(key);
+        }
+      }),
+    ),
+  ).current;
+  useEffect(
+    () =>
+      onGone((keys) => {
+        const chats = keys.filter(isChatDraftKey);
+        if (chats.length) settleGone(chats);
+      }),
+    [settleGone],
+  );
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the

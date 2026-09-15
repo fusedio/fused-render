@@ -21,7 +21,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import drafts, schedule, schedule_wake, tasks_store
+from fused_render import drafts, schedule, schedule_wake, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
@@ -1026,6 +1026,65 @@ def test_the_number_moves_even_though_the_composer_deleted_the_draft(
 
     assert _by_key(client)["sess-a"]["task_id"] == number
     assert tasks_store.task_number(key) == ""
+
+
+def test_settle_does_not_renotify_when_the_session_already_had_a_number(
+        client, projects_dir, runs, tmp_path):
+    """THE INFINITE NOTIFY LOOP (bugbot / live repro, 2026-09-15). A send can
+    land in a session that already has its own number — the same folder ran
+    something else first, or a scheduled fire beat it there — so the rekey
+    below is a no-op: `session-already-numbered` never had a number to give.
+
+    Before the fix, a no-op rekey left the `new:` key's record byte-for-byte
+    unchanged, so `task_ids()` went on handing it back as "still unsettled" on
+    every single build. The settle re-matched the same run, re-called
+    `notify()` unconditionally, and the changes long-poll it woke rebuilt the
+    listing and ran the settle again — forever, ~50 times a second on a real
+    machine, with `GET /api/drafts` right behind it on the client. One symptom
+    was a composer that could never be typed into again: the client kept
+    marking the key's draft "spent" as fast as the loop repeated.
+
+    Two consecutive listing builds must bump the generation at most once
+    between them, and the second must not move it at all."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = "new:" + str(folder)
+    client.put(_chat_url(key), json={"text": "first message"})
+    # A number for the draft itself, exactly as every other test in this file
+    # gets one: through a real listing build, which is the only thing that
+    # allocates it (`_draft_numbers`).
+    number = _by_key(client)[key]["task_id"]
+
+    # sess-a already has its own (different) number in this project, unrelated
+    # to the draft above (however it got one — a scheduled fire, a resumed
+    # session).
+    tasks_store.ensure_ids([("sess-a", str(folder), 2.0)])
+    assert tasks_store.task_number("sess-a") != number
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
+
+    gen_0 = tasks_watch.generation()
+    first = client.get("/api/tasks")
+    assert first.status_code == 200, first.text
+    gen_1 = first.json()["generation"]
+    assert gen_1 - gen_0 <= 1, "one settle pass may notify once, not more"
+
+    second = client.get("/api/tasks")
+    gen_2 = second.json()["generation"]
+    assert gen_2 == gen_1, "the second build must notify nothing"
+
+    # The draft is gone (there was nothing else for the send to do with it),
+    # and the key's own number is SPENT rather than moved — sess-a already had
+    # one of its own, and allocate-once forbids reusing "new:"'s.
+    assert client.get("/api/drafts").json()["chat"] == {}
+    rec = tasks_store.task_ids()[key]
+    assert rec["spent"] is True and rec["moved_to"] == "sess-a"
+    rows = _by_key(client)
+    assert key not in rows
+    assert "sess-a" in rows
 
 
 # ------------------------------- round 2: the template's half of the tag

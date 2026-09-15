@@ -2640,8 +2640,17 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     # note, 2026-09-12): gating it there would skip exactly the common case and
     # strand the number the send was supposed to carry. One small json file,
     # read before anything decides to touch the runs tree.
-    waiting = set(records) | {key for key in tasks_store.task_ids()
-                              if drafts.is_new_chat_key(key)}
+    # A key stamped SPENT (`tasks_store._apply_rekey`) has already been settled
+    # by an earlier build — its send landed in a session that was already
+    # numbered some other way, so there is nothing left to move — and must not
+    # be asked again: `task_ids()` never drops a spent record (it is the
+    # high-water mark), so without this exclusion every later build would
+    # re-find it, re-run the loop below, and re-notify forever (bugbot / live
+    # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
+    waiting = set(records) | {
+        key for key, rec in tasks_store.task_ids().items()
+        if drafts.is_new_chat_key(key) and not rec.get("spent")
+    }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
     agent = _agent_module()
@@ -2690,19 +2699,30 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         if record and float(record.get("updated_at") or 0.0) > started:
             continue  # typed into again since: not this send's draft
         try:
-            tasks_store.rekey(key, session_id)
-            drafts.delete_chat(key)
+            number_moved = tasks_store.rekey_moved(key, session_id)
+            draft_deleted = drafts.delete_chat(key)
         except OSError:
             # A read-only state dir costs the number's continuity and nothing
             # else. Same posture as `_numbers` and the schedule router's own
             # rekey: the listing still answers.
             continue
         waiting.discard(key)
-        moved = True
-        # Both rows moved: the draft row is gone and the session wears its
-        # number. The chat holding the changes long-poll hears it now rather
-        # than on its next full pass.
-        tasks_watch.notify({key, session_id})
+        # NOTIFY ONLY ON A REAL CHANGE. `rekey_moved` stamps a no-op key spent
+        # the first time it is seen (so `waiting`, above, excludes it from
+        # then on) but that stamp alone is not news to any client — the
+        # session already had its number. `delete_chat` answers the other
+        # half: whether the draft row the reader was looking at just vanished.
+        # Without this check every build that still found the key (before the
+        # `waiting` exclusion took effect on the NEXT build) called notify
+        # unconditionally, and the changes long-poll it wakes rebuilt the
+        # listing, re-ran this same settle, and notified again — the loop that
+        # pinned a composer shut (bugbot / live repro, 2026-09-15).
+        if number_moved or draft_deleted:
+            moved = True
+            # Both rows moved: the draft row is gone and the session wears its
+            # number. The chat holding the changes long-poll hears it now
+            # rather than on its next full pass.
+            tasks_watch.notify({key, session_id})
     return moved
 
 

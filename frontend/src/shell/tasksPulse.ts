@@ -756,6 +756,43 @@ export function subscribeListing(
   };
 }
 
+/**
+ * ONE RUN IN FLIGHT AT A TIME, for a caller whose trigger can genuinely storm
+ * (bugbot / live repro, 2026-09-15: a server bug kept re-announcing one
+ * `new:<file>` key as `gone` on every long-poll, and each announcement was its
+ * own `fetchDrafts()` — hundreds of `GET /api/drafts` a second on a real
+ * machine). A burst of calls that lands while a run is still out does not
+ * start its own: it only remembers the newest argument, and the run already
+ * in flight repeats for THAT argument the instant it settles — looping until
+ * nothing is left waiting, rather than piling requests up one per trigger.
+ *
+ * Generic on purpose but with exactly one caller today (App.tsx's
+ * `onGone` → `fetchDrafts`), and pulled out here rather than left inline in
+ * that effect so it has its own test that never has to mount App — the same
+ * reasoning `useAppPageSnapshot`'s extraction out of `AppPage.tsx` gives
+ * (AppPage.test.tsx).
+ */
+export function coalesceLatest<T>(run: (arg: T) => Promise<void>): (arg: T) => void {
+  let inFlight = false;
+  let pending: { arg: T } | null = null;
+  const go = (arg: T) => {
+    inFlight = true;
+    void run(arg).finally(() => {
+      inFlight = false;
+      const next = pending;
+      pending = null;
+      if (next) go(next.arg);
+    });
+  };
+  return (arg: T) => {
+    if (inFlight) {
+      pending = { arg };
+      return;
+    }
+    go(arg);
+  };
+}
+
 /** The keys the server said LEFT, for a reader that has something to clean up
  *  behind a task that is gone (PR C: a composer still holding a deleted
  *  draft's words). Does not start the feed on its own — it is a side channel on

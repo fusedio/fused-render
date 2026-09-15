@@ -8,6 +8,7 @@ import {
   CATCH_UP_SETTLE_MS,
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
+  coalesceLatest,
   dropListingKeys,
   listingFeedLive,
   onGone,
@@ -488,4 +489,61 @@ describe("dropListingKeys", () => {
       expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["b"]);
       off();
     });
+});
+
+describe("coalesceLatest", () => {
+  // bugbot / live repro, 2026-09-15: App.tsx's onGone handler used to start a
+  // fresh `fetchDrafts()` on every fire. A server bug that kept re-announcing
+  // one key as `gone` turned that into hundreds of reads a second; this is
+  // the cap — one run in flight, a burst collapses onto the newest argument.
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  test("a call that arrives mid-run does not start its own — it waits and runs once more, for the newest argument", async () => {
+    const runs: string[] = [];
+    const gates: Array<ReturnType<typeof deferred<void>>> = [];
+    const dispatch = coalesceLatest<string>((arg) => {
+      runs.push(arg);
+      const gate = deferred<void>();
+      gates.push(gate);
+      return gate.promise;
+    });
+
+    dispatch("a");
+    expect(runs).toEqual(["a"]); // starts at once: nothing else in flight
+
+    // Two more arrive while "a" is still running — neither starts its own run;
+    // only the newest of them is remembered.
+    dispatch("b");
+    dispatch("c");
+    expect(runs).toEqual(["a"]);
+
+    gates[0].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "c"]); // "b" was dropped, "c" is the one that ran
+
+    gates[1].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "c"]); // nothing pending: no third run
+  });
+
+  test("calls with no overlap each get their own run", async () => {
+    const runs: string[] = [];
+    const dispatch = coalesceLatest<string>((arg) => {
+      runs.push(arg);
+      return Promise.resolve();
+    });
+    dispatch("a");
+    await Promise.resolve();
+    await Promise.resolve();
+    dispatch("b");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "b"]);
+  });
 });

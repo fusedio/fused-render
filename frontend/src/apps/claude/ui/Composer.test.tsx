@@ -645,6 +645,50 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
   expect(box.props["data-enable-grammarly"]).toBe("false");
 });
 
+// ---- a spent key must not be a permanent block on typing ------------------
+//
+// bugbot / live repro, 2026-09-15: a server bug kept re-announcing one
+// `new:<file>` key as `gone` on every long-poll, so App.tsx's onGone handler
+// called `markChatDraftSpent` on it roughly fifty times a second. Every call
+// runs this composer's `onChatDraftSpent` listener, which empties the box —
+// so as fast as the reader typed, the next call wiped it, and the box read as
+// permanently inert. The server loop is fixed at the source, but the client
+// must not depend on that alone: typing into a spent key has to reopen it.
+
+test("typing after a spend un-spends the key, rather than staying blocked forever", async () => {
+  const { markChatDraftSpent, readChatDraft } = await import("@platform/lib/drafts");
+  const file = "/p/spent-test.py";
+  const key = `new:${file}`;
+  const c = mount({ file, sessionId: "" });
+
+  c.type("first message");
+  expect(c.box().props.value).toBe("first message");
+
+  await act(async () => {
+    await markChatDraftSpent(key);
+  });
+  // The spend cleared the box, exactly like the composer's own send does.
+  expect(c.box().props.value).toBe("");
+
+  // Resuming to type must reopen the key at once — proven by `readChatDraft`
+  // actually reaching the network instead of short-circuiting on `spent`
+  // (`readChatDraft` answers `{draft: null, read: true}` from memory alone,
+  // with no fetch at all, for as long as the key stays spent).
+  let fetchCalls = 0;
+  (globalThis as { fetch: unknown }).fetch = (() => {
+    fetchCalls += 1;
+    return Promise.resolve(
+      new Response(JSON.stringify({ chat: {}, task: {} }), { status: 200 }),
+    );
+  }) as unknown as typeof fetch;
+
+  c.type("second message");
+  expect(c.box().props.value).toBe("second message");
+
+  await readChatDraft(key);
+  expect(fetchCalls).toBe(1);
+});
+
 // ---- a restored draft takes the keyboard (Akshil QA, 2026-09-14) -----------
 
 test("a draft that lands in the box focuses it, caret at the end", async () => {

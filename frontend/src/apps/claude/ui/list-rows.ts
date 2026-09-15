@@ -28,7 +28,7 @@ import type { Task } from "@platform/lib/api";
 import { chatDraftKey, readChatDraft } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { urlForFsPath } from "@platform/lib/router";
-import { isChatDraftTask } from "@shell/tasks-lib";
+import { isChatDraftTask, isDraftTask } from "@shell/tasks-lib";
 import { sessionTitle } from "../protocol/history";
 
 export { sessionTitle };
@@ -193,12 +193,19 @@ export function joinIntoBox(prev: string, back: string): string {
  * move from — it is the box already on screen, drawn as a row — so its press is
  * a focus request and nothing else.
  *
- * A TASK draft is never moved either. It is a FORM — a folder, a time, a repeat
- * rule, a model, a tray — and reading its words into a composer is not the same
- * gesture as throwing the form away.
+ * A TASK draft moves too, as of the live repro (bugbot, 2026-09-15): a build
+ * that read its form's words into the box WITHOUT moving it left both records
+ * behind — the task draft's own row, unchanged, AND a brand-new `new:<file>`
+ * chat draft the composer's autosave minted under the words it had just
+ * copied. One press must leave exactly one record, so a task draft's press is
+ * a move like any other — `onFillDraft` reuses the same PUT-then-discard path,
+ * and `discardDraft` already branches on the draft's own kind to delete it
+ * correctly either way.
  */
 export function draftMovesOut(task: Task, file: string | null): boolean {
-  return isChatDraftTask(task) && task.key !== chatDraftKey(null, file);
+  if (!isDraftTask(task)) return false; // an ordinary conversation is not a draft at all
+  if (isChatDraftTask(task)) return task.key !== chatDraftKey(null, file);
+  return true;
 }
 
 /** T:17947-17953. */

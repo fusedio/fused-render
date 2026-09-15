@@ -1130,11 +1130,13 @@ test("A PRESS IS A MOVE, except on this composer's own draft", () => {
   // exception is the row that IS this box.
   expect(draftMovesOut(chatDraft({ key: "new:/repo/other.py" }), "/repo/x.py")).toBe(true);
   expect(draftMovesOut(chatDraft(), "/repo/x.py")).toBe(false);
-  // A task draft is a FORM — reading its words is not throwing the form away.
+  // A task draft moves too (bugbot, 2026-09-15 live repro): leaving it in
+  // place while copying its words duplicated the row — the form stayed AND a
+  // new chat draft appeared under the words just copied from it.
   expect(draftMovesOut(
     chatDraft({ key: "draft:d-7", draft_kind: "task", draft_id: "d-7" } as Partial<Task>),
     "/repo/x.py",
-  )).toBe(false);
+  )).toBe(true);
   // …and an ordinary conversation is not a draft at all.
   expect(draftMovesOut(chat("s1"), "/repo/x.py")).toBe(false);
 });
