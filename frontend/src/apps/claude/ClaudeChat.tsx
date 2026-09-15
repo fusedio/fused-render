@@ -228,6 +228,15 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /**
+   * DROP THE UPCOMING LANE FROM THE LANDING'S "Recent chats" — `Lists`' own
+   * prop (ui/Lists.tsx), carried through untouched. Set by exactly one host:
+   * the explorer's Claude side panel (`ChatMount`'s own `hideUpcoming`,
+   * Preview.tsx's `?_side=claude` sidebar and ListingPreviewPane's folder
+   * pane) — never inferred here from `file`/`remote`/anything else, so a
+   * second host cannot pick it up by accident of sharing some other fact.
+   */
+  hideUpcoming?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -3135,6 +3144,7 @@ function ChatBody(props: ChatBodyProps) {
             {...(landingFill ? { restore: landingFill } : {})}
             {...(focusReq ? { focusRequest: focusReq } : {})}
             listsDisabled={ann.locked}
+            {...(props.hideUpcoming ? { hideUpcoming: true } : {})}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat
