@@ -73,3 +73,18 @@ body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
   background: var(--sb-thumb);
   background-clip: padding-box;
 }
+
+/* ONE WIDTH, ONE THUMB SHAPE (Akshil, 2026-09-15: "the thumb width is different
+   at different places, make sure it is consistent"). transcript.css gave the
+   chat log an 8px bar with a 4px-radius thumb and no inset border — the one
+   scroller in the shell whose bar read differently. Restated to the shared
+   shape at the same `body` specificity as the fade above. */
+body .chat-root .chat-logwrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
