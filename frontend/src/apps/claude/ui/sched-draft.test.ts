@@ -25,6 +25,7 @@ const {
   attachKey,
   basenameOf,
   draftKey,
+  dropStash,
   parseAttachmentsParam,
   schedulerUrl,
   stashAttachments,
@@ -32,6 +33,8 @@ const {
   takeAttachments,
   takeDraft,
 } = await import("./sched-draft");
+
+const { markChatDraftSpent } = await import("@platform/lib/drafts");
 
 type SchedAttachment = import("./sched-draft").SchedAttachment;
 
@@ -134,4 +137,33 @@ test("basenameOf survives both separators and a path that is only a name", () =>
   expect(basenameOf("b.png")).toBe("b.png");
   // Never the empty string: a chip with no name at all says nothing.
   expect(basenameOf("/shots/")).toBe("/shots/");
+});
+
+test("A SPENT KEY CLEARS THE STASH — the one way a hop outlives its trip", async () => {
+  // Press Schedule (the words go into sessionStorage), land on /tasks, discard
+  // the draft from its row there. Nothing has read the stash yet, so walking
+  // back into the chat used to mount a composer that filled itself from it and
+  // wrote the discarded words straight back (design.md, PR C).
+  stashDraft(FILE, "look at this");
+  stashAttachments(FILE, SHOTS);
+  await markChatDraftSpent(`new:${FILE}`);
+  expect(takeDraft(FILE)).toBe("");
+  expect(takeAttachments(FILE)).toEqual([]);
+});
+
+test("…and only for the file the key names", async () => {
+  stashDraft(FILE, "look at this");
+  await markChatDraftSpent("new:/w/app/other.html");
+  // A SESSION key names a conversation the hop never keys on, so it clears
+  // nothing either.
+  await markChatDraftSpent("s1");
+  expect(takeDraft(FILE)).toBe("look at this");
+});
+
+test("dropStash forgets both halves of one file's hop", () => {
+  stashDraft(FILE, "words");
+  stashAttachments(FILE, SHOTS);
+  dropStash(FILE);
+  expect(takeDraft(FILE)).toBe("");
+  expect(takeAttachments(FILE)).toEqual([]);
 });

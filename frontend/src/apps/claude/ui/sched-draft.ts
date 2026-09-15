@@ -4,6 +4,7 @@
 // Leaving unloads the document, so the draft is stashed in sessionStorage —
 // SESSION and not local: a draft is a fact about this tab's errand, not about
 // the machine. The key is verbatim.
+import { NEW_CHAT_PREFIX, onChatDraftSpent } from "@platform/lib/drafts";
 
 /** T:12013. */
 export function draftKey(file: string | null): string {
@@ -82,6 +83,43 @@ export function takeAttachments(file: string | null): SchedAttachment[] {
     return parseAttachmentsParam(saved);
   } catch {
     return [];
+  }
+}
+
+/**
+ * THE STASH IS SPENT WHEN THE DRAFT IS (design.md, PR C).
+ *
+ * The stash is a one-navigation hop, spent on read — so ordinarily nothing
+ * outlives the trip. One route leaves it standing: press Schedule (the words go
+ * into sessionStorage), land on /tasks, and discard the draft from its row
+ * there. Nothing has read the stash yet, so walking back into the chat mounted a
+ * composer that filled itself from it and wrote the discarded words straight
+ * back — the row the reader had just thrown away, back on the page, with no
+ * gesture of theirs behind it.
+ *
+ * So a key going SPENT clears the stash for the file it names. `new:<file>`
+ * carries the file in the key, which is the shape the stash is filed under; a
+ * session key names a conversation the hop never keys on, and nothing is done
+ * for it.
+ *
+ * REGISTERED AT MODULE SCOPE, ONCE, and that is airtight rather than hopeful:
+ * the stash is sessionStorage, so it can only exist in a document where
+ * `stashDraft` has run, and running it is what loads this module. A tab that
+ * has no stash needs no listener; a tab that has one has this.
+ */
+onChatDraftSpent((key) => {
+  if (!key.startsWith(NEW_CHAT_PREFIX)) return;
+  dropStash(key.slice(NEW_CHAT_PREFIX.length));
+});
+
+/** Both halves of one file's hop, forgotten. Storage refusals are silent, as
+ *  everywhere else in this module. */
+export function dropStash(file: string | null): void {
+  try {
+    sessionStorage.removeItem(draftKey(file));
+    sessionStorage.removeItem(attachKey(file));
+  } catch {
+    // Storage denied — there was nothing readable to clear anyway.
   }
 }
 

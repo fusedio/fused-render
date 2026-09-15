@@ -4136,9 +4136,11 @@ describe("the archive action", () => {
     // whenever EITHER survives its own guard, and its one-pin arrangement is
     // what the flag has to come back to.
     // …and the quick door out, which is on every card that HAS a page — the
-    // fourth member of the strip since 2026-09-13.
+    // fourth member of the strip since 2026-09-13 — and Discard, the draft
+    // card's one action, the fifth since 2026-09-15.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || isDraftTask(task)\n"
+      + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4425,13 +4427,21 @@ describe("the delete affordance", () => {
     const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
     const start = VIEWS_SRC.indexOf('<span className="tasks-card-acts">');
     const strip = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</span>", VIEWS_SRC.indexOf("ICON_UNARCHIVE", start)));
-    const at = strip.indexOf('className="tasks-act tasks-card-act tasks-act--delete"');
+    // TWO trashes in this strip since 2026-09-15 — Discard on a draft card,
+    // Delete forever on a card whose folder is gone — and they are one button
+    // under two conditions that cannot both be true (each stands down for the
+    // other). This test is about the second, so it reads past the first.
+    const at = strip.indexOf(
+      'className="tasks-act tasks-card-act tasks-act--delete"',
+      strip.indexOf("Discard draft"),
+    );
     expect(at).toBeGreaterThan(0);
     expect(strip.slice(0, at)).toContain("{folderMissing && (");
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || isDraftTask(task)\n"
+      + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -5067,7 +5077,10 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
     // from, not whether it opens.
     expect(VIEWS).toContain("const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;");
     expect(VIEWS).toContain("if (onOpenDraft && isDraftTask(task)) onOpenDraft(task);");
-    expect(VIEWS).not.toContain("isChatDraftTask");
+    // The kind is asked in exactly ONE place in this file and it is not a press:
+    // `discardDraft`, where it decides which store the words are in. Neither row
+    // component may consult it.
+    expect(VIEWS.slice(VIEWS.indexOf("function TaskNode("))).not.toContain("isChatDraftTask");
   });
 
   it("gives a session-less row no chat link to be ⌘-clicked into either", () => {

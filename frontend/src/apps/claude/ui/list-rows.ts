@@ -25,9 +25,10 @@
 // `protocol/history.ts`'s copy already had all three right and was imported by
 // nothing but its own test, while the live rows rendered this one.
 import type { Task } from "@platform/lib/api";
-import { chatDraftKey, fetchChatDraft } from "@platform/lib/drafts";
+import { chatDraftKey, readChatDraft } from "@platform/lib/drafts";
+import type { DraftAttachment } from "@platform/lib/drafts";
 import { urlForFsPath } from "@platform/lib/router";
-import { isChatDraftTask } from "@shell/tasks-lib";
+import { isChatDraftTask, isDraftTask } from "@shell/tasks-lib";
 import { sessionTitle } from "../protocol/history";
 
 export { sessionTitle };
@@ -99,7 +100,7 @@ export function paneChatUrl(pane: string, sessionId: string): string {
 }
 
 /**
- * A DRAFT ROW'S WORDS, FOR THE COMPOSER THE READER IS ALREADY LOOKING AT
+ * A DRAFT ROW'S CONTENT, FOR THE COMPOSER THE READER IS ALREADY LOOKING AT
  * (Akshil, 2026-09-15).
  *
  * A draft row used to be a DOOR: a chat draft about another file hopped the
@@ -110,27 +111,101 @@ export function paneChatUrl(pane: string, sessionId: string): string {
  * the press fills the composer and puts the caret after the text, and the
  * reader decides what to do with it from there.
  *
- * WHERE THE WORDS COME FROM is the one asymmetry between the two kinds:
+ * WHERE THE CONTENT COMES FROM is the one asymmetry between the two kinds:
  *
  *   * a CHAT draft is stored under `new:<file>` and the row carries only a
  *     `preview` of it — a first line, clipped (`fused_render/drafts.preview`)
- *     — so the full text is FETCHED, through the same door the composer's own
- *     seed effect uses. The preview stands in only if that read answers
- *     nothing, because half a sentence is better than an empty box;
+ *     — so the WHOLE RECORD is fetched, text and tray together, through the
+ *     same door the composer's own seed effect uses;
  *   * a TASK draft carries its whole stored form on the row already (`form`,
  *     the field the modal used to reopen on), so its description — or its
  *     title, for a title-only form — is read straight off it.
+ *
+ * `whole` IS THE FIELD THAT MATTERS TO A MOVE (Bugbot #1166). It used to
+ * answer the row's clipped preview when the fetch failed, on the reasoning
+ * that half a sentence beats an empty box — right for a COPY and wrong for a
+ * move, because the caller then deleted the full record it had never managed
+ * to read and kept 120 characters of it. So the two answers are told apart:
+ * `whole: false` is "this is a stand-in", and a caller that is about to
+ * destroy the source may not act on one.
  */
-export async function draftTextOf(task: Task): Promise<string> {
+export interface DraftContent {
+  /** What to put in the box. */
+  text: string;
+  /** The source draft's tray — a chat draft's stored attachment rows, and `[]`
+   *  for a task draft, whose files belong to the form and not to a composer. */
+  attachments: DraftAttachment[];
+  /** Is this the record itself, rather than the row's clipped stand-in? */
+  whole: boolean;
+}
+
+export async function draftContentOf(task: Task): Promise<DraftContent> {
   if (isChatDraftTask(task)) {
     const key = chatDraftKey(null, task.file || task.target || "");
-    const saved = await fetchChatDraft(key);
-    return saved?.text || task.draft?.preview || "";
+    const { draft, read } = await readChatDraft(key);
+    if (draft) {
+      return { text: draft.text || "", attachments: draft.attachments ?? [], whole: true };
+    }
+    // READ and EMPTY is a whole answer — there is nothing under this key, and a
+    // caller moving it has nothing to lose. A read that never answered is not.
+    if (read) return { text: "", attachments: [], whole: true };
+    return { text: task.draft?.preview || "", attachments: [], whole: false };
   }
   const form = (task.form ?? {}) as { description?: unknown; title?: unknown };
   const described = String(form.description ?? "").trim();
-  if (described) return described;
-  return String(form.title ?? task.title ?? "").trim();
+  const text = described || String(form.title ?? task.title ?? "").trim();
+  return { text, attachments: [], whole: true };
+}
+
+/**
+ * THE JOIN A COMPOSER MAKES when words arrive in a box that is not empty —
+ * spelled once, here, because two callers now have to agree about it.
+ *
+ * `Composer`'s `restore` seat appends rather than replaces, which is the right
+ * way round for a box that may already hold something the reader typed: a press
+ * must never eat words. `ClaudeChat.onFillDraft` has to predict the same result
+ * one line earlier, because on a MOVE it writes the destination draft to the
+ * server BEFORE dropping the source, and what it writes must be what the box is
+ * about to hold (Bugbot #1166). Two copies of a one-line rule is how the record
+ * and the box start disagreeing.
+ *
+ * A single newline, and only when there is something to join to. (The
+ * PROGRAMMATIC send's seed uses a blank line instead — a paragraph boundary the
+ * model reads — and that one is `Composer.submit`'s own, deliberately not this.)
+ */
+export function joinIntoBox(prev: string, back: string): string {
+  if (!back) return prev;
+  return prev.trim() ? prev.replace(/\s*$/, "\n") + back : back;
+}
+
+/**
+ * IS PRESSING THIS DRAFT ROW A MOVE, OR A REQUEST FOR THE BOX? (design.md,
+ * PR C.)
+ *
+ * A press puts the row's words in the composer, and the composer has a draft key
+ * of its own — the folder it is mounted on — which its next autosave writes them
+ * under. So for every row but ONE the press is a MOVE: leaving the source where
+ * it was would make one sentence two rows, in two folders, with two TASK
+ * numbers, and whichever the reader finished the other would still be sitting
+ * there unsent.
+ *
+ * The one exception is THIS composer's own draft. That row is not a source to
+ * move from — it is the box already on screen, drawn as a row — so its press is
+ * a focus request and nothing else.
+ *
+ * A TASK draft moves too, as of the live repro (bugbot, 2026-09-15): a build
+ * that read its form's words into the box WITHOUT moving it left both records
+ * behind — the task draft's own row, unchanged, AND a brand-new `new:<file>`
+ * chat draft the composer's autosave minted under the words it had just
+ * copied. One press must leave exactly one record, so a task draft's press is
+ * a move like any other — `onFillDraft` reuses the same PUT-then-discard path,
+ * and `discardDraft` already branches on the draft's own kind to delete it
+ * correctly either way.
+ */
+export function draftMovesOut(task: Task, file: string | null): boolean {
+  if (!isDraftTask(task)) return false; // an ordinary conversation is not a draft at all
+  if (isChatDraftTask(task)) return task.key !== chatDraftKey(null, file);
+  return true;
 }
 
 /** T:17947-17953. */

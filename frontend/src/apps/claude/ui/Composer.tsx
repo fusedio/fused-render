@@ -19,7 +19,9 @@ import {
   onChatDraftSpent,
   fetchChatDraft,
   saveChatDraft,
+  unmarkChatDraftSpent,
   useAutosave,
+  type Autosave,
   type DraftAttachment,
 } from "@platform/lib/drafts";
 import "../styles/composer.css";
@@ -41,6 +43,7 @@ import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { SchedButton } from "./SchedButton";
 import { takeAttachments, takeDraft } from "./sched-draft";
+import { joinIntoBox } from "./list-rows";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -56,6 +59,11 @@ export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
  *  second one is the half a narrow column drops (T:4213, 12382-12392). */
 export const FOOTNOTE_LEAD = "Claude can read and edit files here.";
 export const FOOTNOTE_TAIL = " Approvals control what runs without asking.";
+
+/** The box's own tray-and-text autosave, as handed out to a host (`autosaveRef`
+ *  below) — the shape `useAutosave` is instantiated with here, spelled once so
+ *  a caller across the module boundary can type its own ref against it. */
+export type ComposerAutosave = Autosave<{ text: string; attachments: DraftAttachment[] }>;
 
 /** Everything the three pills need, from `useComposerDefaults`. */
 export interface ComposerControls {
@@ -264,9 +272,18 @@ export interface ComposerCardProps {
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed
    * in (`still_queued`, T:15911). `seq` is what re-delivers the same text (two
    * stops can strand the same words), and the text is APPENDED rather than
-   * assigned, because the user may already be typing the next thing.
+   * assigned by default, because the user may already be typing the next
+   * thing.
+   *
+   * `replace: true` is the OTHER caller of this seat — a draft row pressed in
+   * the Recent list (`ClaudeChat.onFillDraft`, bug report 2026-09-15: "make
+   * sure text before it in composer is cleaned and only draft text is
+   * there"). That row's whole content is about to become the box's whole
+   * content, not a second sentence appended to whatever was there, so it asks
+   * for the replacement this seat did not used to offer — including down to
+   * an empty string, for a draft that is pictures with no words at all.
    */
-  restore?: { text: string; seq: number };
+  restore?: { text: string; seq: number; replace?: boolean };
   /** The textarea itself, for a host modal's `initialFocus` (TaskPeek, whose
    *  target used to be the iframe element). */
   boxRef?: React.MutableRefObject<HTMLTextAreaElement | null>;
@@ -291,6 +308,20 @@ export interface ComposerCardProps {
    * words back in the box instead of dropping them.
    */
   submitRef?: React.MutableRefObject<((seed?: string) => boolean) | null>;
+  /**
+   * THIS BOX'S OWN AUTOSAVE, handed OUT the same way `submitRef` is — filled
+   * while this composer is mounted, nulled when it goes (Bugbot #1166, "an
+   * older PUT lands after and overwrites").
+   *
+   * A MOVE out of the Recent list (`ClaudeChat.onFillDraft`) writes this
+   * composer's draft from OUTSIDE it, straight to the server, and it is not
+   * the only writer: this box's own debounce could already have a PUT on the
+   * wire from a keystroke a moment ago. Neither write knows about the other
+   * without this seat — the host stops the debounce, waits out whatever is
+   * already in flight, and only then sends the move's own PUT, so nothing
+   * older can land after it and undo it.
+   */
+  autosaveRef?: React.MutableRefObject<ComposerAutosave | null>;
   /**
    * THE SEND WINDOW'S LATCH, in its two forms.
    *
@@ -375,6 +406,7 @@ export function ComposerCard({
   restore,
   boxRef: hostBoxRef,
   submitRef,
+  autosaveRef: hostAutosaveRef,
   busyRef,
   sendBusy,
   columnRef,
@@ -519,6 +551,10 @@ export function ComposerCard({
   // in this file uses for the same reason.
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
+  // OUT TO THE HOST, same render, same reason `ClaudeChat`'s own `attachRef`
+  // mirrors `attach`: a move out of the Recent list needs to reach into THIS
+  // composer's own autosave before writing over its draft from outside it.
+  if (hostAutosaveRef) hostAutosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   // SOMEBODY ELSE SENT THESE WORDS. The Board can drag a Done row into In
@@ -695,10 +731,21 @@ export function ComposerCard({
   // must not re-append the one already taken.
   const delivered = useRef(0);
   useEffect(() => {
-    if (!restore || !restore.text || restore.seq === delivered.current) return;
+    if (!restore || restore.seq === delivered.current) return;
+    // A stranded follow-up's text is never empty, so the old `!restore.text`
+    // guard cost this seat nothing until `replace` arrived: a chat draft that
+    // is pictures with no words at all replaces the box with "", and that is
+    // a real delivery, not "nothing to restore" (Akshil, 2026-09-15).
+    if (!restore.text && !restore.replace) return;
     delivered.current = restore.seq;
     const back = restore.text;
-    setText((prev) => (prev.trim() ? prev.replace(/\s*$/, "\n") + back : back));
+    // ONE COPY OF THE JOIN (`list-rows.joinIntoBox`): a MOVE out of the Recent
+    // list writes the destination draft to the server before it drops the
+    // source, and what it writes has to be exactly what this line is about to
+    // put in the box (Bugbot #1166). `replace` skips the join entirely — a
+    // draft row's whole content is the box's whole content now, not a second
+    // sentence appended to whatever was there (bug report, 2026-09-15).
+    setText((prev) => (restore.replace ? back : joinIntoBox(prev, back)));
     boxRef.current?.focus({ preventScroll: true });
     grow();
   }, [restore, boxRef, grow]);
@@ -855,7 +902,22 @@ export function ComposerCard({
           disabled={blocked}
           value={text}
           onChange={(ev) => {
-            setText(ev.currentTarget.value);
+            const value = ev.currentTarget.value;
+            setText(value);
+            // A SPENT KEY MUST NOT BE A PERMANENT BLOCK ON TYPING (bugbot /
+            // live repro, 2026-09-15). `spent` exists to close the window
+            // between a send and this composer's next remount — but nothing
+            // before this ever reopened that window once the reader started
+            // a NEW message on the same key, and a stray or duplicate
+            // `markChatDraftSpent` landing after they resumed typing (a slow
+            // `fetchDrafts` round trip from App's `onGone`, or — the actual
+            // live incident — a server that kept re-announcing one key as
+            // `gone` forever) wiped every keystroke as fast as it arrived,
+            // which read as "I cannot type in this box at all". Un-spend the
+            // instant a keystroke lands, same as `saveChatDraft` does once its
+            // debounced write actually fires — this just does not wait for
+            // the debounce, so nothing in between reads the key as spent.
+            if (value.trim()) unmarkChatDraftSpent(draftKeyRef.current);
             grow();
           }}
           onKeyDown={onKeyDown}

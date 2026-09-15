@@ -2548,6 +2548,16 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
         session = str(record.get("session_id") or "")
         if not session:
             continue
+        # A WORDLESS FORM IS NOT A DRAFT (2026-09-15). Emptying the composer on a
+        # bound session now clears the words and KEEPS the form's settings
+        # (`drafts._put_bound`), so a record here can hold a time and a model and
+        # nothing anybody typed — and a `✎ Draft` chip over that would point at a
+        # composer the reader would find empty. Same answer `drafts.chat_view`
+        # gives through the other door.
+        if not (str(record.get("title") or "").strip()
+                or str(record.get("description") or "").strip()
+                or record.get("attachments")):
+            continue
         updated = float(record.get("updated_at") or 0.0)
         if session in out and out[session]["updated_at"] >= updated:
             continue
@@ -2630,8 +2640,17 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     # note, 2026-09-12): gating it there would skip exactly the common case and
     # strand the number the send was supposed to carry. One small json file,
     # read before anything decides to touch the runs tree.
-    waiting = set(records) | {key for key in tasks_store.task_ids()
-                              if drafts.is_new_chat_key(key)}
+    # A key stamped SPENT (`tasks_store._apply_rekey`) has already been settled
+    # by an earlier build — its send landed in a session that was already
+    # numbered some other way, so there is nothing left to move — and must not
+    # be asked again: `task_ids()` never drops a spent record (it is the
+    # high-water mark), so without this exclusion every later build would
+    # re-find it, re-run the loop below, and re-notify forever (bugbot / live
+    # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
+    waiting = set(records) | {
+        key for key, rec in tasks_store.task_ids().items()
+        if drafts.is_new_chat_key(key) and not rec.get("spent")
+    }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
     agent = _agent_module()
@@ -2680,19 +2699,30 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         if record and float(record.get("updated_at") or 0.0) > started:
             continue  # typed into again since: not this send's draft
         try:
-            tasks_store.rekey(key, session_id)
-            drafts.delete_chat(key)
+            number_moved = tasks_store.rekey_moved(key, session_id)
+            draft_deleted = drafts.delete_chat(key)
         except OSError:
             # A read-only state dir costs the number's continuity and nothing
             # else. Same posture as `_numbers` and the schedule router's own
             # rekey: the listing still answers.
             continue
         waiting.discard(key)
-        moved = True
-        # Both rows moved: the draft row is gone and the session wears its
-        # number. The chat holding the changes long-poll hears it now rather
-        # than on its next full pass.
-        tasks_watch.notify({key, session_id})
+        # NOTIFY ONLY ON A REAL CHANGE. `rekey_moved` stamps a no-op key spent
+        # the first time it is seen (so `waiting`, above, excludes it from
+        # then on) but that stamp alone is not news to any client — the
+        # session already had its number. `delete_chat` answers the other
+        # half: whether the draft row the reader was looking at just vanished.
+        # Without this check every build that still found the key (before the
+        # `waiting` exclusion took effect on the NEXT build) called notify
+        # unconditionally, and the changes long-poll it wakes rebuilt the
+        # listing, re-ran this same settle, and notified again — the loop that
+        # pinned a composer shut (bugbot / live repro, 2026-09-15).
+        if number_moved or draft_deleted:
+            moved = True
+            # Both rows moved: the draft row is gone and the session wears its
+            # number. The chat holding the changes long-poll hears it now
+            # rather than on its next full pass.
+            tasks_watch.notify({key, session_id})
     return moved
 
 
@@ -2764,11 +2794,12 @@ def _draft_rows(only: frozenset | set | None = None,
         # number, it stamps the mapping `erased` and keeps it as a reservation,
         # and the row it belonged to is off the page for good — so a draft still
         # naming it has nothing left to wear its chip and would be invisible,
-        # with its words unreachable. The erase itself cuts the binding
-        # (`drafts.unbind_session`), and this is the same answer read off the
-        # store for the draft written between that gesture's two writes and for
-        # any older store left bound: an ordinary row again, blank-numbered
-        # until `_draft_numbers` can mint it one (review, 2026-09-12).
+        # with its words unreachable. The erase itself drops such a draft
+        # (`drafts.delete_bound`), so this is the answer for the two stores that
+        # can still hold one: a draft written between that gesture's two writes,
+        # and any older store left bound by a build that only unbound. An
+        # ordinary row again, blank-numbered until `_draft_numbers` can mint it
+        # one (review, 2026-09-12).
         bound = drafts.bound_session(record.get("session_id"))
         if bound:
             if erased is None:
@@ -3403,12 +3434,18 @@ def api_task_archive(patch: ArchivePatch):
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed = archive_task(task)
-    # AND THE UNSENT TEXT GOES WITH IT. A draft is a promise that the composer
-    # will still hold it when you come back; filing the task away is saying you
-    # are not coming back, and a `✎ Draft` chip on an archived row would be a
-    # badge pointing at a conversation the user just put down (design.md,
-    # "Joins": archive/delete/erase drop the chat draft).
-    drafts.delete_chat(task["session_id"])
+    # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
+    # "Archive/unarchive touch NO drafts").
+    #
+    # This route used to `delete_chat` the session's draft, on the reading that
+    # filing a task away says you are not coming back. That reading belongs to
+    # DELETE, not to archive: archive is the reversible verb — its whole
+    # affordance is the Unarchive button beside it — and a reversible gesture
+    # that destroys text is a gesture nobody can undo. An archived task's drafts
+    # (the chat's and any form bound to it) simply hide with the row and are
+    # there again the moment it comes back, which is what every OTHER fact about
+    # an archived task already does. Delete and erase, which are the verbs that
+    # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
@@ -3575,11 +3612,19 @@ def api_task_delete(patch: DeletePatch):
             cancelled += 1
 
     tasks_store.mark_deleted(key)
-    # The chat draft goes with the row, for archive's reason and one more: the
-    # row is the only place the chip could have been drawn, so a draft left
-    # behind is bytes nothing can ever show or reach.
+    # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
+    # PR C). The row is the only place either could ever have been drawn — the
+    # composer's own draft as the `✎ Draft` chip, a bound New task form as the
+    # same chip off `_bound_chips` — so a draft left behind is bytes nothing can
+    # show and nobody can reach. Unlike archive above, this verb is the one that
+    # means it.
+    #
+    # The bound form's row key is announced with the task's: it was never a row
+    # of its own, but a page holding a stale one (from before the binding, or
+    # from an older build) has to be told to drop it.
+    dropped = drafts.delete_bound(task["session_id"])
     drafts.delete_chat(task["session_id"])
-    tasks_watch.notify({key})
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
 
@@ -3622,11 +3667,11 @@ def api_task_erase(patch: ErasePatch):
 
     WHAT COMES OUT OF STATE: the triage record WHOLE (`forget_triage`, not
     `clear_triage` — there is no session left for a note or a tag to be about),
-    and the read marks (`tasks_store.forget_session`), and a task draft bound to
-    this session is cut loose from it (`drafts.unbind_session`) — the words
-    stay, the binding does not, and that draft's own key is announced beside
-    this task's, because the row has just changed its number, its folder and
-    the thread its Schedule would reach. The task's NUMBER is the
+    and the read marks (`tasks_store.forget_session`), and BOTH shapes of this
+    session's unsent text — its chat draft and any task draft bound to it
+    (`drafts.delete_bound`, 2026-09-15) — with the bound draft's own key
+    announced beside this task's, so a page holding a row under it drops it.
+    The task's NUMBER is the
     one thing kept: allocation is "max seen plus one" read straight off
     task_ids.json, so the mapping stays as a reservation and a reused TASK-007
     can never point at somebody else's work. See `forget_session`.
@@ -3668,10 +3713,10 @@ def api_task_erase(patch: ErasePatch):
             cancelled += 1
 
     removed, erased, failed, refused = 0, False, 0, 0
-    # The draft rows this erase renumbers, announced beside the task's own key
+    # The draft rows this erase takes away, announced beside the task's own key
     # at the end. Empty for a task with no session and for the ordinary erase
     # with nothing bound to it, which is nearly all of them.
-    unbound: list[str] = []
+    dropped: list[str] = []
     session_id = task["session_id"]
     if session_id:
         removed, erased, failed, refused = _erase_session_files(session_id, task["path"])
@@ -3698,26 +3743,25 @@ def api_task_erase(patch: ErasePatch):
         # emphatically something about it — there is no conversation left for
         # it to be typed into.
         drafts.delete_chat(session_id)
-        # A TASK draft bound to it is the other shape, and it is NOT deleted
-        # (review, 2026-09-12): a task draft is a form somebody is still filling
-        # in, and the conversation is only where they had meant to send it. What
-        # goes is the binding — the number this erase has just turned into a
-        # reservation (`forget_session`), and the standing-in for a row that no
-        # longer exists. The draft is an ordinary `draft:<id>` from the next
-        # listing on, numbered in its own folder.
+        # A TASK DRAFT BOUND TO IT GOES TOO (Akshil, 2026-09-15; design.md,
+        # PR C: "Delete + erase drop BOTH"). It used to be UNBOUND instead —
+        # words kept, binding cut, the form coming back as an ordinary
+        # `draft:<id>` row in its own folder — on the reading that a form
+        # somebody is still filling in outlives the conversation it was aimed
+        # at. What that actually produced was half a message addressed to a
+        # thread this gesture had just destroyed, reappearing in a lane the
+        # reader had cleared, with a Schedule button that could no longer do
+        # what it said. Both shapes of "this session's unsent text" now answer
+        # to the same two verbs, which is the one thing delete and erase could
+        # never previously agree on.
         #
-        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126). Unbinding renumbers the
-        # draft, moves it into its own folder and drops its session — and the
-        # page is still drawing it with the erased session's TASK number, still
-        # holding that `session_id` in the form it would reopen, so pressing
-        # Schedule sent the message back into the conversation this gesture just
-        # destroyed. Announcing only the session's key fixed nothing: the draft
-        # is a different row. So the keys the store hands back are announced
-        # with it, below.
-        unbound = drafts.unbind_session(session_id)
+        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126): a page holding one — from
+        # before the binding, or from an older build — has to be told to drop
+        # it, so the keys the store hands back are announced with the task's.
+        dropped = drafts.delete_bound(session_id)
 
     tasks_store.mark_deleted(key)
-    tasks_watch.notify({key} | set(unbound))
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": erased, "removed": removed}
 

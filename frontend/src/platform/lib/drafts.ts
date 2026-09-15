@@ -158,6 +158,26 @@ export function chatDraftKey(sessionId: string | null, file: string | null): str
  *  spells it `NEW_CHAT_PREFIX` for the same reason, and the two must agree. */
 export const NEW_CHAT_PREFIX = "new:";
 
+/**
+ * IS THIS LISTING KEY ONE A CHAT DRAFT IS FILED UNDER?
+ *
+ * The Tasks listing files rows under four shapes and a chat draft answers to
+ * two of them: a bare SESSION id once the conversation exists, and
+ * `new:<file>` before it does — which is exactly `chatDraftKey`'s two answers,
+ * read backwards. The other two carry a prefix and a colon (`draft:<id>` for a
+ * task draft's row, `pending:<entry>` for a scheduled message with no session
+ * yet), and a session id can hold no colon at all (`drafts._SESSION_KEY`
+ * server-side), so the absence of one is the whole test.
+ *
+ * Asked by the shell when the listing says a key is GONE, to decide whether
+ * there are unsent words behind it to clean up (App.tsx).
+ */
+export function isChatDraftKey(key: string): boolean {
+  if (!key) return false;
+  if (key.startsWith(NEW_CHAT_PREFIX)) return true;
+  return !key.includes(":");
+}
+
 /** The file (or folder) a `new:<file>` key was opened on, or `""` for a key
  *  that is a session id. The twin of `drafts.new_chat_file` server-side, and it
  *  exists for the same one reason: a reader who has to get BACK to that chat
@@ -424,6 +444,55 @@ export function onChatDraftSpent(cb: (key: string) => void | Promise<void>): () 
 }
 
 /**
+ * WHO ELSE IS WRITING THIS TASK DRAFT — the chat half's twin, one record over
+ * (Bugbot #1166, "Task discard races in-flight PUT").
+ *
+ * The trash on a draft ROW can be pressed while the New task modal is open on
+ * that very form, with a debounced PUT already on the wire. `stop()` disarms
+ * only the NEXT write; the one already dispatched cannot be cancelled by
+ * anything short of the network, and it lands AFTER the DELETE and puts the row
+ * back — the exact race `NewJobModal`'s own Discard closes with
+ * `stop()` → `await settle()` → delete, and the row had no way to ask for it.
+ *
+ * This is that way: the card subscribes, and what it hands back is its
+ * in-flight write settling. `discardDraft` (shell/ScheduleTaskViews) awaits it
+ * before the DELETE goes out.
+ *
+ * NO `spent` SET, unlike the chat half, and the asymmetry is real rather than
+ * an omission. `spent` exists because a composer REMOUNTS and re-seeds itself
+ * from the server, so a key has to be able to say "those words are gone" to a
+ * reader that has not heard the news. A task draft has one door — its row — and
+ * the row is what has just been discarded, so there is nothing left to seed.
+ */
+const taskSpentListeners = new Set<(id: string, spent: boolean) => void | Promise<void>>();
+
+export function onTaskDraftSpent(
+  cb: (id: string, spent: boolean) => void | Promise<void>,
+): () => void {
+  taskSpentListeners.add(cb);
+  return () => {
+    taskSpentListeners.delete(cb);
+  };
+}
+
+/** "I am about to delete this draft — stand your writer down and tell me when
+ *  nothing of yours is still in the air." AWAITED, exactly like
+ *  `markChatDraftSpent`. */
+export function markTaskDraftSpent(id: string): Promise<void> {
+  return Promise.all([...taskSpentListeners].map((cb) => cb(id, true))).then(
+    () => undefined,
+  );
+}
+
+/** …and undone, when the DELETE it was standing down for FAILED. The row comes
+ *  back and the words are still on the server, so a card left with a stopped
+ *  autosave would go on holding edits it silently never saved
+ *  (`Autosave.resume`). */
+export function unmarkTaskDraftSpent(id: string): void {
+  for (const cb of taskSpentListeners) void cb(id, false);
+}
+
+/**
  * THE DRAFT'S KEY MOVES WITH THE SESSION IT TURNED OUT TO BE, AND NOT FROM HERE
  * (design.md, Round 2: "Every draft has a TASK number").
  *
@@ -544,19 +613,56 @@ export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
  *  start of the wait or in the middle of it makes no difference to the reader:
  *  the words came back after they were sent. */
 export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
-  if (spent.has(key)) return null;
+  // A lookup that failed and a composer with nothing in it read the same here,
+  // and that is right for THIS caller: seeding a composer from nothing is the
+  // state it is already in, and there is nothing to lose by it. The callers that
+  // must tell the two apart take `readChatDraft` below.
+  return (await readChatDraft(key)).draft;
+}
+
+/** What one chat draft's key holds, and whether the question was answered. */
+export interface ChatDraftRead {
+  /** The stored draft, or `null` — there is none, or the key is spent. */
+  draft: ChatDraft | null;
+  /** Did the read actually ANSWER? `false` is "could not find out" — offline, a
+   *  500, a document unloading mid-flight — and is never "there is none". */
+  read: boolean;
+}
+
+/**
+ * One chat draft, with "there is no draft" and "could not find out" kept apart
+ * (`fetchDrafts` draws the same line one width up, and for the same reason).
+ *
+ * `fetchChatDraft` above collapses the two because a composer seeding from
+ * nothing is already empty and loses nothing by it. The caller that CANNOT
+ * collapse them is the one that is about to DESTROY the record it is reading —
+ * the chat's landing list, where pressing a `new:<file>` row moves the words
+ * into the composer and drops the source (`ClaudeChat.onFillDraft`, Bugbot
+ * #1166). Reading "no draft" out of a failed request there deleted a draft
+ * after copying the row's clipped preview in its place.
+ *
+ * A SPENT KEY IS ALWAYS `{draft: null, read: true}`, whatever the server still
+ * holds: those words are sent, and that IS the answer (see `spent`).
+ *
+ * CHECKED TWICE — before the request, so the ordinary resurrection costs not
+ * even a round trip, and AGAIN once the answer is in hand (Bugbot, PR #1118,
+ * 2026-09-11). A GET dispatched a moment before the send is a GET that passed
+ * the first check while the key was still live, and it answers out of a
+ * snapshot taken before the DELETE landed. Whether the key went spent at the
+ * start of the wait or in the middle of it makes no difference to the reader:
+ * the words came back after they were sent.
+ */
+export async function readChatDraft(key: string): Promise<ChatDraftRead> {
+  if (spent.has(key)) return { draft: null, read: true };
   // EVERY WRITE ON THIS KEY THAT IS STILL IN THE AIR IS WAITED FOR FIRST (see
   // `inflightChat`): the composer that is being replaced flushes on unmount,
   // and reading past those PUTs hands the new box the previous draft.
   await settleChatWrites(key);
-  if (spent.has(key)) return null;
+  if (spent.has(key)) return { draft: null, read: true };
   const all = await fetchDrafts();
-  if (spent.has(key)) return null;
-  // A lookup that failed and a composer with nothing in it read the same here,
-  // and that is right for THIS caller: seeding a composer from nothing is the
-  // state it is already in, and there is nothing to lose by it. The caller that
-  // must tell the two apart is the bound-draft hop — see `fetchDrafts`.
-  return all?.chat[key] ?? null;
+  if (spent.has(key)) return { draft: null, read: true };
+  if (!all) return { draft: null, read: false };
+  return { draft: all.chat[key] ?? null, read: true };
 }
 
 /** What `useAutosave` hands back: the things a caller ever needs to do to a
@@ -605,6 +711,23 @@ export interface Autosave<T> {
    * one already in flight. See `settle`.
    */
   stop(): void;
+  /**
+   * …AND BACK ON AGAIN, for the one caller whose reason for stopping turned out
+   * not to hold (Bugbot #1166).
+   *
+   * A card stands its autosave down when it hears its own row discarded
+   * (`onTaskDraftSpent`) — and a DELETE can FAIL. The row comes back, the words
+   * are still on the server, and a card left permanently stopped would go on
+   * collecting edits it silently never saved. Nothing else resumes: `stop` is
+   * still one-way for the send, the schedule and the Discard, which all end the
+   * draft for good.
+   *
+   * Re-arming is the next CHANGE's job, not this call's: the debounce effect
+   * runs on every render whose value differs from what was last written, so a
+   * resume with nothing typed since has nothing to write and correctly writes
+   * nothing.
+   */
+  resume(): void;
   /**
    * WAIT OUT WHATEVER WRITE IS RUNNING, if any.
    *
@@ -753,6 +876,9 @@ export function useAutosave<T>(
     stopped.current = true;
     clear();
   }, []);
+  const resume = useCallback(() => {
+    stopped.current = false;
+  }, []);
   const reset = useCallback((next: T) => {
     clear();
     // The VALUE as well as the bookkeeping — see `Autosave.reset`. Until the
@@ -798,5 +924,5 @@ export function useAutosave<T>(
     };
   }, [flush]);
 
-  return { flush, stop, reset, settle };
+  return { flush, stop, resume, reset, settle };
 }

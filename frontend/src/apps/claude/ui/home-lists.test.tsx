@@ -33,9 +33,9 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { draftTextOf, sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
-  "./list-rows"
-);
+const { draftContentOf, draftMovesOut, joinIntoBox, sessionTitle: rowsSessionTitle, taskInPane, taskPane } =
+  await import("./list-rows");
+const { onChatDraftSpent } = await import("@platform/lib/drafts");
 const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
 const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
 const { MARKER_JOIN } = await import("../protocol/wire");
@@ -986,16 +986,159 @@ test("a LOCKED block still refuses every draft row", () => {
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
+test("A MOVE READS THE WHOLE RECORD, never the row's clipped preview", async () => {
+  // Bugbot #1166. The row carries a 120-character `preview`; the record carries
+  // the text AND the tray. A press that MOVES deletes what it read, so it has to
+  // have read the record — the old reader answered the preview on a failed fetch
+  // and the full draft was deleted behind it.
+  const real = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        chat: {
+          "new:/repo/x.py": {
+            text: "ship the thing, and all of the rest of the sentence",
+            attachments: [{ path: "/shots/a1.png", name: "a1.png", kind: "image" }],
+            updated_at: 1,
+          },
+        },
+        task: {},
+      }),
+    }) as unknown as Response;
+  try {
+    const got = await draftContentOf(chatDraft());
+    expect(got.text).toBe("ship the thing, and all of the rest of the sentence");
+    expect(got.attachments.map((a) => a.path)).toEqual(["/shots/a1.png"]);
+    expect(got.whole).toBe(true);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = real;
+  }
+});
+
+test("…and a read that never answered is a STAND-IN, which a move may not act on", async () => {
+  const real = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () =>
+    ({ ok: false, status: 500, json: async () => ({}) }) as unknown as Response;
+  try {
+    const got = await draftContentOf(chatDraft({ key: "new:/repo/gone.py" }));
+    // The preview is still offered — a copy loses nothing by it — but `whole`
+    // says it is not the record, and `ClaudeChat.onFillDraft` copies nothing and
+    // keeps the source on that answer.
+    expect(got.whole).toBe(false);
+    expect(got.text).toBe("ship the thing");
+    expect(got.attachments).toEqual([]);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = real;
+  }
+});
+
+test("the box's join is spelled once, and the move predicts it", () => {
+  // `Composer`'s restore seat appends; the move has to write the destination
+  // draft with what the box is ABOUT to hold, so both read this one function.
+  expect(joinIntoBox("", "second")).toBe("second");
+  expect(joinIntoBox("first", "second")).toBe("first\nsecond");
+  expect(joinIntoBox("first   \n\n", "second")).toBe("first\nsecond");
+  expect(joinIntoBox("   ", "second")).toBe("second");
+  expect(joinIntoBox("first", "")).toBe("first");
+});
+
 test("a TASK draft's words come off the form already on the row", async () => {
   // No fetch for this kind: the whole stored form rides on the row (it is what
   // the modal used to reopen on), so the description is read straight off it
   // and the title stands in for a title-only form.
   const form = (f: Record<string, unknown>) =>
     chatDraft({ draft_kind: "task", draft_id: "d-1", draft: null, form: f } as Partial<Task>);
-  expect(await draftTextOf(form({ title: "Ship it", description: "and run the tests" })))
+  expect((await draftContentOf(form({ title: "Ship it", description: "and run the tests" }))).text)
     .toBe("and run the tests");
-  expect(await draftTextOf(form({ title: "Ship it" }))).toBe("Ship it");
-  expect(await draftTextOf(form({ title: "Ship it", description: "   " }))).toBe("Ship it");
+  expect((await draftContentOf(form({ title: "Ship it" }))).text).toBe("Ship it");
+  expect((await draftContentOf(form({ title: "Ship it", description: "   " }))).text)
+    .toBe("Ship it");
+});
+
+test("A DRAFT ROW CARRIES THE DISCARD, and no other row does", () => {
+  // design.md, PR C: the one action a draft row has. Same class as the List's
+  // missing-folder trash, so it is the same button under the same hover rule.
+  const { r } = pressDraft([chatDraft()]);
+  const trash = r.root.findAll(
+    (n) => typeof n.type === "string"
+      && String((n.props as { className?: string }).className ?? "")
+        .split(/\s+/).includes("tasks-act--delete"),
+  );
+  expect(trash.length).toBe(1);
+  expect((trash[0].props as { title?: string }).title).toBe("Discard draft");
+
+  const plain = mount(
+    <Lists {...TABBED} recent={[chat("s1")]} onOpen={() => {}} onFillDraft={() => {}} />,
+  );
+  expect(plain.root.findAll(
+    (n) => typeof n.type === "string"
+      && String((n.props as { className?: string }).className ?? "")
+        .split(/\s+/).includes("tasks-act--delete"),
+  ).length).toBe(0);
+});
+
+test("pressing it spends the key, deletes the draft, and never presses the row", async () => {
+  // THE ORDER IS THE MODAL'S DISCARD ORDER (`discardDraft`): the composer
+  // holding these words is emptied and its in-flight write settled BEFORE the
+  // DELETE goes out, or that write lands after it and puts the draft back.
+  const calls: Array<{ method: string; url: string }> = [];
+  const heard: string[] = [];
+  const offSpent = onChatDraftSpent((key) => {
+    heard.push(key);
+  });
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown, init?: { method?: string }) => {
+    calls.push({ method: init?.method ?? "GET", url: String(input) });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+  };
+  try {
+    const { r, pressed } = pressDraft([chatDraft()]);
+    const trash = r.root.find(
+      (n) => typeof n.type === "string"
+        && String((n.props as { className?: string }).className ?? "")
+          .split(/\s+/).includes("tasks-act--delete"),
+    );
+    let stopped = false;
+    await act(async () => {
+      (trash.props as { onClick(e: unknown): void }).onClick({
+        stopPropagation: () => {
+          stopped = true;
+        },
+      });
+      // A macrotask, not a microtask drain: the handler's own `finally` lands
+      // after the stubbed fetch resolves, and it sets state — so it has to be
+      // inside this `act` or React says so.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(stopped).toBe(true);
+    expect(pressed).toEqual([]);
+    expect(heard).toEqual(["new:/repo/x.py"]);
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "DELETE /api/drafts/chat/new%3A/repo/x.py",
+    ]);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+    offSpent();
+  }
+});
+
+test("A PRESS IS A MOVE, except on this composer's own draft", () => {
+  // The words land in a box that has a draft key of its own, so leaving the
+  // source behind would make one sentence two rows in two folders. The
+  // exception is the row that IS this box.
+  expect(draftMovesOut(chatDraft({ key: "new:/repo/other.py" }), "/repo/x.py")).toBe(true);
+  expect(draftMovesOut(chatDraft(), "/repo/x.py")).toBe(false);
+  // A task draft moves too (bugbot, 2026-09-15 live repro): leaving it in
+  // place while copying its words duplicated the row — the form stayed AND a
+  // new chat draft appeared under the words just copied from it.
+  expect(draftMovesOut(
+    chatDraft({ key: "draft:d-7", draft_kind: "task", draft_id: "d-7" } as Partial<Task>),
+    "/repo/x.py",
+  )).toBe(true);
+  // …and an ordinary conversation is not a draft at all.
+  expect(draftMovesOut(chat("s1"), "/repo/x.py")).toBe(false);
 });
 
 test("a host that offers no fill leaves the row inert rather than lit and dead", () => {

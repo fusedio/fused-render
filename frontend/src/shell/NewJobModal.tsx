@@ -36,6 +36,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
   deleteTaskDraft,
+  fetchDrafts,
   newChatFile,
   NEW_CHAT_PREFIX,
   newTaskDraftId,
@@ -56,6 +57,8 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { onGone } from "./tasksPulse";
+import { onTaskDraftSpent } from "@platform/lib/drafts";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -3418,6 +3421,77 @@ export default function NewJobModal({
   }, { writeInitial: hopSeeded });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
+  /**
+   * THE DRAFT THIS CARD SAVES INTO WAS DISCARDED SOMEWHERE ELSE (design.md,
+   * PR C).
+   *
+   * The draft row now carries a trash, and it can be pressed while this card is
+   * open on the very same form — from the List behind it, from the Board, from
+   * another window entirely. The autosave knew nothing about that: the next
+   * keystroke, or merely closing the card (the unmount flush), PUT the form
+   * straight back under its old id, and the row the reader had just discarded
+   * reappeared.
+   *
+   * So the card hears the row leave and stands its writer down. `stop` is
+   * permanent and covers every path in one — the pending debounce, the next
+   * keystroke, the unload flushes and the unmount — so nothing this card does
+   * from here on can re-mint what was thrown away. The CARD is left alone: it
+   * still holds the words, Schedule still works (that path mints a real task and
+   * never needs the draft), and closing a modal out from under somebody over
+   * news from another window would be the worse failure.
+   *
+   * `draft:<id>` is the key a task draft's row is listed under
+   * (`fused_render/drafts.task_key`).
+   *
+   * TWO DOORS, because the news arrives two different ways and only one of them
+   * can be waited on (Bugbot #1166):
+   *
+   *   * `onTaskDraftSpent` is the discard IN THIS DOCUMENT saying so BEFORE it
+   *     deletes, and what this hands back is the card's in-flight write
+   *     settling — `stop` disarms the next write, never the one already on the
+   *     wire, and that one lands after the DELETE and puts the row back. It also
+   *     RESUMES: a DELETE that failed leaves the draft on the server and the row
+   *     on the page, and a card that went on collecting edits it silently never
+   *     saved would be the worse half of the same bug.
+   *   * `onGone` is the listing reporting a row that left — another window's
+   *     discard, a send that spent it — where there is nobody to wait for and
+   *     nothing to resume.
+   *
+   * AND `onGone` IS VERIFIED BEFORE IT STOPS ANYTHING (Bugbot #1166), which is
+   * not optional. `gone` means "this key is not a listing row", not "this
+   * draft was deleted" — and a SESSION-BOUND form is never a row: the modal
+   * that opened on a Schedule hop already has its `session_id` set, so its
+   * first save announces the `draft:<id>` key gone the instant the server
+   * answers (there is no row behind a bound draft, only the session's own),
+   * while the card carrying it is still open on screen. Stopping on that alone
+   * permanently disarmed this card's autosave with nobody having discarded
+   * anything — every edit after it, including the unmount flush, silently
+   * wrote nothing. So the drafts are read back — the same door App.tsx's own
+   * chat-draft twin uses — and only an id the server truly no longer holds is
+   * stopped. A read that FAILS stops nothing: "could not find out" is not "it
+   * is gone" (`fetchDrafts`, which answers null for exactly that case).
+   */
+  useEffect(() => onTaskDraftSpent((id, spent) => {
+    if (!id || id !== draftIdRef.current) return;
+    if (!spent) {
+      autosaveRef.current.resume();
+      return;
+    }
+    autosaveRef.current.stop();
+    return autosaveRef.current.settle();
+  }), []);
+  useEffect(() => onGone((keys) => {
+    const id = draftIdRef.current;
+    if (!id || !keys.includes(`draft:${id}`)) return;
+    void fetchDrafts().then((snapshot) => {
+      if (!snapshot) return;
+      // The id may have moved on (the write this card's own autosave adopts
+      // an id from) while the read was in flight — stopping THAT one on a
+      // stale check would be exactly the bug this door exists to close.
+      if (draftIdRef.current !== id) return;
+      if (!snapshot.task[id]) autosaveRef.current.stop();
+    });
+  }), []);
   // Discard: the draft goes, and so does the card. `stop` first — a write still
   // in the debounce would otherwise land after the DELETE and put it back.
   // `stop` alone only disarms the NEXT write, though: a PUT already sent to

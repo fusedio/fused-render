@@ -12,6 +12,7 @@ export type {
   ComposerProps,
   ComposerCardProps,
   ComposerControls,
+  ComposerAutosave,
 } from "./Composer";
 export { ModelSelect } from "./ModelSelect";
 export { EffortSelect } from "./EffortSelect";
@@ -88,7 +89,9 @@ export {
 export type { ComposerDefaults } from "./composer-defaults";
 export {
   ago,
-  draftTextOf,
+  draftContentOf,
+  draftMovesOut,
+  joinIntoBox,
   paneChatUrl,
   paneSlashes,
   sessionTitle,

@@ -2139,6 +2139,58 @@ describe("a draft moves with the reader, never duplicating", () => {
   });
 });
 
+// ---- `onGone` verifies before it stops the card's autosave -------------------
+//
+// THE BUG (Bugbot #1166). `onGone` fires the moment the LISTING reports
+// `draft:<id>` as a row that left — which is also the shape the very first
+// autosave from a Schedule hop takes, before the row it is about to become has
+// ever existed. Reading `gone` as "discarded" and stopping on it alone left a
+// session-bound card sitting open with a permanently disarmed autosave: no
+// later edit, and no unmount flush, ever wrote again.
+
+describe("onGone verifies the draft is actually gone before it stops anything", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  function onGoneBody(s: string): string {
+    const start = s.indexOf('useEffect(() => onGone((keys) => {');
+    const end = s.indexOf("// Discard: the draft goes, and so does the card.");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return s.slice(start, end);
+  }
+
+  test("it reads GET /api/drafts back before it stops anything", () => {
+    // Same door `App.tsx`'s own chat-draft twin uses for the identical
+    // question ("is this key really not a row, or did I just not check").
+    const body = onGoneBody(src());
+    expect(body).toContain("fetchDrafts()");
+    // The stop is gated behind the read's own answer, not fired unconditionally
+    // the moment the key is seen in `keys` — the ordering the original bug had.
+    expect(body.indexOf("fetchDrafts()"))
+      .toBeLessThan(body.indexOf("autosaveRef.current.stop()"));
+  });
+
+  test("only an id the snapshot does NOT hold is stopped", () => {
+    // `!snapshot.task[id]` (or an equivalent falsy check on it) is what the
+    // stop is conditioned on — a snapshot that DOES carry the id must leave the
+    // autosave running, which is the whole of the fix.
+    const body = onGoneBody(src());
+    expect(body).toContain("snapshot.task[id]");
+    const stopLine = body.indexOf("autosaveRef.current.stop()");
+    const guardLine = body.lastIndexOf("if (", stopLine);
+    expect(body.slice(guardLine, stopLine)).toContain("snapshot.task[id]");
+  });
+
+  test("a read that fails stops nothing — 'could not find out' is not 'it is gone'", () => {
+    const body = onGoneBody(src());
+    // The promise's body bails on a null snapshot before it ever reaches the
+    // stop — `fetchDrafts` answers null for exactly a failed read.
+    const then = body.slice(body.indexOf(".then((snapshot) => {"));
+    expect(then.indexOf("if (!snapshot) return;"))
+      .toBeLessThan(then.indexOf("autosaveRef.current.stop()"));
+  });
+});
+
 // ---- the hop's chat draft does not outlive the task it became ----------------
 //
 // THE BUG (Bugbot, PR #1118). The composer's Schedule button carries what is in

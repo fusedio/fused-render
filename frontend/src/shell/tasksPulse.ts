@@ -756,6 +756,43 @@ export function subscribeListing(
   };
 }
 
+/**
+ * ONE RUN IN FLIGHT AT A TIME, for a caller whose trigger can genuinely storm
+ * (bugbot / live repro, 2026-09-15: a server bug kept re-announcing one
+ * `new:<file>` key as `gone` on every long-poll, and each announcement was its
+ * own `fetchDrafts()` — hundreds of `GET /api/drafts` a second on a real
+ * machine). A burst of calls that lands while a run is still out does not
+ * start its own: it only remembers the newest argument, and the run already
+ * in flight repeats for THAT argument the instant it settles — looping until
+ * nothing is left waiting, rather than piling requests up one per trigger.
+ *
+ * Generic on purpose but with exactly one caller today (App.tsx's
+ * `onGone` → `fetchDrafts`), and pulled out here rather than left inline in
+ * that effect so it has its own test that never has to mount App — the same
+ * reasoning `useAppPageSnapshot`'s extraction out of `AppPage.tsx` gives
+ * (AppPage.test.tsx).
+ */
+export function coalesceLatest<T>(run: (arg: T) => Promise<void>): (arg: T) => void {
+  let inFlight = false;
+  let pending: { arg: T } | null = null;
+  const go = (arg: T) => {
+    inFlight = true;
+    void run(arg).finally(() => {
+      inFlight = false;
+      const next = pending;
+      pending = null;
+      if (next) go(next.arg);
+    });
+  };
+  return (arg: T) => {
+    if (inFlight) {
+      pending = { arg };
+      return;
+    }
+    go(arg);
+  };
+}
+
 /** The keys the server said LEFT, for a reader that has something to clean up
  *  behind a task that is gone (PR C: a composer still holding a deleted
  *  draft's words). Does not start the feed on its own — it is a side channel on
@@ -765,6 +802,77 @@ export function onGone(cb: (keys: string[]) => void): () => void {
   return () => {
     goneSubs.delete(cb);
   };
+}
+
+/**
+ * THESE ROWS ARE GONE — say so NOW, before the server has been asked.
+ *
+ * The optimistic half of a discard (PR C: the trash on a draft row). The row
+ * the reader just pressed has to leave under the pointer, not after a DELETE
+ * and a re-read; and it has to leave EVERYWHERE, because the same draft is a
+ * row in the List, a card on the Board and a line in the chat's Recent list,
+ * and three surfaces dropping it at three different moments is the flicker the
+ * one feed exists to prevent.
+ *
+ * The held listing is the one place all three read from, so the drop happens
+ * there and every subscriber hears one event. It is announced as a `gone`
+ * DELTA, exactly as the long-poll would have announced it — so `onGone` fires
+ * and the cleanup behind a vanished draft (a composer still holding its words)
+ * runs the same way whoever pressed the button.
+ *
+ * NOT A SUBSTITUTE FOR THE REQUEST. The caller still deletes and still pokes;
+ * this only decides what the page shows in between. If the delete fails, the
+ * next read puts the row back, which is the right answer — the draft is still
+ * there.
+ *
+ * `listingGen` is deliberately NOT bumped: this is not news from the server and
+ * must not make the server's next answer look stale.
+ */
+export function dropListingKeys(keys: readonly string[]): void {
+  const gone = keys.filter((key) => !!key);
+  if (!gone.length) return;
+  const held = readListing();
+  if (held === null) {
+    // Nothing on screen to take it off. The cleanup behind the key still has to
+    // run, so the event goes out with no rows of its own.
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  const merged = mergeTaskChanges(held, [], [...gone]);
+  if (merged.length === held.length) {
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [], gone: [...gone] } });
+}
+
+/**
+ * …AND BACK, when the write the drop was optimistic about FAILED.
+ *
+ * `dropListingKeys` takes a row off the page before the server has been asked.
+ * If the DELETE then does not land, the draft is still there — and leaving the
+ * page saying otherwise until the next floor refresh is the page lying about
+ * what the reader still has (Bugbot #1166). The rows go back into the held
+ * listing through the same merge a change-poll uses, so they land in the right
+ * order rather than at the end.
+ *
+ * `listingGen` is untouched for `dropListingKeys`' reason: neither of these is
+ * news from the server, and neither may make the server's next answer look
+ * stale.
+ */
+export function restoreListingRows(rows: readonly Task[]): void {
+  const back = rows.filter((row) => !!row && !!row.key);
+  if (!back.length) return;
+  const held = readListing();
+  // Nothing is being held, so there is nothing to put a row back INTO — the
+  // next read answers with it anyway, which is the state a failed drop wanted.
+  if (held === null) return;
+  const merged = mergeTaskChanges(held, [...back], []);
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [...back], gone: [] } });
 }
 
 /** "Something just changed — re-read the listing NOW." Collapsed to one read

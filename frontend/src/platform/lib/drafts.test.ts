@@ -28,11 +28,16 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
 import {
   chatDraftKey,
+  isChatDraftKey,
   deleteChatDraft,
   fetchChatDraft,
   markChatDraftSpent,
   newChatFile,
   onChatDraftSpent,
+  onTaskDraftSpent,
+  markTaskDraftSpent,
+  readChatDraft,
+  unmarkTaskDraftSpent,
   saveChatDraft,
   saveTaskDraft,
   useAutosave,
@@ -354,6 +359,99 @@ function recordFetch(): { calls: { url: string; init: RequestInit }[]; restore: 
   return { calls, restore: () => { globalThis.fetch = real; } };
 }
 
+describe("readChatDraft", () => {
+  // Bugbot #1166: `fetchChatDraft` answers null for BOTH "there is none" and
+  // "could not find out", which is right for a composer seeding itself (already
+  // empty, nothing to lose) and catastrophic for the one caller that is about to
+  // DESTROY what it read — the move out of the chat's Recent list.
+  test("tells an empty key from a read that never answered", async () => {
+    const real = globalThis.fetch;
+    try {
+      globalThis.fetch = ((() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ chat: { "new:/a": { text: "words", attachments: [] } }, task: {} }),
+        } as Response)) as unknown) as typeof fetch;
+      expect((await readChatDraft("new:/a")).draft?.text).toBe("words");
+      expect(await readChatDraft("new:/b")).toEqual({ draft: null, read: true });
+
+      globalThis.fetch = ((() => Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
+      expect(await readChatDraft("new:/a")).toEqual({ draft: null, read: false });
+      // …and the old door still collapses the two, which is what its callers want.
+      expect(await fetchChatDraft("new:/a")).toBe(null);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test("a spent key is an ANSWER, not an unknown", async () => {
+    const real = globalThis.fetch;
+    try {
+      globalThis.fetch = ((() =>
+        Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
+      await markChatDraftSpent("new:/spent");
+      // Even with the server unreachable: those words are sent, and that is the
+      // whole answer — a caller must not read "unknown" and keep the source.
+      expect(await readChatDraft("new:/spent")).toEqual({ draft: null, read: true });
+    } finally {
+      unmarkChatDraftSpent("new:/spent");
+      globalThis.fetch = real;
+    }
+  });
+});
+
+describe("the task draft's spent signal", () => {
+  // The chat half has existed since PR #1140; this is its twin, and it exists
+  // for the race the row's trash opened (Bugbot #1166): the New task modal is
+  // open on the very form being discarded, with a PUT already on the wire.
+  test("is awaited, and can be taken back when the DELETE fails", async () => {
+    const heard: string[] = [];
+    let released = false;
+    const off = onTaskDraftSpent((id, spent) => {
+      heard.push(`${id}:${spent}`);
+      if (!spent) return;
+      return new Promise<void>((r) =>
+        setTimeout(() => {
+          released = true;
+          r();
+        }, 0),
+      );
+    });
+    await markTaskDraftSpent("d-7");
+    expect(heard).toEqual(["d-7:true"]);
+    expect(released).toBe(true); // AWAITED — the caller may not delete before this
+
+    unmarkTaskDraftSpent("d-7");
+    expect(heard).toEqual(["d-7:true", "d-7:false"]);
+    off();
+    // Nobody left listening is not an error.
+    await markTaskDraftSpent("d-7");
+    expect(heard.length).toBe(2);
+  });
+});
+
+describe("useAutosave().resume()", () => {
+  test("a stopped autosave writes again once its reason to stop is withdrawn", () => {
+    // A card stands down when its row is discarded and comes back up when that
+    // DELETE fails — otherwise it collects edits it silently never saves.
+    const calls: string[] = [];
+    const box = renderAutosave({ n: 0 }, (value) => {
+      calls.push(JSON.stringify(value));
+      return true;
+    });
+    box.current().stop();
+    box.rerender({ n: 1 });
+    box.current().flush();
+    expect(calls).toEqual([]);
+
+    box.current().resume();
+    box.rerender({ n: 2 });
+    box.current().flush();
+    expect(calls).toEqual(['{"n":2}']);
+    box.unmount();
+  });
+});
+
 describe("saveTaskDraft's from_chat_key", () => {
   test("is absent unless the caller names one", async () => {
     const f = recordFetch();
@@ -429,6 +527,19 @@ describe("the two shapes of a chat key", () => {
     expect(newChatFile("")).toBe("");
     // Nothing is trimmed or normalised — chatDraftKey's rule, held here too.
     expect(newChatFile("new:/Users/me/news/")).toBe("/Users/me/news/");
+  });
+
+  test("and tells a chat draft's listing key from every other row's", () => {
+    // The shell asks this of every key the listing says is GONE, to decide
+    // whether there are unsent words behind it to clean up (App.tsx). The two
+    // chat shapes are a bare session id and `new:<file>`; the other two rows
+    // carry a prefix, and a session id can hold no colon at all.
+    expect(isChatDraftKey(chatDraftKey("sess-9", null))).toBe(true);
+    expect(isChatDraftKey(chatDraftKey(null, "/Users/me/news"))).toBe(true);
+    expect(isChatDraftKey("new:")).toBe(true);
+    expect(isChatDraftKey("draft:d-7")).toBe(false);
+    expect(isChatDraftKey("pending:e-3")).toBe(false);
+    expect(isChatDraftKey("")).toBe(false);
   });
 });
 

@@ -8,6 +8,8 @@ import {
   CATCH_UP_SETTLE_MS,
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
+  coalesceLatest,
+  dropListingKeys,
   listingFeedLive,
   onGone,
   readListing,
@@ -418,5 +420,130 @@ describe("subscribeListing", () => {
     await settle();
     off();
     expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["a"]);
+  });
+});
+
+describe("dropListingKeys", () => {
+  test("takes the row off the held listing and announces it as gone", async () => {
+    const e = env([], [{ tasks: [row("a"), row("b")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+
+    dropListingKeys(["a"]);
+    const last = seen[seen.length - 1];
+    expect(last.rows.map((t) => t.key)).toEqual(["b"]);
+    // Announced as the long-poll would have announced it, so the cleanup behind
+    // a vanished draft runs whoever pressed the button.
+    expect(last.delta).toEqual({ rows: [], gone: ["a"] });
+    expect(gone[gone.length - 1]).toEqual(["a"]);
+    expect(readListing()?.map((t) => t.key)).toEqual(["b"]);
+    off();
+    offGone();
+  });
+
+  test("a key nothing is holding still reaches onGone, and repaints nobody", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    const painted = seen.length;
+
+    dropListingKeys(["new:/somewhere/else"]);
+    expect(gone[gone.length - 1]).toEqual(["new:/somewhere/else"]);
+    expect(seen.length).toBe(painted);
+    off();
+    offGone();
+  });
+
+  test("nothing at all for an empty list", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    dropListingKeys([]);
+    dropListingKeys([""]);
+    expect(gone).toEqual([]);
+    off();
+    offGone();
+  });
+
+  test("the drop does NOT age the generation the server's next answer is judged by",
+    async () => {
+      // A local removal is not news from the server, so a full read that left
+      // before it must still land — otherwise the row would be stuck gone until
+      // something else moved.
+      const e = env([], [{ tasks: [row("a"), row("b")], generation: 5 },
+                         { tasks: [row("b")], generation: 5 }]);
+      const seen: ListingEvent[] = [];
+      const off = subscribeListing((ev) => seen.push(ev), e);
+      await settle();
+      dropListingKeys(["a"]);
+      refreshListing();
+      await settle();
+      expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["b"]);
+      off();
+    });
+});
+
+describe("coalesceLatest", () => {
+  // bugbot / live repro, 2026-09-15: App.tsx's onGone handler used to start a
+  // fresh `fetchDrafts()` on every fire. A server bug that kept re-announcing
+  // one key as `gone` turned that into hundreds of reads a second; this is
+  // the cap — one run in flight, a burst collapses onto the newest argument.
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  test("a call that arrives mid-run does not start its own — it waits and runs once more, for the newest argument", async () => {
+    const runs: string[] = [];
+    const gates: Array<ReturnType<typeof deferred<void>>> = [];
+    const dispatch = coalesceLatest<string>((arg) => {
+      runs.push(arg);
+      const gate = deferred<void>();
+      gates.push(gate);
+      return gate.promise;
+    });
+
+    dispatch("a");
+    expect(runs).toEqual(["a"]); // starts at once: nothing else in flight
+
+    // Two more arrive while "a" is still running — neither starts its own run;
+    // only the newest of them is remembered.
+    dispatch("b");
+    dispatch("c");
+    expect(runs).toEqual(["a"]);
+
+    gates[0].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "c"]); // "b" was dropped, "c" is the one that ran
+
+    gates[1].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "c"]); // nothing pending: no third run
+  });
+
+  test("calls with no overlap each get their own run", async () => {
+    const runs: string[] = [];
+    const dispatch = coalesceLatest<string>((arg) => {
+      runs.push(arg);
+      return Promise.resolve();
+    });
+    dispatch("a");
+    await Promise.resolve();
+    await Promise.resolve();
+    dispatch("b");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runs).toEqual(["a", "b"]);
   });
 });

@@ -100,7 +100,8 @@ import {
   CardPolicyProvider,
   Composer,
   createCardPolicy,
-  draftTextOf,
+  draftContentOf,
+  draftMovesOut,
   Home,
   openCardIds,
   resetCardPolicy,
@@ -128,6 +129,7 @@ import {
   useTaskId,
   type TranscriptTail,
   type Viewable,
+  type ComposerAutosave,
 } from "./ui";
 import { recapAnchor } from "./protocol/recap";
 import { useChatRecapEnabled } from "./feature-flag";
@@ -135,6 +137,10 @@ import { useSchedule } from "./sched/useSchedule";
 import { createLiveWatch } from "./live/watch";
 import { getClaudeSessionLiveness, type Task } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
+import { discardDraft } from "@shell/ScheduleTaskViews";
+import { isChatDraftTask } from "@shell/tasks-lib";
+import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
+import { notify } from "@platform/lib/notifications";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -1814,8 +1820,12 @@ function ChatBody(props: ChatBodyProps) {
   /** The words a pressed draft row put in the LANDING's composer — the same
    *  `{text, seq}` seat a stranded follow-up comes back on, kept apart from
    *  `stranded` because that one is about a turn that was running and this one
-   *  is about a row the reader pointed at (`onFillDraft`). */
-  const [landingFill, setLandingFill] = useState<{ text: string; seq: number } | null>(null);
+   *  is about a row the reader pointed at (`onFillDraft`). Always `replace:
+   *  true` — its one producer is a draft row's whole content, which is never
+   *  joined onto whatever the box held (bug report, 2026-09-15). */
+  const [landingFill, setLandingFill] = useState<
+    { text: string; seq: number; replace: true } | null
+  >(null);
   const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
@@ -2202,37 +2212,186 @@ function ChatBody(props: ChatBodyProps) {
    * reader is looking straight at it — so nothing navigates, nothing enters,
    * and no URL moves. The text lands in the box with the caret after it.
    *
-   * THROUGH THE SAME SEAT STRANDED WORDS COME BACK ON (`restore`): it appends
-   * rather than replaces, which is the right way round for a box that may
-   * already hold something the reader typed — a press must never eat words.
-   * Its own counter, because the landing's composer and the chat's are two
-   * instances with two delivery ledgers and a hand-back is not a draft press.
+   * THROUGH THE SAME SEAT STRANDED WORDS COME BACK ON (`restore`), with
+   * `replace: true` (bug report, 2026-09-15): a row's whole content REPLACES
+   * whatever the box held, it does not join onto it — "make sure text before
+   * it in composer is cleaned and only draft text is there". Its own counter,
+   * because the landing's composer and the chat's are two instances with two
+   * delivery ledgers and a hand-back is not a draft press.
    *
-   * ALREADY IN THE BOX IS NOT FILLED AGAIN. The landing composer seeds itself
-   * from this folder's own `new:<file>` draft, so the row for THIS folder names
-   * words that are already on screen; filling would print them twice. That case
-   * is a focus request and nothing more, which is also exactly what it should
-   * be — the reader is asking for the box.
+   * THIS COMPOSER'S OWN ROW IS A FOCUS REQUEST AND NOTHING ELSE, checked
+   * BEFORE anything is read (bug report, 2026-09-15). It is drawn as a row
+   * only because it names the key this very box already autosaves under, so
+   * pressing it is not a fill at all — replacing from a stale GET would throw
+   * away anything typed since the box's own last write, which a request for
+   * the keyboard must never do.
+   *
+   * A SECOND PRESS ON A ROW ALREADY MOVING IS IGNORED, not a second draft
+   * (bug report, 2026-09-15: pressing the same row two or three times used to
+   * mint a fresh `new:<file>` draft under the same words each time, because
+   * nothing here waited for the first move to land or for the list to catch
+   * up and drop the row). `movingKeys` guards the SOURCE key — this composer
+   * has exactly one destination, so the source is the only side two presses
+   * in flight together could disagree about.
    */
   const fillSeq = useRef(0);
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
+  /** THIS composer's own autosave, reached into from the move below so it can
+   *  settle whatever it already has running before a write from outside lands
+   *  on top of it (Bugbot #1166 — "an older PUT lands after and overwrites").
+   *  Filled by whichever composer is mounted on `card.autosaveRef` — the
+   *  landing's, since a move only ever happens while Home is on screen. */
+  const composerAutosaveRef = useRef<ComposerAutosave | null>(null);
+  const movingKeys = useRef<Set<string>>(new Set());
   const onFillDraft = useCallback((task: Task) => {
-    void draftTextOf(task).then((text) => {
-      const box = boxRef.current;
-      if (text && !(box && box.value.includes(text))) {
-        fillSeq.current += 1;
-        setLandingFill({ text, seq: fillSeq.current });
-      }
-      // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
-      // That prop is ambient policy — "may this composer take the keyboard merely
-      // by appearing" — and the explorer's folder pane says no on purpose
-      // (`apps/explorer/ListingPreviewPane` mounts the chat `noFocus` so the
-      // listing keeps the keyboard). A row whose whole content is an unsent
-      // sentence is a request, not an arrival: the caret belongs in the box the
-      // words are in, or the promise the row makes (press Enter and this sends)
-      // is one the reader has to click to collect (Akshil QA, 2026-09-14).
+    const destKey = chatDraftKey(null, file);
+    // EVERY OTHER DRAFT MOVES — chat or task alike (bugbot, 2026-09-15: a
+    // build that special-cased task drafts as read-only left the row behind
+    // AND minted a second, duplicate chat draft under the words it had just
+    // copied — two records for one press). This folder's OWN chat draft is
+    // the one exception: it is the box already on screen, drawn as a row, so
+    // pressing it is a request for the box, not a move out of it (design.md,
+    // PR C).
+    const moving = draftMovesOut(task, file);
+    if (isChatDraftTask(task) && !moving) {
       setFocusReq((n) => n + 1);
+      return;
+    }
+    if (moving && movingKeys.current.has(task.key)) {
+      setFocusReq((n) => n + 1);
+      return;
+    }
+    if (moving) movingKeys.current.add(task.key);
+    void (async () => {
+      try {
+        // THE WHOLE RECORD, text AND tray, rather than the row's clipped
+        // preview (Bugbot #1166). A move destroys what it reads, so it may
+        // only act on something it actually read: a fetch that never
+        // answered used to fall back to the 120-character preview and
+        // delete the full draft behind it.
+        const content = await draftContentOf(task);
+        if (moving && !content.whole) {
+          notify({
+            title: "Couldn't read that draft",
+            detail: "It was left where it is — try again in a moment.",
+            tone: "error",
+          });
+          setFocusReq((n) => n + 1);
+          return;
+        }
+        // A SPENT OR TRULY EMPTY SOURCE IS NOTHING TO MOVE (bugbot HIGH
+        // 4018903486, "second press wipes a completed move"). A second press
+        // that lands after the first one's own `discardDraft` has already
+        // spent (or deleted) this very key reads back `{text: "", whole:
+        // true}` — an ANSWER, not a stand-in, so the guard above never catches
+        // it — and blindly filling from it would overwrite a box that already
+        // holds the words the first press just moved there, and saving it
+        // would write an empty record over the destination and could delete
+        // the draft that had just landed. Nothing here to move, so nothing
+        // here to do but ask for the box, same as any other press.
+        if (moving && !content.text.trim() && !content.attachments.length) {
+          setFocusReq((n) => n + 1);
+          return;
+        }
+        const box = boxRef.current;
+        const before = box?.value ?? "";
+        // REPLACES, NEVER JOINS (bug report, 2026-09-15). A row's whole
+        // content is the message the reader is about to pick up; whatever the
+        // box held before it is not a second draft worth keeping — `stranded`
+        // elsewhere in this file is the one seat that still joins, for a
+        // follow-up handed back onto words the reader may still be typing.
+        if (content.text !== before) {
+          fillSeq.current += 1;
+          setLandingFill({ text: content.text, seq: fillSeq.current, replace: true });
+        }
+        if (moving) {
+          const destAutosave = composerAutosaveRef.current;
+          // SETTLE WHATEVER THIS BOX'S OWN AUTOSAVE ALREADY HAS RUNNING,
+          // before this move writes over it from outside (Bugbot #1166: "an
+          // older PUT lands after and overwrites"). `stop` disarms only the
+          // NEXT write; a PUT already on the wire from a keystroke a moment
+          // ago cannot be cancelled and would land whenever the network
+          // answers — after the line below, undoing it. Resumed either way
+          // once this write is decided: the box stays live and the reader's
+          // next keystroke autosaves same as ever.
+          destAutosave?.stop();
+          await destAutosave?.settle();
+          let landed = false;
+          try {
+            // THE TRAY REPLACES TOO, the same rule as the text: whatever this
+            // box's own tray held is not carried into a row that is about to
+            // become somebody else's words, so it is cleared before the
+            // source's own tray is registered in its place (Bugbot #1166 — it
+            // used to be deleted with the source and never arrive at all).
+            attachRef.current.discard();
+            if (content.attachments.length) {
+              await attachRef.current.addPaths(content.attachments.map((a) => a.path));
+            }
+            // THE DESTINATION IS WRITTEN BEFORE THE SOURCE IS DROPPED, and the
+            // source is dropped only if it landed. The composer's own autosave
+            // gets there on its own debounce, which is a window in which
+            // closing the tab loses the words outright — so the move does not
+            // rest on it.
+            landed = await saveChatDraft(destKey, content.text, content.attachments);
+            if (landed) {
+              // THE COMPOSER'S OWN BASELINE MOVES TOO, to what just landed, so
+              // its next debounce compares against the server's actual record
+              // instead of the pre-move box — a stale baseline here autosaves
+              // right back over this write the moment the reader so much as
+              // blurs the box.
+              destAutosave?.reset({ text: content.text, attachments: content.attachments });
+            }
+          } finally {
+            // RESUME NO MATTER WHAT (Bugbot #1166: "move leaves autosave
+            // stopped on throw"). `stop()` is permanent for this mount until
+            // something calls `resume()` — an exception out of `addPaths` or
+            // `saveChatDraft` used to skip both call sites this replaced and
+            // leave the box's own autosave dead for the rest of its life: no
+            // write on the next keystroke, on blur, or on unmount. A throw
+            // resumes WITHOUT the reset above, so the next keystroke re-saves
+            // whatever is actually sitting in the box rather than trusting a
+            // move that never finished.
+            destAutosave?.resume();
+          }
+          if (landed) {
+            // AWAITED (bugbot HIGH 4018903486, "second press wipes a
+            // completed move"). `movingKeys` is released in the `finally`
+            // below, and it must stay held until the source is actually
+            // spent and dropped — a fire-and-forget here let a second press
+            // through while the DELETE was still on the wire, and that press
+            // read the not-yet-spent source as live content and moved it
+            // again, over the words the first press had only just landed.
+            await discardDraft(task);
+          } else {
+            notify({
+              title: "Couldn't move that draft",
+              detail: "The words are in the box; the row was left where it is.",
+              tone: "error",
+            });
+          }
+        }
+        // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for
+        // it. That prop is ambient policy — "may this composer take the
+        // keyboard merely by appearing" — and the explorer's folder pane says
+        // no on purpose (`apps/explorer/ListingPreviewPane` mounts the chat
+        // `noFocus` so the listing keeps the keyboard). A row whose whole
+        // content is an unsent sentence is a request, not an arrival: the
+        // caret belongs in the box the words are in, or the promise the row
+        // makes (press Enter and this sends) is one the reader has to click
+        // to collect (Akshil QA, 2026-09-14).
+        setFocusReq((n) => n + 1);
+      } finally {
+        if (moving) movingKeys.current.delete(task.key);
+      }
+    })().catch(() => {
+      // NOTHING FIRST-CLASS LEFT TO DO with a throw this deep (Bugbot #1166) —
+      // the `finally` above and the one around the stopped autosave window
+      // have already put `movingKeys` and the box's own autosave back to
+      // normal. This exists only so that failure does not surface as an
+      // unhandled rejection out of a fire-and-forget press handler.
     });
-  }, [boxRef]);
+  }, [boxRef, file]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -2604,6 +2763,11 @@ function ChatBody(props: ChatBodyProps) {
       back: currentUrl(),
       onNavigate,
       boxRef,
+      // OUT TO `onFillDraft`'s move, the same way `boxRef` reaches this card:
+      // whichever composer is mounted (only ever the landing's, since a move
+      // only happens while Home is on screen) installs its own autosave here
+      // (Bugbot #1166).
+      autosaveRef: composerAutosaveRef,
       // The nav lock reaches BOTH composers' Schedule seats (T:12075/12099
       // guard every `.schedbtn`), unlike the schedule block, which is
       // chat-only. `styles/ann.css` already dims them; this is the guard for
@@ -2706,6 +2870,7 @@ function ChatBody(props: ChatBodyProps) {
       inChat,
       onNavigate,
       boxRef,
+      composerAutosaveRef,
       stranded,
       entered,
       sendLocked,
