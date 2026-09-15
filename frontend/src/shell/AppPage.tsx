@@ -188,9 +188,20 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       return frameSrc ? (
         <div className="app-page-frame-wrap">
           <iframe
+            // Keyed on the src: a snapshot -> Live switch must mount a NEW
+            // element, or the `loaded` mark below survives from the old
+            // document and the export shoots a frame mid-navigation.
+            key={frameSrc}
             className="app-page-frame"
             src={frameSrc}
             title={`App: ${slug}`}
+            // The export's capture-source contract (appShot.exportAppFile) is
+            // "pixels that ARE the app right now", which a bounding rect
+            // cannot tell; this mark is how handleExport knows the frame has
+            // a document painted in it rather than an empty box.
+            onLoad={(e) => {
+              e.currentTarget.dataset.loaded = "1";
+            }}
           />
         </div>
       ) : entryPath ? (
@@ -474,21 +485,31 @@ export default function AppPage({
       // The filename carries the version so an exported v7 sitting beside a
       // live export in Downloads is never ambiguous about which is which.
       const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+      // The Overview frame IS the running app, so when it is the visible tab
+      // and has a document loaded it is the capture source: the export shoots
+      // the pixels already on screen, nothing navigates, nothing flashes.
+      // Without it `exportAppFile` builds its stage — a full-viewport scrim
+      // plus a fresh reload of the entry for ~1.5s — which is exactly the
+      // flash this avoids. Any other tab, or a frame still loading, still
+      // falls through to the stage (any picture beats no thumbnail).
+      const frame = document.querySelector<HTMLIFrameElement>(
+        ".app-page-overview:not(.is-hidden) .app-page-frame",
+      );
+      const captureEl = isLive && frame?.dataset.loaded === "1" ? frame : null;
       await exportAppFile(
         {
           path: exportPath,
           name: exportName,
           // A preview capture is only attempted for a LIVE export. For a
-          // snapshot, `exportAppFile`'s stage fallback (no on-screen capture
-          // element is threaded to this page) would reload the ENTRY PAGE'S
-          // LIVE copy to shoot it — a screenshot of the wrong era baked into
-          // a file labelled as the old commit. Omitting `entry_html` here
+          // snapshot, `exportAppFile`'s stage fallback would reload the ENTRY
+          // PAGE'S LIVE copy to shoot it — a screenshot of the wrong era baked
+          // into a file labelled as the old commit. Omitting `entry_html` here
           // skips preview capture entirely rather than risk that; the
           // snapshot export ships with no preview.png, which
           // `downloadAppFile` already handles.
           entry_html: isLive ? entry ?? undefined : undefined,
         },
-        null,
+        captureEl,
       );
     } catch (e) {
       notify({

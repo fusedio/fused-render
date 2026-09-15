@@ -234,7 +234,9 @@ export async function captureAppPreview(
       const height = Math.floor(Math.min(window.innerHeight, width / STAGE_ASPECT));
       stage = document.createElement("div");
       stage.style.cssText =
-        "position:fixed;inset:0;z-index:2147483000;background:#fff;" +
+        // The page's own background, not white: in the dark theme a white
+        // scrim is a full-screen slam for the ~1.5s the app settles.
+        "position:fixed;inset:0;z-index:2147483000;background:var(--bg,#fff);" +
         "display:flex;align-items:center;justify-content:center;";
       const frame = document.createElement("iframe");
       frame.src = shotUrl(entryHtml);
