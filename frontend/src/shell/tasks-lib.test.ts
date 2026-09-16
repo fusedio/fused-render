@@ -7635,6 +7635,66 @@ describe("what the List remembers between visits", () => {
   });
 });
 
+describe("the List's bordered box", () => {
+  // Akshil, 2026-09-16: the bar used to run down a column of bare page BESIDE
+  // the box, because the border sat on the frame INSIDE the scroller. The
+  // scroller wears the border now, so the bar is inside it the way a scrolling
+  // table's is.
+  const LIST_BOX = block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list");
+
+  it("puts the border on the thing that scrolls", () => {
+    expect(LIST_BOX).toContain("overflow-y: auto");
+    expect(LIST_BOX).toContain("border: 1px solid var(--border)");
+    expect(LIST_BOX).toContain("border-radius: 8px");
+    // ...and the frame inside stands down rather than drawing a second hairline
+    // one pixel in. It still owns the border for the Explorer's Claude side
+    // panel, which renders `.tasks-list-frame` with no `.tasks-list` around it.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).toContain("border: 1px solid var(--border)");
+    expect(
+      block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list > .tasks-list-frame"),
+    ).toContain("border: 0");
+    const LISTS = readFileSync(join(SHELL, "../apps/claude/ui/Lists.tsx"), "utf8");
+    expect(LISTS).toContain('<div className="tasks-list-frame">');
+  });
+
+  it("shrinks to the pane instead of growing to it, so a short list still hugs", () => {
+    // `flex: 1 1 auto` is what a borderless scroller could afford: the box was
+    // invisible, so nobody saw it reach the fold under three rows. With the
+    // border on it that empty run is the box itself.
+    expect(LIST_BOX).toContain("flex: 0 1 auto");
+    expect(LIST_BOX).toContain("min-height: 0");
+  });
+
+  it("keeps the wheel, the bounce and the gutter exactly as they were", () => {
+    // The scroller did not move, so none of these had to: the margin wheel still
+    // forwards to this element, the end of the list still stops the delta, and
+    // the gutter is still reserved so the column does not jump by 10px when a
+    // poll crosses the fold.
+    expect(LIST).toContain("useMarginWheel(listRef);");
+    expect(LIST_BOX).toContain("overscroll-behavior: contain");
+    expect(SCHEDULE_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
+  });
+
+  it("flips the last row's count tooltip up so the box cannot clip it", () => {
+    // `[data-tip]` opens `100% + 6px` BELOW its ring (schedule.css), and the
+    // scroller's floor is now the last row's — the same cut `overflow: hidden`
+    // on the frame once made (Bugbot, 2026-08-27). Only a CLOSED last node has a
+    // ring at that edge; an open one has its thread underneath.
+    const flipped = block(
+      TASKS_CSS,
+      '.tasks-list-frame > .tasks-node:last-child > .tasks-row:last-child\n  [data-tip]:not([data-tip=""]):hover::before',
+    );
+    expect(flipped).toContain("top: auto");
+    expect(flipped).toContain("bottom: calc(100% + 6px)");
+    // The frame is NOT padded out to make room instead: that would be dead page
+    // inside the border at every width, for something only hover shows.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).not.toContain("padding-bottom");
+    // ...and the panel holds its flipped seat through the fade-out, like every
+    // other one: `bottom` is in the primitive's transition list beside `top`.
+    expect(block(SCHEDULE_CSS, '[data-tip]:not([data-tip=""])::before')).toContain("bottom 0s 0.1s");
+  });
+});
+
 // ---- the toolbar: one bar, three lenses ----------------------------------------
 // The List / Board / Calendar switcher and the three filters beside it are the only
 // furniture all three views share, so they are also the only place the page can

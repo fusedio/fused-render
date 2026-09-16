@@ -2831,6 +2831,12 @@ input.schedule-when-field {
     opacity 0.1s ease,
     visibility 0.1s ease,
     top 0s 0.1s,
+    /* `bottom` is in the list for the List's LAST row, which opens its panel
+       upward instead (styles/tasks.css — the scroller is the bordered box now
+       and its floor is that row's). Without it that panel alone snapped home
+       the instant the pointer left, mid-fade, while every other one held its
+       seat. Costs the rules that never set `bottom` nothing. */
+    bottom 0s 0.1s,
     left 0s 0.1s,
     transform 0s 0.1s;
   pointer-events: none;
