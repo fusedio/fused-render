@@ -1750,7 +1750,11 @@ def _collect() -> dict[str, dict]:
     # disk; this is the one thing that cannot, and it is why it has a fuse.
     marks = tasks_watch.sent_marks()
     for session_id, mark in marks.items():
-        if session_id not in tasks:
+        # Only a send WITH WORDS is a row on its own: a wordless mark (an
+        # attachment-only send, a bare liveness ping) has nothing to show and
+        # would be a blank card for fifteen seconds (regression review). A
+        # session that already has a row keeps its liveness floor either way.
+        if session_id not in tasks and str(mark.get("text") or "").strip():
             tasks[session_id] = _new_task(session_id, session_id, None)
     for entry in schedule.list_entries():
         if entry.get("state") == schedule.RECURRING:

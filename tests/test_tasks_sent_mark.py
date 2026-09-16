@@ -586,3 +586,27 @@ def test_the_in_flight_send_takes_the_next_message_id_in_the_thread(
     assert thread["first thing"] == "MSG-001"
     r = client.post("/api/tasks/read", json={"key": SID, "message_id": "MSG-002"})
     assert r.status_code == 200, r.text
+
+
+def test_a_wordless_mark_on_an_unknown_session_is_not_a_row(client, tmp_path):
+    """Nothing to show, so nothing to list: a blank card is worse than none."""
+    tasks_watch.mark_running(SID, file=str(tmp_path))
+    assert SID not in _by_key(client)
+
+
+def test_the_card_scan_sleeps_while_nothing_is_alive(monkeypatch):
+    """No registry row and no live mark means no run can have raised a card —
+    the runs tree is not listed at all on that tick."""
+    calls = []
+    monkeypatch.setattr(tasks_watch, "_read_permission_cards",
+                        lambda: calls.append(1) or set())
+    monkeypatch.setattr(tasks_watch, "_read_registry", lambda: set())
+    monkeypatch.setattr(tasks_watch, "_read_live_transcripts", lambda: set())
+    with tasks_watch._cond:
+        tasks_watch._registry.clear()
+        tasks_watch._marks.clear()
+    tasks_watch.tick()
+    assert calls == []
+    tasks_watch.mark_running(SID, text="hi")
+    tasks_watch.tick()
+    assert calls == [1]

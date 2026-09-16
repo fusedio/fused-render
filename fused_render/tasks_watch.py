@@ -838,7 +838,15 @@ def tick() -> set[str]:
     global _primed
     keys = _read_registry()
     keys |= _read_live_transcripts()
-    keys |= _read_permission_cards()
+    # A card can only be raised by a run that is alive, and a live run is either
+    # in the registry or still inside its send mark — so an idle server, with
+    # neither, skips the runs-tree scan altogether. The runs tree is never
+    # pruned and grows for the life of the machine; paying a listdir of it once
+    # a second for nothing was the wrong default (regression review).
+    with _cond:
+        anything_live = bool(_registry) or bool(_marks)
+    if anything_live:
+        keys |= _read_permission_cards()
     # LAST, so a mark whose registry row arrived in the same tick is retired
     # against a listing that already knows better. The row does not flicker
     # either way — `_live` reads `busy` over a mark — but the announcement
