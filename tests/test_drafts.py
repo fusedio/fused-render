@@ -1147,99 +1147,22 @@ def test_start_writes_no_draft_key_when_nobody_sent_one(tmp_path, monkeypatch):
     assert "draft_key" not in meta
 
 
-# --------------------------------------- round 2: a draft moves, never twice
-
-
-def test_a_task_draft_put_takes_the_chat_draft_it_came_from(client, tmp_path):
-    """The composer → New task hop. For one instant the same unfinished
-    sentence would be two rows; `from_chat_key` is the client naming the one it
-    came from, in the request that made the other."""
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    key = "new:" + str(folder)
-    client.put(_chat_url(key), json={"text": "roll up yesterday's PRs"})
-    assert key in _by_key(client)
-
-    r = client.put("/api/drafts/task/draft-0001",
-                   json={"title": "roll up yesterday's PRs",
-                         "target": str(folder), "from_chat_key": key})
-    assert r.status_code == 200, r.text
-    assert r.json()["from_chat_key"] == key
-    assert drafts.get_chat(key) is None
-
-    rows = _by_key(client)
-    assert key not in rows
-    assert "draft:draft-0001" in rows
-    # …and the key is KEPT, because the move has to be reversible: the row's
-    # form is what a reopened modal seeds from, and "Back to chat" reads the
-    # key off it.
-    assert rows["draft:draft-0001"]["form"]["from_chat_key"] == key
-
-
-def test_the_chat_key_is_stored_and_survives_later_saves(client, tmp_path):
-    """The way back, once the hop's URL is gone.
-
-    A draft reopened from its row carries no `?back=` and no sessionStorage
-    stash — the stored key is the only thing left that knows which conversation
-    these words were typed in, so a keystroke save that names nothing must not
-    erase it (Akshil, 2026-09-11)."""
-    folder = tmp_path / "proj"
-    folder.mkdir()
-    key = "new:" + str(folder)
-    client.put(_chat_url(key), json={"text": "roll up yesterday's PRs"})
-    client.put("/api/drafts/task/draft-0001",
-               json={"title": "roll up", "target": str(folder),
-                     "from_chat_key": key})
-    stored = drafts.get_task("draft-0001")
-    assert stored["from_chat_key"] == key
-
-    # The ordinary autosave that follows sends the form and nothing else.
-    r = client.put("/api/drafts/task/draft-0001",
-                   json={"title": "roll up yesterday's PRs",
-                         "target": str(folder)})
-    assert r.json()["draft"]["from_chat_key"] == key
-    assert drafts.get_task("draft-0001")["from_chat_key"] == key
-    assert _by_key(client)["draft:draft-0001"]["form"]["from_chat_key"] == key
-
-
-def test_a_chat_key_that_is_not_one_is_stored_as_nothing(client, tmp_path):
-    """Validated as a key, not kept as text: the field is either something the
-    chat half can be written under or it is empty."""
-    client.put("/api/drafts/task/draft-0001",
-               json={"title": "a thought", "from_chat_key": "/etc/passwd"})
-    assert drafts.get_task("draft-0001")["from_chat_key"] == ""
-
-
-def test_the_chat_key_alone_is_not_a_draft(client, tmp_path):
-    """`from_chat_key` is provenance, not content — an all-empty form that
-    names one is still a delete."""
-    key = "new:" + str(tmp_path)
-    client.put(_chat_url(key), json={"text": "still here"})
-    r = client.put("/api/drafts/task/draft-0001",
-                   json={"title": "", "description": "", "from_chat_key": key})
-    assert r.json()["draft"] is None
-    assert drafts.get_task("draft-0001") is None
-    # …and the chat draft it named is untouched, for the same reason.
-    assert drafts.get_chat(key) is not None
-
-
-def test_a_session_chat_draft_is_taken_too(client, projects_dir):
-    _write_transcript(projects_dir, "sess-a", "/home/me/proj",
-                      [_user("one", T9)])
-    client.put("/api/drafts/chat/sess-a", json={"text": "half a thought"})
-    client.put("/api/drafts/task/draft-0001",
-               json={"title": "half a thought", "from_chat_key": "sess-a"})
-    assert drafts.get_chat("sess-a") is None
-    assert _by_key(client)["sess-a"]["draft"] is None
+# ------------------------------------------ round 2: one draft, never a copy
+#
+# The composer → New task hop used to COPY: the card minted a `draft:<id>` out
+# of the chat box and named its origin (`from_chat_key`) so the same request
+# could delete the chat record. Two records existed for one sentence, if only
+# for an instant, and every duplicate and resurrection this round is about
+# started there. The hop edits the chat record itself now
+# (design-drafts-one-record.md, §1) — see `test_drafts_versioning.py` — so what
+# is left to test here is that nothing else moved.
 
 
 def test_an_empty_task_put_keeps_the_chat_draft(client, tmp_path):
-    """An all-empty form is a delete, and dropping the chat draft over a write
-    that stored nothing would lose the text outright."""
+    """An all-empty form is a delete, and it takes nothing else with it."""
     key = "new:" + str(tmp_path)
     client.put(_chat_url(key), json={"text": "still here"})
-    r = client.put("/api/drafts/task/draft-0001",
-                   json={"title": "  ", "from_chat_key": key})
+    r = client.put("/api/drafts/task/draft-0001", json={"title": "  "})
     assert r.json()["draft"] is None
     assert drafts.get_chat(key) is not None
 
@@ -1260,69 +1183,6 @@ def test_scheduling_into_a_session_drops_that_session_chat_draft(client, tmp_pat
     assert r.status_code == 200, r.text
     assert drafts.get_chat("sess-a") is None
     assert _by_key(client)["sess-a"]["draft"] is None
-
-
-# ----------------------------------------------- round 3: what Schedule takes
-#
-# Two things the first cut of the feature let slip past the create endpoint
-# (Bugbot, PR #1118). Both are about a draft OUTLIVING the thing it turned into,
-# which is the one outcome "a draft moves, never duplicates" forbids.
-
-
-def test_scheduling_a_hop_drops_the_chat_draft_it_came_from(client, tmp_path):
-    """The composer hop's chat draft, retired by the create rather than by the
-    task draft's first autosave.
-
-    That autosave is what normally moves it (`from_chat_key` on the task-draft
-    PUT), but a card opened from the Schedule button opens ready to send: press
-    it inside the 600 ms debounce and no task draft is minted at all, so nothing
-    ever names the chat key. `session_id` cannot stand in — a chat that has never
-    sent anything has no session, and its draft is keyed `new:<file>`."""
-    target = tmp_path / "project"
-    target.mkdir()
-    key = "new:" + str(target / "notes.py")
-    client.put(_chat_url(key), json={"text": "roll up the PRs"})
-    assert key in _by_key(client), "the unsent chat is a row of its own"
-
-    r = client.post("/api/schedule", headers=WRITE,
-                    json={"target": str(target), "message": "roll up the PRs",
-                          "delay_seconds": 600, "title": "Roll up the PRs",
-                          "from_chat_key": key})
-    assert r.status_code == 200, r.text
-    assert drafts.get_chat(key) is None
-    rows = _by_key(client)
-    assert key not in rows, "one task, not a task and the draft it came from"
-    assert any(row["title"] == "Roll up the PRs" for row in rows.values())
-
-
-def test_a_session_keyed_from_chat_key_is_taken_too(client, tmp_path, projects_dir):
-    """The same field carries the other shape — a chat that HAS a session, hopped
-    to the card before `session_id` was ever on the payload."""
-    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [_user("one", T9)])
-    target = tmp_path / "project"
-    target.mkdir()
-    client.put("/api/drafts/chat/sess-a", json={"text": "and then deploy"})
-
-    r = client.post("/api/schedule", headers=WRITE,
-                    json={"target": str(target), "message": "and then deploy",
-                          "delay_seconds": 600, "from_chat_key": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert drafts.get_chat("sess-a") is None
-
-
-def test_a_bad_or_absent_from_chat_key_changes_nothing(client, tmp_path):
-    """Optional and silently ignored — every client written before drafts
-    existed sends none, and a malformed one is not worth a 400 on a request that
-    has already scheduled the task."""
-    target = tmp_path / "project"
-    target.mkdir()
-    key = "new:" + str(target)
-    client.put(_chat_url(key), json={"text": "untouched"})
-    r = client.post("/api/schedule", headers=WRITE,
-                    json={"target": str(target), "message": "hi",
-                          "delay_seconds": 600, "from_chat_key": "/etc/passwd"})
-    assert r.status_code == 200, r.text
-    assert drafts.get_chat(key) is not None
 
 
 # ------------------------------ round 3: a draft that belongs to a session
@@ -1379,9 +1239,9 @@ def test_the_session_a_draft_is_going_into_round_trips(state_dir):
 # --------------------------------------- one bound draft per session (server)
 #
 # THE OWNER'S OWN RULE, "a draft moves, never duplicates" (design.md, Round 2),
-# read the other way round. `from_chat_key` above keeps it for the chat → task
-# hop; this is the same promise for two TASK drafts that both end up naming the
-# same session — a New task form opened twice out of one conversation's
+# read the other way round. The chat → task hop keeps it by not copying at all
+# (one record, one key); this is the same promise for two TASK drafts that both
+# end up naming the same session — a New task form opened twice out of one conversation's
 # Schedule button, say, once before a reload and once after. The session's row
 # can wear exactly one `✎ Draft` chip (`_bound_chips`), so binding a second
 # draft to it is not a second fact, it is one fact written twice.
