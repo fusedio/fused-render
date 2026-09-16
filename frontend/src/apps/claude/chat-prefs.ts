@@ -14,6 +14,7 @@
 // markdown chunk) into its bundle for one boolean.
 import { useEffect, useState } from "react";
 import { getPrefs } from "@platform/lib/api";
+import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
@@ -46,14 +47,81 @@ function setQueue(next: boolean) {
   for (const listener of queueListeners) listener(next);
 }
 
+/**
+ * A PREFS READ THAT NEVER ANSWERS IS NOT A FAILURE — it is worse, because
+ * nothing catches it (ported from the `native_chat_enabled` gate's own fix,
+ * #1162, when that gate was deleted).
+ *
+ * `getPrefs` rejects on a refused connection, and the retry and the `catch`
+ * below both handle that. What neither handles is a request the server ACCEPTS
+ * and never answers — a wedged worker, a machine that went to sleep mid-flight,
+ * a paused process — where the promise simply never settles. `reading` then
+ * stays pinned to a promise that never resolves for the life of the page, so
+ * `read` short-circuits on it forever and NO LATER MOUNT CAN EVER ASK AGAIN:
+ * the one thing the `catch` below exists to guarantee is exactly the thing a
+ * hang takes away.
+ *
+ * Milder here than it was on the flag this was ported from — nothing MOUNTS on
+ * this answer (see `queue`), so a hung read leaves the queue at its default
+ * (off, which is what every send did before the feature existed), and
+ * `queueFlagReady` simply resolves once the deadline fires. What it costs is
+ * the RE-ASK, and a prefs PUT still publishes over it
+ * (`publishProjectQueueEnabled`). Bounded all the same, because "the page
+ * never asks again" should not be a state a hung socket can put this module
+ * in.
+ *
+ * The budget goes around BOTH attempts, not each: that is the shape #1162
+ * settled on, and it is the one that cannot turn one wedged server into two
+ * full waits, or abandon a merely-slow read in favour of asking again.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("prefs read timed out"));
+    }, ms);
+    work.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
+/** The budget itself, as a variable only so a test can make it small: eight
+ *  seconds of real time per case is not a test anyone runs. Production never
+ *  moves it — `setPrefsDeadlineForTests` is the only writer, and
+ *  `resetChatPrefsForTests` puts it back. */
+let prefsDeadlineMs: number = GATE_FALLBACK_MS;
+
+/** Test seam — see `prefsDeadlineMs`. Pass nothing to restore the real budget. */
+export function setPrefsDeadlineForTests(ms: number = GATE_FALLBACK_MS) {
+  prefsDeadlineMs = ms;
+}
+
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefs()
-    // ONE BOUNDED RETRY, then whatever we have. A prefs GET that fails is
-    // usually a single dropped request (a reload racing the server's start), so
-    // asking twice is worth one round trip.
-    .catch(() => getPrefs())
+  reading = withDeadline(
+    getPrefs()
+      // ONE BOUNDED RETRY, then whatever we have. A prefs GET that fails is
+      // usually a single dropped request (a reload racing the server's start),
+      // so asking twice is worth one round trip — and it spends what is left of
+      // the one budget above rather than opening a second window.
+      .catch(() => getPrefs()),
+    prefsDeadlineMs,
+  )
     .then((p) => {
       if (generation !== departed) return;
       // `=== true`: this is OPT-IN, so a server with no such field is a server
@@ -171,5 +239,6 @@ export function resetChatPrefsForTests() {
   reading = null;
   settledOnce = false;
   generation += 1;
+  prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
 }

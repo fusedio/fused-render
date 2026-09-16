@@ -13,6 +13,7 @@ const {
   queueEnabled,
   publishProjectQueueEnabled,
   resetChatPrefsForTests,
+  setPrefsDeadlineForTests,
 } = await import("./chat-prefs");
 
 let calls = 0;
@@ -128,4 +129,84 @@ test("a PUT's own answer is published to every mounted chat without a second GET
   act(() => publishProjectQueueEnabled(true));
   expect(seen[seen.length - 1]).toBe(true);
   expect(calls).toBe(before);
+});
+
+// ── A HUNG READ IS BOUNDED, and the budget covers BOTH attempts ──
+//
+// Ported with the deadline itself from the `native_chat_enabled` gate (#1162),
+// which this module outlived. Nothing MOUNTS on the queue answer, so the cost
+// of a hang here is not a covered pane — it is that `reading` stays pinned to a
+// promise that never settles and no later mount can ever ask again.
+//
+// The budget is shortened in each case for the obvious reason: eight seconds of
+// real time per test is not a test anyone runs.
+
+/** Like `probe`, but waits `ms` of real time for the deadline to fire. */
+async function probeFor(ms: number) {
+  const seen: boolean[] = [];
+  function Probe() {
+    seen.push(useProjectQueueEnabled());
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, ms));
+  });
+  return seen;
+}
+
+test("a read that HANGS costs one budget and leaves the default standing", async () => {
+  setPrefsDeadlineForTests(30);
+  // The request the server accepts and never answers — the case the retry and
+  // the `catch` both miss, because neither ever runs.
+  answer = () => new Promise<unknown>(() => {});
+  const seen = await probeFor(60);
+  // The queue was off the whole way through: the default IS the answer here.
+  expect(seen[seen.length - 1]).toBe(false);
+  expect(queueEnabled()).toBe(false);
+  // ONE request. The retry is for a REJECTION, which is fast; a hang must not
+  // buy a second full window.
+  expect(calls).toBe(1);
+});
+
+test("a hung read does not pin `reading` — a later mount asks again", async () => {
+  setPrefsDeadlineForTests(30);
+  answer = () => new Promise<unknown>(() => {});
+  await probeFor(60);
+  expect(calls).toBe(1);
+  // …and now a server that answers. Without the deadline this mount would
+  // short-circuit onto the first read's promise and never send anything.
+  answer = async () => ({ queue: { enabled: true } });
+  const seen = await probe();
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(calls).toBe(2);
+});
+
+test("a read that is merely SLOW is not abandoned in favour of asking again", async () => {
+  setPrefsDeadlineForTests(60);
+  answer = () =>
+    new Promise((done) => setTimeout(() => done({ queue: { enabled: true } }), 20));
+  const seen = await probeFor(120);
+  // The answer arrived inside the budget and is the answer.
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("the retry still exists — for a REJECTION, and it spends the same budget", async () => {
+  setPrefsDeadlineForTests(200);
+  let first = true;
+  answer = async () => {
+    if (first) {
+      first = false;
+      throw new Error("dropped");
+    }
+    return { queue: { enabled: true } };
+  };
+  const seen = await probeFor(60);
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(calls).toBe(2);
 });
