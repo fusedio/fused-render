@@ -286,3 +286,34 @@ test("publishing a toggle writes the broadcast the other tabs listen for", () =>
     g.localStorage = had;
   }
 });
+
+
+test("a read that FAILED still settles the flag — the next send does not wait 8 s again", async () => {
+  setPrefsDeadlineForTests(30);
+  answer = async () => {
+    throw new Error("refused");
+  };
+  await queueFlagReady();
+  expect(queueEnabled()).toBe(false);
+  const before = calls;
+  // Bugbot: a failed GET nulled `reading`, so every send re-asked and waited.
+  await queueFlagReady();
+  expect(calls).toBe(before);
+});
+
+test("rereadFlags outranks the read it replaces — a late timeout cannot flip native chat off", async () => {
+  setPrefsDeadlineForTests(60);
+  let hang = true;
+  answer = () =>
+    hang
+      ? new Promise<unknown>(() => {})
+      : Promise.resolve({ chat: { native: true }, queue: { enabled: true } });
+  const first = queueFlagReady();
+  hang = false;
+  await rereadFlags();
+  expect(nativeChatEnabledNow()).toBe(true);
+  // The hung read now times out; its catch belongs to an older generation.
+  await first;
+  await new Promise((r) => setTimeout(r, 80));
+  expect(nativeChatEnabledNow()).toBe(true);
+});

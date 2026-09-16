@@ -2484,3 +2484,35 @@ def test_a_queued_chats_number_moves_onto_its_session_the_moment_the_run_names_i
     rows = _rows(client)
     assert tasks_store.pending_key("e-lead") not in rows
     assert rows["sess-new"]["task_id"] == "TASK-001"
+
+
+def test_a_follower_joins_the_session_its_leaders_run_named(
+        client, projects_dir, folders, tmp_path, monkeypatch, flag):
+    """Bugbot: `_run_session` answered for the leader alone, so in the window
+    before the scheduler stamped `claude_session_id` the leader joined the live
+    session while its follow-ups stayed on `pending:` — one chat split in two
+    rows, and a number burnt."""
+    flag()
+    alpha, _beta = folders
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _RunsAgent(runs))
+    schedule._write([
+        _entry("e-lead", "first words", alpha, session_id="",
+               state=schedule.SENT, run_id="r-1"),
+        _entry("e-follow", "second words", alpha, follow_of="e-lead"),
+    ])
+    lead_key = tasks_store.pending_key("e-lead")
+    assert list(_rows(client)) == [lead_key]
+    number = _rows(client)[lead_key]["task_id"]
+
+    run_dir = runs / "r-1"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": alpha, "resumed_from": ""}))
+    (run_dir / "session").write_text("sess-new")
+    (run_dir / "alive").write_text("1")
+    _transcript(projects_dir, "sess-new", alpha, "first words")
+
+    rows = _rows(client)
+    assert set(rows) == {"sess-new"}
+    assert rows["sess-new"]["task_id"] == number

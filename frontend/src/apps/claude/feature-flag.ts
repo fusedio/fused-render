@@ -68,6 +68,11 @@ const recapListeners = new Set<(v: boolean) => void>();
  */
 let queue = false;
 const queueListeners = new Set<(v: boolean) => void>();
+/** A read has SETTLED at least once this page — landed or failed. After that,
+ *  `queueEnabled()` is an answer and not a guess, and a send does not wait on
+ *  another round trip (Bugbot: a failed GET used to null `reading`, so every
+ *  send and decide waited up to 8 s until one succeeded). */
+let settledOnce = false;
 
 function set(next: boolean | null) {
   if (enabled === next) return;
@@ -189,7 +194,9 @@ function read(): Promise<void> {
       if (generation === departed) set(false);
       reading = null;
     })
-    .then(() => {});
+    .then(() => {
+      if (generation === departed) settledOnce = true;
+    });
   return reading;
 }
 
@@ -218,7 +225,9 @@ export function publishChatRecapEnabled(next: boolean) {
  * failed leaves the flag at its default, which is what it would have been.
  */
 export function queueFlagReady(): Promise<void> {
-  return reading ?? read();
+  if (reading) return reading;
+  if (settledOnce) return Promise.resolve();
+  return read();
 }
 
 /**
@@ -229,6 +238,11 @@ export function queueFlagReady(): Promise<void> {
  * into view — the moment a reader who toggled the pref elsewhere returns.
  */
 export function rereadFlags(): Promise<void> {
+  // A NEW GENERATION, so the read this replaces cannot speak after it (Bugbot):
+  // without the bump an older GET that later timed out still matched
+  // `generation`, called `set(false)`, and remounted every native chat embed as
+  // the legacy iframe over a newer read that had already succeeded.
+  generation += 1;
   reading = null;
   return read();
 }
@@ -324,6 +338,7 @@ export function nativeChatEnabledNow(): boolean | null {
  *  otherwise keep the answer the suite just took away. */
 export function resetNativeChatFlagForTests() {
   reading = null;
+  settledOnce = false;
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   set(null);

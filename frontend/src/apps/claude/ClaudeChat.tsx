@@ -827,6 +827,12 @@ function ChatBody(props: ChatBodyProps) {
    *  `onSendReturned` below, and `sendId`'s own note in controller-api. */
   const returnedSends = useRef(new Set<string>());
   const sendSeq = useRef(0);
+  /** WHICH CONVERSATION THIS PANE IS ON, as a counter. Back and Open session
+   *  bump it; a send whose admission answers after the bump belongs to a chat
+   *  the reader has left, and must not write its leader, seeds or card into
+   *  the one now on screen (Bugbot: the in-flight answer put the forgotten
+   *  leader back, and the next landing send joined the previous chat's task). */
+  const paneEpoch = useRef(0);
   /** THE SEND WINDOW'S LATCH. A ref rather than state, because the composer
    *  reads it in the very tick it calls `onSend` — before React can re-render
    *  with a new prop (`dispatchSend`). */
@@ -2328,6 +2334,7 @@ function ChatBody(props: ChatBodyProps) {
           // inside the first prefs read's window used to read "off", skip the
           // door and start a second run in a busy folder. See `queueFlagReady`.
           await queueFlagReady();
+          const epochAtSend = paneEpoch.current;
           if (queueEnabled()) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
@@ -2511,6 +2518,13 @@ function ChatBody(props: ChatBodyProps) {
               // later message in it joins (`sched/queue-leader`, which ignores
               // the call when a leader is already remembered or a session has
               // arrived).
+              if (paneEpoch.current !== epochAtSend) {
+                // The reader left this conversation while the admission was in
+                // flight (Bugbot). The entry is safely in the scheduler's line
+                // and the Tasks page lists it; nothing here may write it into
+                // the chat that is on screen now.
+                return;
+              }
               leader.remember(sid, entryId);
               // THE ROW IS THE SERVER'S; THIS IS ONLY THE FIRST PAINT OF IT.
               // The entry exists now, so the next schedule tick will list it and
@@ -2692,6 +2706,7 @@ function ChatBody(props: ChatBodyProps) {
     // …and the deletions with them: both are memories of the rows that were on
     // this screen, and the next conversation's waiting messages are its own.
     setDroppedEntries(NO_DROPPED);
+    paneEpoch.current += 1;
     // …AND THE RUN NEXT CLAIM (Bugbot, PR #1124). `claimedNext` reads as true
     // until `recGen` moves, so a claim left standing here would paint
     // `queue_priority` on the NEXT conversation's waiting card and hide its own
@@ -2730,6 +2745,7 @@ function ChatBody(props: ChatBodyProps) {
       setAdmitTaskId("");
       setDroppedEntries(NO_DROPPED);
       setNextClaim(null);
+      paneEpoch.current += 1;
       // …and the LEADER, same as Back: `leaderId` reads `leader.peek()` before
       // it reads the session, so a leader left behind here would keep drawing
       // (and acting on) the previous chat's waiting rows under the new

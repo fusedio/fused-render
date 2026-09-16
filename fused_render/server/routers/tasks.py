@@ -2135,8 +2135,13 @@ def _entry_session(entry: dict, by_id: dict | None = None) -> str:
         entry, _by_entry_id() if by_id is None else by_id)
     if leader is None:
         return ""
+    # The leader's run names the session before the scheduler stamps it, for
+    # the follower exactly as for the leader (Bugbot): otherwise the leader
+    # joined the live session while its follow-ups stayed on `pending:` — one
+    # chat split in two rows, and a number burnt.
     return (str(leader.get("claude_session_id") or "")
-            or str(leader.get("session_id") or ""))
+            or str(leader.get("session_id") or "")
+            or _run_session(leader))
 
 
 def _run_session(entry: dict) -> str:
