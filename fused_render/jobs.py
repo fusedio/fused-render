@@ -611,8 +611,22 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
                 # A late tick from the run the user already closed. Answered as
                 # if it had been stored, so a reporter mid-loop does not start
                 # erroring — it simply has no row any more.
+                # Finding 5: this synthetic stand-in never went through
+                # `upsert`'s own default-at-creation path, so it defaulted
+                # `group` to `Job`'s own bare `""` — the same "blank group
+                # collides with every other blank-group job on the page"
+                # hazard the real creation path just closed. It is never
+                # stored in `_jobs`, but it is still serialized back to the
+                # reporter, so it gets the same id-derived default.
                 return _public(
-                    Job(id=job_id, title="", state=RUNNING, started_at=now, updated_at=now),
+                    Job(
+                        id=job_id,
+                        title="",
+                        state=RUNNING,
+                        started_at=now,
+                        updated_at=now,
+                        group=_default_group(job_id),
+                    ),
                     now,
                 )
 
@@ -651,12 +665,28 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
         if "group" in body:
             # No `server=True` gate — see `Job.group`'s own comment on why a
             # page setting this carries none of the forgery risk `tier`/
-            # `waiting_for` guard against. The id-derived DEFAULT is only
-            # ever applied once, at creation (above) — a later tick that
-            # sends `"group": ""` really does clear it to empty rather than
-            # reinstating that default, the same "only the keys present are
-            # applied, literally" rule every other field in this function
-            # follows.
+            # `waiting_for` guard against.
+            #
+            # Finding 5 (code review 2026-09-16): this used to store an
+            # empty/blank `group` LITERALLY, on the reasoning that "only the
+            # keys present are applied" — a tick that explicitly sent
+            # `"group": ""` was read as "clear it to empty" rather than
+            # "reinstate the id-derived default". That reasoning held for
+            # every other field in this function because an empty value for
+            # THOSE fields just means "nothing to show" — but `group` is a
+            # CLUSTERING KEY: two otherwise-unrelated jobs on the same page
+            # that both end up with `group == ""` are, from the client's
+            # `familyKey` (`page + group`) onward, THE SAME FAMILY, and can
+            # be folded together into one nonsense row the moment they also
+            # land in the same activity burst. An empty/blank `group` is
+            # never a meaningful clustering key on its own — it falls back to
+            # `_default_group(job_id)` instead, the same id-derived default
+            # creation already applies, so "explicitly blank" always means
+            # "back to this job's own default", never "join whatever else on
+            # this page is also blank". (`test_the_default_group_is_set_once
+            # _at_creation_not_reapplied_each_tick` used to pin the old,
+            # literal-empty-string behavior; it now pins this fallback
+            # instead — see tests/test_jobs_api.py.)
             #
             # One exception: a `sys:`-prefixed value is off limits for a
             # non-server report, the same spoof-proofing `page` already gets
@@ -668,7 +698,7 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             # a hidden failure, so a hard error would be disproportionate.
             group = _text(body.get("group"), GROUP_MAX)
             if server or not group.startswith(SERVER_ID_PREFIX):
-                job.group = group
+                job.group = group if group else _default_group(job_id)
         if "done" in body:
             job.done = _number(body.get("done"), "done")
         if "total" in body:

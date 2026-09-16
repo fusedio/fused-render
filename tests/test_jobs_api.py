@@ -1182,15 +1182,46 @@ def test_a_worker_token_report_may_still_set_a_sys_prefixed_group():
 
 
 def test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick():
-    """A later tick that explicitly clears `group` back to "" really clears
-    it — the id-derived default is a CREATION-time fallback, not something
-    every tick re-applies over an explicit later value (the same "only the
-    keys present are applied" rule this whole endpoint already follows for
-    every other field)."""
+    """DELIBERATELY CHANGED (finding 5, code review 2026-09-16): this test
+    used to pin a later tick's `"group": ""` as clearing `group` to a
+    literal empty string, on the "only the keys present are applied" rule
+    every other field in `upsert` follows. That rule is wrong for `group`
+    specifically, because `group` is a CLUSTERING KEY (client `familyKey` =
+    `page + group`) — a literal `""` is not "nothing to show" the way it is
+    for `detail`/`message`, it is "join every other job on this page that
+    also happens to be blank", which silently merges unrelated jobs into
+    one nonsense group. `upsert` now falls back to `_default_group(job_id)`
+    whenever the posted `group` is empty/blank, exactly like creation does —
+    an explicit blank always means "back to my own default", never "share
+    a group with something else"."""
     jobs.upsert({"id": "sys:ai-image:boom", "title": "a"}, server=True)
     res = jobs.upsert({"id": "sys:ai-image:boom", "group": ""}, server=True)
-    assert res["group"] == ""
-    # A further tick that says nothing about `group` leaves the empty value
-    # standing rather than reinstating the id-derived default.
+    assert res["group"] == "sys:ai-image"
+    # A further tick that says nothing about `group` leaves the id-derived
+    # default standing (unaffected either way — `group` isn't in this body).
     res2 = jobs.upsert({"id": "sys:ai-image:boom", "done": 1}, server=True)
-    assert res2["group"] == ""
+    assert res2["group"] == "sys:ai-image"
+
+
+def test_an_explicit_blank_group_never_lets_two_unrelated_jobs_collide():
+    """The actual regression finding 5 describes: two page-owned jobs with
+    no `sys:` family, both explicitly posting `group: ""` on the same page,
+    must NOT end up sharing a group — each falls back to its OWN id-derived
+    default (a group of one), the same collision-proofing creation already
+    gives an ungrouped id."""
+    a = jobs.upsert({"id": "render-a", "title": "a", "group": ""})
+    b = jobs.upsert({"id": "render-b", "title": "b", "group": ""})
+    assert a["group"] == "render-a"
+    assert b["group"] == "render-b"
+    assert a["group"] != b["group"]
+
+
+def test_a_late_tick_on_a_dismissed_job_never_returns_a_blank_group():
+    """The synthetic stand-in `upsert` returns for a late tick on a
+    dismissed id never went through the creation path's own default —
+    finding 5 flags it as carrying the same blank-group collision hazard.
+    It must report the same id-derived default a fresh creation would."""
+    jobs.upsert({"id": "sys:ai-image:late", "title": "a"}, server=True)
+    jobs.dismiss("sys:ai-image:late")
+    res = jobs.upsert({"id": "sys:ai-image:late", "done": 1}, server=True)
+    assert res["group"] == "sys:ai-image"
