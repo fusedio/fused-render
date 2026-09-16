@@ -10573,6 +10573,12 @@ describe("one message's own state inside an expanded row", () => {
     const queuedTask = task({ status: "queued" });
     expect(messageState(queuedTask, msg({ at: 100 }), true, 900).word).toBe("queued");
     expect(messageState(queuedTask, msg({ at: 100 }), true, 900).column).toBe("queued");
+    // FLAG OFF, THE WORD NEVER APPEARS (review, 2026-09-16): a due pending
+    // message on a row is "scheduled", exactly as main draws it, whatever the
+    // row's status says.
+    expect(messageState(queuedTask, msg({ at: 100 }), false, 900).word).not.toBe("queued");
+    expect(messageState(task({ status: "in_progress" }), msg({ at: 100 }), false, 900).word)
+      .not.toBe("queued");
     expect(messageState(task({ status: "in_progress" }), msg({ state: "sent", turn: "" }), true, 900).word)
       .toBe("running");
     expect(

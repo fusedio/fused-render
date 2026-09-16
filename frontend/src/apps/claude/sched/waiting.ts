@@ -222,7 +222,7 @@ export function waitingRows(
     const due = String(entry.due || "");
     out.push({
       entryId: id,
-      text: words.get(id) ?? String(entry.message || ""),
+      text: words.get(id) || String(entry.message || ""),
       due,
       // THE CLAIM OUTRANKS THE CLOCK. A `sending` entry is past its due stamp by
       // construction, so the due-time rule would call it `queued` — and it is
@@ -395,7 +395,13 @@ export function reconcileSeeds(
   pendingIds: ReadonlySet<string> | null,
   watch: SeedWatch,
 ): SeedLiveness {
-  if (!pendingIds || !seeds.length) return { live: seeds.slice(), watch };
+  if (!pendingIds) return { live: seeds.slice(), watch };
+  if (!seeds.length) {
+    // Nothing to reconcile, but the poll answer is still SEEN: a seed that
+    // appears next render must not be charged a miss for this answer, which
+    // arrived before it existed (review: the grace window was one poll short).
+    return { live: [], watch: watch.poll === pendingIds ? watch : { ...watch, poll: pendingIds } };
+  }
   const fresh = pendingIds !== watch.poll;
   const seen = new Set(watch.seen);
   const missed = new Map(watch.missed);

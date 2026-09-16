@@ -302,17 +302,10 @@ def _counter(project: str) -> str:
     was given; only the counter is looked up by the canonical name, so a store
     written before this rule counts on unchanged.
 
-    AND HYPHENS COUNT AS SEPARATORS. The listing's fallback for a transcript
-    that has not recorded its cwd decodes the project from Claude Code's
-    directory name, which turns every hyphen into a separator
-    (`-private-tmp-pqueue-qa-alpha` → `/private/tmp/pqueue/qa/alpha`). Numbers
-    were once allocated against that spelling, and a store that holds them
-    would hand the same numbers out again under the folder's real name the
-    moment its transcripts said where they were (browser QA, 2026-09-16:
-    TASK-003 twice in one folder). Folding hyphens here puts both spellings —
-    and any two folders that differ only by a hyphen — on one counter, which
-    costs the odd skipped number and never a duplicate."""
-    return canonical_fs_path(project or "").replace("-", "/")
+    A guessed project (the lossy directory-name decode) mints no number at all
+    under the queue (`routers/tasks.py::_numbers`), so no counter is keyed on
+    the wrong spelling in the first place."""
+    return canonical_fs_path(project or "")
 
 
 def _next_numbers(store: dict) -> dict[str, int]:

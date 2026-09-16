@@ -2468,6 +2468,7 @@ function ChatBody(props: ChatBodyProps) {
               });
             } catch (err) {
               putDownQueuedShot();
+              if (paneEpoch.current !== epochAtSend) return;
               refuseQueuedSend(text, err);
               return;
             }
@@ -2477,6 +2478,7 @@ function ChatBody(props: ChatBodyProps) {
             const run = (verdict as { run?: unknown } | null)?.run;
             if (run !== true && run !== false) {
               putDownQueuedShot();
+              if (paneEpoch.current !== epochAtSend) return;
               refuseQueuedSend(text, new Error("the queue gave no answer."));
               return;
             }
@@ -2506,6 +2508,14 @@ function ChatBody(props: ChatBodyProps) {
               //
               // …and the tray is spent, because the entry now carries its own
               // copies of those pictures (`spendTrayForQueue`).
+              if (paneEpoch.current !== epochAtSend) {
+                // The reader left this conversation while the admission was in
+                // flight. The entry is safely in the scheduler's line and the
+                // Tasks page lists it; nothing here may spend the NEW
+                // conversation's tray or write into its chat.
+                putDownQueuedShot();
+                return;
+              }
               spendTrayForQueue();
               // THE NOTES ARE SPENT TOO, on the same argument and for a sharper
               // reason: their words are on the entry now, so leaving them
@@ -2520,13 +2530,6 @@ function ChatBody(props: ChatBodyProps) {
               // later message in it joins (`sched/queue-leader`, which ignores
               // the call when a leader is already remembered or a session has
               // arrived).
-              if (paneEpoch.current !== epochAtSend) {
-                // The reader left this conversation while the admission was in
-                // flight (Bugbot). The entry is safely in the scheduler's line
-                // and the Tasks page lists it; nothing here may write it into
-                // the chat that is on screen now.
-                return;
-              }
               leader.remember(sid, entryId);
               // THE ROW IS THE SERVER'S; THIS IS ONLY THE FIRST PAINT OF IT.
               // The entry exists now, so the next schedule tick will list it and
@@ -3720,7 +3723,9 @@ function ChatBody(props: ChatBodyProps) {
    *  row and the header said nothing at all. `useLimitWord` asks for this
    *  conversation's own row, on mount and on `tasks-changed` (which the
    *  comeback's own POST rings), floored at five seconds. */
-  const limitWord = useLimitWord(taskKey);
+  // Only where the header is drawn, and only under the flag: the read is one
+  // listing per hook instance, and a cards wall mounts a dozen.
+  const limitWord = useLimitWord(queueOn && !compact && !peek ? taskKey : "");
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -4021,13 +4026,14 @@ function ChatBody(props: ChatBodyProps) {
                 transcript cannot help because nothing has consumed the message
                 yet. Deduped against both (`inboxRows`), so no message is ever
                 two bubbles. */}
-            {inboxRows.map((row) => (
+            {queueOn &&
+              inboxRows.map((row) => (
               <div className="c-inbox" key={row.id}>
                 <div className="turn user c-inbox-turn">
                   <div className="bubble">{row.text}</div>
                 </div>
               </div>
-            ))}
+              ))}
             {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
                 conversation. They are the LAST rows of the transcript by
                 construction — the scheduler sends in `due` order, which for a

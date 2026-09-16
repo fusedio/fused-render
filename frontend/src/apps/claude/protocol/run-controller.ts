@@ -1279,7 +1279,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const data = (await run(
           dir,
           "poll",
-          { run_id: runId, file: FILE || "", native: "1" },
+          { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
           // The controller's own lifetime: `dispose` aborts, so an unmounted
           // chat's last poll does not run to completion on its own.
           { key: null, ...(life ? { signal: life.signal } : {}) },
@@ -2899,7 +2899,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
+      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -2914,7 +2914,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
+        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -3027,7 +3027,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
        * Absent on an older agent.py, and read as zero: the conservative
        * direction, because zero is exactly today's behaviour.
        */
-      const windowMoved = (poll.window ?? 0) > 0;
+      // Under the flag only: the moved-window road exists for a follow-up that
+      // queued behind a live turn; flag off, re-attach is main's strip+append.
+      const windowMoved = queueEnabled() && (poll.window ?? 0) > 0;
       /**
        * Drop the partial assistant rows under a matched user line: `pollLoop`
        * re-streams the whole turn, and the done branch re-renders it from the
@@ -3383,7 +3385,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       : (run(
           dir,
           "history",
-          { file: FILE || "", session_id: sessionId, native: "1" },
+          { file: FILE || "", session_id: sessionId, native: "1", queue: queueEnabled() ? "1" : "0" },
           { key: null },
         ) as Promise<HistoryResponse & { error?: string }>);
 

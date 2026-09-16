@@ -4648,7 +4648,8 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
-def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
+def _poll(run_id: str, file: str = "", app_reads: bool = False,
+          inbox: bool = True) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
@@ -5234,7 +5235,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             # no byte of them is in `out.jsonl` to be echoed or trimmed, and a
             # reload mid-turn drew nothing at all for them before this existed
             # (see `_inbox_waiting`). Empty on every poll of an idle chat.
-            "inbox": _inbox_waiting(run_dir),
+            "inbox": _inbox_waiting(run_dir) if inbox else [],
             "segments": [] if echo_pending
             else _segments_from_rows(parsed, app_reads=app_reads),
             # The seams inside this payload where a mid-stream follow-up was
@@ -5896,7 +5897,8 @@ def _row_ts(row: dict) -> float | None:
     return parsed.timestamp()
 
 
-def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
+def _history(file: str, session_id: str, app_reads: bool = False,
+             inbox: bool = True) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
     Resolved ONLY at the target file's own project dir — with copied files
@@ -5956,7 +5958,7 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     if not os.path.isfile(path):
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
-        return {"turns": [], "transcript": stat, **_history_live(file, session_id)}
+        return {"turns": [], "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
@@ -6113,10 +6115,10 @@ def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat, **_history_live(file, session_id)}
+    return {"turns": turns, "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
 
 
-def _history_live(file: str, session_id: str) -> dict:
+def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
     """The run still going for this chat, WITH its cards, riding on the
     history response.
 
@@ -6155,7 +6157,7 @@ def _history_live(file: str, session_id: str) -> dict:
             # the run got round to answering it. Same rows `_poll` returns,
             # through the same `_inbox_waiting`, so the first poll after this
             # replays them identically (Akshil, 2026-09-12).
-            "inbox": _inbox_waiting(run_dir)}
+            "inbox": _inbox_waiting(run_dir) if inbox else []}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True,
@@ -6384,7 +6386,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
-         native: str = "", draft_key: str = "") -> dict:
+         native: str = "", draft_key: str = "", queue: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -6406,7 +6408,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
         # has a page (claude_spawn's record loop).
-        return _poll(run_id, file, app_reads=native == "1")
+        # `inbox` rows are the queue's own picture of a mid-turn follow-up; the
+        # page says whether it draws them (`queue`), and a template cannot read
+        # the pref itself. Flag off, the payload is main's.
+        return _poll(run_id, file, app_reads=native == "1", inbox=queue == "1")
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
@@ -6441,7 +6446,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _history(file, session_id, app_reads=native == "1")
+        return _history(file, session_id, app_reads=native == "1", inbox=queue == "1")
     if action == "snapshots":
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends

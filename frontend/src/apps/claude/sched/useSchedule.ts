@@ -282,9 +282,16 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const [tick, setTick] = useState(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
+  /** SUBSCRIBED, not read once: the one `/api/prefs` answer may still be in
+   *  flight when this mounts, and a composer that learned the flag only on its
+   *  next navigation would sit shut for a whole conversation over a message the
+   *  queue would have taken. An injected value wins, for the suites. */
+  const queuePref = useProjectQueueEnabled();
+  const queueOn = opts.queueEnabled ?? queuePref;
+
   // Read by the poller, which outlives any one render.
-  const live = useRef({ sessionId, inChat, leaderId });
-  live.current = { sessionId, inChat, leaderId };
+  const live = useRef({ sessionId, inChat, leaderId, queueOn });
+  live.current = { sessionId, inChat, leaderId, queueOn };
 
   /**
    * SAME LIST, SAME OBJECT. The poll answers every 15 s and hands back a fresh
@@ -389,12 +396,6 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     });
   }, []);
 
-  /** SUBSCRIBED, not read once: the one `/api/prefs` answer may still be in
-   *  flight when this mounts, and a composer that learned the flag only on its
-   *  next navigation would sit shut for a whole conversation over a message the
-   *  queue would have taken. An injected value wins, for the suites. */
-  const queuePref = useProjectQueueEnabled();
-  const queueOn = opts.queueEnabled ?? queuePref;
 
   /**
    * WHAT THE BLOCK DRAWS UNDER THE QUEUE: nothing.
@@ -484,9 +485,12 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         inChat: () => live.current.inChat,
         busy: () => hooks.current.controller.isBusy(),
         onBlockers: absorb,
-        onPending: absorbPending,
-        onAllRows: absorbAllRows,
-        onSessions: absorbSessions,
+        // The queue's three feeds are wired only under the flag: each is a
+        // fresh Set/Map per lap and a re-render of the whole chat, which an
+        // idle flag-off chat must not pay (review, 2026-09-16).
+        ...(live.current.queueOn
+          ? { onPending: absorbPending, onAllRows: absorbAllRows, onSessions: absorbSessions }
+          : {}),
         addNote: (text) => hooks.current.controller.addNote(text),
         setRunParam: (runId) => hooks.current.setRunParam(runId),
         resumeRun: (runId) =>

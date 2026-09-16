@@ -80,6 +80,9 @@ export interface PollRequest {
   /** `"1"` from the React page: app-state reads come back as in-stream
    *  notice segments instead of being stripped (agent.py `app_reads`). */
   native?: string;
+  /** "1" while the project queue is on: the agent then answers `inbox` rows
+   *  (a mid-turn follow-up not yet in the transcript); "0" is main's payload. */
+  queue?: string;
 }
 
 /** `decide` for a permission card (T:13979-13996). */
@@ -145,6 +148,9 @@ export interface FileSessionRequest {
   /** `"1"` from the React page (history): app-state reads come back as
    *  in-stream notice segments (agent.py `app_reads`). */
   native?: string;
+  /** "1" while the project queue is on: the agent then answers `inbox` rows
+   *  (a mid-turn follow-up not yet in the transcript); "0" is main's payload. */
+  queue?: string;
 }
 export interface RunIdRequest {
   run_id: string;

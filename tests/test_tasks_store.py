@@ -805,12 +805,3 @@ def test_one_folder_is_one_counter_however_it_is_spelled():
     # not a rewrite of what is stored.
     assert tasks_store.task_ids()["pending:e1"]["project"] == native
 
-
-def test_a_number_minted_under_the_lossy_decode_is_never_handed_out_again():
-    # The listing once numbered a transcript before it recorded its cwd, from
-    # the decoded directory name — every hyphen a separator. That record must
-    # still raise the folder's high-water mark under its real name.
-    lossy = "/private/tmp/pqueue/qa/alpha"
-    real = "/private/tmp/pqueue-qa/alpha"
-    assert tasks_store.ensure_ids([("old", lossy, 1.0)]) == {"old": "TASK-001"}
-    assert tasks_store.ensure_ids([("new", real, 2.0)])["new"] == "TASK-002"

@@ -488,113 +488,6 @@ def _notify(keys: set[str]) -> None:
         logger.debug("could not notify the tasks watcher", exc_info=True)
 
 
-def wake() -> None:
-    """Ring the loop's doorbell unconditionally — "look again, now".
-
-    A HINT, exactly like `_ring`, and never a mechanism: every rule about what
-    fires stays in `tick`, so a ring that lands at the wrong moment costs one
-    early pass that finds nothing. `_ring` asks the store whether anything is
-    due before ringing; this is for callers that already know something changed
-    OUTSIDE the store and cannot answer that question — the watcher seeing a
-    holder's process exit, a turn ending in this process. Their news is "a
-    folder just freed", which no entry's due time records.
-    """
-    _wake.set()
-
-
-# ------------------------------------------------------------- the second ring
-#
-# `_turn_ended` rings the loop the moment a verdict lands, which is what makes
-# "the next task starts in about a second" true for every hold that ends on an
-# EVENT. Two of them do not: a transcript that reads live until its 45-second
-# window runs out, and a folder holder that is `starting` or `reserved` — a
-# grace period with a clock on it. Nothing rings when those lapse, so a tick
-# that held something for one of them would wait out the whole 30-second poll.
-#
-# THE TIMER IS SET FOR WHEN THE CLOCK ACTUALLY RUNS OUT (round-3 review,
-# 2026-09-12). It used to ring two seconds later and then — keyed on the set of
-# entries held, which does not change while the hold stands — never again, so
-# for the 20-second reservation, the two-minute starting grace and the
-# 45-second transcript window it exists for it rang once, far too early, and
-# left the 30-second poll to do the work anyway. The pass that holds knows how
-# long each hold has left (`project_queue.holder_expires_in`, `_live_expires_in`),
-# and the earliest of those is the moment worth waking for.
-_REARM_FLOOR_S = 0.5     # never ring busier than this
-_rearm_lock = threading.Lock()
-_rearm_timer: threading.Timer | None = None
-
-
-def _cancel_rearm() -> None:
-    """Drop any pending re-ring. One timer at a time is the whole invariant —
-    `_rearm` calls this before arming, and a shutdown (or a test) calls it to
-    leave nothing behind. The timer is a daemon, so nothing here keeps the
-    process alive either way."""
-    global _rearm_timer
-    with _rearm_lock:
-        timer, _rearm_timer = _rearm_timer, None
-    if timer is not None:
-        timer.cancel()
-
-
-def _rearm(delays: list[float]) -> None:
-    """Ring the loop again when the earliest hold this pass made expires.
-
-    `delays` is seconds-from-now, one per hold that ends on a clock rather than
-    on an event; an empty list means every hold this pass made has a bell of its
-    own and no timer is needed. Bounded on both ends: never sooner than
-    `_REARM_FLOOR_S` (a hold whose clock has already run out re-ticks once, it
-    does not spin) and never later than `POLL_INTERVAL_S`, which is the floor
-    under all of this and the reason a missed ring costs latency and nothing
-    else.
-
-    **Idempotent per pass, not per episode.** Called on every tick, and every
-    call replaces the one timer this module owns — a hold that stands for ten
-    minutes therefore costs one timer at a time, re-armed to the remaining time
-    as the clock runs down, rather than one timer per tick piling up or (the bug
-    this replaces) one timer for the whole episode fired two seconds in.
-
-    A hint like `wake` itself: the timer only sets an Event, every rule about
-    what fires stays in `tick`, and a ring that lands on a state that has not
-    moved costs one early pass that finds nothing. Best-effort — a timer that
-    cannot start leaves the ordinary poll interval doing what it always has."""
-    global _rearm_timer
-    _cancel_rearm()
-    if not delays:
-        return
-    delay = min(max(min(delays), _REARM_FLOOR_S), float(POLL_INTERVAL_S))
-    try:
-        timer = threading.Timer(delay, wake)
-        timer.daemon = True
-        timer.start()
-    except Exception:  # noqa: BLE001 — the 30s poll is the floor under this
-        logger.debug("could not re-arm the schedule loop", exc_info=True)
-        return
-    with _rearm_lock:
-        _rearm_timer = timer
-
-
-def _live_expires_in(session_id: str, now: datetime) -> float:
-    """Seconds until the per-session transcript hold on `session_id` lapses by
-    itself — 0.0 when nothing can be read, which asks for no timer at all.
-
-    `_session_live` is true while the tail's last real activity is inside
-    `RUNNING_WINDOW_SEC`, so that moment is when this hold ends if nothing else
-    ends it first. The echo window (`VERDICT_ECHO_SEC`) is not a second
-    candidate: it can only ever silence a hold that the 45-second window is
-    already holding, so the window is always the later of the two and always
-    the one that actually frees the entry."""
-    try:
-        from fused_render import session_liveness
-
-        active = session_liveness.session_activity(session_id, now.timestamp())
-    except Exception:  # noqa: BLE001 — an unreadable tail asks for no bell
-        logger.debug("could not read the tail for %s", session_id, exc_info=True)
-        return 0.0
-    if not active:
-        return 0.0
-    return max(0.0, active + session_liveness.RUNNING_WINDOW_SEC - now.timestamp())
-
-
 def _pq():
     """`project_queue`, imported on use.
 
@@ -702,20 +595,6 @@ def _task_key(entry: dict, by_id: dict | None = None) -> str:
                           or leader.get("session_id") or "")
             return session or tasks_store.pending_key(str(leader.get("id") or ""))
     return tasks_store.pending_key(str(entry.get("id") or ""))
-
-
-def _notify(keys: set[str]) -> None:
-    """Tell the Tasks long-poll which rows moved. Best-effort: a watcher that
-    cannot be rung costs one poll interval, never the write that got here."""
-    keys = {k for k in keys if k}
-    if not keys:
-        return
-    try:
-        from fused_render import tasks_watch
-
-        tasks_watch.notify(keys)
-    except Exception:  # noqa: BLE001 — a missed ring is latency, not an error
-        logger.debug("could not notify the tasks watcher", exc_info=True)
 
 
 def store_path() -> str:
@@ -2540,7 +2419,8 @@ def _send(entry: dict) -> None:
     # session host the CHAT owns, not a process this send started.
     _update(entry["id"], state=SENT, run_id=str(run_id), error="",
             **({"host_sent": True} if host_sent else {}))
-    entry["host_sent"] = host_sent
+    if host_sent:
+        entry["host_sent"] = True
     # The row opens `running` and stays that way for the whole TURN, not just the
     # spawn — the spawn takes a moment and the turn can take minutes, and the
     # minutes are the part worth being able to see. `cancellable` is honest here
@@ -2666,7 +2546,6 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
             _turn_ended(entry)
             _report(entry_id, state="cancelled")
-            _turn_ended(entry)
             return False
         if reason:
             _update(entry_id, turn="failed", error=reason,
@@ -2684,7 +2563,6 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             _turn_ended(entry)
             _report(entry_id, state="done", detail="finished")
             _emit(EVENT_DONE, entry)
-        _turn_ended(entry)
         return False
 
     # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
@@ -2860,7 +2738,6 @@ def _close_unwatched(entry: dict, reason: str) -> None:
             return  # already resolved, or never got far enough to need this
     _update(entry_id, turn="unknown", error=reason,
             turn_at=_now().isoformat())
-    _turn_ended(entry)
     _report(entry_id, state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
     # A turn nobody could follow to the end still ENDED — whatever was waiting
@@ -4262,9 +4139,12 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     queued = _run_now_queued(entry, session, now)
     if queued is not None:
         return queued
+    # The echo rule joins run-now's refusal only under the flag: main's run-now
+    # refused on a warm transcript alone, and flag off stays that.
     if session and (session in busy
                     or (_session_live(session, now)
-                        and not _verdict_echo(session, entries, now))):
+                        and not (_pq().enabled()
+                                 and _verdict_echo(session, entries, now)))):
         # "It will go on its own as soon as that turn ends" is a promise, and
         # for a message due next Tuesday it was not true: nothing would look at
         # it again until Tuesday. `_asked_now` is what makes it true — the

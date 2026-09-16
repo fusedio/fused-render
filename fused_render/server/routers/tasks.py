@@ -2166,8 +2166,13 @@ def _run_session(entry: dict) -> str:
     run_id = str(entry.get("run_id") or "")
     if not run_id or entry.get("state") not in (schedule.SENDING, schedule.SENT):
         return ""
+    # Under the flag only: with the queue off the listing groups exactly as
+    # main does — the scheduler's stamp, else `pending:<id>` — and the ring
+    # keys `schedule._entry_keys` computes stay the row's own.
+    if not project_queue.enabled():
+        return ""
     try:
-        agent = project_queue.agent_module()
+        agent = _agent_module()
         if agent is None:
             return ""
         run_dir = os.path.join(str(agent.RUNS), run_id)

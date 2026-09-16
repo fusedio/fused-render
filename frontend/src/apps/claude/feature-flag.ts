@@ -191,7 +191,13 @@ function read(): Promise<void> {
       // default the pref itself has, and it is what these sites rendered before
       // the flag existed — never-broken outranks the tri-state. `reading` is
       // cleared so a later mount (or a publish) can still ask again.
-      if (generation === departed) set(false);
+      if (generation !== departed) return;
+      // ONLY A FIRST READ SETTLES ON `false` (review, 2026-09-16). A re-read —
+      // a tab coming back into view — that fails keeps the answer the page
+      // already has: `set(false)` here remounted every live native chat as the
+      // legacy iframe on one refused GET after a laptop wake. And `reading` is
+      // cleared only by the read that owns it, never by a superseded one.
+      if (!settledOnce) set(false);
       reading = null;
     })
     .then(() => {
