@@ -1593,10 +1593,11 @@ def test_bad_id_spells_the_agents_rule(home):
         assert pq.bad_id(bad) is True, bad
 
 
-def test_with_the_flag_off_a_run_is_never_named_through_the_registry(home, agent):
-    """Flag-off audit (2026-09-12): `_parked_runs` reads this same walk with the
-    queue off, and main never opened `~/.claude/sessions` for it. A run that
-    names no session stays anonymous — `starting` — until its own files say."""
+def test_with_the_flag_off_a_run_is_still_named_through_the_registry(home, agent):
+    """Reversed on 2026-09-16 (Akshil): the flag guards the one-task-per-folder
+    rule, not the sync improvements. Knowing which session a run is — off the
+    registry row the CLI writes against its pid, seconds before the run dir's
+    own `session` file — is liveness bookkeeping every listing benefits from."""
     work = home / "work"
     work.mkdir()
     stage_run(agent, "r-1", str(work / "page.html"), session_id="",
@@ -1604,4 +1605,4 @@ def test_with_the_flag_off_a_run_is_never_named_through_the_registry(home, agent
     registry(SID, status="busy")
     assert pq.enabled() is False
     run = pq.scan_runs(agent)[0]
-    assert SID not in pq.run_sessions(agent, run["run_dir"], run.get("meta") or {})
+    assert SID in pq.run_sessions(agent, run["run_dir"], run.get("meta") or {})

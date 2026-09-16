@@ -485,7 +485,7 @@ def _pid_alive_windows(pid: int) -> bool:
 
 
 def _wake_schedule() -> None:
-    """Tell the scheduler a folder may just have freed (project queue only).
+    """Tell the scheduler a session may just have freed.
 
     THIS IS THE "wake, not wait" half of the queue. This loop already stats the
     live registry once a second, so it learns that a run stopped — status left
@@ -498,13 +498,17 @@ def _wake_schedule() -> None:
     rule about what fires stays in `schedule.tick`, and a ring that finds
     nothing costs one early pass. Imported inside the function because the
     scheduler reaches this module the other way round (through
-    `project_queue`), so a module-level import would close the cycle. Gated on
-    the flag so nothing about a default install changes."""
-    try:
-        from fused_render import project_queue, schedule
+    `project_queue`), so a module-level import would close the cycle.
 
-        if project_queue.enabled():
-            schedule.wake()
+    NOT gated on the project-queue flag (Akshil, 2026-09-16): the queue is the
+    one-task-per-folder RULE, and this is a sync improvement — the scheduler's
+    own per-session hold (a follow-up waiting for the turn in front of it) ends
+    on the same event, and before this ring it waited out the 30-second poll
+    with the flag off too."""
+    try:
+        from fused_render import schedule
+
+        schedule.wake()
     except Exception:  # noqa: BLE001 — a watcher must outlive any one bad ring
         pass
 

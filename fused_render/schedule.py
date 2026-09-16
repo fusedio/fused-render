@@ -2820,15 +2820,16 @@ def _verdict_echo(session_id: str, entries: list[dict], now: datetime,
     read happens only behind it. `seen` memoizes the whole answer within one
     pass, like `_session_live`'s own.
 
-    **Flag-gated** (`project_queue.enabled()`). It is a correctness fix for the
-    pre-existing per-session hold too, and the blast radius is what decides it:
-    with the queue off the schedule behaves byte-for-byte as it shipped, and the
-    30-second poll that covers the same case there is exactly what the queue's
-    "next task starts in about a second" promise cannot live with.
+    **Not flag-gated** (Akshil, 2026-09-16; it was, on a blast-radius
+    argument). It is a correctness fix for the pre-existing per-session hold:
+    with the queue off a follow-up still waited out the whole 45-second window
+    on the finished turn's own closing rows, and only the 30-second poll ended
+    it. The project-queue flag guards the one-task-per-folder RULE, not the
+    sync improvements that came with it.
 
     Never raises: a read that fails answers False, which leaves the hold exactly
     as strict as it was."""
-    if not session_id or not _pq().enabled():
+    if not session_id:
         return False
     if seen is not None and session_id in seen:
         return seen[session_id]
@@ -3784,13 +3785,13 @@ def tick(now: datetime | None = None) -> list[dict]:
             # it is waiting for (`_verdict_echo`).
             logger.debug("holding %s: session %s has a live turn", entry_id,
                          session)
-            # The early wake is the queue's promise (a message goes within
-            # seconds of the folder freeing); with the flag off the 30 s poll
-            # is what shipped, so no timer is armed and no tail is re-read.
-            if folders is not None:
-                left = _live_expires_in(session, now)
-                if left:
-                    held_soon.append(left)
+            # The early wake: a message goes within seconds of the turn in
+            # front of it ending, flag or no flag (Akshil, 2026-09-16 — sync
+            # improvements are not the queue rule), so the pass says how long
+            # this hold has left and a timer rings when it runs out.
+            left = _live_expires_in(session, now)
+            if left:
+                held_soon.append(left)
             continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:

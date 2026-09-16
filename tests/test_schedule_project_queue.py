@@ -894,15 +894,16 @@ def _row(sessions, status, stamp, name="p.json"):
 @pytest.mark.parametrize("flag", [False, True], indirect=True)
 def test_a_session_leaving_busy_rings_the_scheduler(registry, woke, flag):
     """This loop stats the registry once a second, so it learns a run stopped a
-    poll interval before the scheduler's own timer would. Gated: with the flag
-    off nothing about a default install changes."""
+    poll interval before the scheduler's own timer would. Flag or no flag
+    (Akshil, 2026-09-16): the per-session hold the scheduler has always had ends
+    on the same event, and a ring that finds nothing costs one early pass."""
     stamp = 1_800_000_000.0
     _row(registry, "busy", stamp)
     assert woke == []          # arriving busy is not a folder freeing
 
     _row(registry, "idle", stamp + 1)
 
-    assert bool(woke) is flag
+    assert woke
 
 
 def test_a_departed_row_rings_the_scheduler(registry, woke, home):
@@ -1223,11 +1224,12 @@ def test_a_session_still_working_past_the_echo_keeps_the_hold(
 
 
 @pytest.mark.parametrize("flag", [False, True], indirect=True)
-def test_the_echo_is_only_silenced_with_the_flag_on(
+def test_the_echo_is_silenced_flag_or_no_flag(
         folders, spawned, flag, monkeypatch, live_reads_the_transcript):
-    """A correctness fix for the pre-existing per-session hold, kept to the
-    feature that cannot live without it: with the queue off the 30-second poll
-    sends it a tick later, which is what shipped."""
+    """A correctness fix for the pre-existing per-session hold, and since
+    2026-09-16 (Akshil) NOT kept to the queue: the flag guards the
+    one-task-per-folder rule, and a follow-up waiting on the finished turn's own
+    closing rows is a sync defect the queue merely made visible."""
     monkeypatch.setattr(pq, "holders", lambda now=None: {})
     done = schedule.create(str(folders["alpha"]), "first", _ago(60))
     schedule._update(done["id"], state=schedule.SENT, claude_session_id=SID,
@@ -1237,7 +1239,7 @@ def test_the_echo_is_only_silenced_with_the_flag_on(
                             session_id=SID)
 
     sent = [e["id"] for e in schedule.tick()]
-    assert sent == ([later["id"]] if flag else [])
+    assert sent == [later["id"]]
 
 
 @pytest.mark.parametrize("verdict", ["unknown", "cancelled"])
