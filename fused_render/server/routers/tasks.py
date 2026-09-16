@@ -799,6 +799,96 @@ def _chat_message(prompt: dict) -> dict:
     }
 
 
+# How far back of the merged thread a live send looks for ITSELF before deciding
+# it is not there yet. The transcript's own clock and this process's clock are
+# the same machine's, but a prompt is stamped by Claude Code when it WRITES the
+# record and the mark is stamped when the page pressed send — and the CLI takes
+# a moment to get going. Wide enough to cover that gap, and no wider: beyond it
+# the same words are a person saying the same thing twice, which is two
+# messages and must read as two.
+_SENT_MARK_WINDOW_SEC = 15.0
+
+
+def _sent_message(mark: dict) -> dict:
+    """The live send, shaped as a message — the newest one in the thread.
+
+    A SCHEDULE-ENTRY message, deliberately, and not a chat one: `state: "sent"`
+    with `turn: ""` is the one shape `_message_running` reads as a turn in
+    flight, so the row derives `in_progress` from the thread itself rather than
+    from a second rule about marks that `_status` would have to know. The row
+    shows the words and turns its ring on in the same poll, off one fact.
+
+    Every id field is empty because there is nothing on disk to point at yet:
+    no entry made this message, no template, and there is no transcript record
+    to anchor a scroll on. `at` and `ran_at` are both the moment the send
+    happened — the two can only disagree for a message that WAITED for a time,
+    and this one was typed and sent in the same breath (`_chat_message` says
+    the same thing for the same reason). `immediate` is True for that same
+    reason, so no calendar draws a chip for it.
+    """
+    at = float(mark.get("at") or 0.0)
+    return {
+        "message_id": "",
+        "kind": "scheduled",
+        "body": str(mark.get("text") or ""),
+        "at": at,
+        "ran_at": at,
+        "state": schedule.SENT,
+        "turn_at": 0.0,
+        "unread": False,
+        "entry_id": "",
+        "template_id": "",
+        "immediate": True,
+        "turn": "",
+        "anchor": "",
+    }
+
+
+def _fold_sent_mark(messages: list[dict], mark: dict) -> bool:
+    """Add the live send to `messages` as its newest — unless it is ALREADY
+    there. True when one was added (the caller owes the count a message).
+
+    THE DEDUPE IS THE WHOLE FUNCTION. A mark is a claim about a message that is
+    on its way to disk, and the moment it arrives the thread holds it for real:
+    keeping both would show the user their own sentence twice for whatever was
+    left of the fifteen seconds, in a list whose entire promise is that a
+    scheduled message and the prompt it became are ONE message (`_merge`).
+
+    Two ways the same send can already be in the thread, and both are checked
+    on the body, stripped and compared whole — the same join `_merge` makes,
+    for the same reason: the text is handed to the session verbatim.
+
+    * **A TRANSCRIPT PROMPT.** Time-qualified, at or after the mark's own moment
+      less `_SENT_MARK_WINDOW_SEC`: an OLD prompt with the same words is a
+      different message (the user asking the same thing again is the ordinary
+      way a chat works), and only one written around the moment of this send can
+      be this send.
+    * **A SCHEDULED ENTRY.** NOT time-qualified, and deliberately: an entry
+      already in the store IS this message — it has its own row in the thread,
+      its own state, its own verdict — and its `at` is the time it was DUE,
+      which for a caught-up run is days away from when it actually went. Time
+      cannot be the test there, and the body is enough: the entry says what was
+      sent.
+
+    A mark with no words at all (a caller that only wanted the liveness floor)
+    adds nothing: there is no message to show, and an empty bubble in the thread
+    would be worse than the ring on its own.
+    """
+    body = _body_key(mark.get("text"))
+    if not body:
+        return False
+    floor = float(mark.get("at") or 0.0) - _SENT_MARK_WINDOW_SEC
+    for message in messages:
+        if _body_key(message["body"]) != body:
+            continue
+        if message["kind"] != "chat":
+            return False  # the entry this send came from is already the message
+        if max(message["at"] or 0.0, message["ran_at"] or 0.0) >= floor:
+            return False  # the prompt landed; the mark has nothing left to say
+    messages.append(_sent_message(mark))
+    return True
+
+
 def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
     """One thread, oldest first, with the scheduled entries joined onto the
     prompts they became.
@@ -1234,11 +1324,12 @@ def _run_sessions(agent, run_dir: str, meta: dict) -> set:
     """Every session id this run answers to.
 
     BOTH SPELLINGS, for the reason `agent._live_run` spells out: a run knows the
-    session it RESUMED (`resumed_from` in meta.json) and the one the CLI minted
-    for it (the `session` file, or the head of out.jsonl before the first poll
-    has written one), and either can be the id a task row carries. Matching on
-    one of them is how a parked run goes unnoticed for exactly the sessions that
-    were forked or freshly started — which is most scheduled runs.
+    session it RESUMED (`resumed_from` in meta.json) and the one its OWN turn is
+    in (`agent._run_own_session` — the `session` file, the head of out.jsonl, or
+    the id `_start` minted before the spawn), and either can be the id a task row
+    carries. Matching on one of them is how a parked run goes unnoticed for
+    exactly the sessions that were forked or freshly started — which is most
+    scheduled runs.
     """
     out = {str(meta.get("resumed_from") or "")}
     own = ""
@@ -1252,6 +1343,16 @@ def _run_sessions(agent, run_dir: str, meta: dict) -> set:
             own = agent._session_from_out(run_dir)
         except Exception:  # noqa: BLE001 — a head we cannot read is not an id
             own = ""
+    if not own:
+        # …and the id `_start` MINTED, which is the only one of the three that
+        # exists for the first seconds of a fresh run — before any poll wrote
+        # the `session` file and before the CLI announced anything. A card
+        # raised in those seconds (a `Bash` on the very first tool call, which
+        # is the ordinary shape) used to belong to no session this listing knew,
+        # so the row it should have hoisted to Needs attention was somebody
+        # else's. Read straight off `meta`, not through the agent module: it is
+        # a dict this function already has open.
+        own = str(meta.get("session_id") or "")
     out.add(own)
     out.discard("")
     return out
@@ -1629,6 +1730,32 @@ def _collect() -> dict[str, dict]:
     for path in tasks_store.transcripts():
         session_id = os.path.splitext(os.path.basename(path))[0]
         tasks[session_id] = _new_task(session_id, session_id, path)
+    # A SEND IS A TASK BEFORE ANY FILE SAYS SO. `tasks_watch.sent_marks()` is
+    # the page that made the send telling this process it made it (see
+    # `/api/tasks/running`), which is earlier than the transcript, earlier than
+    # the CLI's registry row, and — for a brand-new chat — earlier than there
+    # being anything on disk at all. A mark on a session nothing else lists
+    # becomes a PLACEHOLDER row here, keyed by THE SESSION ID, so the row the
+    # transcript makes a moment later is literally this row: same key, same
+    # number, no swap for the reader to watch.
+    #
+    # ITS LIFETIME IS THE MARK'S, and that is the whole of the rule. While the
+    # mark stands the row stands; when the mark runs out
+    # (`tasks_watch.MARK_TTL_SEC`, or the sender saying the turn ended) the row
+    # is whatever the disk says. With a transcript that is a real row and this
+    # was only its first fifteen seconds. WITHOUT one — a send whose run died on
+    # the spot, a bad model id, a refused spawn — the row DISAPPEARS, because
+    # nothing happened: there is no session, no transcript, no entry, nothing to
+    # open and nothing to report. Everything a reload can reproduce comes off
+    # disk; this is the one thing that cannot, and it is why it has a fuse.
+    marks = tasks_watch.sent_marks()
+    for session_id, mark in marks.items():
+        # Only a send WITH WORDS is a row on its own: a wordless mark (an
+        # attachment-only send, a bare liveness ping) has nothing to show and
+        # would be a blank card for fifteen seconds (regression review). A
+        # session that already has a row keeps its liveness floor either way.
+        if session_id not in tasks and str(mark.get("text") or "").strip():
+            tasks[session_id] = _new_task(session_id, session_id, None)
     for entry in schedule.list_entries():
         if entry.get("state") == schedule.RECURRING:
             # A template never fires and is not a message; its materialised
@@ -1646,6 +1773,13 @@ def _collect() -> dict[str, dict]:
             task["entries"].append(entry)
     for task in tasks.values():
         task["entries"].sort(key=_entry_at)
+        # The live send this task is carrying, or None — read once, here, and
+        # spent by `_place` (which folder the placeholder belongs to) and `_row`
+        # (the words, and the message that shows them). On the task rather than
+        # threaded through as a parameter because a task's own send is a fact
+        # about the task, and the two readers must not be able to disagree about
+        # whether one is standing.
+        task["sent"] = marks.get(task["session_id"]) if task["session_id"] else None
     # The drop happens HERE, once, rather than in each endpoint: the listing,
     # the full thread, the calendar window and the read endpoint all collect
     # through this function, so a task that is no longer a task — or one the
@@ -1730,9 +1864,27 @@ def _place(task: dict) -> None:
     pane = ""
     if task["path"]:
         cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
-    task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
+    # A PLACEHOLDER HAS ONLY THE SEND TO GO ON — no transcript to read a `cwd`
+    # out of, no entry to take a target from — so the mark supplies both: the
+    # file the message was sent about is the target, and its folder (`_workdir`,
+    # the same rule the run itself applies) is the project. Gated on having
+    # neither of the other two sources, so a session that HAS a transcript keeps
+    # reading its own `cwd` and its own pane file; the mark is a floor under a
+    # row with nothing, never an override of something.
+    sent = task.get("sent") or {}
+    if not task["path"] and not entries and sent.get("file"):
+        target = str(sent["file"])
+    if not prompt:
+        # …and the same for the title. `_title`'s `message` source is "the line
+        # the session opened with", which for a send this app has not seen land
+        # yet is exactly the words that were sent — a placeholder row named
+        # after the message, in the same source the transcript will name it in a
+        # moment, rather than a nameless row that acquires a title on the next
+        # poll.
+        prompt = str(sent.get("text") or "")
+    task["first_prompt"] = prompt
     if not cwd:
         cwd = _workdir(target) or (
             sessions._decode_project_dir(os.path.basename(os.path.dirname(
@@ -1743,6 +1895,13 @@ def _place(task: dict) -> None:
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
+    if first_ts is None and sent.get("at"):
+        # A placeholder's only clock. It is fixed for the row's whole life in
+        # exactly the way this value has to be: the transcript that lands a
+        # moment later has a FIRST record older than nothing, so the minimum
+        # below still settles on the file's own answer and the number this
+        # allocates is the number that row keeps (same key — see `_collect`).
+        first_ts = float(sent["at"])
     task["order"] = first_ts
     # WHEN THE TASK BEGAN — the row's `started`, and deliberately NOT `order`
     # above, which this must not disturb: `order` decides the sequence new task
@@ -1810,7 +1969,8 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
 # ------------------------------------------------------------------ liveness
 
 
-def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
+def _live(path: str | None, now: float,
+          session_id: str = "") -> tuple[bool, float, bool]:
     """(is this session running, when was it last active, did the SENDER say a
     turn had just started here).
 
@@ -1841,8 +2001,20 @@ def _live(path: str | None, now: float) -> tuple[bool, float, bool]:
     (`mark_idle`, `POST /api/tasks/idle`) — lives there, not here. That last
     one is what keeps a FAST turn from wearing the ring for the rest of the
     mark's fifteen seconds: the reply landing is news the same page can say
-    the instant it knows it, same as the send was."""
+    the instant it knows it, same as the send was.
+
+    `session_id` is for the ONE task shape that has no transcript to name
+    itself with: a placeholder built out of a live send alone (`_collect`).
+    There is no file to read, so the mark is not merely the best evidence
+    here — it is all of it. Optional, because every other caller has a path
+    and the path already carries the id (the transcript is named for its
+    session), and reading it twice could only produce two answers."""
     if not path:
+        if tasks_watch.is_marked_running(session_id):
+            # A send in flight into a session nothing has written yet. `now` is
+            # the honest last-active — the turn is happening as this is read —
+            # exactly as it is on the marked branch below.
+            return True, now, True
         return False, 0.0, False
     try:
         mtime = os.path.getmtime(path)
@@ -2001,7 +2173,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     inside a per-task `try` that swallows IO errors — a failed write would cost
     the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
-    live, active, marked = _live(task["path"], now)
+    live, active, marked = _live(task["path"], now, task["session_id"])
     prompts = list(rec["tail"]) if rec else []
     # The transcript's prompts already include every scheduled message that
     # fired, so only the ones that never reached a session are added — and with
@@ -2016,6 +2188,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
     merged = _merge(prompts, task["entries"])
+    # …AND THE SEND THAT HAS NOT REACHED DISK YET, as the newest message in it
+    # (`_fold_sent_mark`, which explains when it is already there and drops
+    # itself). It is added to the WHOLE merged thread, before the tail is cut,
+    # for the same reason `live` is decided there: `_status`, `_speaker` and the
+    # row's own `failed` flag all read the whole list, and a send visible to the
+    # preview but not to the status would be a row that shows the words and says
+    # the task is done.
+    #
+    # `total` counts it, so the message ids below still number from the end —
+    # and the id it takes is the id the transcript's own prompt takes when it
+    # lands, because by then it IS that message and the count has not moved.
+    if task.get("sent") and _fold_sent_mark(merged, task["sent"]):
+        total += 1
     # A run that has already reported its verdict does not keep the row In
     # Progress off its own closing transcript records: the queue card in the
     # corner says finished within seconds of the result row, and this page
@@ -3190,6 +3375,14 @@ class RunningPatch(BaseModel):
     # `tasks_watch.mark_running`'s stale-turn check, which only runs when this
     # is present.
     turn: float | None = None
+    # THE WORDS THAT WERE SENT, and the file they were sent about. Both
+    # optional and both defaulting to "" rather than None: a caller that only
+    # wants the liveness floor sends neither and gets exactly the mark this
+    # endpoint has always made. With them, the mark is enough to BE a row — the
+    # message the listing shows, and the project it belongs to — for the
+    # seconds before anything reaches disk. See `tasks_watch.mark_running`.
+    text: str = ""
+    file: str = ""
 
 
 @router.post("/api/tasks/running")
@@ -3217,11 +3410,22 @@ def api_task_running(patch: RunningPatch):
     the race to its own turn's `/api/tasks/idle` call (two independent
     fetches; nothing here orders their arrival) and drop it, rather than
     reopening a row a later idle call already closed (bugbot #1163).
+
+    `text` and `file` are what the sender SAID and what it said it about, and
+    they turn this from a floor under a row into the row itself: a brand-new
+    chat has no transcript, no entry and no session on disk for its first
+    seconds, so without them the send is a task nothing can list. With them the
+    listing has a placeholder — keyed by the session the turn runs in, which is
+    what `POST /api/run` hands the page back — that the transcript then simply
+    becomes. Both are optional and neither can pin anything: they live and die
+    with the mark, and the worst a wrong call does is show one wrong line for
+    fifteen seconds in a row that then disappears.
     """
     session_id = patch.session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
-    tasks_watch.mark_running(session_id, turn=patch.turn)
+    tasks_watch.mark_running(session_id, turn=patch.turn,
+                             text=patch.text.strip(), file=patch.file.strip())
     return {"ok": True, "session_id": session_id}
 
 
@@ -3263,9 +3467,19 @@ def api_task_idle(patch: IdlePatch):
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
-    live, _active, _marked = _live(task["path"], now)
+    live, _active, _marked = _live(task["path"], now, task["session_id"])
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
+    # The live send is part of the thread here for the same reason it is part
+    # of the listing row: "Show more" on a row that reads "running, on these
+    # words" must show those words, not an empty thread until the transcript
+    # lands (bugbot). Same fold, same dedupe.
+    if task.get("sent") and _fold_sent_mark(messages, task["sent"]):
+        # Numbered like the listing numbers it — the next id after everything
+        # on disk — so "mark this one read" and the unread recount can name it
+        # (bugbot). It is the newest by construction: `_merge` sorted the rest
+        # ascending and the mark's `at` is the moment of the send.
+        messages[-1]["message_id"] = tasks_store.format_message_id(len(messages))
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages
@@ -3439,6 +3653,14 @@ def api_task_read(patch: ReadPatch):
             detail=f"message_id: expected MSG-nnn, got {patch.message_id!r}")
 
     tasks_store.mark_read(key, patch.message_id)
+    # THE BADGE IS A LISTED FACT, so the other windows have to be told. `unread`
+    # rides on every row (`_unread_count`) and feeds the sidebar's own dot
+    # (`/api/tasks/pulse`), and this was the one mutation in this router that
+    # changed a row without ringing: reading a message on the Tasks page left a
+    # second window, and the rail, counting it for up to a full poll. Every
+    # other verb here already announces itself — archive, unarchive, delete,
+    # erase — and this is the same kind of write.
+    tasks_watch.notify({key})
 
     # Recounted from the thread rather than decremented, so the badge the page
     # paints is the truth on disk and not an optimistic guess that drifts.
@@ -3475,6 +3697,10 @@ def _read_whole_task(key: str) -> dict:
     if unread_ids:
         tasks_store.mark_read_many(key, unread_ids)
         _mark_unread(messages, key, tasks_store.read_state())
+        # Same ring as the per-message branch above, and only when something
+        # actually moved: a whole-task mark on a task with nothing unread is a
+        # no-op on disk and must not cost every watcher a redraw.
+        tasks_watch.notify({key})
     return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}
 
 

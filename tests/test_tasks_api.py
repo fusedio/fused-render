@@ -3352,6 +3352,9 @@ class _FakeAgent:
     def _session_from_out(self, run_dir):
         return ""
 
+    def _perm_dir(self, run_dir):
+        return os.path.join(run_dir, "perm")
+
     def _tool_detail(self, name, inp):
         return str((inp or {}).get("command") or "")
 

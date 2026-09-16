@@ -994,6 +994,19 @@ def api_claude_session_triage(patch: TriagePatch):
     if patch.status not in ("in_progress", "done", "archived"):
         raise HTTPException(status_code=400, detail=f"unknown status {patch.status!r}")
     write_triage(session_id, patch.status)
+    # THE TASKS LISTING READS THIS FILE. `triage.json` is what `_archive_record`
+    # asks whether a task is filed, so a status written here moves the row's
+    # lane — in this window and in every other one — and the long-poll had no
+    # way to know. Ring the session's own key: it is the task key for every
+    # transcript-backed row (`_collect`), which is the only kind a session id
+    # can name. Best-effort, like every other ring in this app: a watcher that
+    # cannot be reached costs one poll interval, never the write.
+    try:
+        from fused_render import tasks_watch
+
+        tasks_watch.notify({session_id})
+    except Exception:  # noqa: BLE001 — a missed ring is latency, not an error
+        logger.debug("could not notify the tasks watcher", exc_info=True)
     return {"ok": True, "session_id": session_id, "status": patch.status}
 
 
