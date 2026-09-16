@@ -2642,12 +2642,17 @@ function ChatBody(props: ChatBodyProps) {
       // "Back to chat" (task-shots copies, registered as real paths — no
       // upload, `useAttachments.addPaths`).
       attachments: () => attach.items,
-      // THERE IS NO WAY BACK IN any more (Akshil, 2026-09-16). "Back to chat"
-      // from the task card lands on a CLEAN composer: the draft stays where it
-      // was saved, in Upcoming, and is edited on the card — so the tray is never
-      // re-filled from a record either. `onRestoreAttachments` went with it.
+      // A SESSION'S COMPOSER SEEDS ITS TRAY FROM THE RECORD, the same way it
+      // seeds its words: that draft is this conversation's unsent message, and
+      // half of one is not it. Task-shots copies, registered as real paths — no
+      // upload (`useAttachments.addPaths`).
       //
-      // Emptying the tray is still a thing that happens: an answered
+      // A SESSION-LESS COMPOSER NEVER CALLS IT (Akshil, 2026-09-16): its record
+      // is an Upcoming row, "Back to chat" from that card lands on a CLEAN box,
+      // and a tray re-filled from a row nobody opened would be the same
+      // disagreement in files.
+      onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
+      // Emptying the tray is the other half: an adopted record, an answered
       // unsent-message question, and the Schedule hop once the files are on the
       // card (`useAttachments.discard`).
       onDiscardAttachments: attach.discard,

@@ -855,6 +855,37 @@ describe("the syncer's table of interleavings", () => {
     it.restore();
   });
 
+  test("a DELETE the server DROPPED still deleted — the trash must not restore the row", async () => {
+    // Bugbot 4027177439. The server drops a request whose `(client, seq)` is not
+    // newer than the last it applied from this page, and one way that happens is
+    // the trash's DELETE arriving behind this page's own later statement about
+    // the same key. The record the reader pressed the trash on IS gone; reported
+    // as "not removed", `dropDraft` put its row straight back on the List.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("a row in the list");
+    sync.flushNow();
+    await it.settle();
+    sync.markDeleted();
+    const handed = sync.handoff();
+    // The box behind the list types on: its save is WANTED but cannot leave
+    // while the DELETE is on the wire.
+    sync.setText("typed behind the list");
+    sync.flushNow();
+    expect(it.held.length).toBe(2);
+    // …and the DELETE comes back dropped.
+    it.held[1]!.landed = true;
+    it.held[1]!.settle({ json: { ok: true, dropped: true, key: KEY, draft: null } });
+    await flushMicrotasks();
+    // The queued PUT then goes and lands, which is what lets the hop settle.
+    expect(it.held.length).toBe(3);
+    await it.landOne(2);
+    const out = await handed;
+    expect(out.removed).toBe(true);
+    it.restore();
+  });
+
   test("the three moments the document may be going away are listened for once", () => {
     // Not per editor: the debounce belongs to the KEY, so the unload listeners
     // do too. Read off the source because an event nobody can dispatch in this
@@ -964,20 +995,26 @@ describe("the chat does not rekey its own draft", () => {
     expect(d).not.toContain('"/api/drafts/chat/rekey"');
   });
 
-  test("the send owes the record nothing, because nothing wrote one", () => {
-    // The composer does not autosave (Akshil, 2026-09-16), so a send has no
-    // record to spend: no DELETE, no "markDeleted", and none of the ordering
-    // that used to be needed to keep a straggling autosave from resurrecting
-    // the sentence it had just sent.
+  test("a session's send spends its own key, and every write goes through one writer", () => {
     const src = composer();
-    expect(src).not.toContain("markDeleted");
+    // A SESSION'S SEND SPENDS THE RECORD, and it spends it by SAYING SO to the
+    // one writer of that record rather than firing a DELETE beside whatever the
+    // box has on the wire. The ordering that used to live here — take the
+    // in-flight promise, wait for it, state the version it made — is the
+    // syncer's now, so none of it is left in this file to get subtly wrong.
+    expect(src).toContain("draftSyncer(draftKeyRef.current).markDeleted();");
+    expect(src).not.toContain("autosaveRef.current.settle()");
     expect(src).not.toContain("deleteChatDraft");
     expect(src).not.toContain("settleDraft");
-    expect(src).not.toContain("useAutosave");
-    expect(src).not.toContain("draftSyncer");
-    // The two writes that remain are both deliberate gestures, and both are the
-    // one PUT `saveChatDraft` is.
-    expect(src).toContain("saveChatDraft");
+    // …AND THE SESSION-LESS BOX'S THREE WRITES GO THE SAME WAY (Bugbot review of
+    // caef75eb1, HIGH-1). A bare `saveChatDraft` carries no `client`, no `seq`
+    // and no `If-Match` off the syncer's book, so a keepalive PUT from a
+    // reloading tab could land after the Tasks card's edits and undo them. There
+    // is no CALL to it left in this file — only prose about why there is not.
+    expect(src).not.toContain("saveChatDraft(");
+    expect(src).not.toContain("saveChatDraft,");
+    expect(src).toContain("sync.handoff()");
+    expect(src).toContain("sync.flushNow(opts)");
   });
 });
 

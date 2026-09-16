@@ -11,8 +11,15 @@ import { installDomShim } from "./testDomShim";
 // installs, rather than a stub hand-rolled per file.
 installDomShim();
 
-const { navigate, navigateToJobPage, isJobPageRoute, rewriteLegacyUrl, withPreviewFlag } =
-  await import("./router");
+const {
+  navigate,
+  navigateToJobPage,
+  isJobPageRoute,
+  rewriteLegacyUrl,
+  withPreviewFlag,
+  confirmLeave,
+  registerLeaveGuard,
+} = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
   setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
@@ -369,5 +376,45 @@ describe("isJobPageRoute", () => {
   test("is false for an fs path, even one that looks route-like", () => {
     expect(isJobPageRoute("/Users/me/Work/widget")).toBe(false);
     expect(isJobPageRoute("/Users/me/Work/widget/index.html")).toBe(false);
+  });
+});
+
+// ---- the leave guard ------------------------------------------------------
+
+describe("confirmLeave", () => {
+  test("nobody registered is a yes, in the same tick's promise", async () => {
+    expect(await confirmLeave()).toBe(true);
+  });
+
+  test("ONLY THE NEWEST GUARD IS ASKED", async () => {
+    // Bugbot review of caef75eb1, LOW. Asking every registered guard put two
+    // "unsent message" dialogs on screen for one click, one behind the other,
+    // and a reader cannot answer a question they cannot see. The newest
+    // registration is the composer they most recently had something in.
+    const asked: string[] = [];
+    const offOld = registerLeaveGuard(() => {
+      asked.push("old");
+      return true;
+    });
+    const offNew = registerLeaveGuard(() => {
+      asked.push("new");
+      return false;
+    });
+    expect(await confirmLeave()).toBe(false);
+    expect(asked).toEqual(["new"]);
+    // …and detaching the newest restores the one under it.
+    offNew();
+    asked.length = 0;
+    expect(await confirmLeave()).toBe(true);
+    expect(asked).toEqual(["old"]);
+    offOld();
+  });
+
+  test("a guard that THROWS is a yes — a broken question is not a locked door", async () => {
+    const off = registerLeaveGuard(() => {
+      throw new Error("the dialog blew up");
+    });
+    expect(await confirmLeave()).toBe(true);
+    off();
   });
 });

@@ -93,6 +93,18 @@ interface Focused {
   preventScroll?: boolean;
 }
 
+/** The sub-lines the popover shows, in order — the two things the calendar glyph
+ *  cannot say for itself. */
+function subLines(r: ReactTestRenderer): string[] {
+  return r.root
+    .findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className || "") === "c-schedpop-sub",
+    )
+    .map((n) => String(n.props.children).trim());
+}
+
 /** Renders the body (the portal above it has no container here — see the note
  *  in `SchedConfirm.tsx`) and hands back what Continue was told. */
 async function openBody(): Promise<{
@@ -477,4 +489,33 @@ test("a real autosave PUT held open does not race the hop — the two coalesce",
 process.on("beforeExit", () => {
   win.addEventListener = realWin.add;
   win.removeEventListener = realWin.remove;
+});
+
+// ---- what Continue is about to do to a draft that already exists ----------
+
+test("the confirm SAYS SO when Continue would replace a saved draft", async () => {
+  // Akshil, 2026-09-16: Continue states the WHOLE record — these words, these
+  // files — so a draft saved earlier under the same key is replaced rather than
+  // merged. (The time, repeat and model a card put on it survive: the hop sends
+  // no `form`, and the contract makes `form` a patch.) That is a fine rule, and
+  // not one a calendar glyph can convey, so it is said out loud.
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      createElement(SchedConfirmBody, { onGo() {}, onCancel() {}, replaces: true }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  expect(subLines(renderer)).toEqual([
+    "This task will be scheduled to run at a specific time.",
+    "This replaces the saved draft for this chat.",
+  ]);
+});
+
+test("…and says nothing of the sort when there is no saved draft to replace", async () => {
+  const { renderer } = await openBody();
+  expect(subLines(renderer)).toEqual([
+    "This task will be scheduled to run at a specific time.",
+  ]);
 });

@@ -26,7 +26,7 @@ import { rawUrl, uploadTaskShot } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
-import { chatDraftKey, draftSyncer } from "@platform/lib/drafts";
+import { chatDraftKey, draftSyncer, fetchChatDraft } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { schedulerUrl } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
@@ -176,6 +176,29 @@ export function SchedButton({
 }: SchedButtonProps) {
   const [open, setOpen] = useState(false);
   const why = disabled && disabledReason ? SCHED_LABEL + " — " + disabledReason : SCHED_LABEL;
+
+  /**
+   * IS THERE ALREADY A DRAFT ON THIS KEY — asked when the question OPENS, so the
+   * answer is about the record as it stands at the moment the reader is being
+   * asked about it (Akshil, 2026-09-16: Continue replaces the saved draft).
+   *
+   * One GET, and only on open: the popover is the one place the answer is shown,
+   * and asking on every render of a button that is on screen the whole time
+   * would be a poll. A failed read answers `false` — a line that says something
+   * will be replaced had better be sure it will be.
+   */
+  const [replaces, setReplaces] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    setReplaces(false);
+    void fetchChatDraft(chatDraftKey(sessionId, file)).then((saved) => {
+      if (alive && saved) setReplaces(!!saved.text || !!saved.attachments?.length);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open, sessionId, file]);
 
   /**
    * T:17253 — A CONFIRM CAN ALREADY BE UP WHEN THE BLOCK LANDS. "Schedule this
@@ -357,7 +380,7 @@ export function SchedButton({
           </button>
         }
       />
-      <SchedConfirm onGo={go} onCancel={cancel} />
+      <SchedConfirm onGo={go} onCancel={cancel} {...(replaces ? { replaces } : {})} />
     </Popover>
   );
 }

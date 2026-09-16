@@ -1150,6 +1150,15 @@ function makeSyncer(key: string): InnerSyncer {
           // This page has already said something newer; there is nothing to
           // learn and nothing to redo.
           landedOk = true;
+          // …BUT A DROPPED DELETE STILL DELETED (Bugbot 4027177439). The server
+          // drops a request whose `seq` is not the newest this page has sent,
+          // and one of the ways that happens is the trash's DELETE arriving
+          // behind this page's own newer statement about the same key — the
+          // record the reader pressed the trash on IS gone either way. Reported
+          // as "not removed", `dropDraft` put the row straight back on the List.
+          // Guarded by `mine > applied` like every other thing learned here, so
+          // a straggler cannot un-say a later PUT's answer.
+          if (sending.kind === "gone" && mine > applied) removed = true;
         } else if (res.ok) {
           landedOk = true;
           if (mine > applied) {

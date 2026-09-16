@@ -321,8 +321,17 @@ export type LeaveGuard = () => boolean | Promise<boolean>;
 
 const leaveGuards = new Set<LeaveGuard>();
 
-/** Ask me before the next in-app navigation; the answer detaches me. Several
- *  may be registered (two panes, each with a composer) and ALL must say yes. */
+/**
+ * Ask me before the next in-app navigation; the answer detaches me.
+ *
+ * SEVERAL MAY BE REGISTERED — two panes, each with a composer — AND ONLY THE
+ * NEWEST IS ASKED (Bugbot review of caef75eb1, LOW). Asking all of them put two
+ * "unsent message" dialogs on screen for one click, one behind the other, and a
+ * reader cannot answer a question they cannot see. The newest registration is
+ * the composer the reader most recently had something in, which is the one the
+ * click is about; the others keep their words the way every other unasked host
+ * does — the composer's own unmount save.
+ */
 export function registerLeaveGuard(guard: LeaveGuard): () => void {
   leaveGuards.add(guard);
   return () => {
@@ -342,20 +351,34 @@ export function registerLeaveGuard(guard: LeaveGuard): () => void {
  */
 export async function confirmLeave(): Promise<boolean> {
   if (!leaveGuards.size) return true;
-  for (const guard of Array.from(leaveGuards)) {
-    let ok = true;
-    try {
-      ok = await guard();
-    } catch {
-      ok = true;
-    }
-    if (!ok) return false;
+  // A `Set` keeps insertion order, so the last entry is the newest guard.
+  const asked = Array.from(leaveGuards).pop();
+  if (!asked) return true;
+  try {
+    return await asked();
+  } catch {
+    return true;
   }
-  return true;
 }
 
-/** The push itself, run now when nothing is asking and after the answer when
- *  something is. */
+/**
+ * The push itself, run now when nothing is asking and after the answer when
+ * something is.
+ *
+ * A SECOND CLICK WHILE THE QUESTION IS UP IS DROPPED, deliberately. The guard
+ * answers a second ask with `false` while its dialog is on screen (see
+ * `askBeforeLeaving` in the composer), so this hop simply does not happen —
+ * which is the right outcome for a reader who is being asked about the first
+ * one. The click can be made again the moment the dialog is answered.
+ *
+ * AND THE BROWSER'S OWN BACK/FORWARD IS NOT GUARDED AT ALL (Bugbot review,
+ * MED-5). A `popstate` has already happened by the time a listener hears it,
+ * and the only ways to put a question in front of it are a pushState sentinel
+ * that fights the reader's history or the native `beforeunload` prompt, which
+ * does not apply to a same-document hop. The floor under it is the composer's
+ * unmount save: Back out of a chat with words in the box and they are written,
+ * not lost — silently, which is the trade this door is stuck with.
+ */
 function guarded(go: () => void): void {
   if (!leaveGuards.size) {
     go();

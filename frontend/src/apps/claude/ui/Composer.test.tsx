@@ -7,6 +7,7 @@ const { ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
   await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
+const { forgetDraftVersion, resetDraftSyncers } = await import("@platform/lib/drafts");
 
 const realFetch = globalThis.fetch;
 beforeEach(() => {
@@ -18,6 +19,11 @@ const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   (globalThis as { fetch: unknown }).fetch = realFetch;
+  // MODULE STATE, and `bun test` runs every suite in one process: a syncer left
+  // wanting something writes into the next test's fetch ledger, and a remembered
+  // version makes the next mount's first PUT conditional on a record that test
+  // never made.
+  resetDraftSyncers();
 });
 
 const controls = {
@@ -94,6 +100,10 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     sent,
     followups,
     stops: () => stops,
+    /** For the one test that is ABOUT an unmount (a host that takes the pane
+     *  away while the question is up). Unmounting twice is a no-op, so the
+     *  `afterEach` sweep is unbothered. */
+    unmount: () => act(() => renderer!.unmount()),
   };
 }
 
@@ -753,6 +763,180 @@ test("A SEND JUST SENDS: no DELETE, and no write of any kind", async () => {
   expect(c.box().props.value).toBe("");
 });
 
+// ---- AND THE SESSION'S BOX KEEPS THE WHOLE DRAFT --------------------------
+//
+// The fork, in tests. A composer ON A SESSION is the only place that chat's
+// unsent message is visible — the ✎ Draft chip on the row points here — so it
+// seeds from the record, autosaves, and spends the draft on Send, exactly as it
+// always did. Everything above this line is the OTHER road: `new:<file>`, whose
+// record is an Upcoming row.
+
+/** The store, as `GET /api/drafts` serves it, plus a bland answer for writes. */
+function storeWith(chat: Record<string, unknown>): Req[] {
+  const seen: Req[] = [];
+  (globalThis as { fetch: unknown }).fetch = (
+    url: string,
+    init?: RequestInit & { keepalive?: boolean },
+  ) => {
+    const method = init?.method ?? "GET";
+    seen.push({
+      url: String(url),
+      method,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      keepalive: !!init?.keepalive,
+    });
+    if (method === "GET") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ chat, task: {} }), { status: 200 }),
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          draft: method === "DELETE"
+            ? null
+            : { text: "", attachments: [], updated_at: 2, version: 9, form: {} },
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+  return seen;
+}
+
+test("a session's composer SEEDS from the record — one GET, and the words land", async () => {
+  const seen = storeWith({
+    "sess-seed": {
+      text: "the follow-up I never sent",
+      attachments: [{ path: "/shots/a.png", name: "a.png", kind: "image" }],
+      updated_at: 1,
+      version: 3,
+      form: {},
+    },
+  });
+  const restored: string[][] = [];
+  const c = mount({
+    file: "/p/seeded.py",
+    sessionId: "sess-seed",
+    onRestoreAttachments: (paths: string[]) => restored.push(paths),
+  });
+  await act(async () => {
+    await tick();
+  });
+  expect(c.box().props.value).toBe("the follow-up I never sent");
+  // ONE read, and it is a read: nothing is written by a box that merely opened.
+  expect(seen.filter((r) => r.method === "GET")).toHaveLength(1);
+  expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
+  // …and the tray comes back with it: half a draft is not the draft.
+  expect(restored).toEqual([["/shots/a.png"]]);
+  forgetDraftVersion("sess-seed");
+});
+
+test("a NEW-CHAT composer does not read at all, however full the store is", async () => {
+  // The same store, the same words — and a key of `new:<file>`, which is an
+  // Upcoming row and not this box's business.
+  const seen = storeWith({
+    "new:/p/held.py": { text: "words the server is holding", attachments: [], version: 1 },
+  });
+  const c = mount({ file: "/p/held.py", sessionId: "" });
+  await act(async () => {
+    await tick();
+  });
+  expect(c.box().props.value).toBe("");
+  expect(seen).toEqual([]);
+});
+
+test("a read that FAILED leaves the box empty and says nothing", async () => {
+  // `fetchChatDraft` answers `undefined` for a GET that did not land, and the
+  // only honest thing to do with "could not find out" is nothing at all — no
+  // empty box painted over words, no toast about a blip.
+  const seen: Req[] = [];
+  (globalThis as { fetch: unknown }).fetch = (url: string) => {
+    seen.push({ url: String(url), method: "GET", keepalive: false });
+    return Promise.resolve(new Response("nope", { status: 500 }));
+  };
+  const c = mount({ file: "/p/offline.py", sessionId: "sess-offline" });
+  await act(async () => {
+    await tick();
+  });
+  expect(c.box().props.value).toBe("");
+  expect(seen).toHaveLength(1);
+});
+
+test("a session's typing AUTOSAVES, on the syncer's own ordered PUT", async () => {
+  const seen = storeWith({});
+  const c = mount({ file: "/p/typed.py", sessionId: "sess-typing" });
+  await act(async () => {
+    await tick();
+  });
+  c.type("a follow-up in progress");
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("/api/drafts/chat/sess-typing");
+  expect(puts[0]!.body?.text).toBe("a follow-up in progress");
+  // THROUGH THE ONE WRITER, which is what `client` + `seq` in the body say: a
+  // bare `saveChatDraft` from this file would carry neither, and could not be
+  // ordered against anything else this page says about the key.
+  expect(typeof (puts[0]!.body as { client?: unknown }).client).toBe("string");
+  expect((puts[0]!.body as { seq?: unknown }).seq).toBe(1);
+  // …and NO `form`: the composer has no opinion about a time or a repeat, so a
+  // keystroke save may not wipe the ones a Schedule hop put on the record.
+  expect((puts[0]!.body as { form?: unknown }).form).toBeUndefined();
+  expect(c.box().props.value).toBe("a follow-up in progress");
+  forgetDraftVersion("sess-typing");
+});
+
+test("a session's SEND spends the record — the DELETE it always fired", async () => {
+  const seen = storeWith({});
+  const c = mount({ file: "/p/spent.py", sessionId: "sess-send" });
+  await act(async () => {
+    await tick();
+  });
+  c.type("send this one");
+  expect(c.press("Enter")).toBe(true);
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  expect(c.sent).toEqual([{ text: "send this one", model: DEFAULT_MODEL }]);
+  expect(seen.filter((r) => r.method === "DELETE")).toHaveLength(1);
+  expect(seen.find((r) => r.method === "DELETE")!.url)
+    .toBe("/api/drafts/chat/sess-send");
+  expect(c.box().props.value).toBe("");
+  forgetDraftVersion("sess-send");
+});
+
+test("a session's composer is NEVER asked about on the way out", async () => {
+  // Nothing here is unsaved, so the question would be about words that are
+  // already on the server — and the hop stays the synchronous call it has always
+  // been (platform/lib/router.ts).
+  installBody();
+  storeWith({});
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  try {
+    const c = mount({ file: "/p/leaving.py", sessionId: "sess-leave" });
+    await act(async () => {
+      await tick();
+    });
+    c.type("half a follow-up");
+    act(() => {
+      navigateUrl("/tasks");
+    });
+    expect(pushes.urls).toEqual(["/tasks"]);
+    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
+      .toHaveLength(0);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+    forgetDraftVersion("sess-leave");
+  }
+});
+
 // ---- the one question this box asks ---------------------------------------
 //
 // A container for the dialog to portal into, and a node mock for the focus
@@ -848,6 +1032,12 @@ test("an in-app navigation with words in the box asks first, and Save writes ONC
     expect(seen[0]!.method).toBe("PUT");
     expect(seen[0]!.url).toBe("/api/drafts/chat/new%3A/p/leaving.py");
     expect(seen[0]!.body?.text).toBe("a sentence nobody sent");
+    // …THROUGH THE KEY'S ONE WRITER, which is what `client` + `seq` say (Bugbot
+    // review of caef75eb1, HIGH-1). A bare `saveChatDraft` here carried neither,
+    // so a straggling write from this page could not be ordered against the
+    // card's edits and simply landed on top of them.
+    expect(typeof (seen[0]!.body as { client?: unknown }).client).toBe("string");
+    expect((seen[0]!.body as { seq?: unknown }).seq).toBe(1);
     // …then the navigation it was holding up…
     expect(pushes.urls).toEqual(["/tasks"]);
     // …and the box is clean: the record is the copy now (Akshil, 2026-09-16,
@@ -986,9 +1176,152 @@ test("a reload cannot be asked, so it is warned about and then SAVED", async () 
     expect(seen[0]!.method).toBe("PUT");
     expect(seen[0]!.keepalive).toBe(true);
     expect(seen[0]!.body?.text).toBe("the last sentence");
+    // …AND IT GOES THROUGH THE SYNCER LIKE EVERY OTHER WRITE ON THIS KEY.
+    expect(typeof (seen[0]!.body as { client?: unknown }).client).toBe("string");
   } finally {
     win.addEventListener = real.add;
     win.removeEventListener = real.remove;
+  }
+});
+
+test("a door-slam saves the WORDS and drops the tray, on purpose", async () => {
+  // Bugbot review of caef75eb1, HIGH-2. A chat attachment's path is a tempdir on
+  // a 12 h TTL and `POST /api/schedule` refuses anything outside the task-shots
+  // dir, so writing those raw paths onto the record makes a draft the card
+  // cannot schedule and that 404s tomorrow. The copy that fixes it is a round
+  // trip per file, which `pagehide` has no room for — so the words go and the
+  // files do not.
+  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
+  const win = window as unknown as {
+    addEventListener(t: string, fn: (ev: unknown) => void): void;
+    removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  };
+  const real = { add: win.addEventListener, remove: win.removeEventListener };
+  win.addEventListener = (t, fn) => {
+    (winListeners[t] ||= []).push(fn);
+  };
+  win.removeEventListener = (t, fn) => {
+    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
+  };
+  const seen = watchFetch();
+  try {
+    const c = mount({ file: "/p/slammed.py", sessionId: "", attachments: () => [tempShot] });
+    c.type("words and a picture");
+    await act(async () => {
+      for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
+      await tick();
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.body?.text).toBe("words and a picture");
+    expect(seen[0]!.body?.attachments).toEqual([]);
+  } finally {
+    win.addEventListener = real.add;
+    win.removeEventListener = real.remove;
+  }
+});
+
+/** ONE READY CHIP holding a chat tempdir path — the shape every unload and
+ *  every Save has to decide what to do about. */
+const tempShot = {
+  id: "att-1",
+  kind: "image" as const,
+  view: "/tmp/fused-chat/shot.png",
+  name: "shot.png",
+  pending: false,
+};
+
+test("Save FAILS CLOSED when a file could not be copied", async () => {
+  // Bugbot 4027244608. `copyToTaskShots` is `allSettled` and answers with the
+  // files that made it, so a picture whose upload 500ed simply vanished and the
+  // dialog reported success. A draft missing an attachment the reader put in the
+  // box is not the draft they asked to keep — and only they can decide what to
+  // do about that, so nothing is written and they stay where they are.
+  installBody();
+  const seen: Req[] = [];
+  (globalThis as { fetch: unknown }).fetch = (
+    url: string,
+    init?: RequestInit & { keepalive?: boolean },
+  ) => {
+    seen.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      keepalive: !!init?.keepalive,
+    });
+    // The copy's first step is reading the bytes back, and it is what fails.
+    return Promise.resolve(new Response("nope", { status: 500 }));
+  };
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const { _resetNotificationsForTest, getPopupNotification } =
+    await import("@platform/lib/notifications");
+  _resetNotificationsForTest();
+  try {
+    const c = mount({
+      file: "/p/half.py",
+      sessionId: "",
+      attachments: () => [tempShot],
+    });
+    c.type("with a picture");
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick();
+    });
+    // NOT ONE WRITE, and the reader is still in the chat with their words.
+    expect(seen.filter((r) => r.method === "PUT")).toEqual([]);
+    expect(pushes.urls).toEqual([]);
+    expect(c.box().props.value).toBe("with a picture");
+    // …and the toast says WHICH refusal it was.
+    expect(getPopupNotification()?.title)
+      .toBe("Could not attach every file to that draft — nothing was saved");
+    // The question is still up, so the answer can be given again.
+    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
+      .toHaveLength(1);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+    _resetNotificationsForTest();
+  }
+});
+
+test("a pane taken away while the question is up answers it NO", async () => {
+  // Bugbot review of caef75eb1, MED-4. `askBeforeLeaving` hands the router a
+  // promise; an unmount with the dialog on screen used to drop the resolver, and
+  // the navigation waiting on it never happened — nor did any later one, because
+  // the click was simply swallowed. A composer that is gone cannot save, so the
+  // honest answer is "no", said out loud.
+  installBody();
+  watchFetch();
+  const { confirmLeave, navigateUrl } = await import("@platform/lib/router");
+  const pushes = watchPushes();
+  try {
+    const c = mount({ file: "/p/yanked.py", sessionId: "" });
+    c.type("mid-sentence");
+    let answered: boolean | undefined;
+    await act(async () => {
+      void confirmLeave().then((ok) => {
+        answered = ok;
+      });
+      await tick();
+    });
+    expect(answered).toBeUndefined();
+    await act(async () => {
+      c.unmount();
+      await tick();
+    });
+    expect(answered).toBe(false);
+    // …and with the guard gone the app navigates synchronously again.
+    act(() => {
+      navigateUrl("/tasks");
+    });
+    expect(pushes.urls).toEqual(["/tasks"]);
+  } finally {
+    pushes.restore();
+    delete doc.body;
   }
 });
 
