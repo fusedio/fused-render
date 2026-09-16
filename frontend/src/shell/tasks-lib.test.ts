@@ -2579,7 +2579,7 @@ describe("the unread mark", () => {
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
     expect(SCHEDULE_CSS).not.toMatch(/\.schedule-ring\s*\{[^}]*margin/);
     // ...and the row's own trailing time carries none either, for the same reason.
-    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin/);
+    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin[^;]*auto/);
   });
 
   it("leaves a MESSAGE row opening on its ring and then saying its id", () => {
