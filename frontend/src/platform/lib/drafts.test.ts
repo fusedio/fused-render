@@ -964,17 +964,20 @@ describe("the chat does not rekey its own draft", () => {
     expect(d).not.toContain('"/api/drafts/chat/rekey"');
   });
 
-  test("the send still spends its own key, which is all it ever owed", () => {
-    // …and it spends it by SAYING SO to the one writer of that record, rather
-    // than firing a DELETE beside whatever the box has on the wire. The
-    // ordering that used to live here — take the in-flight promise, wait for
-    // it, state the version it made — is the syncer's now, so none of it is
-    // left in this file to get subtly wrong again.
+  test("the send owes the record nothing, because nothing wrote one", () => {
+    // The composer does not autosave (Akshil, 2026-09-16), so a send has no
+    // record to spend: no DELETE, no "markDeleted", and none of the ordering
+    // that used to be needed to keep a straggling autosave from resurrecting
+    // the sentence it had just sent.
     const src = composer();
-    expect(src).toContain("draftSyncer(draftKeyRef.current).markDeleted();");
-    expect(src).not.toContain("autosaveRef.current.settle()");
+    expect(src).not.toContain("markDeleted");
     expect(src).not.toContain("deleteChatDraft");
     expect(src).not.toContain("settleDraft");
+    expect(src).not.toContain("useAutosave");
+    expect(src).not.toContain("draftSyncer");
+    // The two writes that remain are both deliberate gestures, and both are the
+    // one PUT `saveChatDraft` is.
+    expect(src).toContain("saveChatDraft");
   });
 });
 

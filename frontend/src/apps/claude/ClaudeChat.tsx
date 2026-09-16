@@ -30,7 +30,7 @@ import {
   type MutableRefObject,
 } from "react";
 
-import { currentUrl, navigateUrl } from "@platform/lib/router";
+import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -2116,7 +2116,21 @@ function ChatBody(props: ChatBodyProps) {
    * they read it when pressed and neither needs re-binding for a new identity.
    */
   const schedReset = useRef<() => void>(() => {});
-  const onBack = useCallback(() => {
+  /**
+   * THE TWO HOPS THAT REPLACE WHAT IS ON SCREEN WITHOUT PUSHING A URL.
+   *
+   * Back to the landing and opening another session both swap the conversation
+   * inside this pane, so `navigate` never runs and the composer's leave guard is
+   * never consulted — and the composer does not autosave, so its unsent text
+   * would simply be gone. They ask the same question the router asks
+   * (`confirmLeave`, platform/lib/router.ts): the dialog is the composer's own,
+   * and a `false` is the reader saying "stay".
+   *
+   * THE HOP IS A SEPARATE FUNCTION (`backNow`, `openSessionNow`) rather than a
+   * branch inside the handler: a question answered with Cancel must leave the
+   * chat exactly as it was, so nothing the hop does may run before the answer.
+   */
+  const backNow = useCallback(() => {
     // A fresh transcript is a fresh card policy: an override from the
     // conversation that WAS on screen must not leak a card open in one the user
     // has never touched (ui/cardPolicy.ts).
@@ -2152,7 +2166,12 @@ function ChatBody(props: ChatBodyProps) {
     // Back appended them again.
     setStranded(null);
   }, [controller, cardPolicy]);
-  const onOpenSession = useCallback(
+  const onBack = useCallback(() => {
+    void confirmLeave().then((ok) => {
+      if (ok) backNow();
+    });
+  }, [backNow]);
+  const openSessionNow = useCallback(
     (sessionId: string) => {
       resetCardPolicy(cardPolicy);
       setEntered(true);
@@ -2162,6 +2181,14 @@ function ChatBody(props: ChatBodyProps) {
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
+  );
+  const onOpenSession = useCallback(
+    (sessionId: string) => {
+      void confirmLeave().then((ok) => {
+        if (ok) openSessionNow(sessionId);
+      });
+    },
+    [openSessionNow],
   );
   /**
    * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
@@ -2615,10 +2642,14 @@ function ChatBody(props: ChatBodyProps) {
       // "Back to chat" (task-shots copies, registered as real paths — no
       // upload, `useAttachments.addPaths`).
       attachments: () => attach.items,
-      onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
-      // A spend heard from the Board (the row's draft dragged into In Progress)
-      // empties the tray for good: the files already went with the message,
-      // off the server's copy (`useAttachments.discard`).
+      // THERE IS NO WAY BACK IN any more (Akshil, 2026-09-16). "Back to chat"
+      // from the task card lands on a CLEAN composer: the draft stays where it
+      // was saved, in Upcoming, and is edited on the card — so the tray is never
+      // re-filled from a record either. `onRestoreAttachments` went with it.
+      //
+      // Emptying the tray is still a thing that happens: an answered
+      // unsent-message question, and the Schedule hop once the files are on the
+      // card (`useAttachments.discard`).
       onDiscardAttachments: attach.discard,
       hasAttachments:
         attach.items.length > 0 ||

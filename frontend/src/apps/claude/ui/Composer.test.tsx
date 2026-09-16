@@ -1,6 +1,5 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -646,385 +645,380 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
   expect(box.props["data-enable-grammarly"]).toBe("false");
 });
 
-// ---- the send, and the follow-up typed in the next breath ------------------
+// ---- NOTHING IS WRITTEN WHILE THE READER IS IN THE BOX ---------------------
+//
+// Akshil, 2026-09-16: "when I am in the composer, don't autosave as a draft —
+// I'm already there. If I do an operation that could lose the text, pop up a
+// warning: save as draft or discard. After that, the composer is cleared."
+//
+// So the whole of this section is about REQUESTS THAT DO NOT HAPPEN, plus the
+// four gestures that do make one: Save as draft, pagehide, and the Schedule
+// hop's Continue. Every test counts the wire.
 
-test("SEND SPENDS THE RECORD, AND A FOLLOW-UP MAKES A NEW ONE — never both", async () => {
-  // The bug this shape ends: the send fired a DELETE beside the autosave's PUT,
-  // both stating the same version, and whichever the server took second won. A
-  // PUT landing after the DELETE put the sentence that had just been SENT back
-  // on the row as a live draft.
-  //
-  // There is one writer per key now, and both gestures are statements to it:
-  // "the record should hold this", then "the record should not exist", then "the
-  // record should hold the follow-up". They go out in that order, one at a time,
-  // and the last one is what the server is left holding.
-  const { forgetDraftVersion, resetDraftSyncers, draftSyncer } =
-    await import("@platform/lib/drafts");
-  const file = "/p/send-then-follow.py";
-  const key = `new:${file}`;
-  forgetDraftVersion(key);
-  resetDraftSyncers();
-  const seen: { method: string; text?: string }[] = [];
-  let version = 0;
+interface Req {
+  url: string;
+  method: string;
+  body?: { text?: string; attachments?: unknown[] };
+  keepalive: boolean;
+}
+
+/** Every request this composer makes, and an answer bland enough for all of
+ *  them. Returns the ledger, which starts empty on purpose: a composer that
+ *  asks the server ANYTHING on mount is the thing this design removed. */
+function watchFetch(): Req[] {
+  const seen: Req[] = [];
   (globalThis as { fetch: unknown }).fetch = (
-    _url: string,
-    init?: RequestInit,
+    url: string,
+    init?: RequestInit & { keepalive?: boolean },
   ) => {
-    const body = init?.body
-      ? (JSON.parse(String(init.body)) as { text?: string })
-      : undefined;
-    const method = init?.method ?? "GET";
-    // The mount's own seeding GET is not part of what this test is about.
-    if (method !== "GET") seen.push({ method, text: body?.text });
-    version += 1;
+    seen.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      keepalive: !!init?.keepalive,
+    });
     return Promise.resolve(
       new Response(
         JSON.stringify({
+          ok: true,
           chat: {},
           task: {},
-          ok: true,
-          key,
-          removed: true,
-          draft: init?.method === "DELETE"
-            ? null
-            : { text: body?.text ?? "", attachments: [], updated_at: 1,
-                version, form: {} },
+          draft: { text: "", attachments: [], updated_at: 1, version: 1, form: {} },
         }),
         { status: 200 },
       ),
     );
   };
+  return seen;
+}
 
-  const c = mount({ file, sessionId: "" });
-  c.type("the message");
+const tick = async (n = 8) => {
+  for (let i = 0; i < n; i += 1) await Promise.resolve();
+};
+
+test("the box mounts EMPTY even when the server holds a draft for this key", async () => {
+  // The old composer opened with `GET /api/drafts` and painted whatever came
+  // back. It does not read the store at all now: saved drafts live in Upcoming
+  // and are edited on the Tasks card, and a box that filled itself from a
+  // record is a box with an opinion about words the reader did not just type.
+  const seen: Req[] = [];
+  (globalThis as { fetch: unknown }).fetch = (url: string) => {
+    seen.push({ url: String(url), method: "GET", keepalive: false });
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          chat: { "new:/p/held.py": { text: "words the server is holding", attachments: [] } },
+          task: {},
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+  const c = mount({ file: "/p/held.py", sessionId: "" });
   await act(async () => {
-    draftSyncer(key).flushNow(); // the keystroke's own 600 ms, made to fire now
-    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await tick();
   });
-  expect(seen.map((r) => r.method)).toEqual(["PUT"]);
+  expect(c.box().props.value).toBe("");
+  // …and it did not even ask. No GET, so nothing to race and nothing to adopt.
+  expect(seen).toEqual([]);
+});
 
+test("typing writes nothing — no debounce, no blur flush, no request at all", async () => {
+  const seen = watchFetch();
+  const c = mount({ file: "/p/quiet.py", sessionId: "" });
+  c.type("half a thought");
+  // Well past the 600 ms the autosave used to wait, and past anything a blur
+  // would have flushed: the box simply holds the words.
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  expect(seen).toEqual([]);
+  expect(c.box().props.value).toBe("half a thought");
+});
+
+test("A SEND JUST SENDS: no DELETE, and no write of any kind", async () => {
+  // The send used to say "this record is spent" beside an autosave PUT for the
+  // same key, and the two had to be ordered against each other. Nothing wrote
+  // the record, so there is nothing to spend.
+  const seen = watchFetch();
+  const c = mount({ file: "/p/sent.py", sessionId: "" });
+  c.type("the message");
   expect(c.press("Enter")).toBe(true);
   expect(c.sent).toEqual([{ text: "the message", model: DEFAULT_MODEL }]);
   await act(async () => {
-    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await tick();
   });
-  // THE SEND'S OWN WRITE IS THE DELETE, and it goes on its own — the box being
-  // emptied is not a second request.
-  expect(seen.map((r) => r.method)).toEqual(["PUT", "DELETE"]);
-
-  // …and the reader types the next thing.
-  c.type("and one more thing");
-  await act(async () => {
-    draftSyncer(key).flushNow();
-    for (let i = 0; i < 6; i += 1) await Promise.resolve();
-  });
-  expect(seen.map((r) => r.method)).toEqual(["PUT", "DELETE", "PUT"]);
-  expect(seen[2]!.text).toBe("and one more thing");
-  forgetDraftVersion(key);
-  resetDraftSyncers();
-});
-
-// ---- somebody else changed this record ------------------------------------
-//
-// design "one record", §3. The box used to hear a `spent` announcement and empty
-// itself — a client-side belief no second tab could see, and one that a server
-// re-announcing a key as `gone` fifty times a second turned into a box the
-// reader could not type in at all (bugbot / live repro, 2026-09-15). What the
-// server pushes now is the KEY and the VERSION, and the box acts on it only for
-// a record it has actually read.
-
-test("DISCARDING THIS DRAFT'S OWN ROW EMPTIES THE BOX BEHIND IT", async () => {
-  // Akshil, 2026-09-16, live: trashing the draft's row in Recent chats deleted
-  // the record and left the composer on the same page still holding the words —
-  // and the next keystroke wrote them straight back as a fresh v1. Discarding
-  // from ANOTHER tab worked, which is what named the cause: the local delete
-  // forgets the version on its way out (`drafts.write`, contract §2), so by the
-  // time the announcement reached this box `draftVersion(key)` was already
-  // `undefined` and the noisy-`gone` guard swallowed it. A first-person
-  // announcement is not noise, and `announceDraftsGone` now says so.
-  const { announceDraftsGone } = await import("@shell/tasksPulse");
-  const { forgetDraftVersion } = await import("@platform/lib/drafts");
-  const file = "/p/trashed-here.py";
-  const key = `new:${file}`;
-  // Exactly the state a successful local DELETE leaves behind: the record is
-  // gone from the server AND the key's version has been forgotten.
-  forgetDraftVersion(key);
-  const c = mount({ file, sessionId: "" });
-  c.type("words with a row of their own");
-  expect(c.box().props.value).toBe("words with a row of their own");
-  await act(async () => {
-    announceDraftsGone([key]);
-  });
+  expect(seen).toEqual([]);
   expect(c.box().props.value).toBe("");
-  forgetDraftVersion(key);
 });
 
-test("a newer version is re-read and adopted, unless the reader is typing", async () => {
-  // TWO TABS ON ONE FOLDER (design §3): last save wins and the other tab adopts
-  // within a second, rather than finding out on its next reload. The re-read is
-  // what makes it the record and not the row's clipped preview; the focus guard
-  // is what stops it landing on top of somebody mid-sentence, where the next
-  // save's own 409 settles it instead (with the toast).
-  const src = readFileSync(new URL("./Composer.tsx", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("onDraftChange((changed, gone, certain) => {"),
-                         src.indexOf("const rowRef = useRef<HTMLDivElement"));
-  // THE FEED'S `gone` IS THE NOISY ONE, and only it is guarded: the announced
-  // key set covers ordinary task activity (contract §3), so a key this client
-  // holds no version for is ignored rather than clearing a box over a record
-  // that never existed. `certain` is what lets a discard made on THIS page
-  // through the same door — see the test above.
-  expect(body).toContain("if (gone.includes(key) && (certain || seen !== undefined)) {");
-  // …AND EVEN A TRUSTED `gone` DOES NOT EMPTY A BOX SOMEBODY IS TYPING IN
-  // (Bugbot, PR #1180). The send's own DELETE is the everyday way this arrives,
-  // and the reader can be a sentence into a FOLLOW-UP by the time it lands: the
-  // record is gone either way (the version is forgotten first, so the next save
-  // creates it again), but the words in front of them are theirs. A discard
-  // made on this page (`certain`) is still obeyed — that one is the reader
-  // saying so in the first person.
-  expect(body).toContain(
-    "if (!certain && focusedRef.current && textRef.current.trim()) return;");
-  expect(body.indexOf("forgetDraftVersion(key);")).toBeLessThan(
-    body.indexOf("if (!certain && focusedRef.current"));
-  expect(body).toContain("if (seen === undefined) return;");
-  expect(body).toContain("if (!row || row.version <= seen) return;");
-  expect(body).toContain("if (focusedRef.current && textRef.current.trim()) return;");
-  expect(body).toContain("void fetchChatDraft(key).then((saved) => {");
-  expect(body).toContain("adoptRef.current(saved);");
-  // A FAILED GET IS NOT A DELETED RECORD (Bugbot, PR #1180). `fetchChatDraft`
-  // answers `undefined` when the read itself failed and `null` when the key
-  // holds nothing, and only the second is an instruction to empty the box —
-  // collapsed into one, a network blip took the reader's words.
-  expect(body).toContain("if (saved === undefined) return;");
-  // …AND THE TYPING GUARD IS ASKED AGAIN AFTER THE ROUND TRIP, which is where
-  // the typing happens: the check before the GET went out cannot see a sentence
-  // started while it was in the air.
-  const guard = "if (focusedRef.current && textRef.current.trim()) return;";
-  expect(body.split(guard).length - 1).toBe(2);
-  expect(body.indexOf("if (saved === undefined) return;")).toBeLessThan(
-    body.lastIndexOf(guard));
-  expect(body.lastIndexOf(guard)).toBeLessThan(body.indexOf("adoptRef.current(saved);"));
-  // …and the key can change under the read (`new:<file>` → `<session>`), so the
-  // answer is dropped rather than painted into a box that has moved on.
-  expect(body).toContain("if (draftKeyRef.current !== key) return;");
-});
+// ---- the one question this box asks ---------------------------------------
+//
+// A container for the dialog to portal into, and a node mock for the focus
+// trap, both on `schedule-hop.render.test.tsx`'s pattern: react-dom's
+// `createPortal` throws on a container that is not an element by `nodeType`,
+// from inside the render, which unmounts the tree and takes the assertions
+// with it. Installed per test and taken away again — `bun test` shares one
+// `globalThis` across the whole run, and a standing `document.body` changes
+// what other libraries decide to do.
 
-// ---- a restored draft takes the keyboard (Akshil QA, 2026-09-14) -----------
+const doc = globalThis.document as unknown as { body?: unknown };
 
-test("a draft that lands in the box focuses it, caret at the end", async () => {
-  // Pressing a never-sent chat's row in the Recent list promises that the next
-  // Enter sends those words. The box filled and `document.activeElement` stayed
-  // on `<body>`: the mount's `autoFocus` fires before the draft's GET answers,
-  // and the commit that paints the restored text leaves the caret nowhere. So
-  // the focus is taken when the SEED lands, at the end of the sentence.
-  const focused: Array<Record<string, unknown> | undefined> = [];
-  const carets: Array<[number, number]> = [];
-  const node = {
-    value: "",
-    focus: (opts?: Record<string, unknown>) => focused.push(opts),
-    setSelectionRange: (a: number, b: number) => carets.push([a, b]),
+function domNode() {
+  return {
+    focus() {},
+    blur() {},
+    setSelectionRange() {},
+    scrollIntoView() {},
+    addEventListener() {},
+    removeEventListener() {},
+    contains: () => false,
+    closest: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [] as unknown[],
     style: {} as Record<string, string>,
+    value: "",
     scrollHeight: 20,
+    getBoundingClientRect: () => ({
+      top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0,
+    }),
   };
-  const G = globalThis as Record<string, unknown>;
-  const realCS = G.getComputedStyle;
-  G.getComputedStyle = () => ({
-    paddingTop: "0px",
-    paddingBottom: "0px",
-    lineHeight: "16px",
-    paddingLeft: "0px",
-    paddingRight: "0px",
-    columnGap: "6px",
-    marginLeft: "0px",
-    marginRight: "0px",
-    display: "flex",
-  });
-  // The draft store, as `GET /api/drafts` answers it — keyed `new:<file>`,
-  // because this composer has no session yet (platform/lib/drafts.chatDraftKey).
-  (G as { fetch: unknown }).fetch = () =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({
-          chat: { "new:/p/draft.py": { text: "ship the thing", attachments: [] } },
-          task: {},
-        }),
-        { status: 200 },
-      ),
-    );
+}
+
+function installBody() {
+  doc.body = { nodeType: 1, children: [] as unknown[], createNodeMock: domNode };
+}
+
+/** `history.pushState`, watched: this is the fact "the navigation happened",
+ *  and the guard's whole job is to hold it up until the reader has answered. */
+function watchPushes(): { urls: string[]; restore(): void } {
+  const hist = globalThis.history as unknown as {
+    pushState(state: unknown, title: string, url: string): void;
+  };
+  const real = hist.pushState;
+  const urls: string[] = [];
+  hist.pushState = (_state: unknown, _title: string, url: string) => {
+    urls.push(url);
+  };
+  return { urls, restore: () => { hist.pushState = real; } };
+}
+
+/** The dialog's own buttons, found by the words on them — which is how the
+ *  reader finds them too. */
+function dialogButton(root: ReactTestRenderer["root"], label: string) {
+  const hit = root.findAll(
+    (n) => n.type === "button" && n.props.children === label,
+    { deep: true },
+  );
+  expect(hit.length).toBe(1);
+  return hit[0]!;
+}
+
+test("an in-app navigation with words in the box asks first, and Save writes ONCE", async () => {
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
   try {
-    const boxRef = { current: null as unknown };
-    let renderer!: ReactTestRenderer;
+    // NO `createNodeMock` here: the dialog is PORTALED, so the mock the renderer
+    // uses for it comes off `doc.body` (see `installBody`), and giving this
+    // composer real-looking nodes would send `useAutoGrow` at a
+    // `getComputedStyle` this rig does not have.
+    const c = mount({ file: "/p/leaving.py", sessionId: "" });
+    c.type("a sentence nobody sent");
+    // The hop is made the way every row, breadcrumb and notification makes it.
     await act(async () => {
-      renderer = create(
-        <ComposerCard
-          variant="chat"
-          file="/p/draft.py"
-          sessionId=""
-          controls={controls}
-          status="idle"
-          back="/explorer/view/p"
-          boxRef={boxRef as never}
-          autoFocus
-          onSend={() => {}}
-          onFollowUp={() => {}}
-          onStop={() => {}}
-        />,
-        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
-      );
+      navigateUrl("/tasks");
+      await tick();
     });
-    mounted.push(renderer);
-    // The words are in the box…
-    expect(renderer.root.findByType("textarea").props.value).toBe("ship the thing");
-    // …the caret is in it too (the mount's own focus is the first; the seed's is
-    // what this test is about, so there is more than one and at least one landed
-    // after the text)…
-    expect(focused.length).toBeGreaterThan(1);
-    expect(focused[focused.length - 1]).toEqual({ preventScroll: true });
-    // …and it sits at the END of the restored sentence, not in the middle of it.
-    expect(carets.length).toBeGreaterThan(0);
-    const last = carets[carets.length - 1];
-    expect(last).toEqual([node.value.length, node.value.length]);
+    // NOTHING HAS HAPPENED YET: the push is held, and not one byte is written
+    // before the reader has said which way.
+    expect(pushes.urls).toEqual([]);
+    expect(seen).toEqual([]);
+    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
+      .toHaveLength(1);
+
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick();
+    });
+    // ONE PUT, on this chat's own key…
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe("PUT");
+    expect(seen[0]!.url).toBe("/api/drafts/chat/new%3A/p/leaving.py");
+    expect(seen[0]!.body?.text).toBe("a sentence nobody sent");
+    // …then the navigation it was holding up…
+    expect(pushes.urls).toEqual(["/tasks"]);
+    // …and the box is clean: the record is the copy now (Akshil, 2026-09-16,
+    // "after that, the composer is cleared").
+    expect(c.box().props.value).toBe("");
   } finally {
-    if (realCS === undefined) delete G.getComputedStyle;
-    else G.getComputedStyle = realCS;
+    pushes.restore();
+    delete doc.body;
   }
 });
 
-test("…and a composer that is NOT meant to take focus still does not", async () => {
-  // The landing, a preview and a `noFocus` host: a draft that happened to load
-  // must not steal the keyboard from the page around it.
-  const focused: unknown[] = [];
-  const node = {
-    value: "",
-    focus: () => focused.push(1),
-    setSelectionRange: () => {},
-    style: {} as Record<string, string>,
-    scrollHeight: 20,
-  };
-  const G = globalThis as Record<string, unknown>;
-  const realCS = G.getComputedStyle;
-  G.getComputedStyle = () => ({
-    paddingTop: "0px",
-    paddingBottom: "0px",
-    lineHeight: "16px",
-    paddingLeft: "0px",
-    paddingRight: "0px",
-    columnGap: "6px",
-    marginLeft: "0px",
-    marginRight: "0px",
-    display: "flex",
-  });
-  (G as { fetch: unknown }).fetch = () =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({
-          chat: { "new:/p/quiet.py": { text: "unsent", attachments: [] } },
-          task: {},
-        }),
-        { status: 200 },
-      ),
-    );
+test("Discard leaves with nothing written", async () => {
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
   try {
-    let renderer!: ReactTestRenderer;
-    // AWAITED, like the test above: the draft's GET resolves into a `setText`
-    // and the relayout behind it, and a body that returned first would run that
-    // commit after the stub below had been taken away again.
+    const c = mount({ file: "/p/dropped.py", sessionId: "" });
+    c.type("not worth keeping");
     await act(async () => {
-      renderer = create(
-        <ComposerCard
-          variant="chat"
-          file="/p/quiet.py"
-          sessionId=""
-          controls={controls}
-          status="idle"
-          back="/explorer/view/p"
-          onSend={() => {}}
-          onFollowUp={() => {}}
-          onStop={() => {}}
-        />,
-        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
-      );
+      navigateUrl("/tasks");
+      await tick();
     });
-    mounted.push(renderer);
-    // The words did land — so this is about the focus and not about a draft
-    // that never arrived.
-    expect(renderer.root.findByType("textarea").props.value).toBe("unsent");
-    expect(focused).toHaveLength(0);
+    await act(async () => {
+      dialogButton(c.root, "Discard").props.onClick();
+      await tick();
+    });
+    // A discard that left a record behind is the button not working.
+    expect(seen).toEqual([]);
+    expect(pushes.urls).toEqual(["/tasks"]);
+    expect(c.box().props.value).toBe("");
   } finally {
-    if (realCS === undefined) delete G.getComputedStyle;
-    else G.getComputedStyle = realCS;
+    pushes.restore();
+    delete doc.body;
   }
 });
 
-test("a GESTURE that asked for the box beats a host that keeps the keyboard", async () => {
-  // Akshil QA, 2026-09-14 (browser, not this rig): the explorer's folder pane
-  // mounts the chat `noFocus` so the listing keeps the keyboard, so `autoFocus`
-  // is false there — and gating the draft's caret on it left `activeElement` on
-  // `<body>` in exactly the pane the Recent list lives in. `focusRequest` is the
-  // press saying so, and it wins.
-  const focused: Array<Record<string, unknown> | undefined> = [];
-  const carets: Array<[number, number]> = [];
-  const node = {
-    value: "",
-    focus: (opts?: Record<string, unknown>) => focused.push(opts),
-    setSelectionRange: (a: number, b: number) => carets.push([a, b]),
-    style: {} as Record<string, string>,
-    scrollHeight: 20,
-  };
-  const G = globalThis as Record<string, unknown>;
-  const realCS = G.getComputedStyle;
-  G.getComputedStyle = () => ({
-    paddingTop: "0px",
-    paddingBottom: "0px",
-    lineHeight: "16px",
-    paddingLeft: "0px",
-    paddingRight: "0px",
-    columnGap: "6px",
-    marginLeft: "0px",
-    marginRight: "0px",
-    display: "flex",
-  });
-  (G as { fetch: unknown }).fetch = () =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({
-          chat: { "new:/p/asked.py": { text: "ship the thing", attachments: [] } },
-          task: {},
-        }),
-        { status: 200 },
-      ),
-    );
+test("Cancel stays, with the text exactly as it was", async () => {
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
   try {
-    const boxRef = { current: null as unknown };
-    let renderer!: ReactTestRenderer;
+    const c = mount({ file: "/p/staying.py", sessionId: "" });
+    c.type("still writing this");
     await act(async () => {
-      renderer = create(
-        <ComposerCard
-          variant="chat"
-          file="/p/asked.py"
-          sessionId=""
-          controls={controls}
-          status="idle"
-          back="/explorer/view/p"
-          boxRef={boxRef as never}
-          // The host's answer is NO…
-          onSend={() => {}}
-          onFollowUp={() => {}}
-          onStop={() => {}}
-          // …and the press's answer is YES.
-          focusRequest={1}
-        />,
-        { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
-      );
+      navigateUrl("/tasks");
+      await tick();
     });
-    mounted.push(renderer);
-    expect(renderer.root.findByType("textarea").props.value).toBe("ship the thing");
-    expect(focused.length).toBeGreaterThan(0);
-    expect(focused[focused.length - 1]).toEqual({ preventScroll: true });
-    // …and the caret is after the restored sentence, not in the middle of it.
-    const last = carets[carets.length - 1];
-    expect(last).toEqual([node.value.length, node.value.length]);
+    await act(async () => {
+      dialogButton(c.root, "Cancel").props.onClick();
+      await tick();
+    });
+    expect(seen).toEqual([]);
+    expect(pushes.urls).toEqual([]);
+    expect(c.box().props.value).toBe("still writing this");
+    // …and the question is down, so the next hop can ask it again.
+    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Cancel"))
+      .toHaveLength(0);
   } finally {
-    if (realCS === undefined) delete G.getComputedStyle;
-    else G.getComputedStyle = realCS;
+    pushes.restore();
+    delete doc.body;
   }
+});
+
+test("a CLEAN composer is never asked about, and the hop stays synchronous", async () => {
+  // The guard registers only while there is something to lose, which is what
+  // keeps every other navigation in this app the same synchronous call it has
+  // always been (platform/lib/router.ts).
+  installBody();
+  watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  try {
+    const c = mount({ file: "/p/empty.py", sessionId: "" });
+    act(() => {
+      navigateUrl("/tasks");
+    });
+    // Pushed in the same tick, with no dialog anywhere.
+    expect(pushes.urls).toEqual(["/tasks"]);
+    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
+      .toHaveLength(0);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("a reload cannot be asked, so it is warned about and then SAVED", async () => {
+  // The browser will not render our dialog on the way out: `beforeunload` may
+  // only raise the native prompt. So the page raises it while the box is dirty
+  // — and `pagehide`, which fires when the page is actually going, writes the
+  // words with `keepalive` rather than letting them vanish.
+  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
+  const win = window as unknown as {
+    addEventListener(t: string, fn: (ev: unknown) => void): void;
+    removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  };
+  const real = { add: win.addEventListener, remove: win.removeEventListener };
+  win.addEventListener = (t, fn) => {
+    (winListeners[t] ||= []).push(fn);
+  };
+  win.removeEventListener = (t, fn) => {
+    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
+  };
+  const seen = watchFetch();
+  try {
+    const c = mount({ file: "/p/reloaded.py", sessionId: "" });
+    // A clean box binds nothing: there is no reason to warn anybody.
+    expect(winListeners.beforeunload || []).toHaveLength(0);
+    c.type("the last sentence");
+    expect(winListeners.beforeunload || []).toHaveLength(1);
+    // The native prompt is asked for the only way a page is allowed to ask.
+    let prevented = false;
+    let returnValue: unknown;
+    const ev = {
+      preventDefault() {
+        prevented = true;
+      },
+      set returnValue(v: unknown) {
+        returnValue = v;
+      },
+      get returnValue() {
+        return returnValue;
+      },
+    };
+    winListeners.beforeunload![0]!(ev);
+    expect(prevented).toBe(true);
+    expect(returnValue).toBe("");
+    // …and the page actually goes.
+    await act(async () => {
+      for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
+      await tick();
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe("PUT");
+    expect(seen[0]!.keepalive).toBe(true);
+    expect(seen[0]!.body?.text).toBe("the last sentence");
+  } finally {
+    win.addEventListener = real.add;
+    win.removeEventListener = real.remove;
+  }
+});
+
+// ---- the Schedule hop ------------------------------------------------------
+
+test("Continue CREATES the draft, then leaves, and the box is empty behind it", async () => {
+  const { SchedConfirm } = await import("./SchedConfirm");
+  const seen = watchFetch();
+  const hops: string[] = [];
+  const discarded: number[] = [];
+  const c = mount({
+    file: "/p/hop.py",
+    sessionId: "",
+    onNavigate: (url: string) => hops.push(url),
+    onDiscardAttachments: () => discarded.push(1),
+  });
+  c.type("make this a task");
+  await act(async () => {
+    c.root.findByType(SchedConfirm).props.onGo();
+    await tick();
+  });
+  // THE HOP IS THE WRITER. Nothing saved these words before it — the composer
+  // writes nothing — so Continue is what makes the record exist.
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.body?.text).toBe("make this a task");
+  // …then the card, on the key it just wrote, with the way back and the folder.
+  expect(hops).toHaveLength(1);
+  expect(hops[0]).toContain("draft=new%3A%2Fp%2Fhop.py");
+  // …and the composer is clean: one copy, edited on the card from here on.
+  expect(c.box().props.value).toBe("");
+  expect(discarded).toHaveLength(1);
 });
