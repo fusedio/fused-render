@@ -115,20 +115,112 @@ included yet, for the reason above — add them when §5 actually lands.
   anyway, which would have made the `state` check alone sufficient by
   accident — writing both checks is the deliberate, defensive version).
 
+## §4 built: "Recent" section closes the fold-vs-vanish gap (D-B)
+
+- **`recentJobs`/`recentNotifications` (`platform/lib/jobs.ts`)** are the
+  exact complements of `jobRows`/`terminalNotifications`: every job the
+  latter excludes *purely because `isRecentOnly` fired* lands in the former,
+  and nothing else does — a schedule job (D661) or a terminal
+  transient/silent job is excluded from both, rather than leaking into
+  Recent the moment its page happens to be open. Pinned with a dedicated
+  partition test on a 4-job mixed snapshot: every job lands in exactly one
+  of `jobRows`/`recentJobs`, never both, never neither.
+- **`RepoUpdatesCardView` gains a third section, "Recent (N)"**, rendered
+  below "Needs you"/"Worth keeping" whenever non-empty. Collapsed by
+  default with its own local `recentShown` toggle (nothing persisted,
+  matching D603 — a fresh session always starts folded). The count lives
+  IN the heading/toggle button itself (`Recent ({n})`), not deferred to a
+  separate numeral, since the heading is also the section's own disclosure
+  control here, unlike "Needs you"/"Worth keeping" which are passive
+  labels gated behind the "2+ sections" rule. Capped client-side at
+  `RECENT_VISIBLE_CAP = 20`, newest kept (same "arrives oldest-first, slice
+  the tail" trick `shownTerminal`'s fold already uses) — "follow
+  `MAX_RETAINED`'s shape" per spec, though unlike `MAX_RETAINED` this list
+  is not accumulated client-side at all: it is recomputed fresh from the
+  live job snapshot on every poll (`recentNotifications`), so the cap only
+  ever matters when an unusual number of jobs are suppressed at once.
+- **Excluded from `total` and `attentionCount`** — a suppressed success must
+  not make the chip's numeral or its "N needs you" label read busier than
+  "Needs you"/"Worth keeping" alone would. The `idle` panel-empty sentence
+  ("No notifications") is gated on `idle && boundedRecent.length === 0`,
+  not `idle` alone, so a panel holding only Recent rows draws the section
+  instead of the "nothing here" sentence.
+- **No timer anywhere in it** — D663 stands untouched. A row leaves Recent
+  only because the underlying job's presence condition stops holding on a
+  later read (moves back into `jobRows`'s output instead, nothing
+  server-side to reconcile), because its own ✕ dismissed it, or because
+  "Clear all" swept it — never a clock.
+- **Dismissing a Recent row reuses `JobRow` verbatim**, patched through a
+  NEW `onRecentPatch` seam (mirrors `onTerminalPatch` exactly) so its own ✕
+  calls the real `dismissJob` and only ever touches the `recent` list —
+  `terminal`/`recent` are disjoint by construction, so patching the wrong
+  one would silently do nothing.
+- **"Clear all" now reaches Recent too**, per spec. A Recent row IS already
+  an ordinary terminal job server-side (only its DISPLAY is suppressed), so
+  the existing `clearFinishedJobs()` call already dismisses it there with
+  zero changes; the addition is calling `onRecentPatch?.(jobsAfterClear)`
+  alongside the existing `onTerminalPatch?.(jobsAfterClear)` so the section
+  empties the instant the server confirms rather than waiting for the next
+  poll. `boundedRecent.length` also joins the button's own "plurality, not
+  presence" (D604) threshold — two folded successes are as much a batch
+  worth a bulk action as two visible rows are.
+- **Wiring**: `ActivityDock.tsx` computes `recentNotifications(next,
+  isOpenAnywhere)` off the same per-poll snapshot `terminalNotifications`
+  already reads, forwarded through a new `onRecentJobs` callback with its
+  own id-set change-detection ref (`recentIdsRef`), exactly mirroring
+  `onTerminalJobs`/`terminalIdsRef`. `App.tsx` holds a parallel `recentJobs`
+  state, wires it through, and extends the existing `subscribeJobDismissed`
+  handler (used by `JobPopupCard.tsx`'s own dismiss path) to patch BOTH
+  `terminalJobs` and `recentJobs` — the subscriber has no way to know which
+  list a dismissed id is sitting in, so it filters both; whichever one never
+  had the id pays a cheap no-op filter.
+- **Deferred: "completed non-retained messages" in Recent.** The spec text
+  says Recent "holds successful terminal job rows and completed non-retained
+  messages." Traced every current call site that sets `source` on a
+  `notify()` call (`shell/AppPage.tsx:351`/`:515`, per
+  `DECISIONS-actionable-notifications.md`/`DECISIONS-toasts-become-
+  notifications.md`) and found both use `tone: "error"` — which always
+  resolves to `tier: "attention"` via `resolveTier`, and `isSuppressed`
+  explicitly excludes `attention` from ever suppressing. So
+  `isSuppressed` cannot fire for any call site that exists in the codebase
+  today; there is no live message this session could exercise as
+  "suppressed, would have been Recent." Building message-side Recent now
+  would mean adding new state-recording logic to `notifications.ts` (which
+  today just returns early with no record on suppression) for a code path
+  with zero current callers — untestable against a real caller, and a
+  second, parallel bounded-list mechanism next to the job-row one this
+  commit already built. Left for whichever future call site actually needs
+  presence-suppressed, non-error messages (§5's task-finished/scheduled-run-
+  started moments are the most likely candidates) to build alongside that
+  call site, where it can be pinned against something real rather than a
+  hand-rolled mock.
+- Tests: 8 new cases in `RepoUpdatesDock.test.tsx` (collapsed-by-default
+  with a count in the heading; toggle opens/re-collapses; excluded from
+  `total`/`attentionCount`; never turns the chip loud even with a
+  would-be-attention job handed in; no spurious `dl-section-head` for a
+  lone Recent section; ordering below "Needs you"/"Worth keeping" when both
+  present; per-row dismiss patches only `recent`, never `terminal`; "Clear
+  all" reaches Recent). Confirmed RED (6 of 8 failing — 2 already passed by
+  accident against the untouched component, correctly caught once the
+  component existed and were then re-verified as real assertions) before
+  implementing, GREEN after (72 pass, 0 fail, up from the file's own
+  baseline of 66 pass, 187 expect() calls). `jobs.test.ts` gained
+  `recentJobs`/`recentNotifications` coverage in the previous commit (103
+  pass, 0 fail for that file).
+
 ## What the next builder should do first
 
-1. **§4 before anything else that depends on `isRecentOnly`.** The
-   suppressed-but-invisible gap noted above is real today; closing it is the
-   highest-value next step and is scoped tightly (`RepoUpdatesDock.tsx`
-   only).
-2. **§3 grouping** touches `fused_render/jobs.py` (new field, needs a
+1. **§3 grouping** touches `fused_render/jobs.py` (new field, needs a
    Python-side test) and a client grouping layer — read
    `DECISIONS-actionable-notifications.md`'s existing notes on `jobRows`/
    `popupTick` composition order before changing either, since grouping's
-   pop rule (D-C) has to compose with the presence suppression already
-   landed here (§3's own text: "a group row is suppressed under §2b when
-   *every* member satisfies the suppression condition").
-3. **§5** is the largest remaining piece and the one the parent spec's
+   pop rule (D-C) has to compose with the presence suppression AND the new
+   §4 Recent split already landed here (a grouped row's members can now be
+   split across "Worth keeping" and "Recent" individually — §3's own text:
+   "a group row is suppressed under §2b when *every* member satisfies the
+   suppression condition" needs to be read against `recentJobs`/`jobRows`
+   both, not just `jobRows`).
+2. **§5** is the largest remaining piece and the one the parent spec's
    Documentation section most wants written up (D661, `schedule-toast.ts:30`)
    — do not write those decision-log entries until this section's code
    actually ships.
