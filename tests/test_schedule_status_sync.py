@@ -28,6 +28,14 @@ _REAL_SESSION_LIVE = schedule._session_live
 SID = "11111111-1111-1111-1111-111111111111"
 
 
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch):
+    """A per-test store, as every other schedule test file has. Without it the
+    xdist workers share one suite-wide FUSED_RENDER_HOME and one worker's
+    "second" entry comes due in another's `tick`."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
 @pytest.fixture()
 def sid():
     """A session id of this test's own: `session_liveness` remembers where a
@@ -214,4 +222,19 @@ def test_a_closed_turn_wakes_the_loop_and_rings_the_tasks_watcher(monkeypatch):
     monkeypatch.setattr(tasks_watch, "notify", lambda keys: rung.append(set(keys)))
     schedule._turn_ended({"id": "e1", "session_id": SID})
     assert woke == [1]
-    assert rung == [{SID}]
+    # Every key the listing might file this row under, since the ring cannot
+    # know which one it chose: the input session and the not-yet-run row.
+    assert rung == [{SID, "pending:e1"}]
+
+
+def test_a_closed_turn_rings_the_key_the_listing_actually_used(monkeypatch):
+    rung = []
+    monkeypatch.setattr(schedule, "wake", lambda: None)
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys: rung.append(set(keys)))
+    # A resume that forked: the listing files it under the ANSWER, not the input.
+    schedule._turn_ended({"id": "e2", "session_id": SID, "claude_session_id": "forked"})
+    assert rung == [{SID, "forked", "pending:e2"}]
+    # A turn that ended before any session was captured: still a `pending:` row.
+    rung.clear()
+    schedule._turn_ended({"id": "e3"})
+    assert rung == [{"pending:e3"}]

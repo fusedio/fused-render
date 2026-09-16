@@ -1865,8 +1865,28 @@ def _turn_ended(entry: dict) -> None:
     found later, and the notify is simply true: this row changed, and the page
     drawing it has been long-polling for exactly that news."""
     wake()
-    _notify({str(entry.get("session_id") or entry.get("claude_session_id")
-                 or entry.get("id") or "")})
+    _notify(_entry_keys(entry))
+
+
+def _entry_keys(entry: dict) -> set[str]:
+    """Every Tasks key this entry could be listed under, so the ring reaches
+    the row whichever one the listing chose.
+
+    The listing (`tasks.py`'s `_entry_session`) files an entry under the run's
+    ANSWER (`claude_session_id`) when it has one, else the INPUT (`session_id`),
+    else `pending:<id>`. A turn that ends before the watcher captured its session
+    is still a `pending:` row; a resume that forked lives under the answer while
+    its input names the old thread. Ringing one guessed key misses those, and the
+    page waits out the poll floor for news it was told about. Ringing all three
+    costs a watcher one listing it would have redrawn anyway."""
+    from fused_render import tasks_store
+
+    keys = {str(entry.get("claude_session_id") or ""),
+            str(entry.get("session_id") or "")}
+    entry_id = str(entry.get("id") or "")
+    if entry_id:
+        keys.add(tasks_store.pending_key(entry_id))
+    return {k for k in keys if k}
 
 
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
