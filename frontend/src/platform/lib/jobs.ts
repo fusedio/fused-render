@@ -260,10 +260,33 @@ export function effectiveTier(job: Job): JobTier {
  *  that declared itself transient/silent but ended in `error`/`cancelled`
  *  still gets a row, because the override already turned it into
  *  `attention`. */
-export function jobRows(jobs: Job[]): Job[] {
+/** D-A / §2b (SPEC-quiet-notifications.md): a successful job whose own page
+ *  the user is already looking at is not news — it goes to the folded
+ *  "Recent" section (§4) instead of popping or holding a seat in "Needs
+ *  you"/"Worth keeping". Suppression is client-side, at DISPLAY time only —
+ *  the server learns nothing about presence and stays authoritative about
+ *  the row's existence (a dismiss, a real re-check, still works normally).
+ *
+ *  Gated on `state === "done"` specifically, not `isTerminal`: `error` and
+ *  `cancelled` are promoted to "attention" by `effectiveTier` before this
+ *  check ever runs (verified by reading `effectiveTier` above, not assumed),
+ *  so a failure already fails the `!== "attention"` test and is never
+ *  suppressed — this condition is written the long way on purpose so that
+ *  stays visibly true rather than relying on it as an accident of `done`-only
+ *  gating. */
+export function isRecentOnly(job: Job, isOpenAnywhere: (source: string) => boolean): boolean {
+  if (job.state !== "done") return false;
+  if (effectiveTier(job) === "attention") return false;
+  return isOpenAnywhere(job.page);
+}
+
+export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
-    return !isTerminal(j) || (effectiveTier(j) !== "transient" && effectiveTier(j) !== "silent");
+    if (!isTerminal(j)) return true;
+    if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
+    if (isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)) return false;
+    return true;
   });
 }
 
@@ -288,8 +311,11 @@ export function mergedRows(jobs: Job[]): Job[] {
  *  before the waiter notices and clears its own `waiting_for`
  *  (`_wait_ready`'s poll loop), so a poll landing in that gap saw the load
  *  as terminal while Activity's own merged view still had it hidden. */
-export function terminalNotifications(jobs: Job[]): Job[] {
-  return terminalJobs(jobRows(mergedRows(jobs)));
+export function terminalNotifications(
+  jobs: Job[],
+  isOpenAnywhere?: (source: string) => boolean,
+): Job[] {
+  return terminalJobs(jobRows(mergedRows(jobs), isOpenAnywhere));
 }
 
 // ------------------------------------------------------------------ popups
@@ -325,10 +351,11 @@ export function terminalNotifications(jobs: Job[]): Job[] {
  *  `attention` and let it through correctly by accident, but it would also
  *  hide the actual rule being applied: this filter cares about the
  *  producer's OWN claim on a clean finish, not the derived display tier. */
-export function popupJobs(jobs: Job[]): Job[] {
+export function popupJobs(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
   return terminalJobs(mergedRows(jobs))
     .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
-    .filter((j) => !(j.tier === "silent" && j.state === "done"));
+    .filter((j) => !(j.tier === "silent" && j.state === "done"))
+    .filter((j) => !(isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)));
 }
 
 /** One popup tick's candidate key — a terminal EVENT, not a job id.
@@ -379,10 +406,11 @@ export function popupTick(
   jobs: Job[],
   seen: ReadonlySet<string>,
   isFirstTick: boolean,
+  isOpenAnywhere?: (source: string) => boolean,
 ): { seen: Set<string>; popped: Job | null } {
   const next = new Set<string>();
   let popped: Job | null = null;
-  for (const j of popupJobs(jobs)) {
+  for (const j of popupJobs(jobs, isOpenAnywhere)) {
     const key = popupKey(j);
     next.add(key);
     if (isFirstTick || seen.has(key)) continue;

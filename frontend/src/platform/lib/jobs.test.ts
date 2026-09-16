@@ -13,6 +13,7 @@ import {
   jobAmount,
   jobDetail,
   jobFraction,
+  isRecentOnly,
   jobRows,
   jobsAfterClear,
   jobStatusLine,
@@ -752,4 +753,84 @@ test("aggregate progress: nothing running draws no line, no totals sweep, else t
       job({ state: "running", done: null, total: null }),
     ]),
   ).toBeCloseTo(0.5);
+});
+
+// ------------------------------------------------------- presence suppression
+// SPEC-quiet-notifications.md §2b / D-A: a successful terminal job whose own
+// page the user is already looking at does not pop and does not hold a seat
+// in Notifications — it is routed to Recent (§4) instead.
+
+const openHere = (page: string) => (source: string) => source === page;
+const openNowhere = () => false;
+
+test("isRecentOnly: a done, non-attention job whose page is open anywhere is recent-only", () => {
+  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(true);
+});
+
+test("isRecentOnly: false when nothing has that page open", () => {
+  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openNowhere)).toBe(false);
+});
+
+test("isRecentOnly: an error is never recent-only even if its page is open (effectiveTier promotes to attention)", () => {
+  const j = job({ state: "error", tier: "trail", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+});
+
+test("isRecentOnly: a cancelled job is never recent-only for the same reason", () => {
+  const j = job({ state: "cancelled", tier: "trail", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+});
+
+test("isRecentOnly: an explicit tier: attention job is never recent-only", () => {
+  const j = job({ state: "done", tier: "attention", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+});
+
+test("isRecentOnly: a running job is never recent-only regardless of presence", () => {
+  const j = job({ state: "running", tier: "trail", page: "/ai-models/local" });
+  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+});
+
+test("jobRows: a suppressed success drops out when isOpenAnywhere is supplied", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+test("jobRows: the same job still shows when nothing has its page open", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openNowhere)).toEqual(jobs);
+});
+
+test("jobRows: an error still shows even though its page is open — errors are never suppressed", () => {
+  const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual(jobs);
+});
+
+test("jobRows: omitting isOpenAnywhere entirely preserves today's behavior (no suppression)", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs)).toEqual(jobs);
+});
+
+test("popupJobs: a suppressed success does not pop when its page is open", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  expect(popupJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+test("popupJobs: the same job still pops when nothing has its page open", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  expect(popupJobs(jobs, openNowhere).map((j) => j.id)).toEqual(["j1"]);
+});
+
+test("popupTick: a suppressed success raises no popup even on its first genuinely-new tick", () => {
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
+  expect(popped).toBeNull();
+});
+
+test("popupTick: an error on the same open page still pops — an error is never suppressed", () => {
+  const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
+  expect(popped?.id).toBe("j1");
 });

@@ -43,6 +43,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
 import { isRunning, popupTick, terminalNotifications, type Job } from "@platform/lib/jobs";
 import { notify } from "@platform/lib/notifications";
+import { isOpenAnywhere } from "@platform/lib/presence";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 import { noteProgressMayHaveMoved } from "./onboarding/progress";
@@ -228,7 +229,7 @@ export default function ActivityDock({
       runningIdsRef.current = running;
       moved = true;
     }
-    const terminal = terminalNotifications(next);
+    const terminal = terminalNotifications(next, isOpenAnywhere);
     const key = terminal.map((j) => j.id).join(" ");
     if (key !== terminalIdsRef.current) {
       terminalIdsRef.current = key;
@@ -245,6 +246,7 @@ export default function ActivityDock({
       next,
       popupJobsSeenRef.current,
       popupFirstTickRef.current,
+      isOpenAnywhere,
     );
     popupJobsSeenRef.current = seen;
     popupFirstTickRef.current = false;
