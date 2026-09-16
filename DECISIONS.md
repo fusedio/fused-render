@@ -1849,3 +1849,59 @@ Verified: `.venv/bin/python -m pytest tests/test_index_api.py
 tests/test_index_query.py -q` → 174 passed. The burst test alone run 10x in a
 row (all green) and 12x more under sustained CPU load (16 background `yes`
 spinners) — all green, no flakes observed in either condition.
+
+---
+
+## Rank timing on the wire + browser slow-search warning (2026-09-16, worktree-rank-timing-warn)
+
+- **Test placement**: put the Python test in `tests/test_index_search.py`,
+  not `tests/test_index_api.py`. The brief said "put it with the existing
+  index API tests" — but the actual HTTP-level `/api/index/rank` happy-path
+  tests (`test_rank_route_answers_ranked_hits`,
+  `test_rank_route_logs_the_request_total_at_debug`, etc.) all live in
+  `test_index_search.py`; `test_index_api.py` mostly covers lane/pool/
+  concurrency machinery via lower-level fixtures. Added the new test right
+  next to `test_rank_route_answers_ranked_hits`, which builds a real index
+  and hits the route the same way.
+
+- **`.then()` aborted-guard position**: confirmed before editing — the guard
+  is `if (ctl.signal.aborted) return;` as the very first line of the success
+  callback in `FilesHome.tsx`. Placed the elapsed-time computation and
+  `warnSlowSearch` call immediately after it, so an aborted/superseded
+  request never warns and this required no restructuring.
+
+- **Memo-hit path never warns**: confirmed by reading the effect — a memoized
+  answer (`memo.current.get(q)`) returns early via a separate branch (abort
+  inflight, `setAnswer(remembered)`, return) and never reaches
+  `indexRank(...).then(...)` at all, so it structurally cannot call
+  `warnSlowSearch`. No extra guard was needed.
+
+- **Message shape**: one `console.warn` call with a single formatted string
+  (not multiple args) so a screenshot of it is self-contained and grep/read
+  order isn't ambiguous. Labeled the gap "unaccounted/outside-handler"
+  deliberately, per the brief, rather than "network" or "queueing" — none of
+  that is actually measured.
+
+- **`timing` rounding**: rounded server-side to 1 decimal place as specified.
+  Frontend does no further rounding/formatting of the server numbers — they
+  are echoed as received (e.g. `total=1800.0ms`), since the brief did not
+  ask for client-side reformatting and doing so would risk hiding precision
+  a support engineer might want.
+
+No other deviations from the brief.
+
+### rank-timing-warn — code review fixes (2026-09-16)
+
+Code review of the build above found 4 issues; fixed 1-3, left 4 as
+informational per the brief.
+
+| D-new | Finding 1 (float noise): added `r1()` (round to 1 decimal) in `FilesHome.tsx` and applied it to `unaccountedMs` AND to the echoed `timing.total_ms`/`lane_wait_ms`/`worker_ms` | Confirmed directly: `2100 - 1600.1 === 499.9000000000001` in JS. The server already rounds its own three numbers to 1 decimal, so `r1()` is a no-op on those today — but the subtraction is a fresh float op the server's rounding cannot protect, and wrapping all four numbers means the printed line can never regress into a long float run even if a future server change stops pre-rounding one of the echoed fields. The old fixture (`total_ms: 1800`, an integer) could never have produced this bug; rewrote it to `total_ms: 1600.1, lane_wait_ms: 50.3, worker_ms: 1549.8` (1-decimal, as the real server emits) and added `expect(msg).not.toMatch(/\d\.\d{2,}/)` so the test fails without the fix. |
+| D-new | Finding 2 (silent reject branch): added `warnSlowSearchFailed(query, elapsedMs, error)`, called from the `.then()` reject handler in the same effect, guarded by the pre-existing `if (ctl.signal.aborted \|\| err.name === "AbortError") return;` check which was verified to already sit as the first line of that handler (no restructuring needed) | This is the scenario the whole feature exists for: `_bounded_index_read` (fused_render/server/routers/index.py) answers a wedged index read with 503 after `ABANDON_S`, which makes `indexRank()`'s fetch throw — previously that path warned nothing. The new line is prefixed `FAILED` and carries `error.message`, deliberately distinguishable from the success line at a glance rather than requiring a reader to notice the absence of a `server:` clause. |
+| D-new | Finding 2 tests: added "a rejected request past the threshold warns with the error text" and "an aborted rejection never warns even past the threshold"; extended the test harness's `RankCall` with a `reject(message)` that settles the mocked fetch with a 503 + `{error: message}` body (mirrors the existing `StatCall.reject` pattern and matches what the real route sends, so `indexRank()` throws a real `HttpError` rather than a network-level rejection) | The abort case does not depend on the rejected error's identity: `ctl.signal.aborted` is already true from the superseding keystroke by the time `reject()` lands, so the existing guard short-circuits before ever inspecting `err.name` — matching how the pre-existing success-path abort test also relies on the signal check rather than a particular resolve/reject payload. |
+| D-new | Finding 3 (bare `clock.advance` calls): wrapped the three `clock.advance(2100)`/`advance(2500)` calls at (old) lines 545/564/577 in `flush()`, matching every other multi-hundred-ms advance in the file | These three cross `PENDING_INDICATOR_MS` (`setSlow(true)`, outside `act()` if bare) and the 300ms warm-up fallback (`indexRank(WARM_QUERY)`, left unstripped in `rankCalls` if bare — the tests passed before only because the warm call appends at index 1 and `rankCalls[0]` happened to still be the real query). Confirmed no `act()` warnings remain: `bun test src/apps/explorer/FilesHome.render.test.tsx` output has zero "not wrapped in act" lines, before this fix it had 3. |
+| — | Finding 4 (informational, NOT fixed) | `elapsedMs` derives from `Date.now()`, so an NTP step or a sleep/resume during the request window can fabricate or hide a multi-second warning. Pre-existing behavior for the latency readout this diff reuses (`answerFrom`'s elapsed-time field) — this diff makes the same wall-clock exposure support-facing via `console.warn`, but switching to `performance.now()` (monotonic, but NOT wall-clock-comparable across the fetch boundary in the same way, and a larger change to the existing readout) is out of scope for this PR per the brief. Left as a known limitation. |
+
+Verified: `bun test src/apps/explorer/FilesHome.render.test.tsx` → 48 pass, 0
+fail, no act() warnings. `bunx tsc --noEmit` over `frontend/` → clean. No
+Python files touched in this round, so `test_index_search.py` was not
+re-run (nothing in it could have changed).

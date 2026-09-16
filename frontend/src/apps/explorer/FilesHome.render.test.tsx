@@ -41,6 +41,11 @@ interface RankCall {
   root: string;
   q: string;
   resolve: (data: IndexRankResult) => void;
+  /** A wedged/abandoned index read or pool exhaustion — the real
+   * `/api/index/rank` sends a 503 for both (`_bounded_index_read`,
+   * fused_render/server/routers/index.py); this matches what `indexRank()`
+   * actually throws (an HttpError) rather than a network-level rejection. */
+  reject: (message: string) => void;
 }
 interface StatCall {
   path: string;
@@ -81,6 +86,8 @@ function fakeFetch(url: string | URL): Promise<Response> {
         root: params.get("root") ?? "",
         q: params.get("q") ?? "",
         resolve: (data) => settle(new Response(JSON.stringify(data), { status: 200 })),
+        reject: (message) =>
+          settle(new Response(JSON.stringify({ error: message }), { status: 503 })),
       });
     });
   }
@@ -512,6 +519,113 @@ describe("the latency readout", () => {
     await flush(() => box.input().props.onChange({ target: { value: "readme" } }));
     expect(rankCalls.filter((c) => c.q === "readme")).toHaveLength(1); // no re-ask
     expect(noteText(box)).toContain("120 ms");
+    box.unmount();
+  });
+});
+
+describe("the slow-search console warning", () => {
+  let warnCalls: unknown[][] = [];
+  const realWarn = console.warn;
+
+  beforeEach(() => {
+    warnCalls = [];
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+  });
+
+  test("a fast response does not warn", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(87);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a >=2s response warns with the client/server timing breakdown", async () => {
+    const box = mount();
+    await type(box, "readme");
+    // Realistic server timing: the server rounds to 1 decimal place, so
+    // these are never whole integers in production — a fixture that used
+    // whole numbers here would not have caught the float-noise bug the gap
+    // computation (`elapsedMs - timing.total_ms`) had (see DECISIONS.md).
+    await flush(() => clock.advance(2100));
+    await flush(() => rankCalls[0].resolve(answer({
+      hits: [hit("readme.md")], total: 1,
+      timing: { total_ms: 1600.1, lane_wait_ms: 50.3, worker_ms: 1549.8 },
+    })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).toContain("readme");
+    expect(msg).toContain("2100"); // client-measured elapsed
+    expect(msg).toContain("1600.1"); // server total_ms
+    expect(msg).toContain("50.3"); // lane_wait_ms
+    expect(msg).toContain("1549.8"); // worker_ms
+    expect(msg).toContain("499.9"); // unaccounted gap: 2100 - 1600.1
+    // The line must never carry raw float-subtraction noise (e.g.
+    // `399.9000000000001`) — every number in it is at most 1 decimal place.
+    expect(msg).not.toMatch(/\d\.\d{2,}/);
+    box.unmount();
+  });
+
+  test("a >=2s response with timing absent warns without NaN", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).not.toContain("NaN");
+    expect(msg).toContain("2500");
+    expect(msg.toLowerCase()).toContain("unavailable");
+    box.unmount();
+  });
+
+  test("an aborted request never warns even past the threshold", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    // Supersede with a new keystroke: the next debounce's `run()` aborts the
+    // first controller before this resolve() lands on it.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a rejected request past the threshold warns with the error text", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    await flush(() => rankCalls[0].reject("index unavailable: 503"));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).toContain("readme");
+    expect(msg).toContain("2500");
+    expect(msg).toContain("index unavailable: 503");
+    // Must be tellable apart from the success-path line at a glance.
+    expect(msg.toUpperCase()).toContain("FAILED");
+    box.unmount();
+  });
+
+  test("an aborted rejection never warns even past the threshold", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => clock.advance(2500));
+    // Supersede with a new keystroke: the next debounce's `run()` aborts the
+    // first controller before this reject() lands on it — same shape as the
+    // success-path "an aborted request never warns" test above, but on the
+    // reject branch: `ctl.signal.aborted` is checked before `err.name`, so
+    // this must never warn regardless of what the settled error looks like.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reject("superseded"));
+    expect(warnCalls).toHaveLength(0);
     box.unmount();
   });
 });

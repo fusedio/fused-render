@@ -680,6 +680,17 @@ export interface IndexRankResult {
   // directly above it, but nothing here ever read them — no caller
   // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
   // response. See DECISIONS.md.
+  //
+  // Server-side breakdown of `api_index_rank`'s own handler time — the same
+  // three numbers its DEBUG/WARNING log line computes. Optional: an older
+  // server (or any response predating this field) simply omits it, and
+  // callers must not assume its presence (FilesHome's slow-search warning is
+  // the only reader today).
+  timing?: {
+    total_ms: number;
+    lane_wait_ms: number;
+    worker_ms: number;
+  };
 }
 
 export function indexRank(
