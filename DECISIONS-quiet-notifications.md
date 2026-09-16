@@ -1201,3 +1201,130 @@ Commands: same full command list as Fix 14 above (both fixes verified
 together in the same run) — 422 pass, 0 fail; `bunx tsc --noEmit -p
 frontend` clean; `node frontend/scripts/check-boundaries.mjs` → OK (811
 files).
+
+## Fix 16: Bug 2, round 2 — `source` made ambient by default, not opt-in
+
+Live testing found the exact same symptom Fix 14 fixed for image/video
+generation — a success popup while the user was still on the page that
+raised the work — but for TEXT generation this time. Tracing it down: Fix
+14's fix (`Job.source`, distinct from `page`, read from a caller's
+`X-Fused-Source` header) was wired into `/api/ai/image` and `/api/ai/video`
+ONLY. Text generation mints its job row from two call sites in
+`fused_render/server/ai.py` (`_local_relay`, a resident local model, and
+`_apple_relay`, Apple's on-device model) — both pre-dating Fix 14, neither
+ever given a `source=` at all — and `/api/ai/transcribe`
+(`ai_runtime.py`) and `/api/capture/start` (`capture/__init__.py`) had the
+identical gap, just not yet reported live.
+
+**The real defect was never "text forgot it" — it was the SHAPE of Fix
+14's fix.** `source` arrived by OPT-IN: every producer that mints a job row
+had to remember, on its own, to read `X-Fused-Source` and thread it through
+to `jobs.upsert`/`supervisor._report`. Two rounds of live regressions
+later, by two different producers, is a pattern, not a coincidence — an
+opt-in a producer can forget is an opt-in that WILL eventually be
+forgotten, silently, because a producer that never sends `source` just
+notifies forever and no test catches a missing opt-in (there is nothing to
+assert "on" that isn't there). The fix has to change the DEFAULT: `source`
+must arrive without a producer doing anything, and a producer has to work
+to lose it, not remember to gain it.
+
+**Server** (`fused_render/jobs.py`, `fused_render/server/common.py`): a
+request-scoped `contextvars.ContextVar` (`_ambient_source`, jobs.py),
+consulted by `jobs.upsert` ONLY when a producer's own `source=` argument
+resolves empty/falsy (`if not source: source = _ambient_source.get()`) —
+an explicit truthy `source=` still always wins, unchanged from Fix 14's
+own rule. The ContextVar is set for the duration of every request by
+`server/common.py`'s `no_cache_and_log` — the one ASGI middleware that
+runs unconditionally for every request regardless of route, unlike
+`shell_calls.begin`, which only fires when a page sends its own
+`X-Fused-Page`. Read from `request.headers` only, never the body, same
+spoof-proofing `X-Fused-Page` already gets. This one chokepoint is why
+`fused_render/server/ai.py`, `ai_runtime.py`'s transcribe route, and
+`capture/__init__.py` needed NO changes at all: `supervisor._report`
+already defaults `source = fields.pop("source", page)`, and every one of
+these producers' `page` is empty at the point that matters (the
+Playground's own text/transcribe calls carry no `X-Fused-Page`; capture's
+`page` is a separate, real destination that stays whatever it is) — so
+`source` was already resolving empty going into `upsert`, exactly the gap
+`_ambient_source` fills.
+
+A `contextvars.ContextVar` is the right shape specifically because it does
+NOT propagate into a `threading.Thread` spawned with `.start()` (only into
+`asyncio.to_thread`, which explicitly copies the context) — relied on as a
+FEATURE, not worked around: a render's background thread already loses
+`page`'s own request-scoped values for the same reason (Fix 14's own
+design), and a late ambient-less tick from that thread resolves to `""`,
+which is harmless because `Job.source` (like `page`/`origin`) is a STICKY
+field — a falsy value on one tick never overwrites a truthy value an
+earlier tick already set. `_local_relay`/`_apple_relay` run via
+`asyncio.to_thread` (not a bare `Thread`), so the ambient value DOES
+propagate to them — confirmed by a real end-to-end test posting through
+`/api/ai`, not by inspection alone.
+
+**Frontend** (`frontend/src/platform/lib/api.ts`): `getJson`/`mutateJson`
+(and therefore every `postJson`/`putJson` caller) attach
+`X-Fused-Source: encodeURIComponent(currentPresencePage())` automatically,
+before a caller's own `opts.headers` are spread on top — explicit still
+wins over ambient, same rule as the server. This is a deviation from a
+literally-universal "every same-origin request" reading of the brief: two
+raw-`fetch` producers in
+`frontend/src/apps/ai_models/playground/client.ts` (`streamChat`'s
+`/api/ai` call — the literal Round 2 regression — and `embedTexts`/
+`embedPaths`) cannot go through `getJson`/`postJson` at all, because they
+need to read a streamed response body, which `postJson` cannot do (its own
+header comment says so, pre-dating this fix). These three call sites use
+a small exported `sourceHeader()` (renamed from the old local, per-file
+`sourceHeaders()`) explicitly. This narrow, well-flagged opt-in surface —
+three call sites, all in one file, all commented as to why they cannot be
+automatic — is the most complete fix achievable without giving `postJson`
+a streaming mode it does not have; every other producer (transcribe,
+capture start/stop/cancel, `startImage`/`startVideo` via `postJson`) is
+now fully automatic. `startImage`/`startVideo` already sent an explicit
+header before this fix (Fix 14) — they keep doing so via `sourceHeader()`,
+now percent-encoded to match `X-Fused-Page`'s own convention
+(`encodeURIComponent`/server-side `unquote`) rather than Fix 14's raw,
+unencoded value, which happened to work only because `unquote` is a no-op
+on a plain path with no `%` sequences.
+
+**Deviation from the brief's Step 3 test list**: image and video already
+had real-endpoint `Job.source` producer tests from Fix 14
+(`tests/test_ai_runtime.py`:
+`test_an_image_rows_source_defaults_to_the_caller_supplied_page`,
+`test_an_image_rows_source_diverges_from_page_when_the_playground_sends_one`,
+and their video equivalents) — no new tests were added for those two.
+New tests: `tests/test_job_source_ambient.py` (text, both `_local_relay`
+and `_apple_relay`, driven through the real `/api/ai` endpoint with
+TestClient — through the real ASGI middleware, not a direct call to
+`_local_relay`/`_apple_relay`, which would bypass the very layer under
+test); a new transcribe test in `tests/test_ai_runtime.py`
+(`test_a_transcript_rows_source_comes_from_the_ambient_X_Fused_Source`);
+a new capture test in `tests/test_capture.py`
+(`test_the_rows_source_comes_from_the_ambient_X_Fused_Source`); a
+frontend test, `frontend/src/platform/lib/api.test.ts`, proving
+`getJson`/`postJson` attach a non-empty `X-Fused-Source` with no explicit
+attribution and that an explicit caller header still wins.
+
+**What the guard tests protect** (`tests/test_job_source_ambient.py`):
+two structural guards against a THIRD round of this bug.
+`test_every_job_minting_prefix_is_accounted_for` enumerates every
+`*_JOB_PREFIX` constant across `fused_render/` and pins the set — a new
+kind of job-minting producer (a new prefix) fails this test until a
+producer-level source test for it is added and the prefix is added to the
+pinned set, forcing the same conscious check this round skipped twice.
+`test_job_source_is_only_ever_written_by_jobs_upsert` greps for any
+`.source =` assignment outside `jobs.py` — a producer that bypassed
+`jobs.upsert` entirely (mutating a `Job` object directly) would silently
+skip the ambient fallback and the explicit-wins-over-ambient rule both;
+today the only such assignment in the tree is `jobs.py`'s own, inside
+`upsert` itself.
+
+Commands: `.venv/bin/python -m pytest tests/test_jobs_api.py
+tests/test_ai_supervisor_job_page.py tests/test_ai_runtime.py
+tests/test_capture.py tests/test_ai_text_job_row.py tests/test_ai_apple.py
+tests/test_job_source_ambient.py tests/test_server_ai.py` → 869 passed
+(one pre-existing, unrelated failure confirmed on a clean checkout of this
+same branch before this fix's edits:
+`tests/test_ai_metrics.py::test_a_missing_claude_binary_is_counted`, not
+run as part of this fix's targeted set); `bun --cwd frontend test` → 6224
+pass, 0 fail; `bunx tsc --noEmit -p frontend` clean; `node
+frontend/scripts/check-boundaries.mjs` → OK (812 files).
