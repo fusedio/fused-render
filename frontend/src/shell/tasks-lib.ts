@@ -36,6 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import { labelForSource } from "@platform/lib/format";
 import {
   addDays,
   BOARD_COLUMNS,
@@ -4456,6 +4457,13 @@ export interface AttentionRow {
   title: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
+  /** Who raised this row — the row-level counterpart to `Job.origin`/a
+   *  message's `origin` (notifications.ts), reusing that same
+   *  `labelForSource` helper rather than a third labeller: a waiting task's
+   *  own `source` for this purpose is its target/project folder, the exact
+   *  pair `task-status-notify.ts`'s own `taskSource` reads. "" (no
+   *  project/target at all) draws no caption. */
+  origin: string;
 }
 
 /**
@@ -4487,6 +4495,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       taskId: task.task_id,
       title: task.title,
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
+      origin: labelForSource(task.target || task.project),
     });
   }
   return rows;

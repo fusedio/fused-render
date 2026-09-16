@@ -26,6 +26,7 @@ const {
   dismissPopup,
   getPopupNotification,
   getRetainedNotifications,
+  labelForSource,
   notify,
   useRetainedNotifications,
 } = await import("@platform/lib/notifications");
@@ -469,6 +470,47 @@ test("an actionable message (carries a page) with a matching source is never sup
 test("no source at all is never suppressed (opt-in only, never defaulted)", () => {
   notify({ title: "Path copied", tone: "info" });
   expect(popupSnapshot()?.title).toBe("Path copied");
+});
+
+// ---- CHANGE 1 (SPEC-quiet-notifications.md follow-up): every notification
+// names who raised it ---------------------------------------------------
+
+test("labelForSource: an fs path labels as its own basename, extension stripped", () => {
+  expect(labelForSource("/Users/me/Projects/my-app")).toBe("my-app");
+  expect(labelForSource("/Users/me/Projects/my-app/")).toBe("my-app");
+  expect(labelForSource("/Users/me/Projects/report.pdf")).toBe("report");
+});
+
+test("labelForSource: a non-path string passes through verbatim", () => {
+  expect(labelForSource("Playground")).toBe("Playground");
+});
+
+test("labelForSource: no source, or one resolving to nothing, is the empty string — never a placeholder", () => {
+  expect(labelForSource(undefined)).toBe("");
+  expect(labelForSource("")).toBe("");
+  expect(labelForSource("   ")).toBe("");
+});
+
+test("a message with a source carries the label on the stored row", () => {
+  notify({ title: "Could not save", tone: "error", source: "/Users/me/Projects/my-app" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("my-app");
+});
+
+test("a message with no source carries no origin at all", () => {
+  notify({ title: "Could not save", tone: "error" });
+  expect(getRetainedNotifications()[0]?.origin).toBeUndefined();
+});
+
+// ---- CHANGE 2: `recent` opts a retained message into the folded Recent
+// section (RepoUpdatesDock.tsx), the message-side counterpart to a job's
+// own presence-based Recent split ----------------------------------------
+
+test("`recent: true` is carried onto the stored row, defaulting to false", () => {
+  notify({ title: "Finished", tone: "info", page: "/tasks", recent: true });
+  expect(getRetainedNotifications()[0]?.recent).toBe(true);
+
+  notify({ title: "Failed", tone: "error", page: "/tasks" });
+  expect(getRetainedNotifications()[1]?.recent).toBe(false);
 });
 
 test("a suppressed replaceId call clears whatever that id was still showing", () => {

@@ -10129,6 +10129,27 @@ describe("attentionRows", () => {
     ]);
     expect(nowhere[0].href).toBe("/tasks");
   });
+
+  // CHANGE 1 (SPEC: "every notification imo should have a top row/section
+  // for the 'emitting page' context") — the row-level counterpart to
+  // `Job.origin`, reusing `labelForSource` (notifications.ts) rather than a
+  // second labeller.
+  it("names who raised the row, from the task's own target/project", () => {
+    const withTarget = attentionRows([
+      task({ key: "s", status: "needs_attention", target: "/Users/me/my-project" }),
+    ]);
+    expect(withTarget[0].origin).toBe("my-project");
+
+    const projectOnly = attentionRows([
+      task({ key: "p", status: "needs_attention", target: "", project: "/Users/me/other-project" }),
+    ]);
+    expect(projectOnly[0].origin).toBe("other-project");
+
+    const neither = attentionRows([
+      task({ key: "n", status: "needs_attention", target: "", project: "" }),
+    ]);
+    expect(neither[0].origin).toBe("");
+  });
 });
 
 describe("provisionalTasks", () => {

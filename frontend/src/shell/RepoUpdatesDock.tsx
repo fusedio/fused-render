@@ -275,6 +275,11 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
     <NotificationCard
       title={notification.title}
       secondary={notification.detail}
+      // `.dl-origin` — who raised this row (`labelForSource(source)`,
+      // notifications.ts), the exact caption `JobRow` already draws from
+      // `job.origin`. "" (no source, or one that resolves to nothing) draws
+      // no element at all, same rule `caption` always follows.
+      caption={notification.origin || undefined}
       terminal={notification.tone === "error" ? "error" : undefined}
       role={notification.tone === "error" ? "alert" : "status"}
       navAction={notification.action}
@@ -310,6 +315,7 @@ function AttentionRowView({
   return (
     <NotificationCard
       title={title}
+      caption={row.origin || undefined}
       status={row.title}
       statusOneLine
       statusTooltip={row.title}
@@ -540,6 +546,10 @@ function GroupJobRow({
       className={anyFailed ? "dl-row-group-attention" : undefined}
       title={title}
       titleMode="id"
+      // Same "oldest member represents the row" call `title`/`openPage`
+      // already make above — a folded group is one row, so it draws one
+      // origin, not one per member.
+      caption={members[0]?.origin || undefined}
       secondary={`${doneCount} of ${members.length} done`}
       onDismiss={{
         onClick: dismissAll,
@@ -721,7 +731,17 @@ export function RepoUpdatesCardView({
   // here is simply "attention" vs. "everything else that made it into this
   // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
-  const messagesTrail = messages.filter((m) => m.tier !== "attention");
+  // CHANGE 2 (task-status-notify.ts's `in_progress -> done`): a retained,
+  // non-error message can now opt into `recent` (`NotificationInput.recent`)
+  // to land in the folded §4 "Recent" section below instead of the unfolded
+  // "Worth keeping" one — the message-side counterpart to `Job`'s own
+  // presence-based `isRecentOnly`/`recentJobs` split, which is exactly the
+  // gap DECISIONS-quiet-notifications.md's §4 entry flagged as deliberately
+  // unbuilt until a real call site needed it. `messagesTrail` excludes it so
+  // a folded success no longer draws, unfolded, at the very top of "Worth
+  // keeping" the moment it's retained.
+  const messagesRecent = messages.filter((m) => m.tier !== "attention" && m.recent);
+  const messagesTrail = messages.filter((m) => m.tier !== "attention" && !m.recent);
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted
   // toward this cap: the cap exists to bound how tall "Worth keeping" gets
@@ -763,6 +783,12 @@ export function RepoUpdatesCardView({
   // the same "arrives oldest-first" slice `shownTerminal` already uses.
   const [recentShown, setRecentShown] = useState(false);
   const boundedRecent = recent.slice(Math.max(0, recent.length - RECENT_VISIBLE_CAP));
+  // Same cap, same "oldest dropped" slice, for `messagesRecent` — its own
+  // independent bound, exactly the way `MAX_RETAINED` already bounds
+  // `messages` as a whole regardless of `recent`.
+  const boundedMessagesRecent = messagesRecent.slice(
+    Math.max(0, messagesRecent.length - RECENT_VISIBLE_CAP),
+  );
   // Row count for the "Recent (N)" heading — the same "count rows, not raw
   // jobs" decision as `total`/`attentionCount` above, read off the exact
   // collection `renderJobRows` groups and renders below, rather than a
@@ -781,12 +807,19 @@ export function RepoUpdatesCardView({
   // attention/trail split above already computed, so this reads the SAME
   // row-level collection the terminal sections render rather than
   // introducing a second, parallel count that could disagree with it.
+  // `messagesRecent` is EXCLUDED here (D-B: "Recent is never counted toward
+  // idle/total — a suppressed success is not news"), the same rule
+  // `boundedRecent`'s job rows already follow. `messagesAttention.length +
+  // messagesTrail.length` reads as `messages.length` minus that bucket,
+  // rather than a raw `messages.length` that would double back into
+  // Recent's own rows.
   const total =
     visible.length +
     terminalGroups.length +
     pairings.length +
     visibleAttention.length +
-    messages.length;
+    messagesAttention.length +
+    messagesTrail.length;
   const idle = total === 0;
   // HOW MANY ROWS NEED A LOOK, ACROSS BOTH ATTENTION SOURCES (SPEC
   // actionable-notifications item 3) — a waiting task and a failed/cancelled
@@ -854,7 +887,7 @@ export function RepoUpdatesCardView({
               holding only Recent rows must draw them, not the "No
               notifications" sentence that means "there is nothing here at
               all". */}
-          {idle && boundedRecent.length === 0 ? (
+          {idle && boundedRecent.length === 0 && boundedMessagesRecent.length === 0 ? (
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
@@ -984,7 +1017,7 @@ export function RepoUpdatesCardView({
                   the way "Needs you"/"Worth keeping" are. No fold-within-fold:
                   once opened it shows every kept row, capped only by
                   `RECENT_VISIBLE_CAP` at the data layer above. */}
-              {boundedRecent.length > 0 && (
+              {(boundedRecent.length > 0 || boundedMessagesRecent.length > 0) && (
                 <div className="dl-section dl-section-recent">
                   <button
                     type="button"
@@ -992,11 +1025,19 @@ export function RepoUpdatesCardView({
                     onClick={() => setRecentShown((v) => !v)}
                     aria-expanded={recentShown}
                   >
-                    Recent ({boundedRecentGroups.length})
+                    Recent ({boundedRecentGroups.length + boundedMessagesRecent.length})
                   </button>
                   {recentShown && (
                     <div className="dl-rows">
                       {renderJobRows(boundedRecent, onJobsChanged ?? NOOP, onRecentPatch ?? NOOP_PATCH)}
+                      {/* CHANGE 2: a folded "done" task notice — the
+                          message-side counterpart to a presence-suppressed
+                          job row above, drawn through the same
+                          `MessageRowView` "Worth keeping" already uses so it
+                          stays clickable (its own `page`) and dismissible. */}
+                      {boundedMessagesRecent.map((m) => (
+                        <MessageRowView key={m.id} notification={m} />
+                      ))}
                     </div>
                   )}
                 </div>

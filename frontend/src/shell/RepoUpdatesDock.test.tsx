@@ -993,6 +993,7 @@ const asking = (over: Partial<AttentionRow> = {}): AttentionRow => ({
   taskId: "TASK-097",
   title: "Pull today's news",
   href: "/explorer/view/Users/me/proj?_side=claude&session_id=sess-7",
+  origin: "",
   ...over,
 });
 
@@ -1235,6 +1236,7 @@ const message = (over: Partial<StoredNotification> = {}): StoredNotification => 
   id: ++messageId,
   title: "Could not save",
   tier: "attention",
+  recent: false,
   leaving: false,
   ...over,
 });
@@ -1586,4 +1588,121 @@ test("dismissing a group's row dismisses every member at once, and removes all o
   const remaining = patchedTerminal.reduce((jobs, fn) => fn(jobs), [g1, g2] as Job[]);
   expect(remaining).toHaveLength(0);
   globalThis.fetch = realFetch;
+});
+
+// ---- CHANGE 1: every notification names who raised it (`.dl-origin`) -------
+//
+// User, from a screenshot: "every notification imo should have a top
+// row/section for the 'emitting page' context" — a toast reading only
+// "Public link token flash finished" gave no clue which project it came
+// from. `Job.origin`/a message's `origin` (notifications.ts's
+// `labelForSource`) already carry that fact; this section pins that every
+// row TYPE actually draws it, not just jobs.
+
+test("a job row draws its origin caption; a job with no origin draws no line at all", () => {
+  const withOrigin = renderView({ rows: [], terminal: [failedJob({ origin: "Playground" })] });
+  const caption = findAll(withOrigin, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("Playground");
+
+  const without = renderView({ rows: [], terminal: [failedJob({ origin: "" })] });
+  expect(findAll(without, "dl-origin")).toHaveLength(0);
+});
+
+test("a folded group row draws the oldest member's origin, not one per member", () => {
+  const g1 = doneJob({ id: "sys:g:a", group: "g", origin: "Local models" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g", origin: "Benchmark" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  const caption = findAll(tree, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("Local models");
+});
+
+test("a message row draws its origin caption when the notify() call carried a source", () => {
+  const withSource = renderView({
+    rows: [],
+    messages: [message({ tier: "attention", title: "Could not save", origin: "my-app" })],
+  });
+  const caption = findAll(withSource, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("my-app");
+
+  const noSource = renderView({
+    rows: [],
+    messages: [message({ tier: "attention", title: "Could not save" })],
+  });
+  expect(findAll(noSource, "dl-origin")).toHaveLength(0);
+});
+
+test("a waiting-task row draws its origin caption from the task's own target/project", () => {
+  const withOrigin = renderView({ rows: [], attention: [asking({ origin: "my-project" })] });
+  const caption = findAll(withOrigin, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("my-project");
+
+  const without = renderView({ rows: [], attention: [asking({ origin: "" })] });
+  expect(findAll(without, "dl-origin")).toHaveLength(0);
+});
+
+// ---- CHANGE 2: a finished task is retained, clickable, and folded ----------
+//
+// task-status-notify.ts's `in_progress -> done` now sets `page` (retained,
+// clickable) and `recent: true` (folded into §4's "Recent" rather than
+// shouting at the top of "Worth keeping") — this pins where it actually
+// lands, per `NotificationInput.recent`/`StoredNotification.recent`.
+
+test("a `recent` message lands in the folded Recent section, not 'Worth keeping'", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Task finished", page: "/tasks", recent: true })],
+  });
+  // Collapsed by default — same as a job's own Recent row: the heading
+  // shows, but the row itself does not draw until opened.
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+  const toggle = findAll(tree, "dl-recent-toggle");
+  expect(toggle).toHaveLength(1);
+  expect(text(toggle[0])).toBe("Recent (1)");
+  expect(findAll(tree, "dl-section-head").map((n) => text(n))).not.toContain("Worth keeping");
+});
+
+test("a `recent` message is excluded from the chip's total, like a job's own Recent row", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Task finished", page: "/tasks", recent: true })],
+  });
+  expect(numeral(tree)).toBeNull();
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+});
+
+test("clicking the Recent toggle reveals a folded message row, clickable via its own page", () => {
+  const instance = renderInstance({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Task finished", page: "/tasks", recent: true })],
+  });
+  act(() => {
+    const toggle = findAll(
+      instance.toJSON() as ReactTestRendererJSON,
+      "dl-recent-toggle",
+    )[0];
+    (toggle.props as { onClick: () => void }).onClick();
+  });
+  const rows = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-row");
+  expect(rows).toHaveLength(1);
+  // `MessageRowView` sets an explicit `role` ("status"/"alert") for its
+  // content, which wins over `rowClick`'s own implicit `role="button"`
+  // (NotificationCard.tsx) — clickability is `dl-row-open` + a real
+  // `onClick`, not the ARIA role.
+  expect(rows[0].props.className).toContain("dl-row-open");
+  expect(typeof (rows[0].props as { onClick?: () => void }).onClick).toBe("function");
+});
+
+test("a non-recent, retained message still lands in 'Worth keeping', unfolded (unchanged behaviour)", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Moved 3 items", page: "/tasks" })],
+  });
+  expect(findAll(tree, "dl-recent-toggle")).toHaveLength(0);
+  expect(findAll(tree, "dl-row").map((n) => text(n))).toEqual(
+    expect.arrayContaining([expect.stringContaining("Moved 3 items")]),
+  );
 });

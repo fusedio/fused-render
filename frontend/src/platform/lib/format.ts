@@ -1,5 +1,38 @@
 // Pure formatting helpers. No DOM, no fetch. (The vanilla module also carried
 // escapeHtml — dropped: JSX escapes text content itself.)
+
+// THE CLIENT-SIDE COUNTERPART TO `origin_for_page` (fused_render/jobs.py) —
+// found and reused for the SAME reason that function exists (a `.dl-origin`
+// caption naming who raised a notification row), not a second,
+// independently-invented labeller. `Job.origin` is computed server-side, at
+// report time, with a closed shell-route table and a `projectenv`
+// project-root lookup neither of which a client-raised message's `notify()`
+// call (`platform/lib/notifications.ts`) or a waiting task's own row
+// (`shell/tasks-lib.ts`'s `attentionRows`) can reach synchronously — no
+// request round trip happens at either call site. Every `source`/
+// target/project those two ever set is a bare fs path (AppPage.tsx's own app
+// folder, a task's own target/project — see `tasks-lib.ts`'s own "Project
+// FOLDERS, full paths" note), so this mirrors exactly `origin_for_page`'s OWN
+// bare-path fallback branch (no route match, no project root found: the
+// basename, extension stripped) rather than reimplementing the route table
+// or the project lookup client-side, or leaving no label at all.
+//
+// LIVES HERE, NOT in notifications.ts: `tasks-lib.ts` (shell/) needs it too,
+// and notifications.ts imports router.ts, which reads `location` at module
+// scope — importing notifications.ts from tasks-lib.ts broke every one of
+// its tests that don't install a DOM shim before their own static imports
+// evaluate (tasks-lib.test.ts had never needed one). format.ts has no
+// imports and no side effects of its own, so both callers can reach this
+// without dragging that module-init chain in.
+export function labelForSource(source: string | undefined): string {
+  const trimmed = (source || "").trim();
+  if (!trimmed) return "";
+  const stripped = trimmed.replace(/[/\\]+$/, "");
+  const base = stripped.split(/[/\\]/).pop() || stripped;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
 export function formatSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;

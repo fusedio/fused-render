@@ -32,7 +32,15 @@ import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { isFocusedHere } from "@platform/lib/presence";
+import { labelForSource } from "@platform/lib/format";
 import type { NotificationCardAction } from "@platform/ui/NotificationCard";
+
+// `labelForSource` LIVES IN format.ts, not here — see that file's own header
+// comment for why (this module imports router.ts, which reads `location` at
+// module scope; format.ts has zero imports/side effects so `tasks-lib.ts`
+// can reach it without dragging that chain in). Re-exported so existing
+// `notify()` callers/tests that reach it via this module keep working.
+export { labelForSource } from "@platform/lib/format";
 
 // "trail" is deliberately UNREPRESENTABLE on client input — see
 // DECISIONS-toasts-become-notifications.md's "Retention narrows to error-or-
@@ -72,6 +80,15 @@ export interface NotificationInput {
    *  where the page already shows the same result on screen (the app
    *  install/run lifecycle messages this branch wires it for). */
   source?: string;
+  /** OPT-IN ONLY, mirrors `source`'s own opt-in shape — when this message is
+   *  retained at all (see `isRetained`), draw it in the Notifications panel's
+   *  folded §4 "Recent" section (RepoUpdatesDock.tsx) instead of the
+   *  unfolded "Worth keeping" one. For a bare success with nothing to act on
+   *  besides "go back to it" (task-status-notify.ts's `in_progress -> done`,
+   *  the first caller) persisting is fine, shouting is not — undefined/false
+   *  keeps today's behaviour (an actionable, non-error message in "Worth
+   *  keeping", unfolded) for every other call site. */
+  recent?: boolean;
 }
 
 export interface StoredNotification {
@@ -82,6 +99,14 @@ export interface StoredNotification {
   tone?: "error" | "info";
   action?: NotificationCardAction;
   page?: string;
+  /** See `NotificationInput.recent`. */
+  recent: boolean;
+  /** A dimmed caption naming who raised this row — the message-side
+   *  counterpart to `Job.origin` (jobs.ts, `.dl-origin`/`caption` on
+   *  `NotificationCard`). Computed once at `notify()` time from `source` via
+   *  `labelForSource` below; "" (never stored — see `toStored`) draws no
+   *  element at all, same rule `Job.origin` follows. */
+  origin?: string;
   // Dismissed, but still rendered while its exit animation plays (see
   // TOAST_EXIT_MS). Only ever true on the POPUP — a retained row is simply
   // removed outright, it has no exit animation of its own to play.
@@ -228,6 +253,8 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     tone: input.tone,
     action: input.action,
     page: input.page,
+    recent: Boolean(input.recent),
+    origin: labelForSource(input.source) || undefined,
     leaving: false,
   };
 }
@@ -310,6 +337,7 @@ function forwardToShell(n: StoredNotification): number | undefined {
       tone: n.tone,
       action: n.action,
       page: n.page,
+      recent: n.recent,
     };
     return top?._fusedIngestNotification?.(input);
   } catch {
