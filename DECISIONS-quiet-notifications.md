@@ -858,15 +858,80 @@ thin transforms passed through it. Pinned by 3 new tests in
 different snapshot on the verification read than on the initial read,
 simulating the exact interleaving above without needing real concurrency.
 
+**11. `jobs.ts` `groupPopupTick`/`clusterFamily` — a group's START tracking
+was keyed on cluster IDENTITY, which is partly positional.** `clusterFamily`
+numbers a family's burst clusters 0, 1, 2... purely by their order in the
+CURRENT snapshot (finding 3's own doc comment already names this: "computed
+off a copy sorted by `started_at`"). `groupJobs` baked that ordinal into
+`JobGroup.key` (`${page} ${group}#${clusterIdx}`), and `GroupPopupState`
+(then `runningGroups: Set<groupKey>`) tracked "has this group had a running
+member" by that same key. Two ways the ordinal moves under a still-running
+cluster without any of ITS members changing: an older, fully-terminal
+cluster in the same family leaves the snapshot ("Clear all", a dismissal,
+a sweep) and every later cluster's index shifts down by one; or a late
+report arrives whose `started_at` predates everything seen so far by more
+than `GROUP_GAP_MS` and splits what was one cluster into two, again
+shifting every later ordinal. Either way, a group already running (already
+announced) gets a NEW key, `runningGroups.has(newKey)` reads false, and
+`groupPopupTick` pops a duplicate "started" card for work the user was
+already told about — while the OLD key vanishing also remounts
+`GroupJobRow` in `RepoUpdatesDock.tsx` (same key used as the React list
+key), discarding whatever local state it held mid-interaction.
+
+THE FIX, in two parts, per the orchestrator's ruling — only the first one is
+load-bearing:
+
+1. **Correctness.** `GroupPopupState.runningGroups` (a `Set<groupKey>`) is
+   replaced with `runningMemberIds` (a `Set<jobId>`) — the ids of every
+   member, across all multi-member groups, that was RUNNING as of the last
+   tick. A group now pops START when it has running members and NONE of its
+   CURRENTLY running members' ids was in that set last tick — the same
+   "0 running members to some" edge, expressed in terms that never touch
+   group-key identity at all. A job's id never changes, so no amount of
+   cluster renumbering can turn an already-seen running member into an
+   apparently-new one. This is WHY the tracking moved from group keys to job
+   ids — not a stylistic preference, a structural fix: as long as ANY
+   representation of "have I seen this group running" is derived from a
+   value that can change without the underlying membership changing, the
+   same class of bug reappears under a different key shape. Job ids are the
+   one identity in this system that is guaranteed stable across a
+   membership-preserving snapshot change. Do not "simplify" this back to a
+   set of group/cluster keys — that is exactly what this fix undoes.
+   `runningMemberIds` is rebuilt fresh every tick from the current
+   snapshot's running members, the same "recomputed, not accumulated" shape
+   the old `nextRunning` already had — ids of jobs that have left the
+   snapshot are not carried forward (unlike `failedSeen`, which finding 8
+   requires to persist past a group's shrink; that field and its carry-
+   forward rule are unchanged).
+2. **Hygiene (defence-in-depth, not the correctness fix).** `clusterFamily`
+   now keys each cluster on its own earliest member's id instead of a
+   positional index, so `JobGroup.key` (and the React list key derived from
+   it in `RepoUpdatesDock.tsx`'s `renderJobRows`) only moves when that
+   cluster's own earliest member actually changes, not when an unrelated
+   older cluster leaves the snapshot. This closes the `GroupJobRow` remount
+   problem, but it must not be relied on to close the START-popup bug —
+   `groupPopupTick` doesn't use `JobGroup.key` for its running-state tracking
+   at all, by design, specifically so a future key-shape change here (however
+   well-intentioned) can never resurrect finding 11.
+
+`failedSeen` (finding 8) was already keyed by `popupKey(member)` — a job id
+plus its `finished_at` — so it was never affected by this bug; left
+unchanged. Pinned by 2 new tests in `jobs.test.ts`: an older, fully-terminal
+cluster removed from the snapshot between ticks does not re-pop the
+surviving running cluster, and a late-arriving report that splits an
+earlier cluster does not re-pop its already-seen running members.
+
 **Test state (code review fixes)**: `bun test
 frontend/src/platform/lib/presence.test.ts
 frontend/src/platform/lib/jobs.test.ts
 frontend/src/shell/RepoUpdatesDock.test.tsx
 frontend/src/shell/useTaskStatusNotify.test.ts
+frontend/src/shell/ActivityDock.test.tsx
 frontend/src/platform/lib/scheduleEvents.test.ts` → all pass, 0 fail.
 `.venv/bin/python -m pytest tests/test_jobs_api.py tests/test_index_jobs.py
 -q` → all pass. `bunx tsc --noEmit -p frontend` clean.
 `node frontend/scripts/check-boundaries.mjs` → OK (811 files). Each of the
-ten fixes above landed as its own commit
+eleven fixes above landed as its own commit
 (`5f9580d62`, `72ac1b54d`, `c277eb00e`, `ea034e4bc`, `4bf76d98b`,
-`69f294e05`, `f4dc38ff8`, `41816f083`, `bd74ca789`), pushed immediately.
+`69f294e05`, `f4dc38ff8`, `41816f083`, `bd74ca789`, plus finding 11's own
+commit), pushed immediately.
