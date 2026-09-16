@@ -2624,9 +2624,10 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     composer already holding the text (design.md, "Round 2").
 
     THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
-    session (there is none until the first send — and the run that send starts
-    is what carries this number forward, `_settle_new_chats`),
-    no messages, nothing that has happened.
+    session (there is none until the first send — and a send does not take this
+    row's number with it either: a saved draft outlives every send made from
+    the same folder, `_settle_new_chats`), no messages, nothing that has
+    happened.
 
     `form` IS THE HOP'S SETTINGS WHEN THERE ARE ANY, and null when there are
     none. It used to be null always, on the reasoning that a chat draft is text
@@ -2827,14 +2828,28 @@ _NEW_CHAT_SCAN_LIMIT = 60
 
 
 def _settle_new_chats(chat_drafts: dict) -> bool:
-    """Walk a `new:<file>` key's TASK number onto the session the send that
-    SPENT it created, and drop the draft that send spent. True if anything
-    moved.
+    """Walk a STRANDED `new:<file>` TASK number onto the session the send that
+    SPENT it created. True if anything moved.
+
+    A SEND NEVER TOUCHES A SAVED DRAFT (blocker, 2026-09-16). This used to
+    `delete_chat` the record too, and that was the truth while the composer
+    autosaved on every keystroke: the record WAS the message going out, and the
+    transcript took the words over in the same tick. The composer autosaves
+    nothing now (caef75eb1, `ui/Composer.tsx` — "a send just sends"), so a
+    `new:<file>` record exists only because the reader ASKED for one — "Save as
+    draft" in the leave guard, or Schedule → Continue — and a send is not an
+    answer to that question. Type, leave, save as draft, come back, type
+    something else, send: the saved Upcoming row and its number both stand, and
+    the session the send makes gets a number of its own. So a key that still
+    HAS a record is not settled here at all. What is left for this to settle is
+    the NUMBER ALONE — a `new:<file>` key that carries one in `task_ids` with
+    no record behind it, the row the reader was watching left on a key nothing
+    reads again.
 
     THE SEND NAMES ITS OWN DRAFT, and nothing here infers it. A chat with no
     session drafts under `new:<file>` and is numbered under that key; the first
-    send creates the session, and the number has to follow it or the row the
-    user has been watching is stranded on a key nothing reads again. So the
+    send creates the session, and a number with no record left to hold it has
+    to follow that session or it is stranded for good. So the
     composer's session-less send puts the key it is spending in the start
     request (`protocol/run-controller.ts`, `draft_key`), `agent._start` writes
     it into `meta.json` verbatim before it spawns anything, and this reads it
@@ -2847,9 +2862,9 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     two guards: a scheduled task's first fire (`schedule.py::_send` →
     `claude_spawn.spawn_helper` → `agent._start`), a `new_task_each_run` entry,
     canvases.py's own spawn. Any of them would have taken the number off a chat
-    the reader was still typing into and `delete_chat` would have destroyed the
-    unsent words with it (review, 2026-09-12). None of them sends a
-    `draft_key`, so none of them can claim a draft now.
+    the reader was still typing into — and, in the build that still deleted,
+    the unsent words with it (review, 2026-09-12). None of them sends a
+    `draft_key`, so none of them can claim a number now.
 
     (The four rounds before that asked the CLIENT which session its own send
     created, and each answer was an inference with a gap — a send that threw, a
@@ -2870,26 +2885,24 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
 
     TWO GUARDS BESIDES THE KEY:
 
+    * **A record, and this key is not ours.** A `new:<file>` key with a saved
+      draft behind it is a row the reader put there on purpose; its number is
+      that row's, not the send's. Excluded before the tree is read at all, so
+      no tagged run can claim it however old or new the save is.
     * **A session id, or nothing happens.** A run that never got one (`_start`
       failed, the CLI died before its first row) has nothing to carry the
-      number to, and the draft is still the only copy of what was typed. Asked
-      again on the next build.
-    * **Nothing newer than the run.** A draft whose last save is AFTER this run
-      started is not the message it sent — it is words typed into the same box
-      while the session id was still on its way — so the key is left whole,
-      number and text both. Everything else under the key predates the send and
-      IS what was sent, which is why the draft is deleted and its text is never
-      copied forward: the words are in the transcript already.
+      number to. Asked again on the next build.
     """
     records = {key: rec for key, rec in chat_drafts.items()
                if drafts.is_new_chat_key(key)}
-    # The ordinary case has no record at all — the composer deletes the draft
-    # on send, in the same tick as the send — so the NUMBER alone is what is
-    # usually left to move, and the numbers store is the only place it is. That
-    # is why this read is not gated on `records` being non-empty (review perf
-    # note, 2026-09-12): gating it there would skip exactly the common case and
-    # strand the number the send was supposed to carry. One small json file,
-    # read before anything decides to touch the runs tree.
+    # A RECORD MEANS HANDS OFF, and the records are read here only to say which
+    # keys this must not touch. Nothing under a key the reader saved moves: not
+    # the words, not the number, not on any later build. What is left is the
+    # number with no record behind it, and the numbers store is the only place
+    # that is written down — which is why this read is not gated on `records`
+    # being non-empty (review perf note, 2026-09-12): gating it there would
+    # skip exactly the case this function exists for. One small json file, read
+    # before anything decides to touch the runs tree.
     # A key stamped SPENT (`tasks_store._apply_rekey`) has already been settled
     # by an earlier build — its send landed in a session that was already
     # numbered some other way, so there is nothing left to move — and must not
@@ -2897,9 +2910,10 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     # high-water mark), so without this exclusion every later build would
     # re-find it, re-run the loop below, and re-notify forever (bugbot / live
     # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
-    waiting = set(records) | {
+    waiting = {
         key for key, rec in tasks_store.task_ids().items()
         if drafts.is_new_chat_key(key) and not rec.get("spent")
+        and key not in records
     }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
@@ -2918,9 +2932,6 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         run_dir = os.path.join(runs, name)
         meta_path = os.path.join(run_dir, "meta.json")
         try:
-            # The mtime of the file `_start` writes once, before it spawns: when
-            # this run began, which is the floor the second guard reads.
-            started = os.path.getmtime(meta_path)
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
         except (OSError, ValueError):
@@ -2945,12 +2956,8 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         if not ids:
             continue  # no id minted yet (or ever): ask again next build
         session_id = sorted(ids)[0]
-        record = records.get(key)
-        if record and float(record.get("updated_at") or 0.0) > started:
-            continue  # typed into again since: not this send's draft
         try:
             number_moved = tasks_store.rekey_moved(key, session_id)
-            draft_deleted = drafts.delete_chat(key)
         except OSError:
             # A read-only state dir costs the number's continuity and nothing
             # else. Same posture as `_numbers` and the schedule router's own
@@ -2960,18 +2967,18 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         # NOTIFY ONLY ON A REAL CHANGE. `rekey_moved` stamps a no-op key spent
         # the first time it is seen (so `waiting`, above, excludes it from
         # then on) but that stamp alone is not news to any client — the
-        # session already had its number. `delete_chat` answers the other
-        # half: whether the draft row the reader was looking at just vanished.
-        # Without this check every build that still found the key (before the
-        # `waiting` exclusion took effect on the NEXT build) called notify
-        # unconditionally, and the changes long-poll it wakes rebuilt the
-        # listing, re-ran this same settle, and notified again — the loop that
-        # pinned a composer shut (bugbot / live repro, 2026-09-15).
-        if number_moved or draft_deleted:
+        # session already had its number, and nothing in the listing reads
+        # differently than it did a moment ago. Without this check every build
+        # that still found the key (before the `waiting` exclusion took effect
+        # on the NEXT build) called notify unconditionally, and the changes
+        # long-poll it wakes rebuilt the listing, re-ran this same settle, and
+        # notified again — the loop that pinned a composer shut (bugbot / live
+        # repro, 2026-09-15).
+        if number_moved:
             moved = True
-            # Both rows moved: the draft row is gone and the session wears its
-            # number. The chat holding the changes long-poll hears it now
-            # rather than on its next full pass.
+            # The number changed hands: the old key stops answering to it and
+            # the session wears it. The chat holding the changes long-poll
+            # hears it now rather than on its next full pass.
             tasks_watch.notify({key, session_id})
     return moved
 
@@ -3213,12 +3220,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
     task_drafts, chat_drafts = drafts.list_all()
-    # A FIRST SEND'S SESSION IS SETTLED HERE, before a number is allocated
-    # below: `new:<file>` hands its number to the session that send created and
-    # the spent draft goes (`_settle_new_chats` — and see its docstring for why
-    # this is the server's job and not the composer's). A settle rewrites the
-    # store this build has already read, so the read is taken again; it is one
-    # small file, and it only happens on the build a send is settled in.
+    # A STRANDED `new:<file>` NUMBER IS SETTLED HERE, before a number is
+    # allocated below: a key with no record left behind it hands its number to
+    # the session the send created (`_settle_new_chats` — and see its docstring
+    # for why this is the server's job, and why a key that still HAS a record
+    # is never touched). A settle rewrites the store this build has already
+    # read, so the read is taken again; it is one small file, and it only
+    # happens on the build a number is settled in.
     if _settle_new_chats(chat_drafts):
         task_drafts, chat_drafts = drafts.list_all()
     # …and the same read, asked the session's way round: which conversation has

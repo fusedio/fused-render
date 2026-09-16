@@ -838,7 +838,17 @@ def test_new_chat_draft_rows_appear_and_vanish_through_the_changes_endpoint(
 # gets its first run passes those guards too: a scheduled task's first fire,
 # a `new_task_each_run` entry, canvases.py's spawn. Each would have taken the
 # number AND deleted the unsent words (review, 2026-09-12). That is the second
-# test below, and it is the one this round exists for.
+# test below.
+#
+# WHAT IT SETTLES IS THE NUMBER, AND ONLY WHEN NOTHING HOLDS IT (blocker,
+# 2026-09-16). The settle used to delete the `new:<file>` record too, which was
+# right while the composer autosaved every keystroke — the record WAS the
+# message going out. It autosaves nothing now (caef75eb1): a `new:<file>`
+# record exists only because the reader pressed "Save as draft" in the leave
+# guard or Schedule → Continue, and a send is not an answer to that. So a key
+# with a record is skipped whole — words, number, row — and the send's session
+# is numbered like any other; only a key left holding a number with no record
+# behind it is still settled. First test below.
 
 
 def _stage_run(runs, name, file, session_id="", resumed_from="", started=None,
@@ -852,8 +862,10 @@ def _stage_run(runs, name, file, session_id="", resumed_from="", started=None,
     API, canvases.py. They write no such field, which is exactly what stops them
     claiming a draft.
 
-    `started` back-dates `meta.json` — the run's own clock, which is what tells
-    a draft the send spent from one typed into after it."""
+    `started` back-dates `meta.json` — the run's own clock. Nothing in the
+    settle reads it any more (a record is untouchable whenever it was written),
+    and it is kept because the tests that stage both orderings say so out
+    loud."""
     d = runs / name
     d.mkdir(parents=True, exist_ok=True)
     meta = {"file": str(file), "resumed_from": resumed_from,
@@ -869,29 +881,42 @@ def _stage_run(runs, name, file, session_id="", resumed_from="", started=None,
     return d
 
 
-def test_a_session_less_send_carries_the_number_onto_the_session_it_made(
+def test_a_saved_draft_survives_a_send_from_the_same_folder(
         client, projects_dir, runs, tmp_path):
+    """THE BLOCKER (review, 2026-09-16). "Send just sends."
+
+    Type, leave, press "Save as draft", come back, type something else, send.
+    The saved row is the one thing in the product the reader explicitly asked
+    to keep, and this used to destroy it — record, words and TASK number — on
+    the next listing build, because the send tags its run with the key and the
+    settle read that tag as "this draft has been spent". It has not: the
+    composer autosaves nothing (caef75eb1), so the record is not the message
+    that went out. The row stands, its number stands, and the session the send
+    made is numbered on its own.
+    """
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
-    client.put(_chat_url(key), json={"text": "first message"})
+    client.put(_chat_url(key), json={"text": "saved for later"})
     number = _by_key(client)[key]["task_id"]
     assert number == "TASK-001"
 
-    # The send: a run tagged with this draft's key, and Claude Code minted a
-    # session for it.
+    # The send: a run tagged with this key, and Claude Code minted a session.
     _write_transcript(projects_dir, "sess-a", str(folder),
-                      [_user("first message", T9)])
+                      [_user("something else entirely", T9)])
     _stage_run(runs, "20260912-090000-aa", folder, "sess-a", draft_key=key,
                started=time.time() + 5)
 
-    rows = _by_key(client)
-    assert key not in rows, "the folder row is the session's row now"
-    assert rows["sess-a"]["task_id"] == number
-    assert tasks_store.task_number("sess-a") == number
-    # And the draft the send spent is gone — never copied onto the session:
-    # those words are in the transcript.
-    assert client.get("/api/drafts").json()["chat"] == {}
+    gen_0 = tasks_watch.generation()
+    for _ in range(2):  # twice: a settle that only bites on build two is a bug
+        rows = _by_key(client)
+        assert rows[key]["task_id"] == number, "the saved row keeps its number"
+        assert rows["sess-a"]["task_id"] != number, "the session gets its own"
+        assert client.get("/api/drafts").json()["chat"][key]["text"] == \
+            "saved for later"
+    assert tasks_store.task_number(key) == number
+    assert "spent" not in tasks_store.task_ids()[key]
+    assert tasks_watch.generation() == gen_0, "nothing settled: nothing to say"
 
 
 def test_a_first_run_nobody_tagged_leaves_the_draft_whole(
@@ -966,29 +991,34 @@ def test_a_send_into_a_session_leaves_another_chats_draft_alone(
     assert client.get("/api/drafts").json()["chat"][key]["text"] == "still typing this"
 
 
-def test_a_run_that_never_minted_a_session_leaves_the_draft_alone(
+def test_a_run_that_never_minted_a_session_leaves_the_number_where_it_is(
         client, runs, tmp_path):
     """`_start` failed, or the CLI died before its first row. There is nothing
-    to carry the number to, and the draft is still the only copy of what the
-    user typed."""
+    to carry the number to, so the key keeps it and is asked again next build.
+
+    Staged on a STRANDED number — the record deleted first — because a key that
+    still has a record never reaches this guard at all."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
     client.put(_chat_url(key), json={"text": "first message"})
     number = _by_key(client)[key]["task_id"]
+    client.delete(_chat_url(key))
 
     _stage_run(runs, "20260912-090000-aa", folder, draft_key=key,
                started=time.time() + 5)
 
-    assert _by_key(client)[key]["task_id"] == number
-    assert client.get("/api/drafts").json()["chat"][key]["text"] == "first message"
+    _by_key(client)
+    assert tasks_store.task_number(key) == number
+    assert "spent" not in tasks_store.task_ids()[key]
 
 
-def test_words_typed_after_the_run_started_are_not_that_run_s_draft(
+def test_a_draft_saved_after_the_send_is_no_more_touchable_than_one_before(
         client, projects_dir, runs, tmp_path):
-    """A draft saved AFTER the run began is not the message it sent — it is the
-    next one, typed into the same box while the session id was still on its way
-    — so the key keeps both its words and its number."""
+    """The other ordering, and the same answer. Whether the reader saved before
+    the run started or after it, a record is a record: nothing about WHEN it
+    was written decides this, and a future round tempted to re-introduce a
+    timestamp guard has to break this test to do it."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
@@ -1001,16 +1031,18 @@ def test_words_typed_after_the_run_started_are_not_that_run_s_draft(
 
     rows = _by_key(client)
     assert rows[key]["task_id"] == number
+    assert rows["sess-a"]["task_id"] != number
     assert client.get("/api/drafts").json()["chat"][key]["text"] == "and one more thing"
 
 
-def test_the_number_moves_even_though_the_composer_deleted_the_draft(
+def test_a_stranded_number_still_reaches_the_session_that_send_made(
         client, projects_dir, runs, tmp_path):
-    """The ORDINARY case, and the one with no draft record left to read: the
-    composer deletes its own `new:<file>` draft in the same tick as the send, so
-    by the next build the number is all that is still filed under the key. It
-    still has to reach the session — which is why the settle asks the numbers
-    store and not only the drafts store."""
+    """The one case this settle is left for: a `new:<file>` key holding a
+    number with NO record behind it. The reader discarded the draft (or an
+    older build's composer deleted it on send), so the row nothing reads again
+    is a number on its own, and it still has to reach the session the send
+    created — which is why the settle asks the numbers store and not only the
+    drafts store."""
     folder = tmp_path / "proj"
     folder.mkdir()
     key = "new:" + str(folder)
@@ -1052,8 +1084,10 @@ def test_settle_does_not_renotify_when_the_session_already_had_a_number(
     client.put(_chat_url(key), json={"text": "first message"})
     # A number for the draft itself, exactly as every other test in this file
     # gets one: through a real listing build, which is the only thing that
-    # allocates it (`_draft_numbers`).
+    # allocates it (`_draft_numbers`). Then the record goes, leaving the
+    # stranded number that is the only thing the settle still acts on.
     number = _by_key(client)[key]["task_id"]
+    client.delete(_chat_url(key))
 
     # sess-a already has its own (different) number in this project, unrelated
     # to the draft above (however it got one — a scheduled fire, a resumed
@@ -1076,10 +1110,8 @@ def test_settle_does_not_renotify_when_the_session_already_had_a_number(
     gen_2 = second.json()["generation"]
     assert gen_2 == gen_1, "the second build must notify nothing"
 
-    # The draft is gone (there was nothing else for the send to do with it),
-    # and the key's own number is SPENT rather than moved — sess-a already had
-    # one of its own, and allocate-once forbids reusing "new:"'s.
-    assert client.get("/api/drafts").json()["chat"] == {}
+    # The key's own number is SPENT rather than moved — sess-a already had one
+    # of its own, and allocate-once forbids reusing "new:"'s.
     rec = tasks_store.task_ids()[key]
     assert rec["spent"] is True and rec["moved_to"] == "sess-a"
     rows = _by_key(client)

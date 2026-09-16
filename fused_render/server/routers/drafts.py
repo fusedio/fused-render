@@ -54,8 +54,11 @@ of that inference had a gap (Bugbot, PR #1118, 2026-09-12). What the send does
 say is which draft it is SPENDING: it tags its own run with the key
 (`draft_key`, written into the run's `meta.json` by `agent._start`), and the
 server moves the number when that run's session id appears, at listing time:
-`routers/tasks.py::_settle_new_chats`. The composer still DELETEs its own
-`new:<file>` draft on send, which is the ordinary way one goes away.
+`routers/tasks.py::_settle_new_chats` — but ONLY once the record itself is
+gone. A send writes nothing here at all (`ui/Composer.tsx`: "a send just
+sends"), so a `new:<file>` draft, which exists only because the reader asked
+for one, goes away the one ordinary way anything here does: a DELETE through
+this door.
 
 Routes take `{key:path}` rather than `{key}` for one reason: a `new:<file>` key
 carries a file path, separators and all, and a plain path parameter stops at
