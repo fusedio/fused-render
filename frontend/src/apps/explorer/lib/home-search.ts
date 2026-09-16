@@ -165,6 +165,60 @@ export function patternTail(query: string): string {
 }
 
 /**
+ * A client-side mirror of `expand_whitespace_query`
+ * (`fused_render/index/query.py`) — the ONE shared transform both
+ * `resolve_query` and `search_under` run a raw typed string through before
+ * deciding `mode`. Kept here, not re-derived at each call site, so every
+ * caller that needs to know whether a query WOULD settle in glob mode
+ * before a response has come back agrees with the server by construction:
+ * trim; a no-op when the trimmed string has no internal whitespace; else
+ * collapse every whitespace run to a single `*` (never `**`, a different,
+ * cross-directory token) and wrap the FINAL `/`-separated segment in a
+ * leading/trailing `*`, but only when that segment has no user-typed `*`
+ * of its own.
+ *
+ * A whitespace run directly beside a literal `*` the user already typed
+ * (`report *.pdf`) must not stack a SECOND `*` next to it — that would
+ * collapse into `**`, the cross-directory token, silently crossing a
+ * folder boundary this query never asked to cross. The existing star
+ * already does the whitespace run's job, so the run is dropped instead of
+ * replaced whenever it borders one. Mirrors the identical fix in
+ * `expand_whitespace_query` (`fused_render/index/query.py`) — see
+ * DECISIONS.md for why the earlier "accepted edge case" note on this was
+ * reversed.
+ */
+export function expandWhitespaceQuery(raw: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed || !/\s/.test(trimmed)) return trimmed;
+  const rawSegments = trimmed.split("/");
+  const last = rawSegments.length - 1;
+  const wrapLast = !rawSegments[last]!.includes("*");
+  const collapseWs = (segment: string): string =>
+    segment.replace(/\s+/g, (match, offset: number) => {
+      const before = offset > 0 && segment[offset - 1] === "*";
+      const after =
+        offset + match.length < segment.length && segment[offset + match.length] === "*";
+      return before || after ? "" : "*";
+    });
+  const segments = rawSegments.map(collapseWs);
+  if (wrapLast) segments[last] = `*${segments[last]}*`;
+  return segments.join("/");
+}
+
+/**
+ * Whether `raw`, run through the same transform `resolve_query` applies,
+ * would settle in `mode: "glob"` server-side — `"*" in raw` after
+ * `expand_whitespace_query`, exactly mirroring `resolve_query`'s own rule
+ * (fused_render/index/query.py). Needed wherever a caller has to pick a
+ * behavior BEFORE a response comes back and says which mode actually ran
+ * (e.g. how many rows are worth asking for) — see `useListingSearch.ts`'s
+ * request `limit`.
+ */
+export function willResolveToGlobMode(raw: string): boolean {
+  return expandWhitespaceQuery(raw).includes("*");
+}
+
+/**
  * A ranked response as an answer: absolutized, capped, and highlighted.
  *
  * A hit's `path` is built from `res.base`, the directory the server actually
@@ -210,7 +264,9 @@ export function answerFrom(
       positions:
         res.mode === "substring"
           ? substringMatch(pattern, h.rel)?.positions ?? []
-          : globMatch(res.pattern, h.rel)?.positions ?? [],
+          : res.pattern
+            ? globMatch(res.pattern, h.rel)?.positions ?? []
+            : [],
     })),
     truncated: res.truncated,
     total: res.total,
@@ -252,21 +308,55 @@ export function answerFrom(
  * deadline (`STALE_CLEAR_MS`, platform/lib/instant-search) uses to decide
  * there is nothing worth holding onto.
  *
- * A GLOB-mode held answer (`answer.mode === "glob"`) is never narrowed —
- * it returns no rows, which is the same "nothing worth holding onto" signal
- * a paste produces, and lets the real round trip already in flight for `q`
- * supply the answer instead. `substringMatch` is not a weaker version of
- * glob matching whose survivors are safely a subset of it: extending a glob
- * pattern by a keystroke can match an entirely different set of paths (one
- * more `*` character does not narrow the same way one more literal
- * character does), so there is no local test here that could reproduce the
- * server's `regexp_matches` semantics without literally re-implementing
- * them — and reusing `substringMatch` instead would silently DROP hits
- * that a fresh glob query would still return, the exact defect this
- * function exists to avoid on the substring path.
+ * A GLOB-mode held answer (`answer.mode === "glob"`) is narrowed ONLY when
+ * `q` is still a PURE whitespace-derived query — no literal `*` typed
+ * anywhere, and no `/` (a path-shaped query walks `resolve_query`'s base
+ * off `q` itself; reproducing that walk locally is exactly the "no local
+ * test can reproduce the server's semantics" case below, so it still
+ * bails). For that narrow shape, `expand_whitespace_query`'s own transform
+ * (fused_render/index/query.py) is fully reproducible client-side: trim,
+ * collapse whitespace runs to a single `*`, then wrap the whole (single-
+ * segment) query in a leading/trailing `*`. Every multi-word home query
+ * hits this path on every keystroke while the user is still typing inside
+ * or adding a word — SPEC-search-space-wildcard.md's whole motivating case
+ * — so bailing to `[]` here blanked the result list between keystrokes for
+ * exactly the queries this feature exists for (code review finding).
+ * `globMatch` against the rebuilt pattern is the SAME test `_glob_sql`
+ * filtered the held hits with originally, just re-evaluated for `q`, so a
+ * held hit that still matches stays a provable subset of what a fresh
+ * round trip for `q` would answer.
+ *
+ * A literal `*` the user typed themselves has no such guarantee — one more
+ * wildcard character can match an entirely different set of paths (`*.csv`
+ * -> `*.csv?` — SPEC's own example) — so that case (and the path-shaped
+ * case above) still bails to `[]`, the same "nothing worth holding onto"
+ * signal a paste produces, and lets the real round trip already in flight
+ * for `q` supply the answer instead. `substringMatch` is not a weaker
+ * version of glob matching whose survivors are safely a subset of it, so it
+ * is never used as a stand-in here even in the narrowed case above —
+ * `globMatch` against the rebuilt pattern is the only test that agrees with
+ * the server for glob mode.
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
-  if (answer.mode === "glob") return [];
+  if (answer.mode === "glob") {
+    // A path-shaped query walks `resolve_query`'s base off `q` itself — out
+    // of scope, same as a literal "*" (see the doc comment above). Both
+    // rule this out before the pattern is even built.
+    if (q.includes("*") || q.includes("/")) return [];
+    const pattern = expandWhitespaceQuery(q);
+    // No internal whitespace left in the trimmed query: the server would
+    // resolve this back to SUBSTRING mode, not glob (`willResolveToGlobMode`
+    // would be false) — `expandWhitespaceQuery` returns it unchanged in that
+    // case, which is not a glob pattern this branch can safely match with.
+    if (!pattern.includes("*")) return [];
+    const out: HomeHit[] = [];
+    for (const hit of answer.hits) {
+      const m = globMatch(pattern, hit.rel);
+      if (!m) continue;
+      out.push({ ...hit, positions: m.positions });
+    }
+    return out;
+  }
   // Same reasoning as `answerFrom`: `hit.rel` is relative to `answer.base`,
   // which a `~`/`/`-leading query can have walked past the box's own root —
   // matching the raw `q` against a base-relative `rel` fails on every row

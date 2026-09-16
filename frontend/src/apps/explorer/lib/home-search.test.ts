@@ -5,6 +5,7 @@ import {
   activeRow,
   aiSearchUsable,
   answerFrom,
+  expandWhitespaceQuery,
   formatElapsed,
   homeCountNote,
   indexGap,
@@ -21,6 +22,7 @@ import {
   scanStarting,
   stepHighlight,
   submitRow,
+  willResolveToGlobMode,
   type HomeAnswer,
   type HomeHit,
   type RowModel,
@@ -67,6 +69,31 @@ function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
     ...over,
   };
 }
+
+describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
+  it("is a no-op for a whitespace-free query, glob or not", () => {
+    expect(expandWhitespaceQuery("report")).toBe("report");
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts");
+    expect(willResolveToGlobMode("report")).toBe(false);
+    expect(willResolveToGlobMode("*.pdf")).toBe(true);
+  });
+
+  it("collapses whitespace runs to a single '*' and wraps the final segment", () => {
+    expect(expandWhitespaceQuery("hello world")).toBe("*hello*world*");
+    expect(expandWhitespaceQuery("hello  world")).toBe("*hello*world*");
+    expect(expandWhitespaceQuery("  hello world  ")).toBe("*hello*world*");
+    expect(willResolveToGlobMode("hello world")).toBe(true);
+  });
+
+  it("wraps only the final segment, not earlier ones", () => {
+    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My*Documents/*report*");
+  });
+
+  it("does not add a wrap when the final segment already carries a user '*'", () => {
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("report*.pdf");
+  });
+});
 
 describe("pathShortcut", () => {
   it("expands ~ and ~/… against home", () => {
@@ -240,6 +267,21 @@ describe("answerFrom", () => {
     expect(out.hits[0]!.positions!.map((i) => "my_hello_big_world.py"[i]).join("")).toBe(
       "helloworld",
     );
+  });
+
+  it("does not throw when a glob-mode response somehow carries no pattern (finding 6)", () => {
+    // `IndexRankResult.pattern` is typed as an always-populated string, but
+    // `hitsFromRank` (listing/ranked-hits.ts) guards it defensively anyway
+    // (`mode === "glob" && pattern`) rather than trust the type at a wire
+    // boundary — this mirrors that same guard here, since an unguarded
+    // `globMatch(res.pattern, h.rel)` call throws a TypeError the instant
+    // `pattern` is undefined (`pattern.toLowerCase()` inside `globMatch`).
+    const out = answerFrom(
+      rankResult({ mode: "glob", pattern: undefined as unknown as string, hits: [rankHit("report.csv")] }),
+      "*.csv",
+      0,
+    );
+    expect(out.hits[0]!.positions).toEqual([]);
   });
 
   it("still highlights a substring-mode hit exactly as before", () => {
@@ -625,7 +667,7 @@ describe("narrowAnswer", () => {
     expect(narrowAnswer(held, "rdme")).toEqual([]);
   });
 
-  it("never narrows a glob-mode held answer locally — no local test can reproduce regexp_matches", () => {
+  it("never narrows a glob-mode held answer locally when the new query types a literal '*'", () => {
     // Extending a glob pattern by a keystroke does not narrow the same way
     // extending a substring does (one more "*" can match an entirely
     // different set of paths), so substringMatch is not a safe stand-in and
@@ -637,6 +679,58 @@ describe("narrowAnswer", () => {
       hits: [homeHit("report.csv"), homeHit("draft.csv")],
     });
     expect(narrowAnswer(held, "*.csv?")).toEqual([]);
+  });
+
+  it("never narrows a glob-mode held answer locally when the new query is path-shaped", () => {
+    // A "/"-containing query walks resolve_query's base off `q` itself —
+    // reproducing that walk locally is out of scope, so this bails too.
+    const held = answer({
+      query: "hello world",
+      mode: "glob",
+      hits: [homeHit("hello-world.txt")],
+    });
+    expect(narrowAnswer(held, "hello/world")).toEqual([]);
+  });
+
+  it("narrows a whitespace-derived glob-mode held answer locally, re-matching the rebuilt pattern (finding 5)", () => {
+    // No literal "*" and no "/" — expand_whitespace_query's own transform
+    // (trim, collapse whitespace to "*", wrap the segment) is fully
+    // reproducible client-side, so typing on inside a multi-word query no
+    // longer blanks the list between keystrokes.
+    const held = answer({
+      query: "hello wor",
+      mode: "glob",
+      hits: [
+        homeHit("hello-world.txt"),
+        homeHit("hello_world.py"),
+        homeHit("world-hello.txt"),
+      ],
+    });
+    const narrowed = narrowAnswer(held, "hello world");
+    expect(narrowed.map((h) => h.rel)).toEqual(["hello-world.txt", "hello_world.py"]);
+  });
+
+  it("recomputes positions for the rebuilt glob pattern, not the held query's", () => {
+    const held = answer({
+      query: "hello wor",
+      mode: "glob",
+      hits: [homeHit("hello-world.txt")],
+    });
+    const [hit] = narrowAnswer(held, "hello world");
+    expect(hit.positions!.map((i) => "hello-world.txt"[i]).join("").toLowerCase()).toBe(
+      "helloworld",
+    );
+  });
+
+  it("empties a whitespace-derived glob-mode held answer once the query stops being multi-word", () => {
+    // Trimmed down to a single word, the server would resolve this back to
+    // SUBSTRING mode, not glob — the rebuilt pattern above does not apply.
+    const held = answer({
+      query: "hello wor",
+      mode: "glob",
+      hits: [homeHit("hello-world.txt")],
+    });
+    expect(narrowAnswer(held, "hello")).toEqual([]);
   });
 
   it("narrows against the trailing segment for a query that walked past the box root", () => {
