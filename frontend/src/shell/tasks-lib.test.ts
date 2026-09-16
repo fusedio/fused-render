@@ -7345,7 +7345,9 @@ describe("which board lanes are rolled up", () => {
       (r) => r.selectors.includes(".schedule-tv-lane-body::-webkit-scrollbar-thumb"),
     );
     expect(shared?.selectors).toContain(".schedule-cal-thread::-webkit-scrollbar-thumb");
-    expect(shared?.selectors).toContain(".tasks-list::-webkit-scrollbar-thumb");
+    // The List and the Cards wall left this rule for an overlay bar (Akshil,
+    // 2026-09-16) — see "the List's bordered box" and the Cards wall's own test.
+    expect(shared?.selectors).not.toContain(".tasks-list::-webkit-scrollbar-thumb");
     // The week grid is the exception and keeps hiding its bar outright — the
     // hour lines already say where you are.
     expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
@@ -7665,14 +7667,20 @@ describe("the List's bordered box", () => {
     expect(LIST_BOX).toContain("min-height: 0");
   });
 
-  it("keeps the wheel, the bounce and the gutter exactly as they were", () => {
-    // The scroller did not move, so none of these had to: the margin wheel still
-    // forwards to this element, the end of the list still stops the delta, and
-    // the gutter is still reserved so the column does not jump by 10px when a
-    // poll crosses the fold.
+  it("keeps the wheel and the bounce, and lets the bar float over the rows", () => {
+    // The scroller did not move, so the margin wheel still forwards to this
+    // element and the end of the list still stops the delta. The bar is an
+    // OVERLAY now (Akshil, 2026-09-16: "let content take full width and we show
+    // scroll bar on top of content"): `scrollbar-color` opts the element back
+    // into overlay bars, fed the same hover-only ink as every other scroller,
+    // and no gutter is reserved for it.
     expect(LIST).toContain("useMarginWheel(listRef);");
     expect(LIST_BOX).toContain("overscroll-behavior: contain");
-    expect(SCHEDULE_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
+    const overlay = block(SCHEDULE_CSS, ".task-cards-scroll");
+    expect(overlay).toContain("scrollbar-color: var(--sb-thumb) transparent");
+    expect(overlay).not.toContain("scrollbar-gutter");
+    expect(SCHEDULE_CSS).not.toContain(".tasks-list::-webkit-scrollbar");
+    expect(SCHEDULE_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
   });
 
   it("flips the last row's count tooltip up so the box cannot clip it", () => {
@@ -8595,11 +8603,14 @@ describe("the Cards view's frame", () => {
     );
     expect(CARDS_CSS).not.toContain("max-width: none");
     expect(CARDS_CSS).not.toContain("padding-inline");
-    // ...and it wears the same 10px non-overlay bar as the List and the Board
-    // (schedule.css, "The scrollbar the Tasks page's ... scrollers wear").
+    // ...and it wears the same OVERLAY bar as the List (Akshil, 2026-09-16): the
+    // cards take the full width and the bar floats over them, inked only under
+    // the pointer, with no column reserved for it.
     const SCHED_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
-    expect(SCHED_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
-    expect(SCHED_CSS).toContain(".tasks-list::-webkit-scrollbar,\n.task-cards-scroll::-webkit-scrollbar {\n  width: 10px;");
+    expect(block(SCHED_CSS, ".task-cards-scroll")).toContain(
+      "scrollbar-color: var(--sb-thumb) transparent",
+    );
+    expect(SCHED_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
     expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
     // ...and a wheel in the margins reaches it, by the List's own rule — ONE
     // hook for both views (useMarginWheel), not a second forwarding rule.
