@@ -1380,13 +1380,24 @@ function TemplatePreview({
   const [askDelivery, setAskDelivery] = useState<
     { text: string; seq: number; route: "side" | "content" } | null
   >(null);
+  // THE LAST SEQ DELIVERED TO EACH SEAT, kept apart from `askDelivery` on
+  // purpose (Bugbot, PR #1149): the mount keys below read it, and a key that
+  // read the CURRENT delivery fell back to 0 for whichever seat the latest ask
+  // was not for — so an ask to the sidebar, after one to the content pane, took
+  // the content pane's key from its seq back to 0 and remounted it anyway.
+  const [seatSeq, setSeatSeq] = useState<{ side: number; content: number }>({
+    side: 0,
+    content: 0,
+  });
   const pulledFor = useRef(-1);
   useEffect(() => {
     if (pulledFor.current === claudeAskInstance) return;
     pulledFor.current = claudeAskInstance;
     const text = takeClaudeAsk(claudeSeedRef);
     if (text) {
-      setAskDelivery({ text, seq: claudeAskInstance, route: claudeSeedRouteRef.current });
+      const route = claudeSeedRouteRef.current;
+      setAskDelivery({ text, seq: claudeAskInstance, route });
+      setSeatSeq((prev) => ({ ...prev, [route]: claudeAskInstance }));
     }
   }, [claudeAskInstance]);
   // AND CLEARED ONCE IT HAS BEEN HANDED OVER. The mount keyed on this seq read
@@ -1934,10 +1945,11 @@ function TemplatePreview({
   // reader had scrolled to in the content pane, and the reverse.
   //
   // Each seat therefore keys on the seq of the last delivery made to IT
-  // (`askDelivery.route`), and a delivery to the other seat leaves it at the
-  // value it already had — no key change, no remount.
-  const claudeSeatKey = (seat: "side" | "content") =>
-    `claude:${askDelivery && askDelivery.route === seat ? askDelivery.seq : 0}`;
+  // (`seatSeq`, written beside `askDelivery`), and a delivery to the other seat
+  // leaves it at the value it already had — no key change, no remount. NOT read
+  // off `askDelivery` itself: that is only ever the LATEST delivery, so the
+  // other seat would read as 0 and flip back (Bugbot, PR #1149).
+  const claudeSeatKey = (seat: "side" | "content") => `claude:${seatSeq[seat]}`;
   // The CONTENT pane's, which also has to pass every non-chat mode through
   // unchanged: it is the key for whatever the held-frame swap is mounting.
   const claudeMountKey = (m: string) => (m === CHAT_MODE ? claudeSeatKey("content") : m);

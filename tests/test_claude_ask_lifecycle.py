@@ -157,7 +157,7 @@ def test_preview_keys_the_claude_mount_on_the_delivered_ask(preview, preview_sid
     `PreviewSidebar` must actually use it for the mount's key."""
     assert "const claudeSeatKey = (seat: \"side\" | \"content\") =>" in preview
     assert (
-        "`claude:${askDelivery && askDelivery.route === seat ? askDelivery.seq : 0}`"
+        "`claude:${seatSeq[seat]}`"
     ) in preview
     assert "key={claudeMountKey(m)}" in preview
     assert "key={claudeSideMountKey}" in preview
@@ -183,9 +183,14 @@ def test_preview_keys_each_claude_seat_on_its_own_deliveries(preview):
     # delivery the pull produces.
     assert 'const claudeSeedRouteRef = useRef<"side" | "content">("content");' in preview
     assert "claudeSeedRouteRef.current = claudeAskRoute;" in preview
-    assert (
-        "setAskDelivery({ text, seq: claudeAskInstance, route: claudeSeedRouteRef.current });"
-    ) in preview
+    assert "const route = claudeSeedRouteRef.current;" in preview
+    assert "setAskDelivery({ text, seq: claudeAskInstance, route });" in preview
+    # Each seat's LAST delivered seq is remembered on its own (Bugbot, PR #1149:
+    # a key read off the single latest `askDelivery` fell back to 0 for the other
+    # seat, so an ask to one seat flipped the other's key and remounted it).
+    assert "const [seatSeq, setSeatSeq] = useState<{ side: number; content: number }>({" in preview
+    assert "setSeatSeq((prev) => ({ ...prev, [route]: claudeAskInstance }));" in preview
+    assert "askDelivery.route === seat" not in preview
     # Two derived keys, each reading only its own seat's deliveries.
     assert 'const claudeMountKey = (m: string) => (m === CHAT_MODE ? claudeSeatKey("content") : m);' in preview
     assert 'const claudeSideMountKey = claudeSeatKey("side");' in preview
