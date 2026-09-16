@@ -311,3 +311,35 @@ def test_a_message_due_later_arms_nothing(folder, monkeypatch):
     monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
     schedule.create(str(folder), "tomorrow", _ago(-3600))
     assert armed == []
+
+
+def test_a_tick_keeps_the_timer_for_a_message_due_in_a_moment(folder, spawned, monkeypatch):
+    """One entry overdue, one due in a second. The tick sends the first and must
+    re-arm for the second — not cancel the timer `_ring` set (bugbot)."""
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
+    schedule.create(str(folder), "overdue", _ago(5))
+    schedule.create(str(folder), "in a moment", _ago(-1.0))
+    armed.clear()
+    assert len(schedule.tick()) == 1
+    assert armed and any(0 < d <= 1.0 for d in armed[-1])
+
+
+def test_an_empty_tick_still_arms_for_a_message_due_in_a_moment(folder, monkeypatch):
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
+    schedule.create(str(folder), "in a moment", _ago(-1.0))
+    armed.clear()
+    assert schedule.tick() == []
+    assert armed and any(0 < d <= 1.0 for d in armed[-1])
+
+
+def test_a_ring_for_something_due_now_still_arms_for_the_next(folder, monkeypatch):
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
+    schedule.create(str(folder), "in a moment", _ago(-1.0))
+    armed.clear()
+    schedule._wake.clear()
+    schedule.create(str(folder), "overdue", _ago(5))
+    assert schedule._wake.is_set()
+    assert armed and any(0 < d <= 1.0 for d in armed[-1])

@@ -302,17 +302,15 @@ _thread_lock = threading.Lock()
 _wake = threading.Event()
 
 
-def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> bool:
-    """Wake the loop if anything in `entries` is pending and already due.
-
-    Reads the store when handed nothing. The test is deliberately the cheap
-    half of `_claim_due`'s — pending, and due — because a spurious ring costs
-    one early tick that finds nothing to do, while a missed one costs the user
-    the whole poll interval."""
-    now = now or _now()
-    if entries is None:
-        with _lock:
-            entries = _read()
+def _soon_pending(entries: list[dict], now: datetime) -> list[float]:
+    """Seconds-from-now for every PENDING entry due inside the poll window but
+    not yet due — `_claim_due`'s job stops at `<= now`. Shared by `_ring`
+    (arms a timer without waiting on `tick` to run at all) and by `tick`
+    itself, which folds this into its own end-of-pass `_rearm` call: `_rearm`
+    owns one timer for the whole module, and without this a soon-due entry
+    `_ring` armed a timer for could be silently cancelled by `tick`'s own
+    end-of-pass rearm (for holds that end on a clock), which replaces
+    whatever `_ring` set, knowing nothing about it (Bugbot, 2026-09-16)."""
     soon: list[float] = []
     for entry in entries:
         if entry.get("state") != PENDING:
@@ -321,11 +319,41 @@ def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> boo
             ahead = (parse_due(entry.get("due")) - now).total_seconds()
         except ValueError:
             continue
-        if ahead <= 0:
-            _wake.set()
-            return True
-        if ahead < POLL_INTERVAL_S:
+        if 0 < ahead < POLL_INTERVAL_S:
             soon.append(ahead)
+    return soon
+
+
+def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> bool:
+    """Wake the loop if anything in `entries` is pending and already due.
+
+    Reads the store when handed nothing. The test is deliberately the cheap
+    half of `_claim_due`'s — pending, and due — because a spurious ring costs
+    one early tick that finds nothing to do, while a missed one costs the user
+    the whole poll interval.
+
+    Scans every entry rather than returning on the first due one: an
+    already-due entry and a soon-due one can both be pending at once, and the
+    soon-due one still needs its timer armed even though this call is about
+    to wake the loop for the other one (Bugbot, 2026-09-16 — the earlier
+    version returned before it got there, so the soon-due entry waited out
+    the whole 30-second poll whenever anything else was also due)."""
+    now = now or _now()
+    if entries is None:
+        with _lock:
+            entries = _read()
+    due_now = False
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            if parse_due(entry.get("due")) <= now:
+                due_now = True
+                break
+        except ValueError:
+            continue
+    if due_now:
+        _wake.set()
     # DUE INSIDE THE POLL WINDOW: arm the timer for that moment. A message the
     # page sends as "now" is stamped a few hundred milliseconds ahead of this
     # read (`delay_seconds`, a client clock), so it was never `<= now` here and
@@ -333,9 +361,10 @@ def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> boo
     # seconds of a new task reading as not started (Akshil, 2026-09-16), the
     # exact wait `_ring` exists to remove. Same single timer the tick's holds
     # use; the tick re-arms it for whatever is left when it fires.
+    soon = _soon_pending(entries, now)
     if soon:
         _rearm(soon)
-    return False
+    return due_now
 
 
 def wake() -> None:
@@ -2936,10 +2965,13 @@ def tick(now: datetime | None = None) -> list[dict]:
     _coalesce(now)
     _materialize(now)
     due = _claim_due(now)
-    if not due:
-        return sent
     with _lock:
         entries = _read()
+    if not due:
+        # Nothing to send, but a message due in a moment still needs its
+        # timer — this pass is the last word on the one timer `_rearm` owns.
+        _rearm(_soon_pending(entries, now))
+        return sent
     busy = _busy_sessions(entries)
     live_seen: dict[str, bool] = {}
     # Memo for `_verdict_echo`, like `live_seen` for `_session_live`: one
@@ -2990,6 +3022,13 @@ def tick(now: datetime | None = None) -> list[dict]:
         # progress"). Same bell `_turn_ended` rings when the turn closes.
         _notify(_entry_keys(entry))
         _send(entry)
+    # `_rearm` owns one timer for the whole module, and this call is the last
+    # word for this pass — so it must know about every reason to wake again,
+    # not just clock-based holds. A pending entry that was not yet due when
+    # `_claim_due` looked (the exact case `_ring` arms a timer for) is folded
+    # in here too, or this call would silently cancel that timer without
+    # replacing it (Bugbot, 2026-09-16).
+    held_soon.extend(_soon_pending(entries, now))
     _rearm(held_soon)
     return sent
 
