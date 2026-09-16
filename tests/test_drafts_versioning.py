@@ -466,6 +466,30 @@ def test_scheduling_by_draft_key_deletes_exactly_once(client, tmp_path,
     assert "sess-a" in changed["drafts"]["gone"]
 
 
+def test_scheduling_by_draft_key_spends_a_bound_form_too(client, tmp_path,
+                                                         projects_dir):
+    """One record, two doors — and one Schedule. A chat key whose words live in
+    a form bound to the session must take the form with it, or the sentence the
+    reader just booked comes back as an unsent `✎ Draft` chip on the task it
+    became."""
+    _transcript(projects_dir, "sess-a")
+    target = tmp_path / "project"
+    target.mkdir()
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "and then deploy", "session_id": "sess-a",
+                     "target": str(target)})
+    assert _by_key(client)["sess-a"]["bound_draft"] == "draft-0001"
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "and then deploy",
+                          "delay_seconds": 600, "session_id": "sess-a",
+                          "draft_key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert drafts.get_task("draft-0001") is None
+    row = _by_key(client)["sess-a"]
+    assert row["bound_draft"] == "" and row["draft"] is None
+
+
 def test_a_draft_key_that_is_not_one_changes_nothing(client, tmp_path):
     """Optional and silently ignored, like every other clean-up on this route:
     the task IS scheduled, and a malformed key is not worth a 400."""

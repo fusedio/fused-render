@@ -425,6 +425,11 @@ def api_schedule_create(body: dict = Body(...),
     #
     # Best-effort and optional like every other clean-up here: the message IS
     # scheduled, and a draft that could not be dropped costs one stale row.
+    # BOTH HALVES OF THAT ONE RECORD. A chat key whose words live in a form
+    # bound to the session is the same "one record, two doors" the composer's
+    # own send already spends whole (`DELETE /api/drafts/chat/<key>`): leaving
+    # the form behind would put the sentence back on the row as unsent the
+    # moment the listing repainted, on the very task it just became.
     chat_draft = drafts.chat_key(body.get("draft_key"))
     if chat_draft:
         try:
@@ -432,9 +437,13 @@ def api_schedule_create(body: dict = Body(...),
                     and not str(entry.get("session_id") or "")):
                 tasks_store.rekey(chat_draft,
                                   tasks_store.pending_key(str(entry.get("id") or "")))
+            spent = set(drafts.delete_bound(chat_draft))
             if drafts.delete_chat(chat_draft):
+                spent.add(chat_draft)
+            if spent:
                 tasks_watch.notify(
-                    {chat_draft, str(entry.get("session_id") or "")} - {""})
+                    (spent | {chat_draft, str(entry.get("session_id") or "")})
+                    - {""})
         except OSError:
             pass
 
