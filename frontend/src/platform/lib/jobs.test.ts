@@ -917,6 +917,30 @@ test("popupTick: a suppressed success raises no popup even on its first genuinel
   expect(popped).toBeNull();
 });
 
+test("popupTick (finding 2): a suppressed success's key is recorded even though it never pops", () => {
+  // Before the fix, popupTick built its candidate list from
+  // `popupJobs(jobs, isOpenAnywhere)` directly -- a suppressed job never
+  // appeared in that filtered list, so its key never made it into `seen`.
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  const { seen, popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
+  expect(popped).toBeNull();
+  expect(seen.size).toBe(1);
+});
+
+test("popupTick (finding 2): navigating away after a suppressed success does not pop it stale", () => {
+  // The regression this finding describes: a job pops nothing while its page
+  // is open (suppressed). The user then navigates away, so `isOpenAnywhere`
+  // now returns false for that page. Without the fix, the job's key was
+  // never in `seen` from the first tick, so this second tick treated it as
+  // brand new and popped a stale card for a job the user never watched
+  // finish live.
+  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
+  const tick1 = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
+  expect(tick1.popped).toBeNull();
+  const tick2 = popupTick(jobs, tick1.seen, false, openNowhere);
+  expect(tick2.popped).toBeNull();
+});
+
 test("popupTick: an error on the same open page still pops — an error is never suppressed", () => {
   const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
   const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));

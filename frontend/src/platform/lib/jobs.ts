@@ -652,9 +652,22 @@ export function popupTick(
 ): { seen: Set<string>; popped: Job | null } {
   const next = new Set<string>();
   let popped: Job | null = null;
-  for (const j of popupJobs(jobs, isOpenAnywhere)) {
+  // Finding 2 (code review 2026-09-16): candidates are gathered WITHOUT the
+  // presence filter here (`popupJobs(jobs)`, not `popupJobs(jobs,
+  // isOpenAnywhere)`) so every terminal candidate's key lands in `next`,
+  // suppressed or not. The old code called `popupJobs(jobs, isOpenAnywhere)`
+  // directly, so a presence-suppressed job's key was NEVER added to `seen` --
+  // it simply never appeared in the loop. The instant the user navigated
+  // away and `isOpenAnywhere` flipped false for that page, the very same
+  // already-finished job looked brand new (its key still absent from
+  // `seen`) and popped a stale card. Presence suppression is instead applied
+  // per-candidate below, only to gate POPPING -- the key is still recorded
+  // either way, so a later presence flip can never manufacture a "new" event
+  // out of an old one.
+  for (const j of popupJobs(jobs)) {
     const key = popupKey(j);
     next.add(key);
+    if (isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)) continue;
     if (isFirstTick || seen.has(key)) continue;
     if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
   }
