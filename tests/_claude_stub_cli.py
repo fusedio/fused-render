@@ -83,9 +83,13 @@ def reap_host(run_dir, timeout=5.0):
     # while something under this run is actually alive. A run whose pid file
     # names a dead process (a test that planted its own pid, or a host that
     # already idle-reaped and removed host.json) has nothing to wait for.
+    # An EMPTY read is not that: the host `_private_open`s (O_TRUNC) the pid
+    # file before writing the CLI's pid into it, so for a moment there is
+    # nothing to read at all — keep waiting on that, the deadline bounds it.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not os.path.exists(host_json):
-        if not any(_alive(p) for p in _read_pids()):
+        found = _read_pids()
+        if found and not any(_alive(p) for p in found):
             break
         time.sleep(0.05)
     pids = {p for p in _read_pids() if _alive(p)}
