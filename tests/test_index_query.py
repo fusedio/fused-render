@@ -156,10 +156,26 @@ def test_expand_whitespace_query_converts_earlier_segments_without_wrapping():
 
 def test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star():
     """When the final segment already has a user-typed `*`, rule 3's implied
-    wrap does not apply to it — but whitespace elsewhere in the query still
-    collapses (an accepted, documented edge case: adjacent whitespace and an
-    explicit `*` can still produce a `**`; see DECISIONS.md)."""
+    wrap does not apply to it."""
     assert expand_whitespace_query("*.pdf") == "*.pdf"
+
+
+def test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star():
+    """Code review finding: a whitespace run directly beside a literal `*`
+    the user already typed must not insert a SECOND `*` next to it —
+    `report *.pdf` collapsing to `report**.pdf` would cross a folder
+    boundary (`**`) this query never asked for (spec: whitespace implies a
+    single-segment `*`, never `**`). The user's own `*` already does the
+    whitespace run's job, so the run is dropped instead of replaced.
+
+    (Reverses the earlier "accepted edge case" note that used to sit on
+    `test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star`
+    above — see DECISIONS.md.)"""
+    assert expand_whitespace_query("report *.pdf") == "report*.pdf"
+    # No wrap is added here either — the final segment already has a
+    # user-typed `*`, so rule 4's implied wrap does not apply to it.
+    assert expand_whitespace_query("*.pdf report") == "*.pdf*report"
+    assert expand_whitespace_query("a * b") == "a*b"
 
 
 @pytest.mark.parametrize("filename,expected", [
@@ -443,6 +459,46 @@ def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:/Users/example/*.conf")
     assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+                   "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_still_recognized(monkeypatch):
+    """Code review finding: `expand_whitespace_query` used to run BEFORE
+    `_DRIVE_ABS`'s check, so a drive path with a space in one of its
+    segments (`C:\\My Files\\rep`) got whitespace-collapsed while its
+    backslashes were still backslashes — the collapse treated the whole
+    string as one opaque segment (no `/` in it yet), wrapped a leading `*`
+    onto the front, and destroyed the `C:` prefix `_DRIVE_ABS` looks for —
+    the path silently stopped resolving as absolute at all (it would fall
+    through to being treated as a bare relative query instead). `_DRIVE_ABS`
+    must be checked, and backslashes folded to `/`, before
+    `expand_whitespace_query` ever runs, so the drive prefix survives and
+    this still resolves as a Windows absolute path — even though the walk
+    itself cannot advance PAST a segment the whitespace collapse turned into
+    a glob (`My Files` -> `My*Files`; `_walk_from` only walks literal,
+    `*`-free segments), so `base` stays at the drive root and the glob-ified
+    rest becomes the pattern instead."""
+    real_dirs = {"C:/My Files", "C:/My Files/rep"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\My Files\\rep")
+    # The all-backslash typed string has no literal "/" in it (spec: "a
+    # slash is the only thing that limits depth"), so it also widens to any
+    # depth the same as `test_resolve_windows_drive_letter_path_walks_the_
+    # filesystem` above — this decision is read from the RAW typed string,
+    # not from the "/"-joined form the drive-normalization step produces.
+    assert out == {"base": "C:/", "pattern": "**/My*Files/*rep*", "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_only_in_the_pattern(monkeypatch):
+    """When the space is confined to the segment PAST the real directories
+    (the ones `_walk_from` can still walk literally), the walk advances all
+    the way to `example`, and the space-as-wildcard grammar applies only to
+    what's left over as the pattern."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\Users\\example\\hello world")
+    # Same all-backslash-typed-string widening as the test above.
+    assert out == {"base": "C:/Users/example", "pattern": "**/*hello*world*",
                    "mode": "glob"}
 
 

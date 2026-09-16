@@ -688,7 +688,13 @@ def expand_whitespace_query(raw: str) -> str:
     3. Otherwise, collapse every run of whitespace to a single `*` — `**`
        is a DIFFERENT, cross-directory wildcard in this grammar, so
        `hello  world` (two spaces) must resolve identically to `hello
-       world`, not silently widen.
+       world`, not silently widen. This must never STACK a second `*`
+       directly beside a `*` the user already typed adjacent to that
+       whitespace, either (`report *.pdf` -> `report*.pdf`, never
+       `report**.pdf`, which would cross a folder boundary this query never
+       asked to cross) — when the run already borders a literal `*`, that
+       star already does the whitespace run's job, so the run is dropped
+       rather than replaced.
     4. Imply a leading/trailing wildcard on the FINAL `/`-separated segment
        only, and only when that segment has no user-typed `*` of its own —
        this is what delivers "contains, in order" instead of an anchored
@@ -700,7 +706,18 @@ def expand_whitespace_query(raw: str) -> str:
         return trimmed
     segments = trimmed.split("/")
     wrap_last = "*" not in segments[-1]
-    segments = [_WS_RUN.sub("*", s) for s in segments]
+
+    def _collapse_ws(segment: str) -> str:
+        def repl(m: "re.Match[str]") -> str:
+            start, end = m.span()
+            already_starred = (
+                (start > 0 and segment[start - 1] == "*")
+                or (end < len(segment) and segment[end] == "*")
+            )
+            return "" if already_starred else "*"
+        return _WS_RUN.sub(repl, segment)
+
+    segments = [_collapse_ws(s) for s in segments]
     if wrap_last:
         segments[-1] = "*" + segments[-1] + "*"
     return "/".join(segments)
@@ -793,7 +810,30 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         if blocked is not None and blocked_out is not None:
             blocked_out.append(blocked)
 
-    raw = expand_whitespace_query(raw or "")
+    raw = raw or ""
+    # The implicit `**/` decision below is defined to read the RAW typed
+    # string (before any of this function's own mutations) for a `/` —
+    # captured here, before the drive-path backslash normalization that
+    # follows, so an all-backslash Windows path (no `/` at all, as typed)
+    # still widens to any depth exactly as it always has, rather than
+    # picking up a "/" this function itself inserted.
+    raw_had_slash = "/" in raw
+    if _DRIVE_ABS.match(raw.strip()):
+        # A Windows drive path's own separator is "\", never "/" — normalize
+        # it to "/" BEFORE `expand_whitespace_query` runs, so that function's
+        # own "/"-segment split (and its "wrap only the FINAL segment" rule)
+        # actually sees the path's real segments (code review finding: doing
+        # this AFTER expansion left the whole path as one opaque segment,
+        # `raw`'s leading `C:\` got swallowed into the wrap's own `*` prefix,
+        # and `_DRIVE_ABS.match(raw)` below stopped matching at all — a
+        # drive path with a space, e.g. `C:\My Files\rep`, silently stopped
+        # resolving as an absolute path). `_DRIVE_ABS` only tests the drive
+        # PREFIX (`[A-Za-z]:[\\/]`), so this is safe to do unconditionally
+        # once that prefix is confirmed present — nothing past it is a POSIX
+        # path where a literal backslash would be a legal filename character
+        # this might mangle.
+        raw = raw.replace("\\", "/")
+    raw = expand_whitespace_query(raw)
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))
@@ -837,7 +877,7 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
         base, pattern = root, raw
-    if is_glob and "/" not in raw:
+    if is_glob and not raw_had_slash:
         pattern = "**/" + pattern
     return {"base": base, "pattern": pattern,
             "mode": "glob" if is_glob else "substring"}
@@ -1041,7 +1081,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
         f"LIMIT {limit}")
 
 
-def _glob_sql(inner: str, regex: str, limit: int) -> str:
+def _glob_sql(inner: str, regex: str, hidden: str, limit: int) -> str:
     """Glob mode's whole query: a full-match regex filter, no scoring at all
     — not `_rank_sql`'s apparatus with the scoring columns dropped, `p0`/
     `strpos`/`segment_starts`/`name_bonus` are never computed in the first
@@ -1054,13 +1094,21 @@ def _glob_sql(inner: str, regex: str, limit: int) -> str:
 
     `regex` is the already-lowercased, already-SQL-escaped pattern from
     `_glob_to_regex`; it is matched against `lrel`, never `rel` — glob mode
-    is case-insensitive like every other mode here. Hidden entries are NOT
-    filtered: `query_wants_hidden` governs substring mode only, and an
-    explicit pattern here matches whatever the regex matches, dotfiles
-    included."""
+    is case-insensitive like every other mode here.
+
+    `hidden` is the exact same fragment `_rank_sql` is handed (`""` or
+    `" AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')"`, from
+    `query_wants_hidden` against the same `qs` both branches share) — code
+    review finding: a plain multi-word query (`hello world`) now resolves to
+    glob mode (SPEC-search-space-wildcard.md's whitespace-as-wildcard rule),
+    and without this it surfaced dotfiles a single-word substring query for
+    the same text would have hidden, purely because of which mode the query
+    happened to land in. `query_wants_hidden` already reads intent off `qs`
+    itself (a dot-leading query, `.env`/`*/.git`, still opts back in), so
+    applying it here needs no separate rule — the same one both modes share."""
     return (
         f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
-        f"WHERE regexp_matches(lrel, '{regex}') "
+        f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
         f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
         f"LIMIT {limit}")
 
@@ -1268,13 +1316,24 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             token.check()
         t0 = time.monotonic()
         n = len(qs)
+        # Hidden entries are dropped HERE, in the same query that filters
+        # and scores/matches — `query_wants_hidden`/`is_hidden_rel` (this
+        # module, moved from the now-deleted index/rank.py) are the
+        # definitions; this mirrors them. Shared by both branches below
+        # (code review finding: `_glob_sql` used to skip this filter
+        # entirely, so a plain multi-word query — glob mode, since
+        # SPEC-search-space-wildcard.md's whitespace-as-wildcard rule —
+        # surfaced dotfiles the equivalent single-word substring query
+        # would have hidden).
+        hidden = ("" if _wants_hidden(qs)
+                  else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
         if glob:
             # `qs` is already the resolved pattern (`resolve_query`'s
             # `pattern`, base already peeled off) — lowered here, the same
             # side the corpus is lowered on (`lrel`), so the two always fold
             # through the same `lower()`.
             regex = _q(_glob_to_regex(qs.lower()))
-            sql = _glob_sql(inner, regex, limit + 1)
+            sql = _glob_sql(inner, regex, hidden, limit + 1)
         else:
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query
@@ -1283,12 +1342,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # sides separately can disagree).
             ql = like_literal(qs)
             qq = _q(qs)
-            # Hidden entries are dropped HERE, in the same query that filters
-            # and scores — `query_wants_hidden`/`is_hidden_rel` (this module,
-            # moved from the now-deleted index/rank.py) are the definitions;
-            # this mirrors them.
-            hidden = ("" if _wants_hidden(qs)
-                      else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
             sql = _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
