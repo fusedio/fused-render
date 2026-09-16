@@ -51,9 +51,10 @@ import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
 import {
   deleteChatDraft,
   deleteTaskDraft,
+  taskDraftKey,
 } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
-import { dropListingKeys, restoreListingRows } from "./tasksPulse";
+import { announceDraftsGone, dropListingKeys, restoreListingRows } from "./tasksPulse";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
@@ -1465,6 +1466,7 @@ export async function discardDraft(task: Task): Promise<boolean> {
   if (!isDraftTask(task)) {
     if (!task.draft || !task.session_id) return false;
     const out = await deleteChatDraft(task.session_id);
+    if (out.ok) announceDraftsGone([task.session_id]);
     announceTasksChanged();
     return out.ok;
   }
@@ -1480,7 +1482,8 @@ export async function discardDraft(task: Task): Promise<boolean> {
     : id
       ? await deleteTaskDraft(id)
       : { ok: false };
-  if (!out.ok) restoreListingRows([task]);
+  if (out.ok) announceDraftsGone([chat ? task.key : taskDraftKey(id ?? "")]);
+  else restoreListingRows([task]);
   announceTasksChanged();
   return out.ok;
 }

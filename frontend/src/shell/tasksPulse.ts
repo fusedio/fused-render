@@ -883,6 +883,26 @@ export function subscribeListing(
  * says which keys and at which versions, so there is nothing to look up and
  * nothing to coalesce.
  */
+/**
+ * THIS RECORD IS GONE — say so NOW, before the server has been asked.
+ *
+ * `dropListingKeys`' twin, for the draft channel, and it exists for the same
+ * reason: the trash on a draft row has to take effect under the pointer. The
+ * ROW leaves through that function; this is what reaches the EDITOR that record
+ * may also be open in — the composer behind the List, the New task card on top
+ * of it — which would otherwise go on showing words the reader has just thrown
+ * away until the next long-poll caught up.
+ *
+ * Optimistic, like its twin: the server's own announcement follows and says the
+ * same thing, and a DELETE that failed leaves the record on the server for the
+ * next read to find.
+ */
+export function announceDraftsGone(keys: readonly string[]): void {
+  const gone = keys.filter((key) => !!key);
+  if (!gone.length) return;
+  for (const sub of draftSubs) sub([], [...gone]);
+}
+
 export function onDraftChange(
   cb: (changed: { key: string; version: number }[], gone: string[]) => void,
 ): () => void {

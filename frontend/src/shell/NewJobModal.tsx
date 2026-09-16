@@ -2545,7 +2545,7 @@ export default function NewJobModal({
    * THE TASK THESE WORDS CAME OUT OF, when the card was opened from one
    * (design.md B, Option 1).
    *
-   * Scheduling from a task flows through `chatSessionId` / `fromChatKey`, which
+   * Scheduling from a task flows through `chatSessionId` / `chatKey`, which
    * name a SESSION — nothing on the card said which task that session is, so a
    * reader mid-form had no way to check what they were continuing. The header
    * says it as a chip beside the title, and pressing it opens that task.
@@ -3233,8 +3233,8 @@ export default function NewJobModal({
    * record", §1 and §4).
    *
    * When it is set, the card is a second door onto a CHAT record: the composer's
-   * own, edited in place. There is no mint, no `from_chat_key`, no delete of a
-   * copy, and no `writeInitial` — all four existed because a hop used to create
+   * own, edited in place. There is no mint, no origin key to spend, no delete of
+   * a copy, and no write-at-mount — all four existed because a hop used to create
    * a task draft over words that already lived somewhere, and the window between
    * "words exist here" and "words exist there" was the whole bug.
    *
@@ -3295,7 +3295,7 @@ export default function NewJobModal({
    * the row never goes away at all.
    *
    * NOTHING IS WRITTEN UNTIL SOMEBODY CHANGES SOMETHING (design §4). `dirty` is
-   * the whole gate now: there is no `writeInitial` arm any more, because a hop
+   * the whole gate now: there is no write-at-mount arm any more, because a hop
    * no longer arrives holding words that exist nowhere else — they are already
    * on the record this card is about to edit. Open the card, press ✕, and
    * nothing at all has happened.
@@ -3967,7 +3967,7 @@ export default function NewJobModal({
               depending on what you opened. The LABEL still differs, because the
               verbs do: one withdraws a running task, one drops an unfinished
               form. No arming step here — there is nothing scheduled to undo. */}
-          {(draftId || recordKey) && (
+          {(draftId || (recordKey && !editing)) && (
             <button
               type="button"
               className="btn btn-danger-text new-task-delete"
@@ -3980,11 +3980,10 @@ export default function NewJobModal({
             </button>
           )}
           {/* The way back completes the chat's round trip: chat → schedule →
-              adjust the draft → schedule again. Only shown when a chat sent us
-              here — from anywhere else there is no "back". Two ways it can have:
-              the hop's own `?back=` URL, and a REOPENED draft's stored
-              `from_chat_key`, which is the only trace left once the hop's URL
-              is gone (see `backToChat`). */}
+              adjust the draft → schedule again. Only shown when there is a chat
+              record behind this card — from anywhere else there is no "back".
+              Two ways it can have: the hop's own `?from=` route, and the record's
+              own key turned into one (see `backToChat`). */}
           {canGoBack && (
             <button type="button" className="btn btn-secondary schedule-back-chat"
                     disabled={busy}
