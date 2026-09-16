@@ -60,10 +60,10 @@ import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 // and a ref would have to be threaded through the portal to get here.
 const SPLIT_SEL = ".stat-split";
 
-// The one companion whose document is a CHAT, and so the one that reports when
-// its transcript is painted (`data-chat-ready`, platform/ui/ChatFrame). Named
-// here rather than compared inline so the gate below reads as a fact about that
-// mode and not as a string that happened to match.
+// The one companion that is NOT a framed template but the app's own chat
+// (apps/claude), handed in as `chat` rather than built from a URL. Named here
+// rather than compared inline so the gate below reads as a fact about that mode
+// and not as a string that happened to match.
 const CHAT_MODE = "claude";
 
 // The page-level split's right-hand slot, rendered by StatView beside the left
@@ -109,6 +109,7 @@ export default function PreviewSidebar({
   onSelect,
   onClose,
   chat,
+  chatResolved = true,
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -124,7 +125,10 @@ export default function PreviewSidebar({
   // remount that lets the new document's boot pull the fresh prompt
   // (Preview.tsx's `claudeFrameKey`/`claudeAskInstance`).
   frameKey?: string;
-  // Its /render URL, or null while its gate is still resolving.
+  // A FRAMED companion's /render URL, or null while its gate is still
+  // resolving. The chat companion has no URL — it is `chat` below, mounted by
+  // the caller — so its own "still resolving?" answer arrives as
+  // `chatResolved`, not as a stand-in address here.
   src: string | null;
   onSelect: (mode: string) => void;
   // Clears `_side`. The title bar's opener is hidden while this column is up
@@ -139,6 +143,12 @@ export default function PreviewSidebar({
    * is the whole of what this component ever did for it.
    */
   chat?: ReactNode;
+  /**
+   * Whether the CHAT companion's gate has settled — the same question `src`
+   * answers for a framed one. Defaults to true: a caller that hands over no
+   * `chat` at all is never showing this column on the chat mode anyway.
+   */
+  chatResolved?: boolean;
 }) {
   // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
   // is what makes the divider hold still while you walk from file to file, since
@@ -297,6 +307,17 @@ export default function PreviewSidebar({
     divider.addEventListener("pointercancel", onUp);
   };
 
+  /* The chosen companion's gate has not settled yet (CT-12): hold the column
+     rather than frame a template whose condition may deny this file. Written
+     once because both companions can be in this state — a framed one has no
+     `src` yet, the chat has no `chatResolved` yet — and they wait the same. */
+  const resolvingHold = (
+    <div className="preview-resolving">
+      <span className="mode-icon-spinner" />
+      Checking if this view applies…
+    </div>
+  );
+
   return (
     <>
       <div
@@ -330,43 +351,33 @@ export default function PreviewSidebar({
             <SideTabs tabs={entries} active={active} onSelect={onSelect} />
           </div>
         </div>
-        {src === null ? (
-          /* The chosen sidebar mode is gate-pending (CT-12): hold the column
-             rather than frame a template whose condition may deny this file. */
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
-            Checking if this view applies…
-          </div>
+        {/* THE CLAUDE COMPANION IS NOT A FRAME AT ALL: it is the app's own chat,
+            mounted by the caller and handed down as `chat`, so it is asked about
+            its gate (`chatResolved`) rather than about a URL. It covers its own
+            boot with its skeleton (apps/claude/ui/ChatPlaceholder), which is the
+            one thing this column would otherwise have had to do for it — it is
+            the only companion that restores a transcript before it has anything
+            to show.
+
+            Rendered as GIVEN, with no box of its own: the caller's `ChatMount`
+            carries the remount `key`, and `.chat-mount`
+            (frontend/src/styles/chat-frame.css) fills this column the way the
+            frame below does. */}
+        {active === CHAT_MODE ? (
+          chatResolved ? chat : resolvingHold
+        ) : src === null ? (
+          resolvingHold
         ) : (
           /* Keyed on the mode, so a switch replaces the document outright. No
              held-frame cross-fade here (unlike the content pane): the sidebar is
              a narrow column of chrome-heavy tools, and the two of them look
-             nothing alike — there is no illusion of continuity to protect.
-
-             THE CLAUDE COMPANION IS THE ONE MODE THAT COVERS ITS OWN BOOT
-             (platform/ui/ChatFrame): it is the only one of the three that
-             restores a transcript before it has anything to show, so it is the
-             only one whose cold document was a visible black pane. The cover
-             waits on `data-chat-ready`, which only the chat template stamps —
-             the gate is the MODE and not the 8s fallback, because a `git` or
-             `mcp` column revealed by a timeout would be a whole new bug in
-             exchange for a fix nobody asked for there. The key stays on the
-             outer component, so a mode switch still replaces the document. */
-          active === CHAT_MODE ? (
-            // Rendered as GIVEN, with no box of its own: the caller's
-            // `ChatMount` carries both the remount `key` and the
-            // `.preview-side-frame` class, so the flag-off path is the exact
-            // iframe this branch used to build and the flag-on path fills the
-            // same parent (`.chat-mount`, apps/claude/styles/chat.css).
-            chat
-          ) : (
-            <iframe
-              key={frameKey}
-              className="preview-side-frame"
-              src={src}
-              title={modeTitle(active)}
-            />
-          )
+             nothing alike — there is no illusion of continuity to protect. */
+          <iframe
+            key={frameKey}
+            className="preview-side-frame"
+            src={src}
+            title={modeTitle(active)}
+          />
         )}
       </aside>
     </>

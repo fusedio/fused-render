@@ -1,4 +1,4 @@
-"""runPython target for claude/template.html: chat with the Claude Code
+"""runPython target for the native chat (frontend/src/apps/claude): chat with the Claude Code
 CLI about the target — a FOLDER (an app folder, or any other) or a file. This is
 the only chat backend: it began as a fork of the plain chat template's agent
 (the split view was the fork), kept every improvement that fork gained, and
@@ -193,8 +193,9 @@ APP_STATE_TOOL = "app_state"
 # user-facing copy of a message (the run's `meta.json`, hence the commit
 # subject and a re-attach match — plus the restored
 # transcript in `_history`), because the user typed the message, not the block.
-# Duplicated in template.html, which writes it; a test asserts the two agree
-# (D146: a duplicated rule needs a test, not a comment).
+# Duplicated in frontend/src/apps/claude/pane/appState.ts (APP_STATE_TAG),
+# which writes it; a test asserts the two agree (D146: a duplicated rule needs
+# a test, not a comment).
 APP_STATE_TAG = "live-app-state"
 
 
@@ -233,7 +234,8 @@ def _permission_wait() -> int:
 PERMISSION_WAIT = _permission_wait()
 
 # Tools for which "allow all of these for the rest of the reply" is offered.
-# MUST stay identical to WHOLE_TOOL_GRANTABLE in template.html — the card is
+# MUST stay identical to WHOLE_TOOL_GRANTABLE in
+# frontend/src/apps/claude/protocol/summaries.ts — the card is
 # where the choice is made, this is where it is enforced, and a test asserts
 # the two lists agree (D146: a duplicated rule needs a test, not a comment).
 #
@@ -1643,7 +1645,7 @@ def _live_mode(meta: dict, permissions: list) -> str:
       describing a session that had already left it — and `permChoices`' plan
       guard went on suppressing the mode-switch affordance on every later card
       of the run, for a plan mode nobody was in. Where it lands mirrors the
-      picker write-back at template.html's `buildPlanCard.send` exactly: the
+      picker write-back in frontend/src/apps/claude/ui/PlanCard.tsx exactly: the
       granted `setMode` when the approval carried one, `DEFAULT_PERMISSION_MODE`
       ("prompt", the CLI's own default) otherwise. A "keep planning" `deny`
       moves nothing — the session is still planning, which is the point of it.
@@ -1729,7 +1731,8 @@ def _pane_file(text: str) -> str:
     containing `"url":` must not win.
 
     Three answers, in order of honesty. `entry` is the state's own name for the
-    document the pane is about (template.html `appEntry`) and wins outright.
+    document the pane is about (`appEntry` in
+    frontend/src/apps/claude/pane/appState.ts) and wins outright.
     The url is the fallback for older blocks, and there `_file` must beat
     `path`, because a templated preview's url is
     `/render?path=<template>&_file=<file>`: `path` names OUR template, which
@@ -1794,8 +1797,8 @@ _MACHINERY_DROP = (
 # Spelled out rather than built from `APP_STATE_TAG`: the parity test compares
 # this tuple to the server's literal one, and a wire tag renamed on one side of
 # that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
-# constant on this side at all — only template.html, which writes the block,
-# names it.)
+# constant on this side at all — only frontend/src/apps/claude/protocol/wire.ts,
+# which writes the block, names it.)
 _MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
@@ -4103,7 +4106,8 @@ def _read_current_turn(run_dir: str) -> tuple:
     form) is exactly a `result` followed by more bytes that belong to the
     SAME displayed turn, not a new one — `_segments_from_rows` renders that
     combination as one notice-joined reply, and a page rendering the whole
-    `segments` list fresh every poll (see `renderSegments` in template.html)
+    `segments` list fresh every poll (the native chat's segment model,
+    frontend/src/apps/claude/protocol/segments.ts, renders it that way)
     needs the ORIGINAL text still in that list on every later poll, not just
     the wake's own continuation. Advancing past a `result` a wake continues
     would make the next poll return only the wake, silently erasing the reply
@@ -4860,7 +4864,8 @@ _MODEL_SHORT = ("fable", "opus", "sonnet", "haiku")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # The PINNED entries the picker offers beside the aliases — full `--model` ids
-# rather than a family name (template.html's MODELS). They have to be matched
+# rather than a family name (the chat's `MODELS`,
+# frontend/src/apps/claude/ui/composer-defaults.ts). They have to be matched
 # BEFORE the short names below, and matched exactly, because every one of them
 # contains its own family name: "claude-fable-5-1-20260401" collapsed to "fable"
 # under the old loop, so a chat actually running the pinned model came back from
@@ -6069,7 +6074,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _cancel(run_id, queued=queued == "1")
     if action == "live_host":
         # "Is there a session I can hand a follow-up to?" — asked BEFORE
-        # every send (see template.html's sendMessage): a host answering
+        # every send (see the chat controller's `sendMessage`,
+        # frontend/src/apps/claude/protocol/controller-api.ts): a host answering
         # here is what turns a follow-up into an inbox write instead of a
         # fresh `_start`. Unlike `live_run`, this says yes for a session
         # sitting idle between turns too — see `_live_host`'s own comment.

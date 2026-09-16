@@ -1,6 +1,13 @@
 # apps/claude — native Claude chat
 
-React port of `fused_render/templates/claude/template.html` (`T`), flag-gated.
+The app's Claude chat, and the only one. It began as a React port of the
+`templates/claude` iframe (`T`, cited throughout for provenance); that template
+and the `native_chat_enabled` flag that chose between the two are gone.
+
+`T` / `T:<line>` cites throughout this directory refer to the deleted
+`fused_render/templates/claude/template.html` (removed 2026-09-15, D884); read
+them against git history before that commit.
+
 Plan: `.claude-design/design.md`; behaviour inventories: `.claude-design/inventory/`.
 
 ## Layering
@@ -11,11 +18,21 @@ SURFACE rather than a route: the explorer and the canvases workspace host it as 
 pane, and both are apps. Read the script's own comment for why it is not lifted
 into `platform/` instead.
 
-- `feature-flag.ts` — `native_chat_enabled` pref (`prefs.chat.native`), `useNativeChatEnabled()`;
-  and, off the SAME one prefs read, `chat_recap_enabled` (`prefs.chat.recap`, default ON),
-  `useChatRecapEnabled()`.
-- `ChatMount.tsx` — the switch: `<ClaudeChat/>` on, legacy `<ChatFrame/>` iframe off. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its popup (`shell/TaskCards.tsx`), the explorer file sidebar (`apps/explorer/Preview.tsx` → `PreviewSidebar`'s `chat` slot), the folder listing pane (`ListingPreviewPane.tsx`), the canvases workspace (`apps/canvases/CanvasWorkspace.tsx`) and the explorer content pane (`_mode=claude`). The two sites that framed a PLAIN iframe hand their old element over as `legacy` so the flag off is the same node it always was.
-- `legacy-src.ts` — the six flag-off `/render` URLs in one place, pinned byte-for-byte by `legacy-src.test.ts`. `shell/schedule-lib.ts` re-exports two of them.
+- `chat-prefs.ts` — the chat's prefs, off ONE shared `/api/prefs` GET: `chat_recap_enabled`
+  (`prefs.chat.recap`, default ON), `useChatRecapEnabled()`. One retry and one 8s budget
+  around both attempts, so a read the server accepts and never answers cannot pin `reading`
+  and leave the page unable to ask again.
+- `ChatMount.tsx` — the one mount every host uses: the per-mount param store, the host ids
+  that arrive late, the `lazy` code-split boundary and the error card a failure inside it
+  falls back to — in TWO kinds, since that boundary is above the whole chat: a chunk that
+  never arrived (`isChunkLoadError`) keeps the deploy copy and Reload, and anything else is
+  a render crash, shown with its own message and a Try again that remounts. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its
+  popup (`shell/TaskCards.tsx`), the task side peek (`shell/TaskPeek.tsx`), the explorer file
+  sidebar (`apps/explorer/Preview.tsx` → `PreviewSidebar`'s `chat` slot), the folder listing
+  pane (`ListingPreviewPane.tsx`), the canvases workspace (`apps/canvases/CanvasWorkspace.tsx`)
+  and the explorer content pane (`_mode=claude`).
+- `ui/ChatPlaceholder.tsx` — the skeleton every wait shows, and `CHAT_FRAME_FALLBACK_MS`,
+  the 8 s backstop every wait gives up at.
 - `ClaudeChat.tsx` — root `.chat-root`, layout variants (split / chat-only / compact / peek / narrow), boot.
 - `protocol/` — pure TS, bun-tested, no React:
   - `types.ts` every `agent.py` action's request/response (04-core-chat §B/§C).
@@ -39,10 +56,9 @@ into `platform/` instead.
 | left pane / split / narrow | `pane/` |
 | screenshots / attachments | `shots/` (PR2) · annotations `ann/` (PR3) · sched/live/lists `sched/`, `live/` (PR4) |
 
-## Running with the flag on
+## Running it
 
-`FUSED_RENDER_NATIVE_CHAT=1 scripts/dev.sh` (env beats the pref), or Preferences → "Native chat (beta)".
-Checks: `cd frontend && npm run typecheck && npm run check:boundaries && bun test`.
+`scripts/dev.sh`. Checks: `cd frontend && npm run typecheck && npm run check:boundaries && bun test`.
 
 ## Session recap ("While you were away")
 

@@ -1,5 +1,15 @@
 # Claude template — POC notes
 
+> **SUPERSEDED 2026-09-15.** There is no chat *template* any more. The legacy
+> `fused_render/templates/claude/template.html` and the `native_chat_enabled`
+> flag that gated it were deleted; the native React chat
+> (`frontend/src/apps/claude`) is the only chat. `templates/claude/` survives as
+> the chat's **backend** folder — `agent.py`, `app.py`, `artifacts.py`,
+> `condition.py`, `permission_server.py`, `session_host.py`, `icon.svg` — and
+> `claude` is now a *shell-rendered* template name
+> (`server/templates.py::SHELL_RENDERED`) that resolves to `agent.py` rather
+> than to a page. Everything below, including the 2026-08-08 note, is history.
+
 **Status:** POC, 2026-07-08. Not a locked design; every choice below was made
 for implementation simplicity and is expected to be revisited.
 Origin: adapted from an internal chat sandbox POC (detached `claude -p`

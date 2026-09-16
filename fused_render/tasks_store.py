@@ -722,7 +722,8 @@ def first_text(content) -> str:
 # below. Claude Code writes some ON the user's behalf: a finished subagent
 # reporting back, a slash command's envelope, the stdout it captured. The
 # fused-render Claude page writes others IN FRONT OF what the user typed
-# (`composeOutgoing` in templates/claude/template.html: the app-state snapshot,
+# (`composeOutgoing` in frontend/src/apps/claude/protocol/wire.ts, fed the
+# block list `ui/sendMerge.ts` merges for the send: the app-state snapshot,
 # then the pane screenshots, then the annotation notes, then the words).
 #
 # The corpus says the two groups behave OPPOSITELY. Over 219 transcripts / 2519
@@ -782,7 +783,8 @@ _LEADING_BLOCK = re.compile(
 # inside a block, and so does any TRUNCATED copy of one — so a balanced strip
 # cannot fire and the record would read as a real message. Everything from a
 # machinery opener onwards is machinery whatever follows it, which is exactly
-# the second pass template.html's `BLOCK_OPENERS` makes over a cut preview.
+# the second pass `BLOCK_OPENERS` makes over a cut preview in
+# frontend/src/apps/claude/protocol/history.ts.
 _LEADING_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 
 # The annotation notes as they are written TODAY: an `<annotations>` block of
@@ -885,8 +887,8 @@ def ann_notes(text: str) -> str:
     """The words the user typed INSIDE their annotations, for a send that
     carried no free text at all — or "" when there are none.
 
-    THE THIRD COPY of an annotation rule (`template.html`'s `stripAnnBlock`,
-    `agent.py`'s `_ann_notes`, this) and pinned to the second one over the
+    THE THIRD COPY of an annotation rule (`stripAnnBlock` in
+    frontend/src/apps/claude/protocol/wire.ts, `agent.py`'s `_ann_notes`, this) and pinned to the second one over the
     shared corpus by `test_claude_sessions_merged.py`, for the reason D166
     forces on every one of these: a template may not import `fused_render`, and
     four readers that stopped agreeing about machinery is the bug this whole
@@ -995,7 +997,8 @@ def pane_file(text: str) -> str:
     rather than regexed; a title containing `"url":` must not win.
 
     Three answers, in order of honesty. `entry` is the state's own name for
-    the document the pane is about (template.html `appEntry`) and wins
+    the document the pane is about (`appEntry` in
+    frontend/src/apps/claude/pane/appState.ts) and wins
     outright. The url is the fallback for older blocks — and there the
     `_file` param must beat `path`, because a templated preview's url is
     `/render?path=<template>&_file=<file>`: `path` names OUR template, which

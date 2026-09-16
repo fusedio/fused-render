@@ -1,14 +1,22 @@
 """The `defaults` action: preselecting the model/effort the user ACTUALLY last
 used with Claude Code for this project — read from the project's session
-transcripts (shared by the CLI and this template, both key sessions on the same
+transcripts (shared by the CLI and this app, both key sessions on the same
 cwd munge) and, failing that, from settings files. A hardcoded "default" in the
 selector tells the user nothing; the real config does.
 """
 import importlib.util
 import json
 import os
+import re
+from pathlib import Path
 
 import pytest
+
+
+#: The native composer's own vocabularies, the TypeScript half of the parity
+#: the `defaults` action lives or dies by (03 §4e).
+_COMPOSER = (Path(__file__).resolve().parent.parent / "frontend" / "src" /
+             "apps" / "claude" / "ui" / "composer-defaults.ts")
 
 
 def _load_agent():
@@ -111,23 +119,49 @@ def test_short_model_collapses_every_spelling(tmp_path, monkeypatch):
     assert agent._short_model("") == ""
 
 
-def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
-    html = open(os.path.join("fused_render", "templates", "claude",
-                             "template.html"), encoding="utf-8").read()
-    assert '{ action: "defaults", file: FILE }' in html
-    # explicit pane param > detected config > user preference > hardcoded
-    # fallback. The preference sits BELOW detection on purpose: what this
-    # project is actually worked in says more about this chat than a global
-    # setting does, and the preference is what fills the gap when there is
-    # nothing to detect.
-    assert (
-        'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
-    )
-    assert 'fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT' in html
-    # detected values are validated against the selector's own lists
-    assert "MODELS.includes(d.model)" in html
-    assert "EFFORTS.includes(d.effort)" in html
-    # …and so is the preference, for the same reason: a name this build's
-    # selector doesn't have cannot be shown as selected.
-    assert 'fetch("/api/prefs")' in html
-    assert "MODELS.includes(m)" in html
+def _ts_list(src: str, name: str) -> list:
+    """The string members of an `export const <name> = [ ... ]` TS array.
+
+    Deliberately textual: a Python test cannot import TypeScript, so the wire
+    vocabulary is read the same way tests/test_trouble_parity.py reads the
+    shell's own constants. Tolerates line breaks, trailing commas, `as const`
+    and either quote style.
+    """
+    m = re.search(r"export\s+const\s+%s\s*(?::[^=]*)?=\s*\[(.*?)\]" % name,
+                  src, re.DOTALL)
+    assert m, f"no `export const {name} = [...]` in the native source"
+    return re.findall(r"""['"]([^'"]+)['"]""", m.group(1))
+
+
+def test_every_model_detection_can_return_is_one_the_native_picker_offers():
+    """`defaults` preselects a pill. A value the pill's own list does not hold
+    is dropped by the picker (`resolveModel` falls back to DEFAULT_MODEL), so a
+    spelling agent.py can return and ModelSelect cannot show is a preselect
+    that silently never happens — the exact failure `_short_model`'s docstring
+    describes, with the JS half now in TypeScript."""
+    agent = _load_agent()
+    models = _ts_list(_COMPOSER.read_text(encoding="utf-8"), "MODELS")
+    detectable = set(agent._MODEL_SHORT) | {v for _, v in agent._MODEL_PINNED}
+    assert detectable <= set(models), detectable - set(models)
+    # The pinned ids lead: someone opening the menu is usually after a specific
+    # model, and every pinned id contains its own family name.
+    assert models[0] == "claude-fable-5-1"
+
+
+def test_every_effort_detection_can_return_is_one_the_native_picker_offers():
+    agent = _load_agent()
+    efforts = _ts_list(_COMPOSER.read_text(encoding="utf-8"), "EFFORTS")
+    assert list(agent._EFFORT_LEVELS) == efforts
+
+
+def test_the_stored_default_model_pref_is_spelled_the_picker_s_way():
+    """`prefs.VALID_DEFAULT_MODELS` is what the Preferences page stores and the
+    composer reads as the third-ranked answer (param > detected > pref). A
+    pref value the picker's list does not hold resolves to DEFAULT_MODEL, so
+    the user's saved default would be silently ignored."""
+    from fused_render.shell import prefs
+    models = set(_ts_list(_COMPOSER.read_text(encoding="utf-8"), "MODELS"))
+    stored = {m for m in prefs.VALID_DEFAULT_MODELS if m}
+    assert stored <= models, stored - models
+    # "" is the "no stored default" sentinel, never an option on the pill.
+    assert "" in prefs.VALID_DEFAULT_MODELS and "" not in models

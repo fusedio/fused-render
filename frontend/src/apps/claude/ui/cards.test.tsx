@@ -3,7 +3,7 @@
 // every one of these, so a button that sends the wrong thing — or stops
 // offering a way back after a failed send — is the worst bug on the page.
 //
-// react-test-renderer, the ChatFrame.test.tsx pattern: no DOM, so the tests
+// react-test-renderer, the ChatPlaceholder.test.tsx pattern: no DOM, so the tests
 // drive the rendered `onClick`/`onChange` props directly and hand the textarea
 // handlers a stand-in node (see `fakeField`).
 import { afterEach, expect, test } from "bun:test";

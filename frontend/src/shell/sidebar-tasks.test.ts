@@ -617,8 +617,9 @@ const EVENTS = readFileSync(
   "utf8",
 );
 const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
-const CHAT_TEMPLATE = readFileSync(
-  join(SHELL, "../../../fused_render/templates/claude/template.html"),
+const CHAT = readFileSync(join(SHELL, "../apps/claude/ClaudeChat.tsx"), "utf8");
+const RUN_CONTROLLER = readFileSync(
+  join(SHELL, "../apps/claude/protocol/run-controller.ts"),
   "utf8",
 );
 
@@ -679,35 +680,25 @@ describe("pokeTasks", () => {
   it("an interactive chat turn pokes too — through the storage stamp", () => {
     // Interactive turns create no sys:schedule job and no schedule event, so
     // neither producer above fires for them (Akshil, 2026-08-19: "the task's
-    // unread status does not update"). The chat template stamps a localStorage
-    // key at turn start and turn end; the chat is its own iframe document, so
-    // every OTHER document — the shell around it, a Tasks page in another
-    // window — receives the `storage` event and pokes.
+    // unread status does not update"). The chat stamps a localStorage key at
+    // turn start and turn end, and the `storage` event is how every OTHER
+    // document — a Tasks page in another window, a second chat on this one —
+    // hears about it and pokes.
     expect(STORE).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
     expect(STORE).toMatch(/if \(key === CHAT_ACTIVITY_KEY\) pokeTasks\(\);/);
     expect(APP).toMatch(/pokeOnChatActivity\(e\.key\)/);
     expect(APP).toMatch(/window\.addEventListener\("storage", onStorage\)/);
     expect(APP).toMatch(/window\.removeEventListener\("storage", onStorage\)/);
-    // The template's half: one key, stamped at both ends of pollLoop — the one
-    // place a turn is ever in flight, which covers re-attached runs for free.
-    expect(CHAT_TEMPLATE).toContain('"fused-render:chat-activity"');
-    expect(CHAT_TEMPLATE).toMatch(
-      // Not adjacent any more: #653's generation comment sits between the
-      // chrome write and the stamp — the invariant is "stamps at loop START,
-      // before the first poll", not "on the very next line".
-      /setRunningUi\(true\);[\s\S]{0,700}noteChatActivity\(\);[\s\S]*?await fused\.runPython/,
-    );
-    expect(CHAT_TEMPLATE).toMatch(
-      // The end stamp sits after #653's seat-guarded chrome block — outside
-      // the guard, deliberately: the turn ended whichever loop owns the UI.
-      // The window is as generous as the start stamp's above, and for the same
-      // reason: the `ownRunEndedAt` watermark and its comment (D415) now sit
-      // between the guard and the stamp. The invariant is "stamps at loop END,
-      // outside the seat guard", not "on the very next line".
-      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,700}noteChatActivity\(\);/,
-    );
+    // The chat's half: the same one key…
+    expect(CHAT).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    expect(CHAT).toMatch(/localStorage\.setItem\(\s*\n?\s*CHAT_ACTIVITY_KEY,/);
+    // …stamped at BOTH ends of a turn, which is the one place a turn is ever in
+    // flight and so covers re-attached runs for free. Once beside the running
+    // chrome going up, once in the loop's `finally` going down.
+    expect(RUN_CONTROLLER).toMatch(/setRunningUi\(true\);[\s\S]{0,400}noteChatActivity\(\);/);
+    expect((RUN_CONTROLLER.match(/\n\s*noteChatActivity\(\);/g) ?? []).length).toBeGreaterThanOrEqual(2);
     // A changed value every time, or the second of two same-millisecond turn
     // ends fires no event at all.
-    expect(CHAT_TEMPLATE).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
+    expect(CHAT).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
   });
 });
