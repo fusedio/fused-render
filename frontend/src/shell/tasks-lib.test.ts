@@ -7690,10 +7690,19 @@ describe("the List's bordered box", () => {
     // ring at that edge; an open one has its thread underneath.
     const flipped = block(
       TASKS_CSS,
-      '.tasks-list-frame > .tasks-node:last-child > .tasks-row:last-child\n  [data-tip]:not([data-tip=""]):hover::before',
+      '.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child\n  [data-tip]:not([data-tip=""]):hover::before',
     );
     expect(flipped).toContain("top: auto");
     expect(flipped).toContain("bottom: calc(100% + 6px)");
+    // A ONE-ROW LIST does not flip — first and last at once, there is no room
+    // above either (Bugbot, PR #1174). It has nothing to scroll, so the box
+    // stops clipping instead and the panel drops below the ring as usual.
+    expect(
+      block(
+        TASKS_CSS,
+        ".schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child)",
+      ),
+    ).toContain("overflow: visible");
     // The frame is NOT padded out to make room instead: that would be dead page
     // inside the border at every width, for something only hover shows.
     expect(block(TASKS_CSS, ".tasks-list-frame")).not.toContain("padding-bottom");

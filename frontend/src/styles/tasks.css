@@ -108,12 +108,23 @@
    frame's floor: 20px of dead page inside the border would move the bottom
    hairline off the last row at every width, to make room for something that is
    only there on hover. */
-.tasks-list-frame > .tasks-node:last-child > .tasks-row:last-child
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
   [data-tip]:not([data-tip=""]):hover::before,
-.tasks-list-frame > .tasks-node:last-child > .tasks-row:last-child
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
   [data-tip]:not([data-tip=""]):focus-visible::before {
   top: auto;
   bottom: calc(100% + 6px);
+}
+
+/* A ONE-ROW LIST HAS NOWHERE TO FLIP TO (Bugbot, PR #1174): its only row is
+   first and last at once, so a panel raised above it lands outside the box just
+   as one dropped below it does. But a box with one row in it has nothing to
+   scroll either, so it does not need to clip: `overflow: visible` here lets the
+   panel fall below the ring the ordinary way and be seen. `:not(:only-child)`
+   above is what keeps that row's panel pointing down. The bar stays declared
+   (`scrollbar-color`, schedule.css) and simply has nothing to draw. */
+.schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child) {
+  overflow: visible;
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a
