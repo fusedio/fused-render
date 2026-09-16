@@ -166,6 +166,28 @@ export function isOpenAnywhere(source: string, env: PresenceEnv = {}): boolean {
   return Object.values(map).some((e) => matchesSource(e.page, source));
 }
 
+/**
+ * Finding 6: `isOpenAnywhere` does a synchronous `localStorage.getItem` +
+ * `JSON.parse` on every single call. A poll tick in ActivityDock calls it
+ * once per terminal job, once per recent job, once per popup candidate, and
+ * (via the grouped variants in jobs.ts) once per member of every
+ * multi-member group — all within the same tick, all against the exact same
+ * underlying registry snapshot. That's an O(N)-ish pile of synchronous
+ * main-thread storage reads/parses per tick for data that hasn't changed
+ * since the top of the tick.
+ *
+ * Call this ONCE per tick and pass the returned predicate anywhere an
+ * `isOpenAnywhere`-shaped function is expected (it has the same
+ * `(source: string) => boolean` signature) — every caller downstream
+ * (terminalNotifications, recentNotifications, popupTick, groupPopupTick,
+ * and their internal per-member checks) then reuses the one read.
+ */
+export function snapshotIsOpenAnywhere(env: PresenceEnv = {}): (source: string) => boolean {
+  const now = nowOf(env);
+  const pages = Object.values(pruneStale(readAll(env), now)).map((e) => e.page);
+  return (source: string) => pages.some((page) => matchesSource(page, source));
+}
+
 /** Only THIS document: is it showing `source`, focused, and visible right
  *  now? Deliberately does not consult the registry at all — a document
  *  always knows its own state precisely, and going through localStorage

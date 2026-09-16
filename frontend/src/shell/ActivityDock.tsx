@@ -51,7 +51,7 @@ import {
   type Job,
 } from "@platform/lib/jobs";
 import { notify } from "@platform/lib/notifications";
-import { isOpenAnywhere } from "@platform/lib/presence";
+import { snapshotIsOpenAnywhere } from "@platform/lib/presence";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
 import { noteProgressMayHaveMoved } from "./onboarding/progress";
@@ -250,6 +250,13 @@ export default function ActivityDock({
   // not on every tick.
   const runningIdsRef = useRef("");
   const onJobsReported = useCallback((next: Job[]) => {
+    // Finding 6: read the presence registry ONCE per tick rather than once
+    // per job (and once per group member) below. `isOpenAnywhere` itself
+    // does a synchronous localStorage read + JSON.parse on every call;
+    // `snapshotIsOpenAnywhere` does that read/parse a single time here and
+    // hands back a same-shaped predicate closed over the one snapshot, so
+    // every call site below reuses it instead of re-reading storage.
+    const isOpenAnywhere = snapshotIsOpenAnywhere();
     const running = next.filter(isRunning).map((j) => j.id).join(" ");
     let moved = false;
     if (running !== runningIdsRef.current) {

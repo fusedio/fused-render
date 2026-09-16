@@ -5,7 +5,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 
 installDomShim();
 
-const { matchesSource, isOpenAnywhere, isNarrator, computeTopLevel, PRESENCE_STALE_MS } =
+const { matchesSource, isOpenAnywhere, snapshotIsOpenAnywhere, isNarrator, computeTopLevel, PRESENCE_STALE_MS } =
   await import("@platform/lib/presence");
 
 // ---- source matching -------------------------------------------------
@@ -120,6 +120,73 @@ test("isOpenAnywhere: a corrupt stored value degrades to false rather than throw
   };
   expect(() => isOpenAnywhere("/x", { storage, now: () => 1000 })).not.toThrow();
   expect(isOpenAnywhere("/x", { storage, now: () => 1000 })).toBe(false);
+});
+
+// ---- snapshotIsOpenAnywhere (finding 6) ---------------------------------
+
+test("snapshotIsOpenAnywhere: matches the same source/staleness rules as isOpenAnywhere", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/ai-models/local", focused: true, ts: 1000, topLevel: true },
+      w2: { page: "/tasks", focused: false, ts: 1000, topLevel: true },
+    },
+  });
+  const predicate = snapshotIsOpenAnywhere({ storage, now: () => 1000 });
+  expect(predicate("/ai-models/local")).toBe(true);
+  expect(predicate("/tasks")).toBe(true);
+  expect(predicate("/preferences")).toBe(false);
+
+  const staleNow = 1000 + PRESENCE_STALE_MS + 1;
+  const stalePredicate = snapshotIsOpenAnywhere({ storage, now: () => staleNow });
+  expect(stalePredicate("/ai-models/local")).toBe(false);
+});
+
+test("snapshotIsOpenAnywhere: degrades to a false-returning predicate when storage throws", () => {
+  const throwingStorage = {
+    getItem: () => {
+      throw new Error("SecurityError: blocked");
+    },
+    setItem: () => {},
+    removeItem: () => {},
+  };
+  const predicate = snapshotIsOpenAnywhere({ storage: throwingStorage, now: () => 1000 });
+  expect(predicate("/ai-models/local")).toBe(false);
+});
+
+test("snapshotIsOpenAnywhere: reads the registry exactly once no matter how many sources are checked", () => {
+  let reads = 0;
+  const backing = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/ai-models/local", focused: true, ts: 1000, topLevel: true },
+    },
+  });
+  const countingStorage = {
+    getItem: (k: string) => {
+      reads += 1;
+      return backing.getItem(k);
+    },
+    setItem: backing.setItem,
+    removeItem: backing.removeItem,
+  };
+  const predicate = snapshotIsOpenAnywhere({ storage: countingStorage, now: () => 1000 });
+  expect(reads).toBe(1);
+  // Simulate a single poll tick checking many jobs (and group members)
+  // against the same snapshot: none of these may touch storage again.
+  predicate("/ai-models/local");
+  predicate("/tasks");
+  predicate("/preferences");
+  predicate("/ai-models/local");
+  expect(reads).toBe(1);
+
+  // For contrast: the same four checks against the raw `isOpenAnywhere`
+  // (as every call site used before this fix) would read storage every
+  // single time -- this is the exact O(N) pattern the snapshot replaces.
+  reads = 0;
+  isOpenAnywhere("/ai-models/local", { storage: countingStorage, now: () => 1000 });
+  isOpenAnywhere("/tasks", { storage: countingStorage, now: () => 1000 });
+  isOpenAnywhere("/preferences", { storage: countingStorage, now: () => 1000 });
+  isOpenAnywhere("/ai-models/local", { storage: countingStorage, now: () => 1000 });
+  expect(reads).toBe(4);
 });
 
 // ---- narrator election --------------------------------------------------
