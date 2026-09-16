@@ -2366,6 +2366,9 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     });
     controller = made.controller;
     await controller.sendMessage("go");
+    // The decide first AWAITS the queue flag's read (`queueFlagReady`), which is
+    // a rejected fetch and its retry in this harness — a tick, not a poll lap.
+    await new Promise((r) => setTimeout(r, 0));
     // T:14118's `dismiss` is a real `deny` POST that RESOLVES the card
     // (T:14126-14140): the tool call was blocked, so "✗ Not answered" is the
     // record of how it was unblocked. Filtering the row out instead lost that,

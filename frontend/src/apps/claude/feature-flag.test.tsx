@@ -13,8 +13,12 @@ const {
   nativeChatEnabledNow,
   resetNativeChatFlagForTests,
   queueEnabled,
+  queueFlagReady,
+  rereadFlags,
   publishProjectQueueEnabled,
   setPrefsDeadlineForTests,
+  applyQueueFlagBroadcast,
+  QUEUE_FLAG_BROADCAST_KEY,
 } = await import("./feature-flag");
 
 let calls = 0;
@@ -225,4 +229,60 @@ test("the retry still exists — for a REJECTION, and it spends the same budget"
   const seen = await probeFor(60);
   expect(seen[seen.length - 1]).toBe(true);
   expect(calls).toBe(2);
+});
+
+
+// ---- the flag is READ before a send asks it (Akshil's QA, 2026-09-16) ---------
+// `queueEnabled()` is `false` until the one prefs read lands; a send inside that
+// window used to skip the queue's door and start a second run in a busy folder.
+
+test("queueFlagReady starts the read when nothing has, and resolves with the answer in", async () => {
+  answer = async () => ({ chat: { native: false }, queue: { enabled: true } });
+  expect(queueEnabled()).toBe(false);
+  await queueFlagReady();
+  expect(queueEnabled()).toBe(true);
+  expect(calls).toBe(1);
+  // …and a second wait is the same one read, not another request.
+  await queueFlagReady();
+  expect(calls).toBe(1);
+});
+
+test("rereadFlags asks the server again — a tab coming back into view learns the flip", async () => {
+  answer = async () => ({ queue: { enabled: false } });
+  await queueFlagReady();
+  expect(queueEnabled()).toBe(false);
+  answer = async () => ({ queue: { enabled: true } });
+  await rereadFlags();
+  expect(queueEnabled()).toBe(true);
+  expect(calls).toBe(2);
+});
+
+test("a Settings toggle in ANOTHER tab reaches this one through the storage event", async () => {
+  answer = async () => ({ queue: { enabled: false } });
+  await queueFlagReady();
+  expect(queueEnabled()).toBe(false);
+  applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on: true, at: 1 }));
+  expect(queueEnabled()).toBe(true);
+  // An unrelated key, or a malformed value, changes nothing.
+  applyQueueFlagBroadcast("other", JSON.stringify({ on: false }));
+  applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, "nope");
+  expect(queueEnabled()).toBe(true);
+});
+
+test("publishing a toggle writes the broadcast the other tabs listen for", () => {
+  const store = new Map<string, string>();
+  const g = globalThis as { localStorage?: unknown };
+  const had = g.localStorage;
+  g.localStorage = {
+    setItem: (k: string, v: string) => store.set(k, v),
+    getItem: (k: string) => store.get(k) ?? null,
+  };
+  try {
+    publishProjectQueueEnabled(true);
+    const raw = store.get(QUEUE_FLAG_BROADCAST_KEY);
+    expect(raw).toBeDefined();
+    expect((JSON.parse(String(raw)) as { on: boolean }).on).toBe(true);
+  } finally {
+    g.localStorage = had;
+  }
 });

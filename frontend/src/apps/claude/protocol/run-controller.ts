@@ -38,7 +38,7 @@ import {
   scheduleMessage,
 } from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
-import { queueEnabled } from "../feature-flag";
+import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
@@ -2295,7 +2295,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // waiting on this one.
       //
       // Flag off: the endpoint is never called and the agent's own action runs,
-      // byte for byte as before.
+      // byte for byte as before. The flag is AWAITED first (`queueFlagReady`):
+      // a decision inside the first prefs read's window used to read "off" and
+      // write past the door (Akshil's QA, 2026-09-16).
+      await queueFlagReady();
       if (queueEnabled()) {
         const held = await decideThroughQueue({
           run_id: runId,

@@ -132,7 +132,12 @@ import {
   type Viewable,
 } from "./ui";
 import { recapAnchor } from "./protocol/recap";
-import { queueEnabled, useChatRecapEnabled, useProjectQueueEnabled } from "./feature-flag";
+import {
+  queueEnabled,
+  queueFlagReady,
+  useChatRecapEnabled,
+  useProjectQueueEnabled,
+} from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
 import type { SchedAttachment } from "./ui/sched-draft";
@@ -2319,6 +2324,11 @@ function ChatBody(props: ChatBodyProps) {
           // into the exact second run in a busy folder the queue exists to
           // prevent. So only a clean `run: true` sends; anything else is
           // `refuseQueuedSend` — words back in the box, reason on the card.
+          //
+          // THE FLAG IS AWAITED, NOT ASSUMED (Akshil's QA, 2026-09-16): a send
+          // inside the first prefs read's window used to read "off", skip the
+          // door and start a second run in a busy folder. See `queueFlagReady`.
+          await queueFlagReady();
           if (queueEnabled()) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
