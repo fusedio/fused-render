@@ -1394,6 +1394,17 @@ test("a Recent row draws only when its section is expanded, and starts collapsed
   expect(text(toggle[0])).toBe("Recent (1)");
 });
 
+test("a two-member group in Recent counts as ONE row in the section heading, not two", () => {
+  // Counts rows, not raw jobs (user decision, verbatim: "yes we should count
+  // rows") — two members that fold into one `GroupJobRow` must read "Recent
+  // (1)", the number of rows actually rendered, not "Recent (2)".
+  const r1 = doneJob({ id: "sys:g:r1", group: "g" });
+  const r2 = doneJob({ id: "sys:g:r2", group: "g" });
+  const tree = renderView({ rows: [], recent: [r1, r2] });
+  const toggle = findAll(tree, "dl-recent-toggle");
+  expect(text(toggle[0])).toBe("Recent (1)");
+});
+
 test("clicking the Recent toggle reveals its rows; clicking again re-collapses", () => {
   const instance = renderInstance({ rows: [], recent: [doneJob({ id: "r1" })] });
   const toggle = () => findAll(instance.toJSON() as ReactTestRendererJSON, "dl-recent-toggle")[0];
@@ -1511,7 +1522,7 @@ test("a two-member group renders as ONE row, with an 'N of M done' subline", () 
   expect(findAll(tree, "dl-row-group-attention")).toHaveLength(0);
 });
 
-test("a two-member group with one failing member gets the attention stripe and counts both members toward 'needs you'", () => {
+test("a two-member group with one failing member gets the attention stripe and counts as ONE row toward 'needs you'", () => {
   const ok = doneJob({ id: "sys:g:a", group: "g" });
   const bad = failedJob({ id: "sys:g:b", group: "g" });
   const tree = renderView({ rows: [], terminal: [ok, bad] });
@@ -1520,9 +1531,20 @@ test("a two-member group with one failing member gets the attention stripe and c
   expect(findAll(tree, "dl-row")).toHaveLength(1);
   expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
   expect(text(findAll(tree, "dl-model")[0])).toBe("1 of 2 done");
-  // Raw job counts (the documented, lower-risk choice) — the whole group's
-  // two members both count toward the badge, not just the failing one.
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
+  // Row counts, not raw job counts (user decision, verbatim: "yes we should
+  // count rows") — the whole two-member group is ONE row on screen, so it
+  // counts once toward the badge, the same as any other single row.
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
+test("a two-member group counts as ONE row toward the chip's total, not two", () => {
+  // Counts rows, not raw jobs (user decision, verbatim: "yes we should count
+  // rows") — the chip's numeral must read "1", the number of rows on screen,
+  // even though two jobs are folded into it.
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  expect(numeral(tree)).toBe("1");
 });
 
 test("a single-member group renders unchanged via JobRow — the regression trap this task named by number", () => {

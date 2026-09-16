@@ -763,15 +763,27 @@ export function RepoUpdatesCardView({
   // the same "arrives oldest-first" slice `shownTerminal` already uses.
   const [recentShown, setRecentShown] = useState(false);
   const boundedRecent = recent.slice(Math.max(0, recent.length - RECENT_VISIBLE_CAP));
+  // Row count for the "Recent (N)" heading — the same "count rows, not raw
+  // jobs" decision as `total`/`attentionCount` above, read off the exact
+  // collection `renderJobRows` groups and renders below, rather than a
+  // second `groupJobs` call that could drift from what's on screen.
+  const boundedRecentGroups = groupJobs(boundedRecent);
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change. Unaffected by the attention/trail split above: `terminal`
   // is still every terminal job, whichever section it lands in.
+  //
+  // COUNTS ROWS, NOT RAW JOBS (user decision, verbatim: "yes we should count
+  // rows") — eight downloads folded into one grouped row must read as one,
+  // not eight. `terminalGroups` is the exact `groupJobs(terminal)` call the
+  // attention/trail split above already computed, so this reads the SAME
+  // row-level collection the terminal sections render rather than
+  // introducing a second, parallel count that could disagree with it.
   const total =
     visible.length +
-    terminal.length +
+    terminalGroups.length +
     pairings.length +
     visibleAttention.length +
     messages.length;
@@ -780,9 +792,12 @@ export function RepoUpdatesCardView({
   // actionable-notifications item 3) — a waiting task and a failed/cancelled
   // job are the same kind of fact from the chip's point of view: something
   // the person asked for, or something that happened to them, that nobody
-  // has looked at yet.
+  // has looked at yet. Counts ROWS here too, for the same reason as `total`
+  // above: `terminalAttentionGroups` is the exact collection "Needs you"
+  // renders a `GroupJobRow`/`JobRow` per entry of, so a two-member failing
+  // group counts once, matching the single row the reader actually sees.
   const attentionCount =
-    visibleAttention.length + terminalAttention.length + messagesAttention.length;
+    visibleAttention.length + terminalAttentionGroups.length + messagesAttention.length;
   const hasAttentionSection = attentionCount > 0;
   const hasTrailSection =
     pairings.length > 0 ||
@@ -977,7 +992,7 @@ export function RepoUpdatesCardView({
                     onClick={() => setRecentShown((v) => !v)}
                     aria-expanded={recentShown}
                   >
-                    Recent ({boundedRecent.length})
+                    Recent ({boundedRecentGroups.length})
                   </button>
                   {recentShown && (
                     <div className="dl-rows">

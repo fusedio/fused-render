@@ -935,3 +935,120 @@ eleven fixes above landed as its own commit
 (`5f9580d62`, `72ac1b54d`, `c277eb00e`, `ea034e4bc`, `4bf76d98b`,
 `69f294e05`, `f4dc38ff8`, `41816f083`, `bd74ca789`, plus finding 11's own
 commit), pushed immediately.
+
+## Fix 12: `groupPopupTick`'s finding-11 predicate regressed serialized handoffs
+
+Finding 11's fix moved START tracking from group keys to running member ids
+(the right call — see finding 11's own doc, kept unchanged) but landed the
+wrong predicate for deciding whether a group is "already in flight":
+
+```
+const allUnseen = runningMembers.every((m) => !state.runningMemberIds.has(m.id));
+if (!isFirstTick && allUnseen) { ...pop START... }
+```
+
+`runningMembers` here is only the members running THIS tick. A serialized
+burst — a1 finishes, then a2 starts, then a3 starts, all within
+`GROUP_GAP_MS` — has a DIFFERENT, newly-running member on every tick, so
+`allUnseen` reads true on every single handoff (the one member that's
+running right now was never running before, because it just started) and
+`groupPopupTick` popped a duplicate START card per handoff — exactly the
+pile-up D-C exists to prevent, and a straightforward regression of finding
+11's own intent.
+
+Fixed by asking about the whole group, not just its currently-running
+subset:
+
+```
+const wasRunning = g.jobs.some((m) => state.runningMemberIds.has(m.id));
+if (!isFirstTick && !wasRunning) { ...pop START... }
+```
+
+**Why this iterates `g.jobs` (every member) and not `runningMembers` (only
+the currently-running ones) — do not "simplify" this back:** the question
+`groupPopupTick` needs answered is "was this GROUP already in flight last
+tick", not "was this SPECIFIC currently-running member already running
+last tick". Those two questions coincide for a group whose members overlap
+in time, but diverge exactly at a handoff — the moment one member finishes
+and a different member starts in the same or a later tick. `g.jobs` still
+includes the just-finished member (now `done`, not running, but still a
+member of the group this tick), so checking whether ANY of them —
+including the one that just went terminal — was in `runningMemberIds`
+correctly recognizes "this group has had a running member continuously,
+this is a handoff, not a fresh start." Restricting the check to
+`runningMembers` throws away exactly the information (the group's PAST
+running members, now terminal) that makes the handoff case distinguishable
+from a genuine 0-to-some edge. This is still id-keyed per finding 11's own
+fix (a job id never changes, so cluster-ordinal churn still cannot forge a
+"new" member) — finding 12 only corrects which members' ids get checked
+against that set, not the id-keying itself.
+
+Added a regression test (`groupPopupTick: a serialized handoff (members
+running one at a time within GROUP_GAP_MS) pops START exactly once`,
+`jobs.test.ts`) simulating exactly this: a1 running alone pops the group's
+one legitimate START; a1 finishes and a2 takes over — no pop; a2 finishes
+and a brand-new a3 takes over — still no pop. Confirmed it fails under the
+old `allUnseen` predicate (pops a spurious second START at the a1→a2
+handoff) and passes under the fix, by reverting to the old predicate,
+re-running, and restoring the fix. The three pre-existing finding-11 tests
+("removing an older, fully-terminal cluster...", "a late-arriving report
+that splits an earlier cluster...") and the ordinary-completion test all
+still pass unchanged.
+
+Commands: `bun test src/platform/lib/jobs.test.ts
+src/shell/RepoUpdatesDock.test.tsx src/shell/ActivityDock.test.tsx` → 229
+pass, 0 fail. `bunx tsc --noEmit -p frontend` clean. `node
+frontend/scripts/check-boundaries.mjs` → OK (811 files).
+
+## Fix 13: panel section counts now count rows, not raw jobs
+
+User decision, verbatim: "yes we should count rows." Previously `total`,
+`attentionCount`, and the "Recent (N)" heading in `RepoUpdatesDock.tsx` all
+summed raw job counts, so eight downloads folded into one `GroupJobRow`
+still read as "8" on the chip and in "N needs you" — a count that
+disagreed with what was actually on screen (one row).
+
+Fixed by deriving each count from the SAME row-level collection its
+section already renders, rather than a parallel count that could drift:
+
+- `total` now adds `terminalGroups.length` (the exact `groupJobs(terminal)`
+  call the attention/trail split already computes) instead of
+  `terminal.length`.
+- `attentionCount` now adds `terminalAttentionGroups.length` (the exact
+  collection "Needs you" maps a row per entry of) instead of
+  `terminalAttention.length`.
+- The "Recent (N)" heading now reads a new `boundedRecentGroups =
+  groupJobs(boundedRecent)`'s `.length` instead of `boundedRecent.length` —
+  `boundedRecent` is the exact array `renderJobRows` groups and renders
+  below, so this reads the same collection the section shows rather than
+  introducing a second, independent count.
+
+This deliberately REVERSES the "counts stay raw-job, not group-based"
+call recorded earlier in this file (§3 client: the multi-member group row
+UI unit) — that entry's own reasoning is now superseded by the user's
+explicit decision above; do not read that earlier entry as still current.
+
+Not changed: the "Clear all" button's plurality threshold (`visible.length
++ terminal.length + messages.length + boundedRecent.length > 1`) — this is
+a boolean gate deciding whether a bulk-action button exists at all, not a
+displayed count a reader compares against what's on screen, and the task
+that ordered this fix named `total`, the attention count, and the Recent
+heading specifically. Left alone rather than guessed into scope.
+
+Updated `RepoUpdatesDock.test.tsx`'s existing "a two-member group with one
+failing member..." test: its badge assertion changes from `"2 needs you"`
+(the old raw-job count) to `"1 needs you"` (one row). Added two new tests:
+a two-member group counts as ONE toward the chip's total numeral, and a
+two-member group in Recent reads `"Recent (1)"`, not `"Recent (2)"`.
+
+Commands: `bun test src/platform/lib/jobs.test.ts
+src/shell/RepoUpdatesDock.test.tsx src/shell/ActivityDock.test.tsx` → 229
+pass, 0 fail (same run as Fix 12's — both fixes verified together).
+`bunx tsc --noEmit -p frontend` clean. `node
+frontend/scripts/check-boundaries.mjs` → OK (811 files). Grepped `tests/`
+for the touched symbols (`groupPopupTick`, `attentionCount`,
+`boundedRecent.length`, `RepoUpdatesDock`) — the only Python hits
+(`test_activity_bar_structure.py`, `test_jobs_api.py`) reference the
+filename or an unrelated localStorage/fold check, not the specific lines
+changed here; `test_activity_bar_structure.py` re-run directly to confirm
+(4 passed).
