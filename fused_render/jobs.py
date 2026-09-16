@@ -34,6 +34,8 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import os
 import re
@@ -581,6 +583,41 @@ def _default_group(job_id: str) -> str:
 
 # -------------------------------------------------------------------- mutation
 
+# The request-scoped default for `upsert`'s `source=` (SPEC-quiet-
+# notifications.md bug 2). Set for the duration of one request by
+# `server/common.py`'s `no_cache_and_log` middleware, from that request's own
+# `X-Fused-Source` header — never from anything in a request body, the same
+# spoof-proofing rule `X-Fused-Page` already gets (`server/routers/jobs.py`).
+#
+# A `ContextVar` is naturally scoped to the current asyncio Task, i.e. to the
+# request handling it, which is exactly the lifetime this needs — and, just as
+# usefully, it does NOT propagate into a `threading.Thread` a handler spawns
+# (each new thread starts with a fresh/default context). That is not a
+# limitation to work around: a render's LATER ticks run inside such a spawned
+# thread, with no request to inherit from, and correctly see "" here — which
+# is fine, because `job.source` is sticky (only a truthy value overwrites) and
+# the OPENING tick, which runs synchronously inside the request handler before
+# any thread is spawned, already set it. Background/scheduled work with no
+# originating request (envinstall, schedule.py, the update manager, ...) never
+# has this set either, and an empty ambient source degrades to "keep
+# notifying" (the default in `Job.source`'s own comment), never to silence.
+_ambient_source: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_ambient_source", default=""
+)
+
+
+@contextlib.contextmanager
+def ambient_source(value: str):
+    """Make `value` the request-scoped default for `upsert`'s `source=` for
+    the duration of the `with` block. See `_ambient_source`'s own comment for
+    why a `ContextVar` is the right shape here, and `upsert`'s docstring for
+    why an explicit `source=` argument still always wins over this default."""
+    token = _ambient_source.set(value)
+    try:
+        yield
+    finally:
+        _ambient_source.reset(token)
+
 
 def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None = None,
            now: float | None = None, server: bool = False) -> dict:
@@ -777,6 +814,21 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
             job.origin = _text(origin, ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
+        if not source:
+            # Ambient fallback (SPEC-quiet-notifications.md bug 2): a producer
+            # that has no real `page` of its own (the AI Models Playground,
+            # which is shell-level, not a page iframe) and never threads an
+            # explicit `source=` either (text generation, transcribe, capture
+            # — every one of these forgot, twice, in live testing) used to
+            # resolve `source` to "" here, which is indistinguishable from "no
+            # attribution" and suppresses nothing. `_ambient_source` is the
+            # request-scoped default `no_cache_and_log` (server/common.py)
+            # stamps from `X-Fused-Source` for the DURATION of the request
+            # that is minting this tick — so a producer gets a correct source
+            # by doing nothing, and has to go out of its way (spawn a thread,
+            # as the renders already do) to lose it. An explicit truthy
+            # `source=` above always still wins; this only fills the gap.
+            source = _ambient_source.get()
         if source:
             job.source = _page_text(source)
 
