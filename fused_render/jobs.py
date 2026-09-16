@@ -390,6 +390,28 @@ class Job:
     # own repo root/output folder) or one of a handful of shell routes a few
     # server producers name directly. "" when no destination applies.
     page: str = ""
+    # WHO RAISED this job, for presence suppression only — never a click
+    # destination (that's `page`, above). For an ordinary report, `source`
+    # and `page` carry the SAME value (both come off the report's own
+    # `X-Fused-Page`), so nothing here changes for the common case. The two
+    # are DELIBERATELY DISTINCT for a render (`ai/supervisor.py`'s
+    # `_start_render`): `page` there ends up pointing at the render's own
+    # OUTPUT PATH once the caller supplied none (so a click opens the
+    # finished file — a pre-existing, deliberate fallback, see `page`'s own
+    # comment and `_start_render`'s docstring), which makes `page` useless
+    # as "was the user already looking at the page that asked for this" —
+    # comparing an absolute `.png` path against the shell's open routes can
+    # never match, so a suppression check reading `page` for a render is
+    # suppressing nothing, ever (SPEC-quiet-notifications.md bug 1). `source`
+    # is the fix: it NEVER inherits `page`'s output-path fallback (see
+    # `_start_render`, which always reports it as the caller's raw page, or
+    # ""), so a suppression check that reads `source` instead of `page` can
+    # actually match a render against the route that raised it. "" means
+    # "no known raiser" and must always be read as "cannot suppress, so
+    # notify" — never as "matches everything" or "matches nothing forever
+    # silently"; see `jobs.ts`'s `isRecentOnly`, which relies on
+    # `matchesSource("", "")` reading false for exactly this reason.
+    source: str = ""
     # A short, human-readable label naming WHAT RAISED this job — "Playground",
     # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
     # "Scheduler", "App install", or a user app's own name. Not stored as a
@@ -560,9 +582,16 @@ def _default_group(job_id: str) -> str:
 # -------------------------------------------------------------------- mutation
 
 
-def upsert(body: dict, *, page: str = "", origin: str | None = None,
+def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None = None,
            now: float | None = None, server: bool = False) -> dict:
     """Create or update one record from a reporter's POST body.
+
+    `source=`, like `page=` and `origin=`, is threaded in as its own argument
+    and is NEVER settable from the body — see `Job.source`'s own comment for
+    what it means and why it exists. A truthy value always wins, on every
+    tick, the same way a truthy `page=` always overwrites; unlike `page=`, no
+    caller should ever pass an output-path fallback here — an empty `source`
+    on a given tick simply leaves whatever `source` an earlier tick set.
 
     Upsert rather than create+update: a reporter's every progress tick is the
     same call with the same id, so there is one code path whether this is the
@@ -748,6 +777,8 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             job.origin = _text(origin, ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
+        if source:
+            job.source = _page_text(source)
 
         if "state" in body:
             state = _one_of(body.get("state"), STATES, "state", job.state)

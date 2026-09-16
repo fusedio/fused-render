@@ -264,6 +264,76 @@ def test_the_page_header_keeps_internal_whitespace_verbatim(client):
     assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
 
 
+def test_a_page_attributes_its_own_source_through_the_header(client):
+    """`source` (SPEC-quiet-notifications.md bug 1) is who RAISED the row,
+    for presence suppression — for an ordinary page-owned report with no
+    distinct `X-Fused-Source`, it defaults to the same value as `page`."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    row = listing(client)[0]
+    assert row["source"] == "/tmp/my app/index.html"
+    assert row["source"] == row["page"]
+
+
+def test_a_distinct_x_fused_source_header_diverges_from_page(client):
+    """A caller that sends BOTH headers gets a row whose `page` (click
+    destination) and `source` (raiser, for suppression) genuinely differ —
+    this is the mechanism a render uses to keep `page` pointing at its
+    output file while `source` still names the page that asked for it."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={
+            "X-Fused": "1",
+            "X-Fused-Page": "/tmp/outputs/render.png",
+            "X-Fused-Source": "/ai-models/playground",
+        },
+    )
+    row = listing(client)[0]
+    assert row["page"] == "/tmp/outputs/render.png"
+    assert row["source"] == "/ai-models/playground"
+
+
+def test_source_defaults_to_empty_when_no_page_or_source_header_is_sent(client):
+    """No header at all means no known raiser — `source` must stay "",
+    never inherit the request body's `page` fallback a worker gets (that
+    channel is for `page`'s click-destination contract only, see
+    `test_a_worker_reports_its_own_page` and neighbours)."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1"},
+    )
+    assert listing(client)[0]["source"] == ""
+
+
+def test_source_is_never_settable_from_the_body(client):
+    """Same forgeability argument as `origin`'s own body-gate test: a page
+    cannot claim a different raiser by typing one into the report body."""
+    report(client, id="a", title="t", source="/some/other/page")
+    assert listing(client)[0]["source"] == ""
+
+
+def test_source_is_sticky_across_a_later_report_that_omits_it(client):
+    """Same stickiness rule `page`/`origin`/`tier` already follow: a later
+    tick with no `X-Fused-Source` (and no `X-Fused-Page`, so nothing to
+    default from) must not blank what an earlier tick already set."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"},
+    )
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "done": 5},
+        headers={"X-Fused": "1"},
+    )
+    assert listing(client)[0]["source"] == "/ai-models/playground"
+
+
 def test_origin_round_trips_on_a_server_upsert():
     """`origin` names WHAT RAISED a job — "Playground", "Local models" — a
     short caption distinct from `page` (where clicking the row goes). A
