@@ -599,3 +599,90 @@ notifications), not yet started.
 - Full suite (frontend `apps/`, backend beyond the four files above) not
   run — scoped-tests-only per the build instructions; that is the
   orchestrator's job at the end.
+
+## §5 built: scheduled-run events, task-status-poll diffing, both narrator-gated
+
+**Built, tested, committed, pushed** (commits `4d8fc3eed`, `7ce6f588b`,
+`e677f6463`):
+
+- **`fused_render/schedule.py`**: new `EVENT_STARTED = "started"`, emitted
+  in `_send()` right after a spawn is confirmed to have actually taken —
+  never on a failed spawn (claim died, `spawn_helper` error, or an
+  exception), whichever of the three paths caused it. Every Python test
+  whose exact-event-kind-list assertion this affects was updated across
+  `tests/test_schedule_reporting.py`, `tests/test_task_sync_matrix.py`, and
+  `tests/test_schedule_recurring.py` — see those files' own updated
+  comments for which code paths do and do not reach the new emission.
+- **`schedule-toast.ts`/`scheduleEvents.ts`**: `toastForEvent` no longer
+  returns `null` for `done`; `started` gets the same suppressible,
+  non-retained `tone: "info"` shape. `useScheduleEvents` gates its poll on
+  `isNarrator()`, re-checked every tick (not just at mount), and only acks
+  a batch of events AFTER narrating it — the mechanism that makes an
+  unattended run's notification unlosable (server-held-until-acked; a
+  narrator that dies mid-narration sees the event again next time any
+  window polls). Pinned directly in `scheduleEvents.test.ts`.
+- **`task-status-notify.ts`/`useTaskStatusNotify.ts`** (new files): the
+  "interactive turns and needs-input" half of §5's Sources bullet — no new
+  server channel, derived entirely from `tasksPulse.ts`'s existing pulse
+  poll. Diffs each task's `taskColumn()` across polls in the narrator
+  window and calls `notify()` on `in_progress->done` (suppressible info),
+  `in_progress->blocked` (never-suppressed, retained, actioned failure),
+  and `*->needs_attention` (a plain, non-retained popup only — see below).
+  Wired into `App.tsx` alongside `useScheduleEvents`.
+
+**Reconciling `needs_attention` with the pre-existing `attentionRows`
+mechanism** (`tasks-lib.ts`, built 2026-09-03 in direct response to
+Akshil's own "there should be notifications with blocked tasks as well,"
+wired into `RepoUpdatesDock.tsx` well before this branch's §5 work
+started): that mechanism ALREADY gives `needs_attention` a dedicated,
+always-current, dismissible Notifications-panel row — "retained: yes,
+attention" from the spec's table is therefore already true today, with no
+§5 code at all. What it does NOT do is announce the MOMENT a task parks —
+it is a passive, continuously-recomputed display, never a `notify()` call,
+so a task that parks while nobody is on the Tasks page or has the panel
+open produces no popup, only a row waiting to be found.
+
+`useTaskStatusNotify.ts` closes exactly that gap and no more: on
+`*->needs_attention` it calls `notify()` with no tone/tier at all, which
+resolves to `"transient"` — pops, does not retain (`notifications.ts`'s
+`resolveTier`/`isRetained`). Using `notify()`'s ordinary `tone: "error"`
+shape instead would have always-retained a SECOND, independently
+dismissible row for the exact same task, duplicating `attentionRows`
+rather than complementing it. This was a judgment call, not something
+either `DECISIONS-quiet-notifications.md` or `schedule.py`'s own header
+comment (the Akshil 2026-09-03 "no event for a run parked on a card"
+note, about a DIFFERENT, narrower mechanism — the schedule event log
+specifically, not this task-status-poll diff) settles directly; recorded
+here so the next reader does not "fix" the missing tone/page as an
+oversight and reintroduce the duplicate row.
+
+**What `schedule.py`'s own "no event for a parked run" comment is, and is
+not, about**: that decision is scoped to the SCHEDULE EVENT LOG
+(`_emit`/`event_log`, `started`/`done`/`failed`/`missed`) — a toast
+specifically for a *scheduled send* that parks on a card was tried on this
+branch and reverted, because the Tasks page/panel row already covered it.
+It says nothing about, and does not preclude, the separate task-status-poll
+mechanism this section describes, which covers EVERY task (scheduled or
+manually run) and is the spec's own named "interactive turns and
+needs-input" bullet — a distinct code path (`/api/tasks` status, not the
+schedule event log) that this branch's spec text explicitly requires.
+
+**Documentation**: the D661 partial-reversal entry is in
+`DECISIONS-actionable-notifications.md`; the `schedule-toast.ts:30`
+reversal entry is in `DECISIONS-toasts-become-notifications.md`; both
+specs' Constraints/Out-of-Scope sections were updated to point at those
+entries rather than left contradicting this branch.
+
+**Test state**: `bun test frontend/src/platform/lib/scheduleEvents.test.ts
+frontend/src/platform/lib/schedule-toast.test.ts
+frontend/src/shell/task-status-notify.test.ts
+frontend/src/shell/useTaskStatusNotify.test.ts
+frontend/src/shell/tasksPulse.test.ts frontend/src/shell/tasksPulse.lane.test.tsx
+frontend/src/shell/tasks-lib.test.ts frontend/src/shell/RepoUpdatesDock.test.tsx
+frontend/src/shell/sidebar-tasks.test.ts` → 725 pass, 0 fail. `bunx tsc
+--noEmit -p frontend` clean. `node frontend/scripts/check-boundaries.mjs` →
+OK (811 files). Python: the three schedule test files listed above, plus
+the wider schedule suite (441 tests) run during this build, all passing.
+Full suite (frontend `apps/`, backend beyond the files touched here) not
+run — scoped-tests-only per the build instructions; that is the
+orchestrator's job at the end.

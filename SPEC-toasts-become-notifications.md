@@ -256,6 +256,13 @@ rename while `bun test` stays green — this has bitten this repo before.
   deliberate decision).
 - Any change to how server-side jobs are produced, tiered, or dismissed.
 - `sys:schedule:*` rows.
+- **`schedule-toast.ts`'s own "`done` produces no toast" rule was in scope
+  for this round and is now REVERSED by SPEC-quiet-notifications.md §5** —
+  `toastForEvent` no longer returns `null`; `done`/`started` are `tone:
+  "info"`, suppressible via `source`, never retained. See
+  DECISIONS-toasts-become-notifications.md's "Reversal: `schedule-toast.ts:30`"
+  entry. Everything else in this file (the tier/retention machinery
+  `notify()` itself runs on) is untouched by that reversal.
 - Persisting messages across reloads.
 - The commit already on this branch (`845d7ca9b`, AI models curation seal) —
   unrelated, carried over from the user's working tree at their request.

@@ -1774,3 +1774,46 @@ suppression now, but SPEC-quiet-notifications.md §4's "Recent" section
 yet. Today a suppressed job simply disappears from `jobRows`/`popupJobs`
 with nowhere else to land — see `DECISIONS-quiet-notifications.md` for the
 full accounting and where to pick this up.
+
+## D661 partially reversed — a scheduled/interactive task's own row now DOES notify (SPEC-quiet-notifications.md §5)
+
+D661 (`ActivityDock.tsx`'s header comment, and the `SCHEDULE_JOB_PREFIX`
+filter at `jobs.ts:265`/`:330`) says a scheduled/task job's own row is
+excluded from Activity in every state — "a task is not a job." That
+exclusion **stays intact and untouched**: this branch adds no task rows to
+`jobRows`/`popupJobs`, and nothing in `jobs.ts` changed for §5.
+
+What §5 reverses is the *belief that motivated* the exclusion, not the
+exclusion itself: that belief was "a task's own lifecycle needs no
+notification at all, because the Tasks page already shows it." That is
+false for exactly the case nobody is looking — a scheduled run firing at
+6am, or an interactive turn finishing while the tab is elsewhere, has
+nowhere else to surface until someone goes and checks. §5 gives that
+lifecycle its OWN notification path, parallel to (not routed through)
+Activity/`jobs.ts`:
+
+- `fused_render/schedule.py`'s event log (`started`/`done`/`failed`/
+  `missed`) → `frontend/src/platform/lib/schedule-toast.ts` →
+  `scheduleEvents.ts`'s `notify()` calls, narrator-gated.
+- The task-status poll's `in_progress`/`blocked`/`done`/`needs_attention`
+  transitions → `frontend/src/shell/task-status-notify.ts` →
+  `useTaskStatusNotify.ts`'s `notify()` calls, narrator-gated.
+
+**The reversal is conditional, per the spec's own table**: a successful run
+(`done`) still isn't news *when you are looking at it* — both new call
+sites suppress via `notify()`'s `source` check (SPEC-quiet-notifications.md
+§2a's `isFocusedHere`) exactly when the run's own chat/project is already
+on screen. Only `failed`/`missed`/`blocked`/`needs_attention` are never
+suppressed, per the table's "attention" column.
+
+**`needs_attention` specifically does not get a second retained row.**
+`tasks-lib.ts`'s `attentionRows` (built 2026-09-03, wired into
+`RepoUpdatesDock.tsx`) already gives this exact state a dedicated,
+always-current, dismissible Notifications-panel row. Routing the
+`*->needs_attention` transition through `notify()`'s ordinary
+`tone: "error"` shape would always-retain a SECOND, independently
+dismissible row for the same fact. `useTaskStatusNotify.ts` therefore
+raises this one transition with no tone/tier (resolves to `"transient"`:
+pops, does not retain) — the announcement `attentionRows` cannot give on
+its own (a popup at the moment of transition), while `attentionRows`
+keeps owning "is still parked."

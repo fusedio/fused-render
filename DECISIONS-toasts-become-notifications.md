@@ -647,3 +647,30 @@ existing popup/retained row under that id, going through the existing
 `dismissPopup` exit-animation path rather than nulling the popup
 synchronously) and returns `replaceId ?? -1` — a caller that stored the
 returned id for a later `dismiss()` gets a harmless no-op id, not a crash.
+
+## Reversal: `schedule-toast.ts:30`'s "a run that just worked is not news" (SPEC-quiet-notifications.md §5)
+
+`toastForEvent` used to return `null` for a `done` event outright — the
+theory being that the Tasks page is where results live, and a plain
+success is never worth interrupting for. That theory only held while every
+window was assumed to be looking at it. §5's version: **"a successful run
+is news when you are not looking at it."**
+
+`toastForEvent` no longer returns `null` for anything. `done` (and the new
+`started` event kind — `fused_render/schedule.py` now emits it on every
+confirmed spawn) produce a `tone: "info"` `ScheduleToast` carrying
+`source: e.target` — suppressible (via `notify()`'s existing `source`
+check, §2a) when the run's own chat/project is already open+focused, and
+never retained (no `action`/`page`), same as any other transient
+confirmation. `failed`/`missed` are unchanged: `tone: "error"`, never
+suppressed, always retained, always actioned.
+
+This is the same "conditional" shape D661's reversal takes in
+`DECISIONS-actionable-notifications.md` — read that entry for the fuller
+picture, since both reversals are two views of the same §5 change
+(`scheduleEvents.ts`'s narrator-gated `notify()` calls are the single
+mechanism behind both). `scheduleEvents.test.ts` pins the "unattended run
+must not lose its notification" trap named in the spec directly: acking a
+schedule event only ever happens AFTER it has been narrated, so a page
+that dies mid-narration sees the event again rather than silently losing
+it, and a non-narrator window never polls or acks at all.

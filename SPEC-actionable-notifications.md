@@ -55,7 +55,7 @@ DESIRED
 - **Native OS notifications.** None exist in the codebase, and `fused_render/app.py:362-363` records that as a deliberate decision.
 - **Whole-row clicks on repo rows.** Their buttons already satisfy the actionability rule.
 - **Per-producer changes to what a job's title or status text says** — only its destination is in scope.
-- **`sys:schedule:*` rows**, which never reach the panel and keep their existing read-gated `FINISHED_TTL_S` age-out.
+- **`sys:schedule:*` rows**, which never reach the panel and keep their existing read-gated `FINISHED_TTL_S` age-out. **This is unchanged by SPEC-quiet-notifications.md §5** — §5 does not route a task/schedule job into `jobRows`/Activity (D661's `SCHEDULE_JOB_PREFIX` exclusion stays exactly as written); it gives a task's lifecycle a wholly separate notification path (`schedule-toast.ts`/`scheduleEvents.ts` and `task-status-notify.ts`/`useTaskStatusNotify.ts`) that calls `notify()` directly rather than going through a job row at all. See DECISIONS-actionable-notifications.md's "D661 partially reversed" entry.
 ## Producers and their destinations (settled)
 
 `fused_render/shell/onboarding.py` only calls `jobs.list_jobs()`; it never
