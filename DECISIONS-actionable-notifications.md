@@ -1730,3 +1730,47 @@ than being left to read as if D663 no longer holds anywhere. See
 SPEC-toasts-become-notifications.md and
 DECISIONS-toasts-become-notifications.md for the full tier-assignment
 rationale this decision enables.
+
+## Sixteenth round — presence-based suppression for job rows (SPEC-quiet-notifications.md §2b / D-A)
+
+`SPEC-quiet-notifications.md` adds a client-side presence registry
+(`platform/lib/presence.ts`) so the panel can answer "is the page this job
+is about already open somewhere?" without a server round-trip. §2b uses that
+to keep a *successful* terminal job from popping or entering "Needs you"/
+"Worth keeping" when the user is already looking at its destination — a new
+`isRecentOnly(job, isOpenAnywhere)` predicate in `platform/lib/jobs.ts`,
+threaded as an optional trailing parameter through `jobRows`, `popupJobs`,
+`popupTick`, and `terminalNotifications`.
+
+**This is deliberately a new, narrower mechanism than anything already
+documented in this file, not a variant of D663's timer or of the
+error/cancelled promotion:**
+
+- It only ever excludes a job whose `state === "done"` **and** whose
+  `effectiveTier(job) !== "attention"` **and** whose `page` is open
+  somewhere — written as three explicit checks rather than folded into one
+  boolean, specifically so "an error/cancelled job is never suppressed"
+  reads as true in the source rather than as an accidental consequence of
+  the `state` check alone (`error`/`cancelled` jobs are never `"done"`
+  anyway, which would have made checking `state` alone sufficient by
+  accident — the explicit `effectiveTier` check is the deliberate,
+  defensive version, verified by reading `effectiveTier`'s definition, not
+  by assuming its promotion covers this case).
+- It composes with, and does not replace, D663: a suppressed row is not
+  dismissed. The server-side row is untouched; `fused.watchJob` still sees
+  it; the very next read (navigation away, the presence entry going stale
+  after `PRESENCE_STALE_MS`) re-evaluates the same job from scratch and can
+  put it back in view. There is no new timer anywhere in this mechanism.
+- `DownloadManager.tsx`'s existing `jobRows(mergedRows(reported))` call site
+  did not need to change: it only ever sees jobs already filtered to
+  non-terminal by `inFlightJobs`, so an *optional* trailing parameter (all
+  four signatures) left that call site correct by construction — pinned
+  with an explicit "omitting `isOpenAnywhere` preserves today's behavior"
+  test in `jobs.test.ts` rather than left to be true by coincidence.
+
+**Known gap, not a design decision:** `isRecentOnly` is wired into
+suppression now, but SPEC-quiet-notifications.md §4's "Recent" section
+(where these suppressed successes are supposed to land) has not been built
+yet. Today a suppressed job simply disappears from `jobRows`/`popupJobs`
+with nowhere else to land — see `DECISIONS-quiet-notifications.md` for the
+full accounting and where to pick this up.

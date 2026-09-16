@@ -610,3 +610,40 @@ though `git blame` churn later put it back near 333 — always re-grepped
 rather than trusted); and the "destructive-but-successful" bullet the brief
 asked to be corrected lives in `SPEC-toasts-become-notifications.md`
 (§5, "Migrate the 69 call sites"), not `SPEC-actionable-notifications.md`.
+
+## Sixteenth round — client-message suppression, `source` opt-in (SPEC-quiet-notifications.md §2a / D-A)
+
+Adds an opt-in `source?: string` to `NotificationInput` and a new
+`isSuppressed(input, tier)` check at the top of `notify()`
+(`platform/lib/notifications.ts`), ahead of the existing `replaceId`
+branch. A message is suppressed when: `source` is set, the raising
+document is itself focused and visible on that exact source
+(`platform/lib/presence.ts`'s `isFocusedHere`, which reads the document's
+own live focus/visibility state directly rather than the presence
+registry — see that module's decisions log for why), the resolved tier is
+not `attention`, and the input carries no `action` and no `page`.
+
+**Why this doesn't touch the tier/retention machinery this file already
+documents:** suppression is evaluated once, before tier resolution's
+consequences (popup creation, the retained-list step-down) run at all — it
+answers "should this message exist in the UI in any form" rather than
+changing *how* a message that does get created is tiered or retained. An
+`attention` message, or one carrying `action`/`page` (i.e. one with
+something left to do), is never suppressible regardless of focus, matching
+this file's own "actionability" framing of what belongs in the retained
+list — suppression reuses that same shape (no `action`, no `page`) rather
+than inventing a second, parallel notion of "nothing to do here."
+
+Wired at the two call sites SPEC-quiet-notifications.md names explicitly:
+`shell/AppPage.tsx`'s icon-pick-failure and export-failure `notify()`
+calls (both `tone: "error"`, so functionally unaffected by suppression
+today — `error` promotes to `attention` via `resolveTier`'s existing
+rule — but consistent with the spec's explicit call-out and ready for a
+future non-error call site at either line to opt in without further
+plumbing).
+
+A suppressed call still runs its `replaceId` cleanup (dismisses any
+existing popup/retained row under that id, going through the existing
+`dismissPopup` exit-animation path rather than nulling the popup
+synchronously) and returns `replaceId ?? -1` — a caller that stored the
+returned id for a later `dismiss()` gets a harmless no-op id, not a crash.
