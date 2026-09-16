@@ -5,9 +5,8 @@ import { installDomShim } from "@platform/lib/testDomShim";
 
 installDomShim();
 
-const { matchesSource, isOpenAnywhere, isNarrator, PRESENCE_STALE_MS } = await import(
-  "@platform/lib/presence"
-);
+const { matchesSource, isOpenAnywhere, isNarrator, computeTopLevel, PRESENCE_STALE_MS } =
+  await import("@platform/lib/presence");
 
 // ---- source matching -------------------------------------------------
 
@@ -154,4 +153,52 @@ test("isNarrator: a pane entry (topLevel: false) is never eligible even if its i
 test("isNarrator: nobody on record degrades to true (narrate), never to silence", () => {
   const storage = fakeStorage({});
   expect(isNarrator({ storage, now: () => 1000 })).toBe(true);
+});
+
+// ---- Finding 1: an embed must never be narrator-eligible -----------------
+//
+// `computeTopLevel` is what `writeSelf` stores as a document's `topLevel`
+// flag, which is exactly the set `isNarrator` elects from above. Before this
+// fix, a standalone embed/preview tab (top-level in its own window, but
+// `IS_EMBED`) registered `topLevel: true` and could win the election even
+// though nothing ever narrates from an embed — silencing every
+// schedule/task notification for as long as it sorted first and stayed
+// open. `IS_EMBED` is only ever computed once, at module load, from
+// `location.pathname` (see `router.ts`), so it can't be varied within one
+// test file/process without contaminating every other suite that shares
+// `globalThis` in the same `bun test` run (see `testDomShim.ts`'s header).
+// `computeTopLevel` is pulled out as a pure function precisely so this
+// exclusion can be pinned directly, against both `isEmbed` values, without
+// touching that shared module-load state.
+test("computeTopLevel: an embed document is never topLevel, even when it is window.top", () => {
+  const top = {} as Window;
+  (top as unknown as { top: Window }).top = top;
+  expect(computeTopLevel(true, top)).toBe(false);
+});
+
+test("computeTopLevel: a non-embed top-level document is topLevel (pre-fix behavior preserved)", () => {
+  const top = {} as Window;
+  (top as unknown as { top: Window }).top = top;
+  expect(computeTopLevel(false, top)).toBe(true);
+});
+
+test("computeTopLevel: a non-embed framed (pane) document is never topLevel", () => {
+  const top = {} as Window;
+  const frame = {} as Window;
+  (top as unknown as { top: Window }).top = top;
+  (frame as unknown as { top: Window }).top = top;
+  expect(computeTopLevel(false, frame)).toBe(false);
+});
+
+test("computeTopLevel: an embed pane (framed embed) is never topLevel either", () => {
+  const top = {} as Window;
+  const frame = {} as Window;
+  (top as unknown as { top: Window }).top = top;
+  (frame as unknown as { top: Window }).top = top;
+  expect(computeTopLevel(true, frame)).toBe(false);
+});
+
+test("computeTopLevel: no window (SSR-ish) degrades to topLevel when not an embed", () => {
+  expect(computeTopLevel(false, undefined)).toBe(true);
+  expect(computeTopLevel(true, undefined)).toBe(false);
 });

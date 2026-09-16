@@ -14,7 +14,7 @@
 // `postMessage` (this repo deliberately avoids the latter — see
 // `notifications.ts`'s own header comment on why it uses a same-origin
 // `window.top` global instead for the parent/child case).
-import { NAV_EVENT, currentUrl, fsPathFromLocation, IS_TOP_EMBED } from "@platform/lib/router";
+import { NAV_EVENT, currentUrl, fsPathFromLocation, IS_EMBED } from "@platform/lib/router";
 
 export interface PresenceEntry {
   page: string;
@@ -203,6 +203,31 @@ export function isNarrator(env: PresenceEnv = {}): boolean {
 // one must NOT collide with another document's, hence the random suffix).
 const windowId = `w${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+// Finding 1 (code review 2026-09-16): this used to be
+// `IS_TOP_EMBED || window === window.top` — but `IS_TOP_EMBED` (an EMBED
+// document that also happens to be top-level) already IMPLIES
+// `window === window.top` by its own definition, so that `||` was a no-op
+// that changed nothing: any top-level window, embed or not, registered as
+// `topLevel: true`. An embed/preview document opened standalone in its own
+// tab is exactly that — top-level, and eligible to WIN the narrator
+// election — but nothing ever narrates from an embed (`useScheduleEvents`
+// bails out on `IS_EMBED` before it ever calls `isNarrator()`, and
+// `useTaskStatusNotify` only mounts inside the shell's `App`). If that
+// embed's `windowId` sorts first, the real shell tab loses the election to
+// a document that will never narrate, silencing every schedule/task
+// notification for as long as the embed tab stays open. Narrator
+// eligibility must mean "a document that could actually narrate" —
+// `isEmbed` is excluded outright, not folded into an `||` that never
+// mattered.
+//
+// Pulled out as a pure function (rather than inlined in `writeSelf`) so a
+// test can pin the exclusion directly against both `isEmbed` values without
+// having to vary `IS_EMBED`, which `router.ts` only ever computes once, at
+// module load, from `location.pathname`.
+export function computeTopLevel(isEmbed: boolean, win: Window | undefined): boolean {
+  return !isEmbed && (typeof win === "undefined" || win === win.top);
+}
+
 function writeSelf(env: PresenceEnv = {}): void {
   const now = nowOf(env);
   const map = pruneStale(readAll(env), now);
@@ -210,7 +235,7 @@ function writeSelf(env: PresenceEnv = {}): void {
     page: currentPresencePage(),
     focused: isFocusedAndVisible(),
     ts: now,
-    topLevel: IS_TOP_EMBED || typeof window === "undefined" || window === window.top,
+    topLevel: computeTopLevel(IS_EMBED, typeof window === "undefined" ? undefined : window),
   };
   writeAll(map, env);
 }
