@@ -259,12 +259,32 @@ same redundancy for an eighth of the time.
 ## 7. The ranked search — `GET /api/index/rank`
 
 `GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
-age_s, root, hits, total, truncated, scanned_partitions, of_partitions}`, where each
-hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
-defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
-encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
-corpus and this is not one. A miss is a 200 with `covered: false` and no hits, exactly
-as for the corpus.
+age_s, root, base, mode, pattern, hits, total, truncated, scanned_partitions,
+of_partitions}`, where each hit is `{rel, is_dir, size, mtime, score, longest_run,
+tier, depth}` and `limit` defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000; a
+`mode: "glob"` answer instead uses `MAX_GLOB_RANK_LIMIT`, 5,000 — every glob hit is an
+equal match with no tail to trim, so the client select-alls the whole fetched set
+rather than a top-N of it). Plain JSON, a few KB — no columnar encoding and no gzip
+special-casing, because that machinery (§6) exists for a 20 MB corpus and this is not
+one. A miss is a 200 with `covered: false` and no hits, exactly as for the corpus.
+
+`q`, exactly as typed (unstripped), is run through `resolve_query` (`query.md §3`)
+before anything else: whitespace runs collapse into wildcards, a leading `~`/`/`/drive
+letter/`..` can peel a `base` off the front, and the result decides `mode` —
+`"glob"` the moment the expanded string contains a `*` anywhere, including one
+introduced purely by whitespace with no character the user typed, else
+`"substring"`. `base` is the resolved search root (equal to the request's own `root`
+unless `q` escaped it), and `pattern` is exactly what a `mode: "glob"` hit's `rel` was
+full-matched against — the tail of the expanded `q` left after peeling off `base`,
+carrying any implicit `**/` prefix. `pattern` is populated in **both** modes (cheap —
+it is already computed) but only meaningful for highlighting when `mode == "glob"`:
+in substring mode a hit's `rel` is trivially known to contain the raw query as a
+literal substring, so the client re-derives highlight positions from its own typed
+text (`fuzzy.ts`'s `substringMatch`) exactly as it always did.
+
+**A `mode: "glob"` hit is never scored** (`query.md §3`) — there is no ranking signal
+to compute when every hit is an equal full-pattern match — and is returned in
+`depth ASC, rel ASC` order instead of the substring branch's `tier`/`score` order.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
@@ -295,10 +315,16 @@ including `lower(rel)`, doesn't land in an arbitrary order on a multi-threaded t
 `longest_run` is still reported on each hit, since the wire contract and
 `listing/ranked-hits.ts` still read it.
 
-**`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
-got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
-truth for what highlights, and the server stays free to change how it scores internally
-without that becoming a wire contract.
+**`positions` are not returned, in either mode.** The client re-runs `fuzzyMatch`
+(substring mode) or `globMatch` (glob mode, matching `pattern` against each hit's
+`rel`, both in `platform/lib/fuzzy.ts`) over the ~200 rows it got back to build its own
+highlights, so `fuzzy.ts` stays the single source of truth for what highlights, and the
+server stays free to change how it scores or matches internally without that becoming
+a wire contract. `globMatch` marks each literal piece of `pattern` separately, leaving
+wildcard gaps unmarked (a mark spanning `/` stays continuous); rendering must
+reconstruct the hit's `rel` byte-exact. The two production call sites — the in-folder
+listing (`listing/ranked-hits.ts`) and the home page (`lib/home-search.ts`) — compute
+positions independently (one per search box) but share this one render/match layer.
 
 **Parity is a test, not an intention.** The deleted `index/rank.py` used to be a line-
 for-line port of `fuzzy.ts` + `listing/search.ts`; `_rank_sql` is now a SQL port of just
