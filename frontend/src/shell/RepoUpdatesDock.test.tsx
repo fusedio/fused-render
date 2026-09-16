@@ -140,6 +140,7 @@ const failedJob = (over: Partial<Job> = {}): Job => {
     unit: "",
     message: "GDAL ran out of memory",
     page: "",
+    source: "",
     origin: "",
     owner: "server",
     cancellable: false,

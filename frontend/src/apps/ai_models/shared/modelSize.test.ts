@@ -38,6 +38,7 @@ function job(extra: Partial<Job> = {}): Job {
     unit: "bytes",
     message: "",
     page: "",
+    source: "",
     origin: "",
     owner: "server",
     cancellable: true,

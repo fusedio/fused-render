@@ -1052,3 +1052,152 @@ for the touched symbols (`groupPopupTick`, `attentionCount`,
 filename or an unrelated localStorage/fold check, not the specific lines
 changed here; `test_activity_bar_structure.py` re-run directly to confirm
 (4 passed).
+
+## Fix 14: Bug 1 (client) — `Job.source`, `isRecentOnly`/`familyKey` read it, and the Playground actually sends it
+
+Live report: on the AI Models Playground, generating an image while the
+Playground itself was open still popped a success notification (should
+have suppressed), and two sequential generations popped two separate
+notifications (should have grouped into one). This entry covers the
+CLIENT half of bug 1 — the server half (`Job.source`, `X-Fused-Source`
+header, `fused_render/jobs.py`/`ai_runtime.py`/`ai/supervisor.py`) is a
+separate backend commit (`1dc9d0164`).
+
+**Root cause, restated for the client:** `page` on a `Job` row is
+overloaded — for a server-backed render it is deliberately left to fall
+back to the OUTPUT IMAGE PATH once no caller page survives
+(`_start_render`'s `page or done_page or out_dir or ""`), so a click still
+opens the file. `isRecentOnly` (`frontend/src/platform/lib/jobs.ts`) read
+`job.page` for its presence check, comparing the open shell route against
+an absolute `.png` path — which can never match, so a server-backed
+render could never be suppressed no matter where the user was.
+
+**Fix:** added `source: string` to the `Job` interface (mirrors the
+server's own `Job.source` exactly, including its own doc comment about
+never inheriting `page`'s fallback), and changed `isRecentOnly` to read
+`job.source` instead of `job.page`. Tests (`jobs.test.ts`): a render whose
+`page` is an output path but whose `source` is the raising route IS
+suppressed when that route is open; the same job with an empty `source`
+is NOT suppressed (empty degrades to notify, never silence).
+
+**Deviation from the brief, found while fixing the above (not in the
+original brief):** `familyKey` (the function `groupJobs`/`groupPopupTick`
+use to cluster jobs into one popup) was keyed on `job.page` alone. For a
+REAL render this is a per-job output path, so two Playground image
+generations sharing the same `group` value would never share a
+`familyKey` in production — they would never cluster into one group at
+all, regardless of any fix to the popup-tick mechanism itself. Changed
+`familyKey` to `${job.source || job.page} ${job.group}` — falls back to
+`page` only when `source` is empty (an ordinary, non-render producer,
+where the two already carry the same value), so no existing single-member
+or non-render grouping test's behavior changes. Flagged here explicitly
+because it is scope beyond bug 1/bug 2 as originally described, but the
+live symptom ("2 popups for 2 image gens") cannot be fixed without it —
+`groupPopupTick`'s own fix (Fix 12, and the new lastStartPopAt gate below)
+only matters once two renders actually land in the same group.
+
+**Blast radius of the required `source: string` field** — every direct
+`Job` object literal or `job()`/`failedJob()` helper across the frontend
+needed a `source` value, found via `bunx tsc --noEmit -p .` (10 errors
+across 9 files, same technique as the `group` field's own rollout — see
+above). Fixed, each defaulting to `""` or (in `jobs.test.ts`'s own
+`job()` helper) to whatever `page` resolved to, matching the server's own
+default and keeping every pre-existing fixture passing unchanged:
+`frontend/src/platform/lib/jobs.test.ts`,
+`frontend/src/apps/ai_models/playground/client.test.ts`,
+`frontend/src/apps/claude/ann/transcribe.test.ts`,
+`frontend/src/apps/ai_models/shared/modelSize.test.ts`,
+`frontend/src/platform/ui/DownloadManager.test.tsx`,
+`frontend/src/platform/ui/JobPopupCard.test.tsx`,
+`frontend/src/platform/ui/JobRow.test.tsx`,
+`frontend/src/platform/ui/NotificationHost.test.tsx`,
+`frontend/src/shell/ActivityDock.test.tsx`,
+`frontend/src/shell/RepoUpdatesDock.test.tsx`. Checked
+`RepoUpdatesDock.test.tsx`'s `notify()`/`message()` calls (lines
+~1279/1325) before touching anything near them — confirmed they build a
+separate notifications type, not `Job`, and left untouched.
+
+**Verified the producer actually sends the header** (the brief's own
+explicit instruction, not assumed): `frontend/src/apps/ai_models/playground/client.ts`'s
+`startImage`/`startVideo` sent NO attribution headers at all before this
+fix — confirmed by reading `postJson`'s call sites directly. Fixed by
+adding a `sourceHeaders()` helper (`X-Fused-Source: currentPresencePage()`)
+passed to both. Deliberately does NOT also send `X-Fused-Page`: sending it
+would make `page`'s existing output-path fallback lose to the caller's
+route permanently (the router reads `X-Fused-Page` once at job creation
+and threads it through every server-side tick), breaking "click opens the
+file" for every Playground render. TDD: wrote
+`startImage sends X-Fused-Source...`/`startVideo sends X-Fused-Source...`
+in `client.test.ts` first (mocking `fetch` to capture the request), 2
+failing (`X-Fused-Source` undefined), then implemented, both green, and
+both assert `X-Fused-Page` is absent.
+
+Commands: `bun --cwd frontend test src/platform/lib/jobs.test.ts
+src/platform/lib/presence.test.ts src/shell/RepoUpdatesDock.test.tsx
+src/shell/ActivityDock.test.tsx src/apps/ai_models/playground/client.test.ts
+src/apps/ai_models/shared/modelSize.test.ts src/apps/claude/ann/transcribe.test.ts
+src/platform/ui/DownloadManager.test.tsx src/platform/ui/JobPopupCard.test.tsx
+src/platform/ui/JobRow.test.tsx src/platform/ui/NotificationHost.test.tsx` →
+422 pass, 0 fail. `bun --cwd frontend test src/apps/ai_models` (full app
+sweep, collateral check on the client.ts change) → 630 pass, 0 fail.
+`bunx tsc --noEmit -p frontend` clean. `node
+frontend/scripts/check-boundaries.mjs` → OK (811 files). Backend:
+`.venv/bin/python -m pytest tests/test_jobs_api.py
+tests/test_ai_supervisor_job_page.py tests/test_ai_runtime.py` → 667
+passed. Grepped `tests/` for `familyKey`/`lastStartPopAt`/`X-Fused-Source`/
+`job.source` — only hits are the new tests added in this same pass
+(`test_jobs_api.py`, `test_ai_runtime.py`), no stale line-literal
+assertions on the touched frontend source.
+
+## Fix 15: Bug 2 — a finished group re-popped when a new member started (lastStartPopAt gate)
+
+Live report, same symptom as Fix 14 above: "similar tasks for same page
+should be grouped. I got 2 notification popups for 2 image gen." Fix 12
+(`wasRunning` checked by member id across the whole group, not just the
+currently-running subset) already closes the case where the group's OWN
+member list never shrinks below 2 — see that entry. It does not close a
+second, narrower gap: `GroupPopupState.runningMemberIds` is rebuilt each
+tick from ONLY the members running THAT tick
+(`for (const m of runningMembers) nextRunningMemberIds.add(m.id)`, inside
+the `if (runningMembers.length > 0)` branch). A tick where the group has
+ZERO running members — one member already finished, the next merely
+queued/not yet started, still a multi-member group — adds nothing to that
+set, so a genuinely continuous burst that happens to pass through one
+observed all-idle tick has its "was running" memory erased. The next
+member starting then reads as a fresh 0-to-some edge and pops a spurious
+second START.
+
+Fix: `GroupPopupState.lastStartPopAt`, a `familyKey(job) -> started_at of
+that family's last START pop` map, rebuilt fresh each tick from live
+multi-member groups only (same pattern as `runningMemberIds`) but,
+critically, explicitly CARRIED FORWARD through an all-idle tick (the
+`else if (priorPop !== undefined) nextLastStartPopAt.set(fam, priorPop)`
+branches, both when a group currently has 0 running members and when a
+family isn't in `groups` in `runningMembers.length > 0`'s own miss case).
+A START now pops only when BOTH `wasRunning` is false AND the family's
+last pop (if any) is more than `GROUP_GAP_MS` in the past
+(`recentlyPopped`). Keyed on `familyKey`, not the cluster-scoped `g.key`,
+per Fix 12/finding 11's own rule that cluster identity is partly
+positional and must never key persisted state.
+
+Why a genuinely new burst still pops: `clusterFamily` splits a family into
+separate clusters whenever a member's `started_at` is more than
+`GROUP_GAP_MS` past the cluster's own latest activity — so two members
+that land in DIFFERENT clusters are, by construction, always more than
+`GROUP_GAP_MS` apart, and `recentlyPopped` can never suppress them.
+
+Tests added (`jobs.test.ts`): `a member finishing before the next one
+starts does not re-pop START` — a1 runs and finishes while a2 is only
+"waiting" (an idle-but-still-multi-member tick sits in between), a2 then
+starts 67s later (well inside `GROUP_GAP_MS`) — must NOT re-pop; `a
+genuinely new burst, more than GROUP_GAP_MS after the family's last START
+pop, still pops` — a brand-new pair (`b1`/`b2`) starting far enough past
+`a1`/`a2` that `clusterFamily` itself puts them in a new cluster — must
+pop. The pre-existing serialized-handoff regression test (commit
+`18352ff42`) re-run unmodified and still passes, along with every other
+`groupPopupTick` test in the file (144 total, 0 failing).
+
+Commands: same full command list as Fix 14 above (both fixes verified
+together in the same run) — 422 pass, 0 fail; `bunx tsc --noEmit -p
+frontend` clean; `node frontend/scripts/check-boundaries.mjs` → OK (811
+files).

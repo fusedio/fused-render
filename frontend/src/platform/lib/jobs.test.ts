@@ -38,6 +38,12 @@ import {
 } from "@platform/lib/jobs";
 
 function job(over: Partial<Job> = {}): Job {
+  // `source` defaults to whatever `page` resolved to (ordinary-producer
+  // parity, same as the server's own default) unless a test explicitly
+  // overrides it — this is what lets every pre-existing fixture in this file
+  // keep passing unchanged once `isRecentOnly`/`familyKey` read `source`
+  // instead of `page`.
+  const page = over.page ?? "/tmp/index.html";
   return {
     id: "j1",
     title: "FLUX.2-klein-4B",
@@ -51,7 +57,8 @@ function job(over: Partial<Job> = {}): Job {
     total_estimated: false,
     unit: "bytes",
     message: "",
-    page: "/tmp/index.html",
+    page,
+    source: page,
     origin: "",
     owner: "page",
     cancellable: true,
@@ -826,6 +833,33 @@ test("isRecentOnly: a running job is never recent-only regardless of presence", 
   expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
 });
 
+// Bug 1 (SPEC-quiet-notifications.md): a server-backed render's `page` is
+// overloaded to the OUTPUT IMAGE PATH once no caller page survives — a
+// pre-existing, deliberate fallback in `_start_render` that must keep
+// working so a click still opens the file. `source` is the separate field
+// that carries the RAISING route instead, and `isRecentOnly` must read it,
+// not `page`, or a server-backed render can never be suppressed at all.
+test("isRecentOnly: a render whose page is an output path IS suppressed via its distinct source", () => {
+  const j = job({
+    state: "done",
+    tier: "trail",
+    page: "/tmp/outputs/render.png",
+    source: "/ai-models/playground",
+  });
+  expect(isRecentOnly(j, openHere("/ai-models/playground"))).toBe(true);
+});
+
+test("isRecentOnly: the same render job is NOT suppressed when source is empty (unknown source degrades to notify)", () => {
+  const j = job({
+    state: "done",
+    tier: "trail",
+    page: "/tmp/outputs/render.png",
+    source: "",
+  });
+  expect(isRecentOnly(j, openHere("/ai-models/playground"))).toBe(false);
+  expect(isRecentOnly(j, openNowhere)).toBe(false);
+});
+
 test("jobRows: a suppressed success drops out when isOpenAnywhere is supplied", () => {
   const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
   expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual([]);
@@ -1291,6 +1325,81 @@ test("groupPopupTick: a serialized handoff (members running one at a time within
 
   const t3 = groupPopupTick(tick3, t2.state, false);
   expect(t3.popped).toBeNull(); // a3 taking over from a2 is likewise not a new START
+});
+
+test("groupPopupTick: a member finishing before the next one starts does not re-pop START (bug 2, live report: 2 popups for 2 image gens)", () => {
+  // The gap `wasRunning` alone cannot see: a1 runs and finishes while a2 is
+  // merely queued ("waiting", not yet running) — an intermediate tick
+  // observes the group with ZERO running members while it is still a
+  // multi-member group. Because `GroupPopupState.runningMemberIds` is
+  // rebuilt each tick from ONLY the members running THAT tick (see its own
+  // doc), an all-idle-but-still-multi tick forgets a1 was ever running —
+  // `wasRunning` reads false the instant a2 actually starts, even though
+  // this is the SAME burst. `lastStartPopAt` is the backstop: it is
+  // explicitly carried forward through an idle tick (unlike
+  // `runningMemberIds`), so the gate still recognizes "this family already
+  // popped a START recently" and suppresses the spurious second pop.
+  const t1: Job[] = [
+    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
+  ];
+  // Idle tick: a1 just finished, a2 hasn't started yet — 0 running members,
+  // still a 2-member group.
+  const t2: Job[] = [
+    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
+  ];
+  // a2 finally starts, 67s (well inside GROUP_GAP_MS) after a1's own start.
+  const t3: Job[] = [
+    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
+    job({ id: "sys:g:a2", state: "running", group: "sys:g", started_at: 67_100 }),
+  ];
+
+  const r1 = groupPopupTick(t1, EMPTY_GROUP_POPUP_STATE, false);
+  expect(r1.popped?.id).toBe("sys:g:a1"); // genuine first START for this family
+
+  const r2 = groupPopupTick(t2, r1.state, false);
+  expect(r2.popped).toBeNull(); // ordinary completion of one member, nothing to pop
+
+  const r3 = groupPopupTick(t3, r2.state, false);
+  expect(r3.popped).toBeNull(); // same burst — must NOT re-pop START
+});
+
+test("groupPopupTick: a genuinely new burst, more than GROUP_GAP_MS after the family's last START pop, still pops", () => {
+  const t1: Job[] = [
+    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g", started_at: 1_000 }),
+  ];
+  const t2: Job[] = [
+    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g", started_at: 1_000 }),
+  ];
+  // A brand-new pair, far enough past a1/a2's own activity that
+  // `clusterFamily` itself puts them in a NEW cluster (this is the
+  // "genuinely new burst is, by construction, more than GROUP_GAP_MS past
+  // the old one" guarantee the fix's doc comment relies on) — so this must
+  // pop regardless of the gate.
+  const t3: Job[] = [
+    job({
+      id: "sys:g:b1",
+      state: "running",
+      group: "sys:g",
+      started_at: 1_000 + GROUP_GAP_MS + 10_000,
+    }),
+    job({
+      id: "sys:g:b2",
+      state: "waiting",
+      group: "sys:g",
+      started_at: 1_000 + GROUP_GAP_MS + 10_000,
+    }),
+  ];
+
+  const r1 = groupPopupTick(t1, EMPTY_GROUP_POPUP_STATE, false);
+  expect(r1.popped?.id).toBe("sys:g:a1");
+  const r2 = groupPopupTick(t2, r1.state, false);
+  expect(r2.popped).toBeNull();
+  const r3 = groupPopupTick(t3, r2.state, false);
+  expect(r3.popped?.id).toBe("sys:g:b1");
 });
 
 test("groupPopupTick: ordinary member completion pops nothing (no start, no failure)", () => {

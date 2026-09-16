@@ -90,6 +90,21 @@ export interface Job {
   // one place that tells the two shapes apart and turns either into a real
   // navigation). Empty for a job no destination has been given yet.
   page: string;
+  // WHO RAISED this job, for presence suppression only — mirrors
+  // `fused_render/jobs.py`'s `Job.source` exactly, including why it exists:
+  // `page` above is deliberately allowed to end up pointing at a RENDER's own
+  // output file (so a click opens it) once no caller page was supplied, which
+  // makes `page` useless for "is the user already looking at the page that
+  // asked for this" — an absolute `.png` path can never match an open shell
+  // route. `source` is the field a presence check must read instead
+  // (SPEC-quiet-notifications.md bug 1): for an ordinary job it carries the
+  // SAME value as `page` (both come off the same `X-Fused-Page`), and only
+  // diverges for a render, where it stays the raising route (or "") through
+  // every tick, including the terminal one, never inheriting `page`'s
+  // output-path fallback. "" means "no known raiser" and must always read as
+  // "cannot suppress, so notify" — see `isRecentOnly`, and `matchesSource`
+  // (presence.ts), which already returns false for an empty `source`.
+  source: string;
   // A short, human-readable label naming WHAT RAISED this job — "Playground",
   // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
   // "Scheduler", "App install". Deliberately NOT `page` and never derived
@@ -288,7 +303,16 @@ export function effectiveTier(job: Job): JobTier {
 export function isRecentOnly(job: Job, isOpenAnywhere: (source: string) => boolean): boolean {
   if (job.state !== "done") return false;
   if (effectiveTier(job) === "attention") return false;
-  return isOpenAnywhere(job.page);
+  // `job.source`, NOT `job.page` (SPEC-quiet-notifications.md bug 1): `page`
+  // is a render's own OUTPUT PATH once no caller page was supplied (see
+  // `Job.source`'s own doc comment above), which can never match an open
+  // shell route — reading it here suppressed nothing, ever, for a
+  // server-backed render. `source` never inherits that fallback, so a render
+  // raised from a page the user is still looking at is now suppressed
+  // correctly, and `source === ""` (no known raiser) correctly falls through
+  // to `isOpenAnywhere("")`, which `matchesSource` always reads false for —
+  // "cannot suppress, so notify", never a silent match.
+  return isOpenAnywhere(job.source);
 }
 
 // ------------------------------------------------------------------ §3 grouping
@@ -346,8 +370,23 @@ export interface JobGroup {
   jobs: Job[];
 }
 
+// Finding (2026-09-16, found while fixing bug 1 above, not in the original
+// brief): keyed on `job.page` until now, which for a REAL render is a
+// per-job output path — two Playground image generations sharing the same
+// `group` ("sys:ai-image") never shared a `familyKey` in production, because
+// each one's own `page` is its own unique output file once the render
+// finishes. That means they could never even reach `groupJobs`'s
+// multi-member path at all, regardless of `groupPopupTick`'s own START rule
+// — the live symptom "2 popups for 2 image gens" (SPEC-quiet-notifications.md
+// bug 2) would have SURVIVED a `groupPopupTick`-only fix, silently, because
+// the jobs never became a group to pop once for. `job.source || job.page`
+// fixes this: a render's `source` is the raising route, shared across every
+// render from the same page (unlike `page`), while an ordinary job with no
+// distinct `source` (every existing producer/test fixture, where `source`
+// defaults to `page`) computes the exact same key as before — this is why no
+// existing test needed its `page`/`group` values touched to keep passing.
 function familyKey(job: Job): string {
-  return `${job.page} ${job.group}`;
+  return `${job.source || job.page} ${job.group}`;
 }
 
 /** Split one `(page, group)` family into burst clusters - see `GROUP_GAP_MS`
@@ -747,11 +786,36 @@ export interface GroupPopupState {
    *  members of MULTI-member groups (a single-member group's own failure
    *  already pops via `popupTick`/`popupJobs` unchanged). */
   failedSeen: ReadonlySet<string>;
+  /** Bug 2 (SPEC-quiet-notifications.md, live report: "2 popups for 2 image
+   *  gens"): `familyKey(job)` (NOT the cluster-scoped `JobGroup.key` — same
+   *  finding-11 rule as `runningMemberIds` above, a cluster key is partly
+   *  positional and must never key state) -> the `started_at` of the START
+   *  event this family last popped a card for.
+   *
+   *  `wasRunning` alone (the pre-existing check right below) answers "did
+   *  this group have a running member last tick", which is FALSE for a
+   *  serialized burst the instant one member finishes before the next one
+   *  starts — two image generations 67s apart, well inside `GROUP_GAP_MS`
+   *  (one burst, one cluster), each read as a fresh 0-to-some edge and popped
+   *  TWICE. This map is the second, independent gate: a START only pops when
+   *  BOTH `wasRunning` is false AND this family's last START pop (if any) is
+   *  more than `GROUP_GAP_MS` in the past — the same window that already
+   *  decides whether two jobs belong to the same burst at all, so a genuinely
+   *  new burst (necessarily more than `GROUP_GAP_MS` past the old one, or
+   *  `clusterFamily` would have merged them) always still pops.
+   *
+   *  Rebuilt fresh every tick from the CURRENT snapshot's live multi-member
+   *  groups only (same pattern as `runningMemberIds`) — a family with no
+   *  multi-member group left in the snapshot (every member dismissed, swept,
+   *  or shrunk to a lone survivor) is not carried forward, which is what
+   *  bounds this map's size without a prune pass of its own. */
+  lastStartPopAt: ReadonlyMap<string, number>;
 }
 
 export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
   runningMemberIds: new Set(),
   failedSeen: new Set(),
+  lastStartPopAt: new Map(),
 };
 
 /** D-C's own pop rule (SPEC-quiet-notifications.md §3), for MULTI-member
@@ -793,10 +857,19 @@ export function groupPopupTick(
   const groups = allGroups.filter((g) => g.jobs.length > 1);
   const nextRunningMemberIds = new Set<string>();
   const nextFailedSeen = new Set<string>();
+  const nextLastStartPopAt = new Map<string, number>();
   let popped: Job | null = null;
   let poppedAt = -Infinity;
 
   for (const g of groups) {
+    // Bug 2's family key — deliberately `familyKey`, not `g.key`: `g.key` is
+    // cluster-scoped (this burst only), but the gate below has to recognize
+    // "this SAME family already popped a START recently" across the exact
+    // moment a cluster's own membership is still settling — see
+    // `GroupPopupState.lastStartPopAt`'s own doc.
+    const fam = familyKey(g.jobs[0]);
+    const priorPop = state.lastStartPopAt.get(fam);
+
     const runningMembers = g.jobs.filter(isRunning);
     if (runningMembers.length > 0) {
       for (const m of runningMembers) nextRunningMemberIds.add(m.id);
@@ -813,16 +886,31 @@ export function groupPopupTick(
       // 0-to-some edge regardless of which specific member happens to be the
       // one currently running.
       const wasRunning = g.jobs.some((m) => state.runningMemberIds.has(m.id));
-      if (!isFirstTick && !wasRunning) {
-        const rep = runningMembers.reduce((a, b) =>
-          (b.started_at ?? 0) > (a.started_at ?? 0) ? b : a,
-        );
-        const at = rep.started_at ?? 0;
+      const rep = runningMembers.reduce((a, b) =>
+        (b.started_at ?? 0) > (a.started_at ?? 0) ? b : a,
+      );
+      const at = rep.started_at ?? 0;
+      // Bug 2 (SPEC-quiet-notifications.md, "2 popups for 2 image gens"):
+      // `wasRunning` alone is FALSE for a serialized handoff the instant one
+      // member finishes before the next starts — a real gap with nothing
+      // running, even though both belong to the same burst. This second gate
+      // asks the complementary question: did this FAMILY already pop a START
+      // within `GROUP_GAP_MS`? A genuinely new burst is, by `clusterFamily`'s
+      // own construction, always more than `GROUP_GAP_MS` past the previous
+      // one's last activity — so this can never suppress a real new burst,
+      // only a same-burst handoff `wasRunning` alone cannot see.
+      const recentlyPopped = priorPop !== undefined && at - priorPop <= GROUP_GAP_MS;
+      if (!isFirstTick && !wasRunning && !recentlyPopped) {
         if (at > poppedAt) {
           popped = rep;
           poppedAt = at;
         }
+        nextLastStartPopAt.set(fam, at);
+      } else if (priorPop !== undefined) {
+        nextLastStartPopAt.set(fam, priorPop);
       }
+    } else if (priorPop !== undefined) {
+      nextLastStartPopAt.set(fam, priorPop);
     }
 
     for (const member of g.jobs) {
@@ -856,7 +944,14 @@ export function groupPopupTick(
     }
   }
 
-  return { state: { runningMemberIds: nextRunningMemberIds, failedSeen: nextFailedSeen }, popped };
+  return {
+    state: {
+      runningMemberIds: nextRunningMemberIds,
+      failedSeen: nextFailedSeen,
+      lastStartPopAt: nextLastStartPopAt,
+    },
+    popped,
+  };
 }
 
 // A REAL, server-side dismissal that happened somewhere its own `onPatch`

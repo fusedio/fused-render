@@ -70,6 +70,7 @@ const BASE: Job = {
   unit: "",
   message: "",
   page: "",
+  source: "",
   origin: "",
   owner: "server",
   cancellable: true,

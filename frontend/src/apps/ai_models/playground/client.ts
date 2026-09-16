@@ -14,6 +14,21 @@
 // is its business, not a second contract to copy here.
 import { postJson, rawUrl } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
+import { currentPresencePage } from "@platform/lib/presence";
+
+// SPEC-quiet-notifications.md bug 1: `X-Fused-Source` is who RAISED the job,
+// deliberately separate from `X-Fused-Page` (never sent by this module for
+// image/video — see `startImage`/`startVideo` below). A render's own `page`
+// is left to fall back to its output path server-side (`_start_render`'s
+// `page or done_page or out_dir`, `fused_render/ai/supervisor.py`) so a click
+// still opens the file; sending `X-Fused-Page` here would defeat that by
+// making the caller's route win permanently. `source` never inherits that
+// fallback (`Job.source`, `fused_render/jobs.py`), so it is the only field a
+// presence check can read to suppress a Playground-raised render while the
+// Playground itself is still open.
+function sourceHeaders(): Record<string, string> {
+  return { "X-Fused-Source": currentPresencePage() };
+}
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -357,7 +372,7 @@ export interface ImageStarted {
 }
 
 export function startImage(request: ImageRequest): Promise<ImageStarted> {
-  return postJson<ImageStarted>("/api/ai/image", request);
+  return postJson<ImageStarted>("/api/ai/image", request, { headers: sourceHeaders() });
 }
 
 // -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
@@ -405,7 +420,7 @@ export interface VideoStarted {
 }
 
 export function startVideo(request: VideoRequest): Promise<VideoStarted> {
-  return postJson<VideoStarted>("/api/ai/video", request);
+  return postJson<VideoStarted>("/api/ai/video", request, { headers: sourceHeaders() });
 }
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------

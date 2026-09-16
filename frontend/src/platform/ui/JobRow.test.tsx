@@ -39,6 +39,7 @@ const BASE: Job = {
   unit: "",
   message: "",
   page: "",
+  source: "",
   origin: "",
   owner: "page",
   cancellable: true,

@@ -16,8 +16,10 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
 // Dynamic, so the shim above is in place before the module graph evaluates.
-const { ModelLoading, streamChat, watchJob, withModelReady } = await import("./client");
+const { ModelLoading, startImage, startVideo, streamChat, watchJob, withModelReady } =
+  await import("./client");
 import type { Job } from "@platform/lib/jobs";
+const { currentPresencePage } = await import("@platform/lib/presence");
 
 const JOB: Job = {
   id: "j1",
@@ -33,6 +35,7 @@ const JOB: Job = {
   unit: "",
   message: "",
   page: "",
+  source: "",
   origin: "",
   owner: "server",
   cancellable: true,
@@ -45,6 +48,60 @@ const JOB: Job = {
   tier: "trail",
   group: "j1",
 };
+
+// Bug 1 (SPEC-quiet-notifications.md): the Playground is the one producer
+// that must send a DISTINCT `X-Fused-Source` — a render's own `page` field
+// is deliberately left to fall back to its output path (so a click opens
+// the file), which makes `page` useless for "is the user still on the page
+// that asked for this". Without this header, `Job.source` on the server
+// falls back to whatever `page` resolves to (the same value), and a
+// server-backed render can never be suppressed while the Playground is
+// open. This pins that the client actually sends it, not just that the
+// server can read it if sent.
+async function capturedRequest(call: () => Promise<unknown>): Promise<{
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}> {
+  const realFetch = globalThis.fetch;
+  let captured: { url: string; headers: Record<string, string>; body: unknown } | null = null;
+  (globalThis as { fetch: unknown }).fetch = async (url: string, init?: RequestInit) => {
+    captured = {
+      url,
+      headers: { ...(init?.headers as Record<string, string> | undefined) },
+      body: init?.body ? JSON.parse(init.body as string) : undefined,
+    };
+    return { ok: true, json: async () => ({}) };
+  };
+  try {
+    await call();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  if (!captured) throw new Error("fetch was never called");
+  return captured;
+}
+
+test("startImage sends X-Fused-Source, the raising route, without touching X-Fused-Page", async () => {
+  const req = await capturedRequest(() =>
+    startImage({ prompt: "a red fox", model: "org/m" }),
+  );
+  expect(req.url).toBe("/api/ai/image");
+  expect(req.headers["X-Fused-Source"]).toBe(currentPresencePage());
+  // Deliberately absent: sending X-Fused-Page here would make the render's
+  // OWN `page` (the render's output-path click destination) permanently
+  // inherit the Playground's route instead, breaking "click opens the
+  // file" — see `fused_render/ai/supervisor.py` `_start_render`'s `page`
+  // fallback, which this header must never interfere with.
+  expect(req.headers["X-Fused-Page"]).toBeUndefined();
+});
+
+test("startVideo sends X-Fused-Source the same way", async () => {
+  const req = await capturedRequest(() => startVideo({ prompt: "a red fox running" }));
+  expect(req.url).toBe("/api/ai/video");
+  expect(req.headers["X-Fused-Source"]).toBe(currentPresencePage());
+  expect(req.headers["X-Fused-Page"]).toBeUndefined();
+});
 
 /** Drive one watch over a scripted sequence of polls. A string entry is a
  *  state for job j1, `"absent"` is a snapshot without the row, and an Error is
