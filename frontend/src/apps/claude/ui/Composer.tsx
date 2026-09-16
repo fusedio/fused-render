@@ -15,11 +15,10 @@ import {
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
-  deleteChatDraft,
+  draftSyncer,
   draftVersion,
   forgetDraftVersion,
   fetchChatDraft,
-  saveChatDraft,
   useAutosave,
   type ChatDraft,
   type DraftAttachment,
@@ -519,9 +518,10 @@ export function ComposerCard({
       if (textRef.current) return;
       if (saved.text) {
         setText(saved.text);
-        // Restored words are already the server's words: tell the autosave so
-        // the box coming back does not cost a PUT of the same text.
+        // Restored words are already the server's words: tell the hook (so the
+        // box coming back is not a change) and the syncer (so it is not a write).
         autosaveRef.current.reset({ text: saved.text, attachments: saved.attachments ?? [] });
+        draftSyncer(draftKey).seedText(saved.text, saved.attachments ?? []);
         grow();
         // …and the caret goes in after them (see `seededAt`).
         setSeededAt((n) => n + 1);
@@ -567,16 +567,24 @@ export function ComposerCard({
   const focusedRef = useRef(false);
   const autosave = useAutosave(
     { text, attachments: trayDraft },
-    (value, opts) => saveChatDraft(draftKey, value.text, value.attachments, opts),
-    {
-      conflict: {
+    (value) => draftSyncer(draftKey).setText(value.text, value.attachments),
+    { key: draftKey },
+  );
+  // THE CONFLICT RULE IS REGISTERED WITH THE KEY, not held by this component:
+  // the syncer is the record's writer and outlives every editor that opens on
+  // it, so what it needs is to know which editor — if any — is on screen to
+  // adopt into right now. The answer detaches it, so a composer that has gone
+  // cannot be asked to take somebody else's words.
+  useEffect(
+    () =>
+      draftSyncer(draftKey).watch({
         focused: () => focusedRef.current,
         localText: () => textRef.current,
         adopt: (record) => adoptRef.current(record as ChatDraft | null),
         onKept: () =>
           notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
-      },
-    },
+      }),
+    [draftKey],
   );
   // `submit` is a useCallback built below; it needs the autosave handle, and the
   // handle's identity is stable, so it is read through the ref every other seat
@@ -585,24 +593,6 @@ export function ComposerCard({
   autosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
-  /**
-   * THE HOP'S HANDLE ON THIS BOX'S AUTOSAVE (Bugbot, PR #1180).
-   *
-   * The Schedule button writes the record this composer is writing, and until
-   * now the two simply raced: a keystroke a moment before Continue is a PUT
-   * still on its debounce, or already on the wire, and either could land after
-   * the hop's — putting the older words and the chat's own tempdir attachment
-   * paths back on the record the task card was about to open.
-   *
-   * `flush` then `settle` is the whole of the fix: send what is pending, wait
-   * for what is out, and answer with the version that write made so the hop can
-   * state it. Stable identity (the ref, as everything else here does), so
-   * handing it to the button does not rebuild that button's callbacks.
-   */
-  const settleDraft = useCallback((): Promise<number | undefined> => {
-    autosaveRef.current.flush();
-    return autosaveRef.current.settle();
-  }, []);
   const discardAttachments = useRef(onDiscardAttachments);
   discardAttachments.current = onDiscardAttachments;
   /**
@@ -621,6 +611,11 @@ export function ComposerCard({
     discardAttachments.current?.();
     if (files.length) restoreAttachments.current?.(files.map((a) => a.path));
     autosaveRef.current.reset({ text: next, attachments: files });
+    // …AND THE SYNCER TAKES IT AS ALREADY-STORED. Without this the record just
+    // adopted would be written straight back over: the box changed, and a
+    // change is what makes a request. `seedText` is the one way to say "this is
+    // what is wanted AND what is there".
+    draftSyncer(draftKeyRef.current).seedText(next, files);
     grow();
   }, [grow]);
   const adoptRef = useRef(adoptRecord);
@@ -893,37 +888,22 @@ export function ComposerCard({
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
     if (!message && !hasAttachments) return false;
     setText("");
-    // THE DRAFT IS SPENT. `reset` first and with the value the box is ABOUT to
-    // have, so a write debounced a keystroke ago has nothing left to say, and so
-    // an answer to a write already out speaks for nobody.
+    // THE DRAFT IS SPENT, AND SAYING SO IS THE WHOLE OF IT.
     //
-    // …AND THE DELETE WAITS FOR WHAT IS ALREADY ON THE WIRE (Bugbot, PR #1180).
-    // A version refuses a LATER write stating a STALE number; it has no opinion
-    // about a PUT and a DELETE dispatched against the SAME one, which is exactly
-    // this pair — the autosave read version 7, the DELETE would too, and the
-    // server takes whichever arrives second. When that was the PUT, the sent
-    // message came back as a live draft. `settle()` puts them in order here
-    // instead: the PUT lands, this client takes the version it made, and the
-    // DELETE states that one. Un-awaited by `submit` itself, because a send must
-    // still be one tick for the caller.
+    // `reset` first and with the value the box is ABOUT to have, so the render
+    // that empties the box is not read as the reader clearing their draft.
+    // `markDeleted` is then one statement to the one writer of this record: the
+    // record should not exist. It waits for nothing and orders nothing — a PUT
+    // already on the wire is what the syncer is waiting on anyway, and the
+    // DELETE goes out behind it with a higher sequence, so the send can no
+    // longer be overtaken by the autosave of the sentence it just sent.
     //
-    // …AND IT DELETES THE VERSION THE SENT WORDS MADE, NOT "whatever is there
-    // when it fires" (Bugbot again, second round). Waiting is not enough on its
-    // own: the reader can be typing a FOLLOW-UP through that wait, and a
-    // follow-up that saves first is then the record a version-less — or
-    // freshly-read — DELETE removes. So the version is the one `settle` answers
-    // with (the version this composer's own write earned), or, when nothing was
-    // on the wire, the one this client held before the send. A newer record than
-    // that is somebody's unsent words, and the server refuses the DELETE (409)
-    // rather than spending them.
-    const key = draftKeyRef.current;
-    const held = draftVersion(key);
-    const pending = autosaveRef.current.settle();
+    // A FOLLOW-UP TYPED IN THE NEXT BREATH IS SAFE FOR THE SAME REASON. It is a
+    // newer statement about the same key, so it supersedes the delete instead of
+    // racing it: the record ends up holding the follow-up, and the sent sentence
+    // is never resurrected on the way there.
     autosaveRef.current.reset({ text: "", attachments: [] });
-    void pending.then((made) => {
-      const spent = made ?? held;
-      return deleteChatDraft(key, spent === undefined ? undefined : { ifMatch: spent });
-    });
+    draftSyncer(draftKeyRef.current).markDeleted();
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);
@@ -1054,6 +1034,11 @@ export function ComposerCard({
           }}
           onBlur={() => {
             focusedRef.current = false;
+            // LEAVING THE BOX SENDS WHAT IS PENDING. The reader looking away is
+            // the likeliest moment for a tab to be closed, a laptop to be shut
+            // or a link to be followed, and 600 ms is a long time for the last
+            // sentence to exist only here.
+            draftSyncer(draftKeyRef.current).flushNow();
           }}
           {...(onPaste ? { onPaste } : {})}
         />
@@ -1097,8 +1082,6 @@ export function ComposerCard({
             draft={draft}
             {...(attachments ? { attachments } : {})}
             back={back}
-            // The box finishes writing before the hop does — see `settleDraft`.
-            settleDraft={settleDraft}
             // TWO GUARDS WITH DIFFERENT SCOPES, which is what T:12075/12099 read
             // off `schedBlocked() || annNavLocked()` for every `.schedbtn`:
             //

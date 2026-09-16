@@ -10,12 +10,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { SchedButton } = await import("./SchedButton");
 const { SchedConfirm, SchedConfirmBody } = await import("./SchedConfirm");
-const { forgetDraftVersion, saveChatDraft, useAutosave } =
+const { draftSyncer, forgetDraftVersion, resetDraftSyncers, useAutosave } =
   await import("@platform/lib/drafts");
 const { getPopupNotification, _resetNotificationsForTest } =
   await import("@platform/lib/notifications");
 const { useDismissOnWindow } = await import("./useDismissOnWindow");
-type Autosave<T> = ReturnType<typeof useAutosave<T>>;
 
 /** A REAL LISTENER REGISTRY on the shim's `window`, which otherwise no-ops. The
  *  gestures under test ARE window-level bindings, so a test that cannot fire
@@ -43,6 +42,10 @@ const bound = (type: string): number => (winListeners[type] || []).length;
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  // THE SYNCER REGISTRY IS MODULE SCOPE — one writer per key for the whole
+  // document, which is the point of it — so a test that leaves a desired state
+  // behind is a test the next one inherits.
+  resetDraftSyncers();
 });
 
 // ── the hook, on its own ─────────────────────────────────────────────────────
@@ -225,10 +228,7 @@ const HOP_KEY = "new:/w/app/page.html";
 
 /** Mount the real button and hand back the confirm's own `onGo` — the Continue
  *  press, without asking a portal to render in a DOM-less runtime. */
-function pressContinue(
-  onNavigate: (url: string) => void,
-  settleDraft?: () => Promise<number | undefined>,
-) {
+function pressContinue(onNavigate: (url: string) => void) {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
@@ -238,7 +238,6 @@ function pressContinue(
         draft: () => "a scheduled line",
         back: "/w/app/page.html",
         onNavigate,
-        ...(settleDraft ? { settleDraft } : {}),
       }),
       { createNodeMock: () => ({ focus: () => {} }) },
     );
@@ -316,68 +315,80 @@ test("a refused save keeps the reader in the chat, and says so", async () => {
   forgetDraftVersion(HOP_KEY);
 });
 
-test("the hop writes only after the composer's own autosave has finished", async () => {
+test("the hop waits for the write the box already had out", async () => {
   // Bugbot, PR #1180 (second round): waiting for THIS button's PUT is not
   // enough, because the box beside it writes the same record on a debounce. A
   // keystroke a moment before Continue is a PUT that lands AFTER the hop's —
   // with the older words, and with the chat tempdir paths `POST /api/schedule`
-  // refuses. So the composer is settled first, and the version it answers with
-  // is what the hop states: a straggler is then the write that gets refused.
+  // refuses.
+  //
+  // It is not a WAIT any more, it is an ORDER: the box and this button are the
+  // same writer now (`draftSyncer(key)`), so the hop's state simply queues
+  // behind whatever that writer has out and goes when it clears, stating the
+  // version that write earned.
   forgetDraftVersion(HOP_KEY);
-  let finishAutosave!: () => void;
-  const autosaved = new Promise<number | undefined>((r) => {
-    finishAutosave = () => r(9);
-  });
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
   const seen: (string | null)[] = [];
+  let version = 0;
   const real = globalThis.fetch;
   globalThis.fetch = ((_url: string, init?: RequestInit) => {
     const headers = (init?.headers ?? {}) as Record<string, string>;
+    const at = seen.length;
     seen.push(headers["If-Match"] ?? null);
-    return Promise.resolve({
-      ok: true,
-      status: 200,
-      json: () =>
-        Promise.resolve({
+    const answer = (): Response => {
+      version += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
           ok: true,
           key: HOP_KEY,
           draft: { text: "a scheduled line", attachments: [], updated_at: 1,
-                   version: 10, form: {} },
+                   version, form: {} },
         }),
-    } as unknown as Response);
+      } as unknown as Response;
+    };
+    return at === 0 ? held.then(answer) : Promise.resolve(answer());
   }) as typeof fetch;
 
+  // The box's own keystroke save, already on the wire when Continue is pressed.
+  const box = draftSyncer(HOP_KEY);
+  box.setText("a scheduled li");
+  box.flushNow();
+  expect(seen.length).toBe(1);
+
   const went: string[] = [];
-  const go = pressContinue((url) => went.push(url), () => autosaved);
+  const go = pressContinue((url) => went.push(url));
   await act(async () => {
     go();
   });
-  // NOTHING HAS LEFT. The composer's write is still out, so the hop's has not
-  // been dispatched at all — there is no order to get wrong.
-  expect(seen).toEqual([]);
+  // NOTHING NEW HAS LEFT, and the reader is still in the chat.
+  expect(seen.length).toBe(1);
   expect(went).toEqual([]);
+
   await act(async () => {
-    finishAutosave();
-    await autosaved;
+    release();
+    await held;
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
   });
-  // …and it carries the version that write earned, not "whatever this client
-  // last heard of".
-  expect(seen).toEqual(["9"]);
+  // The hop's own write went second, stating the version the box's write made,
+  // and the navigation is its answer.
+  // `0` on the first: this document had never seen a record under this key, and
+  // "I expect nothing here" is what it honestly holds (contract §2).
+  expect(seen).toEqual(["0", "1"]);
   expect(went.length).toBe(1);
   globalThis.fetch = real;
   forgetDraftVersion(HOP_KEY);
 });
 
-test("a real autosave PUT held open queues the flush behind it, and the hop's own PUT goes third", async () => {
-  // THE SAME BUG, through the REAL `useAutosave` this time rather than a
-  // stand-in `settleDraft` (Bugbot, PR #1180, this round): `settleDraft` is
-  // `flush()` then `settle()` (Composer.tsx), and `flush` used to dispatch a
-  // brand-new PUT the instant it was called even while an earlier autosave
-  // was still on the wire — the abandoned one could land AFTER the hop's and
-  // put stale text back on the record the task card was about to open. Now
-  // every write from this box queues behind whatever it already has out
-  // (`useAutosave`, drafts.ts), so the debounced edit's flush waits its turn
-  // and the hop's own PUT — asked for only once `settleDraft` resolves — is
-  // never racing either one.
+test("a real autosave PUT held open does not race the hop — the two coalesce", async () => {
+  // THE SAME BUG through the REAL hook this time. What used to happen here was
+  // three requests in a row, each waiting for the last, because the box's flush
+  // and the hop's PUT were two different writers being put in order by hand.
+  // They are one writer now, so the keystroke typed during the held write and
+  // the hop's own state are ONE request: the last statement wins, which is what
+  // a desired state means.
   forgetDraftVersion(HOP_KEY);
   const calls: { ifMatch: string | null; text?: string }[] = [];
   let releaseFirst!: () => void;
@@ -385,10 +396,10 @@ test("a real autosave PUT held open queues the flush behind it, and the hop's ow
   let version = 0;
   const real = globalThis.fetch;
   globalThis.fetch = ((_url: string, init?: RequestInit) => {
-    const headers = (init?.headers ?? {}) as Record<string, string>;
     const body = init?.body
       ? (JSON.parse(String(init.body)) as { text?: string })
       : undefined;
+    const headers = (init?.headers ?? {}) as Record<string, string>;
     const at = calls.length;
     calls.push({ ifMatch: headers["If-Match"] ?? null, text: body?.text });
     const answer = (): Response => {
@@ -404,34 +415,24 @@ test("a real autosave PUT held open queues the flush behind it, and the hop's ow
         }),
       } as unknown as Response;
     };
-    // Only the FIRST request — the autosave already out when the test begins
-    // — is held; everything after answers as soon as it is asked to, so the
-    // test controls order by CALLING, not by releasing.
     return at === 0 ? heldFirst.then(answer) : Promise.resolve(answer());
   }) as typeof fetch;
 
-  let latest!: Autosave<{ text: string }>;
   const went: string[] = [];
   let renderer!: ReactTestRenderer;
   function Host({ value }: { value: { text: string } }) {
-    latest = useAutosave(value, (v: { text: string }, opts) =>
-      saveChatDraft(HOP_KEY, v.text, [], opts));
-    const settleDraft = useCallback((): Promise<number | undefined> => {
-      latest.flush();
-      return latest.settle();
-    }, []);
+    useAutosave(value, (v: { text: string }) => draftSyncer(HOP_KEY).setText(v.text),
+                { key: HOP_KEY });
     return createElement(SchedButton, {
       file: "/w/app/page.html",
       sessionId: "",
       draft: () => value.text,
       back: "/w/app/page.html",
       onNavigate: (url: string) => went.push(url),
-      settleDraft,
     });
   }
-  // A mount alone mints nothing (design §4: `written` seeds with the opening
-  // value), so the box opens empty and the first keystroke is what the held
-  // write below is about.
+  // A mount alone mints nothing (design §4), so the box opens empty and the
+  // first keystroke is what the held write below is about.
   await act(async () => {
     renderer = create(createElement(Host, { value: { text: "" } }), {
       createNodeMock: () => ({ focus: () => {} }),
@@ -441,16 +442,12 @@ test("a real autosave PUT held open queues the flush behind it, and the hop's ow
   await act(async () => {
     renderer.update(createElement(Host, { value: { text: "first" } }));
   });
-
-  // The autosave's own write — held open, per the mock above.
-  act(() => latest.flush());
+  act(() => draftSyncer(HOP_KEY).flushNow());
   await Promise.resolve();
   expect(calls.length).toBe(1);
-  expect(calls[0]!.ifMatch).toBe(null);
+  expect(calls[0]!.ifMatch).toBe("0");
 
-  // A further keystroke, then Continue — exactly the moment the bug fired:
-  // the debounced edit's flush and the hop's settle both want this box's
-  // pending write answered.
+  // A further keystroke, then Continue — exactly the moment the bug fired.
   await act(async () => {
     renderer.update(createElement(Host, { value: { text: "first and second" } }));
   });
@@ -458,26 +455,18 @@ test("a real autosave PUT held open queues the flush behind it, and the hop's ow
   await act(async () => {
     go();
   });
-  // NOTHING NEW HAS LEFT: the edit's own flush is queued behind the held
-  // autosave, and the hop asked `settleDraft` to wait rather than firing
-  // beside it.
   expect(calls.length).toBe(1);
   expect(went).toEqual([]);
 
   releaseFirst();
   await act(async () => {
     await heldFirst;
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
   });
-  // THE QUEUED FLUSH GOES OUT SECOND — carrying the version the held write
-  // just made, and the newer text — and only once IT lands does the hop's own
-  // PUT follow: THIRD, carrying THAT write's version in turn. Never two on the
-  // wire at once, and never out of order.
-  expect(calls.length).toBe(3);
+  // ONE request follows, not two: the newest state is the hop's, and it states
+  // the version the held write made.
+  expect(calls.length).toBe(2);
   expect(calls[1]).toEqual({ ifMatch: "1", text: "first and second" });
-  expect(calls[2]!.ifMatch).toBe("2");
   expect(went.length).toBe(1);
 
   globalThis.fetch = real;

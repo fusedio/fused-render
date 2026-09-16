@@ -36,17 +36,15 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
-  deleteChatDraft,
-  deleteTaskDraft,
+  draftSyncer,
   draftVersion,
   forgetDraftVersion,
   newChatFile,
   NEW_CHAT_PREFIX,
   newTaskDraftId,
-  saveChatDraft,
-  saveTaskDraft,
   taskDraftKey,
   useAutosave,
+  type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
@@ -3349,14 +3347,29 @@ export default function NewJobModal({
    * no longer exists; a reader mid-field keeps what they are typing, once, with
    * the same soft toast the composer raises.
    */
-  const autosave = useAutosave(draftBody, (value, opts) => {
+  /**
+   * THE KEY THIS CARD IS THE EDITOR OF — the chat record it was opened on, or
+   * the task draft it has minted. `""` while it is neither, which is a card
+   * nobody has typed in yet.
+   */
+  const syncKey = recordKey || (draftId ? taskDraftKey(draftId) : "");
+  const autosave = useAutosave(draftBody, (value) => {
     if (!value) return;
+    // ONE SYNCER, TWO SHAPES. `recordKey` decides which store the same form goes
+    // into, and the two statements differ only in shape:
+    //
+    //   * a CHAT record takes the prose as ONE string — `joinDraft(title,
+    //     description)`, the composer's own box put back together — plus the
+    //     settings as a `form` patch. That is what makes the round trip
+    //     lossless: the composer reads `text`, the card reads `splitDraft(text)`,
+    //     and neither has a second copy of the other's half (contract §1);
+    //   * a TASK record takes the form as it always has, under a uuid this card
+    //     mints at the first statement, so the id and the first save are one
+    //     event and a card cannot end up with an id and no stored draft.
     if (recordKey) {
-      return saveChatDraft(
-        recordKey,
+      draftSyncer(recordKey).setText(
         joinDraft(value.title, value.description),
         value.attachments,
-        opts,
         {
           when: value.when,
           repeat: value.repeat,
@@ -3368,6 +3381,7 @@ export default function NewJobModal({
           new_task_each_run: value.new_task_each_run,
         },
       );
+      return;
     }
     let id = draftIdRef.current;
     if (!id) {
@@ -3375,42 +3389,62 @@ export default function NewJobModal({
       draftIdRef.current = id;
       setDraftId(id);
     }
-    // THE ID COMES BACK, because the write may not have landed on the id it
-    // named (Bugbot, PR #1126): the server can fold a write into a draft that
-    // already holds this conversation. Adopting it keeps the Discard and the
-    // `draft_id` Schedule hands over pointing at the record that exists.
-    return saveTaskDraft(id, value, opts).then((out) => {
-      if (out.id && out.id !== draftIdRef.current) {
-        draftIdRef.current = out.id;
-        setDraftId(out.id);
-      }
-      return out;
-    });
-  }, {
-    conflict: {
-      // The card is a modal, so anything focused in a field IS this card's —
-      // there is nothing else on the page a caret can be in while it is open.
-      focused: () => {
-        const el = typeof document === "undefined" ? null : document.activeElement;
-        return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
-      },
-      localText: () => `${title}\u0000${message}`,
-      adopt: () => {
-        // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
-        // `useState` initialiser, which is what makes a re-opened draft a fresh
-        // mount (shell/Scheduled's `key`). So adopting is closing — the record on
-        // the server is the newer one, and the card that was showing the older
-        // one has nothing left to say. Nobody typed anything here, by the rule
-        // that got us into this branch, so there is nothing to lose by it.
-        notify({ title: "That draft changed elsewhere", tone: "info" });
-        onClose();
-      },
-      onKept: () =>
-        notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
-    },
-  });
+    draftSyncer(taskDraftKey(id)).setTask(value);
+  }, { key: syncKey });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
+  /**
+   * WHAT THIS CARD ANSWERS WHEN THE RECORD MOVED UNDER IT (design §2), read
+   * through a ref because the rule is registered with the KEY and the fields it
+   * asks about change on every keystroke.
+   *
+   * A 409 means somebody else wrote first — the other tab, or the composer this
+   * hop came out of, still open behind it. Nothing focused in this form means
+   * the server's copy is simply newer, and the card closes onto it rather than
+   * showing a form that no longer exists; a reader mid-field keeps what they are
+   * typing, once, with the same soft toast the composer raises.
+   */
+  const ruleRef = useRef<DraftConflictRule | null>(null);
+  ruleRef.current = {
+    // The card is a modal, so anything focused in a field IS this card's —
+    // there is nothing else on the page a caret can be in while it is open.
+    focused: () => {
+      const el = typeof document === "undefined" ? null : document.activeElement;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    },
+    localText: () => `${title}\u0000${message}`,
+    adopt: () => {
+      // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
+      // `useState` initialiser, which is what makes a re-opened draft a fresh
+      // mount (shell/Scheduled's `key`). So adopting is closing — the record on
+      // the server is the newer one, and the card that was showing the older
+      // one has nothing left to say. Nobody typed anything here, by the rule
+      // that got us into this branch, so there is nothing to lose by it.
+      notify({ title: "That draft changed elsewhere", tone: "info" });
+      onClose();
+    },
+    onKept: () =>
+      notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
+    // THE ID THE WRITE LANDED ON, when the store folded this form into a draft
+    // that already held this conversation (Bugbot, PR #1126). Adopting it keeps
+    // the Discard and the `draft_id` Schedule hands over pointing at the record
+    // that exists.
+    onTaskId: (id: string) => {
+      if (!id || id === draftIdRef.current) return;
+      draftIdRef.current = id;
+      setDraftId(id);
+    },
+  };
+  useEffect(() => {
+    if (!syncKey) return;
+    return draftSyncer(syncKey).watch({
+      focused: () => !!ruleRef.current?.focused(),
+      localText: () => ruleRef.current?.localText() ?? "",
+      adopt: (record) => ruleRef.current?.adopt(record),
+      onKept: () => ruleRef.current?.onKept?.(),
+      onTaskId: (id) => ruleRef.current?.onTaskId?.(id),
+    });
+  }, [syncKey]);
   const recordKeyRef = useRef(recordKey);
   recordKeyRef.current = recordKey;
   /**
@@ -3466,11 +3500,15 @@ export default function NewJobModal({
    */
   const discard = async () => {
     autosaveRef.current.reset(null);
-    const key = recordKey;
-    if (key) await deleteChatDraft(key);
-    else {
-      const id = draftIdRef.current;
-      if (id) await deleteTaskDraft(id);
+    // ONE STATEMENT TO THE ONE WRITER: this record should not exist. `handoff`
+    // waits for the server to agree, so the card closes on a fact rather than on
+    // a hope — and a write of this card's own that was still on the wire cannot
+    // land afterwards and put the row back, because the syncer is what it was
+    // waiting on.
+    if (syncKey) {
+      const sync = draftSyncer(syncKey);
+      sync.markDeleted();
+      await sync.handoff();
     }
     onClose();
   };
@@ -3743,6 +3781,10 @@ export default function NewJobModal({
       // whether or not anybody has typed since (the bug that flush was added
       // for cannot occur).
       autosaveRef.current.reset(null);
+      // …AND THE SYNCER FORGETS IT. The debounce belongs to the KEY now, not to
+      // this card, so a keystroke 300 ms before Save would otherwise fire after
+      // the create and write the draft the server has just deleted straight back.
+      if (syncKey) draftSyncer(syncKey).forget();
       await scheduleMessage(
         buildSchedulePayload({
           target,

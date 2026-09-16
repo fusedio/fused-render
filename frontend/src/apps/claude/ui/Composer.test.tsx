@@ -646,6 +646,84 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
   expect(box.props["data-enable-grammarly"]).toBe("false");
 });
 
+// ---- the send, and the follow-up typed in the next breath ------------------
+
+test("SEND SPENDS THE RECORD, AND A FOLLOW-UP MAKES A NEW ONE — never both", async () => {
+  // The bug this shape ends: the send fired a DELETE beside the autosave's PUT,
+  // both stating the same version, and whichever the server took second won. A
+  // PUT landing after the DELETE put the sentence that had just been SENT back
+  // on the row as a live draft.
+  //
+  // There is one writer per key now, and both gestures are statements to it:
+  // "the record should hold this", then "the record should not exist", then "the
+  // record should hold the follow-up". They go out in that order, one at a time,
+  // and the last one is what the server is left holding.
+  const { forgetDraftVersion, resetDraftSyncers, draftSyncer } =
+    await import("@platform/lib/drafts");
+  const file = "/p/send-then-follow.py";
+  const key = `new:${file}`;
+  forgetDraftVersion(key);
+  resetDraftSyncers();
+  const seen: { method: string; text?: string }[] = [];
+  let version = 0;
+  (globalThis as { fetch: unknown }).fetch = (
+    _url: string,
+    init?: RequestInit,
+  ) => {
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as { text?: string })
+      : undefined;
+    const method = init?.method ?? "GET";
+    // The mount's own seeding GET is not part of what this test is about.
+    if (method !== "GET") seen.push({ method, text: body?.text });
+    version += 1;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          chat: {},
+          task: {},
+          ok: true,
+          key,
+          removed: true,
+          draft: init?.method === "DELETE"
+            ? null
+            : { text: body?.text ?? "", attachments: [], updated_at: 1,
+                version, form: {} },
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+
+  const c = mount({ file, sessionId: "" });
+  c.type("the message");
+  await act(async () => {
+    draftSyncer(key).flushNow(); // the keystroke's own 600 ms, made to fire now
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  expect(seen.map((r) => r.method)).toEqual(["PUT"]);
+
+  expect(c.press("Enter")).toBe(true);
+  expect(c.sent).toEqual([{ text: "the message", model: DEFAULT_MODEL }]);
+  await act(async () => {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  // THE SEND'S OWN WRITE IS THE DELETE, and it goes on its own — the box being
+  // emptied is not a second request.
+  expect(seen.map((r) => r.method)).toEqual(["PUT", "DELETE"]);
+
+  // …and the reader types the next thing.
+  c.type("and one more thing");
+  await act(async () => {
+    draftSyncer(key).flushNow();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  expect(seen.map((r) => r.method)).toEqual(["PUT", "DELETE", "PUT"]);
+  expect(seen[2]!.text).toBe("and one more thing");
+  forgetDraftVersion(key);
+  resetDraftSyncers();
+});
+
 // ---- somebody else changed this record ------------------------------------
 //
 // design "one record", §3. The box used to hear a `spent` announcement and empty

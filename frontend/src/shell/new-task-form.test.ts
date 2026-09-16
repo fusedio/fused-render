@@ -1930,7 +1930,9 @@ describe("the card edits one record, and says which", () => {
   test("…and a card with no chat behind it still mints a task draft", () => {
     const save = src().slice(src().indexOf("const autosave = useAutosave(draftBody,"));
     expect(save).toContain("id = newTaskDraftId();");
-    expect(save).toContain("return saveTaskDraft(id, value, opts).then((out) => {");
+    // ONE WRITER, TWO SHAPES: the same syncer, keyed `draft:<id>` instead of on
+    // the chat. The card states what it wants; nothing here dispatches.
+    expect(save).toContain("draftSyncer(taskDraftKey(id)).setTask(value);");
   });
 
   test("the move's machinery is gone from the card", () => {
@@ -1947,23 +1949,24 @@ describe("the card edits one record, and says which", () => {
     // PR #1126). Keeping the minted id would aim the next autosave, the Discard
     // and Schedule's `draft_id` at a record that does not exist.
     const s = src();
-    expect(s).toContain("if (out.id && out.id !== draftIdRef.current) {");
-    expect(s).toContain("draftIdRef.current = out.id;");
-    expect(s).toContain("setDraftId(out.id);");
+    expect(s).toContain("onTaskId: (id: string) => {");
+    expect(s).toContain("if (!id || id === draftIdRef.current) return;");
+    expect(s).toContain("draftIdRef.current = id;");
+    expect(s).toContain("setDraftId(id);");
   });
 
   test("Discard deletes whichever record the card was writing into", () => {
     const s = src();
     const discard = s.slice(s.indexOf("const discard = async () => {"),
                             s.indexOf("const picked = useMemo("));
-    // `reset(null)` is what stops the unmount flush from writing on the way out.
+    // `reset(null)` is what stops this card from pushing the emptied form on.
     // The ordering the old code needed — stop, await settle, THEN delete — is
-    // the server's job now: the DELETE states the version it read, so a PUT
-    // still on the wire is refused rather than landing after it.
+    // the syncer's now: Discard SAYS the record should not exist, to the one
+    // thing that is writing it, and waits for the server to agree.
     expect(discard).toContain("autosaveRef.current.reset(null);");
     expect(discard).not.toContain("settle()");
-    expect(discard).toContain("if (key) await deleteChatDraft(key);");
-    expect(discard).toContain("if (id) await deleteTaskDraft(id);");
+    expect(discard).toContain("sync.markDeleted();");
+    expect(discard).toContain("await sync.handoff();");
   });
 
   test("Back to chat flushes and walks — the record is untouched", () => {

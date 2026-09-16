@@ -262,6 +262,23 @@ export interface DraftWriteOptions {
    * wants: their unsent words are not what they asked to spend.
    */
   ifMatch?: number;
+  /**
+   * WHERE THIS REQUEST SITS IN ITS PAGE'S OWN QUEUE FOR THIS KEY — the other
+   * half of the ordering story, and the half a version cannot tell (contract
+   * `drafts-seq-contract.md`).
+   *
+   * A version orders THIS page against ANOTHER one: a write stating a number
+   * somebody has already moved past is refused. It says nothing about two of
+   * this page's own requests, because both of them state the number this page
+   * read, and which lands second is the network's decision. So every request
+   * the syncer dispatches carries a counter that only goes up, and the server
+   * drops one that is not newer than the last it applied from this same page
+   * (200 `{dropped: true}`).
+   *
+   * Sent with the page's own `client` id, which `write` adds: the pair is what
+   * makes the counter meaningful, and one without the other is meaningless.
+   */
+  seq?: number;
 }
 
 /**
@@ -326,6 +343,21 @@ export function forgetDraftVersion(key: string): void {
   versions.delete(key);
 }
 
+/**
+ * THIS DOCUMENT'S OWN ID, minted once when this module loads.
+ *
+ * It names the PAGE, not the user and not the tab's contents: what it is for is
+ * the server telling "a request from the page that has already sent me
+ * something newer" apart from "a request from the other window". The first is
+ * dropped, the second is arbitrated by versions, and a shared id would collapse
+ * the two into one wrong answer.
+ *
+ * `crypto.randomUUID` with the same fallback `newTaskDraftId` uses, and for the
+ * same reason: it is absent over plain http on some older builds, and a throw
+ * here would take the whole module down at import time.
+ */
+const CLIENT_ID = newTaskDraftId();
+
 /** THE ANSWER EVERY WRITE IN THIS MODULE GIVES BACK.
  *
  *  `ok` is the old boolean, unchanged for every caller that only wants to know
@@ -337,6 +369,17 @@ export function forgetDraftVersion(key: string): void {
 export interface DraftWrite<R> {
   ok: boolean;
   conflict?: R | null;
+  /**
+   * THE SERVER DROPPED THIS WRITE AS A STRAGGLER — not an error, and nothing
+   * for the caller to do (contract: 200 `{ok: true, dropped: true}`).
+   *
+   * It means this page had already sent a NEWER request for the same key, so
+   * what the record holds is what this page wanted; this one simply arrived
+   * late. `ok` stays true — the desired state is on the server — but the body
+   * says nothing about the record this write did not make, so no version is
+   * read out of it.
+   */
+  dropped?: boolean;
   /**
    * THE VERSION THIS WRITE MADE — the number the server stamped on the record
    * this request wrote, and absent for a write that failed, was refused, or
@@ -404,6 +447,12 @@ async function write<R>(
 ): Promise<DraftWrite<R>> {
   // THE CALLER'S VERSION OUTRANKS THE MAP'S (see `DraftWriteOptions.ifMatch`).
   const seen = opts?.ifMatch ?? versions.get(key);
+  // THE SEQUENCE RIDES IN THE BODY, on a DELETE as much as on a PUT — a delete
+  // that a straggling PUT can outlive is precisely the resurrection this pair
+  // exists to stop, so a bodiless DELETE grows one here.
+  const payload = opts?.seq === undefined
+    ? body
+    : { ...(body === undefined ? {} : (body as object)), client: CLIENT_ID, seq: opts.seq };
   try {
     const res = await fetch(url, {
       method,
@@ -412,7 +461,7 @@ async function write<R>(
         "X-Fused": "1",
         ...(seen === undefined ? {} : { "If-Match": String(seen) }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
       ...(opts?.keepalive ? { keepalive: true } : {}),
     });
     if (res.status === 409) {
@@ -427,6 +476,13 @@ async function write<R>(
     }
     if (!res.ok) return { ok: false };
     const answer = await res.json().catch(() => null);
+    // A DROPPED WRITE IS READ BEFORE ANYTHING ELSE AND ITS BODY IS NOT READ AT
+    // ALL. The record in it is the one a NEWER request from this page left (or
+    // is about to leave), so taking a version off it would be this client
+    // learning a number from a write it did not make.
+    if ((answer as { dropped?: unknown } | null)?.dropped === true) {
+      return { ok: true, dropped: true };
+    }
     const got = landed(answer);
     let made: number | undefined;
     if (got) {
@@ -615,337 +671,680 @@ export async function fetchChatDraft(
   return all.chat[key] ?? null;
 }
 
+// ---------------------------------------------------------------- the syncer
+//
+// ONE WRITER PER DRAFT KEY, AND IT OWNS THE ORDER.
+//
+// What this replaces is a page on which seven things wrote one draft — a 600 ms
+// debounce, a window blur, a tab going hidden, an unmount, the send's DELETE, a
+// Discard, the Schedule hop's PUT — each firing its own request, with the
+// CALLERS trying to put them in order between them (`settle`, a flush chained
+// behind whatever was on the wire, an `era` counter, an `inflight` promise, "the
+// hop waits for the autosave"). Nine bugs came out of that layer and every fix
+// added another rung to it, because the shape was wrong: ordering is not
+// something six callers can each get right.
+//
+// So there are no writers any more, only STATEMENTS OF INTENT. `setText` says
+// what the record should hold; `markDeleted` says it should not exist. The
+// syncer holds the latest such statement (`desired`) and has at most ONE request
+// in flight; when that request settles and the desired state has moved on, it
+// sends again. Every request carries the WHOLE state — never a delta — so the
+// last one to land is right by construction, and the reader's last keystroke
+// always wins over anything still in the air.
+//
+// THREE THINGS KEEP IT HONEST ACROSS A NETWORK THAT REORDERS:
+//
+//   * `If-Match`: a write against a version somebody else has moved past is
+//     refused (409), which is how TWO DOCUMENTS are arbitrated;
+//   * `seq`: a monotonic counter per key per document, dropped server-side when
+//     it is not newer than the last one applied, which is how ONE DOCUMENT is
+//     ordered against itself — the one thing a version cannot do, since both of
+//     this page's requests state the same version;
+//   * the one-in-flight rule, which means those two only ever have to catch the
+//     one case that bypasses it: the keepalive flush.
+//
+// THE KEEPALIVE FLUSH IS THE DELIBERATE EXCEPTION (Bugbot 4026181414, PR #1180).
+// `pagehide` is the last moment anything can leave this document, and a flush
+// that QUEUED itself behind an in-flight PUT never left at all: the browser
+// cancels the non-keepalive request it was waiting for, and the queued one is
+// never dispatched, so the last thing the reader typed dies with the tab. So a
+// keepalive flush bypasses the one-in-flight rule and goes immediately, with the
+// newest state and a higher `seq`. Two requests are then on the wire at once and
+// the older one is harmless whichever order they arrive in — the server drops
+// it, because its sequence is not the newest this page has sent.
+
+/** What a syncer is doing, for anything that wants to draw it. */
+export type DraftSyncState = "idle" | "saving" | "saved" | "conflict";
+
 /**
- * What `useAutosave` hands back — THREE CALLS, where there used to be five.
+ * THE EDITOR'S ANSWER TO "SOMEBODY ELSE WROTE THIS RECORD FIRST" (design §2).
  *
- * `stop` / `resume` were an ordering protocol between one mount's pending write
- * and somebody else's DELETE, and a version does that job for every document at
- * once: a write that arrives after the record it edits has been REWRITTEN is
- * refused by the server (409) instead of landing. A discard and a schedule no
- * longer stand this hook down and wait for it; they simply write, and this
- * hook's late PUT bounces.
+ * A write refused as stale comes back with the server's own record, and there
+ * are exactly two honest things to do with it. If the reader is NOT in this
+ * editor, or is but has not typed since the last save, the other writer's words
+ * are simply newer and better: `adopt` puts them on screen. If the reader IS
+ * mid-sentence, their words win — losing what somebody is actively typing is
+ * not a trade any conflict rule may make — so the state is sent again ONCE
+ * against the version just learned, and `onKept` says so out loud.
  *
- * `settle` came back, and only for the one case a version cannot order (Bugbot,
- * PR #1180): TWO REQUESTS ALREADY ON THE WIRE CARRYING THE SAME `If-Match`. A
- * version refuses a LATER write that states a STALE number; it says nothing
- * about a PUT and a DELETE that were both dispatched against version 7. The
- * send's DELETE can land first, and the autosave's PUT then recreates the
- * sentence that was just sent as a live draft. So the send waits for the write
- * that is already out before deleting — see `settle`.
+ * ONE RETRY, not a loop: two tabs both typing would otherwise write past each
+ * other for as long as they both go on.
  */
-export interface Autosave<T> {
-  /** Write NOW if anything has changed since the last write — what send, submit
-   *  and every unload path spend. */
-  flush(): void;
-  /**
-   * FORGET WHAT IS PENDING and take `next` as already-written.
-   *
-   * The composer's send: the box is about to be cleared and the draft deleted,
-   * and a debounced write armed a keystroke earlier would otherwise be one more
-   * request for a record that is gone. Told what the value is about to become,
-   * rather than reading the current one, because the state write that empties
-   * the box has not been applied yet at the moment this is called.
-   *
-   * `next` becomes BOTH what counts as written and what a later write would
-   * send, so a flush after a reset is a flush with nothing to say.
-   *
-   * It also DISOWNS whatever write is still on the wire: its answer — an
-   * adoption, a conflict retry — is about a value this editor has just stopped
-   * holding, and acting on it would put the sent sentence back in the box.
-   */
-  reset(next: T): void;
-  /**
-   * RESOLVE WHEN NOTHING THIS HOOK STARTED IS STILL ON THE WIRE — WITH THE
-   * VERSION THAT WRITE MADE.
-   *
-   * The one thing a version cannot order: a PUT already dispatched and a DELETE
-   * about to be, both stating the same `If-Match`. The server takes them in
-   * whatever order they arrive, so a send that deletes without waiting can have
-   * its own autosave recreate the message it just sent. `await settle()` first
-   * and the two are ordered by this client instead.
-   *
-   * AND THE ANSWER IS THE VERSION, not merely "done" (Bugbot, PR #1180).
-   * Reading the version out of the map afterwards asks "what is the newest
-   * number anybody has seen", and a follow-up typed during the round trip makes
-   * that somebody else's record. The number this call answers with is the one
-   * THE AWAITED WRITE earned, so a caller can state it and have a newer record
-   * refuse them. `undefined` when nothing was written, when the write failed,
-   * and when it was refused — all three mean "this client made no version", and
-   * the caller falls back to what it knew before.
-   *
-   * Resolves immediately when nothing is in flight, and never rejects.
-   */
-  settle(): Promise<number | undefined>;
-}
-
-export interface AutosaveOptions {
-  /** Quiet time after the last change before a write goes out. */
-  delay?: number;
-  /**
-   * WHAT TO DO WITH A RECORD SOMEBODY ELSE EDITED FIRST (design §2).
-   *
-   * A write refused as stale (409) comes back with the server's own record, and
-   * there are exactly two honest things to do with it. If the reader is NOT in
-   * this editor, or is but has not typed since the last save, the other writer's
-   * words are simply newer and better: `adopt` puts them on screen and the
-   * record and the box agree again. If the reader IS mid-sentence, their words
-   * win — losing what somebody is actively typing is not a trade any conflict
-   * rule may make — so the hook retries ONCE against the version it has just
-   * learned, and `onKept` says so out loud, because a silent overwrite of
-   * somebody else's save is the other way to lose work.
-   *
-   * ONE RETRY, not a loop: two tabs both typing would otherwise write past each
-   * other for as long as they both go on. The second refusal leaves the local
-   * text where it is and the next keystroke tries again on its own debounce.
-   */
-  conflict?: AutosaveConflict;
-}
-
-export interface AutosaveConflict {
+export interface DraftConflictRule {
   /** Is the reader's caret in this editor right now? */
   focused(): boolean;
   /** What the editor is SHOWING, for the "unchanged since the last save" half
-   *  of the rule. Compared against the same reading taken at the last write. */
+   *  of the rule. Compared against the same reading taken at dispatch. */
   localText(): string;
   /** Put the server's record on screen — `null` when it was deleted. */
   adopt(record: unknown): void;
-  /** Said when the local text was kept over a newer server record. */
+  /** Said when the local text was kept over a newer, non-empty server record. */
   onKept?(): void;
+  /**
+   * THE ID A TASK WRITE ACTUALLY LANDED ON, when it was not the one it named
+   * (`saveTaskDraft`, Bugbot PR #1126: the store folds a write into the draft
+   * that already holds this session). The card has to adopt it — every later
+   * call names the draft by id — and the editor is the only thing that can,
+   * since it is the one holding the id.
+   */
+  onTaskId?(id: string): void;
 }
 
-/** A serialisation no value can produce — a stringified string always carries
- *  its quotes — so a comparison against it can only ever be "different". Used to
- *  re-arm a write that a conflict retry has to send again. */
-const UNWRITTEN = "\u0000unwritten";
+/** What `handoff` answers: whether the server now holds what was asked for, and
+ *  the version it holds it at. */
+export interface DraftHandoff {
+  ok: boolean;
+  version?: number;
+}
+
+interface ChatDesired {
+  kind: "chat";
+  text: string;
+  attachments: DraftAttachment[];
+  form?: ChatDraftForm;
+}
+
+interface TaskDesired {
+  kind: "task";
+  form: TaskDraftForm;
+}
+
+interface GoneDesired {
+  kind: "gone";
+}
+
+type Desired = ChatDesired | TaskDesired | GoneDesired;
+
+export interface DraftSyncer {
+  /** The key this syncer is the writer for. */
+  readonly key: string;
+  /** THE RECORD SHOULD HOLD THIS. The whole state every time — words, files and
+   *  (for the card that owns them) the settings — because a request carries the
+   *  whole state and a partial statement would be a delta by another name. */
+  setText(
+    text: string,
+    attachments?: readonly DraftAttachment[],
+    form?: ChatDraftForm,
+  ): void;
+  /** …and the task-draft shape of the same sentence, for a card with no chat
+   *  behind it (`draft:<id>`). */
+  setTask(form: TaskDraftForm): void;
+  /** THE SERVER ALREADY HOLDS THIS — seeding an editor from a record, or taking
+   *  one the change feed pushed. Sets what is wanted AND what is believed to be
+   *  stored, so a box that merely filled writes nothing. */
+  seedText(text: string, attachments?: readonly DraftAttachment[]): void;
+  /** THE RECORD SHOULD NOT EXIST. The send, and every Discard. Goes out at once
+   *  rather than on the debounce — but still behind whatever is in flight. */
+  markDeleted(): void;
+  /** Send what is pending NOW. `keepalive` also lets the request outlive the
+   *  document, and is the one thing that may pass an in-flight request. */
+  flushNow(opts?: { keepalive?: boolean }): void;
+  /** RESOLVE ONCE THE SERVER MATCHES THE DESIRED STATE — the Schedule hop, which
+   *  cannot navigate to a card that seeds from a record this page has not
+   *  finished writing. Never rejects. */
+  handoff(): Promise<DraftHandoff>;
+  /** STOP WANTING ANYTHING — the record is out of this page's hands (the
+   *  Schedule that turns a draft into a task: the server deletes it as part of
+   *  creating the entry, so a pending write would put it straight back). Unlike
+   *  `markDeleted` this asks for nothing; it forgets. */
+  forget(): void;
+  /** Watch what it is doing. */
+  subscribe(cb: (state: DraftSyncState) => void): () => void;
+  /** Register the editor's conflict rule; the answer detaches it. */
+  watch(rule: DraftConflictRule): () => void;
+  /** The editor is going away: it stops speaking for this record. Whatever is
+   *  pending still goes — the syncer is not the editor's, it is the key's. */
+  dispose(): void;
+}
+
+/**
+ * ONE SYNCER PER KEY PER DOCUMENT, and it OUTLIVES THE EDITORS.
+ *
+ * Module scope for the same reason the version map is: two editors can be open
+ * on one record in one document (the composer and the New task card, on the
+ * same chat key), and two writers for one key is the thing this design removes.
+ * It also means an unmount needs no flush of its own — the debounce belongs to
+ * the key, not to the component, so leaving a chat does not have to race the
+ * 600 ms it was in the middle of.
+ */
+const syncers = new Map<string, InnerSyncer>();
+
+/** The syncer for this key, made on first ask. */
+export function draftSyncer(key: string): DraftSyncer {
+  let found = syncers.get(key);
+  if (!found) {
+    found = makeSyncer(key);
+    syncers.set(key, found);
+  }
+  return found;
+}
+
+/** …and the one that already exists, or nothing. Asked by a caller that has
+ *  something to say about a key only IF this document is writing it — the
+ *  List's trash, which otherwise simply DELETEs (`discardDraft`). */
+export function peekDraftSyncer(key: string): DraftSyncer | undefined {
+  return syncers.get(key);
+}
+
+/** Forget every syncer. For tests, which build a document per case; nothing in
+ *  the app has any business dropping a pending write. */
+export function resetDraftSyncers(): void {
+  for (const sync of syncers.values()) sync.cancel();
+  syncers.clear();
+}
 
 /** design.md: 600 ms after the last keystroke. Long enough that a sentence is
  *  one write, short enough that a reader who types and immediately closes the
  *  tab is covered by the flush rather than by the timer. */
 export const AUTOSAVE_DELAY_MS = 600;
 
+interface InnerSyncer extends DraftSyncer {
+  /** Drop the timer and stop caring about answers — tests only. */
+  cancel(): void;
+}
+
+/** The key a TASK draft is sequenced and versioned under, run backwards: the id
+ *  the routes take. `""` for a chat key, which is the test. */
+function taskIdOf(key: string): string {
+  return key.startsWith("draft:") ? key.slice("draft:".length) : "";
+}
+
+/** Two states are the same state when they serialise the same. Built field by
+ *  field rather than handed to `JSON.stringify` whole, so a form the caller
+ *  spelled in another order is not a change. */
+function serialOf(state: Desired): string {
+  if (state.kind === "gone") return " gone";
+  if (state.kind === "task") return "task:" + stable(state.form as unknown);
+  return "chat:" + stable({
+    text: state.text,
+    attachments: state.attachments,
+    form: state.form ?? null,
+  });
+}
+
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_k, v) => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+    const row = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(row).sort()) out[k] = row[k];
+    return out;
+  }) ?? "";
+}
+
+function makeSyncer(key: string): InnerSyncer {
+  // WHAT THE RECORD SHOULD HOLD, and what this page believes it does hold. The
+  // gap between the two is the only thing that ever makes a request.
+  let desired: Desired | undefined;
+  let known: string | undefined;
+  // HOW MANY REQUESTS ARE OUT. Normally one at most; two only across a keepalive
+  // flush, which is allowed to pass (see the header).
+  let out = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let seq = 0;
+  /** The highest `seq` whose answer has been taken. A slower earlier request
+   *  answering after a faster later one must not teach this page anything. */
+  let applied = 0;
+  /** The version the last landed write of this page's made — what `handoff`
+   *  answers with, and what the hop states. */
+  let made: number | undefined;
+  /** Was the last completed request a success? */
+  let landedOk = true;
+  /** Send again the moment the wire clears, rather than on the debounce — set by
+   *  every gesture that is not a keystroke, and cleared once the server has
+   *  caught up. */
+  let urgent = false;
+  /** ONE conflict retry per desired state (see `DraftConflictRule`). */
+  let retried = false;
+  /** Twice refused: stop sending until somebody says something new. Without it
+   *  two tabs in a 409 loop would write past each other for ever. */
+  let stalled = false;
+  /** What the editor was showing when the request in flight was dispatched. */
+  let dispatchedText = "";
+  let rule: DraftConflictRule | undefined;
+  let state: DraftSyncState = "idle";
+  const listeners = new Set<(s: DraftSyncState) => void>();
+  const waiting: Array<(answer: DraftHandoff) => void> = [];
+
+  const dirty = () => desired !== undefined && serialOf(desired) !== known;
+
+  const say = (next: DraftSyncState) => {
+    if (state === next) return;
+    state = next;
+    for (const cb of listeners) {
+      try {
+        cb(next);
+      } catch {
+        // A subscriber that throws is a subscriber's problem; a draft is not
+        // lost over somebody's re-render.
+      }
+    }
+  };
+
+  const clearTimer = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+
+  /** Resolve the hop's waiters — only once the server holds what is wanted and
+   *  nothing is still on the wire. */
+  const settleWaiters = () => {
+    if (!waiting.length) return;
+    if (out > 0) return;
+    if (dirty() && !stalled) return;
+    const answer: DraftHandoff = {
+      ok: landedOk && !dirty(),
+      ...(() => {
+        const version = made ?? draftVersion(key);
+        return version === undefined ? {} : { version };
+      })(),
+    };
+    for (const resolve of waiting.splice(0)) resolve(answer);
+  };
+
+  /** Somebody changed what is wanted: a stall is over and the single retry is
+   *  spent on the new state rather than the old one. */
+  const wanted = (next: Desired, urgently: boolean) => {
+    const serial = serialOf(next);
+    if (desired !== undefined && serialOf(desired) === serial && !urgently) return;
+    desired = next;
+    stalled = false;
+    retried = false;
+    // A KEYSTROKE ENDS AN URGENCY. A blur that could not send (something was in
+    // flight) asked for "as soon as the wire clears"; the reader typing again
+    // is the reader still writing, and the answer to that is the debounce.
+    urgent = urgently;
+    if (!dirty()) {
+      clearTimer();
+      settleWaiters();
+      return;
+    }
+    if (urgently) {
+      pump({});
+      return;
+    }
+    clearTimer();
+    timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
+  };
+
+  function dispatch(sending: Desired, mine: number, keepalive: boolean) {
+    const opts: DraftWriteOptions = {
+      seq: mine,
+      ...(keepalive ? { keepalive: true } : {}),
+    };
+    const seen = draftVersion(key);
+    const ident = taskIdOf(key);
+    if (sending.kind === "gone") {
+      // NO `If-Match: 0` ON A DELETE. Zero means "I expect no record", and a
+      // delete that refuses to run because the record exists would be the trash
+      // not working. A version this page HOLDS is still stated — that one is the
+      // promise not to spend somebody else's newer words.
+      const del = seen === undefined ? opts : { ...opts, ifMatch: seen };
+      return ident ? deleteTaskDraft(ident, del) : deleteChatDraft(key, del);
+    }
+    // …AND `If-Match: 0` ON THE FIRST WRITE OF A KEY THIS DOCUMENT HAS NEVER
+    // SEEN A RECORD FOR (contract §2). Unconditional would mean a page that
+    // failed to read the store — offline for a second at mount — silently
+    // overwriting a draft it never saw. Zero says what it believes: there is
+    // nothing here. A 409 then hands it the record, and the rule below decides.
+    const put = { ...opts, ifMatch: seen ?? 0 };
+    if (sending.kind === "task") return saveTaskDraft(ident, sending.form, put);
+    return saveChatDraft(key, sending.text, sending.attachments, put, sending.form);
+  }
+
+  function pump(opts: { keepalive?: boolean }) {
+    clearTimer();
+    if (stalled || !dirty()) {
+      settleWaiters();
+      return;
+    }
+    // ONE AT A TIME — except a keepalive flush, which is the document's last
+    // word and may not wait for anything (see the header).
+    if (out > 0 && !opts.keepalive) return;
+    const sending = desired as Desired;
+    const serial = serialOf(sending);
+    const mine = (seq += 1);
+    dispatchedText = rule ? rule.localText() : "";
+    out += 1;
+    say("saving");
+    void Promise.resolve(dispatch(sending, mine, !!opts.keepalive))
+      .then((answer) => {
+        const res = answer as DraftWrite<unknown> | undefined;
+        out -= 1;
+        if (!res) {
+          landedOk = false;
+        } else if (res.dropped) {
+          // This page has already said something newer; there is nothing to
+          // learn and nothing to redo.
+          landedOk = true;
+        } else if (res.ok) {
+          landedOk = true;
+          if (mine > applied) {
+            applied = mine;
+            known = serial;
+            made = sending.kind === "gone" ? undefined : res.version;
+          }
+          // A TASK WRITE MAY HAVE LANDED ON ANOTHER ID (`saveTaskDraft`). The
+          // version this page now holds belongs to THAT key, and the card has to
+          // be told, or its next save, its Discard and its Schedule all aim at a
+          // record that is not there.
+          const landedOn = sending.kind === "task"
+            ? (res as { id?: string }).id ?? ""
+            : "";
+          if (landedOn && landedOn !== taskIdOf(key)) {
+            rememberDraftVersion(taskDraftKey(landedOn), res.version);
+            rule?.onTaskId?.(landedOn);
+          }
+        } else if ("conflict" in res) {
+          landedOk = false;
+          resolve(res.conflict ?? null, sending);
+        } else {
+          // Offline, a 500, the document unloading mid-flight. Nothing is said
+          // and nothing is lost: the state is still WANTED, so the next change,
+          // the next flush and the next pagehide all send it again.
+          //
+          // AND NOTHING IS SENT AGAIN ON ITS OWN. Re-dispatching the moment a
+          // failure comes back would be a hot loop against a server that is
+          // down — one request per round trip, for as long as it stays down —
+          // and the write that would fix it is the one the reader has not made
+          // yet. So this stalls, exactly as a second refusal does, and any
+          // statement about this key starts it again.
+          landedOk = false;
+          stalled = true;
+        }
+        after();
+      })
+      .catch(() => {
+        out -= 1;
+        landedOk = false;
+        after();
+      });
+  }
+
+  /** Where the next request is decided, and the only place it is. */
+  function after() {
+    if (!dirty() || stalled) {
+      urgent = false;
+      say(landedOk ? "saved" : "idle");
+      settleWaiters();
+      return;
+    }
+    if (out > 0) return; // the other request in flight will call this again
+    if (urgent) {
+      pump({});
+      return;
+    }
+    // Still typing: the newest state goes out on its own debounce rather than
+    // one request per round trip.
+    clearTimer();
+    timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
+    say("idle");
+  }
+
+  /**
+   * A 409 — and the version is already adopted by `write` before this runs, so
+   * whatever is decided here, the next request states a number that exists.
+   */
+  function resolve(record: unknown, sent: Desired) {
+    say("conflict");
+    const rec = record as ChatDraft | null;
+    // IS THERE ANYTHING ON THE OTHER SIDE TO LOSE? A record that is gone, or the
+    // WORDLESS one a chat keeps while its Schedule form lives on (contract §2),
+    // is not somebody's sentence — so keeping the local text over it costs
+    // nobody anything, and a toast about it would be a toast about nothing. A
+    // task record is judged whole: its fields are not a box anybody is typing
+    // one word at a time into.
+    const theirs = sent.kind === "task"
+      ? !!record
+      : !!rec && (!!`${rec.text ?? ""}`.trim() || !!rec.attachments?.length);
+    const editor = rule;
+    const again = (): void => {
+      // State it once more against the version just learned — `write` has
+      // already taken it — and stop after that, because two tabs both retrying
+      // would write past each other for as long as they both go on.
+      if (retried) {
+        stalled = true;
+        return;
+      }
+      retried = true;
+      urgent = true;
+    };
+    // NOTHING TO LOSE, or nothing in this document holding the record (the
+    // List's trash, the hop): the gesture stands, once.
+    if (!theirs || !editor) {
+      again();
+      return;
+    }
+    // NOT FOCUSED, OR NOTHING TYPED SINCE THE DISPATCH — the other writer's
+    // record is simply the newer one, and taking it is how two tabs on one
+    // folder agree within a second.
+    if (!editor.focused() || editor.localText() === dispatchedText) {
+      editor.adopt(rec);
+      // What is on screen now is what the server holds, so it is also what is
+      // wanted: re-writing it straight back would be this page winning a
+      // conflict it has just conceded.
+      if (rec && sent.kind !== "task") {
+        desired = {
+          kind: "chat",
+          text: rec.text ?? "",
+          attachments: rec.attachments ?? [],
+        };
+        known = serialOf(desired);
+      } else {
+        desired = undefined;
+        known = undefined;
+      }
+      retried = false;
+      stalled = false;
+      return;
+    }
+    // MID-SENTENCE: the local words win, once, and the reader is told.
+    again();
+    if (!stalled) editor.onKept?.();
+  }
+
+  const api: InnerSyncer = {
+    key,
+    setText(text, attachments = [], form) {
+      wanted(
+        {
+          kind: "chat",
+          text,
+          attachments: attachments.slice(),
+          ...(form === undefined ? {} : { form }),
+        },
+        false,
+      );
+    },
+    setTask(form) {
+      wanted({ kind: "task", form }, false);
+    },
+    seedText(text, attachments = []) {
+      clearTimer();
+      desired = { kind: "chat", text, attachments: attachments.slice() };
+      known = serialOf(desired);
+      retried = false;
+      stalled = false;
+      settleWaiters();
+    },
+    markDeleted() {
+      wanted({ kind: "gone" }, true);
+    },
+    forget() {
+      clearTimer();
+      desired = undefined;
+      known = undefined;
+      stalled = false;
+      retried = false;
+      urgent = false;
+      settleWaiters();
+    },
+    flushNow(opts = {}) {
+      urgent = true;
+      stalled = false;
+      pump(opts);
+    },
+    handoff() {
+      urgent = true;
+      stalled = false;
+      retried = false;
+      return new Promise<DraftHandoff>((resolveWith) => {
+        waiting.push(resolveWith);
+        pump({});
+        settleWaiters();
+      });
+    },
+    subscribe(cb) {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    watch(next) {
+      rule = next;
+      return () => {
+        if (rule === next) rule = undefined;
+      };
+    },
+    dispose() {
+      rule = undefined;
+    },
+    cancel() {
+      clearTimer();
+      rule = undefined;
+      waiting.splice(0);
+      listeners.clear();
+    },
+  };
+  return api;
+}
+
 /**
- * AUTOSAVE, THE WHOLE OF IT — debounce, flush, and the promise never to be in
- * the way.
+ * THE THREE MOMENTS A HALF-TYPED THING IS MOST LIKELY TO BE ABANDONED, listened
+ * for ONCE for every key at once rather than once per editor.
  *
- * `value` is whatever the caller wants persisted; `save` is called with it. The
- * hook compares SERIALISED values (`JSON.stringify`), so a caller may hand it a
- * fresh object every render — which every form does — without that alone
- * counting as a change. A value that serialises identically is never written
- * twice, which is what keeps a re-render from becoming a request.
+ * `pagehide` rather than `unload` alone: it is the one that fires for a bfcache
+ * navigation, which is most of them. `visibilitychange` covers the phone and the
+ * tab switch that never becomes a pagehide at all. Both are the document going
+ * away, so both send `keepalive` — and both BYPASS the in-flight rule, because a
+ * queued flush is a flush that never leaves (Bugbot 4026181414).
  *
- * A MOUNT ALONE NEVER WRITES: `written` is seeded with the opening value, so an
- * editor that merely opened — the New task card, a composer seeded from its
- * record — mints nothing. That is `§4`'s "mint only on intent" in one line, and
- * it is why there is no `writeInitial` any more: the Schedule hop no longer
- * arrives holding words that exist nowhere else, because the record it opens on
- * IS where they are.
+ * A window blur is not the document going away, so it is an ordinary flush: what
+ * is pending goes now instead of in 600 ms, behind whatever is already out.
+ */
+let listening = false;
+
+function listen(): void {
+  if (listening || typeof window === "undefined") return;
+  listening = true;
+  const leaving = () => {
+    for (const sync of syncers.values()) sync.flushNow({ keepalive: true });
+  };
+  window.addEventListener("pagehide", leaving);
+  window.addEventListener("blur", () => {
+    for (const sync of syncers.values()) sync.flushNow();
+  });
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") leaving();
+    });
+  }
+}
+
+/**
+ * WHAT `useAutosave` HANDS BACK — TWO CALLS, where there were five and then
+ * three.
  *
- * WHEN IT WRITES:
- *   * `delay` ms after the last change — the ordinary case;
- *   * immediately on window blur, on `pagehide`, and on the document going
- *     hidden — the three moments a half-typed thing is most likely to be
- *     abandoned;
- *   * immediately on unmount, which is what covers leaving a chat for another
- *     one, or closing the task form.
+ * There is no `settle` and no `stop`/`resume`, because there is nothing left for
+ * a caller to order: the syncer has one request in flight and one desired state,
+ * so a send, a discard and a hop simply SAY what they want and the order is the
+ * order they said it in.
+ */
+export interface Autosave<T> {
+  /** Send what is pending NOW rather than on the debounce. */
+  flush(): void;
+  /**
+   * FORGET WHAT IS PENDING and take `next` as what the editor holds.
+   *
+   * The composer's send: the box is about to be cleared, and until the render
+   * that empties it arrives this hook still holds the sentence that was sent.
+   * Told what the value is about to become, rather than reading the current one.
+   *
+   * IT SAYS NOTHING TO THE SYNCER, deliberately. The send has just told it to
+   * delete the record; a `reset` that also spoke would take that back. What the
+   * syncer should hold is always said in the caller's own words —
+   * `markDeleted`, `seedText`, `setText` — and this is only about what counts as
+   * a change from here on.
+   */
+  reset(next: T): void;
+}
+
+/**
+ * AUTOSAVE — now a thin seat over the syncer, and all that is left of it is
+ * "tell the syncer when this editor's value changes".
  *
- * The last three pass `keepalive`, because a request started while the document
- * is going away is cancelled with it otherwise. `save` NEVER throws into the
- * caller (the module's writes swallow everything).
+ * The hook compares SERIALISED values, so a caller may hand it a fresh object
+ * every render — which every form does — without that alone counting as a
+ * change. A MOUNT ALONE NEVER WRITES: the opening value is the baseline, so an
+ * editor that merely opened mints nothing (design §4, "mint only on intent").
+ * That baseline is per MOUNT and the syncer's is per KEY, which is the division
+ * that matters: a second composer opening on a key this document has already
+ * written must not read its own empty box as an instruction to delete.
  *
- * `save` is read through a ref, so an inline closure (what every call site
- * passes) does not tear down and rebuild the pending write on every render.
- *
- * WHAT `save` ANSWERS IS READ, and that is the one new thing here: a
- * `DraftWrite` carrying a `conflict` is a write the server refused because
- * somebody else got there first, and the `conflict` option decides between the
- * two records — see `AutosaveOptions.conflict`.
+ * Everything else that used to be here — the debounce, the unload flush, the
+ * unmount flush, the conflict retry, the one-in-flight queue — belongs to the
+ * key rather than to the component and now lives with it.
  */
 export function useAutosave<T>(
   value: T,
-  save: (value: T, opts: DraftWriteOptions) => unknown,
-  { delay = AUTOSAVE_DELAY_MS, conflict }: AutosaveOptions = {},
+  push: (value: T) => void,
+  { key }: { key?: string } = {},
 ): Autosave<T> {
-  const saveRef = useRef(save);
-  saveRef.current = save;
+  const pushRef = useRef(push);
+  pushRef.current = push;
+  const serial = JSON.stringify(value) ?? "";
+  const written = useRef<string>(serial);
+  const keyRef = useRef(key);
+  keyRef.current = key;
   const valueRef = useRef(value);
   valueRef.current = value;
-  const conflictRef = useRef(conflict);
-  conflictRef.current = conflict;
-  // THE VALUE AS ONE STRING, and it is what the debounce below actually depends
-  // on. Every caller hands a fresh object literal each render, and a host that
-  // re-renders on a poll (the chat does, every 400ms) would otherwise clear and
-  // re-arm the timer forever and never write anything.
-  const serial = JSON.stringify(value) ?? "";
-  const written = useRef<string>(JSON.stringify(value) ?? "");
-  // WHAT THE EDITOR WAS SHOWING AT THE LAST WRITE — the other half of the
-  // adoption rule (`AutosaveOptions.conflict`). "The reader has not typed since
-  // we last saved" is a question about the BOX, not about the serialised form
-  // around it: a card whose model dropdown moved is not a card whose sentence
-  // is at risk.
-  const savedText = useRef<string>(conflict ? conflict.localText() : "");
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // WHAT IS ON THE WIRE, and which editing life it belongs to. `settle` awaits
-  // the first; `reset` bumps the second, so a write started before a send can
-  // no longer adopt, retry, or otherwise speak for a box that has moved on.
-  //
-  // The promise carries the VERSION that write made, because that is the one
-  // thing about a disowned write that still matters: the record it left behind
-  // is the record the send is about to delete.
-  const inflight = useRef<Promise<number | undefined>>(Promise.resolve(undefined));
-  const era = useRef(0);
 
-  const clear = () => {
-    if (timer.current !== undefined) clearTimeout(timer.current);
-    timer.current = undefined;
-  };
-
-  /**
-   * ONE ATTEMPT, retry included — which is what `writeNow` queues and `settle`
-   * ultimately awaits. The conflict retry starts a second request from inside
-   * the first one's `then`, so it is RETURNED into that chain rather than left
-   * beside it: one promise covers both attempts.
-   *
-   * Called only once whatever this hook already has on the wire has cleared
-   * (see `writeNow`), so every read here — `valueRef`, `written`, `era` — is
-   * taken AT DISPATCH TIME, not at the moment the caller asked for a write.
-   */
-  const attempt = useCallback((
-    opts: DraftWriteOptions,
-    retry: boolean,
-  ): Promise<number | undefined> => {
-    const next = JSON.stringify(valueRef.current) ?? "";
-    if (next === written.current) return Promise.resolve(undefined);
-    written.current = next;
-    const rule = conflictRef.current;
-    if (rule) savedText.current = rule.localText();
-    const mine = era.current;
-    const out = saveRef.current(valueRef.current, opts);
-    if (!out || typeof (out as Promise<unknown>).then !== "function") {
-      return Promise.resolve(undefined);
-    }
-    return (out as Promise<unknown>)
-      .then((res): number | undefined | Promise<number | undefined> => {
-        const clash = res as DraftWrite<unknown> | undefined;
-        // THE VERSION IS A FACT ABOUT THE SERVER, not about this editor's life,
-        // so it survives the era check below: the send that disowned this write
-        // is precisely the caller that has to know which record it left.
-        const made = clash && clash.ok ? clash.version : undefined;
-        // A `reset` since this went out means the box is no longer holding what
-        // this write was about — the send already cleared it — so this answer
-        // has nobody to speak for.
-        if (era.current !== mine) return made;
-        if (!clash || clash.ok || !("conflict" in clash)) return made;
-        const rule2 = conflictRef.current;
-        if (!rule2) return undefined;
-        // NOT FOCUSED, OR NOTHING TYPED SINCE THE LAST SAVE — the other
-        // writer's record is simply the newer one, and taking it is how two
-        // tabs on one folder agree within a second.
-        if (!rule2.focused() || rule2.localText() === savedText.current) {
-          rule2.adopt(clash.conflict ?? null);
-          // The adopted value is what is on screen now, so it is also what
-          // counts as written: re-writing it straight back would be this
-          // client winning a conflict it just conceded.
-          written.current = JSON.stringify(valueRef.current) ?? "";
-          savedText.current = rule2.localText();
-          return undefined;
-        }
-        // MID-SENTENCE: the local words win, once. `write` has already taken
-        // the server's version, so this second attempt states a version that
-        // exists — and re-arming `written` is what lets it go out at all.
-        if (retry) return undefined;
-        rule2.onKept?.();
-        written.current = UNWRITTEN;
-        // Straight to `attempt`, NOT `writeNow`: `inflight.current` is this
-        // very call's own not-yet-settled chain link, so queuing the retry
-        // behind it would wait on itself forever.
-        return attempt(opts, true);
-      })
-      .catch((): number | undefined => {
-        // `save`'s own wrapper never rejects; this only guarantees that a
-        // future caller's cannot become an unhandled rejection mid-keystroke.
-        return undefined;
-      });
+  useEffect(() => {
+    listen();
   }, []);
 
-  /**
-   * QUEUES a write behind whatever this hook already has out, so there is
-   * never more than one PUT on the wire for this key at a time (Bugbot, PR
-   * #1180): `flush` fired right after the debounce, or the Schedule hop's
-   * flush-then-settle, used to dispatch a second request while an earlier
-   * autosave was still in flight, and network order — not send order — then
-   * decided which one the record was left holding. A slower first write could
-   * land AFTER a faster second and put stale text, or the chat's own tempdir
-   * attachment paths, back on the record.
-   *
-   * `made ?? prevMade` folds forward: a link that finds nothing new to write
-   * (`attempt`'s own check, re-run at dispatch time against the freshest
-   * `valueRef`) still carries the version the chain already earned, so a
-   * redundant `flush` can never make `settle` forget a real write that came
-   * before it.
-   */
-  const writeNow = useCallback((
-    opts: DraftWriteOptions,
-  ): Promise<number | undefined> => {
-    clear();
-    const chain = inflight.current.then((prevMade) =>
-      attempt(opts, false).then((made) => made ?? prevMade),
-    );
-    inflight.current = chain;
-    return chain;
-  }, [attempt]);
-
-  const flush = useCallback(() => {
-    void writeNow({ keepalive: true });
-  }, [writeNow]);
-  /** Whatever is on the wire AS OF THIS CALL — a write started after it is a
-   *  write about words the caller has not seen, and waiting on those is how a
-   *  send would come to delete a draft typed after it. */
-  const settle = useCallback(() => inflight.current, []);
-  const reset = useCallback((next: T) => {
-    clear();
-    era.current += 1;
-    // The VALUE as well as the bookkeeping — see `Autosave.reset`. Until the
-    // render that empties the box arrives, `valueRef` still holds the sentence
-    // that was just sent, and the unmount flush would write it back.
-    valueRef.current = next;
-    written.current = JSON.stringify(next) ?? "";
-    const rule = conflictRef.current;
-    if (rule) savedText.current = rule.localText();
-  }, []);
-
-  // The debounce. Runs on every render whose serialised value differs from what
-  // was last written — the comparison is inside `writeNow`, so a timer that
-  // fires on an unchanged value costs one string compare and no request.
   useEffect(() => {
     if (serial === written.current) return;
-    clear();
-    timer.current = setTimeout(() => {
-      void writeNow({});
-    }, delay);
-    return clear;
-  }, [serial, delay, writeNow]);
+    written.current = serial;
+    pushRef.current(valueRef.current);
+  }, [serial]);
 
-  // The three ways a document leaves, plus the unmount. `pagehide` rather than
-  // `unload` alone: it is the one that fires for a bfcache navigation, which is
-  // most of them. `visibilitychange` covers the phone/tab-switch that never
-  // becomes a pagehide at all.
-  useEffect(() => {
-    const onHide = () => flush();
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") flush();
-    };
-    window.addEventListener("blur", onHide);
-    window.addEventListener("pagehide", onHide);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("blur", onHide);
-      window.removeEventListener("pagehide", onHide);
-      document.removeEventListener("visibilitychange", onVisibility);
-      // THE UNMOUNT FLUSH, and it is the important one: leaving a chat for
-      // another unmounts the composer without any window event at all.
-      flush();
-    };
-  }, [flush]);
+  const flush = useCallback(() => {
+    const on = keyRef.current;
+    if (on) draftSyncer(on).flushNow();
+  }, []);
+  const reset = useCallback((next: T) => {
+    written.current = JSON.stringify(next) ?? "";
+    valueRef.current = next;
+  }, []);
 
-  return { flush, reset, settle };
+  return { flush, reset };
 }

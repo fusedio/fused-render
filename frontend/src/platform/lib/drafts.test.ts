@@ -2,11 +2,11 @@
 // "Drafts: one record, one key, versioned, pushed", §2).
 //
 // What this file used to test was a coordination layer: a `spent` set, an
-// in-flight map, and a `stop`/`settle`/`resume` protocol, all of which existed
-// to order one document's writes against its own reads. A version orders them
-// against every document at once — the other tab included — so the tests here
-// are about the version: that it is stated, that it is taken from every answer
-// the server gives, and that a refusal is resolved the way the design says.
+// in-flight map, a `stop`/`settle`/`resume` protocol, an `era` counter — all of
+// which existed to order one document's writes against its own reads, and all of
+// which are gone. There is ONE writer per key now (`draftSyncer`), and what is
+// tested here is the thing that replaced them: a desired state, one request in
+// flight, a version between documents and a sequence within one.
 //
 // Driven through the real hook — react-test-renderer, no DOM, the same tool
 // JobRow.test.tsx and apps/explorer/listing/hook-harness.ts both use — because
@@ -14,12 +14,12 @@
 // below is a small reimplementation of hook-harness.ts's own `renderHook`, not
 // an import of it: `platform/` may not import `apps/` (scripts/check-boundaries).
 //
-// Every test drives the write through `flush()` rather than waiting out the
+// Every test drives the write through `flushNow()` rather than waiting out the
 // real debounce timer: `bun test` runs every suite in one process, and a real
 // `setTimeout` left pending past a test's own assertions is exactly the kind of
 // leftover that lands during whichever OTHER file happens to be running when it
 // fires. `flush()` dispatches synchronously, so nothing here waits on a clock.
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -28,19 +28,19 @@ import { installDomShim } from "@platform/lib/testDomShim";
 import {
   chatDraftKey,
   deleteChatDraft,
+  draftSyncer,
   draftVersion,
   fetchChatDraft,
   fetchDrafts,
   forgetDraftVersion,
   isChatDraftKey,
   newChatFile,
+  resetDraftSyncers,
   saveChatDraft,
   saveTaskDraft,
   taskDraftKey,
   useAutosave,
   type Autosave,
-  type AutosaveOptions,
-  type DraftWriteOptions,
 } from "@platform/lib/drafts";
 
 // `useAutosave`'s unload effect reaches for `window`/`document` — real globals
@@ -52,13 +52,13 @@ installDomShim();
 /** Mount `useAutosave` and expose its latest handle. */
 function renderAutosave<T>(
   value: T,
-  save: (value: T, opts: DraftWriteOptions) => unknown,
-  options?: AutosaveOptions,
+  push: (value: T) => void,
+  options?: { key?: string },
 ): { current: () => Autosave<T>; rerender: (next: T) => void; unmount: () => void } {
   let latest!: Autosave<T>;
   let renderer!: ReactTestRenderer;
   const Probe = (props: { value: T }): null => {
-    latest = useAutosave(props.value, save, options);
+    latest = useAutosave(props.value, push, options);
     return null;
   };
   act(() => {
@@ -118,7 +118,6 @@ const chatRecord = (text: string, version: number) => ({
 });
 
 // ---- the version, stated and taken ------------------------------------------
-
 describe("If-Match", () => {
   test("is omitted on a first write and stated on every one after it", async () => {
     const key = "new:/Users/me/if-match";
@@ -192,138 +191,6 @@ describe("If-Match", () => {
 
 // ---- 409, and the two honest things to do with it ---------------------------
 
-describe("a refused write", () => {
-  const conflicted = (key: string, version: number, text: string) => ({
-    status: 409,
-    json: { error: "version", record: chatRecord(text, version), version, key },
-  });
-
-  test("hands the server's record back and takes its version", async () => {
-    const key = "new:/Users/me/clash";
-    forgetDraftVersion(key);
-    const f = serve(() => conflicted(key, 12, "theirs"));
-    const out = await saveChatDraft(key, "mine");
-    expect(out.ok).toBe(false);
-    expect((out.conflict as { text: string } | null)?.text).toBe("theirs");
-    // Whatever the caller decides, the NEXT write has to state a version that
-    // exists or it is refused for ever.
-    expect(draftVersion(key)).toBe(12);
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  test("adopts, when the editor is not focused", async () => {
-    const key = "new:/Users/me/adopt";
-    forgetDraftVersion(key);
-    const f = serve(() => conflicted(key, 3, "theirs"));
-    const adopted: unknown[] = [];
-    let kept = 0;
-    const box = renderAutosave(
-      { text: "mine" },
-      (value, opts) => saveChatDraft(key, value.text, [], opts),
-      {
-        conflict: {
-          focused: () => false,
-          localText: () => "mine",
-          adopt: (record) => adopted.push(record),
-          onKept: () => { kept += 1; },
-        },
-      },
-    );
-    box.rerender({ text: "mine typed" });
-    await act(async () => {
-      box.current().flush();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect((adopted[0] as { text: string }).text).toBe("theirs");
-    // One write, not two: a conceded conflict is not retried.
-    expect(f.calls.length).toBe(1);
-    expect(kept).toBe(0);
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  test("…and when the reader is focused but has typed nothing since the save", async () => {
-    const key = "new:/Users/me/adopt-idle";
-    forgetDraftVersion(key);
-    const f = serve(() => conflicted(key, 3, "theirs"));
-    const adopted: unknown[] = [];
-    // `localText` never moves, so the words on screen ARE the words last
-    // written: a caret sitting in an unchanged box is not somebody mid-sentence.
-    const box = renderAutosave(
-      { text: "mine" },
-      (value, opts) => saveChatDraft(key, value.text, [], opts),
-      {
-        conflict: {
-          focused: () => true,
-          localText: () => "settled",
-          adopt: (record) => adopted.push(record),
-        },
-      },
-    );
-    box.rerender({ text: "mine typed" });
-    await act(async () => {
-      box.current().flush();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(adopted.length).toBe(1);
-    expect(f.calls.length).toBe(1);
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  test("keeps the local text and retries ONCE when the reader is mid-sentence", async () => {
-    const key = "new:/Users/me/keep";
-    forgetDraftVersion(key);
-    // Refused every time: the point is that the retry stops at one. Two tabs
-    // both typing would otherwise write past each other for as long as they go
-    // on.
-    const f = serve(() => conflicted(key, 5, "theirs"));
-    const adopted: unknown[] = [];
-    let kept = 0;
-    // "Mid-sentence" is a question about the ROUND TRIP, not about the caret:
-    // the box said one thing when the save went out and says another by the time
-    // the refusal comes back, so the reader typed while it was in the air. A
-    // caret sitting in an unchanged box is not somebody whose words are at risk,
-    // which is the case the test above covers.
-    let typed = "half a th";
-    const box = renderAutosave(
-      { text: "mine" },
-      (value, opts) => {
-        const out = saveChatDraft(key, value.text, [], opts);
-        typed += "ought";
-        return out;
-      },
-      {
-        conflict: {
-          focused: () => true,
-          localText: () => typed,
-          adopt: (record) => adopted.push(record),
-          onKept: () => { kept += 1; },
-        },
-      },
-    );
-    box.rerender({ text: "mine typed" });
-    await act(async () => {
-      box.current().flush();
-      for (let i = 0; i < 8; i += 1) await Promise.resolve();
-    });
-    expect(adopted).toEqual([]);
-    expect(kept).toBe(1);
-    expect(f.calls.length).toBe(2);
-    // …and the retry states the version it has just been told about, which is
-    // the whole reason it can be expected to land.
-    expect(f.calls[1]!.ifMatch).toBe("5");
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-});
-
 // ---- the chat record's form ---------------------------------------------------
 
 describe("saveChatDraft's form", () => {
@@ -359,60 +226,466 @@ describe("saveChatDraft's form", () => {
   });
 });
 
-// ---- the hook's own promises ---------------------------------------------------
+// ---- the syncer: one writer, and it owns the order ---------------------------
+//
+// A TABLE OF INTERLEAVINGS AGAINST A FAKE VERSIONED SERVER, because that is what
+// the bugs were: never one call being wrong, always two correct calls landing in
+// the wrong order. The lab below holds every request until a test lands it, so a
+// test can say "the send's DELETE arrives before the autosave's PUT" and mean it.
+//
+// The fake server is the contract in thirty lines: a version per key, `If-Match`
+// refused with the record, and a `(client, seq)` that is not newer than the last
+// one applied dropped with `{ok: true, dropped: true}` (drafts-seq-contract.md).
 
-describe("the unmount flush after a send", () => {
-  test("reset() leaves it nothing to write", () => {
-    const calls: string[] = [];
-    const box = renderAutosave({ text: "" }, (value) => {
-      calls.push(JSON.stringify(value));
-      return true;
+interface Stored {
+  text: string;
+  attachments: unknown[];
+  version: number;
+}
+
+function lab() {
+  const store = new Map<string, Stored>();
+  const notes = new Map<string, { client: string; seq: number }>();
+  const held: Array<{
+    seen: Seen;
+    settle: (answer: unknown) => void;
+    landed?: boolean;
+  }> = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const seen: Seen = {
+      method: init?.method ?? "GET",
+      url,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      ifMatch: headers["If-Match"] ?? null,
+    };
+    return new Promise<Response>((resolve) => {
+      held.push({
+        seen,
+        settle: (answer) =>
+          resolve({
+            ok: (answer as { status?: number }).status === undefined
+              || ((answer as { status: number }).status >= 200
+                && (answer as { status: number }).status < 300),
+            status: (answer as { status?: number }).status ?? 200,
+            json: () => Promise.resolve((answer as { json: unknown }).json),
+          } as unknown as Response),
+      });
     });
-    // A sentence typed, then sent: `reset` is told what the box is ABOUT to
-    // hold, because the state write that empties it has not landed yet.
-    box.rerender({ text: "ship the release notes" });
-    box.current().reset({ text: "" });
-    // The session arrives and the chat remounts.
-    box.unmount();
-    expect(calls).toEqual([]);
+  }) as typeof fetch;
+
+  /** Answer request `i` the way the contract says, against the store. */
+  const land = (i: number): Promise<void> => {
+    const req = held[i];
+    if (!req) throw new Error(`no request ${i}`);
+    const key = decodeURIComponent(req.seen.url.split("/api/drafts/chat/")[1] ?? "");
+    const body = (req.seen.body ?? {}) as {
+      text?: string;
+      attachments?: unknown[];
+      client?: string;
+      seq?: number;
+    };
+    const record = store.get(key);
+    const note = notes.get(key);
+    // SEQUENCE FIRST: a straggler from this same page is not a conflict for
+    // anybody to resolve, whatever its `If-Match` says.
+    if (body.client && typeof body.seq === "number") {
+      if (note && note.client === body.client && body.seq <= note.seq) {
+        req.settle({ json: { ok: true, dropped: true, key, draft: record ?? null } });
+        return Promise.resolve();
+      }
+      notes.set(key, { client: body.client, seq: body.seq });
+    }
+    const want = req.seen.ifMatch === null ? null : Number(req.seen.ifMatch);
+    if (want !== null && want !== (record?.version ?? 0)) {
+      req.settle({
+        status: 409,
+        json: {
+          error: "version",
+          record: record ? { ...record, updated_at: 1, form: {} } : null,
+          version: record?.version ?? 0,
+          key,
+        },
+      });
+      return Promise.resolve();
+    }
+    if (req.seen.method === "DELETE") {
+      store.delete(key);
+      req.settle({ json: { ok: true, key, removed: !!record } });
+      return Promise.resolve();
+    }
+    const text = body.text ?? "";
+    const attachments = body.attachments ?? [];
+    if (!text.trim() && !attachments.length) {
+      store.delete(key);
+      req.settle({ json: { ok: true, key, draft: null } });
+      return Promise.resolve();
+    }
+    const next: Stored = {
+      text,
+      attachments,
+      version: (record?.version ?? 0) + 1,
+    };
+    store.set(key, next);
+    req.settle({
+      json: { ok: true, key, draft: { ...next, updated_at: 1, form: {} } },
+    });
+    return Promise.resolve();
+  };
+
+  return {
+    held,
+    store,
+    /** Land everything outstanding, oldest first, until nothing new appears. */
+    async settle(): Promise<void> {
+      for (let i = 0; i < held.length; i += 1) {
+        if (!held[i]!.landed) {
+          held[i]!.landed = true;
+          await land(i);
+          await flushMicrotasks();
+        }
+      }
+    },
+    async landOne(i: number): Promise<void> {
+      held[i]!.landed = true;
+      await land(i);
+      await flushMicrotasks();
+    },
+    text: (key: string) => store.get(key)?.text,
+    version: (key: string) => store.get(key)?.version ?? 0,
+    /** Somebody ELSE wrote this record — the other tab, the Board, a row's
+     *  trash. No sequence of ours is touched by it, which is the point. */
+    elsewhere(key: string, text: string): void {
+      const record = store.get(key);
+      store.set(key, {
+        text,
+        attachments: [],
+        version: (record?.version ?? 0) + 1,
+      });
+    },
+    restore: () => {
+      globalThis.fetch = real;
+      resetDraftSyncers();
+    },
+  };
+}
+
+/** Let every already-resolved promise run. Four turns: a settled request wakes
+ *  the syncer, which may dispatch the next one, whose own `then` is another
+ *  turn. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
+}
+
+describe("the syncer's table of interleavings", () => {
+  const KEY = "new:/Users/me/lab";
+  // THE REGISTRY IS MODULE SCOPE, which is the point of it — so a test starts by
+  // forgetting every syncer and every version, or it inherits the last one's
+  // desired state and reads it as its own.
+  beforeEach(() => {
+    resetDraftSyncers();
+    forgetDraftVersion(KEY);
+    forgetDraftVersion("new:/Users/me/lab-two");
   });
 
-  test("…and so does a flush by hand in the same tick", () => {
-    const calls: string[] = [];
-    const box = renderAutosave({ text: "" }, (value) => {
-      calls.push(JSON.stringify(value));
-      return true;
+  test("(a) type, type, blur — one request at a time, and the last word wins", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("hel");
+    sync.flushNow();
+    expect(it.held.length).toBe(1);
+    // A SECOND FLUSH WHILE THE FIRST IS OUT DISPATCHES NOTHING. This is the
+    // whole one-in-flight rule: what used to happen here was two PUTs on the
+    // wire whose landing order the network chose.
+    sync.setText("hello");
+    sync.flushNow();
+    expect(it.held.length).toBe(1);
+    await it.landOne(0);
+    // …and the moment it clears, the newest state goes — not the state that was
+    // current when the flush was asked for.
+    expect(it.held.length).toBe(2);
+    expect((it.held[1]!.seen.body as { text: string }).text).toBe("hello");
+    await it.landOne(1);
+    expect(it.text(KEY)).toBe("hello");
+    expect(it.held.length).toBe(2);
+    it.restore();
+  });
+
+  test("(b) Send with a PUT in flight, then a follow-up — no resurrection", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("the message");
+    sync.flushNow();
+    // Send: the record should not exist. It waits for the PUT that is out.
+    sync.markDeleted();
+    expect(it.held.length).toBe(1);
+    // …and the reader types the next thing before any of it has landed. That is
+    // a NEWER statement about the same key, so it supersedes the delete instead
+    // of racing it.
+    sync.setText("a follow-up");
+    await it.settle();
+    sync.flushNow(); // the follow-up's own debounce, made to fire now
+    await it.settle();
+    // ONE RECORD, HOLDING THE FOLLOW-UP. The sent sentence is not in it, and no
+    // delete raced a write that had not been made yet.
+    expect(it.text(KEY)).toBe("a follow-up");
+    it.restore();
+  });
+
+  test("(c) the hop hands off while a PUT is in flight, and states the version it made", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("half a sentence");
+    sync.flushNow();
+    // Continue, pressed with that PUT still out and one more keystroke in.
+    sync.setText("half a sentence, and the rest");
+    const handed = sync.handoff();
+    await it.settle();
+    const out = await handed;
+    expect(out.ok).toBe(true);
+    expect(it.text(KEY)).toBe("half a sentence, and the rest");
+    // The hop navigates with the version the server now holds — the one its own
+    // write earned, not a number read out of a map somebody else has moved.
+    expect(out.version).toBe(it.version(KEY));
+    // …and the second request stated the version the first one made.
+    expect(it.held[1]!.seen.ifMatch).toBe("1");
+    it.restore();
+  });
+
+  test("(d) pagehide with a PUT in flight sends IMMEDIATELY, keepalive, newest text", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("first");
+    sync.flushNow();
+    expect(it.held.length).toBe(1);
+    sync.setText("first, then the last thing typed");
+    // THE ONE FLUSH THAT MAY PASS AN IN-FLIGHT REQUEST (Bugbot 4026181414). A
+    // keepalive flush that queued itself behind the PUT never left at all: the
+    // browser cancels the PUT as the document goes, and the queued write dies
+    // with it.
+    sync.flushNow({ keepalive: true });
+    expect(it.held.length).toBe(2);
+    expect((it.held[1]!.seen.body as { text: string }).text)
+      .toBe("first, then the last thing typed");
+    it.restore();
+  });
+
+  test("(e) a remote change is adopted while idle, and kept over a reader mid-sentence", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    let box = "";
+    let focused = false;
+    let kept = 0;
+    let typedSince = "";
+    sync.watch({
+      focused: () => focused,
+      localText: () => typedSince,
+      adopt: (record) => {
+        box = ((record as { text?: string } | null)?.text) ?? "";
+      },
+      onKept: () => {
+        kept += 1;
+      },
     });
-    box.rerender({ text: "ship the release notes" });
-    box.current().reset({ text: "" });
-    box.current().flush();
-    expect(calls).toEqual([]);
-    box.unmount();
-    expect(calls).toEqual([]);
+    // The record is written by somebody else first, so this page's own write is
+    // the one that loses.
+    it.elsewhere(KEY, "their words");
+    sync.setText("my words");
+    sync.flushNow();
+    await it.settle();
+    // NOT FOCUSED: theirs are simply the newer words, and the box takes them.
+    expect(box).toBe("their words");
+    expect(kept).toBe(0);
+    // …and nothing is written back: conceding a conflict and then winning it
+    // anyway is not conceding it.
+    expect(it.text(KEY)).toBe("their words");
+
+    // Now the reader IS mid-sentence over a record somebody else moved again.
+    focused = true;
+    typedSince = "mine";
+    it.elsewhere(KEY, "theirs again");
+    sync.setText("mine");
+    sync.flushNow();
+    // …AND THEY GO ON TYPING WHILE IT IS IN THE AIR, which is what "mid-
+    // sentence" means: the box says something else now than it did when the
+    // request left, so the answer that comes back is about older words.
+    typedSince = "mine, still being typed";
+    sync.setText("mine, still being typed");
+    await it.settle();
+    expect(kept).toBe(1);
+    expect(box).toBe("their words"); // the box was never overwritten
+    expect(it.text(KEY)).toBe("mine, still being typed");
+    it.restore();
+  });
+
+  test("(f) one page's sequence is per key, and says nothing about another page", async () => {
+    const it = lab();
+    const other = "new:/Users/me/lab-two";
+    forgetDraftVersion(KEY);
+    forgetDraftVersion(other);
+    draftSyncer(KEY).setText("one");
+    draftSyncer(KEY).flushNow();
+    draftSyncer(other).setText("two");
+    draftSyncer(other).flushNow();
+    const first = it.held[0]!.seen.body as { client: string; seq: number };
+    const second = it.held[1]!.seen.body as { client: string; seq: number };
+    // ONE CLIENT ID FOR THE DOCUMENT, one counter per key: a busy chat must not
+    // make the New task card's writes look stale.
+    expect(first.client).toBe(second.client);
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(1);
+    await it.settle();
+    // A write from ANOTHER document — no sequence of ours — lands on its own
+    // version and is arbitrated by `If-Match` alone.
+    it.elsewhere(KEY, "the other window");
+    draftSyncer(KEY).setText("ours");
+    draftSyncer(KEY).flushNow();
+    expect((it.held[2]!.seen.body as { seq: number }).seq).toBe(2);
+    await it.settle();
+    expect(it.text(KEY)).toBe("ours");
+    it.restore();
+  });
+
+  test("(g) a straggler that arrives after a newer write is dropped, not applied", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("older");
+    sync.flushNow();
+    sync.setText("newer");
+    sync.flushNow({ keepalive: true }); // two on the wire, deliberately
+    expect(it.held.length).toBe(2);
+    // The newer one arrives FIRST, which is the whole case: the older request is
+    // now a straggler and the record must not go backwards.
+    await it.landOne(1);
+    expect(it.text(KEY)).toBe("newer");
+    await it.landOne(0);
+    expect(it.text(KEY)).toBe("newer");
+    // …and the page learned nothing from the dropped answer: the version it
+    // holds is the one the write that landed made.
+    expect(draftVersion(KEY)).toBe(it.version(KEY));
+    it.restore();
+  });
+
+  test("the first write of an unknown key expects no record (If-Match: 0)", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("hello");
+    sync.flushNow();
+    // Zero is "I expect nothing here" (contract §2): a page that could not read
+    // the store must not silently overwrite a draft it has never seen.
+    expect(it.held[0]!.seen.ifMatch).toBe("0");
+    await it.settle();
+    expect(it.held[0]!.seen.body).toMatchObject({ text: "hello", attachments: [] });
+    it.restore();
+  });
+
+  test("a DELETE never states zero — the trash is not a create", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.markDeleted();
+    expect(it.held[0]!.seen.method).toBe("DELETE");
+    expect(it.held[0]!.seen.ifMatch).toBeNull();
+    // …and it carries the sequence, which is what keeps a keepalive PUT from
+    // landing behind it and putting the record back.
+    expect((it.held[0]!.seen.body as { seq: number }).seq).toBe(1);
+    await it.settle();
+    it.restore();
+  });
+
+  test("seeding a box from its record writes nothing at all", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.seedText("what the server already holds", []);
+    sync.flushNow();
+    expect(it.held.length).toBe(0);
+    // …and the next keystroke does write, because that is a change.
+    sync.setText("what the server already holds, plus more");
+    sync.flushNow();
+    expect(it.held.length).toBe(1);
+    await it.settle();
+    it.restore();
+  });
+
+  test("forget() drops a pending write — the record is out of this page's hands", async () => {
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("about to become a task");
+    sync.forget();
+    sync.flushNow();
+    expect(it.held.length).toBe(0);
+    it.restore();
+  });
+
+  test("the three moments the document may be going away are listened for once", () => {
+    // Not per editor: the debounce belongs to the KEY, so the unload listeners
+    // do too. Read off the source because an event nobody can dispatch in this
+    // runtime is still a promise this module makes.
+    const src = readFileSync(join(import.meta.dir, "drafts.ts"), "utf8");
+    expect(src).toContain('window.addEventListener("pagehide", leaving)');
+    expect(src).toContain('document.addEventListener("visibilitychange"');
+    expect(src).toContain('window.addEventListener("blur"');
+    // …and the one that leaves carries keepalive, which is what makes it leave.
+    expect(src).toContain("sync.flushNow({ keepalive: true })");
   });
 });
+
+// ---- the hook over it ----------------------------------------------------------
 
 describe("nothing is minted by merely opening an editor", () => {
   test("a mount writes nothing, however full the form it mounts on", () => {
     // design §4: "no PUT until title or text non-empty. Open+close empty leaves
-    // nothing." The hook's half of that is the seed — `written` starts as the
-    // opening value — and there is no `writeInitial` escape hatch any more,
-    // because a Schedule hop no longer arrives holding words that exist nowhere
-    // else.
-    const calls: string[] = [];
+    // nothing." The hook's half of that is the baseline — the opening value
+    // counts as already-written — and it is per MOUNT, so a second composer
+    // opening on a key this document has already written does not read its own
+    // empty box as an instruction to delete.
+    const pushed: string[] = [];
     const box = renderAutosave({ title: "Ship it", text: "already here" }, (value) => {
-      calls.push(JSON.stringify(value));
-      return true;
+      pushed.push(JSON.stringify(value));
     });
     box.current().flush();
     box.unmount();
-    expect(calls).toEqual([]);
+    expect(pushed).toEqual([]);
   });
 
-  test("…and the hook exposes no way to override it", async () => {
-    // Asserted on the EXPORTS rather than on the source text: the module's prose
-    // still names what it used to do and why, which is the record of the
-    // decision, not a survival of the code.
+  test("a change is pushed once, and a re-render of the same value is not a change", () => {
+    const pushed: string[] = [];
+    const box = renderAutosave({ text: "" }, (value) => {
+      pushed.push(JSON.stringify(value));
+    });
+    box.rerender({ text: "one" });
+    box.rerender({ text: "one" });
+    box.rerender({ text: "two" });
+    expect(pushed).toEqual(['{"text":"one"}', '{"text":"two"}']);
+    box.unmount();
+  });
+
+  test("reset() leaves the send nothing to write", () => {
+    const pushed: string[] = [];
+    const box = renderAutosave({ text: "" }, (value) => {
+      pushed.push(JSON.stringify(value));
+    });
+    // A sentence typed, then sent: `reset` is told what the box is ABOUT to
+    // hold, because the state write that empties it has not landed yet.
+    box.rerender({ text: "ship the release notes" });
+    pushed.length = 0;
+    box.current().reset({ text: "" });
+    box.rerender({ text: "" });
+    box.unmount();
+    expect(pushed).toEqual([]);
+  });
+
+  test("…and the hook's handle is two calls, with no ordering left in it", async () => {
     const mod = await import("@platform/lib/drafts");
     for (const gone of [
       "writeInitial",
@@ -426,341 +699,15 @@ describe("nothing is minted by merely opening an editor", () => {
     ]) {
       expect(Object.keys(mod)).not.toContain(gone);
     }
-    // …and the hook's handle is three calls, not five: `settle` came back for
-    // the one thing a version cannot order — two requests already on the wire
-    // stating the same `If-Match` (Bugbot, PR #1180).
-    const box = renderAutosave({ n: 0 }, () => true);
-    expect(Object.keys(box.current()).sort()).toEqual(["flush", "reset", "settle"]);
+    // `settle` is gone with the thing it ordered: there is one writer per key
+    // now, so a caller has nothing left to wait for except the server itself
+    // (`handoff`).
+    const box = renderAutosave({ n: 0 }, () => {});
+    expect(Object.keys(box.current()).sort()).toEqual(["flush", "reset"]);
     box.unmount();
   });
 });
 
-// ---- settle: the one ordering a version cannot do -----------------------------
-
-describe("settle", () => {
-  // THE HOLE A VERSION DOES NOT FILL (Bugbot, PR #1180). Versioning refuses a
-  // LATER write that states a STALE number. It says nothing about two requests
-  // that were BOTH dispatched against version 7 — the autosave's PUT and the
-  // send's DELETE — because neither is late when it leaves; whichever the
-  // server takes second simply wins. Taken second, the PUT recreated the message
-  // the user had just sent as a live draft. So the send waits for what is
-  // already on the wire and lets its own answer supply the version.
-  const holdable = (key: string, version: number) => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    const calls: { method: string; ifMatch: string | null }[] = [];
-    const real = globalThis.fetch;
-    globalThis.fetch = ((_url: string, init?: RequestInit) => {
-      const headers = (init?.headers ?? {}) as Record<string, string>;
-      const method = init?.method ?? "GET";
-      calls.push({ method, ifMatch: headers["If-Match"] ?? null });
-      const answer = {
-        ok: true,
-        status: 200,
-        json: () =>
-          Promise.resolve(
-            method === "DELETE"
-              ? { ok: true, key, removed: true }
-              : { ok: true, key, draft: chatRecord("half a line", version) },
-          ),
-      } as unknown as Response;
-      // Only the PUT is held: the DELETE has to be free to answer, or the test
-      // could not tell "waited" from "never sent".
-      return method === "PUT" ? held.then(() => answer) : Promise.resolve(answer);
-    }) as typeof fetch;
-    return { calls, release, restore: () => { globalThis.fetch = real; } };
-  };
-
-  test("a send's DELETE waits for the PUT already out, and states the version it made", async () => {
-    const key = "new:/Users/me/settle";
-    forgetDraftVersion(key);
-    const f = holdable(key, 8);
-    const box = renderAutosave({ text: "" }, (value: { text: string }, opts) =>
-      saveChatDraft(key, value.text, [], opts),
-    );
-    box.rerender({ text: "half a line" });
-    act(() => box.current().flush());
-    // `flush` QUEUES the write; it reaches the wire one microtask later, now
-    // that every write is serialized through this hook's own `inflight` chain
-    // (Bugbot, PR #1180) rather than dispatched the instant `flush` returns.
-    await Promise.resolve();
-    // The PUT is on the wire and nothing has answered it. This is the moment the
-    // send happens.
-    expect(f.calls).toEqual([{ method: "PUT", ifMatch: null }]);
-    const handle = box.current();
-    handle.reset({ text: "" });
-    let deleted = false;
-    const spent = handle.settle().then(async () => {
-      await deleteChatDraft(key);
-      deleted = true;
-    });
-    // …and it has NOT gone out: the old code deleted here, against the same
-    // (absent) version the PUT was carrying.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
-    expect(deleted).toBe(false);
-    f.release();
-    await spent;
-    // Now — and stating 8, the version this client learnt FROM the PUT it waited
-    // for, so the record that is deleted is the one the PUT had just written.
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "DELETE"]);
-    expect(f.calls[1]!.ifMatch).toBe("8");
-    expect(deleted).toBe(true);
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  /**
-   * A FAKE SERVER THAT ACTUALLY KEEPS A VERSION, and answers each request only
-   * when this test says so — which is the only way to write down an
-   * INTERLEAVING (a PUT out, a second PUT out, then a DELETE) rather than a
-   * sequence.
-   */
-  const versioned = (key: string) => {
-    const state = { version: 0, text: "", gone: true };
-    const calls: { method: string; ifMatch: string | null; text?: string }[] = [];
-    const queued: (() => void)[] = [];
-    const real = globalThis.fetch;
-    globalThis.fetch = ((_url: string, init?: RequestInit) => {
-      const headers = (init?.headers ?? {}) as Record<string, string>;
-      const method = init?.method ?? "GET";
-      const body = init?.body
-        ? (JSON.parse(String(init.body)) as { text?: string })
-        : undefined;
-      calls.push({ method, ifMatch: headers["If-Match"] ?? null, ...(body ? { text: body.text } : {}) });
-      return new Promise<Response>((resolve) => {
-        queued.push(() => {
-          const now = state.gone ? 0 : state.version;
-          const want = headers["If-Match"];
-          const answer = (status: number, json: unknown) =>
-            resolve({ ok: status < 300, status, json: () => Promise.resolve(json) } as unknown as Response);
-          if (want !== undefined && Number(want) !== now) {
-            answer(409, {
-              error: "version",
-              key,
-              record: state.gone ? null : chatRecord(state.text, state.version),
-              version: now,
-            });
-            return;
-          }
-          if (method === "DELETE") {
-            state.gone = true;
-            answer(200, { ok: true, key, removed: true });
-            return;
-          }
-          state.gone = false;
-          state.version = now + 1;
-          state.text = body?.text ?? "";
-          answer(200, { ok: true, key, draft: chatRecord(state.text, state.version) });
-        });
-      });
-    }) as typeof fetch;
-    return {
-      calls,
-      state,
-      release: async (at: number) => {
-        queued[at]!();
-        await act(async () => {
-          await Promise.resolve();
-          await Promise.resolve();
-        });
-      },
-      restore: () => { globalThis.fetch = real; },
-    };
-  };
-
-  /** Drain `n` microtasks — generous is fine, a drained queue just sits idle. */
-  const tick = async (n = 1) => {
-    for (let i = 0; i < n; i += 1) await Promise.resolve();
-  };
-
-  test("a follow-up typed through the wait is queued behind it, not raced", async () => {
-    // THE SECOND ROUND OF THE SAME BUG (Bugbot, PR #1180): the reader can type
-    // a FOLLOW-UP while the send's PUT is still out, and the two used to RACE
-    // on the wire — whichever the server took second decided whose words the
-    // record was left holding. Serializing every write through this hook's own
-    // `inflight` chain (Bugbot, PR #1180, this round) removes the race instead
-    // of refereeing it: the follow-up's PUT does not leave until the write
-    // ahead of it has answered, so it always states the version THAT write
-    // made and never goes stale sitting on the wire.
-    const key = "new:/Users/me/follow-up";
-    forgetDraftVersion(key);
-    const f = versioned(key);
-    let local = "";
-    const box = renderAutosave(
-      { text: "" },
-      (value: { text: string }, opts) => saveChatDraft(key, value.text, [], opts),
-      {
-        conflict: {
-          focused: () => true,
-          localText: () => local,
-          adopt: () => {},
-        },
-      },
-    );
-    // A draft already on the server, so every write below is conditional.
-    local = "the sent line";
-    box.rerender({ text: local });
-    act(() => box.current().flush());
-    await tick();
-    await f.release(0);
-    expect(draftVersion(key)).toBe(1);
-
-    // …and now the send, with a fresh line: a second write goes out and is
-    // still on the wire when the send happens.
-    local = "the sent line, and a comma";
-    box.rerender({ text: local });
-    act(() => box.current().flush());
-    await tick();
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
-    const handle = box.current();
-    const held = draftVersion(key);
-    const pending = handle.settle();
-    handle.reset({ text: "" });
-
-    // THE FOLLOW-UP, typed right after the send. QUEUED, not out: this box has
-    // one `inflight` chain, and the write ahead of this one has not answered.
-    local = "one more thing";
-    box.rerender({ text: local });
-    act(() => box.current().flush());
-    await tick(3);
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
-
-    let spent: { ok: boolean } | null = null;
-    const send = pending.then(async (made) => {
-      const at = made ?? held;
-      spent = await deleteChatDraft(key, at === undefined ? undefined : { ifMatch: at });
-    });
-
-    // The send's write lands — version 2 — which is what frees the follow-up's
-    // queued write to go out at last.
-    await f.release(1);
-    await tick(4);
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT", "PUT", "DELETE"]);
-    // AND IT CARRIES THAT VERSION — no conflict, no retry: it never had the
-    // chance to go stale behind an older write the way the old, racing code let
-    // it.
-    expect(f.calls[2]).toEqual({ method: "PUT", ifMatch: "2", text: "one more thing" });
-    // The send's own DELETE, stated against the same version.
-    expect(f.calls[3]!.ifMatch).toBe("2");
-
-    // Let the follow-up's write land — version 3 — before the DELETE is asked
-    // to answer.
-    await f.release(2);
-    await tick(2);
-    // AND THE DELETE IS REFUSED, because the record is no longer the one the
-    // send was about. The follow-up survives on the server, and nothing told
-    // this composer its key was gone.
-    await f.release(3);
-    await send;
-    expect(spent!.ok).toBe(false);
-    expect(f.state.gone).toBe(false);
-    expect(f.state.text).toBe("one more thing");
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  test("flush while an earlier write is still out queues behind it, not beside it", async () => {
-    // THE BUG ITSELF (Bugbot, PR #1180). `settleDraft` (Composer.tsx) is
-    // `flush()` then `settle()` — the Schedule hop's way of waiting for
-    // whatever this box has pending. But `flush` used to dispatch a brand-new
-    // PUT the instant it was called, even while an earlier autosave's PUT was
-    // still on the wire: two requests racing, and `settle` only ever awaited
-    // the newer one. Whichever the server took second decided what the record
-    // was left holding, and on a first save both were unconditional, so the
-    // abandoned one could land AFTER the hop's and put stale text back on the
-    // record the card was about to open.
-    const key = "new:/Users/me/queued-flush";
-    forgetDraftVersion(key);
-    const f = versioned(key);
-    const box = renderAutosave({ text: "" }, (value: { text: string }, opts) =>
-      saveChatDraft(key, value.text, [], opts),
-    );
-
-    box.rerender({ text: "first" });
-    act(() => box.current().flush());
-    await tick();
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
-
-    // A further keystroke, then `flush` again while that PUT is still out —
-    // exactly what the hop's `settleDraft` does right after the debounce
-    // fired on its own.
-    box.rerender({ text: "first and second" });
-    act(() => box.current().flush());
-    await tick(3);
-    // THE SECOND PUT HAS NOT STARTED: queued behind the first, not raced.
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
-
-    const settled = box.current().settle();
-
-    // The first write lands: version 1.
-    await f.release(0);
-    await tick(2);
-    // NOW the second goes out — carrying the version the first one produced,
-    // not a stale or unconditional header.
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
-    expect(f.calls[1]).toEqual({ method: "PUT", ifMatch: "1", text: "first and second" });
-
-    await f.release(1);
-    // `settle` resolves only once BOTH have landed, with the version the
-    // second one made.
-    expect(await settled).toBe(2);
-    box.unmount();
-    f.restore();
-    forgetDraftVersion(key);
-  });
-
-  test("a write reset out from under speaks for nobody when it answers", async () => {
-    // The other half of the send: `reset` disowns what is already out. Without
-    // it the held PUT's 409 would resolve into `adopt` and put the sent sentence
-    // back on screen — the same resurrection by the other road.
-    const key = "new:/Users/me/disowned";
-    forgetDraftVersion(key);
-    let release!: () => void;
-    const held = new Promise<void>((r) => { release = r; });
-    const real = globalThis.fetch;
-    globalThis.fetch = (() =>
-      held.then(() => ({
-        ok: false,
-        status: 409,
-        json: () => Promise.resolve({
-          error: "version",
-          record: chatRecord("somebody else's line", 5),
-          version: 5,
-          key,
-        }),
-      } as unknown as Response))) as unknown as typeof fetch;
-    const adopted: unknown[] = [];
-    const box = renderAutosave(
-      { text: "" },
-      (value: { text: string }, opts) => saveChatDraft(key, value.text, [], opts),
-      {
-        conflict: {
-          focused: () => false,
-          localText: () => "",
-          adopt: (record) => adopted.push(record),
-        },
-      },
-    );
-    box.rerender({ text: "mine" });
-    act(() => box.current().flush());
-    const handle = box.current();
-    handle.reset({ text: "" });
-    release();
-    await act(async () => {
-      await handle.settle();
-    });
-    expect(adopted).toEqual([]);
-    box.unmount();
-    globalThis.fetch = real;
-    forgetDraftVersion(key);
-  });
-});
 
 // ---- keys ---------------------------------------------------------------------
 
@@ -782,22 +729,16 @@ describe("the chat does not rekey its own draft", () => {
   });
 
   test("the send still spends its own key, which is all it ever owed", () => {
-    // …and it spends it AFTER the write already on the wire has answered
-    // (Bugbot, PR #1180): a PUT and a DELETE dispatched against the same
-    // version are ordered by whoever answers first, and when that was the PUT
-    // it put the sent message back as a live draft.
+    // …and it spends it by SAYING SO to the one writer of that record, rather
+    // than firing a DELETE beside whatever the box has on the wire. The
+    // ordering that used to live here — take the in-flight promise, wait for
+    // it, state the version it made — is the syncer's now, so none of it is
+    // left in this file to get subtly wrong again.
     const src = composer();
-    expect(src).toContain("const key = draftKeyRef.current;");
-    // The handle is taken BEFORE the reset — `settle` answers for what is on
-    // the wire as of the call — and the DELETE names the version that write
-    // made rather than reading one at fire time (Bugbot, second round: a
-    // follow-up typed through the wait is the record a late read would spend).
-    expect(src).toContain("const pending = autosaveRef.current.settle();");
-    expect(src).toContain("const spent = made ?? held;");
-    expect(src).toContain(
-      "return deleteChatDraft(key, spent === undefined ? undefined : { ifMatch: spent });");
-    expect(src).not.toContain("void deleteChatDraft(draftKeyRef.current);");
-    expect(src).not.toContain("settle().then(() => deleteChatDraft(key))");
+    expect(src).toContain("draftSyncer(draftKeyRef.current).markDeleted();");
+    expect(src).not.toContain("autosaveRef.current.settle()");
+    expect(src).not.toContain("deleteChatDraft");
+    expect(src).not.toContain("settleDraft");
   });
 });
 

@@ -51,6 +51,7 @@ import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
 import {
   deleteChatDraft,
   deleteTaskDraft,
+  peekDraftSyncer,
   taskDraftKey,
 } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
@@ -1465,10 +1466,10 @@ export async function discardDraft(task: Task): Promise<boolean> {
   // a lie: the row stays and loses its chip on the next listing.
   if (!isDraftTask(task)) {
     if (!task.draft || !task.session_id) return false;
-    const out = await deleteChatDraft(task.session_id);
-    if (out.ok) announceDraftsGone([task.session_id]);
+    const out = await dropDraft(task.session_id, "");
+    if (out) announceDraftsGone([task.session_id]);
     announceTasksChanged();
-    return out.ok;
+    return out;
   }
   const chat = isChatDraftTask(task);
   // A chat draft's row key IS the key it is filed under (`new:<file>`); a task
@@ -1477,14 +1478,38 @@ export async function discardDraft(task: Task): Promise<boolean> {
   dropListingKeys([task.key]);
   // A task row with no `draft_id` is a row this build cannot delete — nothing is
   // sent, and the row goes back rather than silently vanishing.
-  const out = chat
-    ? await deleteChatDraft(task.key)
-    : id
-      ? await deleteTaskDraft(id)
-      : { ok: false };
-  if (out.ok) announceDraftsGone([chat ? task.key : taskDraftKey(id ?? "")]);
+  const out = chat || id ? await dropDraft(chat ? task.key : "", chat ? "" : id ?? "") : false;
+  if (out) announceDraftsGone([chat ? task.key : taskDraftKey(id ?? "")]);
   else restoreListingRows([task]);
   announceTasksChanged();
+  return out;
+}
+
+/**
+ * THE DELETE ITSELF, and WHO makes it.
+ *
+ * A draft this document is WRITING has one writer — the syncer for its key —
+ * and the trash has to go through it rather than around it: a DELETE fired
+ * beside a composer's pending PUT is the pair that ordering by hand never got
+ * right, and saying "this record should not exist" to the thing that owns the
+ * order is the whole of the fix. `handoff` then waits for the server to agree,
+ * so the row is restored on a refusal exactly as it was before.
+ *
+ * A draft NOBODY on this page is writing — the ordinary case for the List, a
+ * row for a chat in another window — has no syncer, and the plain conditional
+ * DELETE this has always made is right for it.
+ */
+async function dropDraft(chatKey: string, taskId: string): Promise<boolean> {
+  const key = chatKey || (taskId ? taskDraftKey(taskId) : "");
+  if (!key) return false;
+  const sync = peekDraftSyncer(key);
+  if (sync) {
+    sync.markDeleted();
+    return (await sync.handoff()).ok;
+  }
+  const out = chatKey
+    ? await deleteChatDraft(chatKey)
+    : await deleteTaskDraft(taskId);
   return out.ok;
 }
 

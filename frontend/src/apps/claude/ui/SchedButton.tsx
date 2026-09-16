@@ -26,7 +26,7 @@ import { rawUrl, uploadTaskShot } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
-import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
+import { chatDraftKey, draftSyncer } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { schedulerUrl } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
@@ -45,27 +45,6 @@ export interface SchedButtonProps {
   attachments?(): readonly Attachment[];
   /** Where "Back to chat" has to land — the host's own path. */
   back: string;
-  /**
-   * THE COMPOSER'S OWN AUTOSAVE, STOOD DOWN BEFORE THE HOP WRITES (Bugbot,
-   * PR #1180).
-   *
-   * This button and the box beside it write the SAME record, and the box's
-   * write is debounced: a keystroke 300 ms before Continue is a PUT that has
-   * not left yet, and a keystroke 700 ms before it is a PUT already on the
-   * wire. Either can land AFTER the hop's own PUT — with older words, and with
-   * the chat tempdir's attachment paths that `POST /api/schedule` refuses — and
-   * the hop's single 409 retry never fires, because a write that states no
-   * version is not refused by anything.
-   *
-   * So the hop asks the composer to finish first. `flush` sends what is pending,
-   * `settle` waits for what is out, and the version it answers with is the one
-   * the hop then states: after that, the straggler is the write that gets
-   * refused rather than the one that wins.
-   *
-   * Optional because the landing card renders this button through the same
-   * component; a host with no autosave to settle simply writes as before.
-   */
-  settleDraft?(): Promise<number | undefined>;
   /** A pending scheduled message shuts this door as well as the composer's
    *  (`schedBlocked`, PR4). Never true for the landing card (T:16851). */
   disabled?: boolean;
@@ -177,7 +156,6 @@ export function SchedButton({
   draft,
   attachments,
   back,
-  settleDraft,
   disabled,
   disabledReason,
   onCancel,
@@ -242,47 +220,41 @@ export function SchedButton({
       return;
     }
     /**
-     * THE SAVE IS AWAITED, AND THE NAVIGATION IS ITS ANSWER (Bugbot, PR #1180).
+     * THE HOP SAYS WHAT THE RECORD SHOULD HOLD AND WAITS FOR THE SERVER TO HOLD
+     * IT (design "one record", §1; the syncer's `handoff`).
      *
-     * The hop used to fire the PUT and navigate in the same tick, on the theory
-     * that a round trip the reader cannot see is a round trip not worth waiting
-     * for. It is, because the card on the other side SEEDS FROM `GET
-     * /api/drafts`: the two requests race, and when the GET won, the reader
-     * arrived at a card holding the words as they were 600 ms ago — or holding
-     * nothing at all on a first hop. Waiting costs one round trip on a
-     * navigation; losing costs the sentence the hop was for.
+     * It used to WRITE — its own PUT, beside the composer's own PUT, on the same
+     * key — and then the two had to be ordered by hand: stand the box's autosave
+     * down, wait for whatever it had on the wire, state the version that write
+     * made, retry once on a 409. Every one of those steps existed because there
+     * were two writers. There is one now: this states the desired state
+     * (the words, plus the attachments copied into the task-shots dir) and
+     * `handoff` resolves once the server matches it, whatever was in flight when
+     * Continue was pressed and whatever the reader typed during the copies.
+     *
+     * THE NAVIGATION IS ITS ANSWER, and that has not changed. The card on the
+     * other side SEEDS FROM `GET /api/drafts`, so leaving before the record is
+     * written is arriving at a card holding the words as they were 600 ms ago —
+     * or holding nothing at all on a first hop.
      *
      * A REFUSED WRITE KEEPS THE READER IN THE CHAT. Navigating with nothing
      * saved is the same empty card by another road, and this side still has the
      * words: staying put with a toast is the only answer that loses nothing.
-     *
-     * AND THE COMPOSER FINISHES BEFORE IT STARTS (`settleDraft`). Waiting here
-     * rather than at the press because the attachment copies above are the slow
-     * half: a debounced keystroke can fire during them, and what has to be
-     * settled is whatever is outstanding at the moment this write leaves.
-     *
-     * ONE RETRY ON A CONFLICT, the same single retry `useAutosave` makes and for
-     * the same reason: another writer — the other tab, a row's trash — can have
-     * taken the version this states. `saveChatDraft` has already taken the
-     * server's version by the time it answers, so the second attempt states one
-     * that exists, and it states it from the map rather than from `seen`.
      */
     const hand = (carried: DraftAttachment[]): void => {
-      void Promise.resolve(settleDraft?.())
-        .then((seen) =>
-          saveChatDraft(key, text, carried, seen === undefined ? undefined : { ifMatch: seen }))
-        .then((out) => (out.ok || !("conflict" in out) ? out : saveChatDraft(key, text, carried)))
-        .then((out) => {
-          if (out.ok) {
-            leave();
-            return;
-          }
-          leaving.current = false;
-          notify({
-            title: "Could not save that draft — you are still in the chat",
-            tone: "error",
-          });
+      const sync = draftSyncer(key);
+      sync.setText(text, carried);
+      void sync.handoff().then((out) => {
+        if (out.ok) {
+          leave();
+          return;
+        }
+        leaving.current = false;
+        notify({
+          title: "Could not save that draft — you are still in the chat",
+          tone: "error",
         });
+      });
     };
     // AN EMPTY TRAY HAS NOTHING TO COPY. The round trip per file below is the
     // slow half; this hop is one PUT, which is the overwhelmingly common one.
@@ -303,7 +275,7 @@ export function SchedButton({
     void copyToTaskShots(tray)
       .catch((): DraftAttachment[] => [])
       .then(hand);
-  }, [disabled, draft, attachments, file, sessionId, back, onNavigate, settleDraft]);
+  }, [disabled, draft, attachments, file, sessionId, back, onNavigate]);
 
   const cancel = useCallback(() => {
     setOpen(false);
