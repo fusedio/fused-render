@@ -111,6 +111,31 @@ describe("subscribeListing", () => {
     expect(listingFeedLive()).toBe(false);
   });
 
+  test("a subscriber that throws on a delta does not end the long-poll", async () => {
+    // Two deltas; the first subscriber throws on the first one. The loop must
+    // still ask again and deliver the second — with `syncFeedLane` this loop is
+    // the sidebar's only poller, and a dead loop would leave it with none.
+    const e = env(
+      [{ generation: 1 }, { generation: 2, rows: [row("b")] }, { generation: 3, rows: [row("c")] }],
+      [{ tasks: [row("a")], generation: 1 }],
+    );
+    let threw = 0;
+    const seen: ListingEvent[] = [];
+    const offBad = subscribeListing((ev) => {
+      if (ev.delta && threw === 0) {
+        threw += 1;
+        throw new Error("bad subscriber");
+      }
+    }, e);
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    expect(threw).toBe(1);
+    expect(e.urls).toContain("/api/tasks/changes?since=3&wait=25");
+    expect(seen[seen.length - 1].rows.map((t) => t.key).sort()).toEqual(["a", "b", "c"]);
+    offBad();
+    off();
+  });
+
   test("a late subscriber is replayed the rows it missed, synchronously", async () => {
     const e = env([], [{ tasks: [row("a")] }]);
     const first = subscribeListing(() => {}, e);
