@@ -99,7 +99,8 @@ CHAT = "chat"
 TASK = "task"
 
 #: …and a third section that is not a kind of draft: the LAST WRITE EACH PAGE
-#: MADE to each key, `{key: {"client": …, "seq": …, "at": …}}`.
+#: MADE to each key, `{key: {client: {"seq": …, "at": …}}}` — ONE ROW PER
+#: (key, client), not per key.
 #:
 #: A version orders two DIFFERENT writers against each other; it cannot order
 #: one writer against itself, because both of its requests state the version
@@ -110,12 +111,18 @@ TASK = "task"
 #: applied from that same page is a STRAGGLER, and the only correct thing to do
 #: with it is nothing.
 #:
-#: IN ITS OWN SECTION AND NOT ON THE RECORD, because the case that matters most
-#: is the one where there IS no record: a send DELETEs and a keepalive PUT from
-#: a tenth of a second earlier arrives afterwards. A seq kept on the record would
-#: have gone with it, and the sent sentence would come back as a live draft —
-#: the resurrection this whole round exists to make impossible. So the note
-#: outlives the record, briefly (`_SEQ_TTL_SEC`).
+#: PER (key, client) RATHER THAN PER KEY, because a key is not one writer's:
+#: two tabs on the same session are two different `client` ids racing the same
+#: key, and a single slot means the second tab's write erases the first tab's
+#: own history of itself — the exact case `_seq_fresh` exists to judge. With one
+#: slot, a genuine straggler from tab A that lands after tab B has written (or
+#: deleted) the same key is compared against B's note, sees a different
+#: `client` and is waved through as "first write" — and if it carries
+#: `If-Match: 0` against a key B just deleted, that waved-through write matches
+#: "no record" and resurrects. Keeping A's own note alive under its own client
+#: id, untouched by B's writes, is what lets `_seq_fresh` still catch it. Capped
+#: at `_SEQ_MAX_CLIENTS_PER_KEY` so one key opened by a thousand tabs over a
+#: laptop's lifetime cannot grow this section without bound; TTL unchanged.
 SEQ = "seq"
 
 #: How long one of those notes is worth keeping. A straggler is a request that
@@ -124,6 +131,14 @@ SEQ = "seq"
 #: that queued it. After that the note is noise and `_prune` drops it, so the
 #: section cannot grow without bound on a machine that opens a thousand folders.
 _SEQ_TTL_SEC = 15 * 60
+
+#: How many DIFFERENT clients' notes one key keeps at once, on top of the TTL
+#: above. The TTL alone bounds how long a note lives; this bounds how many can
+#: pile up on one key inside that window — a shared key a lot of tabs are
+#: hammering at once (the same reasoning, bounded by count instead of by the
+#: clock). The oldest-seen client is evicted first, same as the TTL sweep would
+#: eventually do to it anyway.
+_SEQ_MAX_CLIENTS_PER_KEY = 8
 
 #: A chat with no session yet (the composer's first message has not been sent)
 #: keys on the file it opened on instead — the same key `takeDraft(file)` uses
@@ -440,35 +455,51 @@ def _client_of(value) -> str:
 
 
 def _seq_fresh(data: dict, key: str, client: str, seq: int | None) -> bool:
-    """Is this write NEWER than the last one this page made to this key?
+    """Is this write NEWER than the last one THIS CLIENT made to this key?
 
-    True for a client that sends no `seq` (nothing to compare), true the first
-    time a page writes a key, and true for a DIFFERENT page's write however old
-    its own counter is — one note per key, so the last page to write is the one
-    being sequenced. That is the whole of the rule: a sequence orders a page
-    against itself, and versions go on ordering pages against each other."""
+    True for a client that sends no `seq` (nothing to compare), and true the
+    first time this particular client writes this key — including when some
+    OTHER client has written (or deleted) it since; that write left its own
+    note under its own client id and never touched this one's (module SEQ
+    comment: per (key, client), not per key). A different page's write is
+    always "nothing to compare" here, however old ITS OWN counter is — a
+    sequence only ever orders a page against itself; versions go on ordering
+    pages against each other."""
     if not client or seq is None:
         return True
     row = (data.get(SEQ) or {}).get(key)
-    if not isinstance(row, dict) or row.get("client") != client:
+    entry = row.get(client) if isinstance(row, dict) else None
+    if not isinstance(entry, dict):
         return True
     try:
-        seen = int(row.get("seq"))
+        seen = int(entry.get("seq"))
     except (TypeError, ValueError):
         return True
     return seq > seen
 
 
 def _seq_note(data: dict, key: str, client: str, seq: int | None) -> None:
-    """Remember this write as the newest one that page made to this key.
+    """Remember this write as the newest one THIS CLIENT made to this key.
 
-    Only ever the LATEST `{client, seq}` — a page's whole history under a key is
-    of no interest, and keeping ids for ever would make this file a record of
-    every tab that ever opened a draft."""
+    Only ever the LATEST `{seq, at}` per (key, client) — one page's whole
+    history under a key is of no interest, and keeping every seq it ever sent
+    would make this file a record of every tab that ever opened a draft. Other
+    clients' notes under the same key are untouched, which is the point (module
+    SEQ comment). Capped at `_SEQ_MAX_CLIENTS_PER_KEY`: past that, the
+    longest-idle client's note is evicted first, the same fate the TTL sweep
+    would give it anyway."""
     if not client or seq is None:
         return
-    data.setdefault(SEQ, {})[key] = {"client": client, "seq": int(seq),
-                                     "at": time.time()}
+    row = data.setdefault(SEQ, {}).setdefault(key, {})
+    row[client] = {"seq": int(seq), "at": time.time()}
+    if len(row) > _SEQ_MAX_CLIENTS_PER_KEY:
+        stale = sorted(
+            (c for c in row if c != client),
+            key=lambda c: _epoch(row[c].get("at"))
+            if isinstance(row.get(c), dict) else 0.0,
+        )[:len(row) - _SEQ_MAX_CLIENTS_PER_KEY]
+        for other in stale:
+            row.pop(other, None)
 
 
 def _prune(data: dict) -> None:
@@ -505,12 +536,23 @@ def _prune(data: dict) -> None:
     # to drop a request that is on the wire right now; a quarter of an hour
     # later there is no such request, and keeping it would make this section
     # grow for ever. Unlike a draft, losing one of these costs nothing anybody
-    # typed, so an unreadable stamp is dropped here rather than kept.
+    # typed, so an unreadable stamp is dropped here rather than kept. One row
+    # per (key, client) now, so each client's note under a key ages out on its
+    # own — one tab going quiet does not touch another tab's note on the same
+    # key — and a key with no clients left is dropped rather than kept as an
+    # empty shell.
     seq_cutoff = time.time() - _SEQ_TTL_SEC
     notes = data.setdefault(SEQ, {})
     for key in list(notes):
         row = notes.get(key)
-        if not isinstance(row, dict) or _epoch(row.get("at")) < seq_cutoff:
+        if not isinstance(row, dict):
+            notes.pop(key, None)
+            continue
+        for client_id in list(row):
+            entry = row.get(client_id)
+            if not isinstance(entry, dict) or _epoch(entry.get("at")) < seq_cutoff:
+                row.pop(client_id, None)
+        if not row:
             notes.pop(key, None)
 
 
@@ -1083,14 +1125,16 @@ def put_chat(session_id, text=None, attachments=None, form=None,
             # question "is this key bound?" and the answer to it are one turn of
             # the lock.
             if stored is None:
-                return None, False
+                return None, bool(page and count is not None)
             if not keep:
                 data[CHAT].pop(key, None)
                 return None, True
             was_wordless = not (_text(stored.get("text")).strip()
                                 or _attachments(stored.get("attachments")))
             if was_wordless and merged == settings:
-                return None, False  # already wordless, and the settings stand
+                # already wordless, and the settings stand — but the note still
+                # has to land, same reason as the `stored is None` branch above.
+                return None, bool(page and count is not None)
             data[CHAT][key] = {"text": "", "attachments": [],
                                "updated_at": time.time(), "form": merged}
             return None, True
@@ -1387,7 +1431,7 @@ def put_task(ident, fields, if_version=None, client=None,
         record = _task_record(merged)
         if record is None or _empty_task(record):
             if key not in data[TASK]:
-                return (None, key), False
+                return (None, key), bool(page and count is not None)
             data[TASK].pop(key, None)
             return (None, key), True
         now = time.time()

@@ -678,6 +678,120 @@ def test_task_draft_routes_take_the_same_sequence(client):
     assert drafts.get_task("draft-0001") is not None
 
 
+# ---------------------------------------------------- no-op writes note too
+#
+# `_seq_note` only survives when `_update` persists — gated on `mutate`'s
+# `changed`, which every NO-OP branch used to answer `False`, dropping the
+# note along with the write it made no sense to make. `delete_chat` already
+# got this right (`bool(page and count is not None)`); these three didn't.
+
+
+def test_an_empty_chat_write_against_no_record_still_notes_its_seq(client):
+    """`put_chat`'s first NO-OP branch: an empty write against a key with no
+    stored record — the send path's ordinary shape on a session nobody has
+    drafted into yet. Reproduced in review: `put_chat(k, text="", seq=6)` left
+    `SEQ` empty, so a straggler `put_chat(k, text="…", seq=5)` read as fresh
+    and was applied — a draft the reader never started would come back."""
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "", "client": "page-1", "seq": 6})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    assert drafts.get_chat("sess-a") is None
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "a straggler", "client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_chat("sess-a") is None, "not resurrected"
+
+
+def test_a_wordless_no_op_chat_write_still_notes_its_seq(client, tmp_path):
+    """`put_chat`'s second NO-OP branch: a record that is already wordless and
+    carries settings (`form`), rewritten with the same settings and still no
+    words — the composer's autosave firing again over a form-only record
+    (§1, `test_clearing_the_words_keeps_the_settings_and_the_row_goes`)."""
+    key = "new:" + str(tmp_path)
+    client.put(_chat_url(key), json={"text": "one",
+                                     "form": {"when": "2026-09-18T09:00"},
+                                     "client": "page-1", "seq": 1})
+    client.put(_chat_url(key),
+              json={"text": "", "client": "page-1", "seq": 2})  # now wordless
+    assert drafts.load()["chat"][key]["text"] == ""
+    # Same no-op again, at a much higher seq — this is the branch under test.
+    r = client.put(_chat_url(key),
+                   json={"text": "", "client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    # A straggler that would have been fresh against seq 2 must be dropped
+    # against the note the no-op above should have left at seq 5.
+    r = client.put(_chat_url(key),
+                   json={"text": "resurrected", "client": "page-1", "seq": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.load()["chat"][key]["text"] == "", "not resurrected"
+    assert drafts.get_chat(key) is None, "still reads as no draft"
+
+
+def test_an_empty_task_write_against_no_record_still_notes_its_seq(client):
+    """`put_task`'s NO-OP branch: an empty form PUT against a `draft:<id>` that
+    has never been written — mirrors the chat case above."""
+    r = client.put("/api/drafts/task/draft-0009",
+                   json={"client": "page-1", "seq": 6})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    assert drafts.get_task("draft-0009") is None
+    r = client.put("/api/drafts/task/draft-0009",
+                   json={"title": "a straggler", "client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_task("draft-0009") is None, "not resurrected"
+
+
+# ---------------------------------------------------- one note per (key, client)
+#
+# `SEQ` used to keep one note per KEY: whichever client wrote a shared key last
+# owned the only slot, so a different client's write erased this page's own
+# history under that key and a genuine straggler stopped being caught
+# (drafts-seq-contract.md, "Server response").
+
+
+def test_two_clients_interleaved_each_straggler_dropped_independently(client):
+    client.put(_chat_url("sess-a"), json={"text": "a1", "client": "A", "seq": 1})
+    client.put(_chat_url("sess-a"), json={"text": "a2", "client": "A", "seq": 2})
+    client.put(_chat_url("sess-a"), json={"text": "b1", "client": "B", "seq": 1})
+    client.put(_chat_url("sess-a"), json={"text": "b2", "client": "B", "seq": 2})
+
+    ra = client.put(_chat_url("sess-a"),
+                    json={"text": "a-straggler", "client": "A", "seq": 1})
+    assert ra.json()["dropped"] is True, "A's own straggler, judged against A"
+    rb = client.put(_chat_url("sess-a"),
+                    json={"text": "b-straggler", "client": "B", "seq": 1})
+    assert rb.json()["dropped"] is True, "B's own straggler, judged against B"
+    assert drafts.get_chat("sess-a")["text"] == "b2", "last real write stands"
+
+
+def test_an_if_match_0_straggler_after_another_tabs_delete_is_dropped(client):
+    """The resurrection the fix closes: client A's PUT (seq=2) lands; a
+    different tab, B, deletes the key without ever having seen it (unconditional
+    delete, its own seq=1). B's delete must not erase A's own note — A's
+    earlier, now-stale PUT (seq=1, unconditional `If-Match: 0`, sent before A's
+    seq=2 but arriving after both A's write and B's delete) has to stay dropped
+    even though the deleted key would otherwise make `If-Match: 0` match."""
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "a2", "client": "A", "seq": 2})
+    assert r.status_code == 200, r.text
+    r = client.request("DELETE", _chat_url("sess-a"),
+                       json={"client": "B", "seq": 1})
+    assert r.status_code == 200, r.text
+    assert drafts.get_chat("sess-a") is None
+
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "a1-stale", "client": "A", "seq": 1},
+                   headers={"If-Match": "0"})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_chat("sess-a") is None, "not resurrected"
+
+
 def test_get_drafts_does_not_leak_client_or_seq(client):
     """`client`/`seq` live in their own section of the store (`drafts.SEQ`), off
     the record entirely — so there is no field to strip here, only one to keep
