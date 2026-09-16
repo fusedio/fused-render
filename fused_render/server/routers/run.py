@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Body, Header, Request, Response
@@ -11,6 +12,7 @@ from fused_render.shell import prefetch as shell_prefetch
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import mounts as shell_mounts
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -34,10 +36,12 @@ def _folder_busy(resolved: str, params: dict) -> str:
         if not key:
             return ""
         holder = project_queue.holder_for(key)
-        if not holder or holder.get("kind") not in ("run", "starting"):
-            return ""
         session_id = str(params.get("session_id") or "")
         run_id = str(params.get("run_id") or "")
+        logger.debug("queue gate: %s %s key=%s session=%r run=%r holder=%r",
+                    action, target, key, session_id, run_id, holder)
+        if not holder or holder.get("kind") not in ("run", "starting"):
+            return ""
         if session_id and holder.get("session_id") == session_id:
             return ""
         if run_id and holder.get("run_id") == run_id:

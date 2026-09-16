@@ -2445,3 +2445,42 @@ def test_a_follow_up_typed_during_the_admit_survives_the_spend(
               {"project": alpha, "message": "first thought", "draft_key": key2})
     assert r.status_code == 200, r.text
     assert drafts.get_chat(key2) is None
+
+
+# ================================ a queued chat keeps its number when it starts
+
+
+def test_a_queued_chats_number_moves_onto_its_session_the_moment_the_run_names_it(
+        client, projects_dir, folders, tmp_path, monkeypatch, flag):
+    """Browser QA, 2026-09-16: TASK-056 waiting became TASK-057 running. The
+    transcript is on disk within a second of the spawn; the scheduler stamps
+    `claude_session_id` on the entry two seconds later. A listing in between
+    saw a session with no entry and numbered it afresh. The run dir names the
+    session sooner (`_run_session`), so the pending row and the transcript are
+    ONE task from the first listing after the CLI comes up, and the rekey
+    keeps the number."""
+    flag()
+    alpha, _beta = folders
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _RunsAgent(runs))
+
+    # The queued message, numbered while it waits.
+    schedule._write([_entry("e-lead", "first words", alpha, session_id="",
+                            state=schedule.SENT, run_id="r-1")])
+    # No transcript yet: the row is the pending key.
+    before = _rows(client)
+    assert before[tasks_store.pending_key("e-lead")]["task_id"] == "TASK-001"
+
+    # The run comes up: run dir names the session, the transcript lands with
+    # its cwd — and the scheduler has NOT written `claude_session_id` yet.
+    run_dir = runs / "r-1"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": alpha, "resumed_from": ""}))
+    (run_dir / "session").write_text("sess-new")
+    (run_dir / "alive").write_text("1")
+    _transcript(projects_dir, "sess-new", alpha, "first words")
+
+    rows = _rows(client)
+    assert tasks_store.pending_key("e-lead") not in rows
+    assert rows["sess-new"]["task_id"] == "TASK-001"

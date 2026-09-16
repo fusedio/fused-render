@@ -2037,7 +2037,8 @@ def _entry_session(entry: dict, by_id: dict | None = None) -> str:
     the store read for it — but only for an entry that actually follows one.
     """
     session = (str(entry.get("claude_session_id") or "")
-               or str(entry.get("session_id") or ""))
+               or str(entry.get("session_id") or "")
+               or _run_session(entry))
     if session or not str(entry.get("follow_of") or ""):
         return session
     leader = schedule.leader_of(
@@ -2046,6 +2047,41 @@ def _entry_session(entry: dict, by_id: dict | None = None) -> str:
         return ""
     return (str(leader.get("claude_session_id") or "")
             or str(leader.get("session_id") or ""))
+
+
+def _run_session(entry: dict) -> str:
+    """The session a SENT entry's run has opened, read off the run itself, for
+    the seconds before the scheduler writes it onto the entry.
+
+    THE NUMBER MUST NOT CHANGE WHEN A QUEUED CHAT STARTS (browser QA,
+    2026-09-16: TASK-056 waiting became TASK-057 running). A brand-new chat's
+    transcript is on disk within a second of the spawn; the scheduler learns
+    the session from its own poll of the run two seconds later
+    (`claude_spawn.record_session_when_ready`) and only then stamps
+    `claude_session_id`. A listing in that window saw a session with no entry
+    and a pending row with no session, numbered the session afresh, and the
+    rekey that keeps the pending row's number found the session already
+    numbered. The run dir knows sooner — its `session` file, or the live
+    registry by pid (`project_queue.run_sessions`) — so the entry is grouped
+    onto its session from the first listing after the CLI comes up.
+
+    Only an entry with a run and no session is asked, so the cost is a run-dir
+    read per in-flight spawn, never per entry. Best-effort: nothing readable is
+    "", which is the answer the entry gave before."""
+    run_id = str(entry.get("run_id") or "")
+    if not run_id or entry.get("state") not in (schedule.SENDING, schedule.SENT):
+        return ""
+    try:
+        agent = project_queue.agent_module()
+        if agent is None:
+            return ""
+        run_dir = os.path.join(str(agent.RUNS), run_id)
+        if not os.path.isdir(run_dir):
+            return ""
+        found = project_queue.run_sessions(agent, run_dir, {})
+    except Exception:  # noqa: BLE001 — a run dir we cannot read names nobody
+        return ""
+    return next(iter(sorted(found)), "") if found else ""
 
 
 def _by_entry_id(entries: list[dict] | None = None) -> dict:
