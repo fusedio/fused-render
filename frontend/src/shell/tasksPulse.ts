@@ -208,8 +208,14 @@ function syncFeedLane() {
     return;
   }
   if (feedLane) return;
-  // The rows arrive through `publishTasks` inside the feed; nothing to do with
-  // the event itself.
+  // CLAIM THE SLOT BEFORE SUBSCRIBING. `subscribeListing` calls `schedule()`
+  // synchronously when it is the first subscriber, and `schedule()` comes back
+  // here — so with the slot still empty the nested call subscribed a SECOND
+  // no-op reader whose disposer was then dropped, `listingSubs` could never
+  // return to zero, and the long-poll outlived every reader for the life of
+  // the document (merge audit, 2026-09-16). The rows arrive through
+  // `publishTasks` inside the feed; nothing to do with the event itself.
+  feedLane = () => {};
   feedLane = subscribeListing(() => {});
 }
 

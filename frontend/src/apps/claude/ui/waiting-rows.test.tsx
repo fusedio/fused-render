@@ -461,7 +461,7 @@ describe("the rows come from the server, which is what a reload reads", () => {
     // pending, so the very next poll lists them again.
     const adopt = CHAT.slice(
       CHAT.indexOf("const adoptSession = leaderSession("),
-      CHAT.indexOf("}, [adoptSession, controller, cardPolicy]);"),
+      CHAT.indexOf("}, [adoptSession, controller, cardPolicy, params, file]);"),
     );
     expect(adopt).not.toContain("setWaitingSeeds");
     expect(adopt).not.toContain("setDroppedEntries");

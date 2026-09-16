@@ -1493,11 +1493,6 @@ def _held_requests() -> set:
 # runs-tree scan and one pass over the scheduler's store), and asking it per row
 # would pay that per task.
 
-    try:
-        return project_queue.reserved_sessions()
-    except Exception:  # noqa: BLE001 — an unreadable table reserves nothing
-        return set()
-
 
 def _due_pending(task: dict, now: float, by_id: dict) -> list[tuple[str, tuple]]:
     """This task's entries that are WAITING TO GO RIGHT NOW, each as
