@@ -577,6 +577,11 @@ export function ComposerCard({
       if (!files.length) return;
       restoring.current += 1;
       heldBase.current = base;
+      // WHAT THIS HOLD IS ABOUT, latched at dispatch (Bugbot 4028710588): the
+      // key it names and the episode the box was on when it opened — the same
+      // two questions the seed's text path asks of its own await.
+      const key = draftKeyRef.current;
+      const era = episode.current;
       const done = () => {
         restoring.current = Math.max(0, restoring.current - 1);
         if (!restoring.current) heldBase.current = null;
@@ -586,7 +591,21 @@ export function ComposerCard({
       // an autosave that never speaks again — so the sync answer releases here.
       const back = restoreAttachments.current?.(files.map((a) => a.path));
       if (back && typeof (back as Promise<void>).then === "function") {
-        void (back as Promise<void>).then(done, done);
+        void (back as Promise<void>).then(() => {
+          // ABORT: a Send, an adopted delete, or a key change already moved
+          // this box past the episode this hold was about (Bugbot 4028710588).
+          // `addPaths` commits past its own await, so landing here at all is
+          // exactly a spent draft's files coming back into the tray — put
+          // right back out, and nothing is said to the syncer about them.
+          if (
+            draftKeyRef.current !== key ||
+            episode.current !== era ||
+            peekDraftSyncer(key)?.isGone()
+          ) {
+            discardAttachments.current?.();
+          }
+          done();
+        }, done);
       } else {
         done();
       }

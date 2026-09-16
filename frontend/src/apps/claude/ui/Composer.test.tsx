@@ -1063,6 +1063,74 @@ test("a seeded tray is never written as empty on the way in", async () => {
   forgetDraftVersion("sess-tray");
 });
 
+test("restore can resurrect a spent draft — Send does not let it back in", async () => {
+  // Bugbot 4028710588. `restoreTray` held autosave open across `addPaths` by a
+  // counter with no idea which episode it was minted for. A seed still
+  // restoring when Send fires used to land AFTER the DELETE, put the spent
+  // files back in the tray via `addPaths`' own commit, and the very next
+  // autosave write recreated the draft that Send just spent.
+  const files = [{ path: "/shots/a.png", name: "a.png", kind: "image" as const }];
+  const seen = storeWith({
+    "sess-resurrect": {
+      text: "the spent sentence",
+      attachments: files,
+      updated_at: 1,
+      version: 3,
+      form: {},
+    },
+  });
+  let land: (() => void) | undefined;
+  let tray: { pending: boolean; view: string; name: string; kind: string }[] = [];
+  const c = mount({
+    file: "/p/resurrect.py",
+    sessionId: "sess-resurrect",
+    attachments: () => tray as never,
+    onRestoreAttachments: (paths: string[]) =>
+      new Promise<void>((resolve) => {
+        land = () => {
+          // WHAT `addPaths` DOES ON ITS OWN, past its await: it commits the
+          // paths into the tray whatever else has happened meanwhile.
+          tray = paths.map((path) => ({
+            pending: false,
+            view: path,
+            name: path.slice(path.lastIndexOf("/") + 1),
+            kind: path.endsWith(".png") ? "image" : "file",
+          }));
+          resolve();
+        };
+      }),
+    onDiscardAttachments: () => {
+      tray = [];
+    },
+  });
+  await act(async () => {
+    await tick();
+  });
+  // Seeded, and the restore is still open — the record's own files have not
+  // landed in the tray yet.
+  expect(c.box().props.value).toBe("the spent sentence");
+  expect(tray).toEqual([]);
+  // SEND, while the seed's restore is still in flight.
+  expect(c.press("Enter")).toBe(true);
+  expect(c.box().props.value).toBe("");
+  // …and NOW `addPaths` lands, holding exactly the files Send just spent.
+  await act(async () => {
+    land!();
+    await tick();
+  });
+  // Resurrected into the tray is the bug; the fix puts them right back out.
+  expect(tray).toEqual([]);
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  // The send's own DELETE, and nothing else: no PUT recreating the spent
+  // draft with the resurrected files.
+  expect(seen.filter((r) => r.method === "PUT")).toEqual([]);
+  expect(seen.filter((r) => r.method === "DELETE")).toHaveLength(1);
+  forgetDraftVersion("sess-resurrect");
+});
+
 test("words typed before the session lands move onto the session's record", async () => {
   // Bugbot 4027549731. The first send mints the session and it arrives a render
   // later, so a follow-up typed in that gap sits in a box that has just changed
