@@ -551,6 +551,68 @@ test("repo rows, pairings and a waiting task are never folded, however many term
   expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
 });
 
+// Finding 4 (code review 2026-09-16): TERMINAL_VISIBLE_CAP used to slice the
+// flat `terminalTrail` job list. A multi-member group's members are still
+// contiguous in that flat list (groupJobs' own ordering keeps them
+// together), but a cap boundary landing INSIDE that run split the group in
+// half — the folded-away members were simply gone from the row `groupJobs`
+// re-derives from the sliced list, so the row's own "N of M done" undercounted
+// and its dismiss-all only ever reached the members that survived the slice.
+// The cap must bound ROWS (one per group, however many members), not jobs.
+// Finding 7 (code review 2026-09-16): `GroupJobRow` drew no `rowClick` at
+// all, so once a family had 2+ members and folded into one row (§3), that
+// row lost its destination outright — every other row kind (`JobRow`,
+// pairings, waiting tasks) is clickable, this one silently was not.
+test("finding 7: a folded group row is clickable and opens the oldest member's page", () => {
+  withNav((pushed) => {
+    const older = doneJob({
+      id: "g-a",
+      group: "burst",
+      page: "/ai-models/local",
+      started_at: 0,
+      finished_at: 100,
+    });
+    const newer = doneJob({
+      id: "g-b",
+      group: "burst",
+      page: "/ai-models/local",
+      started_at: 200,
+      finished_at: 300,
+    });
+    const tree = renderView({ rows: [], terminal: [older, newer] });
+    const rows = findAll(tree, "dl-row");
+    expect(rows).toHaveLength(1);
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (rows[0].props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/ai-models/local");
+  });
+});
+
+test("finding 4: a group straddling the cap boundary renders as one complete row, never a partial one", () => {
+  const single = doneJob({ id: "solo", group: "solo", started_at: 0, finished_at: 100 });
+  const burst = Array.from({ length: 6 }, (_, i) =>
+    doneJob({
+      id: `burst${i}`,
+      group: "burst",
+      page: "/x",
+      started_at: 1000 + i * 1000,
+      finished_at: 1000 + i * 1000 + 100,
+    }),
+  );
+  const terminal = [single, ...burst];
+  const tree = renderView({ rows: [], terminal });
+  // Only 2 ROWS exist (the solo job, and the one burst group) — well under
+  // the cap of 5 rows — so nothing should fold at all, and the burst group's
+  // row must report every one of its 6 members, not 5.
+  expect(findAll(tree, "dl-panel-more")).toHaveLength(0);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(2);
+  const secondary = findAll(tree, "dl-model").map((n) => text(n));
+  expect(secondary).toContain("6 of 6 done");
+});
+
 // -------------------------------- nothing opens or closes on its own (D673)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562

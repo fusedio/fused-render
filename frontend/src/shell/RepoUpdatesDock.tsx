@@ -48,7 +48,7 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
@@ -505,6 +505,11 @@ function GroupJobRow({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const members = group.jobs;
+  // The OLDEST member represents the row (arrival order — same judgment call
+  // as `title` just below), for the same reason: nothing in §3 names which
+  // member's destination a folded row should open, and the oldest member is
+  // the one least likely to still be mid-rename/mid-retry.
+  const openPage = members[0]?.page ?? "";
   const title = members[0]?.title ?? group.group;
   const failedCount = members.filter((m) => effectiveTier(m) === "attention").length;
   const doneCount = members.length - failedCount;
@@ -546,6 +551,16 @@ function GroupJobRow({
       status={
         failure ?? (anyFailed ? `${failedCount} of ${members.length} failed` : undefined)
       }
+      // Finding 7 (code review 2026-09-16): a lone job's row has always had a
+      // `rowClick` (`JobRow`, `DownloadManager.tsx`) — a folded group row had
+      // none at all, so a family with 2+ members lost its destination
+      // outright the moment §3 started folding it into one row. Deliberately
+      // NOT reusing `JobRow`'s "opening dismisses" convention here: dismissing
+      // an entire multi-member group just because the user looked at it would
+      // throw away every sibling's own state, not just the one they clicked
+      // to see — a group's ✕ already dismisses everything explicitly, and a
+      // click's only job here is to go look.
+      rowClick={openPage ? { onClick: () => navigateToJobPage(openPage), title: `Open ${title}` } : undefined}
     />
   );
 }
@@ -721,10 +736,25 @@ export function RepoUpdatesCardView({
   // is backwards from what the cap is for. Slicing off the tail keeps the
   // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
   // themselves, so the panel's reading order never changes.
-  const shownTerminal = olderShown
-    ? terminalTrail
-    : terminalTrail.slice(Math.max(0, terminalTrail.length - TERMINAL_VISIBLE_CAP));
-  const olderTerminalCount = terminalTrail.length - shownTerminal.length;
+  //
+  // Finding 4 (code review 2026-09-16): this used to slice `terminalTrail`
+  // itself — a flat JOB list — which cuts a multi-member group's members in
+  // half whenever the cap boundary lands inside it. `renderJobRows` below
+  // re-derives groups from whatever job list it's given, so a group missing
+  // some members re-grouped into a row with the WRONG "N of M done" count,
+  // and that row's dismiss-all only touched the members that made it past
+  // the slice, orphaning the rest with no row left to dismiss them from.
+  // `TERMINAL_VISIBLE_CAP` bounds how many ROWS show, and a group is always
+  // exactly one row regardless of member count — so the cap has to slice
+  // `terminalTrailGroups` (one entry per row), never the flattened jobs.
+  // Slicing complete groups out, rather than jobs, means the jobs handed to
+  // `renderJobRows` are always a union of WHOLE groups, so re-grouping them
+  // reproduces the exact same groups with nothing missing.
+  const shownTerminalGroups = olderShown
+    ? terminalTrailGroups
+    : terminalTrailGroups.slice(Math.max(0, terminalTrailGroups.length - TERMINAL_VISIBLE_CAP));
+  const shownTerminal = shownTerminalGroups.flatMap((g) => g.jobs);
+  const olderTerminalCount = terminalTrailGroups.length - shownTerminalGroups.length;
   // §4: Recent's own fold — collapsed by default (D603: nothing persisted,
   // a fresh `false` on every mount, exactly like `olderShown` above), no
   // arrival-driven auto-open (this section holds only successes nobody
