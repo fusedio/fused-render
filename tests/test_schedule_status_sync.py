@@ -238,3 +238,47 @@ def test_a_closed_turn_rings_the_key_the_listing_actually_used(monkeypatch):
     rung.clear()
     schedule._turn_ended({"id": "e3"})
     assert rung == [{"pending:e3"}]
+
+
+# ---- a send rings the page before the CLI does -----------------------------------
+
+
+def test_a_claimed_send_rings_the_tasks_watcher_before_the_spawn(
+        folder, spawned, monkeypatch):
+    """The row is in progress from the claim; the page must not wait for the
+    CLI's registry row (2-4 s) to hear so. Rung under every key the listing
+    might file it by, since a fresh task has no session yet (`pending:`)."""
+    rung = []
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys: rung.append(set(keys)))
+    entry = schedule.create(str(folder), "go", _ago(30))
+    assert schedule.tick() != []
+    assert rung and rung[0] == {"pending:" + entry["id"]}
+    assert spawned  # …and the ring came with the send, not instead of it
+
+
+def test_a_spawn_failure_rings_the_tasks_watcher(folder, monkeypatch):
+    rung = []
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys: rung.append(set(keys)))
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **k: {"error": "no claude"})
+    entry = schedule.create(str(folder), "go", _ago(30))
+    schedule.tick()
+    assert {"pending:" + entry["id"]} in rung
+    assert [e for e in schedule.list_entries() if e["id"] == entry["id"]][0]["state"] == "error"
+
+
+def test_the_session_id_stamp_rings_the_old_and_new_keys(folder, monkeypatch):
+    """First reporting tick names the session: the `pending:` row is now the
+    session's row, and the page swaps them on one long-poll answer."""
+    rung = []
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys: rung.append(set(keys)))
+    monkeypatch.setattr(schedule, "_report", lambda *a, **k: None)
+    entry = schedule.create(str(folder), "go", _ago(30))
+    schedule._update(entry["id"], state=schedule.SENT, run_id="r-1")
+    entry = [e for e in schedule.list_entries() if e["id"] == entry["id"]][0]
+
+    class Agent:
+        def _cancel(self, *a, **k): return None
+
+    schedule._turn_tick(entry, "r-1", Agent(), {"session_id": SID})
+    assert {SID, "pending:" + entry["id"]} in rung

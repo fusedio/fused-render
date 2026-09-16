@@ -1639,6 +1639,8 @@ def _fail(entry: dict, reason: str) -> None:
     _report(entry["id"], title=_job_title(entry), kind="task", detail=entry["target"],
             state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
+    # `in_progress` -> `blocked` is a status change like a verdict is.
+    _notify(_entry_keys(entry))
 
 
 def _outgoing(entry: dict) -> str:
@@ -1909,6 +1911,11 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     if ran and ran != entry.get("claude_session_id"):
         entry["claude_session_id"] = ran
         _update(entry_id, claude_session_id=ran)
+        # The row just moved keys: it was `pending:<id>` (or the INPUT session)
+        # and is now filed under the answer. Ring both, so the page swaps the
+        # rows in one long-poll answer (`api_tasks_changes` names the pending
+        # key `gone`) instead of showing two until the full listing.
+        _notify(_entry_keys(entry))
         # …and if this was a chaining template's run, the answer becomes the
         # INPUT of the next one. Without this the default never happens: a
         # template created from the Tasks page has no session id, every
@@ -2960,6 +2967,15 @@ def tick(now: datetime | None = None) -> list[dict]:
             # would both pass the check above.
             busy.add(session)
         sent.append(entry)
+        # The row is IN PROGRESS from this line (`sending`, then `sent` with no
+        # verdict — `_message_running`), and the page drawing it has been
+        # long-polling for exactly that news. Rung here, before the spawn: the
+        # CLI's own registry row lands two to four seconds after the process
+        # starts, and that file was the only thing telling the page until now —
+        # under the session's key, while the row still sat at `pending:<id>`
+        # (Akshil, 2026-09-16: "a new task takes 3-4 seconds to show up as in
+        # progress"). Same bell `_turn_ended` rings when the turn closes.
+        _notify(_entry_keys(entry))
         _send(entry)
     _rearm(held_soon)
     return sent
