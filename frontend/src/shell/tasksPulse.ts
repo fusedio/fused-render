@@ -157,8 +157,66 @@ function schedule() {
   // every answer through publishTasks, so a pulse poll beside it is the same
   // double-poll the feeder rule exists to prevent — just spent on the smaller
   // endpoint.
+  // THE FAST LANE FOLLOWS THE SAME RULE AS THE TIMER, and is started and
+  // stopped from the same place so the two can never disagree about who is
+  // polling (see `syncFeedLane`).
+  syncFeedLane();
   if (listeners.size + rowListeners.size === 0 || fedElsewhere()) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
+}
+
+// ---- the fast lane -----------------------------------------------------------
+//
+// "1 running" IN THE RAIL SHOULD BE INSTANT, and on the two intervals above it
+// was not: a run that started the moment after a poll went unmentioned for ten
+// seconds, and one that started on an idle machine for thirty (Akshil,
+// 2026-09-12: "should be instant… everywhere in UI"). The number itself is
+// cheap to fetch; what was slow was WAITING to ask.
+//
+// So while this module is the poller — a pulse reader mounted and NOBODY
+// feeding it — it follows the document's own listing feed (`subscribeListing`,
+// below), which long-polls `/api/tasks/changes` against the server's change
+// watcher and answers the moment a session starts, resumes, takes a prompt,
+// grows, or any queue verb rings it. The feed publishes every answer through
+// `publishTasks`, so the rail moves on the same tick the Tasks page would; the
+// intervals above stay exactly as they were, as the floor under a watcher that
+// missed something.
+//
+// ONE POLLER, STILL. The feed counts as a feeder (`fedElsewhere`), so the pulse
+// timer stands down the moment the lane opens — one socket, one listing, and
+// the sidebar comes along without a second connection. A page that runs the
+// feed itself (Tasks, a chat) is the same subscription refcounted, not a second
+// one; `useTasksFeeder` stands the whole module down, this lane included, and
+// starting it back up is the same `schedule()` call that re-arms the timer.
+
+/** This module's own subscription to the listing feed, or null while the lane
+ *  is closed. */
+let feedLane: (() => void) | null = null;
+
+function syncFeedLane() {
+  const wanted =
+    listeners.size + rowListeners.size > 0 &&
+    feeders === 0 &&
+    typeof document !== "undefined" &&
+    typeof window !== "undefined";
+  if (!wanted) {
+    if (feedLane) {
+      const stop = feedLane;
+      feedLane = null;
+      stop();
+    }
+    return;
+  }
+  if (feedLane) return;
+  // CLAIM THE SLOT BEFORE SUBSCRIBING. `subscribeListing` calls `schedule()`
+  // synchronously when it is the first subscriber, and `schedule()` comes back
+  // here — so with the slot still empty the nested call subscribed a SECOND
+  // no-op reader whose disposer was then dropped, `listingSubs` could never
+  // return to zero, and the long-poll outlived every reader for the life of
+  // the document (merge audit, 2026-09-16). The rows arrive through
+  // `publishTasks` inside the feed; nothing to do with the event itself.
+  feedLane = () => {};
+  feedLane = subscribeListing(() => {});
 }
 
 /** The window event a poke sends when a feeder page owns the poll: the store
