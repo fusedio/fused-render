@@ -1849,3 +1849,43 @@ Verified: `.venv/bin/python -m pytest tests/test_index_api.py
 tests/test_index_query.py -q` → 174 passed. The burst test alone run 10x in a
 row (all green) and 12x more under sustained CPU load (16 background `yes`
 spinners) — all green, no flakes observed in either condition.
+
+---
+
+## Rank timing on the wire + browser slow-search warning (2026-09-16, worktree-rank-timing-warn)
+
+- **Test placement**: put the Python test in `tests/test_index_search.py`,
+  not `tests/test_index_api.py`. The brief said "put it with the existing
+  index API tests" — but the actual HTTP-level `/api/index/rank` happy-path
+  tests (`test_rank_route_answers_ranked_hits`,
+  `test_rank_route_logs_the_request_total_at_debug`, etc.) all live in
+  `test_index_search.py`; `test_index_api.py` mostly covers lane/pool/
+  concurrency machinery via lower-level fixtures. Added the new test right
+  next to `test_rank_route_answers_ranked_hits`, which builds a real index
+  and hits the route the same way.
+
+- **`.then()` aborted-guard position**: confirmed before editing — the guard
+  is `if (ctl.signal.aborted) return;` as the very first line of the success
+  callback in `FilesHome.tsx`. Placed the elapsed-time computation and
+  `warnSlowSearch` call immediately after it, so an aborted/superseded
+  request never warns and this required no restructuring.
+
+- **Memo-hit path never warns**: confirmed by reading the effect — a memoized
+  answer (`memo.current.get(q)`) returns early via a separate branch (abort
+  inflight, `setAnswer(remembered)`, return) and never reaches
+  `indexRank(...).then(...)` at all, so it structurally cannot call
+  `warnSlowSearch`. No extra guard was needed.
+
+- **Message shape**: one `console.warn` call with a single formatted string
+  (not multiple args) so a screenshot of it is self-contained and grep/read
+  order isn't ambiguous. Labeled the gap "unaccounted/outside-handler"
+  deliberately, per the brief, rather than "network" or "queueing" — none of
+  that is actually measured.
+
+- **`timing` rounding**: rounded server-side to 1 decimal place as specified.
+  Frontend does no further rounding/formatting of the server numbers — they
+  are echoed as received (e.g. `total=1800.0ms`), since the brief did not
+  ask for client-side reformatting and doing so would risk hiding precision
+  a support engineer might want.
+
+No other deviations from the brief.
