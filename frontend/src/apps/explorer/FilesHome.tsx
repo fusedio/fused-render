@@ -94,6 +94,19 @@ const MAX_CARDS = 9;
 // much tighter bar.
 const SLOW_SEARCH_WARN_MS = 2000;
 
+// Rounds to 1 decimal place for display. The server already rounds its own
+// timing numbers to 1 decimal (see fused_render/server/routers/index.py), so
+// this is a no-op on those — but `elapsedMs - timing.total_ms` is a fresh
+// subtraction of an integer (`Date.now()` deltas) against that rounded
+// float, and float subtraction of the two does not land on a clean decimal
+// (e.g. `2000 - 1600.1 === 399.9000000000001`). Rounding every number that
+// reaches this line, derived or echoed, means the printed line can never
+// carry a 15-17 significant-digit float for a support engineer to puzzle
+// over on a screenshot.
+function r1(ms: number): number {
+  return Math.round(ms * 10) / 10;
+}
+
 /** A single, self-explanatory console line for a support engineer reading a
  * screenshot: the query, what the browser measured end to end, and — when
  * the server sent it — its own breakdown of where that time went inside the
@@ -111,12 +124,26 @@ function warnSlowSearch(query: string, elapsedMs: number,
       `or the response omitted it)`);
     return;
   }
-  const unaccountedMs = Math.max(0, elapsedMs - timing.total_ms);
+  const unaccountedMs = Math.max(0, r1(elapsedMs - timing.total_ms));
   console.warn(
     `[explorer] slow home search: query=${JSON.stringify(query)} ` +
-    `elapsed=${elapsedMs}ms | server: total=${timing.total_ms}ms ` +
-    `lane_wait=${timing.lane_wait_ms}ms worker=${timing.worker_ms}ms | ` +
+    `elapsed=${elapsedMs}ms | server: total=${r1(timing.total_ms)}ms ` +
+    `lane_wait=${r1(timing.lane_wait_ms)}ms worker=${r1(timing.worker_ms)}ms | ` +
     `unaccounted/outside-handler=${unaccountedMs}ms`);
+}
+
+/** Same audience and shape as `warnSlowSearch` above, for the branch that
+ * never gets there: a slow request that THROWS (a wedged-index 503 after
+ * `ABANDON_S`, pool exhaustion, a network failure) never reaches `.then()`,
+ * so without this the exact scenario the feature exists for — a customer
+ * stuck for many seconds on a wedged read — logs nothing. Prefixed
+ * "FAILED" and carries the error text so a support engineer can tell a
+ * successful-but-slow search from a failed one at a glance, never having to
+ * infer it from which of two near-identical lines they're looking at. */
+function warnSlowSearchFailed(query: string, elapsedMs: number, error: Error): void {
+  console.warn(
+    `[explorer] slow home search FAILED: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms — request failed: ${error.message}`);
 }
 
 type LaunchTab = "recents" | "sessions" | "repos";
@@ -645,6 +672,8 @@ export function FilesSearch({
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearchFailed(q, elapsedMs, err);
           // The rows in hand STAY. They are the best answer available on a page
           // with no live walk, and the banner below says the refresh failed.
           setFailure(err.message);
