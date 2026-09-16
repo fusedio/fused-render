@@ -1,5 +1,6 @@
 // Pure formatting helpers. No DOM, no fetch. (The vanilla module also carried
 // escapeHtml — dropped: JSX escapes text content itself.)
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 // THE CLIENT-SIDE COUNTERPART TO `origin_for_page` (fused_render/jobs.py) —
 // found and reused for the SAME reason that function exists (a `.dl-origin`
@@ -9,13 +10,21 @@
 // project-root lookup neither of which a client-raised message's `notify()`
 // call (`platform/lib/notifications.ts`) or a waiting task's own row
 // (`shell/tasks-lib.ts`'s `attentionRows`) can reach synchronously — no
-// request round trip happens at either call site. Every `source`/
-// target/project those two ever set is a bare fs path (AppPage.tsx's own app
-// folder, a task's own target/project — see `tasks-lib.ts`'s own "Project
-// FOLDERS, full paths" note), so this mirrors exactly `origin_for_page`'s OWN
-// bare-path fallback branch (no route match, no project root found: the
-// basename, extension stripped) rather than reimplementing the route table
-// or the project lookup client-side, or leaving no label at all.
+// request round trip happens at either call site.
+//
+// Until this fix this function was basename-only and disagreed, visibly,
+// with `origin_for_page` on the very sources it CAN name without a round
+// trip: a source of `/tasks` labelled "tasks" here and "Scheduler" there. It
+// now consults the SAME shared route table (`ORIGIN_BY_ROUTE`,
+// `platform/lib/originRoutes.ts`, which `router.ts` and `jobs.py`'s
+// `_ORIGIN_BY_ROUTE` also read/mirror) before falling back to the bare-path
+// rule. The one thing this function still cannot replicate is
+// `origin_for_page`'s PROJECT-name resolution for an ordinary fs path
+// (`projectenv.project_root_for` + `projectenv.display_name`), which needs
+// server-side filesystem access no client call site has — that remaining
+// divergence (an fs path outside the closed route table labels by basename
+// here, by project name there) is deliberate and bounded: every route this
+// function CAN name authoritatively, it now names identically to the server.
 //
 // LIVES HERE, NOT in notifications.ts: `tasks-lib.ts` (shell/) needs it too,
 // and notifications.ts imports router.ts, which reads `location` at module
@@ -23,11 +32,30 @@
 // its tests that don't install a DOM shim before their own static imports
 // evaluate (tasks-lib.test.ts had never needed one). format.ts has no
 // imports and no side effects of its own, so both callers can reach this
-// without dragging that module-init chain in.
+// without dragging that module-init chain in. `originRoutes.ts` has the same
+// property, so importing it here does not change that.
 export function labelForSource(source: string | undefined): string {
   const trimmed = (source || "").trim();
   if (!trimmed) return "";
-  const stripped = trimmed.replace(/[/\\]+$/, "");
+  // The full string is tried FIRST: a query-bearing route can itself be a
+  // table key (`"/preferences?tab=indexing"` alongside the bare
+  // `"/preferences"`) that is MORE specific than what stripping its query
+  // string would leave — strip first and the indexing page mislabels as
+  // "Preferences". Only once the full string misses is the query string (and
+  // any hash) stripped and tried again, which is what turns a task
+  // destination like `/explorer/view/Users/x/app?_side=claude&session_id=…`
+  // into a clean route/basename lookup instead of carrying that junk tail
+  // into either lookup or the basename fallback below.
+  const routed = ORIGIN_BY_ROUTE[trimmed];
+  if (routed) return routed;
+  const withoutQuery = trimmed.split(/[?#]/)[0];
+  const routedStripped = ORIGIN_BY_ROUTE[withoutQuery];
+  if (routedStripped) return routedStripped;
+  // fs-path fallback: basename, extension stripped. `origin_for_page`'s own
+  // documented fallback for the same "not a known route" case — see the file
+  // header comment above for why this function stops here rather than also
+  // resolving a project name.
+  const stripped = withoutQuery.replace(/[/\\]+$/, "");
   const base = stripped.split(/[/\\]/).pop() || stripped;
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(0, dot) : base;

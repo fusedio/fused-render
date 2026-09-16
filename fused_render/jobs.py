@@ -246,9 +246,16 @@ MODEL_MAX = TITLE_MAX
 # always an fs path, which `origin_for_page` below names after the PROJECT
 # it belongs to instead of guessing from this table). This is the SAME
 # closed set of routes as `JOB_PAGE_ROUTES` in
-# `frontend/src/platform/lib/router.ts` — kept here, in one place, rather
-# than as a second competing table; if the two drift, the fix is a one-line
-# addition on whichever side is behind.
+# `frontend/src/platform/lib/router.ts`, which now derives its membership
+# from `ORIGIN_BY_ROUTE` in `frontend/src/platform/lib/originRoutes.ts` — the
+# client-side mirror of this exact dict, also consulted by
+# `labelForSource` (`format.ts`) so a client-raised notification's caption
+# names the same page the same way a server-raised job's does. Kept here, on
+# the Python side, as its own literal (Python can't import TS) rather than a
+# second competing table with independent content; `tests/test_jobs_api.py`'s
+# `test_origin_by_route_matches_the_client_table` parses `originRoutes.ts`
+# and diffs it against this dict so the two cannot silently drift — a route
+# added on one side without the matching entry on the other fails that test.
 _ORIGIN_BY_ROUTE: dict[str, str] = {
     "/ai-models/local": "Local models",
     "/ai-models/benchmark": "Benchmark",

@@ -1511,3 +1511,140 @@ Commands run from the worktree root:
 - A human should open the app, trigger a real "Task finished" transition,
   and a real client-raised message with a `source` set, and visually
   confirm both the popup and panel rows in light and dark mode.
+
+## Fix 19: one shared route table, not three copies of the same knowledge
+
+**The defect Fix 17 left behind**: it built `labelForSource` (`format.ts`) as
+a basename-only fallback and never wired it to the server's own route table,
+so it disagreed with `origin_for_page` (`fused_render/jobs.py`) on every
+known shell route — `/tasks` labelled "Scheduler" server-side and "tasks"
+client-side, same for `/ai-models/local`, `/ai-models/benchmark`,
+`/claude-config`, `/preferences`. A source carrying a query string (a task
+destination like `/explorer/view/Users/x/app?_side=claude&session_id=…`,
+`schedule-lib.ts`'s `explorerUrl`/`chatPaneUrl`) was not stripped either, so
+`labelForSource` could return a raw URL fragment as a caption. Meanwhile
+`router.ts`'s `JOB_PAGE_ROUTES` held the SAME closed route set a third time,
+as a bare `Set` with no labels — three independently-maintained copies of
+one fact ("which routes are shell surfaces, and what do we call each one"),
+and `jobs.py`'s own comment already said outright that any drift between
+its table and `router.ts`'s was a bug to fix, without naming the third copy
+that had since appeared.
+
+**Why three copies existed instead of one, even though everyone knew it was
+wrong**: Python cannot import TypeScript, so the server-side dict was always
+going to be its own literal — that one copy is structural, not a mistake.
+The client-side duplication was the real defect, and it existed because the
+one place client code COULD have put a single shared table
+(`notifications.ts`, which already imports `router.ts`) is unreachable from
+`tasks-lib.ts` without breaking `tasks-lib.test.ts`
+(`ReferenceError: location is not defined` — `router.ts` reads `location` at
+module scope, and `notifications.ts` imports it eagerly). Fix 17's builder
+worked around that constraint by writing a second, independent labelling
+rule in `format.ts` rather than restructuring the module graph — which
+solved the import problem but reintroduced the drift problem the comment in
+`jobs.py` was already warning about.
+
+**The fix**: reproduced the `location`-at-module-scope constraint before
+touching anything (confirmed: `router.ts`'s `IS_EMBED`/`IS_PREVIEW`/the
+`rewriteLegacyPath` IIFE all read `location` at module scope, and
+`notifications.ts` imports `router.ts` eagerly for `IS_EMBED`/`IS_TOP_EMBED`
+— so anything that imports `notifications.ts`, even transitively, needs a
+DOM shim installed before its own static imports evaluate). Rather than
+routing around `router.ts`, pulled the table BELOW it: a new leaf module,
+`frontend/src/platform/lib/originRoutes.ts` — `ORIGIN_BY_ROUTE`, a plain
+`Record<string, string>`, zero imports, zero module-scope side effects
+(the same property `format.ts` already had, and for the same reason:
+`tasks-lib.ts` needs to reach it with no DOM shim). Three consumers now read
+this one table instead of each holding their own copy:
+- `router.ts`'s `JOB_PAGE_ROUTES` is now `new Set(Object.keys(ORIGIN_BY_ROUTE))`
+  instead of a second literal list — its own behaviour is unchanged
+  (`router.test.ts`'s existing `isJobPageRoute`/`navigateToJobPage` tests,
+  which already pinned the exact six-route set literally, passed unmodified
+  and are the regression proof).
+- `format.ts`'s `labelForSource` now tries `ORIGIN_BY_ROUTE[source]` FIRST
+  (the full, unstripped string — because a query-bearing key can itself be a
+  table entry, see below), then `ORIGIN_BY_ROUTE[withoutQueryOrHash]`, and
+  only falls through to the basename-and-strip-extension rule when neither
+  hits.
+- `fused_render/jobs.py`'s `_ORIGIN_BY_ROUTE` keeps its own literal (Python
+  cannot import the TS module) but its header comment now names
+  `originRoutes.ts` explicitly as the table it mirrors, and points at the
+  new cross-language test below.
+
+**The `/preferences` vs `/preferences?tab=indexing` ordering, preserved
+correctly**: `_ORIGIN_BY_ROUTE` carries both keys with different labels
+("Preferences" vs "Explorer") precisely because the query string changes
+what the route MEANS. `labelForSource` therefore checks the full string
+before stripping anything — stripping first and looking up second would
+have collapsed the indexing tab's "Explorer" into "Preferences", the exact
+bug the brief called out by name. Query/hash stripping only happens for the
+SECOND lookup and for the basename fallback, which is also what turns a
+task-destination URL's junk tail into a clean label instead of carrying it
+through.
+
+**The deliberate, bounded divergence that remains**: `labelForSource` still
+cannot replicate `origin_for_page`'s PROJECT-name resolution for an ordinary
+fs path (`projectenv.project_root_for` + `projectenv.display_name`) — that
+needs server-side filesystem access no client call site has, since neither
+a client-raised `notify()` call nor a waiting task's own row makes a request
+round trip. This was already true before this fix and is unchanged by it;
+what changed is that every route the client COULD name authoritatively
+(the closed shell-route set) now agrees with the server byte-for-byte, so
+the only remaining disagreement is on fs paths, where the client's
+"basename, extension stripped" answer was always documented as the
+next-best fallback, never a bug.
+
+**Cross-language drift test**: `tests/test_jobs_api.py`'s
+`test_origin_by_route_matches_the_client_table` parses `originRoutes.ts`'s
+object-literal source text with a regex (pytest cannot import or execute
+TypeScript) and diffs the resulting dict against `jobs._ORIGIN_BY_ROUTE`
+key-for-key. Verified it actually catches drift, not just passes vacuously:
+temporarily changed one Python-side value (`"/tasks": "Scheduler"` ->
+`"/tasks": "WRONG"`) and confirmed the test fails with a clear diff, then
+restored the file and confirmed it passes again. This was chosen over
+maintaining two independently-pinned literal lists (one per language, each
+just asserting its own table's shape) because a same-literal-list test can
+pass on both sides while the two literals still disagree with each other —
+the whole class of bug this fix exists to close; parsing the actual TS
+source and comparing it to the actual Python dict cannot pass unless the
+two are identical.
+
+**Other tests added**: `frontend/src/platform/lib/format.test.ts` —
+`labelForSource` labels every `ORIGIN_BY_ROUTE` entry with its own table
+value (a loop over all six routes, not one example); the
+`/preferences?tab=indexing` vs `/preferences` vs `/preferences?tab=engines`
+ordering; a task-destination-shaped URL (`?_side=claude&session_id=…`)
+strips to a clean basename; a bare fs path still falls back to basename
+(regression pin for existing behaviour untouched by this fix).
+
+**Verification**:
+- `bun --cwd frontend test` -> 6243 pass, 0 fail, across 297 files (4 more
+  than Fix 17/18's 6239, all new `labelForSource`/`ORIGIN_BY_ROUTE` tests;
+  same file set otherwise). One unrelated pre-existing issue found and
+  ruled out during this work, NOT a regression from this fix: running
+  `format.test.ts router.test.ts notifications.test.ts tasks-lib.test.ts`
+  together as one `bun test` invocation throws
+  `ReferenceError: location is not defined` from `router.ts`'s module-init
+  `rewriteLegacyPath` IIFE — reproduces identically on a stash of this
+  fix's own changes (confirmed via `git stash`/`git stash apply`, not just
+  asserted), and each of those four files passes cleanly run on its own or
+  as part of the full suite. A pre-existing test-isolation quirk in how
+  bun orders module-scope DOM reads across hand-picked file subsets, not a
+  regression.
+- `bunx tsc --noEmit -p frontend` -> clean, no output.
+- `node frontend/scripts/check-boundaries.mjs` -> `boundaries OK (813 files)`.
+- `.venv/bin/python -m pytest tests/test_jobs_api.py -q` -> 91 passed (up
+  from Fix 17/18's 81; the one new cross-language test plus this branch's
+  existing coverage).
+- Grepped `tests/` for every touched/added symbol
+  (`labelForSource`, `JOB_PAGE_ROUTES`, `ORIGIN_BY_ROUTE`,
+  `_ORIGIN_BY_ROUTE`, `originRoutes`) — the only hits are this fix's own new
+  test and pre-existing prose comments naming `_ORIGIN_BY_ROUTE`/
+  `JOB_PAGE_ROUTES` in `test_jobs_api.py`, unaffected by this change.
+
+**Not verified — no browser in this session**: that the caption on a real
+`/tasks`-sourced or `/preferences?tab=indexing`-sourced notification now
+visibly matches its job-row counterpart's caption in a live popup/panel
+render, in both themes. A human should trigger a client-raised notification
+or a waiting-task row from one of the six shell routes and confirm the
+caption reads the same as a job row raised from that same route.

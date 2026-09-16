@@ -13,6 +13,7 @@ outcome's retention entirely.
 """
 import json
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -397,6 +398,37 @@ def test_the_page_header_defaults_origin_for_a_known_shell_route(client):
         headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
     )
     assert listing(client)[0]["origin"] == "Local models"
+
+
+def test_origin_by_route_matches_the_client_table():
+    """`_ORIGIN_BY_ROUTE` above and `ORIGIN_BY_ROUTE` in
+    `frontend/src/platform/lib/originRoutes.ts` are meant to be the ONE
+    closed set/label mapping (see that dict's own header comment) — three
+    copies of this knowledge (this dict, that TS table, and `router.ts`'s
+    OWN now-derived `JOB_PAGE_ROUTES`) used to exist, and disagreed
+    (`/tasks` was "Scheduler" here and "tasks" — a plain basename guess —
+    in the client's OLD `labelForSource`). This test can't import or
+    execute the TS module from pytest, so it parses the object literal's
+    source text directly and diffs it key-for-key against this dict; a
+    route added to one side without the matching entry on the other fails
+    here rather than only surfacing as a visibly wrong caption in the app.
+    """
+    ts_path = os.path.join(
+        REPO_ROOT, "frontend", "src", "platform", "lib", "originRoutes.ts"
+    )
+    with open(ts_path, encoding="utf-8") as f:
+        src = f.read()
+
+    match = re.search(
+        r"export const ORIGIN_BY_ROUTE:.*?=\s*\{(.*?)\n\};", src, re.DOTALL
+    )
+    assert match, "ORIGIN_BY_ROUTE object literal not found in originRoutes.ts"
+    body = match.group(1)
+    entries = re.findall(r'"((?:[^"\\]|\\.)*)":\s*"((?:[^"\\]|\\.)*)"', body)
+    assert entries, "no route/label pairs parsed out of ORIGIN_BY_ROUTE"
+    client_table = dict(entries)
+
+    assert client_table == jobs._ORIGIN_BY_ROUTE
 
 
 def test_the_page_header_names_the_project_for_an_fs_path(client, monkeypatch):

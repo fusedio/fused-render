@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { formatMtime, formatMtimeFull, formatParams, formatSize, basename, dirname, repoName } from "@platform/lib/format";
+import {
+  formatMtime,
+  formatMtimeFull,
+  formatParams,
+  formatSize,
+  basename,
+  dirname,
+  repoName,
+  labelForSource,
+} from "@platform/lib/format";
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 // 2025-09-24 20:59:57 local time — the seconds are what the assertions are
 // about, so the instant is built from local parts, not a UTC string.
@@ -66,6 +76,41 @@ describe("path helpers", () => {
     expect(basename("/")).toBe("/");
     expect(dirname("/a/b/c.txt")).toBe("/a/b");
     expect(dirname("/a")).toBe("/");
+  });
+});
+
+describe("labelForSource: agrees with the server's origin_for_page on every known route", () => {
+  it("labels every ORIGIN_BY_ROUTE entry with its own table value, not a basename guess", () => {
+    // Fix 17 shipped a basename-only labeller that disagreed, visibly, with
+    // the server's origin_for_page on the very sources it CAN name without
+    // a round trip ("/tasks" -> "tasks" here, "Scheduler" there). This loop
+    // is the regression pin: every key in the shared table must label
+    // identically to its own value, for every route, not just one example.
+    for (const [route, label] of Object.entries(ORIGIN_BY_ROUTE)) {
+      expect(labelForSource(route)).toBe(label);
+    }
+  });
+
+  it("tries the query-bearing key BEFORE stripping it — /preferences?tab=indexing is Explorer, not Preferences", () => {
+    expect(labelForSource("/preferences?tab=indexing")).toBe("Explorer");
+    expect(labelForSource("/preferences")).toBe("Preferences");
+    // A tab this table does not special-case falls through to the bare
+    // "/preferences" entry once its own query string is stripped.
+    expect(labelForSource("/preferences?tab=engines")).toBe("Preferences");
+  });
+
+  it("strips a query string and hash before falling back to the basename rule", () => {
+    // A real task-destination shape (schedule-lib.ts's explorerUrl/chatPaneUrl):
+    // the junk tail must not leak into the label.
+    expect(labelForSource("/explorer/view/Users/x/fused-share?_side=claude&session_id=abc123")).toBe(
+      "fused-share",
+    );
+    expect(labelForSource("/Users/me/Projects/my-app?foo=bar")).toBe("my-app");
+    expect(labelForSource("/Users/me/Projects/my-app#section")).toBe("my-app");
+  });
+
+  it("still falls back to a bare basename for a route the table does not cover", () => {
+    expect(labelForSource("/Users/me/Projects/my-app")).toBe("my-app");
   });
 });
 
