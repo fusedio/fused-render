@@ -332,7 +332,8 @@ def _app_folder_exists(rel: str) -> bool:
 
 @router.get("/api/apps/icon")
 def api_app_icon(path: str):
-    """The optional ``icon.svg`` of the app that owns ``path`` — the folder
+    """The optional icon (``icon.svg``, else ``icon.png``) of the app that
+    owns ``path`` — the folder
     itself, or a file anywhere inside an app (a page open in the explorer).
     Ownership is the tasks' rule (`current_apps.app_dir_for`: registry first,
     then the workspace climb to the first tagged folder), so the favicon on
@@ -409,9 +410,11 @@ def api_app_remove_icon(
     path: str,
     x_fused: str | None = Header(default=None),
 ):
-    """Delete the app's ``icon.svg`` — the picker's "Remove", back to the
-    generic mark. A folder without the file is already there: ``removed``
-    false, not an error."""
+    """Delete the app's icon — EVERY name in ``ICON_NAMES`` (``icon.svg`` and
+    ``icon.png``), so the picker's "Remove" means "no icon": unlinking only
+    the svg would resurface a png the author dropped in underneath, not the
+    generic mark the button promises. A folder with none is already there:
+    ``removed`` false, not an error."""
     from fused_render import current_apps
 
     guard = _require_fused(x_fused)
@@ -422,14 +425,17 @@ def api_app_remove_icon(
     folder = current_apps.app_dir_for(path)
     if folder is None:
         return _error("not an app folder", status=404)
-    target = os.path.join(folder, current_apps.ICON_NAME)
-    try:
-        os.unlink(target)
-    except FileNotFoundError:
-        return {"removed": False}
-    except OSError as exc:
-        return _error(f"could not remove icon.svg: {exc.strerror or exc}", status=500)
-    return {"removed": True}
+    removed = False
+    for name in current_apps.ICON_NAMES:
+        target = os.path.join(folder, name)
+        try:
+            os.unlink(target)
+            removed = True
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return _error(f"could not remove {name}: {exc.strerror or exc}", status=500)
+    return {"removed": removed}
 
 
 @router.get("/api/apps/entry")

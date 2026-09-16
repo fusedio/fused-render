@@ -2579,7 +2579,7 @@ describe("the unread mark", () => {
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
     expect(SCHEDULE_CSS).not.toMatch(/\.schedule-ring\s*\{[^}]*margin/);
     // ...and the row's own trailing time carries none either, for the same reason.
-    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin/);
+    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin[^;]*auto/);
   });
 
   it("leaves a MESSAGE row opening on its ring and then saying its id", () => {
@@ -2666,7 +2666,7 @@ describe("the unread mark", () => {
     // page pasted under a looser one.
     expect(TASKS_CSS).toMatch(/--tasks-row-pad-y: 10px/);
     expect(TASKS_CSS).toMatch(/--tasks-msg-pad-y: 8px/);
-    expect(TASKS_CSS).toMatch(/--tasks-row-gap: 10px/);
+    expect(TASKS_CSS).toMatch(/--tasks-row-gap: 4px/);
     expect(TASKS_CSS).toMatch(/--tasks-row-pad: 14px/);
     expect(block(TASKS_CSS, ".tasks-row")).toContain(
       "padding: var(--tasks-row-pad-y) var(--tasks-row-pad)",
@@ -4382,7 +4382,7 @@ describe("the delete affordance", () => {
     expect(ROW.indexOf("{ICON_TRASH}")).toBeLessThan(ROW.indexOf('className="tasks-row-missing"'));
     // Both are the same row's answer to the same fact.
     expect((ROW.match(/\{folderMissing && \(/g) ?? []).length).toBe(2);
-    expect(ROW).toContain("aria-label={`Delete ${task.task_id} forever`}");
+    expect(ROW).toContain("aria-label={`Delete ${shortTaskId(task.task_id)} forever`}");
     expect(ROW).toContain('data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}');
     expect(ROW).toContain("disabled={eraseBlocked(task)}");
     // Without this the row's own activate raises the missing-folder toast over
@@ -4467,7 +4467,7 @@ describe("the delete affordance", () => {
     }
     // The words: the target in the title, the consequence in the body, the
     // permanence in bold, the verb on the button.
-    expect(MODAL).toContain("title={`Delete ${task.task_id}?`}");
+    expect(MODAL).toContain("title={`Delete ${shortTaskId(task.task_id)}?`}");
     // Two sentences, no path, no id (Akshil, 2026-09-07).
     expect(MODAL).toContain(
       "This deletes the Claude session transcript behind this task.",
@@ -4487,7 +4487,7 @@ describe("the delete affordance", () => {
     // default is transient) rather than staying in the panel, per the
     // retention-narrowing reversal (DECISIONS-toasts-become-notifications.md).
     for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
-      expect(src).toContain('notify({ title: `Deleted ${task.task_id}`, tone: "info" });');
+      expect(src).toContain('notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });');
       expect(src).not.toContain('tier: "trail"');
     }
   });
@@ -8583,7 +8583,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).not.toContain("task-card-open");
     expect(CARDS_CSS).not.toContain("task-card-open");
     // The id keeps the List's own muted skin, whatever the title row shows.
-    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>');
     const head = CARDS.slice(CARDS.indexOf('<header\n        className="task-card-head"'), CARDS.indexOf("</header>"));
     expect(head.length).toBeGreaterThan(0);
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
@@ -9890,7 +9890,7 @@ describe("the schedule mark on a List row", () => {
     expect(scheduledMark(again, NOW)?.title).toBe(`Repeats · next run ${messageStamp(AHEAD)}`);
     // Never both: the row picks by the flag.
     expect(ROW).toContain("{sched.repeats ? ICON_REPEAT : ICON_CLOCK}");
-    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(1);
+    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(2); // inline mark + its copy in the hover strip
     expect(VIEWS).not.toContain("SHOW_SCHEDULE_MARK");
   });
 

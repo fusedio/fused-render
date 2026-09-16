@@ -924,7 +924,7 @@ test("a waiting task draws a row that names the task and says what it wants", ()
   const tree = renderView({ rows: [], attention: [asking()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(1);
-  expect(text(rows[0])).toContain("TASK-097 needs your input");
+  expect(text(rows[0])).toContain("T097 needs your input");
   expect(text(rows[0])).toContain("Pull today's news");
 });
 
@@ -1043,7 +1043,7 @@ test("the waiting row goes above every other kind", () => {
     attention: [asking()],
   });
   const rows = findAll(tree, "dl-row");
-  expect(text(rows[0])).toContain("TASK-097 needs your input");
+  expect(text(rows[0])).toContain("T097 needs your input");
 });
 
 test("Clear never counts a waiting row — there is nothing there to clear", () => {

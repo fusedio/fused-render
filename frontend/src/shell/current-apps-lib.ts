@@ -56,8 +56,9 @@ export interface CurrentApp {
    *  row's own rule). The server's flag (the unread section below), the app's
    *  OWN state: reading the task elsewhere does not clear it, opening the app does. */
   unread: boolean;
-  /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
-   *  null — the glyph slot falls back to the generic mark. */
+  /** The app's optional icon (`icon.svg`, else `icon.png`), as a drawable
+   *  URL (api.appIconUrl), or null — the glyph slot falls back to the generic
+   *  mark. app-icon-src.isRasterIconUrl tells the two apart for the clip. */
   iconUrl: string | null;
 }
 

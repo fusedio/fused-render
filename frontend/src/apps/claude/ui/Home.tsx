@@ -24,6 +24,9 @@ export interface HomeProps extends HomeCardProps {
    *  turn that edited the file leaves a stale checkpoint chain behind it rather
    *  than a cached one (`useSnapshots`'s third argument). */
   snapInvalidation?: unknown;
+  /** `Lists`' own prop, carried straight through: the explorer's Claude side
+   *  panel is the one host that sets it. */
+  hideUpcoming?: boolean;
 }
 
 export function Home({
@@ -33,6 +36,7 @@ export function Home({
   listsDisabled,
   agentDir,
   snapInvalidation,
+  hideUpcoming,
   ...cardProps
 }: HomeProps) {
   // BOTH READS LIVE HERE, not threaded down from the chat: they are the landing
@@ -77,6 +81,7 @@ export function Home({
             {...(onFillDraft ? { onFillDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
+            {...(hideUpcoming ? { hideUpcoming } : {})}
           />
         </div>
       </div>

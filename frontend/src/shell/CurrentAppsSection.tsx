@@ -45,7 +45,7 @@ import { HeroComposer } from "@apps/builder/HomeHero";
 import { inFlight, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   appPageTabFromSearch,
   appPageUrl,
@@ -297,11 +297,16 @@ function CurrentAppRow({
           // The app's own icon.svg in the generic mark's slot, drawn as is —
           // the author's colours, no mask or tint (owner, 2026-08-27); a
           // picker-written glyph names its colour and useThemedIconSrc
-          // resolves it for the live theme. Not draggable: an <img> drags
-          // natively, and the glyph is the natural handle for the row reorder
-          // (same as the name's draggable={false}).
+          // resolves it for the live theme. An icon.png (the raster fallback)
+          // is the one exception: `is-raster` clips it to the rounded square
+          // (sidebar.css), since a photo-like file has no plate of its own.
+          // Not draggable: an <img> drags natively, and the glyph is the
+          // natural handle for the row reorder (same as the name's
+          // draggable={false}).
           <img
-            className="current-app-icon"
+            className={
+              "current-app-icon" + (isRasterIconUrl(app.iconUrl) ? " is-raster" : "")
+            }
             src={iconSrc}
             alt=""
             draggable={false}

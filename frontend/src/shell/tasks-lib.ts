@@ -76,6 +76,8 @@ export function tildePath(path: string, home: string): string {
 }
 
 /** The last segment of a path — what the folder chip prints. "/" stays "/". */
+export { shortTaskId } from "@platform/lib/task-id";
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
@@ -3503,6 +3505,20 @@ export const LIST_ORDER: BoardColumn[] = BOARD_COLUMNS.map((c) => c.key);
 export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
   const byLane = groupByColumn(tasks, now);
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
+}
+
+/**
+ * IS THIS ROW THE ONE `groupByColumn` FILES UNDER UPCOMING — a scheduled-for-
+ * later task or either kind of draft (`kind: "draft"`, hoisted to that lane's
+ * head rather than given one of its own, see `laneOf`). One test, so a host
+ * that hides the whole lane (the explorer's Claude side panel — a folder or
+ * file's `?_side=claude` companion — asks the reader to look at a chat about
+ * the thing on screen, not a queue of unstarted work) filters against exactly
+ * the bucket `sortForList` itself would have put the row in, rather than a
+ * second opinion that could drift from it.
+ */
+export function isUpcomingLane(task: Pick<Task, "status" | "kind">): boolean {
+  return laneOf(taskColumn(task)) === "upcoming";
 }
 
 /** One lane, drafts first, everything in the order it arrived in. Applied by

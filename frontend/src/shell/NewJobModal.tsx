@@ -11,6 +11,7 @@
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -4007,16 +4008,16 @@ export default function NewJobModal({
             <button
               type="button"
               className="new-task-source"
-              title={`Open ${sourceTask.taskId}`}
+              title={`Open ${shortTaskId(sourceTask.taskId)}`}
               onClick={sourceTask.onOpen}
             >
-              from {sourceTask.taskId}
+              from {shortTaskId(sourceTask.taskId)}
             </button>
           )
           // No door on this surface, so no control: the same chip, saying the
           // same thing, with nothing to press. A button that answers a press
           // with nothing is the worse of the two.
-          : <span className="new-task-source">from {sourceTask.taskId}</span>,
+          : <span className="new-task-source">from {shortTaskId(sourceTask.taskId)}</span>,
       })}
       onClose={onClose}
       busy={busy}

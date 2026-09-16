@@ -376,6 +376,13 @@ body[data-capture-shooting] .app-pcard-export {
   object-fit: contain;
 }
 
+/* The icon.png fallback: fitted to the slot's rounded square (the skeleton's
+   8px), cover so it fills it — an svg owns its plate, a raster gets one here. */
+.app-pcard-icon.is-raster {
+  object-fit: cover;
+  border-radius: 8px;
+}
+
 /* The generic mark for an app with no icon.svg: muted, so it reads as the
    slot being filled rather than as a badge on the name, and inset inside that
    slot — an authored icon is a whole tile of artwork, a bare sparkle drawn to

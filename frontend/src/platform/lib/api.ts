@@ -2394,7 +2394,8 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
-  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // The app's optional icon at the folder's root (absolute path) — `icon.svg`,
+  // else `icon.png`, the shell's precedence (app_listing.ICON_NAMES) — and its
   // mtime — the mark a card draws to the left of its name, the same file the
   // sidebar's Projects row and the app's tab favicon draw. Null for an app
   // without one (and for an exported `.fused`, which has no folder root),
@@ -2716,8 +2717,9 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
   return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
 }
 
-/** The URL to draw an app icon from: the raw file, with its mtime as a cache
- *  key so an edited icon.svg shows up without a hard reload. */
+/** The URL to draw an app icon from: the raw file (`icon.svg` or `icon.png`),
+ *  with its mtime as a cache key so an edited icon shows up without a hard
+ *  reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
   // Full float mtime, not the floored second — a same-second replacement of
   // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
@@ -3275,6 +3277,64 @@ export function getTaskChanges(
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
   return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
+}
+
+/**
+ * "A TURN JUST STARTED ON THIS SESSION" — told to the server at the moment of
+ * the send, because nothing on disk says it in time.
+ *
+ * A chat here runs `claude -p` out of process, and the CLI writes its registry
+ * row two to four seconds later; until then the listing read every one of this
+ * app's own turns as done (fused_render/tasks_watch.py `mark_running`). The
+ * sender is the only party that knows sooner, so it says so — once, from
+ * `run-controller.ts`, beside the `announceTasksChanged` that already marks
+ * both turn boundaries.
+ *
+ * BEST-EFFORT BY CONTRACT: the mark is a short-lived floor the registry
+ * overrides, so a failed call costs the first seconds of one ring and nothing
+ * else. Callers swallow the rejection rather than surfacing it.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided a turn had started —
+ * belt-and-suspenders against this call's own POST arriving at the server
+ * AFTER a later `markTaskIdle` for the same session (a race the client also
+ * guards against by awaiting this call before firing that one; see
+ * `run-controller.ts` `noteTurnIdle`). `tasks_watch.mark_running` ignores a
+ * mark whose `turn` is not newer than the last `mark_idle` it saw.
+ */
+export function markTaskRunning(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/running", {
+    session_id: sessionId,
+    turn,
+  });
+}
+
+/**
+ * "A TURN JUST ENDED ON THIS SESSION" — the other half of `markTaskRunning`,
+ * told to the server the moment the poll loop sees the turn close (a final
+ * result, a stop, an error), because a registry row disappearing is a tick
+ * behind and the mark's own TTL is fifteen seconds behind that.
+ *
+ * A SEPARATE endpoint from `markTaskRunning`, deliberately: the send's mark
+ * must post exactly once, at the START, or a finished row would spin out the
+ * mark's whole window (see `run-controller.test.ts`, "the server hears that a
+ * turn started") — folding "ended" into the same call as a `running: false`
+ * flag would have made that one call do both jobs.
+ *
+ * BEST-EFFORT BY CONTRACT, same as `markTaskRunning`: retiring the mark early
+ * is a nicety, not a guarantee — the registry-corroborated stand-down and the
+ * TTL both still apply if this never lands.
+ *
+ * `turn` is `Date.now()` at the moment the caller decided the turn had ended —
+ * the other half of `markTaskRunning`'s `turn`. `tasks_watch.mark_idle` keeps
+ * the newest one it has seen, so a `mark_running` that later arrives claiming
+ * an earlier or equal `turn` is recognized as the SAME turn's late running
+ * POST, not a fresh send, and is ignored.
+ */
+export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/tasks/idle", {
+    session_id: sessionId,
+    turn,
+  });
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —

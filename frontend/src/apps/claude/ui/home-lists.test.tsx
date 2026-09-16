@@ -673,6 +673,18 @@ function taskRow(r: ReturnType<typeof create>) {
   );
 }
 
+/** Every row on screen, not just the first — for the tests that care how
+ *  MANY the list drew rather than which one. */
+function taskRows(r: ReturnType<typeof create>) {
+  return r.root.findAll(
+    (n) =>
+      typeof n.type === "string" &&
+      /(^| )tasks-row( |$)/.test(
+        String((n.props as { className?: string }).className || ""),
+      ),
+  );
+}
+
 test("A CHAT ABOUT THIS PANE opens in place; one about another file hops", () => {
   // `RecentRow`'s own split, kept (T:18183-18197): same file ⇒ `onOpen`, other
   // file ⇒ the host is sent to that file with the session attached.
@@ -1185,4 +1197,63 @@ test("EVERY press seeds the header's identity — the hop as much as the in-plac
   act(() => (rows[0].props as { onClick(): void }).onClick());
   expect(sessionSeed("s1")?.key).toBe("s1");
   resetSessionSeeds();
+});
+
+// ---- THE EXPLORER'S CLAUDE SIDE PANEL HIDES UPCOMING (Akshil, 2026-09-16) --
+//
+// One host — the explorer's `?_side=claude` sidebar and its folder-pane
+// counterpart — opened this list to talk about the file or folder already on
+// screen, not to browse a queue of unstarted work sitting beside it. So its
+// "Recent chats" drops the Upcoming lane: a scheduled-for-later task and
+// either kind of draft, the same bucket `sortForList`/`groupByColumn`
+// (shell/tasks-lib.isUpcomingLane) files them under. Every other host of this
+// list — the landing this suite otherwise tests, the Tasks page cards wall,
+// side peek, full-page chat — never sets `hideUpcoming` and keeps showing
+// every lane exactly as before.
+
+test("hideUpcoming drops the Upcoming lane; unset, every other host still shows it", () => {
+  const rows = [
+    chat("done1", { status: "done" }),
+    chat("later1", { key: "later1", session_id: "later1", status: "upcoming" }),
+    chatDraft(),
+  ];
+
+  // UNSET — the landing and every other host. All three lanes render, drafts
+  // included, exactly as they do today.
+  const shown = mount(
+    <Lists file="/repo/x.py" recent={rows} artifacts={[]} onOpen={() => {}} />,
+  );
+  expect(taskRows(shown).length).toBe(3);
+
+  // SET — the explorer's Claude side panel alone. The settled chat stays; the
+  // scheduled task and the draft both go, and neither leaves so much as a
+  // dimmed row or a chip behind — they are not drawn at all.
+  const hidden = mount(
+    <Lists
+      file="/repo/x.py"
+      recent={rows}
+      artifacts={[]}
+      onOpen={() => {}}
+      hideUpcoming
+    />,
+  );
+  const remaining = taskRows(hidden);
+  expect(remaining.length).toBe(1);
+  expect(text(all(hidden.toJSON() as Json, "tasks-title")[0])).not.toContain(
+    "ship the thing",
+  );
+
+  // Nothing left once Upcoming is the whole list: the section disappears
+  // entirely — no heading, no dot, no ghost of a filtered-out row — the same
+  // honest-empty rule an unfiltered `[]` already gets (T:18452-18477).
+  const allUpcoming = mount(
+    <Lists
+      file="/repo/x.py"
+      recent={[rows[1], rows[2]]}
+      artifacts={[]}
+      onOpen={() => {}}
+      hideUpcoming
+    />,
+  );
+  expect(all(allUpcoming.toJSON() as Json, "c-list-panel").length).toBe(0);
 });

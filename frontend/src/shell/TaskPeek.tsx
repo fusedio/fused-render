@@ -30,6 +30,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Task } from "@platform/lib/api";
+import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
@@ -1077,7 +1078,7 @@ export function TaskPeek({
         style={{ width: layout.open ? layout.width : heldWidth.current }}
         aria-hidden={layout.open ? undefined : true}
         role="complementary"
-        aria-label={task ? `${task.task_id} ${title}` : "Task"}
+        aria-label={task ? `${shortTaskId(task.task_id)} ${title}` : "Task"}
       >
         {/* The seam: a 1px line in a 12px hit area, straddling the panel's
             leading edge exactly as the sidebar's handle straddles its border
@@ -1239,12 +1240,11 @@ export function TaskPeek({
           {showPreview && previewSrc && (
             <>
               {/* THE APP, LIVE (design.md, App preview in the peek). The frame
-                  lays out at a virtual 1280×720 and is scaled to the panel's
-                  width, so the app sees a desktop window however narrow the
-                  peek is — and widening the peek makes the preview taller as
-                  well as wider. The box crops rather than squashes: the wrapper
-                  under it is the scaled frame's real size, and the box scrolls
-                  when the cap or the reader's own drag is shorter than that. */}
+                  lays out at a virtual 1280×720 and is scaled to CONTAIN in the
+                  card — the smaller of the width fit and the height fit — so
+                  the app sees a desktop window however narrow the peek is, the
+                  aspect never bends, and whichever axis has room to spare shows
+                  padding around the frame (shell/peek-preview.ts `previewBox`). */}
               <div className="task-side-peek-preview" style={{ height: box.height }}>
                 {previewFailed ? (
                   <p className="task-side-peek-preview-off" role="status">
@@ -1257,16 +1257,24 @@ export function TaskPeek({
                   // panel is showing, and the frame answers a hover the way
                   // those cards do (styles/task-peek.css). The scroller is the
                   // card's child so the border never scrolls with the crop.
-                  <div className="task-side-peek-preview-card">
+                  <div
+                    className="task-side-peek-preview-card"
+                    // THE CARD IS THE FRAME'S SIZE, not the box's (Akshil,
+                    // 2026-09-16): the border hugs the scaled 16:9 frame, and
+                    // whatever the box has to spare on either axis is MARGIN
+                    // around the card (styles/task-peek.css centres it), not
+                    // padding inside it — a card with a band of its own
+                    // background beside the app is not a card of the app.
+                    style={{
+                      width: PREVIEW_VW * box.scale,
+                      height: box.frameHeight * box.scale,
+                    }}
+                  >
                     <div className="task-side-peek-preview-scroll">
                     <div
                       className="task-side-peek-preview-scale"
-                      // The scaled frame's real footprint, and it tracks the
-                      // FRAME's height rather than a constant 720 now: past its
-                      // natural size the box gives the app a taller viewport
-                      // instead of cropping it (shell/peek-preview.ts
-                      // `previewBox`), and the wrapper is what tells the
-                      // scroller how much there is.
+                      // The scaled frame's real footprint; `transform` does
+                      // not affect layout, so the wrapper states the size.
                       style={{
                         width: PREVIEW_VW * box.scale,
                         height: box.frameHeight * box.scale,
@@ -1331,7 +1339,7 @@ export function TaskPeek({
                 legacySrc={src}
                 legacyFrameRef={frameRef}
                 className="task-peek-frame"
-                title={`${task.task_id} ${title}`}
+                title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
                 // ONE TURN TO LAND ON, when the press that opened this was a
@@ -1381,7 +1389,7 @@ export function TaskPeek({
           onDone={() => {
             const erased = erasing;
             setErasing(null);
-            notify({ title: `Deleted ${erased.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(erased.task_id)}`, tone: "info" });
             onReload?.();
             // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
             // the task is gone, the panel is not — it moves on to the next one
