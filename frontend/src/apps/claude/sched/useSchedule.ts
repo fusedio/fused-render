@@ -485,12 +485,21 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         inChat: () => live.current.inChat,
         busy: () => hooks.current.controller.isBusy(),
         onBlockers: absorb,
-        // The queue's three feeds are wired only under the flag: each is a
-        // fresh Set/Map per lap and a re-render of the whole chat, which an
-        // idle flag-off chat must not pay (review, 2026-09-16).
-        ...(live.current.queueOn
-          ? { onPending: absorbPending, onAllRows: absorbAllRows, onSessions: absorbSessions }
-          : {}),
+        // The queue's three feeds are ALWAYS wired and gated AT CALL TIME on
+        // the live flag: each is a fresh Set/Map per lap and a re-render of the
+        // whole chat, which an idle flag-off chat must not pay (review,
+        // 2026-09-16) — but the watcher is built once, so a gate at build time
+        // would never learn a later flip (Bugbot). `live.current` is what the
+        // poller already reads for the session and the chat state.
+        onPending: (ids) => {
+          if (live.current.queueOn) absorbPending(ids);
+        },
+        onAllRows: (rows) => {
+          if (live.current.queueOn) absorbAllRows(rows);
+        },
+        onSessions: (map) => {
+          if (live.current.queueOn) absorbSessions(map);
+        },
         addNote: (text) => hooks.current.controller.addNote(text),
         setRunParam: (runId) => hooks.current.setRunParam(runId),
         resumeRun: (runId) =>

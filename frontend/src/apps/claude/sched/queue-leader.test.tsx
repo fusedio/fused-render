@@ -315,9 +315,7 @@ describe("the session the leader's run opened", () => {
     // conversation — bringing the real transcript with it.
     // Wired only under the flag (review, 2026-09-16): each feed is a fresh
     // Set/Map per lap and a re-render, which an idle flag-off chat must not pay.
-    expect(USE_SCHEDULE).toContain(
-      "? { onPending: absorbPending, onAllRows: absorbAllRows, onSessions: absorbSessions }",
-    );
+    expect(USE_SCHEDULE).toContain("if (live.current.queueOn) absorbSessions(map);");
     expect(USE_SCHEDULE).toContain("ranSessions: ReadonlyMap<string, string> | null;");
     expect(CHAT).toContain(
       'const adoptSession = leaderSession(sched.ranSessions, leader.peek(), state.sessionId ?? "");',
