@@ -412,7 +412,6 @@
 .chat-root.chat-compact .c-topbar,
 .chat-root.chat-compact .c-anntools,
 .chat-root.chat-compact .c-composer-chat,
-.chat-root.chat-compact .c-footnote,
 .chat-root.chat-compact .c-home {
   display: none;
 }

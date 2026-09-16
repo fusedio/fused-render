@@ -79,7 +79,6 @@ import {
 import {
   AppPane,
   createAppStateWatcher,
-  footnoteFor,
   homePlaceholderFor,
   LeftModePicker,
   pickerHost,
@@ -3098,7 +3097,6 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
-                footnote={footnoteFor(pane.noun)}
                 artStrip={<ArtStrip items={art.items} />}
               />
             ) : (

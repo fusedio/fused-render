@@ -3300,11 +3300,24 @@ export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
  * guards against by awaiting this call before firing that one; see
  * `run-controller.ts` `noteTurnIdle`). `tasks_watch.mark_running` ignores a
  * mark whose `turn` is not newer than the last `mark_idle` it saw.
+ *
+ * `extra.text` is the words just sent (the user's prompt, with the
+ * `<live-app-state>` block already stripped) and `extra.file` is the chat's
+ * target path. Sent only when the caller has them — a mark with no send behind
+ * it (a re-attach ping) omits both, and the server keeps what it already knew
+ * rather than blanking the row. They are a HINT told sooner, never client
+ * state: the listing the page renders still comes back from the server.
  */
-export function markTaskRunning(sessionId: string, turn: number): Promise<{ ok: boolean }> {
+export function markTaskRunning(
+  sessionId: string,
+  turn: number,
+  extra: { text?: string; file?: string } = {},
+): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/tasks/running", {
     session_id: sessionId,
     turn,
+    ...(extra.text ? { text: extra.text } : {}),
+    ...(extra.file ? { file: extra.file } : {}),
   });
 }
 

@@ -7383,7 +7383,9 @@ describe("which board lanes are rolled up", () => {
       (r) => r.selectors.includes(".schedule-tv-lane-body::-webkit-scrollbar-thumb"),
     );
     expect(shared?.selectors).toContain(".schedule-cal-thread::-webkit-scrollbar-thumb");
-    expect(shared?.selectors).toContain(".tasks-list::-webkit-scrollbar-thumb");
+    // The List and the Cards wall left this rule for an overlay bar (Akshil,
+    // 2026-09-16) — see "the List's bordered box" and the Cards wall's own test.
+    expect(shared?.selectors).not.toContain(".tasks-list::-webkit-scrollbar-thumb");
     // The week grid is the exception and keeps hiding its bar outright — the
     // hour lines already say where you are.
     expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
@@ -7670,6 +7672,81 @@ describe("what the List remembers between visits", () => {
     // by a ref that it clears itself, so a user scroll is not undone by the next
     // poll landing.
     expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
+  });
+});
+
+describe("the List's bordered box", () => {
+  // Akshil, 2026-09-16: the bar used to run down a column of bare page BESIDE
+  // the box, because the border sat on the frame INSIDE the scroller. The
+  // scroller wears the border now, so the bar is inside it the way a scrolling
+  // table's is.
+  const LIST_BOX = block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list");
+
+  it("puts the border on the thing that scrolls", () => {
+    expect(LIST_BOX).toContain("overflow-y: auto");
+    expect(LIST_BOX).toContain("border: 1px solid var(--border)");
+    expect(LIST_BOX).toContain("border-radius: 8px");
+    // ...and the frame inside stands down rather than drawing a second hairline
+    // one pixel in. It still owns the border for the Explorer's Claude side
+    // panel, which renders `.tasks-list-frame` with no `.tasks-list` around it.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).toContain("border: 1px solid var(--border)");
+    expect(
+      block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list > .tasks-list-frame"),
+    ).toContain("border: 0");
+    const LISTS = readFileSync(join(SHELL, "../apps/claude/ui/Lists.tsx"), "utf8");
+    expect(LISTS).toContain('<div className="tasks-list-frame">');
+  });
+
+  it("shrinks to the pane instead of growing to it, so a short list still hugs", () => {
+    // `flex: 1 1 auto` is what a borderless scroller could afford: the box was
+    // invisible, so nobody saw it reach the fold under three rows. With the
+    // border on it that empty run is the box itself.
+    expect(LIST_BOX).toContain("flex: 0 1 auto");
+    expect(LIST_BOX).toContain("min-height: 0");
+  });
+
+  it("keeps the wheel and the bounce, and lets the bar float over the rows", () => {
+    // The scroller did not move, so the margin wheel still forwards to this
+    // element and the end of the list still stops the delta. The bar is an
+    // OVERLAY now (Akshil, 2026-09-16: "let content take full width and we show
+    // scroll bar on top of content"): `scrollbar-color` opts the element back
+    // into overlay bars, fed the same hover-only ink as every other scroller,
+    // and no gutter is reserved for it.
+    expect(LIST).toContain("useMarginWheel(listRef);");
+    expect(LIST_BOX).toContain("overscroll-behavior: contain");
+    const overlay = block(SCHEDULE_CSS, ".task-cards-scroll");
+    expect(overlay).toContain("scrollbar-color: var(--sb-thumb) transparent");
+    expect(overlay).not.toContain("scrollbar-gutter");
+    expect(SCHEDULE_CSS).not.toContain(".tasks-list::-webkit-scrollbar");
+    expect(SCHEDULE_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
+  });
+
+  it("flips the last row's count tooltip up so the box cannot clip it", () => {
+    // `[data-tip]` opens `100% + 6px` BELOW its ring (schedule.css), and the
+    // scroller's floor is now the last row's — the same cut `overflow: hidden`
+    // on the frame once made (Bugbot, 2026-08-27). Only a CLOSED last node has a
+    // ring at that edge; an open one has its thread underneath.
+    const flipped = block(
+      TASKS_CSS,
+      '.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child\n  [data-tip]:not([data-tip=""]):hover::before',
+    );
+    expect(flipped).toContain("top: auto");
+    expect(flipped).toContain("bottom: calc(100% + 6px)");
+    // A ONE-ROW LIST does not flip — first and last at once, there is no room
+    // above either (Bugbot, PR #1174). It has nothing to scroll, so the box
+    // stops clipping instead and the panel drops below the ring as usual.
+    expect(
+      block(
+        TASKS_CSS,
+        ".schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child)",
+      ),
+    ).toContain("overflow: visible");
+    // The frame is NOT padded out to make room instead: that would be dead page
+    // inside the border at every width, for something only hover shows.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).not.toContain("padding-bottom");
+    // ...and the panel holds its flipped seat through the fade-out, like every
+    // other one: `bottom` is in the primitive's transition list beside `top`.
+    expect(block(SCHEDULE_CSS, '[data-tip]:not([data-tip=""])::before')).toContain("bottom 0s 0.1s");
   });
 });
 
@@ -8573,11 +8650,14 @@ describe("the Cards view's frame", () => {
     );
     expect(CARDS_CSS).not.toContain("max-width: none");
     expect(CARDS_CSS).not.toContain("padding-inline");
-    // ...and it wears the same 10px non-overlay bar as the List and the Board
-    // (schedule.css, "The scrollbar the Tasks page's ... scrollers wear").
+    // ...and it wears the same OVERLAY bar as the List (Akshil, 2026-09-16): the
+    // cards take the full width and the bar floats over them, inked only under
+    // the pointer, with no column reserved for it.
     const SCHED_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
-    expect(SCHED_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
-    expect(SCHED_CSS).toContain(".tasks-list::-webkit-scrollbar,\n.task-cards-scroll::-webkit-scrollbar {\n  width: 10px;");
+    expect(block(SCHED_CSS, ".task-cards-scroll")).toContain(
+      "scrollbar-color: var(--sb-thumb) transparent",
+    );
+    expect(SCHED_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
     expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
     // ...and a wheel in the margins reaches it, by the List's own rule — ONE
     // hook for both views (useMarginWheel), not a second forwarding rule.

@@ -337,7 +337,7 @@ def test_mark_running_announces_at_once_and_expires_by_itself(claude_home):
     assert tasks_watch.tick() == set()  # nothing on disk moved
     # The window closing is news too — no byte on disk records it — and it is
     # said exactly once.
-    tasks_watch._marks[SID] = time.time() - 1
+    tasks_watch._marks[SID]["until"] = time.time() - 1
     assert tasks_watch.tick() == {SID}
     assert not tasks_watch.is_marked_running(SID)
     assert tasks_watch.tick() == set()

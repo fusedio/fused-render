@@ -189,7 +189,12 @@ def main() -> None:
 
     argv = agent._claude_argv(
         run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
-        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"],
+        # `.get`, not `[...]`: this dict is whatever `_start` wrote, and a host
+        # started by an older one (a run adopted across an upgrade) simply has
+        # no minted id — which is the pre-`--session-id` behaviour, not an
+        # error.
+        req.get("new_session_id", ""))
 
     out_fh = _append_private(os.path.join(run_dir, "out.jsonl"))
     err_fh = _append_private(os.path.join(run_dir, "err.log"))
@@ -224,7 +229,12 @@ def main() -> None:
     host_json = os.path.join(run_dir, "host.json")
     with agent._private_open(host_json) as f:
         json.dump({
-            "pid": os.getpid(), "session_id": req["session_id"],
+            # THE SESSION, not the question. A fresh chat's `session_id` is ""
+            # and its real id is the one `_start` minted, so a reader of
+            # host.json (which is how a live session is FOUND) used to see
+            # nothing at all for every new chat.
+            "pid": os.getpid(),
+            "session_id": req["session_id"] or req.get("new_session_id", ""),
             "file": req["file"], "mode": req["cli_mode"],
             "model": req["model"], "effort": req["effort"],
             "read_dirs": req["extra_read_dirs"],

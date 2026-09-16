@@ -1867,6 +1867,29 @@ def _send(entry: dict) -> None:
     if res.get("error") or not run_id:
         _fail(entry, str(res.get("error") or "failed to start session"))
         return
+    # NO `tasks_watch.mark_running` HERE, and the reason is worth writing down
+    # because the absence looks like an omission.
+    #
+    # The mark exists for a send this server cannot otherwise SEE for two to
+    # four seconds — a chat typed into the app, whose turn begins in another
+    # process with no entry in any store. A scheduled send is not that. The
+    # claim above already wrote `sending`/`sent` into the store, which the
+    # listing reads as a message in flight (`tasks._message_running`), and the
+    # claim already rang `_entry_keys` — so this row is In Progress in the page
+    # within one long-poll, off a fact on disk, with no fuse to burn.
+    #
+    # Marking anyway would make it WORSE, not redundant: until the first
+    # reporting tick stamps `claude_session_id`, the listing files this entry
+    # under `pending:<id>` — so a mark on the session `res` names would build a
+    # SECOND, placeholder row beside it (`tasks._collect`) for the same message,
+    # and the reader would watch two rows collapse into one.
+    #
+    # (`_start` cannot mark on its own behalf either, whoever calls it: it runs
+    # in `claude_spawn.SESSION_HELPER`'s bare python, or in the executor's
+    # worker for a page send — never in this process, and a template may not
+    # import `fused_render` at all. The mark is always made by the server-side
+    # caller that knows it wants one, which for a page send is the page, through
+    # `POST /api/tasks/running`.)
     # Registered BEFORE the store says `sent`, and that order is the point: the
     # sweep treats a `sent` entry with nothing watching it as abandoned, so a
     # window where this one is already `sent` but not yet registered is a window in

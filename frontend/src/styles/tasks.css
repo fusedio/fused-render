@@ -27,9 +27,24 @@
    scrolls inside itself. `min-height: 0` is what allows a flex child to be
    SHORTER than its content — without it this floors at its content height and
    the scroller never engages. Every ancestor already carries it (schedule.css
-   `.schedule-page`, `.schedule-main`). */
+   `.schedule-page`, `.schedule-main`).
+
+   THE SCROLLER IS THE BORDERED BOX (Akshil, 2026-09-16: "bring the scrollbar
+   inside the box"). It wore no border for a round and the border sat on the
+   `.tasks-list-frame` inside it, which put the bar in a column of bare page
+   BESIDE the box — a scrolling table whose bar is outside its own frame, which
+   is not what a scrolling table looks like anywhere else in this app. The bar
+   now runs down the inside of the border, where the reader expects it.
+
+   `flex: 0 1 auto`, NOT `1 1 auto`, and that is the whole reason the border
+   could not simply be moved here before: a growing scroller is the pane's full
+   height, so three tasks would be three rows adrift at the top of a box that
+   reached the fold. Shrink-only means the box is its content's height until the
+   content outgrows the pane, and only then does it stop and scroll — exactly
+   the hug the frame inside used to do, now done by the thing that has the
+   border. `min-height: 0` still lets it shrink past its content. */
 .schedule-page .schedule-main > .tasks-list {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   /* A wheel that reaches the list's end must STOP there. Without this the
@@ -38,22 +53,31 @@
      overshoot, which reads as the page saying "nothing to scroll" while the
      list is scrolling fine (Akshil, 2026-08-20). */
   overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
-/* The border is on a FRAME inside the scroller, not on the scroller. A bordered
-   scroller wears its bar inside its own border, which leaves a bar-wide column
-   between the rows' edge and the frame — every hairline stopped 10px short of
-   the box (Akshil, screenshot, 2026-08-27). With the frame inside, the bar
-   stands beside the frame and the rows run edge to edge. */
+/* THE FRAME KEEPS THE BORDER EVERYWHERE ELSE. The Explorer's Claude side panel
+   renders `.tasks-list-frame` on its own — the Tasks page's rows inside a
+   column that scrolls somewhere far above them (apps/claude/ui/Lists.tsx) — so
+   this is still where the box comes from for every caller that is not the List.
+   On the List the scroller above wears it, and the frame stands down rather
+   than drawing a second hairline one pixel inside the first. */
 .tasks-list-frame {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-/* The scroller used to clip the row washes to the corners. The frame must NOT
+
+.schedule-page .schedule-main > .tasks-list > .tasks-list-frame {
+  border: 0;
+  border-radius: 0;
+}
+
+/* The scroller clips the row washes to its own corners. The frame must NOT also
    do it with `overflow: hidden`: the ring's unread-count tooltip hangs below
    the last row, and a clipping frame cut it off (Bugbot, 2026-08-27). So the
-   END rows round their own outer corners instead — one px inside the frame's
-   8px so the wash meets the border's inner edge — and nothing is clipped. */
+   END rows round their own outer corners instead — one px inside the box's 8px
+   so the wash meets the border's inner edge. */
 .tasks-list-frame > .tasks-node:first-child > .tasks-row {
   border-top-left-radius: 7px;
   border-top-right-radius: 7px;
@@ -64,6 +88,43 @@
 .tasks-list-frame > .tasks-node:last-child > :last-child {
   border-bottom-left-radius: 7px;
   border-bottom-right-radius: 7px;
+}
+
+/* AND THE LAST ROW'S COUNT TOOLTIP FLIPS UP, because the clip the note above
+   refuses is now the SCROLLER's and the scroller ends at the last row.
+
+   A `[data-tip]` panel (schedule.css) is an absolutely positioned `::before`
+   that opens `calc(100% + 6px)` below its ring. Anywhere but the bottom of the
+   content that lands on the rows underneath and is seen; on the ring that IS at
+   the bottom it lands outside the scroll box, and the reader has to scroll past
+   the end of the list to read it — the same cut `overflow: hidden` on the frame
+   once made (Bugbot, 2026-08-27), arriving by the other door now that the box
+   hugs its rows.
+
+   Only ONE ring can be at that edge: the last node's own row, and only while
+   that node is closed (an open one has its thread below it, so the panel has
+   somewhere to fall) — which is exactly what `> .tasks-row:last-child` says.
+   That one raises its panel above the ring instead. Preferred over padding the
+   frame's floor: 20px of dead page inside the border would move the bottom
+   hairline off the last row at every width, to make room for something that is
+   only there on hover. */
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
+  [data-tip]:not([data-tip=""]):hover::before,
+.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child
+  [data-tip]:not([data-tip=""]):focus-visible::before {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* A ONE-ROW LIST HAS NOWHERE TO FLIP TO (Bugbot, PR #1174): its only row is
+   first and last at once, so a panel raised above it lands outside the box just
+   as one dropped below it does. But a box with one row in it has nothing to
+   scroll either, so it does not need to clip: `overflow: visible` here lets the
+   panel fall below the ring the ordinary way and be seen. `:not(:only-child)`
+   above is what keeps that row's panel pointing down. The bar stays declared
+   (`scrollbar-color`, schedule.css) and simply has nothing to draw. */
+.schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child) {
+  overflow: visible;
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a

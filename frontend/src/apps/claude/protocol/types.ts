@@ -471,8 +471,15 @@ export interface ErrorOnly {
   error: string;
 }
 
-/** agent.py:2452 / 2350 (+ main()'s own guards 5188-5191). */
-export type StartResponse = { run_id: string; error?: undefined } | ErrorOnly;
+/** agent.py:2452 / 2350 (+ main()'s own guards 5188-5191).
+ *
+ * `session_id` is THE ID THIS TURN RUNS IN, answered at spawn: the resumed one,
+ * or the uuid the server minted for a brand-new chat. Optional because an older
+ * server omits it — the first poll's `session_id` is the fallback, and always
+ * agrees with this one (`run-controller.ts` `noteSessionId` is a no-op the
+ * second time). Having it HERE is what lets the url param, the state and the
+ * running mark all happen at the send instead of one poll later. */
+export type StartResponse = { run_id: string; session_id?: string; error?: undefined } | ErrorOnly;
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
