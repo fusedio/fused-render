@@ -8,7 +8,7 @@ import {
   CATCH_UP_SETTLE_MS,
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
-  coalesceLatest,
+  onDraftChange,
   dropListingKeys,
   listingFeedLive,
   onGone,
@@ -516,59 +516,66 @@ describe("dropListingKeys", () => {
     });
 });
 
-describe("coalesceLatest", () => {
-  // bugbot / live repro, 2026-09-15: App.tsx's onGone handler used to start a
-  // fresh `fetchDrafts()` on every fire. A server bug that kept re-announcing
-  // one key as `gone` turned that into hundreds of reads a second; this is
-  // the cap — one run in flight, a burst collapses onto the newest argument.
-  function deferred<T>() {
-    let resolve!: (v: T) => void;
-    const promise = new Promise<T>((r) => (resolve = r));
-    return { promise, resolve };
-  }
+describe("onDraftChange", () => {
+  // design §3: the change answer now says which DRAFT records moved and to what
+  // version, so an open composer or task card adopts another tab's save within a
+  // second instead of finding out on its next reload. It replaced App.tsx's
+  // `onGone` → `fetchDrafts` → mark-spent loop, which was one whole read of the
+  // drafts store per announcement — hundreds a second on a real machine when a
+  // server bug kept re-announcing one key (the incident `coalesceLatest` existed
+  // for).
+  const drafts = (changed: { key: string; version: number }[], gone: string[]) =>
+    ({ changed, gone });
 
-  test("a call that arrives mid-run does not start its own — it waits and runs once more, for the newest argument", async () => {
-    const runs: string[] = [];
-    const gates: Array<ReturnType<typeof deferred<void>>> = [];
-    const dispatch = coalesceLatest<string>((arg) => {
-      runs.push(arg);
-      const gate = deferred<void>();
-      gates.push(gate);
-      return gate.promise;
-    });
-
-    dispatch("a");
-    expect(runs).toEqual(["a"]); // starts at once: nothing else in flight
-
-    // Two more arrive while "a" is still running — neither starts its own run;
-    // only the newest of them is remembered.
-    dispatch("b");
-    dispatch("c");
-    expect(runs).toEqual(["a"]);
-
-    gates[0].resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(runs).toEqual(["a", "c"]); // "b" was dropped, "c" is the one that ran
-
-    gates[1].resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(runs).toEqual(["a", "c"]); // nothing pending: no third run
+  test("carries the server's changed/gone straight through", async () => {
+    const e = env(
+      [{ generation: 1 },
+       { generation: 2, rows: [], gone: [],
+         drafts: drafts([{ key: "new:/a/x.py", version: 4 }], ["sess-9"]) }],
+      [{ tasks: [], generation: 1 }],
+    );
+    const seen: Array<[{ key: string; version: number }[], string[]]> = [];
+    const offDrafts = onDraftChange((changed, gone) => seen.push([changed, gone]));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(seen).toEqual([[[{ key: "new:/a/x.py", version: 4 }], ["sess-9"]]]);
+    offDrafts();
+    off();
   });
 
-  test("calls with no overlap each get their own run", async () => {
-    const runs: string[] = [];
-    const dispatch = coalesceLatest<string>((arg) => {
-      runs.push(arg);
-      return Promise.resolve();
-    });
-    dispatch("a");
-    await Promise.resolve();
-    await Promise.resolve();
-    dispatch("b");
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(runs).toEqual(["a", "b"]);
+  test("…even on an answer whose rows and `gone` are both empty", async () => {
+    // A version bump on a record two tabs are open on moves no ROW at all — the
+    // listing is unchanged — and the fold below `continue`s past such an answer.
+    // So the draft delta is announced first and unconditionally, or a second
+    // tab's save would never reach the first one's composer.
+    const e = env(
+      [{ generation: 1 },
+       { generation: 3, rows: [], gone: [],
+         drafts: drafts([{ key: "sess-1", version: 8 }], []) }],
+      [{ tasks: [], generation: 1 }],
+    );
+    const seen: string[] = [];
+    const offDrafts = onDraftChange((changed) => seen.push(...changed.map((c) => c.key)));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(seen).toEqual(["sess-1"]);
+    offDrafts();
+    off();
+  });
+
+  test("and says nothing at all when the answer carries no drafts key", async () => {
+    // `full: true` answers carry none (contract §3), and so does every older
+    // server. Firing an empty event would wake every subscriber for nothing.
+    const e = env(
+      [{ generation: 1 }, { generation: 4, rows: [], gone: ["sess-2"] }],
+      [{ tasks: [], generation: 1 }],
+    );
+    let fired = 0;
+    const offDrafts = onDraftChange(() => { fired += 1; });
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(fired).toBe(0);
+    offDrafts();
+    off();
   });
 });

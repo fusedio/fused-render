@@ -16,14 +16,16 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
   deleteChatDraft,
-  onChatDraftSpent,
+  draftVersion,
+  forgetDraftVersion,
   fetchChatDraft,
   saveChatDraft,
-  unmarkChatDraftSpent,
   useAutosave,
-  type Autosave,
+  type ChatDraft,
   type DraftAttachment,
 } from "@platform/lib/drafts";
+import { notify } from "@platform/lib/notifications";
+import { onDraftChange } from "@shell/tasksPulse";
 import "../styles/composer.css";
 import type { PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
@@ -42,8 +44,6 @@ import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { SchedButton } from "./SchedButton";
-import { takeAttachments, takeDraft } from "./sched-draft";
-import { joinIntoBox } from "./list-rows";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -60,10 +60,6 @@ export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
 export const FOOTNOTE_LEAD = "Claude can read and edit files here.";
 export const FOOTNOTE_TAIL = " Approvals control what runs without asking.";
 
-/** The box's own tray-and-text autosave, as handed out to a host (`autosaveRef`
- *  below) — the shape `useAutosave` is instantiated with here, spelled once so
- *  a caller across the module boundary can type its own ref against it. */
-export type ComposerAutosave = Autosave<{ text: string; attachments: DraftAttachment[] }>;
 
 /** Everything the three pills need, from `useComposerDefaults`. */
 export interface ComposerControls {
@@ -283,7 +279,7 @@ export interface ComposerCardProps {
    * for the replacement this seat did not used to offer — including down to
    * an empty string, for a draft that is pictures with no words at all.
    */
-  restore?: { text: string; seq: number; replace?: boolean };
+  restore?: { text: string; seq: number };
   /** The textarea itself, for a host modal's `initialFocus` (TaskPeek, whose
    *  target used to be the iframe element). */
   boxRef?: React.MutableRefObject<HTMLTextAreaElement | null>;
@@ -308,20 +304,6 @@ export interface ComposerCardProps {
    * words back in the box instead of dropping them.
    */
   submitRef?: React.MutableRefObject<((seed?: string) => boolean) | null>;
-  /**
-   * THIS BOX'S OWN AUTOSAVE, handed OUT the same way `submitRef` is — filled
-   * while this composer is mounted, nulled when it goes (Bugbot #1166, "an
-   * older PUT lands after and overwrites").
-   *
-   * A MOVE out of the Recent list (`ClaudeChat.onFillDraft`) writes this
-   * composer's draft from OUTSIDE it, straight to the server, and it is not
-   * the only writer: this box's own debounce could already have a PUT on the
-   * wire from a keystroke a moment ago. Neither write knows about the other
-   * without this seat — the host stops the debounce, waits out whatever is
-   * already in flight, and only then sends the move's own PUT, so nothing
-   * older can land after it and undo it.
-   */
-  autosaveRef?: React.MutableRefObject<ComposerAutosave | null>;
   /**
    * THE SEND WINDOW'S LATCH, in its two forms.
    *
@@ -352,8 +334,8 @@ export interface ComposerCardProps {
    * /api/fs/raw.
    */
   onRestoreAttachments?(paths: string[]): void;
-  /** Empty the tray without sending it — what a spend heard from elsewhere
-   *  (`onChatDraftSpent`) does to the files, the way `take()` does on Send. */
+  /** Empty the tray without sending it — what adopting a record from elsewhere
+   *  does to the files, the way `take()` does on Send. */
   onDiscardAttachments?(): void;
   /**
    * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
@@ -406,7 +388,6 @@ export function ComposerCard({
   restore,
   boxRef: hostBoxRef,
   submitRef,
-  autosaveRef: hostAutosaveRef,
   busyRef,
   sendBusy,
   columnRef,
@@ -420,42 +401,22 @@ export function ComposerCard({
   back,
   onNavigate,
 }: ComposerCardProps) {
-  // The other half of the scheduler round trip, put back into an EMPTY box
-  // only, and the stash is spent either way (T:12105-12118).
-  const [text, setText] = useState(() => takeDraft(file));
-  /**
-   * THE TRAY'S HALF OF THE SAME ROUND TRIP (owner E2E R1, F4 (2026-09-10)).
-   *
-   * Not a `useState` initialiser like the draft's, because the answer does not
-   * belong to this component: the tray lives in `ClaudeChat`, and the only thing
-   * to do with these paths is hand them up. In an EFFECT and not the render body
-   * for `attachBack`'s reason — a render React throws away (StrictMode's double
-   * invoke, a concurrent attempt that loses) must not have spent the stash.
-   *
-   * ONCE, latched on a ref: `takeAttachments` spends the row, so the second run
-   * of a StrictMode double-mount reads nothing anyway — but the handler is a
-   * prop whose identity changes, and re-running on it would re-add the tray's
-   * chips on every re-render that reshuffled it.
-   */
-  const tookAttachments = useRef(false);
+  // THE BOX OPENS EMPTY AND FILLS FROM THE RECORD (design "one record", §1).
+  // There is no sessionStorage hop to read back any more: the Schedule button
+  // carries a KEY, and the words it left behind are the server's copy — which
+  // is the same copy this composer seeds from on an ordinary reload. One road
+  // in, so a walk back from the task form cannot disagree with a refresh.
+  const [text, setText] = useState("");
   const restoreAttachments = useRef(onRestoreAttachments);
   restoreAttachments.current = onRestoreAttachments;
-  useEffect(() => {
-    if (tookAttachments.current) return;
-    tookAttachments.current = true;
-    const back = takeAttachments(file);
-    if (back.length) restoreAttachments.current?.(back.map((a) => a.path));
-  }, [file]);
   const { ref: boxRef, grow } = useAutoGrow(text);
 
   // ---- THE SERVER-SIDE DRAFT (design.md, "Client behavior / Chat composer") --
   //
-  // The stash above is the SCHEDULE HOP — one navigation, this tab, spent on
-  // read. This is the other lifetime: what the reader typed and did not send,
-  // kept on the server so it survives a reload, another window, and opening a
-  // different chat and coming back. Additive in one direction, exactly as the
-  // design says: the hop is untouched and wins, because it is the more specific
-  // fact (a draft that was on its way to the task form thirty seconds ago).
+  // What the reader typed and did not send, kept on the server so it survives a
+  // reload, another window, and opening a different chat and coming back. ONE
+  // record, and this is the only door into it from here: the Schedule hop edits
+  // the same one (design §1), so there is no "the hop wins" rule left to state.
   //
   // The key is the session, or `new:<file>` while the chat has not got one yet
   // (chatDraftKey). A brand-new chat's first send both creates the session and
@@ -495,8 +456,7 @@ export function ComposerCard({
   useEffect(() => {
     if (seededKeys.current.has(draftKey)) return;
     seededKeys.current.add(draftKey);
-    // The hop already filled the box: it is newer and more specific, and the
-    // server's copy is about to be overwritten by the first autosave anyway.
+    // Words typed before the GET answered are the reader's and outrank it.
     if (textRef.current) return;
     void fetchChatDraft(draftKey).then((saved) => {
       if (!saved) return;
@@ -532,59 +492,105 @@ export function ComposerCard({
         .map((a) => ({
           path: a.view as string,
           name: a.name || (a.view as string),
-          // Anything that is not a picture wears the glyph, the same floor
-          // `parseAttachmentsParam` applies to a stash row.
+          // Anything that is not a picture wears the glyph, the same floor a
+          // stored record's own rows carry.
           kind: a.kind === "image" ? "image" : "file",
         }))
     : [];
   // 600 ms after the last keystroke, plus blur / pagehide / unmount. Empty text
   // with an empty tray is a DELETE server-side, so clearing the box by hand
   // clears the draft too without this having to know the difference.
-  // Returns the write's own promise (rather than `void`-discarding it, like
-  // most fire-and-forget callers of `saveChatDraft`) so `autosave.settle()`
-  // below can tell when it actually lands (Akshil, 2026-09-11).
-  const autosave = useAutosave({ text, attachments: trayDraft }, (value, opts) =>
-    saveChatDraft(draftKey, value.text, value.attachments, opts),
+  //
+  // NO `form` IS SENT, ever, and that is the whole reason the contract makes it
+  // a patch (drafts §2): a composer has no opinion about a time or a repeat, so
+  // its keystroke saves must not wipe the ones a Schedule hop put on the same
+  // record while the reader was typing in this box.
+  //
+  // THE CONFLICT RULE (design §2). A 409 means somebody else — the other tab,
+  // the task form, the Board — wrote this record first. If the caret is not in
+  // this box, or nothing has been typed since the last save, their words are
+  // simply the newer ones and the box takes them. If the reader is mid-sentence
+  // theirs win, once, and the toast says so: keeping a half-typed line silently
+  // over somebody else's save is how two tabs lose one message between them.
+  const focusedRef = useRef(false);
+  const autosave = useAutosave(
+    { text, attachments: trayDraft },
+    (value, opts) => saveChatDraft(draftKey, value.text, value.attachments, opts),
+    {
+      conflict: {
+        focused: () => focusedRef.current,
+        localText: () => textRef.current,
+        adopt: (record) => adoptRef.current(record as ChatDraft | null),
+        onKept: () =>
+          notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
+      },
+    },
   );
   // `submit` is a useCallback built below; it needs the autosave handle, and the
   // handle's identity is stable, so it is read through the ref every other seat
   // in this file uses for the same reason.
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
-  // OUT TO THE HOST, same render, same reason `ClaudeChat`'s own `attachRef`
-  // mirrors `attach`: a move out of the Recent list needs to reach into THIS
-  // composer's own autosave before writing over its draft from outside it.
-  if (hostAutosaveRef) hostAutosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
-  // SOMEBODY ELSE SENT THESE WORDS. The Board can drag a Done row into In
-  // Progress and send this conversation's unsent draft from there
-  // (shell/draft-run `chatBody`), while this box is open on the same key with
-  // the same sentence in it. Left alone, the next autosave puts the sent words
-  // back on the list as a draft and Send sends them again (Bugbot, PR #1140).
-  // So the spend is heard and the box does what its own Send does: empties,
-  // and resets the autosave to the empty value so no debounced write survives.
-  // Only a spend from ELSEWHERE arrives here — the composer's own send
-  // (`deleteChatDraft`) is silent, since the host still has to `take()` the
-  // tray for the outgoing message.
   const discardAttachments = useRef(onDiscardAttachments);
   discardAttachments.current = onDiscardAttachments;
+  /**
+   * PUT THE SERVER'S RECORD ON SCREEN — the one place this composer adopts words
+   * it did not type. Reached from the 409 rule above and from the change feed
+   * below, so "somebody else edited this draft" has exactly one outcome however
+   * the news arrives.
+   *
+   * `null` is the record deleted: the box empties the way its own Send empties
+   * it, tray included, because the files were part of the draft that is gone.
+   */
+  const adoptRecord = useCallback((record: ChatDraft | null) => {
+    const next = record?.text ?? "";
+    const files = record?.attachments ?? [];
+    setText(next);
+    discardAttachments.current?.();
+    if (files.length) restoreAttachments.current?.(files.map((a) => a.path));
+    autosaveRef.current.reset({ text: next, attachments: files });
+    grow();
+  }, [grow]);
+  const adoptRef = useRef(adoptRecord);
+  adoptRef.current = adoptRecord;
+  /**
+   * THE RECORD CHANGED SOMEWHERE ELSE (design §3).
+   *
+   * `/api/tasks/changes` now pushes every announced draft key with its version,
+   * so a second tab's save, a discard from the List, a Board drag that sent
+   * these words, and `POST /api/schedule` deleting the draft it came from all
+   * reach this box the same way and within a second. This replaced a `spent`
+   * set, an `inflight` map and a listener that had to be awaited by its
+   * announcer — all of which existed to order one document's writes against its
+   * own reads, which a version does for every document at once.
+   *
+   * GONE IS ONLY ACTED ON FOR A KEY THIS CLIENT HAS A VERSION FOR (contract §3):
+   * the announced key set is noisy by construction, and clearing a box on a key
+   * nobody has ever written would throw away words that were never saved.
+   *
+   * CHANGED IS ONLY ACTED ON WHEN IT IS NEWER, and never over a reader who is
+   * typing: the next save's own 409 settles that case, with the toast.
+   */
   useEffect(
     () =>
-      onChatDraftSpent((key) => {
-        if (key !== draftKeyRef.current) return;
-        setText("");
-        // THE TRAY GOES TOO (Bugbot, PR #1140): the files were part of the draft
-        // that was just sent, and a tray still holding them would autosave an
-        // attachments-only draft back under the key — un-spending it and
-        // resurrecting the chip.
-        discardAttachments.current?.();
-        autosaveRef.current.reset({ text: "", attachments: [] });
-        // AND THE WIRE IS DRAINED before the sender proceeds: `reset` cancels
-        // only the pending timer, so a PUT fired a keystroke ago is still out
-        // there and would land after the create's delete. The promise is what
-        // `markChatDraftSpent` awaits.
-        return autosaveRef.current.settle().then(() => undefined);
+      onDraftChange((changed, gone) => {
+        const key = draftKeyRef.current;
+        const seen = draftVersion(key);
+        if (seen === undefined) return;
+        if (gone.includes(key)) {
+          forgetDraftVersion(key);
+          adoptRef.current(null);
+          return;
+        }
+        const row = changed.find((c) => c.key === key);
+        if (!row || row.version <= seen) return;
+        if (focusedRef.current && textRef.current.trim()) return;
+        void fetchChatDraft(key).then((saved) => {
+          if (draftKeyRef.current !== key) return;
+          adoptRef.current(saved);
+        });
       }),
     [],
   );
@@ -732,20 +738,16 @@ export function ComposerCard({
   const delivered = useRef(0);
   useEffect(() => {
     if (!restore || restore.seq === delivered.current) return;
-    // A stranded follow-up's text is never empty, so the old `!restore.text`
-    // guard cost this seat nothing until `replace` arrived: a chat draft that
-    // is pictures with no words at all replaces the box with "", and that is
-    // a real delivery, not "nothing to restore" (Akshil, 2026-09-15).
-    if (!restore.text && !restore.replace) return;
+    // A stranded follow-up's text is never empty. The seat only ever APPENDS
+    // now: the one caller that replaced the whole box was the draft MOVE out of
+    // the Recent list, and a press on a draft row no longer moves anything — it
+    // opens the record where it already lives (design §1).
+    if (!restore.text) return;
     delivered.current = restore.seq;
     const back = restore.text;
-    // ONE COPY OF THE JOIN (`list-rows.joinIntoBox`): a MOVE out of the Recent
-    // list writes the destination draft to the server before it drops the
-    // source, and what it writes has to be exactly what this line is about to
-    // put in the box (Bugbot #1166). `replace` skips the join entirely — a
-    // draft row's whole content is the box's whole content now, not a second
-    // sentence appended to whatever was there (bug report, 2026-09-15).
-    setText((prev) => (restore.replace ? back : joinIntoBox(prev, back)));
+    // A single newline, and only when there is something to join to: a press
+    // must never eat words the reader is still typing.
+    setText((prev) => (prev.trim() ? prev.replace(/\s*$/, "\n") + back : back));
     boxRef.current?.focus({ preventScroll: true });
     grow();
   }, [restore, boxRef, grow]);
@@ -788,15 +790,13 @@ export function ComposerCard({
     if (!message && !hasAttachments) return false;
     setText("");
     // THE DRAFT IS SPENT. `reset` first and with the value the box is ABOUT to
-    // have: a write debounced a keystroke ago would otherwise land after the
-    // DELETE and put the sent message back on the list as an unsent draft.
-    // `reset` only cancels that PENDING timer, though — a PUT already in
-    // flight (fired a keystroke before this one) cannot be cancelled and
-    // would still land after an immediate delete. `settle()` waits out
-    // whichever write is running, THEN the delete goes out; `submit` itself
-    // does not wait on either (Akshil, 2026-09-11).
+    // have, so a write debounced a keystroke ago has nothing left to say. A PUT
+    // already on the wire is no longer a hazard worth waiting out: it states the
+    // version it read, and the DELETE below bumps past it — so if it lands late
+    // the server refuses it (409) instead of resurrecting the sent message. That
+    // is what versioning bought, and it is why this is one line and not three.
     autosaveRef.current.reset({ text: "", attachments: [] });
-    void autosaveRef.current.settle().then(() => deleteChatDraft(draftKeyRef.current));
+    void deleteChatDraft(draftKeyRef.current);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);
@@ -904,23 +904,18 @@ export function ComposerCard({
           onChange={(ev) => {
             const value = ev.currentTarget.value;
             setText(value);
-            // A SPENT KEY MUST NOT BE A PERMANENT BLOCK ON TYPING (bugbot /
-            // live repro, 2026-09-15). `spent` exists to close the window
-            // between a send and this composer's next remount — but nothing
-            // before this ever reopened that window once the reader started
-            // a NEW message on the same key, and a stray or duplicate
-            // `markChatDraftSpent` landing after they resumed typing (a slow
-            // `fetchDrafts` round trip from App's `onGone`, or — the actual
-            // live incident — a server that kept re-announcing one key as
-            // `gone` forever) wiped every keystroke as fast as it arrived,
-            // which read as "I cannot type in this box at all". Un-spend the
-            // instant a keystroke lands, same as `saveChatDraft` does once its
-            // debounced write actually fires — this just does not wait for
-            // the debounce, so nothing in between reads the key as spent.
-            if (value.trim()) unmarkChatDraftSpent(draftKeyRef.current);
             grow();
           }}
           onKeyDown={onKeyDown}
+          // WHO HAS THE CARET, for the conflict rule above and nothing else: a
+          // record that changed elsewhere is adopted into a box nobody is
+          // typing in, and never over one somebody is.
+          onFocus={() => {
+            focusedRef.current = true;
+          }}
+          onBlur={() => {
+            focusedRef.current = false;
+          }}
           {...(onPaste ? { onPaste } : {})}
         />
         {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no

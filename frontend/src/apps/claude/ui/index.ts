@@ -12,7 +12,6 @@ export type {
   ComposerProps,
   ComposerCardProps,
   ComposerControls,
-  ComposerAutosave,
 } from "./Composer";
 export { ModelSelect } from "./ModelSelect";
 export { EffortSelect } from "./EffortSelect";
@@ -26,13 +25,7 @@ export { useDismissOnWindow } from "./useDismissOnWindow";
 export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
 export { SchedConfirm, SchedConfirmBody } from "./SchedConfirm";
-export {
-  draftKey,
-  stashDraft,
-  takeDraft,
-  schedulerUrl,
-  SCHEDULE_URL,
-} from "./sched-draft";
+export { schedulerUrl } from "./SchedButton";
 export { Topbar } from "./Topbar";
 export type { TopbarProps } from "./Topbar";
 export { Kebab, forgetTaskCaches, knownTaskId, useTaskId } from "./Kebab";
@@ -89,9 +82,7 @@ export {
 export type { ComposerDefaults } from "./composer-defaults";
 export {
   ago,
-  draftContentOf,
-  draftMovesOut,
-  joinIntoBox,
+  draftHref,
   paneChatUrl,
   paneSlashes,
   sessionTitle,

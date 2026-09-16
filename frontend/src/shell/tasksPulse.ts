@@ -473,6 +473,29 @@ interface ChangesResponse {
   rows?: Task[];
   gone?: string[];
   full?: boolean;
+  drafts?: DraftsDelta;
+}
+
+/**
+ * THE DRAFT HALF OF ONE CHANGE (design "one record", §3; contract §3).
+ *
+ * The listing has always said which ROWS moved; it now says which DRAFT RECORDS
+ * moved too, with the version each is at. That is what lets an open composer or
+ * task card take another tab's save within a second instead of finding out on
+ * its next reload — and it is what let a whole coordination layer go: a `spent`
+ * set, an in-flight map, and a listener a sender had to await.
+ *
+ * `key` is the DRAFT key, which is the listing's key for chat drafts (a session
+ * id, or `new:<file>`) and `draft:<id>` for a task draft.
+ *
+ * `gone` IS NOISY BY CONSTRUCTION and the contract says so in as many words: the
+ * announced key set covers ordinary task activity, so most of what turns up here
+ * is a key that never had a draft. A subscriber must ignore `gone` for a key it
+ * holds no version for, and must never discard unsaved words on one.
+ */
+export interface DraftsDelta {
+  changed: { key: string; version: number }[];
+  gone: string[];
 }
 
 /** Only what the feed needs off `fetch`, so a bun test can hand over a
@@ -530,6 +553,9 @@ export interface ListingEvent {
 
 const listingSubs = new Set<(ev: ListingEvent) => void>();
 const goneSubs = new Set<(keys: string[]) => void>();
+const draftSubs = new Set<
+  (changed: { key: string; version: number }[], gone: string[]) => void
+>();
 /** The newest server generation folded into `listing` — the guard that stops a
  *  full read which left BEFORE a delta from rolling the rows back when it
  *  lands after it (bugbot #892, the rule Scheduled.tsx used to keep itself). */
@@ -545,6 +571,14 @@ let feedLoad: (() => void) | null = null;
  *  below already makes overlapping reads harmless — this only has to collapse
  *  the burst, not rate-limit the endpoint. */
 let refreshQueued = false;
+
+function emitDrafts(delta: DraftsDelta | undefined) {
+  if (!delta) return;
+  const changed = Array.isArray(delta.changed) ? delta.changed : [];
+  const gone = Array.isArray(delta.gone) ? delta.gone : [];
+  if (!changed.length && !gone.length) return;
+  for (const sub of draftSubs) sub(changed, gone);
+}
 
 function emitListing(ev: ListingEvent) {
   for (const sub of listingSubs) sub(ev);
@@ -699,6 +733,11 @@ function startFeed(env: ListingEnv) {
       }
       const rows = r.rows || [];
       const gone = r.gone || [];
+      // THE DRAFT DELTA IS ANNOUNCED FIRST AND UNCONDITIONALLY. It rides the
+      // same answer as the rows but it is not about them: an answer whose rows
+      // and `gone` are both empty can still carry a version bump for a record
+      // two tabs are open on, and the fold below would `continue` past it.
+      emitDrafts(r.drafts);
       if (!rows.length && !gone.length) continue;
       // A DELTA IS ABOUT ROWS WE NO LONGER TRUST. Dropped rather than queued: the
       // listing on its way is read AFTER this change was recorded, so it already
@@ -826,39 +865,30 @@ export function subscribeListing(
 }
 
 /**
- * ONE RUN IN FLIGHT AT A TIME, for a caller whose trigger can genuinely storm
- * (bugbot / live repro, 2026-09-15: a server bug kept re-announcing one
- * `new:<file>` key as `gone` on every long-poll, and each announcement was its
- * own `fetchDrafts()` — hundreds of `GET /api/drafts` a second on a real
- * machine). A burst of calls that lands while a run is still out does not
- * start its own: it only remembers the newest argument, and the run already
- * in flight repeats for THAT argument the instant it settles — looping until
- * nothing is left waiting, rather than piling requests up one per trigger.
+ * WHICH DRAFT RECORDS MOVED, and to what version (design §3).
  *
- * Generic on purpose but with exactly one caller today (App.tsx's
- * `onGone` → `fetchDrafts`), and pulled out here rather than left inline in
- * that effect so it has its own test that never has to mount App — the same
- * reasoning `useAppPageSnapshot`'s extraction out of `AppPage.tsx` gives
- * (AppPage.test.tsx).
+ * Subscribed by the two editors a draft can be open in — the chat composer and
+ * the New task card — each for its OWN key. `gone` clears or closes; a
+ * `changed` whose version is newer than the one the subscriber holds is re-read
+ * and adopted, unless the reader is mid-sentence, in which case the next save's
+ * own 409 settles it (`platform/lib/drafts`, `AutosaveOptions.conflict`).
+ *
+ * Does not start the feed on its own — a side channel on a listing somebody else
+ * is already following, exactly like `onGone`.
+ *
+ * WHAT THIS REPLACED: `App.tsx` used to hear `onGone`, re-read the WHOLE drafts
+ * store and mark keys spent — one `GET /api/drafts` per announcement, which a
+ * server re-announcing one key turned into hundreds of requests a second on a
+ * real machine (the incident `coalesceLatest` was written for). The server now
+ * says which keys and at which versions, so there is nothing to look up and
+ * nothing to coalesce.
  */
-export function coalesceLatest<T>(run: (arg: T) => Promise<void>): (arg: T) => void {
-  let inFlight = false;
-  let pending: { arg: T } | null = null;
-  const go = (arg: T) => {
-    inFlight = true;
-    void run(arg).finally(() => {
-      inFlight = false;
-      const next = pending;
-      pending = null;
-      if (next) go(next.arg);
-    });
-  };
-  return (arg: T) => {
-    if (inFlight) {
-      pending = { arg };
-      return;
-    }
-    go(arg);
+export function onDraftChange(
+  cb: (changed: { key: string; version: number }[], gone: string[]) => void,
+): () => void {
+  draftSubs.add(cb);
+  return () => {
+    draftSubs.delete(cb);
   };
 }
 

@@ -59,8 +59,7 @@ import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
-import { coalesceLatest, onGone, pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
-import { fetchDrafts, isChatDraftKey, markChatDraftSpent } from "@platform/lib/drafts";
+import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -587,76 +586,23 @@ export default function App({ config }: { config: Config }) {
     return () => window.removeEventListener(TASKS_CHANGED_EVENT, pokeTasks);
   }, []);
 
-  // THE OTHER DIRECTION: a row that LEFT, and the composer still holding its
-  // words (design.md, PR C).
+  // THE OTHER DIRECTION — a row that LEFT, and the composer still holding its
+  // words — IS NO LONGER WIRED HERE (design "one record", §3).
   //
-  // A chat draft is filed under the very key its row is listed under — a session
-  // id, or `new:<file>` — so "this key is gone" and "those unsent words are
-  // gone" are one fact. The listing feed already hears it, from its own long
-  // poll (another window discarded the draft, or a send spent it) and from the
-  // optimistic drop the trash makes locally. What was missing was anybody
-  // telling the COMPOSER, which is mounted somewhere else on the page with that
-  // sentence in its box and its autosave armed: without this, going back to it
-  // wrote the words straight back and the row the reader had just discarded
-  // reappeared.
+  // This used to hear `onGone`, re-read the whole drafts store to find out which
+  // of those keys had really lost a record, and mark each one spent so every
+  // composer mounted on it emptied itself. Three things were wrong with it and
+  // all three are gone with the mechanism: `gone` says "this key is not a row",
+  // not "this draft was deleted", so it needed a verifying GET; that GET was one
+  // per announcement, which a server re-announcing one key turned into hundreds
+  // of `/api/drafts` a second on a real machine; and "spent" was a client-side
+  // belief that a second tab could not see.
   //
-  // `markChatDraftSpent` is the call that reaches it — the key goes spent so
-  // nothing re-reads it, and every composer mounted on it empties itself the way
-  // its own Send does (Composer's `onChatDraftSpent` listener).
-  //
-  // HERE rather than in the store, because this is a WIRING fact: tasksPulse is
-  // a transport and knows nothing about drafts, and platform/lib/drafts may not
-  // import up into shell. App is the one place that may hold both.
-  //
-  // AND IT IS VERIFIED BEFORE ANYTHING IS CLEARED, which is not optional.
-  // `gone` does not mean "this draft was deleted", it means "this key is not a
-  // row" — and a live draft can answer to that too. A chat draft filed under a
-  // session the listing carries no task for is the standing case: the PUT
-  // announces the session key, the changes endpoint has no row to rebuild, and
-  // it reports the key gone while the words are sitting in the store. Spending
-  // on that alone would empty a box somebody is typing in, which is the one
-  // thing this store may never do. So the drafts are read back, and only a key
-  // the server no longer holds is spent. A read that FAILS spends nothing:
-  // "could not find out" is not "it is gone" (`fetchDrafts`, which answers null
-  // for exactly this distinction).
-  //
-  // One read for the whole burst, and `gone` is empty on almost every poll.
-  //
-  // Only the two CHAT shapes are asked. `draft:<id>` is a task draft, whose
-  // only writer is the New task modal, and that modal stands its own autosave
-  // down when it hears its own id leave (NewJobModal).
-  //
-  // A SERVER STORM MUST NOT BECOME A CLIENT STORM (bugbot / live repro,
-  // 2026-09-15). Every `onGone` fire used to start its OWN `fetchDrafts()` —
-  // harmless while `gone` really does carry news only once in a while, but a
-  // server bug that kept re-announcing one key as `gone` on every long-poll
-  // turned this into hundreds of `GET /api/drafts` a second, each trailed by
-  // its own `markChatDraftSpent` (see that call's own note on why a spent key
-  // must not be a permanent block on typing — this is the other half of that
-  // fix, closing the amplifier rather than only the symptom). `coalesceLatest`
-  // (tasksPulse) is the general shape of "one run in flight, a burst drops
-  // into the newest argument and the run repeats for it once" — pulled out of
-  // this effect and onto its own so it has a test that never has to mount
-  // this component (bugbot #1166, same reasoning as `useAppPageSnapshot`'s
-  // extraction out of AppPage.tsx).
-  const settleGone = useRef(
-    coalesceLatest((chats: string[]) =>
-      fetchDrafts().then((snapshot) => {
-        if (!snapshot) return;
-        for (const key of chats) {
-          if (!snapshot.chat[key]) void markChatDraftSpent(key);
-        }
-      }),
-    ),
-  ).current;
-  useEffect(
-    () =>
-      onGone((keys) => {
-        const chats = keys.filter(isChatDraftKey);
-        if (chats.length) settleGone(chats);
-      }),
-    [settleGone],
-  );
+  // The server now pushes `drafts: {changed: [{key, version}], gone: [key]}` on
+  // the same change answer (contract §3), and the two editors that can be open
+  // on a draft — the chat composer and the New task card — subscribe for their
+  // OWN key (`tasksPulse.onDraftChange`). Nothing has to be looked up, nothing
+  // has to be coalesced, and the other window hears it too.
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the

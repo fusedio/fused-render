@@ -4139,7 +4139,7 @@ describe("the archive action", () => {
     // fourth member of the strip since 2026-09-13 — and Discard, the draft
     // card's one action, the fifth since 2026-09-15.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || isDraftTask(task)\n"
+      "{((peekOn && page) || file || folderMissing || hasDraft(task)\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
@@ -4394,14 +4394,22 @@ describe("the delete affordance", () => {
   it("is a door only on a card whose folder is gone, first in the strip, left of Archive", () => {
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
-    const at = head.indexOf('className="task-card-door task-card-door--danger"');
+    // TWO danger doors now, and the Delete one is the SECOND: the discard
+    // (design §5 — the List's and the Board's own trash, on this wall too) sits
+    // first, and the two cannot both be drawn (discard stands down on a folder
+    // that is gone, where the delete is the stronger claim).
+    const del = head.indexOf("{/* Delete for good");
+    const at = head.indexOf('className="task-card-door task-card-door--danger"', del);
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
-    expect(head.slice(head.indexOf("{/* Delete for good"), at)).toContain("{gone && (");
+    expect(head.slice(del, at)).toContain("{gone && (");
     expect(head).toContain("{(filing || explorer || gone) && (");
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    // …and the discard is the strip's first member, the same seat it takes on
+    // the List row and the Board card.
+    expect(head.indexOf("Discard draft")).toBeLessThan(del);
     expect(CARDS_SRC).toContain("const blocked = eraseBlocked(task);");
     expect(head).toContain("disabled={blocked || acting}");
     expect(head.slice(at, head.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
@@ -4440,7 +4448,7 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || isDraftTask(task)\n"
+      "{((peekOn && page) || file || folderMissing || hasDraft(task)\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
@@ -4853,7 +4861,10 @@ describe("an expanded thread leads with the draft it is carrying", () => {
     // …and the handler is the composer's own hop door, so there is one lookup
     // and one seeding rule for the bound form, not two.
     expect(page).toContain("const openBoundDraft = (task: Task) => {");
-    expect(page).toContain("boundDraftSeed(all.task, session, null)");
+    // …and a session-bound form IS the session's chat record (contract §1, "one
+    // record, two doors"), so this opens the card through exactly the function
+    // the Schedule hop seeds from — one lookup, one seeding rule, one card.
+    expect(page).toContain("chatHopSeed(session, all.chat[session] ?? null)");
   });
 
   it("costs the thread's arithmetic nothing", () => {
@@ -4960,7 +4971,7 @@ describe("the Draft chip says ONE word, whichever kind of draft it is", () => {
   });
 });
 
-describe("a never-sent chat opens the New task modal, like every other draft", () => {
+describe("a never-sent chat's row opens its CHAT, not a form", () => {
   const chatDraft = task({
     key: "new:/Users/me/news", kind: "draft", draft_kind: "chat",
     status: "upcoming", file: "/Users/me/news", target: "/Users/me/elsewhere",
@@ -4975,82 +4986,76 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
     SCHEDULED.indexOf("const openDraft = (task: Task) => {"),
   );
 
-  it("builds a hop seed and opens the form — it does not navigate", () => {
-    // The same object the composer's Schedule button builds, spent through the
-    // same door (`openForm`), so one press and the other land on one card.
-    expect(ARM).toContain("const seed: HopSeed = {");
-    expect(ARM).toContain("openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);");
-    // NOT a navigation, and the page no longer holds the tools for one: the
-    // chat-draft href and the router hop are both gone from this file.
-    expect(SCHEDULED).not.toContain("navigateUrl");
-    expect(SCHEDULED).not.toContain("chatDraftHref");
+  it("navigates, and mints nothing (design \"one record\", §1)", () => {
+    // WHAT THIS REPLACED: the press fetched the record, split it across Title
+    // and description, and minted a `draft:<id>` over it carrying a
+    // `from_chat_key` that told the server to delete the chat's copy. One press,
+    // two records for the length of a round trip, and a generation counter to
+    // stop a second press minting a third. A chat draft belongs to a composer,
+    // so the press goes where the words already are.
+    expect(ARM).toContain("const href = draftHref(task, null);");
+    expect(ARM).toContain("if (href) navigateUrl(href);");
+    // No mint, no move, no read: a press is a URL.
+    expect(ARM).not.toContain("openForm(");
+    expect(ARM).not.toContain("fetchChatDraft");
+    expect(SCHEDULED).not.toContain("from_chat_key");
+    expect(SCHEDULED).not.toContain("boundDraftSeed");
   });
 
-  it("carries the row's own key as `fromChatKey`, so the draft MOVES", () => {
-    // `new:<file>` is what the composer stored the words under, so naming it is
-    // what lets the first task-draft save delete that row rather than leave the
-    // sentence on the list twice (design.md, Round 2: "A draft moves, never
-    // duplicates").
-    expect(ARM).toContain("chatKey: task.key,");
-    // …and the row's key IS that spelling — `new:` plus the chat's own file,
-    // the one platform/lib/drafts.chatDraftKey writes.
-    expect(chatDraft.key).toBe("new:/Users/me/news");
+  it("uses the SAME rule the chat's own Recent list presses", () => {
+    // A draft row that opened two different places from two views would be two
+    // behaviours to learn (design-principles §1). One function, re-exported from
+    // the chat package, pressed by both.
+    expect(SCHEDULED).toContain('import { draftHref } from "@apps/claude";');
+    const CHAT = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+    expect(CHAT).toContain("const href = draftHref(task, file);");
   });
 
-  it("goes BACK to the folder's chat, built out of the chat's own `file`", () => {
-    // The way back is the door a never-sent chat's composer is mounted on, and
-    // it has to be built out of `file` — the string the draft is keyed on
-    // (platform/lib/drafts.chatDraftKey) — or the composer seeds from a key
-    // nothing wrote. `target` is the fallback for a server that sent no file.
-    expect(ARM).toContain("const at = task.file || task.target || \"\";");
-    expect(ARM).toContain("back: at ? chatPaneUrl(at) : null,");
-    expect(chatPaneUrl(chatDraft.file!)).toBe("/explorer/view/Users/me/news?_side=claude");
-    // NOT `&session_id=` with nothing after it. An empty value says the
-    // question was asked and answered with nothing; a chat that has never been
-    // sent has not been asked (Akshil, 2026-09-11).
-    expect(chatPaneUrl(chatDraft.file!)).not.toContain("session_id");
-    // …and the seed names no session at all, for the same reason.
-    expect(ARM).toContain("session: null,");
-  });
-
-  it("fetches the WHOLE message first, and falls back to the preview", () => {
-    // The row carries only `draft.preview` — the first LINE — and the card
-    // splits the message across Title and description (`splitDraft`), so
-    // opening on the preview would drop every line after the first. The card
-    // seeds in `useState` initialisers, so the text has to be in hand before
-    // the modal opens.
-    expect(ARM).toContain("fetchChatDraft(task.key)");
-    expect(ARM).toContain("message: stored?.text ?? task.draft?.preview ?? null,");
-    expect(ARM).toContain("attachments: stored?.attachments ?? [],");
-    expect(ARM.indexOf("fetchChatDraft(task.key)"))
-      .toBeLessThan(ARM.indexOf("openForm("));
-  });
-
-  it("drops a fetch that a later press has overtaken", () => {
-    // Because it fetches first, this is the one opening that can arrive LATE
-    // (Bugbot on PR #1126, 2026-09-12): a second press used to be painted over
-    // when the first fetch resolved. The click's generation is taken before
-    // the fetch and compared before the open; every door (`openForm`) bumps
-    // it, so an in-flight answer for an older press is abandoned.
-    expect(ARM).toContain("const gen = ++chatDraftGen.current;");
-    expect(ARM).toContain("if (gen !== chatDraftGen.current) return;");
-    expect(ARM.indexOf("const gen = ++chatDraftGen.current;"))
-      .toBeLessThan(ARM.indexOf("fetchChatDraft(task.key)"));
-    expect(ARM.indexOf("if (gen !== chatDraftGen.current) return;"))
-      .toBeLessThan(ARM.indexOf("openForm("));
-    const door = SCHEDULED.slice(
-      SCHEDULED.indexOf("const openForm = ("),
-      SCHEDULED.indexOf("const [draftRow, setDraftRow]"),
+  it("lands on the folder's chat, built out of the chat's own `file`", () => {
+    // The door has to be built out of `file` — the string the draft is keyed on
+    // (platform/lib/drafts.chatDraftKey) — or the composer that opens seeds from
+    // a key nothing wrote. `target` is the fallback for a server that sent none.
+    //
+    // (Asserted on the source rather than by calling it: `list-rows` reaches the
+    // router, whose module init wants a `location`, and this suite runs without
+    // a DOM. The URL itself is pinned through `chatPaneUrl`, which is the
+    // function `draftHref` builds it with.)
+    const ROWS = readFileSync(
+      join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
     );
-    expect(door).toContain("chatDraftGen.current++;");
+    const FN = ROWS.slice(ROWS.indexOf("export function draftHref("));
+    expect(FN).toContain('const at = task.file || task.target || "";');
+    expect(chatPaneUrl(chatDraft.file!)).toBe(
+      "/explorer/view/Users/me/news?_side=claude",
+    );
+    // A `new:<file>` row names NO session — `task.key.includes(":")` is the test,
+    // and `paneChatUrl` drops an empty one. An empty value would say the question
+    // was asked and answered with nothing; a chat that has never been sent has
+    // not been asked (Akshil, 2026-09-11).
+    expect(FN).toContain('paneChatUrl(at, task.key.includes(":") ? "" : task.key)');
+  });
+
+  it("is a FOCUS request, not a navigation, on this composer's own draft", () => {
+    // The box is already on screen, drawn as a row, so the press asks for the
+    // keyboard instead of navigating. `null` is what the chat's landing and the
+    // Tasks page both read as "nowhere to go".
+    const ROWS = readFileSync(
+      join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
+    );
+    const FN = ROWS.slice(ROWS.indexOf("export function draftHref("));
+    expect(FN).toContain("if (task.key === chatDraftKey(null, file)) return null;");
+    // …and a TASK draft goes to the modal instead, by id.
+    expect(FN).toContain("`/tasks?draft=${encodeURIComponent(task.draft_id)}`");
+    // An ordinary conversation is not a draft at all.
+    expect(FN).toContain("if (!isDraftTask(task)) return null;");
   });
 
   it("is the Scheduled page's first question about a draft row's press", () => {
     // A chat draft has no form to re-open and no `draft_id` to fall through to,
-    // so the hop arm has to be asked before the stored-form arm.
+    // so the chat arm has to be asked before the stored-form arm.
     const open = SCHEDULED.slice(
       SCHEDULED.indexOf("const openDraft = (task: Task) => {"),
-      SCHEDULED.indexOf("// What a deep link named"),
+      SCHEDULED.indexOf("const openBoundDraft = (task: Task) => {"),
     );
     expect(open.indexOf("isChatDraftTask(task)"))
       .toBeLessThan(open.indexOf("if (!task.draft_id) return;"));
@@ -8695,9 +8700,10 @@ describe("the Cards view's frame", () => {
     // and the <a>; a gradient on the strip's left edge; and a card whose folder
     // the server cannot stat says so instead of "Starting…" for ever.
     // The glyphs come from the List's own file — one definition per mark, wherever
-    // it is drawn. (A multi-line import since the trash joined them.)
+    // it is drawn. (A multi-line import since the trash joined them, and since
+    // design §5 put the List's `discardDraft` on this wall's cards too.)
     const glyphImport = CARDS.slice(
-      CARDS.indexOf("import {\n  ICON_ARCHIVE,"),
+      CARDS.indexOf("import {\n  discardDraft,"),
       CARDS.indexOf('} from "./ScheduleTaskViews";'),
     );
     for (const name of ["ICON_ARCHIVE", "ICON_TRASH", "ICON_UNARCHIVE", "IdentityChip", "StatusIcon"]) {

@@ -51,10 +51,6 @@ import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
 import {
   deleteChatDraft,
   deleteTaskDraft,
-  markChatDraftSpent,
-  markTaskDraftSpent,
-  unmarkChatDraftSpent,
-  unmarkTaskDraftSpent,
 } from "@platform/lib/drafts";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import { dropListingKeys, restoreListingRows } from "./tasksPulse";
@@ -82,6 +78,7 @@ import {
   firstLine,
   groupByColumn,
   heldMessages,
+  hasDraft,
   isChatDraftTask,
   isDraftTask,
   peekOpenable,
@@ -1437,60 +1434,55 @@ async function performRun(intent: Pick<TaskRunIntent, "kind" | "entryId">): Prom
  * modal's own Discard has never had one either, and a dialog over an unfinished
  * sentence is a ceremony about nothing (design.md, PR C).
  *
- * THE ORDER IS NewJobModal's DISCARD ORDER (`discard`, NewJobModal.tsx), for its
- * reason: a write already on the wire cannot be cancelled, so it lands AFTER the
- * DELETE and puts the draft back. There the writer to stand down is the card's
- * own autosave, reached directly. Here the writer is somewhere else on the page
- * entirely — a COMPOSER mounted on the same key, or the New task MODAL open on
- * this very form — so each kind has a signal that reaches its writer and hands
- * back the promise of its in-flight write settling:
+ * IT IS THREE LINES NOW, and the two mechanisms it used to need are gone with
+ * the design that made them necessary (design "one record", §2). It used to have
+ * to reach whatever else on the page was WRITING this draft — a composer mounted
+ * on the same key, the New task modal open on this very form — stand its autosave
+ * down, wait for its in-flight PUT to settle, and undo all of that if the DELETE
+ * then failed. A version does the ordering instead: the DELETE states the version
+ * it read, and a write still in the air states an older one, so it is refused
+ * rather than landing after and putting the row back. Nothing has to be told, so
+ * nothing has to be untold.
  *
- *   * a CHAT draft: `markChatDraftSpent`, which also makes the key read as spent
- *     so nothing re-seeds from it;
- *   * a TASK draft: `markTaskDraftSpent`, whose one listener is the modal
- *     (Bugbot #1166 — the delete used to go out over a live debounce, and the
- *     row came back).
+ * `dropListingKeys` takes the row off every surface at once — the List, the
+ * Board, the Cards wall and the chat's Recent list all read one held listing —
+ * and `restoreListingRows` puts it back when the server refuses. The other
+ * writer, if there is one, hears the delete through the change feed
+ * (`tasksPulse.onDraftChange`) within a second.
  *
- * Only once that has settled may the DELETE go out.
- *
- * AND IF THE DELETE FAILS, EVERY OPTIMISTIC STEP IS UNDONE (Bugbot #1166). The
- * draft is still on the server, so the row goes back (`restoreListingRows`), the
- * chat key stops reading as spent (`unmarkChatDraftSpent` — otherwise every
- * composer on it answers empty and refuses to restore until a reload), and the
- * modal's autosave comes back up. The alternative is a page that says the draft
- * is gone while the store still holds it, and a composer that will not give it
- * back.
- *
- * `dropListingKeys` takes the row off every surface at once — the List, the Board
- * and the chat's Recent list all read one held listing — and
- * `announceTasksChanged` at the end is the reconciliation against the server
- * either way.
- *
- * EXPORTED for the chat's landing list, where pressing a `new:<file>` draft row
- * MOVES its words into the composer (`ClaudeChat.onFillDraft`) — and a move is
- * this same gesture on the source. One function, so "the draft is gone" cannot
- * come to mean two different sequences.
+ * EXPORTED because four surfaces press it — the List row, the Board card, the
+ * Cards wall and the chat's Recent list — so "the draft is gone" cannot come to
+ * mean four different sequences.
  */
 export async function discardDraft(task: Task): Promise<boolean> {
+  // THE CHIP CASE, and it is the one that does NOT drop a row (design §5). An
+  // ordinary task whose composer is holding unsent words wears the Draft on the
+  // List, the Board and the Cards wall — and on the wall it is the ONLY way a
+  // draft is ever drawn, because a card is a transcript and a draft row has no
+  // session (tasks-lib.cardsForTasks). Discarding it throws the words away and
+  // leaves the task exactly where it is, so the optimistic drop below would be
+  // a lie: the row stays and loses its chip on the next listing.
+  if (!isDraftTask(task)) {
+    if (!task.draft || !task.session_id) return false;
+    const out = await deleteChatDraft(task.session_id);
+    announceTasksChanged();
+    return out.ok;
+  }
   const chat = isChatDraftTask(task);
   // A chat draft's row key IS the key it is filed under (`new:<file>`); a task
   // draft's row is `draft:<id>` and the id is what the routes take.
   const id = chat ? "" : task.draft_id;
-  if (chat) await markChatDraftSpent(task.key);
-  else if (id) await markTaskDraftSpent(id);
   dropListingKeys([task.key]);
   // A task row with no `draft_id` is a row this build cannot delete — nothing is
   // sent, and the row goes back rather than silently vanishing.
-  const gone = chat
+  const out = chat
     ? await deleteChatDraft(task.key)
-    : !!id && (await deleteTaskDraft(id));
-  if (!gone) {
-    if (chat) unmarkChatDraftSpent(task.key);
-    else if (id) unmarkTaskDraftSpent(id);
-    restoreListingRows([task]);
-  }
+    : id
+      ? await deleteTaskDraft(id)
+      : { ok: false };
+  if (!out.ok) restoreListingRows([task]);
   announceTasksChanged();
-  return gone;
+  return out.ok;
 }
 
 /**
@@ -3570,7 +3562,7 @@ function TaskNode({
 
             NO CONFIRM. A draft is unsent text and the modal's own Discard has
             never asked either; see `discardDraft`. */}
-        {isDraftTask(task) && !folderMissing && (
+        {hasDraft(task) && !folderMissing && (
           <button
             type="button"
             className="tasks-act tasks-act--delete"
@@ -5166,7 +5158,7 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || isDraftTask(task)
+      {((peekOn && page) || file || folderMissing || hasDraft(task)
         || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
@@ -5174,7 +5166,7 @@ function TaskCard({
               PR C; §1 — one element, one behaviour in every view). Stands down
               on a card whose folder is gone, where the trash beside it is the
               stronger claim. */}
-          {isDraftTask(task) && !folderMissing && (
+          {hasDraft(task) && !folderMissing && (
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"

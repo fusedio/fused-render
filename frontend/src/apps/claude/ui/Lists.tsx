@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask, isUpcomingLane } from "@shell/tasks-lib";
+import { isDraftTask } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -100,24 +100,6 @@ export interface ListsProps {
   onFillDraft?(task: Task): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
-  /**
-   * DROP THE UPCOMING LANE FROM "Recent chats" — drafts (`kind: "draft"`) and
-   * scheduled-for-later tasks alike, the same bucket `sortForList`/
-   * `groupByColumn` (shell/tasks-lib) file them under.
-   *
-   * ONE HOST ASKS FOR THIS: the explorer's Claude side panel (a file's
-   * `?_side=claude` sidebar and a folder's own preview pane) — the reader
-   * opened it to talk about the thing already on screen, not to be shown a
-   * queue of unstarted work sitting beside it. Every other host of this list
-   * (the landing, Tasks page cards wall, side peek, full-page chat) leaves the
-   * prop unset and keeps showing every lane exactly as before.
-   *
-   * Filtered here, not upstream in `useRecentTasks`, because it is a
-   * PRESENTATION choice about which host this is, not a fact about what the
-   * server sent — the same rows are still the right answer for a header, a
-   * seed or a title map built off them.
-   */
-  hideUpcoming?: boolean;
 }
 
 export function Lists({
@@ -130,7 +112,6 @@ export function Lists({
   onFillDraft,
   onNavigate,
   disabled,
-  hideUpcoming,
 }: ListsProps) {
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
@@ -163,16 +144,6 @@ export function Lists({
   );
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  /** The rows this host actually shows — `recent` itself, unless the host
-   *  asked to drop the Upcoming lane (`hideUpcoming`). Kept apart from `recent`
-   *  so a title map or a header built off the full read is unaffected by what
-   *  this ONE list happens to be hiding, and null passes straight through: a
-   *  filter has nothing to do to a skeleton. */
-  const shownRecent = useMemo(
-    () => (hideUpcoming && recent ? recent.filter((t) => !isUpcomingLane(t)) : recent),
-    [recent, hideUpcoming],
-  );
-
   const timeline = snaps?.timeline;
   const snapsFailed = !!snaps?.failed;
   // `undefined` is "this target has no panel" (a folder) and reads as zero;
@@ -188,7 +159,7 @@ export function Lists({
           : 0;
 
   const counts: ListCounts = {
-    recent: shownRecent === null ? null : shownRecent.length,
+    recent: recent === null ? null : recent.length,
     artifacts: artifacts === null ? null : artifacts.length,
     snaps: snapCount,
     snapsFailed,
@@ -310,7 +281,7 @@ export function Lists({
 
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
-      {shownRecent === null ? (
+      {recent === null ? (
         <RecentSkeleton />
       ) : (
         // The Tasks page's own frame around the Tasks page's own rows: the
@@ -318,7 +289,7 @@ export function Lists({
         // off it (styles/tasks.css), and without it the rows read as a column
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
-          {shownRecent.map((task) => (
+          {recent.map((task) => (
             <TaskRowItem key={task.key} task={task} {...pressFor(task)} />
           ))}
         </div>

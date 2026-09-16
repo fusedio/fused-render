@@ -1,25 +1,24 @@
-// `useAutosave`'s `settle()` — the fix for the composer-drafts resurrection
-// race (Akshil, 2026-09-11): `reset()`/`stop()` can cancel the PENDING debounce
-// timer, but nothing short of the network can cancel a `fetch` already sent,
-// so Send/Discard/Schedule need a way to wait that one write out before firing
-// the delete that would otherwise land BEFORE it and get resurrected.
+// ONE RECORD, VERSIONED — the drafts module's whole concurrency story (design
+// "Drafts: one record, one key, versioned, pushed", §2).
+//
+// What this file used to test was a coordination layer: a `spent` set, an
+// in-flight map, and a `stop`/`settle`/`resume` protocol, all of which existed
+// to order one document's writes against its own reads. A version orders them
+// against every document at once — the other tab included — so the tests here
+// are about the version: that it is stated, that it is taken from every answer
+// the server gives, and that a refusal is resolved the way the design says.
 //
 // Driven through the real hook — react-test-renderer, no DOM, the same tool
 // JobRow.test.tsx and apps/explorer/listing/hook-harness.ts both use — because
-// what matters is a SEQUENCE (write starts, write is still running, write
-// resolves, `settle()` resolves only then) that grepping the source cannot
-// show. The harness below is a small reimplementation of hook-harness.ts's own
-// `renderHook`/`Deferred`, not an import of it: `platform/` may not import
-// `apps/` (scripts/check-boundaries; see this module's own header for why).
+// what matters is a SEQUENCE that grepping the source cannot show. The harness
+// below is a small reimplementation of hook-harness.ts's own `renderHook`, not
+// an import of it: `platform/` may not import `apps/` (scripts/check-boundaries).
 //
 // Every test drives the write through `flush()` rather than waiting out the
 // real debounce timer: `bun test` runs every suite in one process, and a real
-// `setTimeout` left pending past a test's own assertions is exactly the kind
-// of leftover that lands during whichever OTHER file happens to be running
-// when it fires — this file's first draft did that (a 30ms real wait per
-// test) and it was enough to shift a completely unrelated suite's mocked
-// `fetch` count elsewhere in the same run. `flush()` dispatches synchronously,
-// so nothing here ever waits on the clock.
+// `setTimeout` left pending past a test's own assertions is exactly the kind of
+// leftover that lands during whichever OTHER file happens to be running when it
+// fires. `flush()` dispatches synchronously, so nothing here waits on a clock.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,43 +27,27 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
 import {
   chatDraftKey,
-  isChatDraftKey,
   deleteChatDraft,
+  draftVersion,
   fetchChatDraft,
-  markChatDraftSpent,
+  fetchDrafts,
+  forgetDraftVersion,
+  isChatDraftKey,
   newChatFile,
-  onChatDraftSpent,
-  onTaskDraftSpent,
-  markTaskDraftSpent,
-  readChatDraft,
-  unmarkTaskDraftSpent,
   saveChatDraft,
   saveTaskDraft,
+  taskDraftKey,
   useAutosave,
   type Autosave,
   type AutosaveOptions,
-  type ChatDraft,
   type DraftWriteOptions,
-  type TaskDraftForm,
-  unmarkChatDraftSpent,
 } from "@platform/lib/drafts";
 
-// `useAutosave`'s unload effect reaches for `window`/`document` — real
-// globals in a browser, absent in bun's DOM-less test runtime. Neither is
-// touched at drafts.ts's MODULE scope (only inside the hook's own effects,
-// which run after this file's synchronous top level), so installing the shim
-// here — rather than via the dynamic-import dance router.test.ts needs — is
-// enough.
+// `useAutosave`'s unload effect reaches for `window`/`document` — real globals
+// in a browser, absent in bun's DOM-less test runtime. Neither is touched at
+// drafts.ts's MODULE scope (only inside the hook's own effects, which run after
+// this file's synchronous top level), so installing the shim here is enough.
 installDomShim();
-
-/** A promise this test resolves by hand, standing in for a PUT in flight. */
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
 
 /** Mount `useAutosave` and expose its latest handle. */
 function renderAutosave<T>(
@@ -96,147 +79,287 @@ function renderAutosave<T>(
   };
 }
 
-describe("useAutosave().settle()", () => {
-  test("resolves at once when nothing has ever been written", async () => {
-    // Discard on a card nobody touched: no write was ever dispatched, so
-    // there is nothing to wait out.
-    const box = renderAutosave({ n: 0 }, () => true);
-    let settled = false;
-    await box.current()
-      .settle()
-      .then(() => {
-        settled = true;
-      });
-    expect(settled).toBe(true);
-    box.unmount();
+/** One request, as this file's stub records it. */
+interface Seen {
+  method: string;
+  url: string;
+  body: unknown;
+  ifMatch: string | null;
+}
+
+/** A `fetch` that answers whatever `reply` says and records what it was asked.
+ *  Every test restores the real one, because bun runs every suite in one
+ *  process. */
+function serve(reply: (seen: Seen) => { status?: number; json: unknown }) {
+  const calls: Seen[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const seen: Seen = {
+      method: init?.method ?? "GET",
+      url,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      ifMatch: headers["If-Match"] ?? null,
+    };
+    calls.push(seen);
+    const answer = reply(seen);
+    const status = answer.status ?? 200;
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(answer.json),
+    } as unknown as Response);
+  }) as typeof fetch;
+  return { calls, restore: () => { globalThis.fetch = real; } };
+}
+
+const chatRecord = (text: string, version: number) => ({
+  text, attachments: [], updated_at: 1, version, form: {},
+});
+
+// ---- the version, stated and taken ------------------------------------------
+
+describe("If-Match", () => {
+  test("is omitted on a first write and stated on every one after it", async () => {
+    const key = "new:/Users/me/if-match";
+    forgetDraftVersion(key);
+    const f = serve(() => ({ json: { ok: true, key, draft: chatRecord("a", 4) } }));
+    await saveChatDraft(key, "a");
+    // NOTHING TO CLOBBER YET. A key this client has never seen has no version to
+    // state, and the server reads a missing header as unconditional (contract §2)
+    // — which is right for a create and wrong for nothing.
+    expect(f.calls[0]!.ifMatch).toBeNull();
+    // …and the answer's version is adopted, so the NEXT write is conditional
+    // without a GET in between.
+    expect(draftVersion(key)).toBe(4);
+    await saveChatDraft(key, "ab");
+    expect(f.calls[1]!.ifMatch).toBe("4");
+    f.restore();
+    forgetDraftVersion(key);
   });
 
-  test("waits for a write already in flight before resolving", async () => {
-    const calls: string[] = [];
-    const put = deferred<boolean>();
-    const box = renderAutosave({ n: 0 }, (value) => {
-      calls.push(JSON.stringify(value));
-      return put.promise;
-    });
-
-    box.rerender({ n: 1 });
-    box.current().flush();
-    expect(calls).toEqual(['{"n":1}']);
-
-    let settled = false;
-    const settling = box.current()
-      .settle()
-      .then(() => {
-        settled = true;
-      });
-    // The PUT has not answered yet — settle must not have resolved either.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
-    put.resolve(true);
-    await settling;
-    expect(settled).toBe(true);
-    box.unmount();
+  test("a task write is versioned under the key the LISTING uses", async () => {
+    // `draft:<id>`, not `<id>`: that is the key `/api/tasks/changes` pushes this
+    // record's version under, and two spellings of one record is the class of bug
+    // this design ends.
+    const id = "d-version";
+    forgetDraftVersion(taskDraftKey(id));
+    const f = serve(() => ({
+      json: { ok: true, draft_id: id, draft: { ...chatRecord("", 2), title: "x" } },
+    }));
+    await saveTaskDraft(id, {} as never);
+    expect(draftVersion(taskDraftKey(id))).toBe(2);
+    expect(draftVersion(id)).toBeUndefined();
+    f.restore();
+    forgetDraftVersion(taskDraftKey(id));
   });
 
-  test(
-    "reset() forgets the pending write's bookkeeping but settle() still " +
-      "waits for a write already dispatched",
-    async () => {
-      const put = deferred<boolean>();
-      const box = renderAutosave({ n: 0 }, () => put.promise);
+  test("a DELETE states it too, and forgets the key afterwards", async () => {
+    const key = "new:/Users/me/deleted";
+    forgetDraftVersion(key);
+    const f = serve((seen) =>
+      seen.method === "GET"
+        ? { json: { chat: { [key]: chatRecord("words", 9) }, task: {} } }
+        : { json: { ok: true, key, removed: true } });
+    await fetchDrafts();
+    expect(draftVersion(key)).toBe(9);
+    await deleteChatDraft(key);
+    expect(f.calls[1]!.ifMatch).toBe("9");
+    // A key with no version reads as "this client has never seen it", which is
+    // what stops a later `gone` for it from being acted on (contract §3).
+    expect(draftVersion(key)).toBeUndefined();
+    f.restore();
+  });
 
-      box.rerender({ n: 1 });
-      // The composer's send: dispatch (standing in for a debounced write that
-      // already went out), then `reset` to the value the box is about to
-      // hold. `reset` cannot reach back and cancel the fetch above.
-      box.current().flush();
-      box.current().reset({ n: 1 });
-
-      let settled = false;
-      const settling = box.current()
-        .settle()
-        .then(() => {
-          settled = true;
-        });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(settled).toBe(false);
-
-      put.resolve(false);
-      await settling;
-      expect(settled).toBe(true);
-      box.unmount();
-    },
-  );
-
-  test(
-    "stop() disarms future writes but settle() still waits for one already " +
-      "running",
-    async () => {
-      const put = deferred<boolean>();
-      const calls: string[] = [];
-      const box = renderAutosave({ n: 0 }, (value) => {
-        calls.push(JSON.stringify(value));
-        return put.promise;
-      });
-
-      box.rerender({ n: 1 });
-      box.current().flush();
-      expect(calls).toEqual(['{"n":1}']);
-
-      box.current().stop();
-      // A later change, even flushed by hand, must NOT queue a new write —
-      // stop is permanent for this mount.
-      box.rerender({ n: 2 });
-      box.current().flush();
-      expect(calls).toEqual(['{"n":1}']);
-
-      let settled = false;
-      const settling = box.current()
-        .settle()
-        .then(() => {
-          settled = true;
-        });
-      await Promise.resolve();
-      expect(settled).toBe(false);
-      put.resolve(true);
-      await settling;
-      expect(settled).toBe(true);
-      box.unmount();
-    },
-  );
-
-  test("a save that rejects still lets settle() resolve, not hang or throw", async () => {
-    const box = renderAutosave({ n: 0 }, () => Promise.reject(new Error("network")));
-    box.rerender({ n: 1 });
-    box.current().flush();
-
-    let settled = false;
-    // If `settle()` propagated the rejection this `await` would throw and
-    // fail the test — same contract every write in this module already keeps
-    // (see drafts.ts's own header).
-    await box.current()
-      .settle()
-      .then(() => {
-        settled = true;
-      });
-    expect(settled).toBe(true);
-    box.unmount();
+  test("a stale GET cannot drag the version backwards", async () => {
+    const key = "new:/Users/me/backwards";
+    forgetDraftVersion(key);
+    const f = serve((seen) =>
+      seen.method === "GET"
+        ? { json: { chat: { [key]: chatRecord("old", 2) }, task: {} } }
+        : { json: { ok: true, key, draft: chatRecord("new", 7) } });
+    await saveChatDraft(key, "new");
+    expect(draftVersion(key)).toBe(7);
+    // The read was dispatched before the write and answers after it. Adopting
+    // its number would make the next write state a version the server has
+    // already moved past — refused for ever, on a record nobody else touched.
+    await fetchDrafts();
+    expect(draftVersion(key)).toBe(7);
+    f.restore();
+    forgetDraftVersion(key);
   });
 });
 
-// ---- the unmount flush that follows the first send --------------------------
-//
-// THE BUG (Bugbot, PR #1118, 2026-09-11). The first send from a session-less
-// chat calls `reset({ text: "", attachments: [] })` and then, one tick later,
-// gains a session — which remounts the whole chat. The composer going away runs
-// the unmount flush, and that flush reads the value REF, which at that instant
-// still holds the render before the clear: the sentence that was just sent. It
-// differed from the empty value `reset` had just recorded, so it was written —
-// a PUT with content, which un-spends the key and puts the message back on the
-// server under it. `reset` has to move the value too, not only the bookkeeping.
+// ---- 409, and the two honest things to do with it ---------------------------
+
+describe("a refused write", () => {
+  const conflicted = (key: string, version: number, text: string) => ({
+    status: 409,
+    json: { error: "version", record: chatRecord(text, version), version, key },
+  });
+
+  test("hands the server's record back and takes its version", async () => {
+    const key = "new:/Users/me/clash";
+    forgetDraftVersion(key);
+    const f = serve(() => conflicted(key, 12, "theirs"));
+    const out = await saveChatDraft(key, "mine");
+    expect(out.ok).toBe(false);
+    expect((out.conflict as { text: string } | null)?.text).toBe("theirs");
+    // Whatever the caller decides, the NEXT write has to state a version that
+    // exists or it is refused for ever.
+    expect(draftVersion(key)).toBe(12);
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("adopts, when the editor is not focused", async () => {
+    const key = "new:/Users/me/adopt";
+    forgetDraftVersion(key);
+    const f = serve(() => conflicted(key, 3, "theirs"));
+    const adopted: unknown[] = [];
+    let kept = 0;
+    const box = renderAutosave(
+      { text: "mine" },
+      (value, opts) => saveChatDraft(key, value.text, [], opts),
+      {
+        conflict: {
+          focused: () => false,
+          localText: () => "mine",
+          adopt: (record) => adopted.push(record),
+          onKept: () => { kept += 1; },
+        },
+      },
+    );
+    box.rerender({ text: "mine typed" });
+    await act(async () => {
+      box.current().flush();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect((adopted[0] as { text: string }).text).toBe("theirs");
+    // One write, not two: a conceded conflict is not retried.
+    expect(f.calls.length).toBe(1);
+    expect(kept).toBe(0);
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("…and when the reader is focused but has typed nothing since the save", async () => {
+    const key = "new:/Users/me/adopt-idle";
+    forgetDraftVersion(key);
+    const f = serve(() => conflicted(key, 3, "theirs"));
+    const adopted: unknown[] = [];
+    // `localText` never moves, so the words on screen ARE the words last
+    // written: a caret sitting in an unchanged box is not somebody mid-sentence.
+    const box = renderAutosave(
+      { text: "mine" },
+      (value, opts) => saveChatDraft(key, value.text, [], opts),
+      {
+        conflict: {
+          focused: () => true,
+          localText: () => "settled",
+          adopt: (record) => adopted.push(record),
+        },
+      },
+    );
+    box.rerender({ text: "mine typed" });
+    await act(async () => {
+      box.current().flush();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(adopted.length).toBe(1);
+    expect(f.calls.length).toBe(1);
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("keeps the local text and retries ONCE when the reader is mid-sentence", async () => {
+    const key = "new:/Users/me/keep";
+    forgetDraftVersion(key);
+    // Refused every time: the point is that the retry stops at one. Two tabs
+    // both typing would otherwise write past each other for as long as they go
+    // on.
+    const f = serve(() => conflicted(key, 5, "theirs"));
+    const adopted: unknown[] = [];
+    let kept = 0;
+    // "Mid-sentence" is a question about the ROUND TRIP, not about the caret:
+    // the box said one thing when the save went out and says another by the time
+    // the refusal comes back, so the reader typed while it was in the air. A
+    // caret sitting in an unchanged box is not somebody whose words are at risk,
+    // which is the case the test above covers.
+    let typed = "half a th";
+    const box = renderAutosave(
+      { text: "mine" },
+      (value, opts) => {
+        const out = saveChatDraft(key, value.text, [], opts);
+        typed += "ought";
+        return out;
+      },
+      {
+        conflict: {
+          focused: () => true,
+          localText: () => typed,
+          adopt: (record) => adopted.push(record),
+          onKept: () => { kept += 1; },
+        },
+      },
+    );
+    box.rerender({ text: "mine typed" });
+    await act(async () => {
+      box.current().flush();
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    });
+    expect(adopted).toEqual([]);
+    expect(kept).toBe(1);
+    expect(f.calls.length).toBe(2);
+    // …and the retry states the version it has just been told about, which is
+    // the whole reason it can be expected to land.
+    expect(f.calls[1]!.ifMatch).toBe("5");
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+});
+
+// ---- the chat record's form ---------------------------------------------------
+
+describe("saveChatDraft's form", () => {
+  test("is left off the wire entirely when the caller has no opinion", async () => {
+    // The composer never sends one, and the contract makes `form` a patch for
+    // exactly that reason: a keystroke save must not wipe the time and repeat a
+    // Schedule hop put on the same record (contract §2).
+    const key = "new:/Users/me/no-form";
+    forgetDraftVersion(key);
+    const f = serve(() => ({ json: { ok: true, key, draft: chatRecord("a", 1) } }));
+    await saveChatDraft(key, "a");
+    expect(f.calls[0]!.body).toEqual({ text: "a", attachments: [] });
+    expect("form" in (f.calls[0]!.body as object)).toBe(false);
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("and rides along when the New task card has one", async () => {
+    const key = "new:/Users/me/with-form";
+    forgetDraftVersion(key);
+    const f = serve(() => ({ json: { ok: true, key, draft: chatRecord("a", 1) } }));
+    await saveChatDraft(key, "Ship it\n\nand run the tests", [], undefined, {
+      when: "2026-09-17T09:00", repeat: "none", model: "opus",
+    });
+    const body = f.calls[0]!.body as { text: string; form: Record<string, unknown> };
+    // THE WORDS ARE IN `text`, NEVER IN `form.description` (contract §1) — one
+    // string both editors open on, which is what makes the round trip lossless.
+    expect(body.text).toBe("Ship it\n\nand run the tests");
+    expect(body.form.when).toBe("2026-09-17T09:00");
+    expect("description" in body.form).toBe(false);
+    f.restore();
+    forgetDraftVersion(key);
+  });
+});
+
+// ---- the hook's own promises ---------------------------------------------------
 
 describe("the unmount flush after a send", () => {
   test("reset() leaves it nothing to write", () => {
@@ -267,225 +390,50 @@ describe("the unmount flush after a send", () => {
     box.unmount();
     expect(calls).toEqual([]);
   });
+});
 
-  test("stop() disarms it outright, words in the box or not", () => {
-    // Schedule's half: the server deletes the draft as it creates the task, so
-    // the teardown must not write one back either.
+describe("nothing is minted by merely opening an editor", () => {
+  test("a mount writes nothing, however full the form it mounts on", () => {
+    // design §4: "no PUT until title or text non-empty. Open+close empty leaves
+    // nothing." The hook's half of that is the seed — `written` starts as the
+    // opening value — and there is no `writeInitial` escape hatch any more,
+    // because a Schedule hop no longer arrives holding words that exist nowhere
+    // else.
     const calls: string[] = [];
-    const box = renderAutosave({ text: "" }, (value) => {
+    const box = renderAutosave({ title: "Ship it", text: "already here" }, (value) => {
       calls.push(JSON.stringify(value));
       return true;
     });
-    box.rerender({ text: "half a thought" });
-    box.current().stop();
+    box.current().flush();
     box.unmount();
     expect(calls).toEqual([]);
   });
-});
 
-// ---- the opening value, when it arrived already typed -------------------------
-// design.md, Round 2: the Schedule hop hands the task form the sentence the
-// composer was holding, so the card mounts on words that are already a draft.
-// `writeInitial` is what lets the first write happen with nobody having typed.
-
-describe("useAutosave({ writeInitial })", () => {
-  test("off by default: mounting alone never writes", () => {
-    // "Nothing minted for an untouched modal" is made of exactly this — the
-    // form's own initial state is not something the user typed.
-    let writes = 0;
-    const box = renderAutosave({ n: 0 }, () => {
-      writes += 1;
-      return true;
-    });
-    box.current().flush();
-    expect(writes).toBe(0);
-    box.unmount();
-  });
-
-  test("on: the mount value counts as unwritten, so the first flush writes it", () => {
-    const seen: unknown[] = [];
-    const box = renderAutosave({ text: "from the chat" }, (v) => {
-      seen.push(v);
-      return true;
-    }, { writeInitial: true });
-    box.current().flush();
-    expect(seen).toEqual([{ text: "from the chat" }]);
-    box.unmount();
-  });
-
-  test("…and only once — the second flush has nothing new to say", () => {
-    let writes = 0;
-    const box = renderAutosave({ text: "from the chat" }, () => {
-      writes += 1;
-      return true;
-    }, { writeInitial: true });
-    box.current().flush();
-    box.current().flush();
-    expect(writes).toBe(1);
-    box.unmount();
-  });
-
-  test("a null opening value writes nothing of substance and still settles", async () => {
-    // An Edit hands `null` here. The hook has no opinion about the value; the
-    // caller's own `save` is what refuses it.
-    const seen: unknown[] = [];
-    const box = renderAutosave<{ n: number } | null>(null, (v) => {
-      seen.push(v);
-      return true;
-    }, { writeInitial: true });
-    box.current().flush();
-    expect(seen).toEqual([null]);
-    await box.current().settle();
-    box.unmount();
-  });
-});
-
-// ---- the wire: a draft that MOVES rather than duplicating ---------------------
-
-const FORM: TaskDraftForm = {
-  title: "", description: "half a thought", target: "~/news",
-  when: null, repeat: null, custom_rule: null, model: "", effort: "",
-  permission: "", attachments: [], new_task_each_run: null, session_id: "",
-};
-
-/** Swap `fetch` for a recorder, and put the real one back afterwards. */
-function recordFetch(): { calls: { url: string; init: RequestInit }[]; restore: () => void } {
-  const calls: { url: string; init: RequestInit }[] = [];
-  const real = globalThis.fetch;
-  globalThis.fetch = ((url: string, init: RequestInit) => {
-    calls.push({ url, init });
-    return Promise.resolve({ ok: true } as Response);
-  }) as typeof fetch;
-  return { calls, restore: () => { globalThis.fetch = real; } };
-}
-
-describe("readChatDraft", () => {
-  // Bugbot #1166: `fetchChatDraft` answers null for BOTH "there is none" and
-  // "could not find out", which is right for a composer seeding itself (already
-  // empty, nothing to lose) and catastrophic for the one caller that is about to
-  // DESTROY what it read — the move out of the chat's Recent list.
-  test("tells an empty key from a read that never answered", async () => {
-    const real = globalThis.fetch;
-    try {
-      globalThis.fetch = ((() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ chat: { "new:/a": { text: "words", attachments: [] } }, task: {} }),
-        } as Response)) as unknown) as typeof fetch;
-      expect((await readChatDraft("new:/a")).draft?.text).toBe("words");
-      expect(await readChatDraft("new:/b")).toEqual({ draft: null, read: true });
-
-      globalThis.fetch = ((() => Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
-      expect(await readChatDraft("new:/a")).toEqual({ draft: null, read: false });
-      // …and the old door still collapses the two, which is what its callers want.
-      expect(await fetchChatDraft("new:/a")).toBe(null);
-    } finally {
-      globalThis.fetch = real;
+  test("…and the hook exposes no way to override it", async () => {
+    // Asserted on the EXPORTS rather than on the source text: the module's prose
+    // still names what it used to do and why, which is the record of the
+    // decision, not a survival of the code.
+    const mod = await import("@platform/lib/drafts");
+    for (const gone of [
+      "writeInitial",
+      "markChatDraftSpent",
+      "unmarkChatDraftSpent",
+      "onChatDraftSpent",
+      "markTaskDraftSpent",
+      "onTaskDraftSpent",
+      "unmarkTaskDraftSpent",
+      "readChatDraft",
+    ]) {
+      expect(Object.keys(mod)).not.toContain(gone);
     }
-  });
-
-  test("a spent key is an ANSWER, not an unknown", async () => {
-    const real = globalThis.fetch;
-    try {
-      globalThis.fetch = ((() =>
-        Promise.resolve({ ok: false } as Response)) as unknown) as typeof fetch;
-      await markChatDraftSpent("new:/spent");
-      // Even with the server unreachable: those words are sent, and that is the
-      // whole answer — a caller must not read "unknown" and keep the source.
-      expect(await readChatDraft("new:/spent")).toEqual({ draft: null, read: true });
-    } finally {
-      unmarkChatDraftSpent("new:/spent");
-      globalThis.fetch = real;
-    }
-  });
-});
-
-describe("the task draft's spent signal", () => {
-  // The chat half has existed since PR #1140; this is its twin, and it exists
-  // for the race the row's trash opened (Bugbot #1166): the New task modal is
-  // open on the very form being discarded, with a PUT already on the wire.
-  test("is awaited, and can be taken back when the DELETE fails", async () => {
-    const heard: string[] = [];
-    let released = false;
-    const off = onTaskDraftSpent((id, spent) => {
-      heard.push(`${id}:${spent}`);
-      if (!spent) return;
-      return new Promise<void>((r) =>
-        setTimeout(() => {
-          released = true;
-          r();
-        }, 0),
-      );
-    });
-    await markTaskDraftSpent("d-7");
-    expect(heard).toEqual(["d-7:true"]);
-    expect(released).toBe(true); // AWAITED — the caller may not delete before this
-
-    unmarkTaskDraftSpent("d-7");
-    expect(heard).toEqual(["d-7:true", "d-7:false"]);
-    off();
-    // Nobody left listening is not an error.
-    await markTaskDraftSpent("d-7");
-    expect(heard.length).toBe(2);
-  });
-});
-
-describe("useAutosave().resume()", () => {
-  test("a stopped autosave writes again once its reason to stop is withdrawn", () => {
-    // A card stands down when its row is discarded and comes back up when that
-    // DELETE fails — otherwise it collects edits it silently never saves.
-    const calls: string[] = [];
-    const box = renderAutosave({ n: 0 }, (value) => {
-      calls.push(JSON.stringify(value));
-      return true;
-    });
-    box.current().stop();
-    box.rerender({ n: 1 });
-    box.current().flush();
-    expect(calls).toEqual([]);
-
-    box.current().resume();
-    box.rerender({ n: 2 });
-    box.current().flush();
-    expect(calls).toEqual(['{"n":2}']);
+    // …and the hook's handle is two calls, not five.
+    const box = renderAutosave({ n: 0 }, () => true);
+    expect(Object.keys(box.current()).sort()).toEqual(["flush", "reset"]);
     box.unmount();
   });
 });
 
-describe("saveTaskDraft's from_chat_key", () => {
-  test("is absent unless the caller names one", async () => {
-    const f = recordFetch();
-    await saveTaskDraft("d1", FORM);
-    expect(JSON.parse(String(f.calls[0].init.body))).not.toHaveProperty("from_chat_key");
-    f.restore();
-  });
-
-  test("rides the body when it does, beside the form", async () => {
-    // The server deletes that chat draft as it stores this one, so the sentence
-    // is in exactly one place at every instant (design.md, Round 2).
-    const f = recordFetch();
-    await saveTaskDraft("d1", FORM, undefined, "new:/Users/me/news");
-    const body = JSON.parse(String(f.calls[0].init.body));
-    expect(body.from_chat_key).toBe("new:/Users/me/news");
-    expect(body.description).toBe("half a thought");
-    f.restore();
-  });
-});
-
-// ---- the number follows the session, and NOT from here ----------------------
-// design.md, Round 2: "Every draft has a TASK number." A brand-new chat keys its
-// draft `new:<file>` and is given one under that key; the first send creates the
-// session, and the number has to follow it or the row the reader was watching is
-// stranded on a key nothing reads again.
-//
-// THE MOVE IS THE SERVER'S (Bugbot, PR #1118, 2026-09-12). Four rounds went into
-// asking this page which session its own send created, and every answer was an
-// inference with a gap in it — a send that threw, a refusal that never left
-// `idle`, a Back before the id landed — that left the move owed to whichever
-// session id turned up next, walking an unsent row onto a conversation the send
-// had nothing to do with. `routers/tasks.py::_settle_new_chats` reads it off the
-// run's own `meta.json` instead. These hold the client's side of that: it does
-// the delete and nothing else, and the machinery it used to need is gone.
+// ---- keys ---------------------------------------------------------------------
 
 describe("the chat does not rekey its own draft", () => {
   const chat = () =>
@@ -498,29 +446,23 @@ describe("the chat does not rekey its own draft", () => {
     const c = chat();
     expect(c).not.toContain("rekeyChatDraft");
     expect(c).not.toContain("pendingRekey");
-    // Nor any of the inferences the rounds before it tried.
-    expect(c).not.toContain("startedWithoutSession");
-    expect(c).not.toContain("rekeyedFor");
     const d = drafts();
     expect(d).not.toContain("export async function rekeyChatDraft");
     // The URL as it would be WRITTEN, not as the module's own prose names it.
     expect(d).not.toContain('"/api/drafts/chat/rekey"');
-    expect(d).not.toContain("SentWithoutSession");
-    expect(composer()).not.toContain("SentWithoutSession");
   });
 
   test("the send still spends its own key, which is all it ever owed", () => {
     expect(composer()).toContain("deleteChatDraft(draftKeyRef.current)");
-    expect(composer()).not.toContain("markSentWithoutSession");
   });
 });
 
 describe("the two shapes of a chat key", () => {
   test("reads the file back out of a `new:` key, and nothing out of a session", () => {
-    // The way BACK to a never-sent chat is built out of this string — a reopened
-    // task draft's "Back to chat" and the draft row's own href both have to land
-    // on the same `file` the composer keys on, or the chat that opens seeds from
-    // a key nothing wrote.
+    // The way BACK to a never-sent chat is built out of this string — the task
+    // card's "Back to chat" and the draft row's own href both have to land on
+    // the same `file` the composer keys on, or the chat that opens seeds from a
+    // key nothing wrote.
     expect(newChatFile(chatDraftKey(null, "/Users/me/news"))).toBe("/Users/me/news");
     expect(newChatFile("new:/a/b")).toBe("/a/b");
     expect(newChatFile("sess-9")).toBe("");
@@ -530,10 +472,6 @@ describe("the two shapes of a chat key", () => {
   });
 
   test("and tells a chat draft's listing key from every other row's", () => {
-    // The shell asks this of every key the listing says is GONE, to decide
-    // whether there are unsent words behind it to clean up (App.tsx). The two
-    // chat shapes are a bare session id and `new:<file>`; the other two rows
-    // carry a prefix, and a session id can hold no colon at all.
     expect(isChatDraftKey(chatDraftKey("sess-9", null))).toBe(true);
     expect(isChatDraftKey(chatDraftKey(null, "/Users/me/news"))).toBe(true);
     expect(isChatDraftKey("new:")).toBe(true);
@@ -541,332 +479,38 @@ describe("the two shapes of a chat key", () => {
     expect(isChatDraftKey("pending:e-3")).toBe(false);
     expect(isChatDraftKey("")).toBe(false);
   });
-});
 
-// ---- a spent chat key never hands its draft back -----------------------------
-//
-// THE BUG (Bugbot, PR #1118). The first send from a session-less chat deletes
-// the draft under `new:<file>` AND gives the landing a session, which remounts
-// the composer. The fresh mount seeds itself from `fetchChatDraft`, and that GET
-// can overtake the DELETE still in flight: the answer is the sentence that was
-// just sent, put back into the box the send had emptied — a message the reader
-// sent, sitting in their composer as an unsent draft.
-//
-// Nothing inside one mount can close that window (`reset`/`stop`/`settle` all
-// belong to the component being thrown away, and the seed runs in the NEXT one),
-// so the fact lives at module scope. These drive the module's own functions,
-// which is where it lives; every test uses a key of its own, because the set is
-// module state and deliberately outlives any one of them.
-
-describe("a spent chat key reads back as empty", () => {
-  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
-
-  /** `fetch` answering `GET /api/drafts` out of `chat`, and recording every call
-   *  — the writes here never reach a server, which is the point: what is being
-   *  asserted is what the module answers WHILE the DELETE is still in the air. */
-  function serve(chat: Record<string, ChatDraft>) {
-    const calls: string[] = [];
-    const real = globalThis.fetch;
-    globalThis.fetch = ((url: string, init?: RequestInit) => {
-      calls.push(`${init?.method ?? "GET"} ${url}`);
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ chat, task: {} }),
-      } as unknown as Response);
-    }) as typeof fetch;
-    return { calls, restore: () => { globalThis.fetch = real; } };
-  }
-
-  test("the remount's seed gets nothing, though the server still holds the words", async () => {
-    const key = "new:/Users/me/sent";
-    const f = serve({ [key]: held("ship the release notes") });
-    // Before the send: the draft is real and the composer would restore it.
-    expect(await fetchChatDraft(key)).not.toBeNull();
-    // The send. Deliberately NOT awaited — the DELETE being in flight is the
-    // whole of the race.
-    void deleteChatDraft(key);
-    expect(await fetchChatDraft(key)).toBeNull();
+  test("a key is a PATH on the wire, segment by segment", () => {
+    const key = "new:/Users/me/a b/x.py";
+    forgetDraftVersion(key);
+    const f = serve(() => ({ json: { ok: true, key, draft: chatRecord("a", 1) } }));
+    void saveChatDraft(key, "a");
+    // The separators stand; each segment is encoded. `encodeURIComponent` on the
+    // whole key would send `%2F`, which every layer between here and the route
+    // gets to normalise differently.
+    expect(f.calls[0]!.url).toBe("/api/drafts/chat/new%3A/Users/me/a%20b/x.py");
     f.restore();
-  });
-
-  test("and answers without a request at all", async () => {
-    const key = "new:/Users/me/sent-quietly";
-    const f = serve({ [key]: held("ship it") });
-    void deleteChatDraft(key);
-    const before = f.calls.length;
-    expect(await fetchChatDraft(key)).toBeNull();
-    expect(f.calls.length).toBe(before);
-    f.restore();
-  });
-
-  test("typing into the key again brings it back", async () => {
-    // Spent is not dead: a reader who starts a second unsent message in the same
-    // folder has a draft again, and the next composer to open there must see it.
-    const key = "new:/Users/me/typed-on";
-    const f = serve({ [key]: held("and one more thing") });
-    void deleteChatDraft(key);
-    expect(await fetchChatDraft(key)).toBeNull();
-    await saveChatDraft(key, "and one more thing");
-    expect(await fetchChatDraft(key)).not.toBeNull();
-    f.restore();
-  });
-
-  test("an attachment alone is content enough", async () => {
-    const key = "new:/Users/me/dropped-a-file";
-    const f = serve({ [key]: held("") });
-    void deleteChatDraft(key);
-    await saveChatDraft(key, "", [{ path: "/tmp/a.png", name: "a.png", kind: "image" }]);
-    expect(await fetchChatDraft(key)).not.toBeNull();
-    f.restore();
-  });
-
-  test("an empty write does NOT un-spend it — an empty write is itself a delete", async () => {
-    // The composer's autosave fires on the pause after the send cleared the box.
-    // Treating that as "there are words here again" would re-open the window.
-    const key = "new:/Users/me/cleared";
-    const f = serve({ [key]: held("ghost") });
-    void deleteChatDraft(key);
-    await saveChatDraft(key, "   ");
-    expect(await fetchChatDraft(key)).toBeNull();
-    f.restore();
-  });
-
-  test("one key's spending says nothing about any other", async () => {
-    const sent = "new:/Users/me/one";
-    const other = "new:/Users/me/two";
-    const f = serve({ [sent]: held("sent"), [other]: held("still unsent") });
-    void deleteChatDraft(sent);
-    expect(await fetchChatDraft(sent)).toBeNull();
-    expect((await fetchChatDraft(other))?.text).toBe("still unsent");
-    f.restore();
+    forgetDraftVersion(key);
   });
 });
 
-// ---- a read already in the air when the send lands ---------------------------
+describe("fetchChatDraft", () => {
+  test("answers the record the store holds, and remembers its version", async () => {
+    const key = "new:/Users/me/seed";
+    forgetDraftVersion(key);
+    const f = serve(() => ({ json: { chat: { [key]: chatRecord("words", 6) }, task: {} } }));
+    expect((await fetchChatDraft(key))?.text).toBe("words");
+    expect(draftVersion(key)).toBe(6);
+    expect(await fetchChatDraft("new:/Users/me/nothing")).toBeNull();
+    f.restore();
+    forgetDraftVersion(key);
+  });
 
-describe("fetchChatDraft re-checks spent after the answer", () => {
-  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
-
-  test("a GET dispatched before the send still answers null", async () => {
-    // THE BUG (Bugbot, PR #1118, 2026-09-11): the guard ran before the request
-    // only. A seed that passed it while the key was still live answers out of a
-    // snapshot taken before the DELETE landed — and hands the composer the
-    // sentence that was sent in the meantime.
-    const key = "new:/Users/me/mid-flight";
-    const waiting: (() => void)[] = [];
+  test("and a read that never answered is null rather than a throw", async () => {
     const real = globalThis.fetch;
-    globalThis.fetch = (() =>
-      new Promise<Response>((resolve) => {
-        waiting.push(() =>
-          resolve({
-            ok: true,
-            json: () => Promise.resolve({ chat: { [key]: held("ship the release notes") }, task: {} }),
-          } as unknown as Response),
-        );
-      })) as unknown as typeof fetch;
-
-    // The remount's seed goes out while the key is still live…
-    const reading = fetchChatDraft(key);
-    await Promise.resolve();
-    // …and the send marks it spent while that GET is still unanswered.
-    void deleteChatDraft(key);
-    for (const answer of waiting.splice(0)) answer();
-
-    expect(await reading).toBeNull();
+    globalThis.fetch = (() => Promise.reject(new Error("offline"))) as typeof fetch;
+    expect(await fetchChatDraft("new:/Users/me/offline")).toBeNull();
+    expect(await fetchDrafts()).toBeNull();
     globalThis.fetch = real;
-  });
-});
-
-// ---- a seed never overtakes the write it should be reading --------------------
-// Pressing a never-sent chat's row in Recent flips `inChat`, which throws the
-// LANDING composer away and mounts the CHAT one on the same `new:<file>` key.
-// The landing's unmount flush dispatches its PUT first, then the new mount's
-// seed GETs that key — and a GET answered out of a pre-write snapshot hands the
-// new box the previous draft, which its own autosave then writes back over the
-// newer one (Bugbot, PR #1145).
-describe("fetchChatDraft waits for a write still on the wire", () => {
-  test("the seed reads the flushed words, not the ones they replaced", async () => {
-    const key = "new:/Users/me/draft-press";
-    let stored = "the words as they were one draft ago";
-    const releasePut: (() => void)[] = [];
-    const real = globalThis.fetch;
-    globalThis.fetch = ((_url: string, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        // The unmount flush: held open, exactly as a PUT still in the air is.
-        const body = JSON.parse(String(init.body)) as { text: string };
-        return new Promise<Response>((resolve) => {
-          releasePut.push(() => {
-            stored = body.text;
-            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
-          });
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({ chat: { [key]: { text: stored, attachments: [], updated_at: 1 } }, task: {} }),
-      } as unknown as Response);
-    }) as unknown as typeof fetch;
-
-    // The landing composer's unmount flush goes out…
-    const writing = saveChatDraft(key, "the newest sentence");
-    // …and the chat composer mounts and seeds on the same key while it is in
-    // the air. Without the wait this GET is answered first, out of the old
-    // snapshot.
-    const seeding = fetchChatDraft(key);
-    await Promise.resolve();
-    for (const answer of releasePut.splice(0)) answer();
-    await writing;
-
-    expect((await seeding)?.text).toBe("the newest sentence");
-    globalThis.fetch = real;
-  });
-
-  test("TWO writes in the air, and the read waits for BOTH", async () => {
-    // The debounce fires, the reader types one more word, and the press unmounts
-    // the box before that PUT is answered — so two writes are on the wire at
-    // once. A read that waited only for the NEWEST could be dispatched while the
-    // older one was still unlanded (Bugbot, PR #1145, second pass).
-    //
-    // Asserted as the CONTRACT rather than as a returned string: what matters is
-    // that the GET is not dispatched until every write that was already in the
-    // air has settled, and a test that only compares the answer passes or fails
-    // on microtask ordering instead.
-    const key = "new:/Users/me/two-writes";
-    const landed: string[] = [];
-    /** `landed`, as it stood the moment the GET went out. Held in an object so
-     *  the assignment below (inside a callback) is not narrowed away. */
-    const seen: { atGet: string[] | null } = { atGet: null };
-    const gate: Record<string, () => void> = {};
-    const real = globalThis.fetch;
-    globalThis.fetch = ((_url: string, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        const body = JSON.parse(String(init.body)) as { text: string };
-        return new Promise<Response>((resolve) => {
-          gate[body.text] = () => {
-            landed.push(body.text);
-            resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
-          };
-        });
-      }
-      seen.atGet = [...landed];
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            chat: { [key]: { text: landed[landed.length - 1] ?? "", attachments: [], updated_at: 1 } },
-            task: {},
-          }),
-      } as unknown as Response);
-    }) as unknown as typeof fetch;
-
-    const first = saveChatDraft(key, "the debounced words");
-    const second = saveChatDraft(key, "the flushed words");
-    const seeding = fetchChatDraft(key);
-    await Promise.resolve();
-    // The NEWER write answers FIRST; the older one is still out there.
-    gate["the flushed words"]?.();
-    await second;
-    await Promise.resolve();
-    await Promise.resolve();
-    // The read must not have gone out yet — one write is still unlanded.
-    expect(seen.atGet).toBeNull();
-    gate["the debounced words"]?.();
-    await first;
-    await seeding;
-
-    // Both had landed before the GET was dispatched.
-    expect(seen.atGet).toEqual(["the flushed words", "the debounced words"]);
-    globalThis.fetch = real;
-  });
-
-  test("a settled write leaves nothing behind for the next read to wait on", async () => {
-    const key = "new:/Users/me/draft-settled";
-    const real = globalThis.fetch;
-    globalThis.fetch = ((_url: string, init?: RequestInit) =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve(
-            init?.method === "PUT"
-              ? {}
-              : { chat: { [key]: { text: "done", attachments: [], updated_at: 1 } }, task: {} },
-          ),
-      } as unknown as Response)) as unknown as typeof fetch;
-    await saveChatDraft(key, "done");
-    expect((await fetchChatDraft(key))?.text).toBe("done");
-    globalThis.fetch = real;
-  });
-});
-
-// ---- a spend can be heard, and taken back ------------------------------------
-// The Board can send a conversation's draft from a drag (shell/draft-run
-// `chatBody`) while a composer sits open on the same key. Two facts follow
-// (Bugbot, PR #1140): the composer must HEAR the spend and empty itself, and a
-// spend whose send then FAILS must be undone so the next drag does not read
-// "gone" for words the server still holds.
-describe("markChatDraftSpent announces, unmarkChatDraftSpent undoes", () => {
-  const held = (text: string): ChatDraft => ({ text, attachments: [], updated_at: 1 });
-  function serve(chat: Record<string, ChatDraft>) {
-    const real = globalThis.fetch;
-    globalThis.fetch = (() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ chat, task: {} }),
-      } as unknown as Response)) as unknown as typeof fetch;
-    return () => {
-      globalThis.fetch = real;
-    };
-  }
-
-  test("a listener hears the key, and only while subscribed", async () => {
-    const heard: string[] = [];
-    const off = onChatDraftSpent((k) => {
-      heard.push(k);
-    });
-    await markChatDraftSpent("s-1");
-    off();
-    await markChatDraftSpent("s-2");
-    expect(heard).toEqual(["s-1"]);
-  });
-
-  test("the spend waits for what the listener is still writing", async () => {
-    let settled = false;
-    const off = onChatDraftSpent(
-      () =>
-        new Promise<void>((r) =>
-          setTimeout(() => {
-            settled = true;
-            r();
-          }, 5),
-        ),
-    );
-    const p = markChatDraftSpent("s-5");
-    expect(settled).toBe(false);
-    await p;
-    expect(settled).toBe(true);
-    off();
-  });
-
-  test("the composer's own send does NOT announce — it would empty its own tray mid-send", () => {
-    const heard: string[] = [];
-    const off = onChatDraftSpent((k) => {
-      heard.push(k);
-    });
-    const restore = serve({});
-    void deleteChatDraft("s-3");
-    restore();
-    off();
-    expect(heard).toEqual([]);
-  });
-
-  test("a failed send un-spends: the words read back again", async () => {
-    const key = "s-4";
-    const restore = serve({ [key]: held("still on the server") });
-    markChatDraftSpent(key);
-    expect(await fetchChatDraft(key)).toBeNull();
-    unmarkChatDraftSpent(key);
-    expect((await fetchChatDraft(key))?.text).toBe("still on the server");
-    restore();
   });
 });

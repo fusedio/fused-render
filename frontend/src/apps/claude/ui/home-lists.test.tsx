@@ -8,6 +8,8 @@
 // own — `artLabel`'s fallback chain, `snapDeltaLabel`'s two shapes, the
 // per-session run grouping that stops a second chain's "v2" reading as a
 // duplicate row.
+import { readFileSync } from "node:fs";
+
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
@@ -1199,61 +1201,41 @@ test("EVERY press seeds the header's identity — the hop as much as the in-plac
   resetSessionSeeds();
 });
 
-// ---- THE EXPLORER'S CLAUDE SIDE PANEL HIDES UPCOMING (Akshil, 2026-09-16) --
+// ---- EVERY HOST SHOWS UPCOMING, THE EXPLORER PANEL INCLUDED (design
+// "drafts: one record", §6 — #1168 reverted) --------------------------------
 //
-// One host — the explorer's `?_side=claude` sidebar and its folder-pane
-// counterpart — opened this list to talk about the file or folder already on
-// screen, not to browse a queue of unstarted work sitting beside it. So its
-// "Recent chats" drops the Upcoming lane: a scheduled-for-later task and
-// either kind of draft, the same bucket `sortForList`/`groupByColumn`
-// (shell/tasks-lib.isUpcomingLane) files them under. Every other host of this
-// list — the landing this suite otherwise tests, the Tasks page cards wall,
-// side peek, full-page chat — never sets `hideUpcoming` and keeps showing
-// every lane exactly as before.
+// A draft is a task row with a TASK number on it, and a reader who opens the
+// explorer's `?_side=claude` sidebar to talk about the file on screen is the
+// reader most likely to have left half a sentence in that very folder's
+// composer. Hiding the lane there hid the one row they could act on and made
+// the panel disagree with List, Board and Cards about what exists. So there is
+// no per-host filter left at all: `Lists` draws what it is given, and no host
+// passes an opinion about lanes.
 
-test("hideUpcoming drops the Upcoming lane; unset, every other host still shows it", () => {
+test("every host draws the Upcoming lane; no host can filter it out", () => {
   const rows = [
     chat("done1", { status: "done" }),
     chat("later1", { key: "later1", session_id: "later1", status: "upcoming" }),
     chatDraft(),
   ];
-
-  // UNSET — the landing and every other host. All three lanes render, drafts
-  // included, exactly as they do today.
   const shown = mount(
     <Lists file="/repo/x.py" recent={rows} artifacts={[]} onOpen={() => {}} />,
   );
   expect(taskRows(shown).length).toBe(3);
 
-  // SET — the explorer's Claude side panel alone. The settled chat stays; the
-  // scheduled task and the draft both go, and neither leaves so much as a
-  // dimmed row or a chip behind — they are not drawn at all.
-  const hidden = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={rows}
-      artifacts={[]}
-      onOpen={() => {}}
-      hideUpcoming
-    />,
-  );
-  const remaining = taskRows(hidden);
-  expect(remaining.length).toBe(1);
-  expect(text(all(hidden.toJSON() as Json, "tasks-title")[0])).not.toContain(
-    "ship the thing",
-  );
-
-  // Nothing left once Upcoming is the whole list: the section disappears
-  // entirely — no heading, no dot, no ghost of a filtered-out row — the same
-  // honest-empty rule an unfiltered `[]` already gets (T:18452-18477).
-  const allUpcoming = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={[rows[1], rows[2]]}
-      artifacts={[]}
-      onOpen={() => {}}
-      hideUpcoming
-    />,
-  );
-  expect(all(allUpcoming.toJSON() as Json, "c-list-panel").length).toBe(0);
+  // The prop is GONE rather than merely unset by these hosts: the two explorer
+  // panels and the two components between them carry no trace of it, so a
+  // future embed cannot re-acquire the cut by copying a neighbour.
+  for (const f of [
+    "../ChatMount.tsx",
+    "../ClaudeChat.tsx",
+    "./Home.tsx",
+    "./Lists.tsx",
+    "../../explorer/Preview.tsx",
+    "../../explorer/ListingPreviewPane.tsx",
+  ]) {
+    expect(readFileSync(new URL(f, import.meta.url), "utf8")).not.toContain(
+      "hideUpcoming",
+    );
+  }
 });

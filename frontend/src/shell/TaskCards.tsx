@@ -39,6 +39,7 @@ import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
+  discardDraft,
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
@@ -62,6 +63,7 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
+  hasDraft,
   opensElsewhere,
   peekOpenable,
   spansProjects,
@@ -571,6 +573,9 @@ function TaskCard({
   // hint says the only thing that would help. Disabled means the dialog never
   // opens, so nobody reads the refusal for the first time inside a confirmation.
   const [erasing, setErasing] = useState(false);
+  /** One discard at a time: the trash above stays down while its DELETE is out,
+   *  so a double press cannot send two. */
+  const [discarding, setDiscarding] = useState(false);
   const blocked = eraseBlocked(task);
   const refile = async () => {
     if (!filing || acting) return;
@@ -742,6 +747,35 @@ function TaskCard({
             a folder that opens, and a folder that is not gone has none). */}
         {(filing || explorer || gone) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
+          {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
+              trash, on this wall too (design "one record", §5: the same actions
+              everywhere). It is the ONE way a draft is ever drawn here: a card
+              is a transcript, so a draft ROW has no card (tasks-lib.cardsForTasks)
+              and what a wall can carry is an ordinary task whose composer is
+              holding something — the the Draft chip in the head above. The
+              gesture is the same call the other two views make (`discardDraft`),
+              and, like them, it asks nothing first: unsent text is not a
+              destructive delete, and the New task modal's own Discard has never
+              confirmed either.
+
+              Stands down on a card whose folder is gone, where the trash beside
+              it is the stronger claim — the same rule the List row keeps. */}
+          {hasDraft(task) && !gone && (
+            <button
+              type="button"
+              className="task-card-door task-card-door--danger"
+              disabled={discarding}
+              data-hint="Discard draft"
+              aria-label={`Discard draft ${shortTaskId(task.task_id)}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDiscarding(true);
+                void discardDraft(task).finally(() => setDiscarding(false));
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
               2026-09-07: "should only show up if it has a folder missing
               error"): a task that can still be opened is archived, not

@@ -3,26 +3,31 @@
 //
 // The composer used to try to schedule on its own; everything past a bare
 // deferral is the /tasks page's form, so what travels is what the page cannot
-// know and this composer always does: the FOLDER, the words already in the box,
-// and the conversation they were written in. What does NOT travel is how this
-// chat is configured — a task runs unattended and the page owns those answers.
+// know and this composer always does: WHICH DRAFT this is, and where to come
+// back to. That is the whole of the URL now — `?new=1&draft=<chat key>&from=…`
+// — because the words themselves no longer travel at all.
 //
-// …and, since owner E2E R1, F4 (2026-09-10), THE ATTACHMENTS: a draft that
-// carries three screenshots is one thing the user assembled, and arriving at the
-// task form with the words but not the pictures made them do the attaching
-// twice.
+// WHY NOTHING TRAVELS ANY MORE (design "Drafts: one record, one key, versioned,
+// pushed", §1). The hop used to carry the sentence three ways at once: a
+// sessionStorage stash, a `?message=` param, and a `draft:<id>` the task form
+// minted on arrival — three copies of one half-written thing, and every bug in
+// this feature was two of them disagreeing. The draft IS a server record with a
+// key; the key is all that has to cross a navigation, and both ends open the
+// same record.
+//
+// WHAT THE BUTTON STILL DOES BEFORE LEAVING is copy the tray into the task-shots
+// dir (`copyToTaskShots`) and save that onto the record, because a chat
+// attachment's path is a tempdir on a 12 h TTL and `POST /api/schedule` refuses
+// any path outside `schedule.shots_dir()`. The bytes are the one thing a key
+// cannot stand in for.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Popover, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { rawUrl, uploadTaskShot } from "@platform/lib/api";
 import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
-import {
-  basenameOf,
-  schedulerUrl,
-  stashAttachments,
-  stashDraft,
-  type SchedAttachment,
-} from "./sched-draft";
+import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
+import type { DraftAttachment } from "@platform/lib/drafts";
+import { SCHEDULE_URL } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface SchedButtonProps {
@@ -112,13 +117,36 @@ function CalendarIcon() {
  * reason the button does nothing at all — the words and the folder are the
  * handoff's point and they still travel (owner E2E R1, F4 (2026-09-10)).
  */
+/** The name a chip falls back to when the attachment carried none. */
+export function basenameOf(path: string): string {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return (cut === -1 ? path : path.slice(cut + 1)) || path;
+}
+
+/**
+ * THE HOP'S URL — the key and the way back, and nothing else (design §1).
+ *
+ * `new=1` is what makes the hop feel like one control rather than two: the form
+ * opens immediately, so the click lands on a filled-in dialog (T:12019-12029).
+ * `draft` is the CHAT KEY (`platform/lib/drafts.chatDraftKey`) — the record the
+ * task form is about to edit, not a new one to mint. `from` is where "Back to
+ * chat" lands, which the host supplies because a native chat has no
+ * `window.top` split to make (T:11979).
+ */
+export function schedulerUrl(draftKey: string, from: string): string {
+  return (
+    `${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`
+    + (from ? `&from=${encodeURIComponent(from)}` : "")
+  );
+}
+
 export async function copyToTaskShots(
   items: readonly Attachment[],
-): Promise<SchedAttachment[]> {
+): Promise<DraftAttachment[]> {
   const carry = items.filter((a) => !a.pending && !!a.view);
   if (!carry.length) return [];
   const done = await Promise.allSettled(
-    carry.map(async (att): Promise<SchedAttachment> => {
+    carry.map(async (att): Promise<DraftAttachment> => {
       const view = att.view as string;
       const name = att.name || basenameOf(view);
       const res = await fetch(rawUrl(view));
@@ -179,39 +207,56 @@ export function SchedButton({
     const text = draft().trim();
     const tray = attachments?.() ?? [];
     setOpen(false);
-    // The draft SURVIVES the trip: leaving unloads this view, and a rebuilt
-    // composer used to come back empty (T:12011).
-    stashDraft(file, text);
-    const leave = (carried: SchedAttachment[]): void => {
-      // Both roads, for the two directions: the URL is how the task form opens
-      // on them, the stash is how the composer gets them back.
-      stashAttachments(file, carried);
-      onNavigate?.(
-        schedulerUrl({ file, draft: text, sessionId, back, attachments: carried }),
-      );
+    // THE KEY, NOT THE WORDS (design §1). This is the record the composer's own
+    // autosave has been writing under, and it is the record the task form is
+    // about to go on editing.
+    const key = chatDraftKey(sessionId, file);
+    const leave = (): void => {
+      leaving.current = false;
+      onNavigate?.(schedulerUrl(key, back));
     };
+    // NOTHING TO SAVE, SO NOTHING TO WAIT FOR. An empty composer stored no
+    // draft, and writing an empty record here would be a DELETE — which on a
+    // chat that already carries a bound form (the ✎ chip) would throw that
+    // form's time, repeat and model away on the way to a card that was about to
+    // show them. So an empty hop simply leaves, in this tick, and the card opens
+    // on whatever the record already holds.
+    const carry = tray.filter((a) => !a.pending && !!a.view);
+    if (!text && !carry.length) {
+      leave();
+      return;
+    }
     // AN EMPTY TRAY STILL LEAVES IN THIS TICK. The copy below is a round trip
     // per file and there is nothing to round-trip here, so the overwhelmingly
     // common handoff keeps the immediacy T:12019 built it for — a Continue that
     // waits a microtask for an answer it already knows is a control that feels
     // slower for no reason.
-    if (!tray.some((a) => !a.pending && !!a.view)) {
-      leaving.current = false;
-      leave([]);
+    //
+    // …but the WRITE still goes out, un-awaited: the composer's own debounce may
+    // be holding the last 600 ms of typing, and the card on the other side seeds
+    // from the record. One PUT of exactly what is on screen closes that window,
+    // and this is the same value the composer's unmount flush is about to send
+    // anyway, so the two cannot disagree.
+    if (!carry.length) {
+      void saveChatDraft(key, text);
+      leave();
       return;
     }
     // THE TRAY IS NOT EMPTIED. `take()` is the send's gesture; this one is a
     // handoff the user can walk back from with "Back to chat", and a tray
-    // cleared here would leave them with neither copy while the task form is
-    // open (owner E2E R1, F4 (2026-09-10)).
+    // cleared here would leave them with neither copy.
+    //
+    // AND THE COPIES ARE WRITTEN ONTO THE RECORD, because that is where the card
+    // reads them from now (there is no `?attachments=` param any more) and
+    // because the chat's own paths expire: a tempdir on a 12 h TTL that
+    // `POST /api/schedule` refuses outright. The record ends up holding the
+    // task-shots paths, which the composer can still draw from if the reader
+    // walks back.
     void copyToTaskShots(tray)
-      .catch((): SchedAttachment[] => [])
-      .then(leave)
-      .finally(() => {
-        // A refused navigation (no `onNavigate`, a host that declined) must not
-        // latch the button for the rest of the page's life.
-        leaving.current = false;
-      });
+      .catch((): DraftAttachment[] => [])
+      .then((carried) => saveChatDraft(key, text, carried))
+      .catch(() => undefined)
+      .then(leave);
   }, [disabled, draft, attachments, file, sessionId, back, onNavigate]);
 
   const cancel = useCallback(() => {

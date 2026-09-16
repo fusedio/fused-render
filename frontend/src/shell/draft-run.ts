@@ -31,8 +31,6 @@ import type { Task, TaskAttachment } from "@platform/lib/api";
 import {
   fetchChatDraft,
   fetchDrafts,
-  markChatDraftSpent,
-  unmarkChatDraftSpent,
 } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { copyToTaskShots } from "@apps/claude/ui/SchedButton";
@@ -166,9 +164,6 @@ export function boundDraftPayload(
     // own number moves across on `draft_id` instead, server-side.
     replacesEntryId: "",
     draftId,
-    // …and the chat draft these words were typed in, for the card whose first
-    // save never got to move it, so the server drops that copy too.
-    fromChatKey: saved.fromChatKey ?? "",
     timePicked: false,
     images: attachments.map((a) => a.path),
     attachments,
@@ -290,10 +285,9 @@ export function chatDraftPayload(
     newTaskEachRun: false,
     replacesEntryId: "",
     // The chat draft is deleted by `session_id` alone (above), so there is no
-    // draft id to name and no origin key to spend: these words were typed in
-    // the conversation they are going to.
+    // draft id to name: these words were typed in the conversation they are
+    // going to.
     draftId: "",
-    fromChatKey: "",
     timePicked: false,
     images: attachments.map((a) => a.path),
     attachments,
@@ -355,19 +349,7 @@ export async function runRowDraftNow(
   if (action.draftKind === "form") {
     made = await scheduleMessage(await boundFormBody(action.draftId));
   } else {
-    const body = await chatBody(task, action.sessionId);
-    try {
-      made = await scheduleMessage(body);
-    } catch (e) {
-      // THE SPEND IS TAKEN BACK when the send fails (Bugbot, PR #1140): the
-      // words are still on the server, the board's note invites another drag,
-      // and a key left spent would answer that drag with "gone" until a
-      // reload. `chatBody` spent it before the request on purpose (see
-      // there); this is the matching undo for the one outcome where the
-      // request did not do what the spend promised.
-      unmarkChatDraftSpent(action.sessionId);
-      throw e;
-    }
+    made = await scheduleMessage(await chatBody(task, action.sessionId));
   }
   // The new entry's id, for the same reason `runDraftNow` hands one back: the
   // words were dragged into In Progress, so the caller fires this immediately
@@ -399,10 +381,6 @@ async function boundFormBody(draftId: string): Promise<SchedulePayload> {
 
 /** The composer's unsent words, read back by session and translated. */
 async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload> {
-  // `fetchChatDraft` and not a raw read of the snapshot, for the reason that
-  // function exists: a key whose words this page has ALREADY sent reads as empty
-  // here even while the server still holds them (`spent`). A drop is exactly the
-  // gesture that could otherwise re-send a sentence the reader watched go.
   const draft = await fetchChatDraft(sessionId);
   if (!draft) throw new Error(GONE);
   const body = chatDraftPayload({
@@ -412,17 +390,13 @@ async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload>
     attachments: await carriedAttachments(draft.attachments ?? []),
   });
   if (!body) throw new Error(GONE);
-  // SPENT NOW, BEFORE THE SEND (`markChatDraftSpent`) — the half of the
-  // composer's own send this path still owes the drafts module. No request goes
-  // with it: the DELETE is the server's, inside the create call (`session_id`,
-  // above). But the delete is not what `spent` is for. The board reloads the
-  // instant the drop lands, and a `fetchChatDraft` racing the create answers out
-  // of a snapshot taken before it — the words back on the row as still unsent,
-  // one drag away from being sent a second time.
-  // …and AWAITED, because the composer that hears it settles its in-flight
-  // autosave before answering — the one write that could otherwise land after
-  // the create's delete and put the sentence back (see `markChatDraftSpent`).
-  await markChatDraftSpent(sessionId);
+  // NOTHING IS "SPENT" HERE ANY MORE (design "one record", §2). The create's own
+  // `session_id` deletes the chat draft server-side, and the announcement that
+  // follows reaches every composer mounted on that key through the change feed
+  // (`tasksPulse.onDraftChange`) — so the box empties on the news rather than on
+  // a promise this module used to make on the sender's behalf. A composer write
+  // still in the air when the delete lands is refused as stale, which is what
+  // the version is for; it can no longer put the sentence back.
   return body;
 }
 

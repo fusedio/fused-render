@@ -17,3 +17,10 @@ export {
   peekFrameSrc,
   sideFrameSrc,
 } from "./legacy-src";
+
+/** WHERE A DRAFT ROW'S PRESS GOES — the chat that holds it, or the New task
+ *  modal (design "one record", §1). Re-exported so the Tasks page presses the
+ *  same rule the chat's own Recent list does: a draft row that opened two
+ *  different places from two views would be two behaviours to learn. A leaf
+ *  helper, so this costs the shell chunk nothing but the function. */
+export { draftHref } from "./ui/list-rows";
