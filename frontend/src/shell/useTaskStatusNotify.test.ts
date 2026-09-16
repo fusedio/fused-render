@@ -166,4 +166,34 @@ describe("useTaskStatusNotify", () => {
     expect(getRetainedNotifications()).toEqual([]);
     h.unmount();
   });
+
+  // Finding 9 (code review 2026-09-16): a non-narrator window must keep
+  // tracking each task's column silently so that the moment it BECOMES the
+  // narrator (the old one's tab closed), a transition landing on that very
+  // tick is recognized correctly rather than looking like a first sighting.
+  test("a transition landing on the narrator-handoff tick is still notified, not dropped", async () => {
+    plantForeignNarrator();
+    const h = mountHook();
+    await flush();
+    // While non-narrator: in_progress -> blocked happens silently. The old,
+    // buggy code never touched `prev` here at all.
+    await publish([task({ status: "in_progress" })]);
+    await publish([task({ status: "blocked" })]);
+    expect(getPopupNotification()).toBeNull();
+    expect(getRetainedNotifications()).toEqual([]);
+
+    // The foreign narrator's tab closes — this window is elected narrator.
+    presenceStore.delete(PRESENCE_KEY);
+
+    // The very next tick both hands this window the narrator role AND
+    // carries a real transition (blocked -> needs_attention). Without the
+    // fix, `prev` was never seeded with "blocked" while this window was
+    // non-narrator, so this reads as a first sighting of the task and
+    // notifies nothing.
+    await publish([task({ status: "needs_attention" })]);
+
+    const popup = getPopupNotification();
+    expect(popup?.title).toContain("needs your input");
+    h.unmount();
+  });
 });

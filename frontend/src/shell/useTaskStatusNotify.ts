@@ -28,8 +28,24 @@ export function useTaskStatusNotify(): void {
   const previous = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
-    // Re-checked on every pulse update, not just once at mount — see header.
-    if (!isNarrator()) return;
+    // Finding 9 (code review 2026-09-16): the narrator check used to short-
+    // circuit BEFORE `prev` was touched at all, so a non-narrator window's
+    // book of "what column was this task in last time I looked" simply never
+    // advanced. That's fine while narration stays put, but the moment THIS
+    // window becomes the new narrator (the old one's tab closed), its first
+    // tick as narrator would find `prev` still at whatever it was the last
+    // time this window looked (often nothing, if it was never narrator
+    // before) — so a transition that genuinely happened while this window
+    // was non-narrating either replays a stale one or, if the transition
+    // lands in that very handoff tick, gets read as "first sighting" and its
+    // notification is silently dropped.
+    //
+    // The book-keeping (`prev.set`/pruning) now runs on EVERY tick regardless
+    // of narrator status, so `prev` is always accurate the instant a window
+    // is handed the narrator role. Only the actual `notify()` call stays
+    // gated on `isNarrator()` — see header for why only the elected window
+    // may raise these.
+    const narrator = isNarrator();
     const prev = previous.current;
     const liveKeys = new Set<string>();
     for (const task of tasks) {
@@ -38,7 +54,7 @@ export function useTaskStatusNotify(): void {
       const column = taskColumn(task);
       const input = notificationForTransition(was, task);
       prev.set(task.key, column);
-      if (input) notify(input);
+      if (narrator && input) notify(input);
     }
     for (const key of Array.from(prev.keys())) {
       if (!liveKeys.has(key)) prev.delete(key);
