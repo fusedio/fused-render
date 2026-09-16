@@ -720,6 +720,7 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
     sid = str(session_id or "")
     run = str(run_id or "")
     derived = holders(now)
+    spent = _spent_sets()
     with _res_lock:
         _prune_reservations()
         found = _reservations.get(key)
@@ -728,10 +729,20 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
         # Read HERE, under the lock, and passed down: `_anonymous_self` must not
         # take this lock from inside a caller that already holds it.
         age = 0.0 if found is None else max(0.0, time.monotonic() - found[3])
+        # The reserved holder is re-decided from the table here, so the spent
+        # rule has to be applied here too — otherwise a reservation `holders()`
+        # has already retired would come straight back as this folder's holder.
+        # The table's stamp is monotonic and a run id's is wall time, so the
+        # promise is dated the way `_live_reservations` dates it: now, less its
+        # age.
+        spent_here = (found is not None
+                      and _reservation_spent(reserved_by or "",
+                                             reserved_run_id,
+                                             time.time() - age, spent))
         holder = derived.get(key)
         if holder is not None and holder["kind"] == "reserved":
             holder = None  # stale by construction; the table below is the truth
-        if holder is None and reserved_by is not None:
+        if holder is None and reserved_by is not None and not spent_here:
             holder = {"session_id": reserved_by, "task_key": reserved_by,
                       "run_id": reserved_run_id, "kind": "reserved"}
         elif (holder is not None and reserved_by is not None
@@ -980,11 +991,22 @@ def _prune_reservations() -> None:
         _reservations.pop(key, None)
 
 
-def _live_reservations() -> dict[str, tuple[str, str]]:
-    """`{key: (session id, run id)}` for every unexpired reservation."""
+def _live_reservations() -> dict[str, tuple[str, str, float]]:
+    """`{key: (session id, run id, the WALL-CLOCK moment it was taken)}` for
+    every unexpired reservation.
+
+    The third field is the promise's own timestamp, and it is handed out in
+    wall time although the table keeps monotonic: the only thing that compares
+    with it is a run id's timestamp, which is wall time off the clock the agent
+    stamped the directory name with (`_run_time`). Converted here, once, rather
+    than by each reader — `time.time() - (now - taken)` is the same subtraction
+    every one of them would have to make."""
     with _res_lock:
         _prune_reservations()
-        return {k: (found[0], found[2]) for k, found in _reservations.items()}
+        now_mono, now_wall = time.monotonic(), time.time()
+        return {k: (found[0], found[2],
+                    now_wall - max(0.0, now_mono - found[3]))
+                for k, found in _reservations.items()}
 
 
 # ------------------------------------------------------------------ the holders
@@ -1070,9 +1092,10 @@ def holders(now: float | None = None) -> dict[str, dict]:
     at worst a second task in a folder — which is what happened every day before
     this existed.
     """
-    out = _derived_holders(now)
-    for key, (session_id, run_id) in _live_reservations().items():
-        if key in out:
+    spent = _spent_sets()
+    out = _derived_holders(now, spent)
+    for key, (session_id, run_id, at) in _live_reservations().items():
+        if key in out or _reservation_spent(session_id, run_id, at, spent):
             continue
         out[key] = {"session_id": session_id, "run_id": run_id,
                     "task_key": session_id, "kind": "reserved"}
@@ -1080,13 +1103,147 @@ def holders(now: float | None = None) -> dict[str, dict]:
     return out
 
 
-def _derived_holders(now: float | None = None) -> dict[str, dict]:
+# A SEND MARK AND A RESERVATION ARE PROMISES, AND A PROMISE ENDS WHEN THE RUN IT
+# PROMISED ARRIVES (Akshil's QA, 2026-09-16). Both say "a process is about to be
+# in this folder", and both are believed on a fuse — the mark's 15 s, the
+# reservation's `RESERVATION_TTL` — because nothing rings when the spawn lands.
+# The run dir IS that landing, and once it exists the run rules are the only
+# truth about the folder, INCLUDING their right to say nothing is held: a run
+# parked on a card holds nothing (`run_waiting`), because it may wait until
+# tomorrow. Believing the promise past its own arrival put the folder straight
+# back under a hold nothing could clear, and a task blocked on a permission card
+# plus a new chat send in the same folder queued the send behind the parked
+# run's own mark.
+#
+# **ARRIVES MEANS NEWER THAN THE PROMISE, AND THAT IS THE WHOLE OF THE RULE.** A
+# second message into a chat that has already had a turn carries the OLD run's
+# id and a session the folder's whole history of run dirs answers to — so
+# "a run dir names this" retired that send's promise the instant it was made and
+# left the resume spawn unguarded, which is two chats admitted into one tree.
+# What separates the promise that has been kept from the promise that has not is
+# TIME: the run that keeps it is stamped after it was made, and every run that
+# came before is somebody's earlier turn.
+#
+# `_spent_sets` reads the tree ONCE per `holders()` and says WHEN what landed.
+
+
+def _run_time(run_id: str) -> float:
+    """When the agent made this run dir, off the id it named it with — `agent`'s
+    `time.strftime("%Y%m%d-%H%M%S") + "-" + hex`, so the id itself is the
+    timestamp and nothing has to be stat'd.
+
+    THE NAME AND NOT THE MTIME. A directory's mtime moves every time the run
+    writes a file, so a run started an hour ago and still working reads as
+    brand new — and "newer than the promise" would then be true of the very run
+    the promise is waiting to be relieved by. The name is stamped once, at
+    spawn, and never moves again.
+
+    Local time, because that is the clock `strftime` wrote it in. An id that
+    does not parse — a test fixture, a hand-made directory, a future layout —
+    reads 0.0, which is never newer than anything and therefore never retires a
+    promise: the safe answer is the one that keeps the folder held.
+    """
+    try:
+        return time.mktime(time.strptime(str(run_id)[:15], "%Y%m%d-%H%M%S"))
+    except (ValueError, OverflowError, TypeError):
+        return 0.0
+
+
+def _spent_sets() -> tuple[dict, dict, set]:
+    """What has landed in the runs tree, and when —
+    ``({session: newest run time}, {run id: run time}, {parked sessions})``.
+
+    Every run dir counts, dead or parked or idle: the question is not whether a
+    run holds its folder but whether the send that promised it ever arrived.
+    Per session it is the NEWEST run that decides — an older one is an earlier
+    turn of the same conversation and says nothing about this send.
+
+    THE PARKED SET IS THE ONE ANSWER WITH NO CLOCK ON IT, and it is the reported
+    bug's exact shape: a run sitting on a card nobody has answered is in flight,
+    holds nothing, and may sit there until tomorrow, so a promise naming that
+    session is over whichever of the two was stamped first. Everything else is
+    settled by time.
+
+    Cheap by construction: `scan_runs` is memoized, the timestamp is parsed off
+    the id, and `run_waiting` reads the permission list already cached on the
+    record (`run_permissions`) — no pid is probed and no directory is walked
+    twice."""
+    sessions: dict = {}
+    runs: dict = {}
+    parked: set = set()
+    agent = agent_module()
+    if agent is None:
+        return sessions, runs, parked
+    for run in scan_runs(agent):
+        run_id = str(run["run_id"])
+        at = _run_time(run_id)
+        runs[run_id] = at
+        named = {s for s in run["sessions"] if s}
+        for session_id in named:
+            if at > sessions.get(session_id, 0.0):
+                sessions[session_id] = at
+        if named and run_waiting(agent, run):
+            parked |= named
+    return sessions, runs, parked
+
+
+# The run id's stamp has one-second granularity and the promise's does not, so a
+# run spawned inside the same second as the send that asked for it rounds DOWN
+# and would read as older than its own promise. One second of slack is the whole
+# of the correction — anything wider would start retiring promises with last
+# turn's run dir.
+_RUN_STAMP_GRANULARITY = 1.0
+
+
+def _newer(at: float, promised_at: float) -> bool:
+    """Was a run dir stamped `at` made no earlier than a promise made at
+    `promised_at`? 0.0 — an id that would not parse — is never newer."""
+    return at > 0.0 and at + _RUN_STAMP_GRANULARITY >= promised_at
+
+
+def _mark_spent(session_id: str, promised_at: float, spent) -> bool:
+    """Has the run a sent mark promised already landed? The mark's only name is
+    its session, so the newest run answering to that session decides, and it
+    decides on time alone: a mark is made by the page that is sending RIGHT NOW,
+    and every run dir older than it belongs to an earlier turn."""
+    sessions, _runs, _parked = spent
+    return _newer(sessions.get(session_id, 0.0), promised_at)
+
+
+def _reservation_spent(session_id: str, run_id: str, promised_at: float,
+                       spent) -> bool:
+    """Has the spawn this reservation authorised already landed?
+
+    Three ways, and the first is the only one without a clock:
+
+    1. **A run naming its session is PARKED** — in flight, holding nothing, and
+       possibly until tomorrow. Time cannot settle this one: the card may have
+       been raised long before this send was admitted and the folder is free
+       either way.
+    2. **A run naming its session is newer than the reservation.** The spawn it
+       was covering has appeared and the run rules own the folder now.
+    3. **The run it NAMED is newer than the reservation** — the anonymous
+       first-send case, where a chat knows the run it started before it knows
+       its session. A second message carries its PREVIOUS run's id, which is
+       older than this promise and therefore retires nothing.
+    """
+    sessions, runs, parked = spent
+    if session_id and session_id in parked:
+        return True
+    if session_id and _newer(sessions.get(session_id, 0.0), promised_at):
+        return True
+    return bool(run_id) and _newer(runs.get(run_id, 0.0), promised_at)
+
+
+def _derived_holders(now: float | None = None,
+                     spent: tuple | None = None) -> dict[str, dict]:
     """`holders()` without the reservations — everything derived from disk.
 
     Split out so `reserve_if_free` can do the filesystem half outside its lock
     and the reservation half inside it, which is what makes admission one
     decision rather than a look followed by a write."""
     now = time.time() if now is None else now
+    spent = _spent_sets() if spent is None else spent
     out: dict[str, dict] = {}
     agent = agent_module()
     if agent is not None:
@@ -1128,6 +1285,14 @@ def _derived_holders(now: float | None = None) -> dict[str, dict]:
         key = queue_key(file) if file else ""
         if not key or key in out or not session_id:
             continue
+        try:
+            promised_at = float((mark or {}).get("at") or 0.0)
+        except (TypeError, ValueError):
+            promised_at = 0.0
+        # A mark we cannot date is dated NOW, which no run dir is newer than —
+        # an unreadable stamp must cost the mark nothing.
+        if _mark_spent(session_id, promised_at or time.time(), spent):
+            continue  # the run this send promised has landed (`_spent_sets`)
         out[key] = {"session_id": session_id, "run_id": "",
                     "task_key": session_id, "kind": "sending"}
     for entry in _sending_entries():
@@ -1186,7 +1351,7 @@ def _name_starting(out: dict[str, dict]) -> None:
         return
     reservations = _live_reservations()
     for key in anonymous:
-        session_id, run_id = reservations.get(key, ("", ""))
+        session_id, run_id, _at = reservations.get(key, ("", "", 0.0))
         if session_id:
             out[key] = dict(out[key], session_id=session_id,
                             task_key=session_id)

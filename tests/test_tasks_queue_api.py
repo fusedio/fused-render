@@ -519,10 +519,10 @@ def test_a_second_unanswered_card_still_needs_attention(
 
 def test_the_line_puts_held_answers_first_then_priority_then_the_older_due(
         client, projects_dir, folders, monkeypatch, flag, state_dir, park):
-    """The order the line moves in, in one row of three. A held answer outranks
-    every message in its folder (delivering it is what lets the parked run
-    finish and free the tree); a skipped message outranks an unskipped one; and
-    between equals the older `due` goes first.
+    """The order the line moves in, in one row of three. Promoted work goes
+    first, newest promotion first: the answer was given just now and the skip
+    carries no stamp at all (a promotion from before `priority_at` existed), so
+    the answer leads. Unpromoted work follows in `due` order.
 
     The answering task has a REAL parked run behind it — an unanswered request
     on disk — because that is the only shape a held answer ever comes in, and a
@@ -548,7 +548,9 @@ def test_the_line_puts_held_answers_first_then_priority_then_the_older_due(
     assert rows["sess-answer"]["queue_position"] == 1
     assert rows["sess-answer"]["queue_priority"] is True
     assert rows["sess-skipped"]["queue_position"] == 2
-    assert rows["sess-skipped"]["queue_priority"] is True
+    # Promoted, but SECOND — so not runs-next, and the client keeps drawing it
+    # a Run next button that would make it first.
+    assert rows["sess-skipped"]["queue_priority"] is False
     assert rows["sess-plain"]["queue_position"] == 3
     assert rows["sess-plain"]["queue_priority"] is False
     # "behind" NAMES THE TASK DIRECTLY AHEAD, and held answers are stepped over:
@@ -559,6 +561,105 @@ def test_the_line_puts_held_answers_first_then_priority_then_the_older_due(
     assert rows["sess-skipped"]["queue_ahead"] == rows["sess-holder"]["task_id"]
     assert rows["sess-plain"]["queue_ahead"] == rows["sess-skipped"]["task_id"]
     assert rows["sess-plain"]["queue_ahead_key"] == "sess-skipped"
+
+
+def test_the_holders_own_held_answer_is_not_a_row_in_its_own_line(
+        client, projects_dir, folders, monkeypatch, flag, park):
+    """TWO ROWS BOTH READING "1st in line · behind TASK-019", where TASK-019 was
+    itself a blocked task and not a run at all (Akshil, screenshot,
+    2026-09-16). An answer held for the session that HOLDS the folder is an
+    answer to the run in flight — the thing the rest of the line is waiting
+    for — not a task waiting on it, and counting it gave the folder two heads:
+    the answer at position 1 and the genuinely queued task at position 1 behind
+    it. The holder is not in its own line, its answers included."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-wait", alpha, "waiting")
+    park("r-holder", "sess-holder", alpha)
+    schedule._write([_entry("e1", "run the report", alpha,
+                            session_id="sess-wait")])
+    project_queue.hold_answer(alpha, "sess-holder", "r-holder", "req-1",
+                              {"raw": {"decision": "allow"}})
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    rows = _rows(client)
+    assert rows["sess-holder"]["queue_position"] == 0
+    assert rows["sess-holder"]["status"] != "queued"
+    assert rows["sess-wait"]["queue_position"] == 1
+    assert rows["sess-wait"]["queue_ahead_key"] == "sess-holder"
+
+
+def test_one_folder_has_exactly_one_first_place(
+        client, projects_dir, folders, monkeypatch, flag):
+    """The invariant behind the screenshot, asserted as an invariant: the
+    positions in a folder are 1..n, each used once. Two rows claiming first is
+    not a cosmetic slip — the line is the promise that one of them runs next,
+    and two firsts means nobody knows which."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "asked first")
+    _transcript(projects_dir, "sess-b", alpha, "asked second")
+    schedule._write([
+        _entry("e-a", "asked first", alpha, due=_iso(-300),
+               session_id="sess-a"),
+        _entry("e-b", "asked second", alpha, due=_iso(-100),
+               session_id="sess-b"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    rows = _rows(client)
+    assert rows["sess-a"]["queue_position"] == 1
+    assert rows["sess-a"]["queue_ahead_key"] == "sess-holder"
+    assert rows["sess-b"]["queue_position"] == 2
+    assert rows["sess-b"]["queue_ahead_key"] == "sess-a"
+    taken = sorted(row["queue_position"] for row in rows.values()
+                   if row["queue_key"] == alpha and row["queue_position"])
+    assert taken == list(range(1, len(taken) + 1))
+
+
+def test_run_next_pressed_after_an_answer_outranks_it_and_before_it_does_not(
+        client, projects_dir, folders, monkeypatch, flag, park):
+    """AN ANSWERED CARD IS NEXT IN LINE UNTIL THE USER SAYS OTHERWISE (Akshil,
+    2026-09-16). Answering a parked card and pressing Run next on a message are
+    the same sentence — "this one, next" — so the line ranks them by WHEN it was
+    said and the last word wins. The same two rows, twice, with only the moment
+    of the Run next moved either side of the answer."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-parked", alpha, "answered a card")
+    park("r-parked", "sess-parked", alpha)
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    def line(priority_at):
+        schedule._write([_entry("e-q", "run next", alpha, due=_iso(-600),
+                                session_id="sess-q", priority=True,
+                                priority_at=priority_at)])
+        tasks_mod.reset_cache()
+        return _rows(client)
+
+    # Run next pressed AFTER the answer: it is the later word, so it leads.
+    project_queue.hold_answer(alpha, "sess-parked", "r-parked", "req-1",
+                              {"raw": {"decision": "allow"}}, at=100.0)
+    rows = line(200.0)
+    assert rows["sess-q"]["queue_position"] == 1
+    assert rows["sess-q"]["queue_ahead_key"] == "sess-holder"
+    assert rows["sess-q"]["queue_priority"] is True
+    assert rows["sess-parked"]["queue_position"] == 2
+    # Promoted, but no longer the head — so not runs-next.
+    assert rows["sess-parked"]["queue_priority"] is False
+
+    # Pressed BEFORE it: the answer is the later word and takes the head back,
+    # and the message is second — behind the HOLDER, because "behind" steps over
+    # a held answer rather than pointing the reader at a card decision.
+    rows = line(50.0)
+    assert rows["sess-parked"]["queue_position"] == 1
+    assert rows["sess-parked"]["queue_priority"] is True
+    assert rows["sess-q"]["queue_position"] == 2
+    assert rows["sess-q"]["queue_ahead_key"] == "sess-holder"
+    assert rows["sess-q"]["queue_priority"] is False
 
 
 def test_one_task_takes_one_place_however_many_messages_it_has(

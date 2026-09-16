@@ -1627,3 +1627,146 @@ def test_a_send_the_page_announced_holds_its_folder(home, agent, monkeypatch):
         assert pq.is_free(folder_key(work), SID) is True
     finally:
         tasks_watch.reset()
+
+
+
+# ============================================== a promise and the run that keeps it
+
+
+def run_id_at(offset=0.0):
+    """A run id the way agent.py names one — `%Y%m%d-%H%M%S` plus a suffix —
+    stamped `offset` seconds from now.
+
+    The rest of this suite names its run dirs `r-1`, which is what the tree
+    looked like before the id's timestamp meant anything; these cases turn on
+    WHEN a run was made against when a send promised it (`_run_time`), so they
+    have to spell the real format. An unparsable id reads as time 0 and is never
+    newer than anything, which is exactly why `r-1` leaves every other case in
+    this file alone."""
+    return time.strftime("%Y%m%d-%H%M%S",
+                         time.localtime(time.time() + offset)) + "-abc"
+
+
+def test_a_send_mark_stops_holding_once_its_run_is_on_disk(home, agent,
+                                                           monkeypatch):
+    """AKSHIL'S QA, 2026-09-16: a task parked on a permission card plus a new
+    chat send in the same folder, and the send was told it was queued — behind
+    the mark the parked task had written on its way in. The mark is a promise
+    that a process is about to be in the folder, the run dir is that promise
+    arriving, and once it has arrived the run rules own the answer — including
+    their right to say a parked run holds nothing."""
+    from fused_render import schedule
+    work = home / "work"
+    work.mkdir()
+    monkeypatch.setattr(schedule, "list_entries", lambda: [])
+    stage_run(agent, run_id_at(), str(work / "page.html"), SID,
+              perms=[{"id": "p1", "tool": "Bash", "decision": ""}])
+    registry(SID, status="busy")
+    tasks_watch.reset()
+    tasks_watch.mark_running(SID, text="go", file=str(work / "page.html"))
+    try:
+        assert pq.holders() == {}
+        assert pq.is_free(folder_key(work), SID2) is True
+    finally:
+        tasks_watch.reset()
+
+
+def test_a_send_mark_with_no_run_dir_still_holds_its_folder(home, agent,
+                                                            monkeypatch):
+    """The regression guard on the fix above: the whole reason the mark is a
+    holder at all is the window BEFORE any run dir exists."""
+    from fused_render import schedule
+    work = home / "work"
+    work.mkdir()
+    monkeypatch.setattr(schedule, "list_entries", lambda: [])
+    tasks_watch.reset()
+    tasks_watch.mark_running(SID, text="go", file=str(work / "page.html"))
+    try:
+        assert pq.holders()[folder_key(work)]["kind"] == "sending"
+        assert pq.is_free(folder_key(work), SID2) is False
+    finally:
+        tasks_watch.reset()
+
+
+def test_a_send_mark_is_not_retired_by_last_turns_run(home, agent, monkeypatch):
+    """THE SECOND MESSAGE INTO AN IDLE CHAT. Its session already answers to the
+    run dir of the turn before, so "a run dir names this session" retired the
+    mark the instant it was made and left the resume spawn unguarded — two
+    chats admitted into one tree. Only a run stamped after the promise keeps
+    it."""
+    from fused_render import schedule
+    work = home / "work"
+    work.mkdir()
+    monkeypatch.setattr(schedule, "list_entries", lambda: [])
+    stage_run(agent, run_id_at(-60), str(work / "page.html"), SID)
+    tasks_watch.reset()
+    tasks_watch.mark_running(SID, text="again", file=str(work / "page.html"))
+    try:
+        assert pq.holders()[folder_key(work)]["kind"] == "sending"
+        assert pq.is_free(folder_key(work), SID2) is False
+    finally:
+        tasks_watch.reset()
+
+
+def test_a_reservation_stops_holding_once_its_run_is_on_disk(home, agent):
+    """The reservation half of the same bug. The admission promised a spawn,
+    the spawn landed and parked on a card — so the folder is free, and the next
+    send may have it."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    run_id = run_id_at()
+    stage_run(agent, run_id, str(work / "page.html"), SID,
+              perms=[{"id": "p1", "tool": "Bash", "decision": ""}])
+    registry(SID, status="busy")
+    pq.reserve(key, SID, run_id=run_id)
+    assert pq.holders() == {}
+    assert pq.reserve_if_free(key, SID2) is True
+
+    # …and by the parked run's SESSION alone, which is all a reservation taken
+    # before the spawn can name (`_reservation_spent`).
+    pq.reset_cache()
+    registry(SID, status="busy")
+    pq.reserve(key, SID)
+    assert pq.holders() == {}
+    assert pq.reserve_if_free(key, SID2) is True
+
+
+def test_a_reservation_with_no_run_dir_still_holds_its_folder(home, agent):
+    """The regression guard: the gap the reservation was invented for is the
+    one before anything at all is on disk."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    pq.reserve(key, SID, run_id=run_id_at())
+    assert pq.holders()[key]["kind"] == "reserved"
+    assert pq.reserve_if_free(key, SID2) is False
+
+
+def test_a_reservation_is_not_retired_by_the_run_it_carried_in(home, agent):
+    """A SECOND MESSAGE NAMES THE RUN ITS FIRST ONE STARTED, not the one it is
+    about to start. That old run is older than this promise and retires
+    nothing — otherwise the resume spawn is unguarded for its whole cold
+    start."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    old = run_id_at(-60)
+    stage_run(agent, old, str(work / "page.html"), SID)
+    pq.reserve(key, SID, run_id=old)
+    assert pq.holders()[key]["kind"] == "reserved"
+    assert pq.reserve_if_free(key, SID2) is False
+
+
+def test_an_unparsable_run_id_never_retires_a_promise(home, agent):
+    """A directory whose name is not a timestamp cannot say when it was made,
+    and the safe reading of "I do not know" is the one that keeps the folder
+    held."""
+    assert pq._run_time("r-1") == 0.0
+    assert pq._run_time("") == 0.0
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    stage_run(agent, "r-1", str(work / "page.html"), SID)
+    pq.reserve(key, SID, run_id="r-1")
+    assert pq.holders()[key]["kind"] == "reserved"

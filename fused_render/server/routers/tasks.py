@@ -1627,22 +1627,38 @@ def _queue_lines(tasks: dict[str, dict], now: float,
 
     The line, per folder, in the order it moves:
 
-    * **held answers first**, oldest first. A card decision the user made while
-      the folder was busy is already an answer to a run that is parked IN that
-      folder — delivering it is what lets that run finish, so anything else going
-      first would be a message opening a second turn on the tree the parked run
-      still owns. They are also the one thing here that is not a scheduler entry,
-      which is why `project_queue.order_key` cannot rank them.
-    * **then one slot per waiting task**, at its best entry (`min` by
-      `order_key` — priority first, then the older `due`, then the entry id).
+    * **everything the user PROMOTED, newest promotion first.** Two gestures
+      promote: answering a parked card (the answer is held until the folder
+      frees) and Run next on a message (`priority`, stamped `priority_at`).
+      Both are the same sentence — "this one, next" — so both are ranked by the
+      moment it was said and the LAST word wins (Akshil, 2026-09-16). An
+      answered card is therefore next in line by itself, and stops being next
+      the moment the user presses Run next on something else; before this an
+      answer sat unconditionally at the head and that later press could not be
+      obeyed. It is `order_key`'s own "play next, not back of the promoted
+      pile" rule, read across both kinds of promotion.
+    * **then one slot per unpromoted task**, at its best entry (`min` by
+      `order_key` — the older `due`, then the entry id).
       ONE SLOT PER TASK and not one per entry, because the line the UI prints is
       a line of tasks ("#2 in line · behind TASK-041") and a task with three
       queued messages is one thing waiting, not three.
 
+    A held answer is the one thing here that is not a scheduler entry, so
+    `project_queue.order_key` cannot rank it and each slot carries its own key
+    instead: `(rank, tiebreak, order_key, task key)`, where a promoted slot is
+    `(0, -stamp, ())` and an unpromoted one `(1, 0.0, order_key)`. Same types in
+    every position, and the two kinds differ in the first — a total order with
+    no comparison of an answer's clock against an entry's `due`.
+
     The HOLDER is not in its own line: it is not waiting, it is running. That is
     `project_queue.is_free`'s rule read the other way round, and it is what keeps
     the inbox-absorb case (a second message typed into a conversation that is
-    already running) out of the queue entirely.
+    already running) out of the queue entirely. **That goes for its held answers
+    too** (Akshil, 2026-09-16): an answer whose session is the holder is an
+    answer to the run in flight, not a task waiting on it, and counting it
+    printed a second "1st in line · behind <a blocked task>" row against a
+    holder that was never really one. Belt to a braces fixed in `holders()`, and
+    cheap enough to keep either way.
 
     `ahead_key` IS THE TASK DIRECTLY IN FRONT OF THIS ONE, not always the
     holder (Akshil, 2026-09-12). "Behind TASK-041" on every card in a line of
@@ -1653,13 +1669,12 @@ def _queue_lines(tasks: dict[str, dict], now: float,
     n - 1. Read down the lane the sentences now chain: the holder, then each
     other's.
 
-    HELD ANSWERS ARE INVISIBLE IN "behind". An answer the user made on a parked
-    card is at the head of its folder's line by definition, but it is a card
-    decision and not a message anybody queued, and naming it as the thing in
-    front of a queued send would point the reader at a conversation that is not
-    going to run in front of them so much as be let go. So the walk back skips
-    them, and a task whose only predecessors are held answers reads as behind
-    the holder — the same sentence position 1 gets.
+    HELD ANSWERS ARE INVISIBLE IN "behind". Wherever an answer stands in its
+    folder's line, it is a card decision and not a message anybody queued, and
+    naming it as the thing in front of a queued send would point the reader at a
+    conversation that is not going to run in front of them so much as be let go.
+    So the walk back skips them, and a task whose only predecessors are held
+    answers reads as behind the holder — the same sentence position 1 gets.
 
     `ahead` is the number a reader
     sees, `ahead_session` and `ahead_target` the pair a reader CLICKS
@@ -1683,9 +1698,11 @@ def _queue_lines(tasks: dict[str, dict], now: float,
         # paint as queued. One dict lookup saves the whole pass below.
         return {}
 
-    # folder -> [(rank, tiebreak, task key)]. Rank 0 is a held answer, rank 1 a
-    # scheduled message; the tiebreak is the answer's age or the entry's
-    # `order_key`, which are not comparable to each other and never compared.
+    # folder -> [(rank, tiebreak, order_key, task key, is a held answer)].
+    # Rank 0 is promoted (an answer, or Run next) and sorts on the negated
+    # stamp with an empty `order_key`; rank 1 is everything else and sorts on
+    # its `order_key` with a constant tiebreak — so the four slots hold one type
+    # each and the two kinds are never compared against each other.
     lines: dict[str, list[tuple]] = {}
     best: dict[str, tuple[str, tuple]] = {}  # task key -> (folder, order_key)
     for answer in held:
@@ -1696,11 +1713,14 @@ def _queue_lines(tasks: dict[str, dict], now: float,
         task_key = answer["session_id"]
         if not task_key or task_key in best:
             continue
+        if task_key in (holder["session_id"], holder["task_key"]):
+            continue  # the holder's own answer — it is running, not waiting
         best[task_key] = (key, ())
-        lines.setdefault(key, []).append((0, answer["at"], task_key))
+        stamp = _stamp(answer.get("at"))
+        lines.setdefault(key, []).append((0, -stamp, (), task_key, True))
     for task_key, task in tasks.items():
         if task_key in best:
-            continue  # its held answer already stands at the head of the line
+            continue  # its held answer already took this task's slot
         waiting = None
         for key, order in _due_pending(task, now, by_id):
             holder = holders.get(key)
@@ -1713,13 +1733,21 @@ def _queue_lines(tasks: dict[str, dict], now: float,
         if waiting is None:
             continue
         best[task_key] = waiting
-        lines.setdefault(waiting[0], []).append((1, waiting[1], task_key))
+        key, order = waiting
+        # `order_key` already carries the promotion: `(not priority,
+        # -priority_at, ...)`. Reading the stamp back off it — rather than off
+        # the entry — is what keeps a follower ranked with the leader whose key
+        # it borrowed.
+        item = ((0, order[1], (), task_key, False) if not order[0]
+                else (1, 0.0, order, task_key, False))
+        lines.setdefault(key, []).append(item)
 
     out: dict[str, dict] = {}
     for key, line in lines.items():
-        line.sort(key=lambda item: (item[0], item[1], item[2]))
+        line.sort(key=lambda item: item[:4])
         holder = holders[key]
-        for position, (_rank, _tie, task_key) in enumerate(line, start=1):
+        for position, (_rank, _tie, _order, task_key, is_held) in \
+                enumerate(line, start=1):
             task = tasks.get(task_key)
             out[task_key] = {
                 "key": key,
@@ -1735,11 +1763,13 @@ def _queue_lines(tasks: dict[str, dict], now: float,
                 # the link rather than offering a click that goes nowhere.
                 "ahead_session": "",
                 "ahead_target": "",
-                # THE HEAD OF THE LINE IS RUNS-NEXT WHETHER OR NOT ANYBODY
-                # SKIPPED. `priority` here says only what the store says — Skip
-                # set it, or a held answer is always one — and the client is
-                # what merges the two sentences (`queueRunsNext`).
-                "priority": _rank == 0 or _has_priority(task),
+                # RUNS-NEXT IS A FACT ABOUT THE HEAD OF THE LINE, NOT ABOUT
+                # THE GESTURE (Akshil, 2026-09-16). The client draws the
+                # runs-next glyph and hides Run next wherever this is true, so a
+                # promoted task standing SECOND — outranked by a newer skip or a
+                # newer answer — must read "2nd in line" and keep the button
+                # that would make it first. Position 1 and promoted, or nothing.
+                "priority": position == 1 and (is_held or _has_priority(task)),
             }
     return out
 
@@ -1748,13 +1778,25 @@ def _ahead_in_line(line: list[tuple], position: int, holder: dict) -> str:
     """The task key the entry at 1-based `position` is waiting DIRECTLY behind.
 
     The nearest message task in front of it, else the holder — see
-    `_queue_lines` for why held answers (rank 0) are stepped over rather than
-    named, and why position 1 is the holder rather than nothing at all."""
+    `_queue_lines` for why held answers are stepped over rather than named, and
+    why position 1 is the holder rather than nothing at all. It is the slot's
+    own `is_held` flag that says so and no longer its rank (2026-09-16): a
+    promoted message now shares rank 0 with an answer, and stepping over it
+    would hide a send that really is going to run in front of the reader."""
     for index in range(position - 2, -1, -1):
-        rank, _tie, task_key = line[index]
-        if rank != 0:
-            return task_key
+        item = line[index]
+        if not item[4]:
+            return item[3]
     return str(holder.get("task_key") or "")
+
+
+def _stamp(value) -> float:
+    """A promotion stamp as epoch seconds — 0.0 for one that cannot be read, so
+    an unstamped promotion sorts behind every stamped one rather than raising."""
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _has_priority(task: dict | None) -> bool:
@@ -5673,7 +5715,12 @@ def api_queue_decide(body: dict = Body(...),
 
     project_queue.hold_answer(key, session_id, run_id, request_id, {"raw": raw})
     tasks_watch.notify({session_id})
+    # The answer is work the scheduler owes the moment the folder frees, and a
+    # later Run next can outrank it (rule 5, 2026-09-16) — so the place it
+    # reports is the derived one, not a hard-coded 1, and the loop is rung so
+    # a folder that is already free delivers it now rather than on the poll.
+    schedule.wake()
     place = _queue_place(session_id)
-    return {"held": True, "position": 1, "ahead": place["ahead"],
+    return {"held": True, "position": place["position"], "ahead": place["ahead"],
             "ahead_title": place["ahead_title"],
             "ahead_key": place["ahead_key"]}

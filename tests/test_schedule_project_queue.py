@@ -473,6 +473,50 @@ def test_an_entry_with_no_folder_is_never_held(folders, spawned, home,
     assert [e["id"] for e in schedule.tick()] == [entry["id"]]
 
 
+def test_an_entry_held_by_its_own_session_still_takes_the_folder(
+        folders, spawned, home, monkeypatch):
+    """Akshil's QA, 2026-09-16: two skipped tasks in one folder ran at the same
+    time. The first entry passed the folder gate and was then stopped by the
+    live-turn gate, which marked nothing — so the second, a brand-new task with
+    no session for the session gates to see, walked into the same working tree.
+    A hold owns the folder for the pass just as a claim does."""
+    _on(home)
+    monkeypatch.setattr(pq, "holders", lambda now=None: {})
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: session == SID)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    first = schedule.create(str(folders["alpha"]), "one", _ago(60),
+                            session_id=SID)
+    second = schedule.create(str(folders["alpha"]), "two", _ago(30))
+
+    assert schedule.tick() == []
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert stored[first["id"]]["state"] == schedule.PENDING
+    assert stored[second["id"]]["state"] == schedule.PENDING
+    assert spawned == []
+
+
+def test_a_folder_taken_between_the_sweep_and_the_claim_is_not_claimed(
+        folders, spawned, home, monkeypatch):
+    """The snapshot said free; disk says otherwise by the time we claim. A chat
+    send admitted in between (a reservation taken, a run dir appearing) is a
+    process in the tree this pass never saw, so the claim takes one last look
+    (Akshil's QA, 2026-09-16: two skipped tasks ran together)."""
+    _on(home)
+    monkeypatch.setattr(pq, "holders", lambda now=None: {})
+    monkeypatch.setattr(pq, "holder_for",
+                        lambda key, now=None: _holder(SID2) if key else None)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.tick() == []
+    stored = schedule.list_entries()[0]
+    assert stored["id"] == entry["id"]
+    assert stored["state"] == schedule.PENDING
+    assert stored["fired"] == ""
+    assert spawned == []
+
+
 # ============================================================== held answers
 
 
@@ -519,6 +563,51 @@ def test_a_held_answer_waits_while_the_folder_is_still_busy(folders, home,
 
     assert agent.decided == []
     assert len(pq.held_answers()) == 1
+
+
+def _stamp_priority(entry_id: str, at: float) -> None:
+    """Run next, at a moment of the test's choosing — the stamp is the whole
+    comparison, so it cannot be left to the clock."""
+    schedule.set_priority([entry_id], True)
+    with schedule._lock:
+        entries = schedule._read()
+        for entry in entries:
+            if entry["id"] == entry_id:
+                entry["priority_at"] = at
+        schedule._write(entries)
+
+
+@pytest.mark.parametrize("promoted_at,answer_first", [(200.0, False),
+                                                      (50.0, True)])
+def test_a_newer_run_next_outranks_a_held_answer(folders, spawned, home, agent,
+                                                 monkeypatch, promoted_at,
+                                                 answer_first):
+    """Akshil, 2026-09-16: an answered blocked task is next in line by default,
+    but a Run next clicked AFTER the answer is a later instruction and wins.
+    The loser only waits a pass — the answer stays held, nothing is dropped."""
+    _on(home)
+    key = _key(folders["alpha"])
+    monkeypatch.setattr(pq, "holders", lambda now=None: {})
+    pq.hold_answer(key, SID, "r-1", "p1",
+                   {"raw": {"run_id": "r-1", "request_id": "p1",
+                            "decision": "allow", "scope": "once"}}, at=100.0)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1),
+                            session_id=SID2)
+    _stamp_priority(entry["id"], promoted_at)
+
+    sent = [e["id"] for e in schedule.tick()]
+
+    if answer_first:
+        assert agent.decided == [{"run_id": "r-1", "request_id": "p1",
+                                  "decision": "allow", "scope": "once"}]
+        assert pq.held_answers() == []
+        assert sent == []
+        assert {e["id"]: e["state"] for e in schedule.list_entries()}[
+            entry["id"]] == schedule.PENDING
+    else:
+        assert agent.decided == []
+        assert [a["at"] for a in pq.held_answers()] == [100.0]
+        assert sent == [entry["id"]]
 
 
 def test_every_answer_for_one_run_goes_but_never_two_sessions(folders, home,

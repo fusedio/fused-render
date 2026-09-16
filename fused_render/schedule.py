@@ -3613,6 +3613,50 @@ def _claimed_holder(session: str, entry_id: str) -> dict:
             "kind": "claimed"}
 
 
+def _held_holder(session: str, entry_id: str) -> dict:
+    """The holder record a HELD entry installs — the same shape
+    `_claimed_holder` writes, marked `held` so a reader can tell "about to run"
+    from "waiting on its own session".
+
+    Why a hold marks the folder at all (Akshil's QA, 2026-09-16: "two skipped
+    tasks ran together"): an entry that passed the folder gate and was then
+    stopped by one of the SESSION gates has still won this folder for this pass
+    — it is the thing the folder's line is waiting on. Leaving the folder
+    unmarked let the next due entry for the same tree through, and a brand-new
+    task with no session of its own is invisible to the session gates, so it was
+    claimed and two processes landed in one working tree."""
+    holder = _claimed_holder(session, entry_id)
+    holder["kind"] = "held"
+    return holder
+
+
+def _newest_promoted(entries: list[dict], due: list[str]) -> dict[str, float]:
+    """Per folder, the newest `priority_at` among this pass's due entries that a
+    user promoted with Run next — the stamp a held card answer has to beat.
+
+    Run next is the one thing a user can say about the order, so saying it AFTER
+    answering a card means they changed their mind about what goes next
+    (Akshil, 2026-09-16). `_deliver_held_answers` is where the two stamps meet."""
+    pq = _pq()
+    wanted = set(due)
+    newest: dict[str, float] = {}
+    for entry in entries:
+        if str(entry.get("id") or "") not in wanted:
+            continue
+        if entry.get("state") != PENDING or not _flag(entry.get("priority")):
+            continue
+        key = pq.queue_key(str(entry.get("target") or ""))
+        if not key:
+            continue
+        try:
+            at = float(entry.get("priority_at") or 0)
+        except (TypeError, ValueError):
+            at = 0.0
+        if at > newest.get(key, 0.0):
+            newest[key] = at
+    return newest
+
+
 def _rehold(pq, answer: dict, why: str) -> None:
     """Put one popped answer back where it was — `at` and all.
 
@@ -3629,7 +3673,7 @@ def _rehold(pq, answer: dict, why: str) -> None:
                      answer["request_id"], why, exc_info=True)
 
 
-def _deliver_held_answers(holders: dict) -> None:
+def _deliver_held_answers(holders: dict, outranked: dict | None = None) -> None:
     """Hand every card decision that was parked on a busy folder to its run,
     now that the folder is free — and hold the folder for the rest of the pass.
 
@@ -3639,6 +3683,16 @@ def _deliver_held_answers(holders: dict) -> None:
     it is mid-way through is older than anything queued behind it). Delivering
     after a message had claimed the folder would leave the answer waiting on a
     turn that started after the user answered it.
+
+    **…unless the user has since said something NEWER about the order**
+    (`outranked`, from `_newest_promoted`; Akshil, 2026-09-16). "Head of the
+    line by default" is not "head of the line whatever happens next": a Run next
+    clicked at 3:05 on a task in this folder is a later instruction than a card
+    answered at 3:00, and answering first would make the button lie. So the
+    folder's oldest held stamp competes with the folder's newest promotion, and
+    the newer one goes. Losing costs the answer nothing but a pass: it is left
+    held and the folder is left unmarked, so the promoted entry claims it here
+    and the very next free pass delivers the answer.
 
     `agent._decide` does the delivery, NOT a decision file written from here.
     `_decide` owns the validation this module has no business restating —
@@ -3677,6 +3731,14 @@ def _deliver_held_answers(holders: dict) -> None:
         return
     for key in sorted({a["queue_key"] for a in waiting if a["queue_key"]}):
         if holders.get(key) is not None:
+            continue
+        promoted = float((outranked or {}).get(key) or 0.0)
+        if promoted and promoted > min(a["at"] for a in waiting
+                                       if a["queue_key"] == key):
+            # A Run next newer than this folder's oldest held answer. Left held
+            # and the folder left free, so the promoted entry takes it below.
+            logger.debug("holding the answers for %s: a newer Run next (%s) "
+                         "goes first", key, promoted)
             continue
         try:
             taken = pq.pop_held_answers(key)
@@ -3808,10 +3870,15 @@ def tick(now: datetime | None = None) -> list[dict]:
     # user who answered a card while the folder was busy is owed that delivery
     # whether or not any message happens to be due in the same pass.
     folders = _pq().holders(now.timestamp()) if _pq().enabled() else None
-    if folders is not None:
-        _deliver_held_answers(folders)
+    # Read BEFORE the answers are delivered, because the delivery now needs to
+    # know what is due: a held answer only goes ahead of the messages if no
+    # NEWER Run next names its folder (`_newest_promoted`, 2026-09-16). Nothing
+    # in `_deliver_held_answers` writes this store, so the snapshot is the same
+    # one the loop below would have read.
     with _lock:
         entries = _read()
+    if folders is not None:
+        _deliver_held_answers(folders, outranked=_newest_promoted(entries, due))
     if not due:
         # Nothing to send, but a message due in a moment still needs its
         # timer — this pass is the last word on the one timer `_rearm` owns.
@@ -3873,6 +3940,11 @@ def tick(now: datetime | None = None) -> list[dict]:
         if session and session in busy:
             logger.debug("holding %s: session %s already has a send in flight",
                          entry_id, session)
+            if folders is not None and key:
+                # …and the folder is this entry's for the rest of the pass. See
+                # `_held_holder` (Akshil's QA, 2026-09-16: two skipped tasks in
+                # one folder ran at the same time).
+                folders[key] = _held_holder(session, entry_id)
             continue
         # …unless what the transcript is showing is the closing rows of a turn
         # we have ALREADY filed a verdict for, which is the one case where the
@@ -3890,10 +3962,33 @@ def tick(now: datetime | None = None) -> list[dict]:
             # it is waiting for (`_verdict_echo`).
             logger.debug("holding %s: session %s has a live turn", entry_id,
                          session)
+            if folders is not None and key:
+                # Same reason as the session-busy hold one gate up: this entry
+                # owns the folder while it waits (`_held_holder`, Akshil's QA,
+                # 2026-09-16: two skipped tasks in one folder ran at the same
+                # time). A brand-new task for the same tree has no session, so
+                # nothing else in this loop would have stopped it.
+                folders[key] = _held_holder(session, entry_id)
             left = _live_expires_in(session, now)
             if left:
                 held_soon.append(left)
             continue
+        if folders is not None and key:
+            # LAST LOOK, from disk. `folders` is this pass's snapshot plus what
+            # this pass itself did; it cannot see a chat send admitted in
+            # between — a reservation taken, or a run dir appearing — and that
+            # send is a process in the tree just the same (Akshil's QA,
+            # 2026-09-16: two skipped tasks in one folder ran at the same time).
+            # A claim is rare, so paying one more runs-tree scan for it is
+            # cheap; it is the per-ENTRY derivation the snapshot exists to avoid.
+            _pq().invalidate_holders()
+            fresh = _pq().holder_for(key, now.timestamp())
+            if not _folder_free(fresh, session):
+                logger.debug("holding %s: folder %s was taken between the "
+                             "sweep and the claim (%s)", entry_id, key,
+                             (fresh or {}).get("task_key", ""))
+                folders[key] = fresh
+                continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:
             continue  # cancelled in the window between the sweep and the claim
