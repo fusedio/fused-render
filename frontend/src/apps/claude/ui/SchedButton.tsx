@@ -27,7 +27,7 @@ import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
 import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
-import { SCHEDULE_URL } from "../sched/scheduled";
+import { schedulerUrl } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface SchedButtonProps {
@@ -123,22 +123,10 @@ export function basenameOf(path: string): string {
   return (cut === -1 ? path : path.slice(cut + 1)) || path;
 }
 
-/**
- * THE HOP'S URL — the key and the way back, and nothing else (design §1).
- *
- * `new=1` is what makes the hop feel like one control rather than two: the form
- * opens immediately, so the click lands on a filled-in dialog (T:12019-12029).
- * `draft` is the CHAT KEY (`platform/lib/drafts.chatDraftKey`) — the record the
- * task form is about to edit, not a new one to mint. `from` is where "Back to
- * chat" lands, which the host supplies because a native chat has no
- * `window.top` split to make (T:11979).
- */
-export function schedulerUrl(draftKey: string, from: string): string {
-  return (
-    `${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`
-    + (from ? `&from=${encodeURIComponent(from)}` : "")
-  );
-}
+/** The hop's URL, built where the rows can reach it too — see
+ *  `sched/scheduled.schedulerUrl`. Re-exported here because this button is
+ *  where the hop is spelt in every reader's head, and in the tests. */
+export { schedulerUrl };
 
 export async function copyToTaskShots(
   items: readonly Attachment[],
@@ -213,7 +201,11 @@ export function SchedButton({
     const key = chatDraftKey(sessionId, file);
     const leave = (): void => {
       leaving.current = false;
-      onNavigate?.(schedulerUrl(key, back));
+      // …AND THE FOLDER THIS CHAT IS IN. A `new:<file>` key spells it; a session
+      // key does not, and without it the card opened on the reader's home
+      // (Akshil, 2026-09-16). This composer knows the path — it is mounted on
+      // it — so it says so.
+      onNavigate?.(schedulerUrl(key, back, file ?? ""));
     };
     // NOTHING TO SAVE, SO NOTHING TO WAIT FOR. An empty composer stored no
     // draft, and writing an empty record here would be a DELETE — which on a

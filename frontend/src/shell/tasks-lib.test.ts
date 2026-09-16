@@ -4863,8 +4863,11 @@ describe("an expanded thread leads with the draft it is carrying", () => {
     expect(page).toContain("const openBoundDraft = (task: Task) => {");
     // …and a session-bound form IS the session's chat record (contract §1, "one
     // record, two doors"), so this opens the card through exactly the function
-    // the Schedule hop seeds from — one lookup, one seeding rule, one card.
-    expect(page).toContain("chatHopSeed(session, all.chat[session] ?? null)");
+    // the Schedule hop seeds from — one lookup, one seeding rule, one card. The
+    // folder travels with it, or the card opens on the reader's home.
+    expect(page).toContain(
+      'openChatRecord(session, draftChatUrl(task), task.project || task.file || "");',
+    );
   });
 
   it("costs the thread's arithmetic nothing", () => {
@@ -4971,7 +4974,7 @@ describe("the Draft chip says ONE word, whichever kind of draft it is", () => {
   });
 });
 
-describe("a never-sent chat's row opens its CHAT, not a form", () => {
+describe("a never-sent chat's row opens the New task card, like every draft row", () => {
   const chatDraft = task({
     key: "new:/Users/me/news", kind: "draft", draft_kind: "chat",
     status: "upcoming", file: "/Users/me/news", target: "/Users/me/elsewhere",
@@ -4985,19 +4988,25 @@ describe("a never-sent chat's row opens its CHAT, not a form", () => {
     SCHEDULED.indexOf("const openChatDraft = (task: Task) => {"),
     SCHEDULED.indexOf("const openDraft = (task: Task) => {"),
   );
+  const ROWS = () => readFileSync(
+    join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
+  );
 
-  it("navigates, and mints nothing (design \"one record\", §1)", () => {
-    // WHAT THIS REPLACED: the press fetched the record, split it across Title
-    // and description, and minted a `draft:<id>` over it carrying a
-    // `from_chat_key` that told the server to delete the chat's copy. One press,
-    // two records for the length of a round trip, and a generation counter to
-    // stop a second press minting a third. A chat draft belongs to a composer,
-    // so the press goes where the words already are.
-    expect(ARM).toContain("const href = draftHref(task, null);");
-    expect(ARM).toContain("if (href) navigateUrl(href);");
-    // No mint, no move, no read: a press is a URL.
-    expect(ARM).not.toContain("openForm(");
-    expect(ARM).not.toContain("fetchChatDraft");
+  it("opens the card in place, and mints nothing", () => {
+    // WHAT THIS REPLACED, twice over. First the press fetched the record, split
+    // it across Title and description, and minted a `draft:<id>` over it
+    // carrying a `from_chat_key` that told the server to delete the chat's copy
+    // — one press, two records, and a generation counter to stop a second press
+    // minting a third. Then it navigated to the folder's COMPOSER instead, which
+    // was one record but two different cards depending on which kind of draft
+    // the row was. Now it is the same card either way, opened on the record, and
+    // on THIS page it is opened in place: a navigation to `/tasks` from `/tasks`
+    // would throw the page's filters, expanded rows and scroll away to draw a
+    // dialog over it.
+    expect(ARM).toContain(
+      'openChatRecord(task.key, draftChatUrl(task), task.project || task.file || "");',
+    );
+    expect(ARM).not.toContain("navigateUrl(");
     expect(SCHEDULED).not.toContain("from_chat_key");
     expect(SCHEDULED).not.toContain("boundDraftSeed");
   });
@@ -5005,26 +5014,35 @@ describe("a never-sent chat's row opens its CHAT, not a form", () => {
   it("uses the SAME rule the chat's own Recent list presses", () => {
     // A draft row that opened two different places from two views would be two
     // behaviours to learn (design-principles §1). One function, re-exported from
-    // the chat package, pressed by both.
-    expect(SCHEDULED).toContain('import { draftHref } from "@apps/claude";');
+    // the chat package, pressed by both — and both halves of it, the hop URL and
+    // the route "Back to chat" lands on, come from the one module.
+    expect(SCHEDULED).toContain('import { draftChatUrl } from "@apps/claude";');
     const CHAT = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
-    expect(CHAT).toContain("const href = draftHref(task, file);");
+    expect(CHAT).toContain("const href = draftHref(task);");
+    expect(CHAT).toContain("if (href) onNavigate(href);");
   });
 
-  it("lands on the folder's chat, built out of the chat's own `file`", () => {
-    // The door has to be built out of `file` — the string the draft is keyed on
-    // (platform/lib/drafts.chatDraftKey) — or the composer that opens seeds from
-    // a key nothing wrote. `target` is the fallback for a server that sent none.
+  it("is the hop URL, folder and all", () => {
+    // The row's press and the composer's Schedule button build the SAME URL, so
+    // the card cannot open two ways. The folder is on it because a session key
+    // spells none, and the card was falling back to the reader's home.
     //
     // (Asserted on the source rather than by calling it: `list-rows` reaches the
     // router, whose module init wants a `location`, and this suite runs without
     // a DOM. The URL itself is pinned through `chatPaneUrl`, which is the
-    // function `draftHref` builds it with.)
-    const ROWS = readFileSync(
-      join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
-    );
-    const FN = ROWS.slice(ROWS.indexOf("export function draftHref("));
-    expect(FN).toContain('const at = task.file || task.target || "";');
+    // function `draftChatUrl` builds it with.)
+    const FN = ROWS().slice(ROWS().indexOf("export function draftHref("));
+    expect(FN).toContain('const at = task.project || task.file || task.target || "";');
+    expect(FN).toContain("return schedulerUrl(task.key, draftChatUrl(task), at);");
+  });
+
+  it("comes back to the folder's chat, built out of the row's own `file`", () => {
+    // "Back to chat" has to be built out of `file` — the string the draft is
+    // keyed on (platform/lib/drafts.chatDraftKey) — or the composer that opens
+    // seeds from a key nothing wrote. `target` is the fallback for a server that
+    // sent none.
+    const BACK = ROWS().slice(ROWS().indexOf("export function draftChatUrl("));
+    expect(BACK).toContain('const at = task.file || task.target || "";');
     expect(chatPaneUrl(chatDraft.file!)).toBe(
       "/explorer/view/Users/me/news?_side=claude",
     );
@@ -5032,19 +5050,21 @@ describe("a never-sent chat's row opens its CHAT, not a form", () => {
     // and `paneChatUrl` drops an empty one. An empty value would say the question
     // was asked and answered with nothing; a chat that has never been sent has
     // not been asked (Akshil, 2026-09-11).
-    expect(FN).toContain('paneChatUrl(at, task.key.includes(":") ? "" : task.key)');
+    expect(BACK).toContain('paneChatUrl(at, task.key.includes(":") ? "" : task.key)');
   });
 
-  it("is a FOCUS request, not a navigation, on this composer's own draft", () => {
-    // The box is already on screen, drawn as a row, so the press asks for the
-    // keyboard instead of navigating. `null` is what the chat's landing and the
-    // Tasks page both read as "nowhere to go".
-    const ROWS = readFileSync(
-      join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
-    );
-    const FN = ROWS.slice(ROWS.indexOf("export function draftHref("));
-    expect(FN).toContain("if (task.key === chatDraftKey(null, file)) return null;");
-    // …and a TASK draft goes to the modal instead, by id.
+  it("is the same press on this composer's OWN row (Akshil, 2026-09-16)", () => {
+    // It used to be a request for the keyboard instead: the box is on screen, so
+    // why navigate? Because a row that behaves differently depending on where
+    // the reader is standing is an affordance nobody can predict — and this was
+    // the one row in the list that did nothing visible. One record, one card,
+    // one press; the composer keeps autosaving the same key behind it.
+    const FN = ROWS().slice(ROWS().indexOf("export function draftHref("));
+    expect(FN).not.toContain("chatDraftKey(null, file)");
+    expect(ROWS()).not.toContain("chatDraftKey");
+    const CHAT = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+    expect(CHAT).not.toContain("focusReq");
+    // …and a TASK draft goes to the modal by id, which it always did.
     expect(FN).toContain("`/tasks?draft=${encodeURIComponent(task.draft_id)}`");
     // An ordinary conversation is not a draft at all.
     expect(FN).toContain("if (!isDraftTask(task)) return null;");

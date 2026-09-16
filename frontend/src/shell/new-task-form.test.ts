@@ -2054,7 +2054,10 @@ describe("the card edits one record, and says which", () => {
     const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
     // The whole handoff: which record, and where to go back to.
     expect(page).toContain('const key = q.get("draft") ?? "";');
-    expect(page).toContain('const hopTo: ChatHop = { key, from: q.get("from") ?? "" };');
+    // …and the FOLDER, which is the one thing a session key cannot state.
+    expect(page).toContain(
+      'openChatRecord(key, q.get("from") ?? "", q.get("target") ?? "");',
+    );
     expect(page).toContain("chatKey={hop.key}");
     expect(page).toContain("chatBack={hop.from}");
     // …and the params that used to carry the words are gone from the page.
@@ -2079,7 +2082,7 @@ describe("the card closes when its record is discarded elsewhere", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
   function goneBody(s: string): string {
-    const start = s.indexOf("useEffect(() => onDraftChange((_changed, gone) => {");
+    const start = s.indexOf("useEffect(() => onDraftChange((_changed, gone, certain) => {");
     const end = s.indexOf("   * DISCARD — the draft goes, and so does the card.");
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -2094,12 +2097,15 @@ describe("the card closes when its record is discarded elsewhere", () => {
     expect(goneBody(s)).not.toContain("fetchDrafts()");
   });
 
-  test("only a key this client holds a version for is acted on", () => {
+  test("only a key this client holds a version for is acted on — from the FEED", () => {
     // The announced key set is noisy by construction (contract §3), and closing
     // a card on a `gone` for a record that never existed would be the worst
-    // possible reading of it.
+    // possible reading of it. A discard made on THIS page is the exception and
+    // says so (`certain`): the delete it came out of has already forgotten the
+    // very version this guard asks for, so without the exemption the card sat
+    // open over a record that no longer existed.
     const body = goneBody(src());
-    expect(body).toContain("if (!mine || draftVersion(mine) === undefined) return;");
+    expect(body).toContain("if (!certain && draftVersion(mine) === undefined) return;");
     expect(body.indexOf("draftVersion(mine) === undefined"))
       .toBeLessThan(body.indexOf("onClose();"));
   });
@@ -2414,12 +2420,12 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     // The answer can arrive late, so it takes the page's own generation and a
     // press through any other door owns the modal.
     expect(s).toContain("const gen = ++chatDraftGen.current;");
-    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null);");
+    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null, at);");
     // A LOOKUP THAT FAILED IS NOT "THERE IS NONE" (`fetchDrafts` answers null
     // for a blip). The card opens anyway, on the key it was given — it is the
     // SAME record either way, so an uninformed card costs a moment of empty
     // fields and never a second draft.
-    expect(s).toContain("openForm(at, null, hopTo);");
+    expect(s).toContain("openForm(lead, null, hopTo);");
     // …and a `?new=1` with no key at all is the app page's own link: nothing to
     // read, so it opens in this tick.
     expect(s).toContain("if (!key) {\n      openForm(at, null, NO_HOP);");
@@ -2474,18 +2480,20 @@ describe("a reopened form opens on its own time, or on none", () => {
     expect(reopenTime(seedWith(1758350000000))).toBeNull();
   });
 
-  test("both bound-draft doors take it, and only a lookup that found nothing keeps the lead", () => {
+  test("every door takes it, because they are all ONE door now", () => {
     const s = page();
-    // The Draft chip's press on the thread line…
-    expect(s).toContain("const found = all && chatHopSeed(session, all.chat[session] ?? null);");
-    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, hopTo, found);");
-    // …and the composer's own hop, which is now literally the same read.
-    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null);");
-    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, hopTo, found);");
+    // The Draft chip's press on the thread line, a draft row's press, and the
+    // composer's own hop are three callers of one function — so the rule cannot
+    // be right in one of them and wrong in another, which is what it was.
+    expect(s).toContain("const openChatRecord = (key: string, from: string, at: string) => {");
+    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null, at);");
+    expect(s).toContain("openForm(found ? reopenTime(found) : lead, null, hopTo, found);");
+    expect(s).toContain("openChatRecord(session, draftChatUrl(task), task.project || task.file || \"\");");
+    expect(s).toContain("openChatRecord(task.key, draftChatUrl(task), task.project || task.file || \"\");");
     // The lead date survives exactly where it means something: a card with no
     // stored record behind it.
-    expect(s).toContain("const at = new Date(Date.now() + NEW_LINK_LEAD_MS);");
-    expect(s).toContain("openForm(at, null, hopTo);");
+    expect(s).toContain("const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);");
+    expect(s).toContain("openForm(lead, null, hopTo);");
   });
 
   test("the ordinary draft row never had the bug — it passes no time and still does", () => {

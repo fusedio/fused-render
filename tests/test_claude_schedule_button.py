@@ -27,6 +27,10 @@ _TEMPLATE = os.path.join("fused_render", "templates", "claude", "template.html")
 _PAGE = os.path.join("frontend", "src", "shell", "Scheduled.tsx")
 _MODAL = os.path.join("frontend", "src", "shell", "NewJobModal.tsx")
 _SCHED_BUTTON = os.path.join("frontend", "src", "apps", "claude", "ui", "SchedButton.tsx")
+# The hop's URL itself moved off the button and into the chat app's schedule
+# vocabulary, so a draft ROW can press exactly the same one without dragging the
+# button — and its popover — into the rows' module (Akshil, 2026-09-16).
+_HOP = os.path.join("frontend", "src", "apps", "claude", "sched", "scheduled.ts")
 
 
 def _read(path: str) -> str:
@@ -62,6 +66,11 @@ def modal() -> str:
 @pytest.fixture(scope="module")
 def sched_button() -> str:
     return _read(_SCHED_BUTTON)
+
+
+@pytest.fixture(scope="module")
+def hop() -> str:
+    return _read(_HOP)
 
 
 @pytest.fixture(scope="module")
@@ -322,7 +331,7 @@ def test_the_button_does_not_reimplement_scheduling(code):
 # ------------------------------------------------------------- the page
 
 
-def test_the_page_reads_the_params_the_template_writes(page, sched_button):
+def test_the_page_reads_the_params_the_template_writes(page, hop):
     """The contract, spelled in two files now — `SchedButton.schedulerUrl` is
     the one writer of the hop and this page's `?new=1` arm is the one reader.
     A rename on either side leaves the button navigating to a Schedule page
@@ -330,10 +339,14 @@ def test_the_page_reads_the_params_the_template_writes(page, sched_button):
     the KEY and the way back travel now (design "one record", §1): the words,
     the tray and the session used to ride as `?message=`, `?attachments=` and
     `?session_id=`, three copies of a thing the server already holds."""
-    assert "?new=1&draft=" in sched_button
-    assert "&from=" in sched_button
+    assert "?new=1&draft=" in hop
+    assert "&from=" in hop
+    # …and the FOLDER, which is the one fact a session key cannot state: without
+    # it the card opened on the reader's home and wrote that home path onto the
+    # conversation's own record (Akshil, 2026-09-16).
+    assert "&target=" in hop
     assert 'q.get("new") !== "1"' in page
-    for param in ("draft", "from"):
+    for param in ("draft", "target", "from"):
         assert f'q.get("{param}")' in page, f"the page ignores {param}"
 
 
@@ -356,12 +369,15 @@ def test_the_link_opens_the_form_immediately(page):
     # words, a tray and a session id that used to ride the URL — and turning
     # what is stored under that key into the seed is ONE call, `chatHopSeed`,
     # not a merge to get wrong.
-    assert 'const hopTo: ChatHop = { key, from: q.get("from") ?? "" };' in effect
-    assert "const found = all && chatHopSeed(key, all.chat[key] ?? null);" in effect
+    # …through the one function every door onto a chat record now takes — the
+    # hop, a draft row's press and the bound-form line — so the seeding rule
+    # cannot be right in one of them and wrong in another.
+    assert 'openChatRecord(key, q.get("from") ?? "", q.get("target") ?? "");' in effect
+    assert "const found = all && chatHopSeed(key, all.chat[key] ?? null, at);" in page
     # A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (`fetchDrafts` answers null for a
     # blip): the card opens anyway, on the key it was given, in both branches.
-    assert "openForm(found ? reopenTime(found) : at, null, hopTo, found);" in effect
-    assert "openForm(at, null, hopTo);" in effect
+    assert "openForm(found ? reopenTime(found) : lead, null, hopTo, found);" in page
+    assert "openForm(lead, null, hopTo);" in page
 
 
 def test_the_prefilled_time_is_valid_the_moment_it_opens(page):
@@ -380,7 +396,7 @@ def test_the_params_are_consumed_not_just_read(page):
     not a place worth keeping in the history."""
     effect = page[page.index('q.get("new")'):]
     effect = effect[:effect.index("}, []);")]
-    for param in ("new", "draft", "from", "edit"):
+    for param in ("new", "draft", "target", "from", "edit"):
         assert f'q.delete("{param}")' in effect, f"{param} outlives its own navigation"
     assert "history.replaceState(" in effect
     assert "pushState" not in effect

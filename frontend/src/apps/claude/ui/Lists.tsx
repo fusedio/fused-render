@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask } from "@shell/tasks-lib";
+import { isDraftTask, upcomingEditEntry } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -33,6 +33,7 @@ import {
   rememberedTab,
 } from "./lists-visibility";
 import { paneChatUrl, taskPane } from "./list-rows";
+import { SCHEDULE_URL } from "../sched/scheduled";
 import { seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
@@ -222,22 +223,24 @@ export function Lists({
    * A LOCKED BLOCK REFUSES EVERY ROW (P4-23): no press and no href, so the
    * stretched link cannot navigate either.
    *
-   * AND A DRAFT ROW GOES NOWHERE AT ALL (Akshil, 2026-09-15). Both kinds used
-   * to be doors: a chat draft about another file hopped the HOST to that file's
-   * chat, and a task draft left the app for `/tasks?draft=<id>` and the modal
-   * there. Round 1 was right that a draft is not inert and wrong about what to
-   * do with it — a press on a list that sits directly under the landing's own
-   * composer should not move the page, least of all out of the app. The words
-   * are unsent words; the box they belong in is the one already on screen.
+   * AND AN UPCOMING ROW OPENS ITS CARD (Akshil, 2026-09-16). A DRAFT goes to the
+   * New task card on its own record, through the host — `onFillDraft` is handed
+   * the ROW and `list-rows.draftHref` decides the URL, so the press is the same
+   * one the Tasks page makes and there is exactly one of it to learn. A
+   * SCHEDULED-LATER row — not a draft, one message, nothing to open a
+   * transcript on — opens the Edit task card on the message that is waiting,
+   * which is the same card the Tasks page opens for it.
    *
-   * So every draft row is one gesture now: fill the composer, caret after the
-   * text, no URL change, no view change. `onFillDraft` is handed the ROW, and
-   * the host does the resolving — a chat draft's body has to be fetched, and a
-   * task draft's is already on the row (`list-rows.draftTextOf`).
+   * The two intervening rounds are worth naming so neither comes back. Round 1
+   * made a draft a door out of the app; round 2 made it no door at all ("fill
+   * the composer, caret after the text") — which read as the row doing nothing
+   * from any host but the landing, and left the row in the composer's OWN
+   * folder behaving differently from its neighbours. One record, one card, one
+   * press.
    *
-   * Neither `isChatDraftTask` nor `draft_id` is consulted here any more: the
-   * two kinds differ only in where their words come from, which is a question
-   * this list does not ask.
+   * Neither `isChatDraftTask` nor `draft_id` is consulted here: the two kinds of
+   * draft differ only in how their record is addressed, which is a question this
+   * list does not ask.
    */
   const pressFor = (task: Task): { href: string | null; onPress?: () => void } => {
     if (disabled) return { href: null };
@@ -245,7 +248,15 @@ export function Lists({
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
     }
-    if (!task.session_id) return { href: null };
+    if (!task.session_id) {
+      // A message waiting to go out, and no thread behind it yet: the card that
+      // can change or stop it is the only thing a press here could mean. The
+      // row carries the entry, so nothing has to be looked up.
+      const entry = upcomingEditEntry(task);
+      if (!entry || !onNavigate) return { href: null };
+      const href = `${SCHEDULE_URL}?edit=${encodeURIComponent(entry)}`;
+      return { href, onPress: () => onNavigate(href) };
+    }
     const pane = taskPane(task, file);
     if (!pane) {
       return {

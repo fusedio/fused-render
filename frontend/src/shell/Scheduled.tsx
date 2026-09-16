@@ -62,8 +62,7 @@ import type {
   Task,
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
-import { navigateUrl } from "@platform/lib/router";
-import { draftHref } from "@apps/claude";
+import { draftChatUrl } from "@apps/claude";
 import { fetchDrafts, NEW_CHAT_PREFIX, newChatFile } from "@platform/lib/drafts";
 import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -213,8 +212,20 @@ const NO_HOP: ChatHop = { key: "", from: "" };
  * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
  * and its `<file>` is the folder the card falls back to when the record names
  * no target of its own.
+ *
+ * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
+ * spells its folder; a session id spells only the thread, so this used to fall
+ * through to `""` and the card opened on the reader's HOME — and its first
+ * autosave then wrote that home path onto the conversation's own record as the
+ * target. Every door that knows the folder now states it: the hop's `?target=`
+ * (the composer's own `file`), or a draft row's `project`. The stored form still
+ * outranks it, because a form that names a target is a choice somebody made.
  */
-export function chatHopSeed(key: string, record: ChatDraft | null): DraftSeed | null {
+export function chatHopSeed(
+  key: string,
+  record: ChatDraft | null,
+  at = "",
+): DraftSeed | null {
   if (!record) return null;
   const split = splitDraft(record.text);
   const form = (record.form ?? {}) as Record<string, unknown>;
@@ -227,7 +238,7 @@ export function chatHopSeed(key: string, record: ChatDraft | null): DraftSeed | 
       description: split.description,
       attachments: record.attachments ?? [],
       target: (typeof form.target === "string" && form.target)
-        || (newChat ? newChatFile(key) : "") || "",
+        || (newChat ? newChatFile(key) : "") || at || "",
       session_id: newChat ? "" : key,
     },
   };
@@ -402,33 +413,54 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    *  whole rule and not a per-arm one. */
   const chatDraftGen = useRef(0);
   /**
-   * PRESSING A CHAT DRAFT'S ROW OPENS ITS CHAT (design "one record", §1).
+   * THE CARD, OPENED ON ONE CHAT RECORD — the only way this page ever opens one
+   * (Akshil, 2026-09-16).
    *
-   * It used to open THIS modal: the row's words were fetched, split across
-   * Title and the description, and a task draft was minted over them with a
-   * a key telling the server to delete the chat's copy. One press,
-   * two records for the length of a round trip, and a whole generation counter
-   * to stop a second press minting a third.
+   * Three doors reach it and they hand over the same three things: the KEY, the
+   * route "Back to chat" lands on, and the FOLDER the card falls back to when
+   * the record names no target. The `?new=1&draft=` hop states all three in its
+   * URL; a draft row and a bound-form line read them off the row. One read, one
+   * seeding rule (`chatHopSeed`), no merge to get wrong — and, since every door
+   * lands here rather than one of them navigating to a composer, pressing a
+   * draft row on THIS page does not throw the page's filters and scroll away to
+   * open a card that was always going to be drawn over it.
    *
-   * A chat draft belongs to a composer — it is half a message to a
-   * conversation, not half a task — so the press goes where the words are.
-   * `draftHref` is the same rule the chat's own Recent list presses
-   * (`apps/claude/ui/list-rows`), so a draft row opens the same place from every
-   * view. A second press is the same URL: nothing is minted, so there is nothing
-   * to guard.
+   * A FAILED LOOKUP IS "UNKNOWN", NOT "NONE" (`fetchDrafts` answers null for a
+   * blip). The card opens anyway, on the key it was given — it is the SAME
+   * record either way, so an uninformed card costs a moment of empty fields and
+   * never a second draft.
+   *
+   * A SECOND PRESS IS THE SAME PRESS: nothing is minted, and the generation
+   * below drops the answer to an opening the reader has since replaced.
    */
+  const openChatRecord = (key: string, from: string, at: string) => {
+    const hopTo: ChatHop = { key, from };
+    const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);
+    const gen = ++chatDraftGen.current;
+    void fetchDrafts().then((all) => {
+      if (gen !== chatDraftGen.current) return;
+      // THE FOUND FORM'S OWN TIME, and no time at all when it had none — see
+      // `reopenTime`. The lead date belongs only to the fallthrough, where the
+      // lookup found nothing and the card is being opened fresh.
+      const found = all && chatHopSeed(key, all.chat[key] ?? null, at);
+      openForm(found ? reopenTime(found) : lead, null, hopTo, found);
+    }, () => {
+      if (gen !== chatDraftGen.current) return;
+      openForm(lead, null, hopTo);
+    });
+  };
   const openChatDraft = (task: Task) => {
-    const href = draftHref(task, null);
-    if (href) navigateUrl(href);
+    openChatRecord(task.key, draftChatUrl(task), task.project || task.file || "");
   };
   /**
-   * A DRAFT ROW'S PRESS, ON THIS PAGE (design "one record", §1).
+   * A DRAFT ROW'S PRESS, ON THIS PAGE — THE NEW TASK CARD, BOTH KINDS (Akshil,
+   * 2026-09-16).
    *
-   * The ROW decides, and the two kinds go two places because they ARE two
-   * things: a chat draft is half a message to a conversation, so it opens that
-   * conversation's composer; a task draft is half a form, so it opens the form.
-   * Neither mints anything, and neither reads the record first — a press is a
-   * navigation or a modal, not a write.
+   * The ROW still decides which record, because the two kinds are filed
+   * differently — a chat draft under its own key, a task draft under an id —
+   * but they now open the same card, which is what makes a draft row one thing
+   * to learn instead of two. Neither mints anything; a task draft carries its
+   * stored form on the row, so that arm reads nothing at all.
    */
   const openDraft = (task: Task) => {
     if (isChatDraftTask(task)) {
@@ -469,21 +501,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const openBoundDraft = (task: Task) => {
     const session = (task.session_id ?? "").trim();
     if (!session) return;
-    const hopTo: ChatHop = { key: session, from: "" };
-    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
-    const gen = ++chatDraftGen.current;
-    void fetchDrafts().then((all) => {
-      if (gen !== chatDraftGen.current) return;
-      // THE FOUND FORM'S OWN TIME, and no time at all when it had none — see
-      // `reopenTime`. This press is a REOPEN, so the lead date belongs only to
-      // the fallthrough, where the lookup found nothing and the card is being
-      // opened fresh.
-      const found = all && chatHopSeed(session, all.chat[session] ?? null);
-      openForm(found ? reopenTime(found) : at, null, hopTo, found);
-    }, () => {
-      if (gen !== chatDraftGen.current) return;
-      openForm(at, null, hopTo);
-    });
+    openChatRecord(session, draftChatUrl(task), task.project || task.file || "");
   };
   // Search, status and project, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
@@ -495,12 +513,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     getConfig().then((c) => setHome(c.home), () => {});
   }, []);
 
-  // `?new=1&draft=<chat key>&from=<route>` — the chat composer's Schedule button
-  // (`apps/claude/ui/SchedButton.schedulerUrl`). The whole handoff is those two
-  // values now: WHICH record to open, and where to go back to. The words, the
-  // tray and the session used to ride the URL as `?message=`, `?attachments=`
-  // and `?session_id=`, which is three copies of a thing the server already
-  // holds — see design "one record", §1.
+  // `?new=1&draft=<chat key>&target=<folder>&from=<route>` — the hop
+  // (`apps/claude/sched/scheduled.schedulerUrl`), pressed by the chat
+  // composer's Schedule button AND by every draft row anywhere. The whole
+  // handoff is those three values: WHICH record to open, WHICH folder it is
+  // about, and where to go back to. The words, the tray and the session used to
+  // ride the URL as `?message=`, `?attachments=` and `?session_id=`, which is
+  // three copies of a thing the server already holds — see design "one record",
+  // §1. `target` is not a fourth copy: it is the one fact a session KEY cannot
+  // state, and without it the card opened on the reader's home folder.
   //
   // The params are CONSUMED, not just read: cleared with replaceState so a
   // reload (or Back to here from wherever the user went next) is the plain
@@ -516,10 +537,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [editId, setEditId] = useState<string | null>(null);
   useEffect(() => {
     const q = new URLSearchParams(location.search);
-    if (q.get("new") !== "1") return;
+    // `?edit=` TRAVELS ON ITS OWN TOO (Akshil, 2026-09-16): a scheduled-later row
+    // in a chat's Recent list presses it, and that press carries no `new=1`
+    // because there is no draft record behind it — only an entry to change or
+    // stop. Read before the hop's guard, and consumed below with the rest.
     setEditId(q.get("edit"));
+    if (q.get("new") !== "1") {
+      if (!q.get("edit")) return;
+      q.delete("edit");
+      const left = q.toString();
+      history.replaceState(history.state, "", location.pathname + (left ? `?${left}` : ""));
+      return;
+    }
     const key = q.get("draft") ?? "";
-    const hopTo: ChatHop = { key, from: q.get("from") ?? "" };
     const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
     // A `?new=1` WITH NO KEY is the app page's own "+ New task" link: there is
     // no chat behind it and nothing to read, so the card opens on the lead date
@@ -541,18 +571,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       // SAME record either way, so an uninformed card costs a moment of empty
       // fields and never a second draft. That is the difference one record
       // makes: the failure mode used to be an eviction.
-      const gen = ++chatDraftGen.current;
-      void fetchDrafts().then((all) => {
-        if (gen !== chatDraftGen.current) return;
-        const found = all && chatHopSeed(key, all.chat[key] ?? null);
-        openForm(found ? reopenTime(found) : at, null, hopTo, found);
-      }, () => {
-        if (gen !== chatDraftGen.current) return;
-        openForm(at, null, hopTo);
-      });
+      openChatRecord(key, q.get("from") ?? "", q.get("target") ?? "");
     }
     q.delete("new");
     q.delete("draft");
+    q.delete("target");
     q.delete("from");
     q.delete("edit");
     const rest = q.toString();

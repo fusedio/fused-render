@@ -942,11 +942,13 @@ function pressDraft(recent: Task[], over: Record<string, unknown> = {}) {
   return { r, pressed, hops };
 }
 
-test("A DRAFT ROW FILLS THE COMPOSER AND GOES NOWHERE (Akshil, 2026-09-15)", () => {
-  // The words are unsent words and the landing's own composer is directly above
-  // this list. Both draft kinds used to navigate — a chat draft about another
-  // file hopped the host, a task draft left the app for `/tasks?draft=` — and
-  // neither does now: no href, so not even a ⌘-click has anywhere to go.
+test("A DRAFT ROW HANDS THE ROW TO THE HOST, and draws no link of its own", () => {
+  // The list's whole job is handing the ROW over untouched — no read, no write,
+  // and no URL of its own. Where it goes is the host's one answer
+  // (`ClaudeChat.onFillDraft` → `list-rows.draftHref`), so the press cannot mean
+  // one thing on the landing and another on the Tasks page. No href either: a
+  // draft press is a callback, so there is nothing for a ⌘-click to open in a
+  // tab that would arrive without it.
   const { r, pressed, hops } = pressDraft([chatDraft()]);
   const row = taskRow(r);
   expect(String((row.props as { className?: string }).className)).not.toContain(
@@ -958,11 +960,9 @@ test("A DRAFT ROW FILLS THE COMPOSER AND GOES NOWHERE (Akshil, 2026-09-15)", () 
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("…and a chat draft about ANOTHER file stays here too", () => {
-  // THE ONE THAT USED TO HOP. Its words go into the box the reader is looking
-  // at; which folder they were typed in is the host's problem, not a reason to
-  // move the page (the landing's autosave then keeps them under `new:<file>`
-  // for THIS folder, which is the accepted cost of not navigating).
+test("…and a chat draft about ANOTHER file is the same press", () => {
+  // Which folder the words were typed in decides what the CARD opens on, not
+  // whether the row is a door: the list hands over the row either way.
   const other = chatDraft({
     key: "new:/repo/other.py",
     target: "/repo/other.py",
@@ -975,7 +975,7 @@ test("…and a chat draft about ANOTHER file stays here too", () => {
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("A TASK DRAFT is the same press — it does not leave for the Tasks modal", () => {
+test("A TASK DRAFT is the same press — one gesture, both kinds", () => {
   const form = chatDraft({
     key: "draft:d-7",
     draft_kind: "task",
@@ -1010,7 +1010,7 @@ test("a LOCKED block still refuses every draft row", () => {
 // because the one thing the move existed to prevent (one sentence, two rows,
 // two TASK numbers) cannot happen if nothing is ever copied.
 
-test("a chat draft's press is its own chat, and this box's own draft is a focus request", () => {
+test("a chat draft's press is the row, handed over whole", () => {
   const { r, pressed } = pressDraft([chatDraft({ key: "new:/repo/other.py" })]);
   expect(pressed.map((t) => t.key)).toEqual([]);
   act(() => (taskRow(r).props as { onClick(): void }).onClick());
@@ -1020,14 +1020,43 @@ test("a chat draft's press is its own chat, and this box's own draft is a focus 
   // write of its own on the way.
 });
 
+test("A SCHEDULED-LATER ROW OPENS ITS CARD, and it is a real link", () => {
+  // Akshil, 2026-09-16: every Upcoming row opens a card. A message waiting to go
+  // out has no thread to show and is not a draft, so the card that can change or
+  // stop it is the only thing its press could mean — and unlike a draft's, this
+  // press IS a URL, so it stretches a real href a ⌘-click can take.
+  const waiting = chatDraft({
+    key: "pending:e-4",
+    kind: "task",
+    state: "upcoming",
+    status: "upcoming",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-4", state: "pending", at: 1, message_id: "m-4" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([waiting]);
+  // A real href, so the press rides the stretched link the row already draws —
+  // which is also what makes ⌘-click open the card in a tab.
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-4");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/tasks?edit=e-4"]);
+});
+
 test("the move's machinery is gone from the row module, not merely unused", () => {
   const src = readFileSync(new URL("./list-rows.ts", import.meta.url), "utf8");
   for (const gone of ["draftContentOf", "draftMovesOut", "joinIntoBox", "readChatDraft"]) {
     expect(src).not.toContain(`export function ${gone}`);
     expect(src).not.toContain(`export async function ${gone}`);
   }
-  // …and what replaced them is one function that answers a URL.
-  expect(src).toContain("export function draftHref(task: Task, file: string | null)");
+  // …and what replaced them is one function that answers a URL — the SAME URL
+  // the composer's Schedule button builds, which is what makes the row's press
+  // and the hop one behaviour (`sched/scheduled.schedulerUrl`).
+  expect(src).toContain("export function draftHref(task: Task): string | null {");
+  expect(src).toContain("return schedulerUrl(task.key, draftChatUrl(task), at);");
 });
 
 test("A DRAFT ROW CARRIES THE DISCARD, and no other row does", () => {

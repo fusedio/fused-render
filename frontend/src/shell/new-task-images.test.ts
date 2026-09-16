@@ -409,9 +409,15 @@ describe("the chat handoff's attachments", () => {
     const BUTTON = readFileSync(
       join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
     expect(BUTTON).toContain(".then((carried) => saveChatDraft(key, text, carried))");
-    // …and the URL it builds is the key and the way back, nothing more.
-    expect(BUTTON).toContain(
+    // …and the URL it builds is the key, the folder and the way back — three
+    // facts, no words. It is built where a draft ROW can press the same one
+    // (`sched/scheduled`), so the hop and the row cannot drift apart.
+    const HOP = readFileSync(
+      join(import.meta.dir, "..", "apps", "claude", "sched", "scheduled.ts"), "utf8");
+    expect(HOP).toContain(
       "`${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`");
+    expect(HOP).toContain('+ (target ? `&target=${encodeURIComponent(target)}` : "")');
+    expect(BUTTON).toContain('onNavigate?.(schedulerUrl(key, back, file ?? ""));');
   });
 
   // ---- and they do not follow the reader to the NEXT card -------------------
@@ -451,7 +457,7 @@ describe("the chat handoff's attachments", () => {
       "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
     // …and the ONLY opening that seeds one is the deep link.
     expect(SCHEDULED.match(/setHop\(seed\)/g) ?? []).toHaveLength(1);
-    expect(SCHEDULED).toContain("openForm(at, null, hopTo);");
+    expect(SCHEDULED).toContain("openForm(lead, null, hopTo);");
   });
 
   it("and the close has nothing left to forget", () => {

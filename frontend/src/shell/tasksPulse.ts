@@ -498,6 +498,24 @@ export interface DraftsDelta {
   gone: string[];
 }
 
+/**
+ * WHAT A DRAFT SUBSCRIBER IS HANDED, and the third argument is the one worth
+ * naming: WHOSE `gone` this is.
+ *
+ * `false` — the change FEED said so, and its `gone` is the noisy set described
+ * above: ignore it for a key you hold no version for.
+ *
+ * `true` — THIS DOCUMENT said so (`announceDraftsGone`), after watching its own
+ * DELETE land. There is no noise in that: the record named is gone, and the
+ * subscriber holding it must let it go even though the delete has already
+ * forgotten the version that would otherwise vouch for the key.
+ */
+export type DraftChangeListener = (
+  changed: { key: string; version: number }[],
+  gone: string[],
+  certain: boolean,
+) => void;
+
 /** Only what the feed needs off `fetch`, so a bun test can hand over a
  *  three-line stub instead of the whole DOM signature. */
 export type FetchLike = (
@@ -553,9 +571,7 @@ export interface ListingEvent {
 
 const listingSubs = new Set<(ev: ListingEvent) => void>();
 const goneSubs = new Set<(keys: string[]) => void>();
-const draftSubs = new Set<
-  (changed: { key: string; version: number }[], gone: string[]) => void
->();
+const draftSubs = new Set<DraftChangeListener>();
 /** The newest server generation folded into `listing` — the guard that stops a
  *  full read which left BEFORE a delta from rolling the rows back when it
  *  lands after it (bugbot #892, the rule Scheduled.tsx used to keep itself). */
@@ -577,7 +593,9 @@ function emitDrafts(delta: DraftsDelta | undefined) {
   const changed = Array.isArray(delta.changed) ? delta.changed : [];
   const gone = Array.isArray(delta.gone) ? delta.gone : [];
   if (!changed.length && !gone.length) return;
-  for (const sub of draftSubs) sub(changed, gone);
+  // NOT certain: this is the feed's announced key set, which is noisy by
+  // construction (contract §3) — see `DraftChangeListener`.
+  for (const sub of draftSubs) sub(changed, gone, false);
 }
 
 function emitListing(ev: ListingEvent) {
@@ -900,12 +918,19 @@ export function subscribeListing(
 export function announceDraftsGone(keys: readonly string[]): void {
   const gone = keys.filter((key) => !!key);
   if (!gone.length) return;
-  for (const sub of draftSubs) sub([], [...gone]);
+  // CERTAIN, and that is the whole difference between this and the feed's own
+  // `gone`. This document just deleted these records and watched the DELETE
+  // land, so a subscriber must act on its key WHETHER OR NOT it is holding a
+  // version for it — which is exactly the case the trash in Recent chats hits:
+  // `deleteChatDraft` forgets the version as the record goes (contract §2), so
+  // by the time this runs the composer's `draftVersion(key)` is already
+  // `undefined` and the noisy-`gone` guard would swallow the one announcement
+  // that was never noise (Akshil, 2026-09-16: trashing the row left the box
+  // full, and the next keystroke wrote the record straight back at v1).
+  for (const sub of draftSubs) sub([], [...gone], true);
 }
 
-export function onDraftChange(
-  cb: (changed: { key: string; version: number }[], gone: string[]) => void,
-): () => void {
+export function onDraftChange(cb: DraftChangeListener): () => void {
   draftSubs.add(cb);
   return () => {
     draftSubs.delete(cb);

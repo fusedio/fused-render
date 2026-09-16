@@ -3433,15 +3433,19 @@ export default function NewJobModal({
    * the write is refused, and either the card closes onto the newer record or
    * the reader's own words win with a toast.
    *
-   * ONLY FOR A KEY THIS CLIENT HOLDS A VERSION FOR (contract §3): the announced
-   * key set is noisy, and closing a card on a `gone` for a record that never
-   * existed would be the worst possible reading of it.
+   * ONLY FOR A KEY THIS CLIENT HOLDS A VERSION FOR (contract §3) — WHEN THE FEED
+   * IS THE ONE SAYING IT: the announced key set is noisy, and closing a card on
+   * a `gone` for a record that never existed would be the worst possible
+   * reading of it. A discard made on THIS page carries `certain` and is acted on
+   * regardless, because the delete it came out of has already forgotten the very
+   * version the guard asks for (tasksPulse `announceDraftsGone`).
    */
-  useEffect(() => onDraftChange((_changed, gone) => {
+  useEffect(() => onDraftChange((_changed, gone, certain) => {
     const key = recordKeyRef.current;
     const id = draftIdRef.current;
     const mine = key || (id ? taskDraftKey(id) : "");
-    if (!mine || draftVersion(mine) === undefined) return;
+    if (!mine) return;
+    if (!certain && draftVersion(mine) === undefined) return;
     if (!gone.includes(mine)) return;
     forgetDraftVersion(mine);
     notify({ title: "Discarded elsewhere", tone: "info" });

@@ -566,24 +566,34 @@ export function ComposerCard({
    * announcer — all of which existed to order one document's writes against its
    * own reads, which a version does for every document at once.
    *
-   * GONE IS ONLY ACTED ON FOR A KEY THIS CLIENT HAS A VERSION FOR (contract §3):
-   * the announced key set is noisy by construction, and clearing a box on a key
-   * nobody has ever written would throw away words that were never saved.
+   * THE FEED'S GONE IS ONLY ACTED ON FOR A KEY THIS CLIENT HAS A VERSION FOR
+   * (contract §3): the announced key set is noisy by construction, and clearing
+   * a box on a key nobody has ever written would throw away words that were
+   * never saved.
+   *
+   * A DISCARD MADE ON THIS PAGE IS NOT THAT (`certain`, tasksPulse). Trashing
+   * this draft's own row in Recent chats is first-person: the DELETE landed,
+   * and the record is gone whatever this box believes about versions. It has to
+   * be said, because the delete itself FORGETS the version on its way out
+   * (`drafts.write`, contract §2) — so the guard above, applied to a local
+   * discard, threw away the one announcement that was never noise and left the
+   * composer holding words whose record no longer existed. The next keystroke
+   * then wrote them straight back as a fresh v1 (Akshil, 2026-09-16).
    *
    * CHANGED IS ONLY ACTED ON WHEN IT IS NEWER, and never over a reader who is
    * typing: the next save's own 409 settles that case, with the toast.
    */
   useEffect(
     () =>
-      onDraftChange((changed, gone) => {
+      onDraftChange((changed, gone, certain) => {
         const key = draftKeyRef.current;
         const seen = draftVersion(key);
-        if (seen === undefined) return;
-        if (gone.includes(key)) {
+        if (gone.includes(key) && (certain || seen !== undefined)) {
           forgetDraftVersion(key);
           adoptRef.current(null);
           return;
         }
+        if (seen === undefined) return;
         const row = changed.find((c) => c.key === key);
         if (!row || row.version <= seen) return;
         if (focusedRef.current && textRef.current.trim()) return;

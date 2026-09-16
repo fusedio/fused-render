@@ -91,6 +91,37 @@ export const SCHEDULE_IMMINENT_MS = 120000;
 export const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";
 /** The route the row lands on. */
 export const SCHEDULE_URL = "/tasks";
+
+/**
+ * THE HOP'S URL — which record, where Back goes, and which folder (design §1).
+ *
+ * `new=1` is what makes the hop feel like one control rather than two: the form
+ * opens immediately, so the click lands on a filled-in dialog (T:12019-12029).
+ * `draft` is the CHAT KEY (`platform/lib/drafts.chatDraftKey`) — the record the
+ * task form is about to edit, not a new one to mint. `from` is where "Back to
+ * chat" lands, which the caller supplies because a native chat has no
+ * `window.top` split to make (T:11979).
+ *
+ * `target` IS THE THIRD THING, and it is here because the key cannot stand in
+ * for it (Akshil, 2026-09-16). A `new:<file>` key carries its folder in the key
+ * itself, so the card could always derive one; a SESSION key carries nothing but
+ * the thread, and the card fell back to the reader's home folder — a hop out of
+ * an ongoing conversation opened a task aimed at `~`, and the modal's first
+ * autosave wrote that home path onto the conversation's own record. The caller
+ * knows the folder (the chat's `file`, or a draft row's `project`), so it says
+ * it, and the stored form still outranks it when the record has one.
+ *
+ * It lives HERE rather than beside the button that first built it so a draft
+ * ROW can press the same URL (`ui/list-rows.draftHref`) without dragging the
+ * button — and its popover — into the rows' module.
+ */
+export function schedulerUrl(draftKey: string, from: string, target = ""): string {
+  return (
+    `${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`
+    + (target ? `&target=${encodeURIComponent(target)}` : "")
+    + (from ? `&from=${encodeURIComponent(from)}` : "")
+  );
+}
 /** T:17222 — short, because this box is 300px wide in the side pane and a
  *  longer line is simply clipped. The banner carries the explanation; this only
  *  has to say the box is not broken. */

@@ -655,27 +655,25 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
 // server pushes now is the KEY and the VERSION, and the box acts on it only for
 // a record it has actually read.
 
-test("a record deleted elsewhere empties the box, once the box knows the record", async () => {
+test("DISCARDING THIS DRAFT'S OWN ROW EMPTIES THE BOX BEHIND IT", async () => {
+  // Akshil, 2026-09-16, live: trashing the draft's row in Recent chats deleted
+  // the record and left the composer on the same page still holding the words —
+  // and the next keystroke wrote them straight back as a fresh v1. Discarding
+  // from ANOTHER tab worked, which is what named the cause: the local delete
+  // forgets the version on its way out (`drafts.write`, contract §2), so by the
+  // time the announcement reached this box `draftVersion(key)` was already
+  // `undefined` and the noisy-`gone` guard swallowed it. A first-person
+  // announcement is not noise, and `announceDraftsGone` now says so.
   const { announceDraftsGone } = await import("@shell/tasksPulse");
-  const { rememberDraftVersion, forgetDraftVersion } = await import("@platform/lib/drafts");
-  const file = "/p/gone-elsewhere.py";
+  const { forgetDraftVersion } = await import("@platform/lib/drafts");
+  const file = "/p/trashed-here.py";
   const key = `new:${file}`;
+  // Exactly the state a successful local DELETE leaves behind: the record is
+  // gone from the server AND the key's version has been forgotten.
   forgetDraftVersion(key);
   const c = mount({ file, sessionId: "" });
-  c.type("first message");
-  expect(c.box().props.value).toBe("first message");
-
-  // NOTHING YET. `gone` is noisy by construction (contract §3) — the announced
-  // key set covers ordinary task activity — so a key this client holds no
-  // version for is ignored, or unsaved words would be thrown away on a record
-  // that never existed.
-  await act(async () => {
-    announceDraftsGone([key]);
-  });
-  expect(c.box().props.value).toBe("first message");
-
-  // …and now the record is one this client has read.
-  rememberDraftVersion(key, 3);
+  c.type("words with a row of their own");
+  expect(c.box().props.value).toBe("words with a row of their own");
   await act(async () => {
     announceDraftsGone([key]);
   });
@@ -690,8 +688,14 @@ test("a newer version is re-read and adopted, unless the reader is typing", asyn
   // is what stops it landing on top of somebody mid-sentence, where the next
   // save's own 409 settles it instead (with the toast).
   const src = readFileSync(new URL("./Composer.tsx", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("onDraftChange((changed, gone) => {"),
+  const body = src.slice(src.indexOf("onDraftChange((changed, gone, certain) => {"),
                          src.indexOf("const rowRef = useRef<HTMLDivElement"));
+  // THE FEED'S `gone` IS THE NOISY ONE, and only it is guarded: the announced
+  // key set covers ordinary task activity (contract §3), so a key this client
+  // holds no version for is ignored rather than clearing a box over a record
+  // that never existed. `certain` is what lets a discard made on THIS page
+  // through the same door — see the test above.
+  expect(body).toContain("if (gone.includes(key) && (certain || seen !== undefined)) {");
   expect(body).toContain("if (seen === undefined) return;");
   expect(body).toContain("if (!row || row.version <= seen) return;");
   expect(body).toContain("if (focusedRef.current && textRef.current.trim()) return;");

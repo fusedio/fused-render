@@ -1807,10 +1807,6 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  /** Bumped by a gesture that has asked for the composer — today only the
-   *  never-sent chat's row (`onOpenChatDraft`). Handed to the CHAT's composer
-   *  alone: the landing's box is the one the reader is leaving. */
-  const [focusReq, setFocusReq] = useState(0);
   const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
@@ -2156,15 +2152,6 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
-    // …AND SO DOES THE CARET REQUEST (Bugbot, PR #1145). `focusReq` is a
-    // COUNTER, so once a draft press has bumped it it is truthy for the rest of
-    // the page's life — and the prop is handed to every chat composer that
-    // mounts after it. Left standing, the next ordinary session opened from the
-    // explorer's folder pane took the keyboard off the listing, which is the
-    // exact case `focusRequest` exists to stay OUT of (`autoFocus` is the
-    // ambient policy; this is one gesture's request). Back is the funnel out of
-    // the chat, so the request is spent here.
-    setFocusReq(0);
   }, [controller, cardPolicy]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
@@ -2173,10 +2160,6 @@ function ChatBody(props: ChatBodyProps) {
       // Same rule as Back: a hand-back belongs to the conversation it was typed
       // in, and this is a different one.
       setStranded(null);
-      // And this session was opened by a press on a CONVERSATION, which asks for
-      // nothing but to be read — belt and braces beside the clear in `onBack`,
-      // the same way `setStranded(null)` is spelled in both.
-      setFocusReq(0);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
@@ -2216,13 +2199,15 @@ function ChatBody(props: ChatBodyProps) {
   const attachRef = useRef(attach);
   attachRef.current = attach;
   /**
-   * PRESSING A DRAFT ROW OPENS THE RECORD WHERE IT IS (design "one record", §1).
+   * PRESSING A DRAFT ROW OPENS THE NEW TASK CARD ON IT (Akshil, 2026-09-16).
    *
-   * Three outcomes and no writes at all. This composer's own draft is the box
-   * already on screen, so its row is a request for the keyboard. Another
-   * folder's chat draft is that chat, so the press navigates there and its
-   * composer seeds from the very key this row is listed under. A task draft is
-   * a form, so the press opens the New task modal on it.
+   * ONE OUTCOME NOW, and no writes at all: every draft row anywhere opens the
+   * same card on the record it is listed under (`draftHref`). The row in THIS
+   * composer's own folder used to be the exception — a request for the keyboard
+   * rather than a navigation — which made one affordance mean two things
+   * depending on where the reader happened to be standing. It is the same
+   * record and the same card; the composer keeps autosaving the same key
+   * behind it, so nothing is copied and nothing is minted.
    *
    * A SECOND PRESS IS THE SAME PRESS. There is nothing in flight to guard
    * against: two presses on one row are two requests for the same URL, and the
@@ -2230,13 +2215,9 @@ function ChatBody(props: ChatBodyProps) {
    * second press finds the card it is asking for already up.
    */
   const onFillDraft = useCallback((task: Task) => {
-    const href = draftHref(task, file);
-    if (!href) {
-      setFocusReq((n) => n + 1);
-      return;
-    }
-    onNavigate(href);
-  }, [file, onNavigate]);
+    const href = draftHref(task);
+    if (href) onNavigate(href);
+  }, [onNavigate]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -3117,7 +3098,6 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
-                {...(focusReq ? { focusRequest: focusReq } : {})}
                 footnote={footnoteFor(pane.noun)}
                 artStrip={<ArtStrip items={art.items} />}
               />
@@ -3136,7 +3116,6 @@ function ChatBody(props: ChatBodyProps) {
             recent={recent}
             onOpenSession={onOpenSession}
             onFillDraft={onFillDraft}
-            {...(focusReq ? { focusRequest: focusReq } : {})}
             listsDisabled={ann.locked}
           />
         )}
