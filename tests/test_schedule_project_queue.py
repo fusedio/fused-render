@@ -517,6 +517,27 @@ def test_a_folder_taken_between_the_sweep_and_the_claim_is_not_claimed(
     assert spawned == []
 
 
+def test_the_last_look_arms_the_timer_for_a_clock_bound_holder(
+        folders, spawned, home, monkeypatch):
+    """A `reserved` or `starting` holder found at the last look lapses on a
+    clock nothing rings, exactly like one found at the first look — so the pass
+    asks to be woken when it does (Bugbot, 2026-09-16)."""
+    _on(home)
+    monkeypatch.setattr(pq, "holders", lambda now=None: {})
+    monkeypatch.setattr(pq, "holder_for",
+                        lambda key, now=None: _holder(SID2, kind="reserved")
+                        if key else None)
+    monkeypatch.setattr(pq, "holder_expires_in",
+                        lambda key, holder, now=None: 7.0)
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda soon: armed.append(list(soon)))
+    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.tick() == []
+    assert spawned == []
+    assert armed and 7.0 in armed[-1]
+
+
 # ============================================================== held answers
 
 

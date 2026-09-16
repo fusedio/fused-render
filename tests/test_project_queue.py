@@ -1732,6 +1732,30 @@ def test_a_reservation_stops_holding_once_its_run_is_on_disk(home, agent):
     assert pq.reserve_if_free(key, SID2) is True
 
 
+def test_the_admit_after_a_spent_reservation_is_a_fresh_promise(home, agent):
+    """A spent row is no row (Bugbot, 2026-09-16). The admit that follows it
+    must not inherit the old run id or the old stamp, or `_reservation_spent`
+    would retire the new promise on the next read and the folder would sit free
+    for the whole spawn window."""
+    work = home / "work"
+    work.mkdir()
+    key = folder_key(work)
+    run_id = run_id_at(-60)
+    stage_run(agent, run_id, str(work / "page.html"), SID,
+              perms=[{"id": "p1", "tool": "Bash", "decision": ""}])
+    registry(SID, status="busy")
+    pq.reserve(key, SID, run_id=run_id)
+    assert pq.holders() == {}  # spent: its run is parked
+    assert pq.reserve_if_free(key, SID2) is True
+    # The new chat's promise stands on its own until its process appears.
+    pq.invalidate_holders()
+    held = pq.holders()[key]
+    assert held["kind"] == "reserved"
+    assert held["session_id"] == SID2
+    assert held["run_id"] == ""
+    assert pq.reserve_if_free(key, "someone-else") is False
+
+
 def test_a_reservation_with_no_run_dir_still_holds_its_folder(home, agent):
     """The regression guard: the gap the reservation was invented for is the
     one before anything at all is on disk."""

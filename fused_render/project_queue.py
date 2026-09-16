@@ -761,9 +761,17 @@ def reserve_if_free(key: str, session_id: str, run_id: str = "",
         # its own reservation holds is one claim, not a new one, and restamping
         # it would make the next nameless message of that same conversation read
         # as a stranger arriving in the same breath.
+        #
+        # …unless the row was SPENT (Bugbot, 2026-09-16): a promise whose run
+        # has already landed is over, and carrying its run id and its stamp
+        # onto this admit would date the new promise before that run — which
+        # `_reservation_spent` retires on the next read, leaving the folder free
+        # for the whole spawn window. A spent row is no row: this is a fresh
+        # claim, stamped now and naming only what the caller named.
+        fresh = found is None or spent_here
         _reservations[key] = (sid, time.monotonic() + RESERVATION_TTL,
-                              run or reserved_run_id,
-                              found[3] if found is not None else time.monotonic())
+                              run if fresh else (run or reserved_run_id),
+                              time.monotonic() if fresh else found[3])
         return True
 
 

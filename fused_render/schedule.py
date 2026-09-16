@@ -3988,6 +3988,12 @@ def tick(now: datetime | None = None) -> list[dict]:
                              "sweep and the claim (%s)", entry_id, key,
                              (fresh or {}).get("task_key", ""))
                 folders[key] = fresh
+                if (fresh or {}).get("kind") in ("starting", "reserved"):
+                    # Same clock-bound grace as the first look (Bugbot,
+                    # 2026-09-16): nothing rings when it lapses, so ask.
+                    left = _pq().holder_expires_in(key, fresh, now.timestamp())
+                    if left:
+                        held_soon.append(left)
                 continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:
