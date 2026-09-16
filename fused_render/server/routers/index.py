@@ -491,12 +491,23 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
     is the raw typed string, exactly as the client sent it, not yet split
     into a base and a pattern.
 
-    The resolved `base`/`mode` travel through to the caller on the returned
-    dict (`out["base"]`/`out["mode"]`) — the client captions the search and
-    decides whether hits carry highlight positions off `mode`, and coverage
-    checks downstream (`_rank_reason`) run against `base`, not the box's own
-    `root`, since a `~`/`/`-escaping query can leave the box's root far
-    behind.
+    The resolved `base`/`mode`/`pattern` travel through to the caller on the
+    returned dict (`out["base"]`/`out["mode"]`/`out["pattern"]`) — the client
+    captions the search and decides whether hits carry highlight positions
+    off `mode`, and coverage checks downstream (`_rank_reason`) run against
+    `base`, not the box's own `root`, since a `~`/`/`-escaping query can leave
+    the box's root far behind.
+
+    `pattern` (SPEC-search-space-wildcard.md §4) is what a glob hit's `rel`
+    was actually full-matched against — NOT the raw `q` the client typed.
+    `resolve_query` may have peeled a base off `q` (so `pattern` is only the
+    tail) and/or expanded whitespace into wildcards; the client cannot
+    recompute either without redoing a filesystem walk it has no access to,
+    so this is the one extra string (not a per-hit position, and not scoring)
+    that lets the client locate a glob hit's own literal pieces for
+    highlighting client-side, the same way `base`/`mode` already let it
+    caption and branch on the answer without a second copy of
+    `resolve_query`'s rules.
 
     `token`, when given, is forwarded unchanged — to BOTH `resolve_query`'s
     filesystem walk and `index_rank`'s SQL query, so a client that
@@ -544,6 +555,7 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
                      ranked=ranked, glob=(mode == "glob"))
     out["base"] = base
     out["mode"] = mode
+    out["pattern"] = pattern
     if blocked_out:
         out["blocked_query_path"] = blocked_out[-1]
     return out
@@ -1800,12 +1812,16 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     `root` is the box's own root; `q` is the raw string exactly as typed,
     unsplit. `_rank_body` resolves the two into a `(base, pattern, mode)`
     triple (`resolve_query`, index/query.py) before ever touching the index —
-    `~` and a leading `/` can walk `base` away from `root` entirely, and
-    `mode` ("substring" or "glob") picks which SQL runs. Both `base` and
-    `mode` come back on the response: `base` is what the client captions the
-    search with, and `mode` says whether a hit carries a highlight-worthy
-    substring position (`positions`, dropped below either way — see the
-    `positions` paragraph) or is an unhighlighted glob match.
+    `~` and a leading `/` can walk `base` away from `root` entirely, `mode`
+    ("substring" or "glob") picks which SQL runs, and whitespace in `q` may
+    have been expanded into wildcards (`expand_whitespace_query`,
+    SPEC-search-space-wildcard.md). All three come back on the response:
+    `base` is what the client captions the search with, `mode` says whether
+    a hit carries a highlight-worthy substring position or is a glob match,
+    and `pattern` is what a glob hit's `rel` was actually matched against —
+    the client needs it (not the raw `q`) to locate a glob hit's own literal
+    pieces for highlighting, since it cannot redo `resolve_query`'s
+    filesystem-dependent base walk itself.
 
     A miss is `{covered: false, hits: []}` with a 200, exactly as for the
     corpus: "no index yet", "not covered" and "a scan is running" are one

@@ -303,6 +303,20 @@ def test_rank_route_answers_ranked_hits(home, tmp_path):
     assert body["total"] == len(body["hits"])
 
 
+def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
+    """SPEC-search-space-wildcard.md §4: the client needs the RESOLVED
+    pattern (whitespace already expanded, any base peeled off) to locate a
+    glob hit's own literal pieces for highlighting — the raw `q` it typed is
+    not enough, since `resolve_query`'s base walk is filesystem-dependent
+    and not something the client can redo itself."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/hello world.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "hello world"}).json()
+    assert body["mode"] == "glob"
+    assert body["pattern"] == "**/*hello*world*"
+
+
 def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):
     """The next slow report should be attributable server-side instead of
     inferred: this is the total the per-phase DEBUG lines add up against."""
