@@ -155,6 +155,103 @@ export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
   return { score, positions, longestRun };
 }
 
+// A glob hit is not promised to be a subsequence or even a substring of the
+// query text (`*.csv` matching `report.csv` has no literal "*.csv" anywhere
+// in `report.csv`), so `fuzzyMatch`/`substringMatch` cannot answer what to
+// highlight for one. This instead locates each LITERAL piece of the glob
+// PATTERN (not the raw query — see `globMatch`'s own docstring) within
+// `text` and marks only those, leaving the wildcard-filled gaps between them
+// unmarked — SPEC-search-space-wildcard.md §4: "mark each literal piece
+// separately" (`hello world` against `my_hello_big_world.py` marks `hello`
+// and `world`, not the `_big_` between them).
+//
+// Mirrors `_glob_to_regex` (fused_render/index/query.py) token for token —
+// `**/ ` is zero-or-more whole segments, a mid-pattern `**` spans
+// separators unrestricted, a lone `*` is confined to one segment, and
+// `?`/`[`/`]` are literal characters, same as every other char — except
+// each literal RUN is wrapped in its own capturing group instead of being
+// escaped inline, so the match's own capture indices (the `d` regex flag,
+// `RegExpExecArray.indices`) give this the position of each piece directly,
+// with no separate scan needed.
+function escapeLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function globToHighlightRegex(pattern: string): RegExp {
+  let out = "";
+  let i = 0;
+  const n = pattern.length;
+  while (i < n) {
+    if (pattern.startsWith("**/", i)) {
+      out += "(?:[^/]*/)*";
+      i += 3;
+    } else if (pattern.startsWith("**", i)) {
+      out += ".*";
+      i += 2;
+    } else if (pattern[i] === "*") {
+      out += "[^/]*";
+      i += 1;
+    } else {
+      let lit = "";
+      while (i < n && pattern[i] !== "*") {
+        lit += pattern[i];
+        i++;
+      }
+      // A literal run immediately followed by the whole-segment "**/"
+      // token ends in the "/" that INTRODUCES that token (the pattern
+      // text is literally "dir/**/…") — that slash is the path separator
+      // the pattern author typed between segments, not part of the
+      // segment name itself, so it stays out of the capture: the spec's
+      // own example marks `[src]/lib/util[.ts]`, not `[src/]lib/...`.
+      let trailingSlash = "";
+      if (lit.endsWith("/") && pattern.startsWith("**/", i)) {
+        trailingSlash = "/";
+        lit = lit.slice(0, -1);
+      }
+      if (lit) out += "(" + escapeLiteral(lit) + ")";
+      out += escapeLiteral(trailingSlash);
+    }
+  }
+  return new RegExp("^" + out + "$", "d");
+}
+
+// `RegExpExecArray` in this repo's ES2020 lib target has no `indices`
+// member (that is an ES2022 addition) — asserted locally rather than
+// bumping the project-wide lib target for one call site.
+type IndicesArray = Array<[number, number] | undefined>;
+
+/**
+ * Highlight positions for a GLOB-mode hit: `pattern` is the server's
+ * resolved pattern (`IndexRankResult.pattern`), already base-peeled and
+ * whitespace-expanded — NOT the raw string the user typed, and not
+ * `resolve_query`'s `**\/` prefix redone client-side (the pattern already
+ * carries it). `text` is the hit's `rel`, exactly as `hitsFromRank`/
+ * `answerFrom` already have it.
+ *
+ * Returns null when `text` does not actually full-match `pattern` — should
+ * not happen for a hit the server already matched, but this does not
+ * assume its caller only ever calls it with one that does.
+ *
+ * `score`/`longestRun` are 0: glob mode has no scoring (SPEC-search-space-
+ * wildcard.md: "do not add scoring to glob mode") and nothing here reads
+ * either field for a glob hit — only `positions` is used, by
+ * `highlightSegments`.
+ */
+export function globMatch(pattern: string, text: string): FuzzyResult | null {
+  const regex = globToHighlightRegex(pattern.toLowerCase());
+  const m = regex.exec(text.toLowerCase()) as
+    | (RegExpExecArray & { indices?: IndicesArray })
+    | null;
+  if (!m || !m.indices) return null;
+  const positions: number[] = [];
+  for (let g = 1; g < m.indices.length; g++) {
+    const range = m.indices[g];
+    if (!range) continue;
+    for (let p = range[0]; p < range[1]; p++) positions.push(p);
+  }
+  return { score: 0, positions, longestRun: 0 };
+}
+
 export interface HighlightSegment {
   text: string;
   match: boolean;
