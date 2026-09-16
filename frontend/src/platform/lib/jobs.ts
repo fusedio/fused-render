@@ -800,14 +800,20 @@ export function groupPopupTick(
     const runningMembers = g.jobs.filter(isRunning);
     if (runningMembers.length > 0) {
       for (const m of runningMembers) nextRunningMemberIds.add(m.id);
-      // START = none of this group's CURRENTLY running members were already
-      // running last tick — see `GroupPopupState.runningMemberIds`'s doc for
-      // why this is id-keyed rather than group-key-keyed. If any current
-      // running member was already running last tick, the group was already
-      // "in flight" and this is an ordinary sibling starting later, not a
-      // 0-to-some edge.
-      const allUnseen = runningMembers.every((m) => !state.runningMemberIds.has(m.id));
-      if (!isFirstTick && allUnseen) {
+      // START = this GROUP (not just its currently-running members) had no
+      // running member last tick — see `GroupPopupState.runningMemberIds`'s
+      // doc for why this is id-keyed rather than group-key-keyed. This must
+      // ask about EVERY member of the group (`g.jobs`), not just the ones
+      // running THIS tick: a serialized burst (a1 finishes, then a2 starts,
+      // then a3 starts, all within GROUP_GAP_MS) has a different, newly-
+      // running member on every tick, so "were the CURRENTLY running members
+      // unseen" is true every single tick and pops a duplicate START per
+      // handoff — exactly the pile-up this branch exists to prevent. Asking
+      // "was ANY member of this group running last tick" answers the real
+      // 0-to-some edge regardless of which specific member happens to be the
+      // one currently running.
+      const wasRunning = g.jobs.some((m) => state.runningMemberIds.has(m.id));
+      if (!isFirstTick && !wasRunning) {
         const rep = runningMembers.reduce((a, b) =>
           (b.started_at ?? 0) > (a.started_at ?? 0) ? b : a,
         );

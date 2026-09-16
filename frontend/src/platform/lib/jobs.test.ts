@@ -1248,6 +1248,51 @@ test("groupPopupTick: a group crossing from 0 running to some pops a START on th
   expect(t1.popped?.id).toBe("sys:g:b");
 });
 
+test("groupPopupTick: a serialized handoff (members running one at a time within GROUP_GAP_MS) pops START exactly once", () => {
+  // Regression for the predicate that asked "were the CURRENTLY running
+  // members unseen" instead of "was ANY member of the group running last
+  // tick" — a serialized burst has a different, newly-running member on
+  // every tick, so the wrong predicate popped a duplicate START on every
+  // handoff instead of once for the whole group.
+  //
+  // "waiting" here stands in for "queued, not yet started" — a1/a2 are both
+  // already known members of the group before either one runs, the same
+  // shape a real batch of queued downloads would have.
+  const seed: Job[] = [
+    job({ id: "sys:g:a1", state: "waiting", group: "sys:g" }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
+  ];
+  // Tick 1: a1 starts running — the group's first running member.
+  const tick1: Job[] = [
+    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
+  ];
+  // Tick 2: a1 finishes, a2 takes over — a handoff, not a new group.
+  const tick2: Job[] = [
+    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
+    job({ id: "sys:g:a2", state: "running", group: "sys:g", started_at: 300 }),
+  ];
+  // Tick 3: a2 finishes, a3 (a brand-new member) takes over — still just a
+  // handoff within the same running group.
+  const tick3: Job[] = [
+    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
+    job({ id: "sys:g:a2", state: "done", group: "sys:g", started_at: 300, finished_at: 400 }),
+    job({ id: "sys:g:a3", state: "running", group: "sys:g", started_at: 500 }),
+  ];
+
+  const t0 = groupPopupTick(seed, EMPTY_GROUP_POPUP_STATE, true);
+  expect(t0.popped).toBeNull(); // seeded on the first tick, same as popupTick's own backlog rule
+
+  const t1 = groupPopupTick(tick1, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a1"); // 0 running -> some running: a genuine START
+
+  const t2 = groupPopupTick(tick2, t1.state, false);
+  expect(t2.popped).toBeNull(); // a2 taking over from a1 is a handoff, not a new START
+
+  const t3 = groupPopupTick(tick3, t2.state, false);
+  expect(t3.popped).toBeNull(); // a3 taking over from a2 is likewise not a new START
+});
+
 test("groupPopupTick: ordinary member completion pops nothing (no start, no failure)", () => {
   const running: Job[] = [
     job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
