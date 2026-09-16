@@ -1338,6 +1338,76 @@ test("groupPopupTick: single-member groups are ignored entirely — never a cand
   expect(t1.popped).toBeNull();
 });
 
+// ------------------------- key-churn must never re-trigger a START ---------
+// Finding (code review 2026-09-16): `clusterFamily` numbers clusters 0,1,2...
+// purely by position in the CURRENT snapshot, and the old `runningGroups`
+// tracked cluster-scoped KEYS (which bake that ordinal in). Losing an older
+// cluster from the snapshot (Clear all, dismissal) or a late report landing
+// out of `started_at` order can renumber a still-running cluster's ordinal
+// out from under it, so a key-keyed `runningGroups` would forget it was
+// already running and pop a duplicate START. Tracking RUNNING MEMBER IDS
+// instead of group keys makes both cases inert.
+
+test("groupPopupTick: removing an older, fully-terminal cluster from the snapshot does not re-pop the surviving running cluster", () => {
+  const oldCluster = job({
+    id: "sys:g:old",
+    group: "sys:g",
+    state: "done",
+    started_at: 100,
+    finished_at: 200,
+  });
+  // The surviving cluster needs 2+ members itself to be a tracked
+  // multi-member group at all (a single-member cluster never reaches
+  // `groupPopupTick`'s START logic).
+  const b1 = job({
+    id: "sys:g:b1",
+    group: "sys:g",
+    state: "running",
+    // Comfortably more than GROUP_GAP_MS past the old cluster's activity —
+    // its own cluster, per `clusterFamily`.
+    started_at: 200 + GROUP_GAP_MS + 10_000,
+  });
+  const b2 = job({
+    id: "sys:g:b2",
+    group: "sys:g",
+    state: "running",
+    started_at: 200 + GROUP_GAP_MS + 10_100,
+  });
+
+  const t0 = groupPopupTick([oldCluster, b1, b2], EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick([oldCluster, b1, b2], t0.state, false);
+  expect(t1.popped).toBeNull(); // already running last tick — no NEW start
+
+  // "Clear all" (or a sweep) drops the old, fully-terminal cluster from the
+  // snapshot entirely. `clusterFamily` now renumbers the surviving cluster
+  // from index 1 to index 0 — a key-keyed tracker would read this as a
+  // brand-new group and pop a duplicate START for work already announced.
+  const t2 = groupPopupTick([b1, b2], t1.state, false);
+  expect(t2.popped).toBeNull();
+});
+
+test("groupPopupTick: a late-arriving report that splits an earlier cluster does not re-pop the already-seen running members", () => {
+  const c1 = job({ id: "sys:g:c1", group: "sys:g", state: "running", started_at: 200_000 });
+  const c2 = job({ id: "sys:g:c2", group: "sys:g", state: "running", started_at: 200_100 });
+
+  const t0 = groupPopupTick([c1, c2], EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick([c1, c2], t0.state, false);
+  expect(t1.popped).toBeNull(); // already running last tick — no NEW start
+
+  // A late report arrives whose `started_at` predates everything seen so
+  // far by more than GROUP_GAP_MS — it splits what was cluster 0 ({c1, c2})
+  // into two clusters, shifting {c1, c2} from ordinal 0 to ordinal 1.
+  const lateReport = job({
+    id: "sys:g:late",
+    group: "sys:g",
+    state: "done",
+    started_at: 1_000,
+    finished_at: 50_000,
+  });
+  const t2 = groupPopupTick([c1, c2, lateReport], t1.state, false);
+  expect(t2.popped).toBeNull();
+});
+
 // -------------------------------------------------- finding 8: shrink-to-1
 // A group shrinking to one member (a sibling dismissed/swept) must not
 // re-pop an already-popped failure via popupTick's singleton path.

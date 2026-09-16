@@ -330,9 +330,15 @@ export const GROUP_GAP_MS = 2 * 60 * 1000;
  *  preserves the snapshot's own arrival order. `key` is the full
  *  cluster-scoped identity (family plus which burst) - use it, not
  *  `${page} ${group}` alone, anywhere a stable per-burst identity is needed
- *  (React list keys, `groupPopupTick`'s own tracked-group keys): two
- *  different bursts of the same family share `page`/`group` but must never
- *  be treated as the same group. */
+ *  (React list keys): two different bursts of the same family share
+ *  `page`/`group` but must never be treated as the same group. Since the
+ *  follow-up finding below, the cluster component is itself content-derived
+ *  (the cluster's earliest member's id), not positional, so this key no
+ *  longer moves when an unrelated cluster in the same family leaves the
+ *  snapshot. `groupPopupTick`'s own START tracking does NOT use this key at
+ *  all (see `GroupPopupState.runningMemberIds`) - it tracks member job ids
+ *  instead, on purpose, so even a key change here can never manufacture a
+ *  duplicate START pop. */
 export interface JobGroup {
   page: string;
   group: string;
@@ -349,17 +355,32 @@ function familyKey(job: Job): string {
  *  copy sorted by `started_at` (the family's own arrival order, preserved by
  *  the caller, is not necessarily start order - a shorter job can be
  *  reported after a longer one that started first). */
-function clusterFamily(members: readonly Job[]): Map<string, number> {
+/** Finding (code review 2026-09-16, follow-up to finding 3): the cluster
+ *  identity used to be its POSITIONAL index (0, 1, 2...) in the current
+ *  snapshot. That ordinal moves whenever an unrelated cluster in the same
+ *  family leaves the snapshot (a Clear-all, a dismissal, a sweep) or a late
+ *  report arrives out of `started_at` order and splits an earlier cluster in
+ *  two — every later ordinal shifts even though nothing about the shifted
+ *  cluster's OWN membership changed. Keying each cluster on its own earliest
+ *  member's id instead (content-derived, not positional) means the key only
+ *  moves when that cluster's own earliest member actually changes.
+ *
+ *  This is defence-in-depth / a React-key fix (`groupJobs`'s `key`,
+ *  `renderJobRows`'s list key) — it is NOT what makes `groupPopupTick`'s
+ *  START rule correct by itself. `GroupPopupState` tracks running MEMBER
+ *  IDS, not group keys, specifically so a key change here can never revive a
+ *  duplicate START pop. See that type's own doc comment. */
+function clusterFamily(members: readonly Job[]): Map<string, string> {
   const sorted = [...members].sort((a, b) => a.started_at - b.started_at);
-  const clusterOf = new Map<string, number>();
-  let clusterIdx = -1;
+  const clusterOf = new Map<string, string>();
+  let clusterHeadId: string | null = null;
   let latestActivity = -Infinity; // latest finished_at ?? started_at seen so far, THIS cluster only
   for (const j of sorted) {
-    if (clusterIdx === -1 || j.started_at - latestActivity > GROUP_GAP_MS) {
-      clusterIdx += 1;
+    if (clusterHeadId === null || j.started_at - latestActivity > GROUP_GAP_MS) {
+      clusterHeadId = j.id;
       latestActivity = -Infinity;
     }
-    clusterOf.set(j.id, clusterIdx);
+    clusterOf.set(j.id, clusterHeadId);
     const activity = j.finished_at ?? j.started_at;
     if (activity > latestActivity) latestActivity = activity;
   }
@@ -391,7 +412,7 @@ export function groupJobs(jobs: readonly Job[]): JobGroup[] {
     }
     arr.push(j);
   }
-  const clustersByFamily = new Map<string, Map<string, number>>();
+  const clustersByFamily = new Map<string, Map<string, string>>();
 
   const byKey = new Map<string, JobGroup>();
   const order: JobGroup[] = [];
@@ -402,7 +423,7 @@ export function groupJobs(jobs: readonly Job[]): JobGroup[] {
       clusterOf = clusterFamily(families.get(fk) ?? []);
       clustersByFamily.set(fk, clusterOf);
     }
-    const cluster = clusterOf.get(j.id) ?? 0;
+    const cluster = clusterOf.get(j.id) ?? j.id;
     const key = `${fk}#${cluster}`;
     let g = byKey.get(key);
     if (!g) {
@@ -693,12 +714,34 @@ export function popupTick(
 /** Carried tick-to-tick state for `groupPopupTick`, the same shape of
  *  "rebuilt every call" ref `popupTick`'s own `seen` set is. */
 export interface GroupPopupState {
-  /** Group keys (`(page, group)`) that had at least one RUNNING member as of
-   *  the last tick — the "0 to some" edge for D-C's start rule is detected
-   *  by a key's absence here followed by its presence now. Self-resetting:
-   *  once a group goes fully idle/terminal its key simply falls out, so its
-   *  NEXT run from zero is a fresh start, not a permanently-spent one. */
-  runningGroups: ReadonlySet<string>;
+  /** Finding (code review 2026-09-16): this used to be a set of GROUP KEYS
+   *  (`(page, group, cluster)`) that had a running member as of the last
+   *  tick. That made the START edge depend on cluster-key IDENTITY, which is
+   *  partly positional (`clusterFamily` numbers a family's bursts 0,1,2... by
+   *  their order in the CURRENT snapshot — see that function's own doc). An
+   *  old, fully-terminal cluster leaving the snapshot (Clear all, a
+   *  dismissal) or a late report splitting an earlier cluster renumbers every
+   *  later cluster's ordinal even though its OWN membership never changed —
+   *  a still-running group's key would shift, `runningGroups.has(newKey)`
+   *  would read false, and a group already announced would pop a duplicate
+   *  START for work the user was already told about.
+   *
+   *  Tracking the RUNNING MEMBERS' JOB IDS instead of group keys sidesteps
+   *  key churn entirely: a job's id never changes, so renumbering a cluster
+   *  cannot manufacture a "new" running member out of one already seen. A
+   *  group pops START only when it has running members and NONE of them was
+   *  in this set as of the previous tick — the same "0 running members to
+   *  some" edge, expressed without ever touching group-key identity.
+   *
+   *  DO NOT "simplify" this back to a set of group keys — that is exactly
+   *  the bug this fix exists to close. See DECISIONS-quiet-notifications.md.
+   *
+   *  Rebuilt fresh every tick from the CURRENT snapshot's running members
+   *  (restricted to multi-member groups), the same way the old `nextRunning`
+   *  was — ids of jobs that have left the snapshot are not carried forward
+   *  here (unlike `failedSeen` below, which Finding 8 requires to persist
+   *  past a group's shrink). */
+  runningMemberIds: ReadonlySet<string>;
   /** `popupKey`-shaped keys of members already popped for failing — same
    *  one-shot-terminal-event identity `popupTick` uses, restricted to
    *  members of MULTI-member groups (a single-member group's own failure
@@ -707,15 +750,9 @@ export interface GroupPopupState {
 }
 
 export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
-  runningGroups: new Set(),
+  runningMemberIds: new Set(),
   failedSeen: new Set(),
 };
-
-function groupKeyOf(g: JobGroup): string {
-  // Finding 3's own cluster-scoped identity, not the bare family -- two
-  // different bursts of the same family must never share a tracked-group key.
-  return g.key;
-}
 
 /** D-C's own pop rule (SPEC-quiet-notifications.md §3), for MULTI-member
  *  groups only — a group of one is handled entirely by `popupTick` above and
@@ -754,17 +791,23 @@ export function groupPopupTick(
 ): { state: GroupPopupState; popped: Job | null } {
   const allGroups = groupJobs(jobs);
   const groups = allGroups.filter((g) => g.jobs.length > 1);
-  const nextRunning = new Set<string>();
+  const nextRunningMemberIds = new Set<string>();
   const nextFailedSeen = new Set<string>();
   let popped: Job | null = null;
   let poppedAt = -Infinity;
 
   for (const g of groups) {
-    const key = groupKeyOf(g);
     const runningMembers = g.jobs.filter(isRunning);
     if (runningMembers.length > 0) {
-      nextRunning.add(key);
-      if (!isFirstTick && !state.runningGroups.has(key)) {
+      for (const m of runningMembers) nextRunningMemberIds.add(m.id);
+      // START = none of this group's CURRENTLY running members were already
+      // running last tick — see `GroupPopupState.runningMemberIds`'s doc for
+      // why this is id-keyed rather than group-key-keyed. If any current
+      // running member was already running last tick, the group was already
+      // "in flight" and this is an ordinary sibling starting later, not a
+      // 0-to-some edge.
+      const allUnseen = runningMembers.every((m) => !state.runningMemberIds.has(m.id));
+      if (!isFirstTick && allUnseen) {
         const rep = runningMembers.reduce((a, b) =>
           (b.started_at ?? 0) > (a.started_at ?? 0) ? b : a,
         );
@@ -807,7 +850,7 @@ export function groupPopupTick(
     }
   }
 
-  return { state: { runningGroups: nextRunning, failedSeen: nextFailedSeen }, popped };
+  return { state: { runningMemberIds: nextRunningMemberIds, failedSeen: nextFailedSeen }, popped };
 }
 
 // A REAL, server-side dismissal that happened somewhere its own `onPatch`
