@@ -8,10 +8,12 @@ import {
   jobTypeLabel,
   SCHEDULE_JOB_PREFIX,
   activeJobByModel,
+  EMPTY_GROUP_POPUP_STATE,
   effectiveTier,
   GRACE_MS,
   groupEffectiveTier,
   groupJobs,
+  groupPopupTick,
   isGroupRecentOnly,
   isGroupTerminal,
   jobAmount,
@@ -1075,4 +1077,142 @@ test("jobRows: two UNRELATED single-member jobs are never folded into each other
   // "a" visible the way a genuine shared-group sibling would.
   expect(jobRows(jobs, open).map((j) => j.id)).toEqual(["b"]);
   expect(recentJobs(jobs, open).map((j) => j.id)).toEqual(["a"]);
+});
+
+// --------------------------------------------------------- D-C pop rule
+// SPEC-quiet-notifications.md §3: a multi-member group pops on START (no
+// running members to some) and on FAILURE (any member error/cancelled), and
+// on nothing else — never on an ordinary completion, never when the whole
+// group finishes. A single-member group is unaffected: `popupTick`/
+// `popupJobs` above already own its pop-on-every-terminal-event behavior
+// unchanged (see the "popupJobs pops every terminal job" tests already in
+// this file, all running with a default group-of-one).
+
+test("popupJobs excludes a multi-member group's own members entirely — their popping is groupPopupTick's job now", () => {
+  const jobs = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 1000 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g" }),
+  ];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual([]);
+});
+
+test("popupJobs still pops a SINGLE-member job's own terminal event unchanged, even sharing a page with an unrelated group", () => {
+  const jobs = [
+    job({ id: "lone", state: "done", finished_at: 1000, page: "/p" }),
+    job({ id: "sys:g:a", state: "done", group: "sys:g", page: "/p", finished_at: 2000 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", page: "/p" }),
+  ];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["lone"]);
+});
+
+test("groupPopupTick: a group's first running member pops a START, once — not on the seeding first tick", () => {
+  const jobs = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 500 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 400 }),
+  ];
+  const first = groupPopupTick(jobs, EMPTY_GROUP_POPUP_STATE, true);
+  expect(first.popped).toBeNull();
+  const second = groupPopupTick(jobs, first.state, false);
+  expect(second.popped).toBeNull(); // already running last tick too — no NEW start
+});
+
+test("groupPopupTick: a group crossing from 0 running to some pops a START on that tick", () => {
+  const idle: Job[] = [job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 })];
+  const started: Job[] = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 700 }),
+  ];
+  const t0 = groupPopupTick(idle, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(started, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:b");
+});
+
+test("groupPopupTick: ordinary member completion pops nothing (no start, no failure)", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneDone: Job[] = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneDone, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: the whole group finishing pops nothing", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const bothDone: Job[] = [
+    job({ id: "sys:g:a", state: "done", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "done", group: "sys:g", started_at: 100, finished_at: 950 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(bothDone, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: any member failing pops a FAILURE, even mid-run", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+});
+
+test("groupPopupTick: a cancelled member also pops a FAILURE (effectiveTier promotes it the same as error)", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const cancelled: Job[] = [
+    job({ id: "sys:g:a", state: "cancelled", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(cancelled, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+});
+
+test("groupPopupTick: a failure already popped is not popped again while it stays failed", () => {
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(oneFailed, EMPTY_GROUP_POPUP_STATE, true);
+  expect(t0.popped).toBeNull(); // seeded on the first tick, same as popupTick's own backlog rule
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped).toBeNull();
+});
+
+test("groupPopupTick: latest wins when a start and a failure both land in the same tick, across different groups", () => {
+  const before: Job[] = [
+    job({ id: "sys:g1:a", state: "done", group: "sys:g1", finished_at: 100 }),
+    job({ id: "sys:g2:a", state: "running", group: "sys:g2", started_at: 100 }),
+  ];
+  const after: Job[] = [
+    job({ id: "sys:g1:a", state: "done", group: "sys:g1", finished_at: 100 }),
+    job({ id: "sys:g1:b", state: "running", group: "sys:g1", started_at: 5000 }), // START at 5000
+    job({ id: "sys:g2:a", state: "error", group: "sys:g2", started_at: 100, finished_at: 2000 }), // FAILURE at 2000
+  ];
+  const t0 = groupPopupTick(before, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(after, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g1:b"); // 5000 > 2000
+});
+
+test("groupPopupTick: single-member groups are ignored entirely — never a candidate here", () => {
+  const jobs = [job({ id: "lone", state: "running", started_at: 100 })];
+  const t0 = groupPopupTick(jobs, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(jobs, t0.state, false);
+  expect(t0.popped).toBeNull();
+  expect(t1.popped).toBeNull();
 });

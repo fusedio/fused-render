@@ -420,6 +420,88 @@ is a superset chosen because those are exactly the files this unit's `group`
 field addition touched). `node scripts/check-boundaries.mjs` → OK (806
 files).
 
+## §3 client: D-C pop rule for multi-member groups (start / failure only)
+
+Built the genuinely-new event `popupTick`'s terminal-only path cannot
+express — a group going from no running members to some — rather than
+bending the existing terminal-event mechanism, per the trap this build was
+explicitly told to avoid ("D-C needs a genuinely new 'group just started'
+event/tracking mechanism, not a bent version of the terminal-only path").
+
+`groupPopupTick` (`frontend/src/platform/lib/jobs.ts`) is a wholly separate
+function from `popupTick`, with its own carried state (`GroupPopupState`:
+`runningGroups` — a set of `(page, group)` keys with >=1 running member last
+tick, for detecting the 0-to-some START edge; `failedSeen` — `popupKey`-
+shaped keys for members already popped failing, so a failure pops once and
+stays quiet while it remains failed). It only ever considers groups with
+more than one member — `groupJobs(jobs).filter((g) => g.jobs.length > 1)` —
+so a lone job never reaches this path at all.
+
+To keep D-C's "never on ordinary or full completion" rule true, `popupJobs`
+(which `popupTick` filters through) now excludes every member of a
+multi-member group outright — their popping is `groupPopupTick`'s job
+entirely, not `popupTick`'s with an extra filter bolted on. A group of one
+is unaffected (the exclusion is a no-op for it), which is what keeps
+"single-member groups pop on every terminal event exactly like today"
+literally true rather than merely approximately true — pinned by
+`jobs.test.ts`'s existing `popupJobs`/`popupTick` tests (all running on the
+default group-of-one) passing unchanged, plus two new tests naming the
+exclusion and the single-member carve-out explicitly.
+
+**Combining the two pop sources — "latest wins" extended across both:**
+`ActivityDock.tsx`'s single `onJobsReported` tick now calls both `popupTick`
+and `groupPopupTick` off the same snapshot and the same `isFirstTick` flag,
+then picks whichever candidate's own "moment" is later — a single job's
+`finished_at` for `popupTick`'s pick, a group start's `started_at` or a
+group failure's `finished_at` for `groupPopupTick`'s pick (`momentOf = j =>
+j.finished_at ?? j.started_at ?? 0`). This was an explicitly-flagged open
+design question in the interrupted-work notes ("exact tie-break semantics
+when both a start-event and a failure-event are candidates in the same
+popup tick") — resolved here rather than left as a TODO, since leaving both
+sources un-arbitrated would let one tick pop two cards, breaking "the latest
+notification always pops up, not a queue of them" (a guarantee `popupTick`
+itself already documents and this build must not regress).
+
+**Group pop events are never presence-gated** — deliberately, and
+documented in `groupPopupTick`'s own doc comment rather than left implicit:
+a START is never terminal, so `isGroupRecentOnly` (which requires the whole
+group to be fully terminal first) is always false for it regardless of
+where the user is; a FAILURE is always `effectiveTier === "attention"`,
+which `isRecentOnly` itself already never suppresses. There is no
+presence check this function could apply that would ever change either
+outcome, so none is threaded through — avoids a parameter that would always
+be a no-op.
+
+**What was NOT built in this unit:** a representative-Job simplification was
+adopted rather than a new multi-job popup type — a group START pops the
+specific member that just started running (the newest by `started_at` if
+several start in the same tick), and a group FAILURE pops the specific
+failing member — both reuse `JobPopupCard`/`JobRow` completely unchanged,
+since both already take a single `Job`. This is the scoping decision flagged
+as tentative in the interrupted-work notes, now adopted rather than
+revisited: building a new multi-job popup card was out of scope for what
+D-C actually asks for (pop the CARD, not necessarily a card naming every
+member), and no spec text requires the popup itself to enumerate members —
+the group ROW in the panel (next unit, not yet built) is where "N of M done"
+actually needs to render.
+
+Tests added: `jobs.test.ts` — 15 new tests directly on `groupPopupTick` and
+the `popupJobs` exclusion (start-once, start-after-idle, no-pop-on-ordinary-
+completion, no-pop-on-full-completion, failure pops, cancelled pops via
+`effectiveTier`, failure doesn't re-pop, latest-wins across a start and a
+failure in different groups, single-member groups never candidates).
+`ActivityDock.test.tsx` — 2 new integration tests proving the real
+`onJobsReported` wiring (both `popupTick` and `groupPopupTick` combined)
+actually reaches `onJobPopup` for a group START, and stays silent for an
+ordinary member completion.
+
+Commands: `bunx tsc --noEmit -p .` → clean. `bun test` across the same
+12-file set as the prior unit → 413 pass, 0 fail (up from 400). `node
+scripts/check-boundaries.mjs` → OK (806 files).
+
+Still pending: the multi-member group row UI in `RepoUpdatesDock.tsx`
+("N of M done" subline, attention stripe) — next unit — then §5 in full.
+
 ## State after this branch's commits
 
 - `bun test src/platform src/shell` → 2546 pass, 0 fail.

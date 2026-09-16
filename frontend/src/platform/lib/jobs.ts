@@ -503,12 +503,27 @@ export function recentNotifications(
  *  news. Reading `effectiveTier` here would already promote that row to
  *  `attention` and let it through correctly by accident, but it would also
  *  hide the actual rule being applied: this filter cares about the
- *  producer's OWN claim on a clean finish, not the derived display tier. */
+ *  producer's OWN claim on a clean finish, not the derived display tier.
+ *
+ *  A MULTI-MEMBER GROUP'S OWN MEMBERS ARE EXCLUDED HERE (D-C,
+ *  SPEC-quiet-notifications.md §3) — their popping is handled by
+ *  `groupPopupTick` below instead, on the group's OWN rule (pop on start,
+ *  pop on failure, never on ordinary or full completion), not on this
+ *  function's per-job terminal rule. Without this exclusion a group member
+ *  would pop here on every ordinary completion, exactly the "bent version of
+ *  the terminal-only path" this build was told not to ship. A group of one
+ *  is unaffected — it is excluded from nothing extra, so it keeps today's
+ *  pop-on-every-terminal-event behavior exactly. */
 export function popupJobs(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
+  const groupById = indexGroups(jobs);
   return terminalJobs(mergedRows(jobs))
     .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
     .filter((j) => !(j.tier === "silent" && j.state === "done"))
-    .filter((j) => !(isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)));
+    .filter((j) => !(isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)))
+    .filter((j) => {
+      const g = groupById.get(j.id);
+      return !g || g.jobs.length === 1;
+    });
 }
 
 /** One popup tick's candidate key — a terminal EVENT, not a job id.
@@ -570,6 +585,105 @@ export function popupTick(
     if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
   }
   return { seen: next, popped };
+}
+
+/** Carried tick-to-tick state for `groupPopupTick`, the same shape of
+ *  "rebuilt every call" ref `popupTick`'s own `seen` set is. */
+export interface GroupPopupState {
+  /** Group keys (`(page, group)`) that had at least one RUNNING member as of
+   *  the last tick — the "0 to some" edge for D-C's start rule is detected
+   *  by a key's absence here followed by its presence now. Self-resetting:
+   *  once a group goes fully idle/terminal its key simply falls out, so its
+   *  NEXT run from zero is a fresh start, not a permanently-spent one. */
+  runningGroups: ReadonlySet<string>;
+  /** `popupKey`-shaped keys of members already popped for failing — same
+   *  one-shot-terminal-event identity `popupTick` uses, restricted to
+   *  members of MULTI-member groups (a single-member group's own failure
+   *  already pops via `popupTick`/`popupJobs` unchanged). */
+  failedSeen: ReadonlySet<string>;
+}
+
+export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
+  runningGroups: new Set(),
+  failedSeen: new Set(),
+};
+
+function groupKeyOf(g: JobGroup): string {
+  return `${g.page} ${g.group}`;
+}
+
+/** D-C's own pop rule (SPEC-quiet-notifications.md §3), for MULTI-member
+ *  groups only — a group of one is handled entirely by `popupTick` above and
+ *  never reaches here (see `groupJobs(jobs).filter(...length > 1)` below).
+ *
+ *  Two, and only two, events pop a group's card:
+ *   1. START — the group goes from no running members to some. This is a
+ *      genuinely new kind of event `popupTick`'s terminal-only path cannot
+ *      express at all (a running job is never a `popupJobs` candidate), not
+ *      a bent reuse of it — the trap this build was explicitly told to
+ *      avoid.
+ *   2. FAILURE — any member enters `error`/`cancelled` (reads via
+ *      `effectiveTier(member) === "attention"`, the same promotion rule
+ *      every other tier decision in this file uses).
+ *  Ordinary completion (one member finishing cleanly) and full completion
+ *  (the group going fully terminal) pop NOTHING — an unattended multi-file
+ *  operation stays quiet exactly the way a single successful job already
+ *  does, until something needs the user's attention.
+ *
+ *  Not gated by presence/`isOpenAnywhere` on purpose: a START is never
+ *  terminal, so `isGroupRecentOnly` (which requires full-terminal) is always
+ *  false for it regardless of where the user is — "in flight" is never
+ *  quiet. A FAILURE is `effectiveTier === "attention"`, which `isRecentOnly`
+ *  itself already always excludes from suppression — so there is no
+ *  presence check this function could apply that would ever change either
+ *  outcome.
+ *
+ *  LATEST WINS, same tie-break shape as `popupTick`: when a start and a
+ *  failure are both new in the same tick (in the same or different groups),
+ *  the one with the later moment — a start's `started_at`, a failure's
+ *  `finished_at` — wins, since that is genuinely the more recent event. */
+export function groupPopupTick(
+  jobs: Job[],
+  state: GroupPopupState,
+  isFirstTick: boolean,
+): { state: GroupPopupState; popped: Job | null } {
+  const groups = groupJobs(jobs).filter((g) => g.jobs.length > 1);
+  const nextRunning = new Set<string>();
+  const nextFailedSeen = new Set<string>();
+  let popped: Job | null = null;
+  let poppedAt = -Infinity;
+
+  for (const g of groups) {
+    const key = groupKeyOf(g);
+    const runningMembers = g.jobs.filter(isRunning);
+    if (runningMembers.length > 0) {
+      nextRunning.add(key);
+      if (!isFirstTick && !state.runningGroups.has(key)) {
+        const rep = runningMembers.reduce((a, b) =>
+          (b.started_at ?? 0) > (a.started_at ?? 0) ? b : a,
+        );
+        const at = rep.started_at ?? 0;
+        if (at > poppedAt) {
+          popped = rep;
+          poppedAt = at;
+        }
+      }
+    }
+
+    for (const member of g.jobs) {
+      if (effectiveTier(member) !== "attention") continue;
+      const mkey = popupKey(member);
+      nextFailedSeen.add(mkey);
+      if (isFirstTick || state.failedSeen.has(mkey)) continue;
+      const at = member.finished_at ?? 0;
+      if (at > poppedAt) {
+        popped = member;
+        poppedAt = at;
+      }
+    }
+  }
+
+  return { state: { runningGroups: nextRunning, failedSeen: nextFailedSeen }, popped };
 }
 
 // A REAL, server-side dismissal that happened somewhere its own `onPatch`

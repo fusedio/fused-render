@@ -42,6 +42,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
 import {
+  EMPTY_GROUP_POPUP_STATE,
+  groupPopupTick,
   isRunning,
   popupTick,
   recentNotifications,
@@ -232,6 +234,12 @@ export default function ActivityDock({
   // memoized with `[]` deps and must not re-create on every poll.
   const popupJobsSeenRef = useRef<Set<string>>(new Set());
   const popupFirstTickRef = useRef(true);
+  // D-C's own state (SPEC-quiet-notifications.md §3) — a MULTI-member
+  // group's start/failure pop-rule tracking, entirely separate from
+  // `popupJobsSeenRef` above (which now excludes multi-member group members
+  // outright; see `popupJobs`'s own doc). Carried the same way, in a ref,
+  // for the same "this callback is memoized with `[]` deps" reason.
+  const groupPopupStateRef = useRef(EMPTY_GROUP_POPUP_STATE);
   const onJobPopupRef = useRef(onJobPopup);
   onJobPopupRef.current = onJobPopup;
   // The setup meter (onboarding/progress.ts) reads stage statuses the server
@@ -281,8 +289,25 @@ export default function ActivityDock({
       isOpenAnywhere,
     );
     popupJobsSeenRef.current = seen;
+    // D-C (§3): a MULTI-member group's own start/failure pop, computed off
+    // the same full `next` snapshot and the same `isFirstTick` flag (so a
+    // page-load backlog seeds silently here too, not just in `popupTick`).
+    // "Latest wins, no stacking" is enforced ACROSS both sources by
+    // comparing whichever moment each candidate actually represents (a
+    // single job's own `finished_at`, a group start's `started_at`, a group
+    // failure's `finished_at`) — see each function's own doc for why that
+    // pairing is the right one.
+    const groupResult = groupPopupTick(next, groupPopupStateRef.current, popupFirstTickRef.current);
+    groupPopupStateRef.current = groupResult.state;
     popupFirstTickRef.current = false;
-    if (popped) onJobPopupRef.current?.(popped);
+    const momentOf = (j: Job) => j.finished_at ?? j.started_at ?? 0;
+    const winner =
+      popped && groupResult.popped
+        ? momentOf(groupResult.popped) > momentOf(popped)
+          ? groupResult.popped
+          : popped
+        : popped ?? groupResult.popped;
+    if (winner) onJobPopupRef.current?.(winner);
     if (moved) noteProgressMayHaveMoved();
   }, []);
 
