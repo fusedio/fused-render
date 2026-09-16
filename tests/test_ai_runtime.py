@@ -7676,6 +7676,23 @@ def test_a_transcript_rows_origin_names_the_calling_page(
     _wait_job(started["jobId"])
 
 
+def test_a_transcript_rows_source_comes_from_the_ambient_X_Fused_Source(
+        client, fake_transcribe_runner, recording):
+    """SPEC-quiet-notifications.md bug 2: transcribe mints its row through
+    `supervisor._report`/`jobs.upsert` with no `source=` of its own — the
+    same shape text generation had, before the ambient default. Sending
+    `X-Fused-Source` with NO `X-Fused-Page` (the Playground's own shape) must
+    still land in `row["source"]`, picked up by `jobs.upsert`'s ambient
+    fallback rather than by anything `ai_runtime.py` does."""
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+    _wait_job(started["jobId"])
+
+
 def test_a_transcript_is_written_to_disk_and_the_job_finishes(
         client, fake_transcribe_runner, recording):
     started = _post_transcribe(client, path=recording).json()

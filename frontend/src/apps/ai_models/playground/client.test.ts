@@ -87,7 +87,12 @@ test("startImage sends X-Fused-Source, the raising route, without touching X-Fus
     startImage({ prompt: "a red fox", model: "org/m" }),
   );
   expect(req.url).toBe("/api/ai/image");
-  expect(req.headers["X-Fused-Source"]).toBe(currentPresencePage());
+  // Percent-encoded, like `X-Fused-Page`'s own header (api.ts's `runHeaders`)
+  // and unquoted the same way server-side (`unquote(x_fused_source)`,
+  // ai_runtime.py) — SPEC-quiet-notifications.md bug 2 routed this header
+  // through api.ts's shared `ambientSourceHeaders`, which now encodes it to
+  // match that convention rather than sending the raw path.
+  expect(req.headers["X-Fused-Source"]).toBe(encodeURIComponent(currentPresencePage()));
   // Deliberately absent: sending X-Fused-Page here would make the render's
   // OWN `page` (the render's output-path click destination) permanently
   // inherit the Playground's route instead, breaking "click opens the
@@ -99,7 +104,7 @@ test("startImage sends X-Fused-Source, the raising route, without touching X-Fus
 test("startVideo sends X-Fused-Source the same way", async () => {
   const req = await capturedRequest(() => startVideo({ prompt: "a red fox running" }));
   expect(req.url).toBe("/api/ai/video");
-  expect(req.headers["X-Fused-Source"]).toBe(currentPresencePage());
+  expect(req.headers["X-Fused-Source"]).toBe(encodeURIComponent(currentPresencePage()));
   expect(req.headers["X-Fused-Page"]).toBeUndefined();
 });
 
