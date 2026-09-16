@@ -10,6 +10,10 @@ import {
   activeJobByModel,
   effectiveTier,
   GRACE_MS,
+  groupEffectiveTier,
+  groupJobs,
+  isGroupRecentOnly,
+  isGroupTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
@@ -55,6 +59,7 @@ function job(over: Partial<Job> = {}): Job {
     stalled: false,
     waiting_for: "",
     tier: "trail",
+    group: over.id ?? "j1",
     ...over,
   };
 }
@@ -913,4 +918,161 @@ test("popupTick: an error on the same open page still pops — an error is never
   const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
   const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
   expect(popped?.id).toBe("j1");
+});
+
+// --------------------------------------------------------------- §3 grouping
+// SPEC-quiet-notifications.md §3: rows are keyed by `(page, group)`, not by
+// id. Every job's `group` defaults, server-side, to its own id when it has
+// no `sys:<name>:` family prefix — so an ungrouped job is a group of one BY
+// CONSTRUCTION, which is what makes "a lone job behaves exactly as today"
+// true without any of `jobRows`/`recentJobs`/`groupJobs` special-casing
+// group size 1. `job()`'s own default (`group: over.id ?? "j1"`) mirrors
+// that server default, so every pre-existing test above — none of which set
+// `group` explicitly — already IS the single-member regression suite: if
+// grouping had broken lone-job behavior, they would have failed already.
+// The tests below name that guarantee explicitly, then move on to what's new.
+
+test("groupJobs: a lone job is its own group of one, keyed by its own id", () => {
+  const jobs = [job({ id: "dl", page: "/ai-models/local" })];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].group).toBe("dl");
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["dl"]);
+});
+
+test("groupJobs: two jobs sharing (page, group) fold into one group, arrival order preserved", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", page: "/ai-images", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", page: "/ai-images", group: "sys:ai-image" }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+});
+
+test("groupJobs: the same group id on two different pages is two groups, not one — grouping is per-page too", () => {
+  const jobs = [
+    job({ id: "a", page: "/one", group: "shared" }),
+    job({ id: "b", page: "/two", group: "shared" }),
+  ];
+  expect(groupJobs(jobs)).toHaveLength(2);
+});
+
+test("isGroupTerminal: false while any member is still running, however many siblings finished", () => {
+  const members = [
+    job({ id: "a", state: "done" }),
+    job({ id: "b", state: "running" }),
+  ];
+  expect(isGroupTerminal(members)).toBe(false);
+});
+
+test("isGroupTerminal: true once every member is terminal", () => {
+  const members = [job({ id: "a", state: "done" }), job({ id: "b", state: "error" })];
+  expect(isGroupTerminal(members)).toBe(true);
+});
+
+test("isGroupRecentOnly: true only when the group is fully terminal AND every member is individually recent-only", () => {
+  const members = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "done", tier: "trail", page: "/p" }),
+  ];
+  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(true);
+});
+
+test("isGroupRecentOnly: one failing member keeps the whole group visible, per spec's own words", () => {
+  const members = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "error", tier: "trail", page: "/p" }),
+  ];
+  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(false);
+});
+
+test("isGroupRecentOnly: one still-running member keeps the whole group visible (not fully terminal)", () => {
+  const members = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "running", tier: "trail", page: "/p" }),
+  ];
+  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(false);
+});
+
+test("isGroupRecentOnly: false when only some members' page is open (one member not recent-only)", () => {
+  const members = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "done", tier: "trail", page: "/p" }),
+  ];
+  // nothing has "/p" open in this variant
+  expect(isGroupRecentOnly(members, openNowhere)).toBe(false);
+});
+
+test("groupEffectiveTier: one attention member promotes the whole group, regardless of the rest", () => {
+  const members = [job({ id: "a", state: "error" }), job({ id: "b", tier: "silent", state: "done" })];
+  expect(groupEffectiveTier(members)).toBe("attention");
+});
+
+test("groupEffectiveTier: the loudest non-attention tier present wins (trail over transient over silent)", () => {
+  const members = [
+    job({ id: "a", tier: "silent", state: "done" }),
+    job({ id: "b", tier: "trail", state: "running" }),
+    job({ id: "c", tier: "transient", state: "done" }),
+  ];
+  expect(groupEffectiveTier(members)).toBe("trail");
+});
+
+test("groupEffectiveTier: all silent stays silent", () => {
+  const members = [job({ id: "a", tier: "silent", state: "done" })];
+  expect(groupEffectiveTier(members)).toBe("silent");
+});
+
+// The trap named explicitly in this build's brief: a two-member group where
+// one member is individually suppressible (done, its page open) and the
+// other is failing must appear EXACTLY ONCE, in the attention/trail path —
+// never split across jobRows and recentJobs, never dropped from both.
+test("jobRows/recentJobs: a two-member group with one suppressed success and one failure appears exactly once, in jobRows", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:ok", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:boom", state: "error", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  const rows = jobRows(jobs, open).map((j) => j.id).sort();
+  const recent = recentJobs(jobs, open).map((j) => j.id).sort();
+  expect(rows).toEqual(["sys:ai-image:boom", "sys:ai-image:ok"]);
+  expect(recent).toEqual([]);
+});
+
+test("jobRows/recentJobs: a two-member group where every member is individually recent-only is suppressed as a whole, into Recent", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  expect(jobRows(jobs, open)).toEqual([]);
+  expect(recentJobs(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+});
+
+test("jobRows: a two-member group with one member still running is never suppressed, even if its sibling's page is open and done", () => {
+  const jobs = [
+    job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
+    job({ id: "sys:ai-image:b", state: "running", tier: "trail", page: "/p", group: "sys:ai-image" }),
+  ];
+  const open = openHere("/p");
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+  expect(recentJobs(jobs, open)).toEqual([]);
+});
+
+// The single-member regression this build was told to pin explicitly: a
+// job whose group is itself (the id-derived default) behaves byte-for-byte
+// like today's ungrouped path — one running + one about-to-be-suppressed
+// job that do NOT share a group must never be folded together, and the
+// suppressed one is judged purely on its own.
+test("jobRows: two UNRELATED single-member jobs are never folded into each other's group just because they share a page", () => {
+  const jobs = [
+    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
+    job({ id: "b", state: "running", tier: "trail", page: "/p" }),
+  ];
+  const open = openHere("/p");
+  // "a" is its own group of one and is fully suppressible on its own;
+  // "b" is a separate group of one, still running, so it should NOT keep
+  // "a" visible the way a genuine shared-group sibling would.
+  expect(jobRows(jobs, open).map((j) => j.id)).toEqual(["b"]);
+  expect(recentJobs(jobs, open).map((j) => j.id)).toEqual(["a"]);
 });

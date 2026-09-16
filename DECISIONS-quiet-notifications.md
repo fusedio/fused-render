@@ -342,6 +342,84 @@ four moments and open questions. Do not write the D661 /
 `schedule-toast.ts:30` decision-log reversal entries until that code
 actually lands.
 
+## §3 client: `group` field, grouping data functions, suppression rewire
+
+Resolved the suppression-composition question the prior handoff explicitly
+left open, per the task brief's own instruction not to re-litigate it:
+**group first, then classify the group.** `jobRows`/`recentJobs` now index
+every job in the snapshot into its `(page, group)` group (`groupJobs` /
+`indexGroups` in `frontend/src/platform/lib/jobs.ts`) and, when a job
+belongs to a group, ask `isGroupRecentOnly(group.jobs, isOpenAnywhere)`
+instead of asking `isRecentOnly` of the job alone. `isGroupRecentOnly` is
+"fully terminal AND every member individually satisfies `isRecentOnly`" —
+spec's own words. This composes correctly with §4 because both functions
+now consult the SAME group-level verdict: a group is never split across
+"Worth keeping" and "Recent", and never dropped from both — pinned by two
+new tests (`jobRows/recentJobs: a two-member group with one suppressed
+success and one failure appears exactly once, in jobRows` and the
+all-suppressed counterpart that lands the whole group in Recent).
+
+Added to `platform/lib/jobs.ts`: `JobGroup`, `groupJobs()`, `isGroupTerminal()`,
+`isGroupRecentOnly()`, `groupEffectiveTier()`, and a private `indexGroups()`
+helper that both `jobRows` and `recentJobs` now share. `groupEffectiveTier`
+extends `effectiveTier`'s per-job promotion rule to a group: one
+`attention`-effective member promotes the whole group tier; absent that, the
+loudest declared tier among the rest wins (`trail` > `transient` > `silent`).
+Not yet consumed anywhere (no UI reads it yet — that's the next unit, the
+group-row UI in `RepoUpdatesDock.tsx`), but built and tested now so the pop-
+rule mechanism (D-C, next) and the UI can both call it rather than
+reimplementing the same promotion logic a third time.
+
+**Single-member regression, proven, not just asserted:** the server's own
+`Job.group` default (a job with no `sys:<name>:` family prefix defaults
+`group` to its own id — already shipped, prior commit) makes an ungrouped
+job a group of exactly one BY CONSTRUCTION. `jobs.test.ts`'s `job()` fixture
+mirrors that (`group: over.id ?? "j1"`), so every test written before this
+unit — none of which set `group` explicitly — already exercises the
+single-member path with grouping active, and all pass unchanged. Two new
+tests name this guarantee explicitly rather than leaving it implicit:
+"two UNRELATED single-member jobs are never folded into each other's group
+just because they share a page" (guards against a page-keyed-only grouping
+bug) and the general "`jobRows`: the same job still shows..." tests already
+in the file, now running through the grouping path.
+
+**Blast radius of adding a required `group: string` field to `Job`:** every
+direct `Job` object literal or `job()`/`failedJob()` test helper across the
+frontend needed a `group` value (mirrors the exact `tier: "trail"` sweep the
+prior builder documented doing during a main-branch merge). Touched, each
+given its own id as the default group (a lone job, group of one):
+`frontend/src/shell/ActivityDock.test.tsx`,
+`frontend/src/platform/ui/NotificationHost.test.tsx`,
+`frontend/src/platform/lib/jobs.test.ts`,
+`frontend/src/apps/claude/ann/transcribe.test.ts`,
+`frontend/src/apps/ai_models/shared/modelSize.test.ts` (all five have a
+`job()`/`extra`-spreading helper — `group: over.id ?? "<default-id>"`),
+plus four static `Job` literals with no helper —
+`frontend/src/apps/ai_models/playground/client.test.ts`,
+`frontend/src/platform/ui/DownloadManager.test.tsx`,
+`frontend/src/platform/ui/JobPopupCard.test.tsx`,
+`frontend/src/platform/ui/JobRow.test.tsx` — and one more helper,
+`frontend/src/shell/RepoUpdatesDock.test.tsx`'s `failedJob()`. Verified via
+`bunx tsc --noEmit -p .` (clean after the sweep) rather than by grepping for
+every literal by hand — a required-field addition surfaces its own blast
+radius exhaustively through the compiler, which grep cannot promise.
+
+Deliberately NOT done yet in this unit: the D-C pop-rule mechanism (start-
+transition / failure-transition tracking for multi-member groups) and the
+group-row UI in `RepoUpdatesDock.tsx`. Both are next, in that order — the
+UI needs the pop-rule's `groupEffectiveTier`/`isGroupRecentOnly` primitives
+already built here, and the pop rule needs nothing further from this file.
+
+Commands run for this unit: `bunx tsc --noEmit -p .` (frontend/) → clean.
+`bun test` across the same 12 files as the prior baseline (jobs,
+notifications, RepoUpdatesDock, schedule-toast, DownloadManager,
+JobPopupCard, JobRow, NotificationHost, ActivityDock, transcribe,
+modelSize, playground/client) → 400 pass, 0 fail (up from the pre-edit
+baseline of 218 pass across the 4-file subset — the wider 12-file run here
+is a superset chosen because those are exactly the files this unit's `group`
+field addition touched). `node scripts/check-boundaries.mjs` → OK (806
+files).
+
 ## State after this branch's commits
 
 - `bun test src/platform src/shell` → 2546 pass, 0 fail.

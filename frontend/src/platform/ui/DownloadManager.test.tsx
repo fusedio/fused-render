@@ -80,6 +80,7 @@ const BASE: Job = {
   stalled: false,
   waiting_for: "",
   tier: "trail",
+  group: "sys:ai-image:x",
 };
 
 

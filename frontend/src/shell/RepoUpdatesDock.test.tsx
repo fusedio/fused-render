@@ -140,6 +140,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   stalled: false,
   waiting_for: "",
   tier: "trail",
+  group: over.id ?? "sys:ai-image:boom",
   ...over,
 });
 

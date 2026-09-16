@@ -123,6 +123,17 @@ export interface Job {
   // through `effectiveTier` below, not directly — a terminal row's actual
   // tier can differ from what its producer declared.
   tier: JobTier;
+  // §3 (SPEC-quiet-notifications.md): the client-side grouping key. Mirrors
+  // `fused_render/jobs.py`'s `Job.group` exactly, including its default:
+  // defaulted server-side, ONCE, at creation, from the id's own
+  // `sys:<name>:` prefix when it has one, else the whole id. The
+  // whole-id fallback is what makes an ungrouped job's own id its own
+  // group of exactly one member — by construction, not by a client-side
+  // special case — which is why "a lone job renders and behaves exactly as
+  // today" holds without this file ever having to check "is this job even
+  // grouped at all". See `groupJobs` below for the client-side grouping
+  // this field feeds.
+  group: string;
 }
 
 export interface JobsSnapshot {
@@ -280,12 +291,113 @@ export function isRecentOnly(job: Job, isOpenAnywhere: (source: string) => boole
   return isOpenAnywhere(job.page);
 }
 
+// ------------------------------------------------------------------ §3 grouping
+//
+// SPEC-quiet-notifications.md §3. `Job.group` (above) is defaulted server-side
+// to a group of exactly one (the job's own id) for anything with no
+// `sys:<name>:` family prefix, which is what makes "a lone job renders and
+// behaves exactly as today" true by construction — the functions below never
+// special-case group size 1, and a regression test pins that it doesn't need
+// to.
+
+/** One group of jobs sharing the same `(page, group)` key — the unit a group
+ *  row is judged and rendered as. `jobs` preserves the snapshot's own
+ *  arrival order. */
+export interface JobGroup {
+  page: string;
+  group: string;
+  jobs: Job[];
+}
+
+function groupKey(job: Job): string {
+  return `${job.page} ${job.group}`;
+}
+
+/** Group a job snapshot by `(page, group)`, preserving first-seen order.
+ *
+ *  THIS RUNS BEFORE CLASSIFICATION, ON PURPOSE — the resolved design
+ *  question this branch inherited from an earlier handoff. `jobRows`/
+ *  `recentJobs` judge a GROUP's fate as a whole (every member must satisfy
+ *  the suppression condition, or the whole group stays visible), not each
+ *  member independently and then folded after the fact: classifying members
+ *  first and grouping after can double-count a group across "Worth keeping"
+ *  and "Recent" (a group split by presence lands partly in each), or drop it
+ *  from both (neither half's own filter recognizes the other half kept it
+ *  alive). Grouping first and then asking "does this whole group satisfy the
+ *  condition" is the only order that keeps a group in exactly one place. */
+export function groupJobs(jobs: readonly Job[]): JobGroup[] {
+  const byKey = new Map<string, JobGroup>();
+  const order: JobGroup[] = [];
+  for (const j of jobs) {
+    const key = groupKey(j);
+    let g = byKey.get(key);
+    if (!g) {
+      g = { page: j.page, group: j.group, jobs: [] };
+      byKey.set(key, g);
+      order.push(g);
+    }
+    g.jobs.push(j);
+  }
+  return order;
+}
+
+/** A group is fully terminal only once EVERY member is — one member still
+ *  running or waiting keeps the whole group "in flight", however many of
+ *  its siblings have already finished. */
+export function isGroupTerminal(members: readonly Job[]): boolean {
+  return members.every(isTerminal);
+}
+
+/** §2b composed with §3: a group is suppressed only when it is fully
+ *  terminal AND every member individually satisfies `isRecentOnly` — spec's
+ *  own words, "a group row is suppressed under §2b when every member
+ *  satisfies the suppression condition. One failing member keeps the whole
+ *  group visible." A member still running fails `isRecentOnly` on its own
+ *  (it isn't `state === "done"`), so a group with any in-flight member is
+ *  never suppressed by this — consistent with "in flight" never being quiet. */
+export function isGroupRecentOnly(
+  members: readonly Job[],
+  isOpenAnywhere: (source: string) => boolean,
+): boolean {
+  return isGroupTerminal(members) && members.every((j) => isRecentOnly(j, isOpenAnywhere));
+}
+
+/** The tier a GROUP reads as, extending `effectiveTier`'s per-job rule: one
+ *  member in `error`/`cancelled` (i.e. `effectiveTier(j) === "attention"`)
+ *  promotes the whole row, the same way a single failing job is always news
+ *  regardless of what it declared. Absent any attention member, the group
+ *  takes the "loudest" tier present among the rest — `trail` over
+ *  `transient` over `silent` — so a group mixing a kept-tier member with a
+ *  quieter one still earns the lasting row its kept member would have gotten
+ *  alone. */
+export function groupEffectiveTier(members: readonly Job[]): JobTier {
+  if (members.some((j) => effectiveTier(j) === "attention")) return "attention";
+  if (members.some((j) => effectiveTier(j) === "trail")) return "trail";
+  if (members.some((j) => effectiveTier(j) === "transient")) return "transient";
+  return "silent";
+}
+
+/** Index every job in a snapshot by the `JobGroup` it belongs to — the one
+ *  lookup `jobRows`/`recentJobs`/the popup pipeline all need to judge a
+ *  member's fate by its GROUP's verdict rather than its own. */
+function indexGroups(jobs: readonly Job[]): Map<string, JobGroup> {
+  const byId = new Map<string, JobGroup>();
+  for (const g of groupJobs(jobs)) {
+    for (const j of g.jobs) byId.set(j.id, g);
+  }
+  return byId;
+}
+
 export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
+  const groupById = indexGroups(jobs);
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
     if (!isTerminal(j)) return true;
     if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
-    if (isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)) return false;
+    if (isOpenAnywhere) {
+      const g = groupById.get(j.id);
+      if (g && isGroupRecentOnly(g.jobs, isOpenAnywhere)) return false;
+    }
     return true;
   });
 }
@@ -308,11 +420,13 @@ export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolea
  *  SAME job straight into `jobRows`'s output instead, with nothing
  *  server-side to reconcile. */
 export function recentJobs(jobs: Job[], isOpenAnywhere: (source: string) => boolean): Job[] {
+  const groupById = indexGroups(jobs);
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
     if (!isTerminal(j)) return false;
     if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
-    return isRecentOnly(j, isOpenAnywhere);
+    const g = groupById.get(j.id);
+    return g ? isGroupRecentOnly(g.jobs, isOpenAnywhere) : isRecentOnly(j, isOpenAnywhere);
   });
 }
 
