@@ -65,13 +65,16 @@ describe("broadenGlobOffer", () => {
 
   // -- SPEC-search-space-wildcard.md: whitespace is an implied wildcard, so
   // a query with no literal "*" at all can still be running in glob mode
-  // server-side, and the ladder must not treat it as "not a glob" just
-  // because it never typed the character.
-  test("a whitespace query with no literal * still widens by name", () => {
-    expect(broadenGlobOffer("hello world")).toEqual({
-      pattern: "hello world*",
-      label: "Widen the name",
-    });
+  // server-side. But expand_whitespace_query already wraps the final
+  // segment in a leading AND trailing "*" whenever it has no user-typed "*"
+  // of its own — appending a trailing "*" to the raw query text (rung 1)
+  // gives that segment a user-typed "*", which SUPPRESSES the implied
+  // leading "*" the original zero-hit search already had. The "widened"
+  // query would therefore be a strict subset of the original, guaranteed to
+  // also return zero hits. So a pure-whitespace query (no literal "*") gets
+  // no offer at all — it is already at its broadest expressible form.
+  test("a whitespace query with no literal * has nothing left to offer", () => {
+    expect(broadenGlobOffer("hello world")).toBeNull();
   });
 
   // -- the finding-3 shapes: a pattern already maximally broad on the
