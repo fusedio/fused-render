@@ -1489,6 +1489,76 @@ def test_the_scoped_gone_reaches_the_changes_endpoint(
     assert tasks_store.pending_key("e-ran") in r.json()["gone"]
 
 
+def _stage_run(runs, projects_dir, run_id, session_id, project, prompt="first words"):
+    """A run whose CLI has come up: the run dir names the session and the
+    transcript is on disk — and the scheduler has not stamped the entry yet."""
+    run_dir = runs / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.joinpath("meta.json").write_text(
+        json.dumps({"file": project, "resumed_from": ""}))
+    run_dir.joinpath("session").write_text(session_id)
+    run_dir.joinpath("alive").write_text("1")
+    _transcript(projects_dir, session_id, project, prompt)
+    return run_dir
+
+
+def test_a_rung_pending_key_the_run_has_rekeyed_is_not_gone_it_is_the_session_row(
+        client, projects_dir, folders, tmp_path, monkeypatch, flag):
+    """Akshil, QA 2026-09-16: the Recent chats list LOSES tasks when the queue
+    moves forward.
+
+    The watcher keys a promoted leader off the scheduler alone
+    (`schedule._task_key` -> `pending:<id>`, the stamp lands two seconds later)
+    while the listing already keys it off the run dir (`_run_session` ->
+    `<session>`). The rung key built no row, was answered `gone`, and the
+    client deleted a LIVE row whose replacement was never rung — and a batch
+    promotion rings several at once. So the answer must CARRY THE SESSION ROW;
+    the rung key still leaves in `gone`, which with the row in the same payload
+    is the rekey swap (`mergeTaskChanges` folds both in one pass) rather than
+    the deletion it used to be."""
+    flag()
+    alpha, _beta = folders
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _RunsAgent(runs))
+    schedule._write([_entry("e-lead", "first words", alpha, session_id="",
+                            state=schedule.SENT, run_id="r-1")])
+    pending = tasks_store.pending_key("e-lead")
+    assert list(_rows(client)) == [pending]  # the row the client is showing
+
+    _stage_run(runs, projects_dir, "r-1", "sess-new", alpha)
+    since = tasks_watch.generation()
+    tasks_watch.notify({pending})  # what the watcher can spell, and only that
+
+    body = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+    assert [row["key"] for row in body["rows"]] == ["sess-new"], \
+        "the replacement row, which the rung key alone never produced"
+    assert body["gone"] == [pending], "and the old name leaves with it"
+
+
+def test_with_the_flag_off_a_rung_pending_key_stays_a_pending_row(
+        client, projects_dir, folders, tmp_path, monkeypatch, flag):
+    """Parity: `_run_session` is gated on the flag, so with the queue off the
+    listing keys this entry exactly as the watcher did and the translation is a
+    no-op — the pending row comes back, nothing is gone."""
+    flag(False)
+    alpha, _beta = folders
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _RunsAgent(runs))
+    schedule._write([_entry("e-lead", "first words", alpha, session_id="",
+                            state=schedule.SENT, run_id="r-1")])
+    pending = tasks_store.pending_key("e-lead")
+    _stage_run(runs, projects_dir, "r-1", "sess-new", alpha)
+
+    since = tasks_watch.generation()
+    tasks_watch.notify({pending})
+
+    body = client.get(f"/api/tasks/changes?since={since}&wait=0").json()
+    assert body["gone"] == []
+    assert [row["key"] for row in body["rows"]] == [pending]
+
+
 def test_marking_a_message_read_rings_the_long_poll(
         client, projects_dir, folders, state_dir, rings):
     """The unread count is on the row and on the pulse, so a mark read in one

@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import type { Task } from "@platform/lib/api";
-import { resetListingFeedForTests } from "@shell/tasksPulse";
+import { refreshListing, resetListingFeedForTests } from "@shell/tasksPulse";
 import { changeIsHere, CHANGES_BACKOFF_MS, subscribeTasks, type RecentEnv } from "./sessions";
 
 // The feed is MODULE state — one per document in the app, and so one per `bun
@@ -95,12 +95,37 @@ describe("subscribeTasks", () => {
     expect(e.urls.length).toBe(0);
   });
 
-  test("a failed read is an empty list, never an error UI (T:18469)", async () => {
+  // A FAILED READ EMITS NOTHING (Akshil QA, 2026-09-16: "the list goes blank").
+  // It used to emit `[]` — the feed's own answer, since a failure makes it
+  // forget its listing — and `[]` is the count the Recent block's visibility is
+  // decided on (`ui/lists-visibility.isFilled`), so one dropped read took the
+  // heading, the tab and every row off screen until the next one landed.
+  test("a FAILED read keeps the rows already up — it is not an empty list", async () => {
+    const seen: (Task[] | null)[] = [];
+    const off = subscribeTasks(
+      "/proj/app.py",
+      (r) => seen.push(r),
+      env([], [{ tasks: [row("a"), row("b")] }, "boom"]),
+    );
+    await settle();
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
+    refreshListing();
+    await settle();
+    off();
+    // No `[]` ever reached the list, and the rows it is drawing are still the
+    // ones the last GOOD read gave it.
+    expect(seen.some((r) => Array.isArray(r) && r.length === 0)).toBe(false);
+    expect(seen[seen.length - 1]?.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+
+  test("…and a list that never had rows keeps its SKELETON, not \"no chats\"", async () => {
     const seen: (Task[] | null)[] = [];
     const off = subscribeTasks("/proj/app.py", (r) => seen.push(r), env([], ["boom"]));
     await settle();
     off();
-    expect(seen[seen.length - 1]).toEqual([]);
+    // The opening `null` and nothing after it: "we could not read" is not the
+    // same news as "this folder has no chats", and only one of the two is true.
+    expect(seen).toEqual([null]);
   });
 
   test("an answer with no `tasks` at all is the same as a failure", async () => {

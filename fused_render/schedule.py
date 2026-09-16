@@ -3869,6 +3869,18 @@ def tick(now: datetime | None = None) -> list[dict]:
     # Computed BEFORE the early return, because a held answer is work too: a
     # user who answered a card while the folder was busy is owed that delivery
     # whether or not any message happens to be due in the same pass.
+    # RE-READ THE TREE FIRST (Akshil's QA, 2026-09-16). `holders` reads the runs
+    # tree through `scan_runs`, which is memoized for `SCAN_TTL` — a window a
+    # listing on /api/tasks populates and this pass then inherits. That memo
+    # caches each run's permission list, so a card raised in the second before
+    # this tick makes a parked run still read as its folder's holder: everything
+    # queued behind it waits, and a `run` holder has no clock, so nothing rings
+    # again until the registry row happens to flip. The memo exists for the
+    # listing's two reads of one walk; a pass is rare (a 30 s poll, or a ring
+    # that already says the disk changed), so one extra walk here is cheap and
+    # the gate is decided on what is on disk NOW.
+    if _pq().enabled():
+        _pq().invalidate_holders()
     folders = _pq().holders(now.timestamp()) if _pq().enabled() else None
     # Read BEFORE the answers are delivered, because the delivery now needs to
     # know what is due: a held answer only goes ahead of the messages if no

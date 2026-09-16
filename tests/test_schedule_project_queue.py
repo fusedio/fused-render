@@ -538,6 +538,106 @@ def test_the_last_look_arms_the_timer_for_a_clock_bound_holder(
     assert armed and 7.0 in armed[-1]
 
 
+
+class _CardAgent:
+    """A runs tree whose permission cards are read OFF DISK every time they are
+    asked for — the one thing `tests/test_project_queue.py`'s stand-in flattens
+    into a static list, and the thing this case is about. Everything else is
+    the same shape: `meta.json`, a `session` file, an `alive` marker."""
+
+    def __init__(self, runs):
+        self.RUNS = str(runs)
+        os.makedirs(self.RUNS, exist_ok=True)
+
+    def stage(self, run_id, file, session_id):
+        run_dir = os.path.join(self.RUNS, run_id)
+        os.makedirs(os.path.join(run_dir, "perm"), exist_ok=True)
+        with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as fh:
+            json.dump({"file": file, "resumed_from": "", "message": "go"}, fh)
+        with open(os.path.join(run_dir, "session"), "w", encoding="utf-8") as fh:
+            fh.write(session_id)
+        with open(os.path.join(run_dir, "alive"), "w", encoding="utf-8") as fh:
+            fh.write("1")
+        return run_dir
+
+    def card(self, run_dir, request_id="p1"):
+        """One request nobody has decided — a run parked on a permission."""
+        with open(os.path.join(run_dir, "perm", request_id + ".json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"request_id": request_id}, fh)
+
+    def _alive(self, run_dir):
+        return os.path.exists(os.path.join(run_dir, "alive"))
+
+    def _session_from_out(self, run_dir):
+        return ""
+
+    def _perm_dir(self, run_dir):
+        return os.path.join(run_dir, "perm")
+
+    def _permissions(self, run_dir):
+        out = []
+        try:
+            names = sorted(os.listdir(self._perm_dir(run_dir)))
+        except OSError:
+            return out
+        for name in names:
+            if not name.endswith(".json") or name.endswith(".res.json"):
+                continue
+            request_id = name[: -len(".json")]
+            decision = ""
+            try:
+                with open(os.path.join(self._perm_dir(run_dir),
+                                       request_id + ".res.json"),
+                          encoding="utf-8") as fh:
+                    decision = json.load(fh).get("decision") or ""
+            except (OSError, ValueError):
+                decision = ""
+            out.append({"request_id": request_id, "decision": decision})
+        return out
+
+
+def test_a_card_raised_inside_the_scan_memo_does_not_hold_the_folder(
+        folders, spawned, home, tmp_path, monkeypatch):
+    """Akshil's QA, 2026-09-16: a task blocked on a permission card frees its
+    folder and the watcher rings within a second, but the tick that follows read
+    the holder map through `scan_runs`'s memo — populated by a listing a moment
+    BEFORE the card file appeared, with each record's permission list cached on
+    it. So the parked run still read as the holder, everything queued behind it
+    waited, and a `run` holder has no clock: nothing rang again until the
+    registry row flipped seconds later, while the listing (deriving fresh) said
+    no holder and flipped the rows queued->upcoming->queued.
+
+    `holders` is NOT stubbed here — the staleness is the subject, so the
+    derivation has to be the real one over a real runs tree."""
+    _on(home)
+    agent = _CardAgent(tmp_path / "card-runs")
+    monkeypatch.setattr(pq, "agent_module", lambda: agent)
+    # The registry's opinion, and only that: the run is alive and mid-turn, so
+    # with no card it is a `run` holder — the kind with no clock behind it.
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda session_id: (session_id == SID2, 0.0))
+    run_dir = agent.stage("20260916-120000-aaaa",
+                          str(folders["alpha"] / "index.html"), SID2)
+
+    key = _key(folders["alpha"])
+    assert pq.holders()[key]["kind"] == "run"  # ...and the memo now says so
+
+    # The card lands INSIDE the window that read populated, and nobody tells the
+    # memo. Pinned wide rather than raced against `SCAN_TTL`: the real window is
+    # under a second and a test that slept inside it would be flaky either way.
+    agent.card(run_dir)
+    with pq._scan_lock:
+        slot, _expiry, runs = pq._scan_memo
+        pq._scan_memo = (slot, time.monotonic() + 600.0, runs)
+    assert pq.holders()[key]["kind"] == "run"  # the stale answer, on purpose
+
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
+    assert len(spawned) == 1
+
+
 # ============================================================== held answers
 
 

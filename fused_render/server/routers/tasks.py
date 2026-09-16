@@ -2407,6 +2407,49 @@ def _entries_for(keys) -> dict[str, list[dict]]:
     return out
 
 
+def _rekeyed_pendings(keys) -> dict[str, str]:
+    """Rung `pending:<entry-id>` key -> the key the LISTING files that entry
+    under, for the keys where the two have drifted apart.
+
+    THE RING AND THE LISTING KEY THE SAME ENTRY OFF DIFFERENT FACTS (Akshil, QA
+    2026-09-16: "Recent chats loses tasks when the queue moves forward"). The
+    watcher names an entry with `schedule._task_key` — the scheduler's stamp,
+    else `pending:<id>` — while the listing has a third source, the run dir the
+    entry already spawned (`_entry_session` -> `_run_session`). In the seconds
+    between a promoted leader's CLI opening its session and
+    `record_session_when_ready` stamping `claude_session_id`, the ring says
+    `pending:<id>` and the listing says `<session>`: no row is built for the
+    rung key, so it was answered `gone` WITH NOTHING BEHIND IT and the client
+    deleted a live row whose replacement had never been rung — it arrived only
+    on the 20 s floor read, and a batch promotion rings several keys at once
+    ("blank, then only a few tasks").
+
+    So the rung key is translated through the listing's own rule and the row it
+    now names is added to the answer. The pending key still leaves in `gone`:
+    the client merges the two halves of one payload atomically
+    (`mergeTaskChanges`), so gone-plus-row is a clean SWAP — one task, one row,
+    under the name the listing gives it — where gone-alone was the data loss.
+
+    Flag-off parity is free: with the queue off `_run_session` answers "" and
+    `_entry_key` is `schedule._task_key` spelled again, so nothing here
+    translates and the pending key stays the pending key.
+    """
+    pendings = {key: tasks_store.pending_entry(key) for key in keys}
+    pendings = {key: eid for key, eid in pendings.items() if eid}
+    if not pendings:
+        return {}
+    by_id = _by_entry_id()
+    out: dict[str, str] = {}
+    for key, entry_id in pendings.items():
+        entry = by_id.get(entry_id)
+        if entry is None:
+            continue
+        listing_key = _entry_key(entry, by_id)
+        if listing_key and listing_key != key:
+            out[key] = listing_key
+    return out
+
+
 def _deleted(task: dict, deleted: dict) -> bool:
     """Has the user deleted this task — and has nothing happened since?
 
@@ -4224,8 +4267,18 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
         return {"generation": gen, "full": True}
     if not keys:
         return {"generation": gen, "rows": [], "gone": []}
-    rows = _task_rows(only=keys)
+    # Translate before diffing: a rung `pending:<id>` whose entry the listing
+    # now files under its run's session is not a task that went away, it is a
+    # row that changed its name (`_rekeyed_pendings`, 2026-09-16).
+    rekeyed = _rekeyed_pendings(keys)
+    rows = _task_rows(only=set(keys) | set(rekeyed.values()))
     listed = {row["key"] for row in rows}
+    # A rung key whose translation IS listed still answers `gone` — and that is
+    # a SWAP, not the deletion this endpoint used to do: the row it re-keys to
+    # rides in the same payload, and the client folds the two together in one
+    # pass (`mergeTaskChanges`: drop the gone keys, upsert the rows), so the
+    # pending row leaves exactly as the session row arrives. What was broken
+    # was the naked `gone` with no row behind it.
     gone = {key for key in keys if key not in listed}
     # A pending message that has just RUN is now filed under its session id
     # (§5): the watcher names the session, the session is listed, and the

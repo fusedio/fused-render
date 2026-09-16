@@ -29,6 +29,7 @@ const { snapAgo, snapDeltaLabel, snapRuns, snapVersionLabel } = await import(
   "../protocol/snapshots"
 );
 const { Lists } = await import("./Lists");
+const { TaskRowItem } = await import("@shell/ScheduleTaskViews");
 type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
@@ -341,6 +342,32 @@ test("a FAILED snapshots read keeps its place in the block, holding the retry", 
   act(() => (retry.props as { onClick: () => void }).onClick());
   expect(reloaded).toBe(1);
   expect(text(all(json, "c-snapsnote")[0])).toContain("store unreadable");
+});
+
+// RUN NEXT ON A RECENT ROW (Akshil QA, 2026-09-16: "the skip button does
+// nothing"). `TaskNode.skip` is one call and two answers — the claim to paint
+// until the server speaks (`onQueued`) and the re-read that fetches the truth
+// (`onReload`) — and this list forwarded neither, so the press put a request on
+// the wire and then had nothing to show for it until the next full listing, up
+// to a poll later. A control that answers a press with nothing IS a dead one.
+test("a Recent row carries Run next's two handles", () => {
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      agentDir="/tpl"
+      recent={[chat("s1", { status: "queued", queue_position: 3 })]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
+  );
+  const rows = r.root.findAllByType(TaskRowItem);
+  expect(rows.length).toBe(1);
+  const props = rows[0].props as { onQueued?: unknown; onReload?: unknown };
+  // The store behind both is the recents' own (`useRecentTasks`), and not state
+  // in this component: it unmounts on the way into a chat, and a claim exists to
+  // outlive exactly that.
+  expect(typeof props.onQueued).toBe("function");
+  expect(typeof props.onReload).toBe("function");
 });
 
 test("two filled lists earn the tab bar; an empty one earns no tab", () => {

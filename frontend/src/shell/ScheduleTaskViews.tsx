@@ -2203,6 +2203,8 @@ export function TaskRowItem({
   home = "",
   href = null,
   onPress,
+  onQueued,
+  onReload,
 }: {
   task: Task;
   /** For the marks that spell a path with `~` (the file mark's caption). */
@@ -2213,6 +2215,23 @@ export function TaskRowItem({
   /** The row's press. OMITTED is what makes the row inert — a row with nowhere
    *  to go says so (`.tasks-row.is-inert`), exactly as on the Tasks page. */
   onPress?: () => void;
+  /**
+   * THE TWO HANDLES A QUEUE VERB NEEDS, and the reason Run next did nothing
+   * here (Akshil QA, 2026-09-16).
+   *
+   * `TaskNode.skip` is one call and two answers: the CLAIM to paint until the
+   * server speaks (`onQueued`, tasks-lib.skippedOverride) and the re-read that
+   * fetches the truth (`onReload`). Both were unforwarded, so a borrowed row's
+   * skip put a request on the wire and then had no way to show that anything
+   * had happened — the row could only change on whatever full listing came
+   * next, up to a poll later, which reads as a dead button.
+   *
+   * OPTIONAL, like `onPress`: a host with no claim store of its own (a static
+   * render, a test) is still handed a working row — it just waits for the
+   * listing, which is what every borrowed row did before.
+   */
+  onQueued?: (override: QueueOverride) => void;
+  onReload?: () => void;
 }) {
   // THE SAME PREF THE TASKS PAGE READS (`task_card_last_message`, Akshil
   // 2026-09-14: it must apply in chat rows too). Read HERE rather than handed
@@ -2243,6 +2262,8 @@ export function TaskRowItem({
       variant="chat"
       chatHref={href}
       {...(onPress ? { onChatPress: onPress } : {})}
+      {...(onQueued ? { onQueued } : {})}
+      {...(onReload ? { onReload } : {})}
     />
   );
 }

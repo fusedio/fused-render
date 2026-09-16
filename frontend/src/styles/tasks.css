@@ -1168,6 +1168,31 @@ button.tasks-caret,
 .tasks-row .tasks-act--skip:focus-visible {
   flex-shrink: 0;
 }
+
+/* …AND THE SHRINK STOPS AT THE HOVER STRIP (Akshil QA, 2026-09-16, chasing
+   "Run next does nothing on a Recent chats row").
+
+   The rule above is older than the strip and was written for a different box.
+   It gave way "before the title does" because the button was then IN THE ROW'S
+   OWN FLEX LINE, a sibling of the title, competing with it for a 400px pane.
+   It is not one any more: `.tasks-row > .tasks-acts` is a zero-width seat whose
+   `.tasks-acts-inner` is absolutely positioned and shrink-to-fit (below), so the
+   strip's flex line holds the marks, Open and this button and sizes itself to
+   them — the title is not in it and gives up nothing for it either way.
+
+   Measured on the served build at a 350px pane, with and without the shrink:
+   22px both times, because a shrink-to-fit line never overflows and
+   `flex-shrink` therefore never engages. So the declaration does nothing where
+   it now lands, which is exactly why it should not be left there — the day
+   anything constrains this strip's width, the ratio-100 child is the one that
+   silently collapses to a control nobody can press, and the `:focus-visible`
+   escape above would hide it by making the keyboard the only road that worked.
+   The button keeps its 22px box inside the strip, and the legacy in-flow case
+   above keeps its shrink. */
+.tasks-row > .tasks-acts > .tasks-acts-inner > .tasks-act--skip {
+  flex-shrink: 0;
+  min-width: auto;
+}
 .tasks-act--skip:hover:not(:disabled),
 .prefs-section .tasks-act--skip:hover:not(:disabled) {
   color: var(--fg);

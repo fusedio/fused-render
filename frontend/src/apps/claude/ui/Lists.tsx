@@ -33,7 +33,7 @@ import {
   rememberedTab,
 } from "./lists-visibility";
 import { paneChatUrl, taskPane } from "./list-rows";
-import { seedSessionTask } from "./useRecentTasks";
+import { noteQueueClaim, reloadRecentTasks, seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
 
@@ -342,7 +342,19 @@ export function Lists({
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
           {shownRecent.map((task) => (
-            <TaskRowItem key={task.key} task={task} {...pressFor(task)} />
+            <TaskRowItem
+              key={task.key}
+              task={task}
+              {...pressFor(task)}
+              // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own
+              // skip needs somewhere to put the claim it just made and a way to
+              // ask for the truth; unwired, the press was a request with no
+              // visible answer. Both go to the recents' store rather than to
+              // state in this component — it unmounts on the way into a chat,
+              // and the claim has to outlive that (`useRecentTasks`).
+              onQueued={noteQueueClaim}
+              onReload={reloadRecentTasks}
+            />
           ))}
         </div>
       )}
