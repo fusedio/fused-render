@@ -415,6 +415,42 @@ def test_a_task_draft_is_a_row_with_a_number(client, tmp_path):
     assert row["form"]["description"] == "roll it up"
 
 
+def test_two_composer_drafts_on_one_folder_are_two_rows(client, tmp_path):
+    """Akshil, 2026-09-16: a never-sent chat's Save and its Schedule used to
+    write `new:<file>` — ONE record per FOLDER — so the second thing the reader
+    saved out of a folder silently replaced the first. Both roads mint a
+    `draft:<id>` apiece now, which is the shape "+ New task" has always made, so
+    two saves out of one folder are two Upcoming rows with two numbers, and
+    trashing one leaves the other exactly where it was."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    for ident, title in (("draft-aaa", "the first thing"),
+                         ("draft-bbb", "the second thing")):
+        r = client.put(f"/api/drafts/task/{ident}",
+                       json={"title": title, "target": str(target)})
+        assert r.status_code == 200, r.text
+
+    rows = _by_key(client)
+    first, second = rows["draft:draft-aaa"], rows["draft:draft-bbb"]
+    assert [first["title"], second["title"]] == ["the first thing",
+                                                 "the second thing"]
+    # Both are ordinary draft rows in the folder they were written in, and each
+    # carries a number of its own.
+    for row in (first, second):
+        assert row["kind"] == "draft" and row["draft_kind"] == "task"
+        assert row["project"] == canonical_fs_path(str(target))
+        assert row["task_id"]
+    assert first["task_id"] != second["task_id"]
+    # …and nothing was ever written under the folder's chat key.
+    assert not [k for k in rows if k.startswith("new:")]
+
+    # The trash takes one and only one.
+    assert client.delete("/api/drafts/task/draft-aaa").status_code == 200
+    left = _by_key(client)
+    assert "draft:draft-aaa" not in left
+    assert left["draft:draft-bbb"]["title"] == "the second thing"
+
+
 def test_a_draft_row_falls_back_to_its_description_then_to_a_name(client):
     client.put("/api/drafts/task/draft-0001",
                json={"description": "  \nroll up yesterday's PRs\nand file them"})

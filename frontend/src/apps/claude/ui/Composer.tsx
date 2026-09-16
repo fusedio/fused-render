@@ -15,10 +15,13 @@ import {
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
+  composerTaskDraft,
   draftSyncer,
   draftVersion,
   forgetDraftVersion,
   fetchChatDraft,
+  newTaskDraftId,
+  taskDraftKey,
   useAutosave,
   type ChatDraft,
   type DraftAttachment,
@@ -481,12 +484,20 @@ export function ComposerCard({
   //     what another tab wrote, empties when the record goes, and its Send
   //     spends the draft. Nothing asks on the way out, because nothing here is
   //     ever unsaved.
-  //   * WITH NO SESSION YET (`new:<file>`) the record is not a chat at all — it
-  //     is an UPCOMING ROW on the Tasks card, and a box that autosaved into that
-  //     list minted a task out of every half-typed thought. So this one writes
-  //     nothing on its own and opens empty, and the single moment its words can
-  //     be lost — leaving — asks the question instead ("Unsent message": save as
-  //     draft, discard, cancel), with `beforeunload`/`pagehide` under it.
+  //   * WITH NO SESSION YET there is no chat for a record to be the unsent
+  //     message OF — what the words would become is an UPCOMING ROW on the Tasks
+  //     card, and a box that autosaved into that list minted a task out of every
+  //     half-typed thought. So this one writes nothing on its own and opens
+  //     empty, and the single moment its words can be lost — leaving — asks the
+  //     question instead ("Unsent message": save as draft, discard, cancel), with
+  //     `beforeunload`/`pagehide` under it.
+  //
+  //     AND WHAT IT SAVES IS A TASK DRAFT, `draft:<id>`, minted fresh every time
+  //     (`composerTaskDraft`; Akshil, 2026-09-16). It used to be this box's
+  //     `new:<file>` key — one record per FOLDER — so the second thing the
+  //     reader saved out of a folder landed on top of the first. `draftKey`
+  //     below is therefore only the SESSION road's key now; the other road never
+  //     writes under it, and nothing else in this app does either.
   const draftKey = chatDraftKey(sessionId, file);
   /** Which of the two rules above is in force. */
   const hasSession = !!sessionId;
@@ -504,6 +515,25 @@ export function ComposerCard({
   discardAttachments.current = onDiscardAttachments;
   const trayRead = useRef(attachments);
   trayRead.current = attachments;
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  /**
+   * THE ID A SESSION-LESS BOX'S WORDS WOULD BE FILED UNDER — minted by the
+   * first road that needs one, reused by the rest, and forgotten the moment the
+   * box is cleared (Akshil, 2026-09-16).
+   *
+   * There are two roads out of a chat that has never been sent and they can
+   * both run for ONE set of words: the dialog's "Save as draft", and the
+   * `pagehide`/unmount write under it. Minting an id inside each would file the
+   * same half-sentence as two Upcoming rows. Minting one per EPISODE — one set
+   * of words, from the first keystroke to the clear — is the rule that makes
+   * "every save is a new draft" true without making "one save" mean two.
+   */
+  const unsentId = useRef("");
+  const mintUnsentId = useCallback((): string => {
+    if (!unsentId.current) unsentId.current = newTaskDraftId();
+    return unsentId.current;
+  }, []);
 
   // ONCE PER KEY, and never killed by a cleanup. The first shape latched a
   // single "seeded" ref AND flipped an `alive` flag in the effect's cleanup;
@@ -768,6 +798,10 @@ export function ComposerCard({
   const clearComposer = useCallback(() => {
     textRef.current = "";
     dirtyRef.current = false;
+    // …AND THE NEXT WORDS ARE THE NEXT DRAFT. An emptied box starts a new
+    // episode, so whatever is typed into it next is filed under an id of its
+    // own rather than over the one just saved (`unsentId`).
+    unsentId.current = "";
     setText("");
     discardAttachments.current?.();
     grow();
@@ -789,10 +823,12 @@ export function ComposerCard({
    * card is where those words are edited now, and a syncer that went on wanting
    * anything for this key would write the cleared box back over them.
    *
-   * NO `form` IS SENT, which the contract reads as a patch (drafts §2): a chat
-   * whose record already carries a bound form (the ✎ chip's time, repeat and
-   * model) keeps every one of those settings, and this states only the words
-   * and the files.
+   * TWO RECORDS, ONE GESTURE. On a SESSION this states the chat record's words
+   * and files and NO `form`, which the contract reads as a patch (drafts §2):
+   * a chat whose record already carries a bound form (the ✎ chip's time, repeat
+   * and model) keeps every one of those settings. On a chat with no session it
+   * mints a TASK draft instead — see `composerTaskDraft`, and the paragraph
+   * about `new:<file>` in the draft-key section above.
    *
    * THE FILES ARE COPIED INTO THE TASK-SHOTS DIR FIRST, the same copy the
    * Schedule hop makes and for the same reason: a chat attachment's path is a
@@ -800,7 +836,6 @@ export function ComposerCard({
    * `schedule.shots_dir()`. A draft the card cannot schedule is half a draft.
    */
   const saveDraftNow = useCallback(async (): Promise<string | null> => {
-    const key = draftKeyRef.current;
     const words = textRef.current.trim();
     const carry = (trayRead.current?.() ?? []).filter((a) => !a.pending && !!a.view);
     const carried = carry.length ? await copyToTaskShots(carry).catch(() => []) : [];
@@ -813,13 +848,23 @@ export function ComposerCard({
     if (carried.length !== carry.length) {
       return "Could not attach every file to that draft — nothing was saved";
     }
+    // A CHAT THAT HAS NEVER BEEN SENT SAVES A NEW DRAFT EVERY TIME
+    // (`composerTaskDraft`; Akshil, 2026-09-16). It used to write `new:<file>`,
+    // one record per FOLDER, so the second thing the reader saved out of a
+    // folder replaced the first without saying so. There is no chat here to be
+    // the unsent message of — there is an Upcoming task, and there can be as
+    // many of those as the reader writes.
+    const key = hasSessionRef.current
+      ? draftKeyRef.current
+      : taskDraftKey(mintUnsentId());
     const sync = draftSyncer(key);
-    sync.setText(words, carried);
+    if (hasSessionRef.current) sync.setText(words, carried);
+    else sync.setTask(composerTaskDraft(words, fileRef.current ?? "", carried));
     const out = await sync.handoff();
     if (!out.ok) return "Could not save that draft — you are still in the chat";
     sync.forget();
     return null;
-  }, []);
+  }, [mintUnsentId]);
 
   /**
    * THE LAST WRITE A DOOR-SLAM GETS — and it is WORDS ONLY (Bugbot review,
@@ -841,7 +886,6 @@ export function ComposerCard({
    *     Save and the Schedule hop — carry the files properly.
    */
   const unloadSave = useCallback((opts: { keepalive?: boolean }) => {
-    const key = draftKeyRef.current;
     const words = textRef.current.trim();
     const dropped = trayDraftRef.current.length;
     if (dropped && typeof console !== "undefined") {
@@ -851,10 +895,19 @@ export function ComposerCard({
           + "is a round trip, and this handler has none.",
       );
     }
-    const sync = draftSyncer(key);
-    sync.setText(words, []);
+    // …AND IT FILES THE SAME KIND OF RECORD THE DIALOG'S SAVE WOULD
+    // (`composerTaskDraft`): a chat with no session has no unsent message, it
+    // has a task nobody finished writing, and a door slammed on one must leave
+    // the same Upcoming row a pressed button would. Under the SAME id as that
+    // button's — `unsentId` is minted once per set of words — so a reader who
+    // saved and then reloaded has one draft, not two.
+    const sync = draftSyncer(
+      hasSessionRef.current ? draftKeyRef.current : taskDraftKey(mintUnsentId()),
+    );
+    if (hasSessionRef.current) sync.setText(words, []);
+    else sync.setTask(composerTaskDraft(words, fileRef.current ?? "", []));
     sync.flushNow(opts);
-  }, []);
+  }, [mintUnsentId]);
 
   /**
    * THE QUESTION ITSELF, as a promise the router waits on.

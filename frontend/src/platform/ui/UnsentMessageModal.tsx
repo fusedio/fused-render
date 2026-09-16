@@ -7,8 +7,11 @@
 // record or stop existing, and that is a question with exactly one person who
 // can answer it.
 //
-// THREE ANSWERS AND NO FOURTH. "Save as draft" writes the one chat record and
-// carries on; "Discard" carries on with nothing written; "Cancel" stays. Esc,
+// THREE ANSWERS AND NO FOURTH. "Save as draft" writes the record and carries on
+// — a NEW Upcoming task draft each time it is pressed, because the box asking
+// this question belongs to a chat that has never been sent and has no single
+// record to overwrite (Composer `saveDraftNow`, Akshil, 2026-09-16);
+// "Discard" carries on with nothing written; "Cancel" stays. Esc,
 // the backdrop and the ✕ are all Cancel — the safe answer is the one a dismissal
 // falls to, because a reader who pressed Escape has not decided anything.
 //

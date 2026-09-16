@@ -555,7 +555,20 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // no chat behind it and nothing to read, so the card opens on the lead date
     // in this tick, exactly as it always has.
     if (!key) {
-      openForm(at, null, NO_HOP);
+      // …THOUGH IT MAY STILL SAY WHERE IT CAME FROM. A Schedule pressed in an
+      // EMPTY never-sent composer has no record to hand over — a draft with no
+      // words is a row saying nothing — but it does know the folder the chat is
+      // mounted on and the route back to it, and a blank card that opened on
+      // the reader's home with no way back would be the press half working
+      // (Akshil, 2026-09-16).
+      const from = q.get("from") ?? "";
+      const at0 = q.get("target") ?? "";
+      openForm(
+        at,
+        null,
+        from ? { key: "", from } : NO_HOP,
+        at0 ? { id: "", form: { target: at0 } } : null,
+      );
     } else {
       // ONE READ, AND THE CARD OPENS ON WHAT IT ANSWERS. The record holds the
       // words, the tray and whatever settings a previous hop left on it, so
@@ -616,6 +629,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     if (q.get("new") === "1") return; // the hop's own param — see above
     const id = q.get("draft");
     if (!id) return;
+    // `&from=` — THE WAY BACK, WHEN THERE IS ONE (Akshil, 2026-09-16). A draft
+    // ROW presses this URL bare: it was opened from a list, and there is no
+    // conversation behind it to return to. The chat composer's Schedule now
+    // presses it too — a never-sent chat mints a TASK draft per press rather
+    // than one chat record per folder (`apps/claude/sched/scheduled.taskDraftUrl`)
+    // — and that press DID come out of a chat, so it names the route home and
+    // the card draws "Back to chat" for it. No `key`: this card is editing a
+    // task draft, not a chat record.
+    const from = q.get("from") ?? "";
+    const hopTo: ChatHop = from ? { key: "", from } : NO_HOP;
     const gen = ++chatDraftGen.current;
     void fetchDrafts().then(
       (all) => {
@@ -624,14 +647,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // `DraftSeed.form` is an index-signature bag, and only a fresh object
         // literal crosses that gap.
         const stored = all?.task[id];
-        openForm(null, null, NO_HOP, { id, form: stored ? { ...stored } : null });
+        openForm(null, null, hopTo, { id, form: stored ? { ...stored } : null });
       },
       () => {
         if (gen !== chatDraftGen.current) return;
-        openForm(null, null, NO_HOP, { id, form: null });
+        openForm(null, null, hopTo, { id, form: null });
       },
     );
     q.delete("draft");
+    q.delete("from");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);

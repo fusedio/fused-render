@@ -236,7 +236,13 @@ test("the Schedule button binds blur/resize only while its confirm is open", asy
 // were 600 ms ago, or nothing at all on a first hop. The words are the whole
 // point of the handoff, so the navigation is now the save's ANSWER.
 
-const HOP_KEY = "new:/w/app/page.html";
+// A SESSION'S key, and it has to be one (Akshil, 2026-09-16). These three tests
+// are about the ORDER of two writers on ONE record — the box's debounced save
+// and the hop's own statement — and that is now only true of a chat that has a
+// session: a never-sent one writes nothing on its own and its Continue mints a
+// `draft:<id>` nobody else holds (see "a never-sent chat" below).
+const HOP_SESSION = "sess-hop";
+const HOP_KEY = HOP_SESSION;
 
 /** Mount the real button and hand back the confirm's own `onGo` — the Continue
  *  press, without asking a portal to render in a DOM-less runtime. */
@@ -246,7 +252,7 @@ function pressContinue(onNavigate: (url: string) => void) {
     renderer = create(
       createElement(SchedButton, {
         file: "/w/app/page.html",
-        sessionId: "",
+        sessionId: HOP_SESSION,
         draft: () => "a scheduled line",
         back: "/w/app/page.html",
         onNavigate,
@@ -437,7 +443,7 @@ test("a real autosave PUT held open does not race the hop — the two coalesce",
                 { key: HOP_KEY });
     return createElement(SchedButton, {
       file: "/w/app/page.html",
-      sessionId: "",
+      sessionId: HOP_SESSION,
       draft: () => value.text,
       back: "/w/app/page.html",
       onNavigate: (url: string) => went.push(url),
@@ -485,37 +491,148 @@ test("a real autosave PUT held open does not race the hop — the two coalesce",
   forgetDraftVersion(HOP_KEY);
 });
 
+// ── a never-sent chat mints a NEW draft, every press ────────────────────────
+//
+// Akshil, 2026-09-16: type, Schedule, Continue; Back to chat; type something
+// else, Schedule, Continue — and the second draft replaced the first. It had to:
+// a session-less composer's key was `new:<file>`, ONE record per folder, and
+// Continue stated the whole of it. A chat that has never been sent is not a
+// conversation with an unsent message in it, so there is no single record for it
+// to be: each press mints a `draft:<id>` task draft, the shape "+ New task"
+// makes, and each one is its own Upcoming row.
+
+interface Wrote {
+  url: string;
+  method: string;
+  body: Record<string, unknown>;
+}
+
+/** Records every request and answers each one as a task-draft write. */
+function watchTaskWrites(): Wrote[] {
+  const seen: Wrote[] = [];
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : {};
+    seen.push({ url: String(url), method: init?.method ?? "GET", body });
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ok: true,
+        draft_id: String(url).split("/").pop(),
+        draft: { ...body, created_at: 1, updated_at: 1, version: 1 },
+      }),
+    } as unknown as Response);
+  }) as typeof fetch;
+  return seen;
+}
+
+/** One press of Continue on a composer with no session, and the URL it left on. */
+async function pressNewChat(text: string): Promise<{ wrote: Wrote[]; went: string[] }> {
+  const wrote = watchTaskWrites();
+  const went: string[] = [];
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app",
+        sessionId: "",
+        draft: () => text,
+        back: "/explorer/view/w/app?_side=claude",
+        onNavigate: (url: string) => went.push(url),
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  await act(async () => {
+    go();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  });
+  return { wrote, went };
+}
+
+test("Continue from a never-sent chat writes a TASK draft, not `new:<file>`", async () => {
+  const real = globalThis.fetch;
+  const { wrote, went } = await pressNewChat("port the parquet reader\nstart with paths");
+  expect(wrote).toHaveLength(1);
+  // The record is a task draft under an id this press minted…
+  expect(wrote[0]!.method).toBe("PUT");
+  expect(wrote[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+  expect(wrote[0]!.url).not.toContain("new%3A");
+  // …carrying the box's prose cut the card's way (`splitDraft`), the folder the
+  // chat is mounted on, and no answer at all to the questions a composer cannot
+  // answer.
+  expect(wrote[0]!.body.title).toBe("port the parquet reader");
+  expect(wrote[0]!.body.description).toBe("start with paths");
+  expect(wrote[0]!.body.target).toBe("/w/app");
+  expect(wrote[0]!.body.when).toBe(null);
+  expect(wrote[0]!.body.repeat).toBe(null);
+  expect(wrote[0]!.body.session_id).toBe("");
+  // …and the card opens through the arm every draft row presses, with the way
+  // back on it.
+  const id = wrote[0]!.url.slice("/api/drafts/task/".length);
+  expect(went).toEqual([
+    `/tasks?draft=${encodeURIComponent(id)}`
+      + "&from=" + encodeURIComponent("/explorer/view/w/app?_side=claude"),
+  ]);
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("…and a SECOND Continue out of the same folder is a SECOND draft", async () => {
+  // The bug, in one assertion: two presses, two ids, two records. The old shape
+  // wrote `new:/w/app` both times and the first draft was simply gone.
+  const real = globalThis.fetch;
+  const first = await pressNewChat("the first thing");
+  resetDraftSyncers();
+  const second = await pressNewChat("the second thing");
+  expect(first.wrote).toHaveLength(1);
+  expect(second.wrote).toHaveLength(1);
+  expect(second.wrote[0]!.url).not.toBe(first.wrote[0]!.url);
+  expect(first.went[0]).not.toBe(second.went[0]);
+  for (const w of [...first.wrote, ...second.wrote]) {
+    expect(w.url).toContain("/api/drafts/task/");
+  }
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("an EMPTY never-sent composer mints nothing and opens a blank card", async () => {
+  // A draft with no words and no files is an Upcoming row saying nothing. The
+  // press still travels — the folder and the way back are what it knows — and
+  // the card is filled in there.
+  const real = globalThis.fetch;
+  const { wrote, went } = await pressNewChat("   ");
+  expect(wrote).toEqual([]);
+  expect(went).toHaveLength(1);
+  expect(went[0]).toContain("new=1");
+  expect(went[0]).toContain("target=" + encodeURIComponent("/w/app"));
+  expect(went[0]).not.toContain("new%3A");
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
 // The patch comes off with the file (see the registry note above).
 process.on("beforeExit", () => {
   win.addEventListener = realWin.add;
   win.removeEventListener = realWin.remove;
 });
 
-// ---- what Continue is about to do to a draft that already exists ----------
+// ---- what Continue is about to do, and what it no longer claims -----------
 
-test("the confirm SAYS SO when Continue would replace a saved draft", async () => {
-  // Akshil, 2026-09-16: Continue states the WHOLE record — these words, these
-  // files — so a draft saved earlier under the same key is replaced rather than
-  // merged. (The time, repeat and model a card put on it survive: the hop sends
-  // no `form`, and the contract makes `form` a patch.) That is a fine rule, and
-  // not one a calendar glyph can convey, so it is said out loud.
-  let renderer!: ReactTestRenderer;
-  await act(async () => {
-    renderer = create(
-      createElement(SchedConfirmBody, { onGo() {}, onCancel() {}, replaces: true }),
-      { createNodeMock: () => ({ focus: () => {} }) },
-    );
-  });
-  mounted.push(renderer);
-  expect(subLines(renderer)).toEqual([
-    "This task will be scheduled to run at a specific time.",
-    "This replaces the saved draft for this chat.",
-  ]);
-});
-
-test("…and says nothing of the sort when there is no saved draft to replace", async () => {
+test("the confirm NEVER says it is replacing a saved draft", async () => {
+  // Akshil, 2026-09-16: it used to, and the sentence was true of a bug. Continue
+  // from a never-sent chat wrote `new:<file>` — one record per FOLDER — so a
+  // second draft out of the same folder really did land on top of the first, and
+  // the line was the page apologising for it. It mints `draft:<id>` per press
+  // now (`composerTaskDraft`), nothing is ever replaced, and the confirm is two
+  // lines again: what it is, and what happens next.
   const { renderer } = await openBody();
   expect(subLines(renderer)).toEqual([
     "This task will be scheduled to run at a specific time.",
   ]);
+  expect(JSON.stringify(renderer.toJSON())).not.toContain("replaces");
 });

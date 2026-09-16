@@ -668,7 +668,16 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
 interface Req {
   url: string;
   method: string;
-  body?: { text?: string; attachments?: unknown[] };
+  /** A chat record's shape (`text`) and a task draft's (`title`/`description`),
+   *  because a session-less box now writes the second — see "a never-sent chat
+   *  saves a NEW draft every time" below. */
+  body?: {
+    text?: string;
+    title?: string;
+    description?: string;
+    target?: string;
+    attachments?: unknown[];
+  };
   keepalive: boolean;
 }
 
@@ -1027,11 +1036,16 @@ test("an in-app navigation with words in the box asks first, and Save writes ONC
       dialogButton(c.root, "Save as draft").props.onClick();
       await tick();
     });
-    // ONE PUT, on this chat's own key…
+    // ONE PUT, and it mints a TASK draft rather than writing this folder's one
+    // chat record (Akshil, 2026-09-16). A chat that has never been sent has no
+    // unsent message to keep — it has an Upcoming task nobody finished writing,
+    // and there can be as many of those as the reader writes.
     expect(seen).toHaveLength(1);
     expect(seen[0]!.method).toBe("PUT");
-    expect(seen[0]!.url).toBe("/api/drafts/chat/new%3A/p/leaving.py");
-    expect(seen[0]!.body?.text).toBe("a sentence nobody sent");
+    expect(seen[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+    expect(seen[0]!.url).not.toContain("new%3A");
+    expect(seen[0]!.body?.title).toBe("a sentence nobody sent");
+    expect(seen[0]!.body?.target).toBe("/p/leaving.py");
     // …THROUGH THE KEY'S ONE WRITER, which is what `client` + `seq` say (Bugbot
     // review of caef75eb1, HIGH-1). A bare `saveChatDraft` here carried neither,
     // so a straggling write from this page could not be ordered against the
@@ -1043,6 +1057,58 @@ test("an in-app navigation with words in the box asks first, and Save writes ONC
     // …and the box is clean: the record is the copy now (Akshil, 2026-09-16,
     // "after that, the composer is cleared").
     expect(c.box().props.value).toBe("");
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("a never-sent chat saves a NEW draft every time, never over the last one", async () => {
+  // THE BUG, in one test (Akshil, 2026-09-16): type, leave, Save as draft; come
+  // back, type something else, leave, Save as draft — and the second save landed
+  // on the first. It had to: the key was `new:<file>`, ONE record per folder,
+  // and Save stated the whole of it. Each save now mints its own `draft:<id>`,
+  // so the reader ends up with the two Upcoming rows they wrote.
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  try {
+    const c = mount({ file: "/p/twice.py", sessionId: "" });
+    c.type("the first thing");
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick();
+    });
+    // …the box is clean again, which is what starts the next draft.
+    expect(c.box().props.value).toBe("");
+
+    c.type("the second thing");
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick();
+    });
+
+    expect(seen).toHaveLength(2);
+    // TWO RECORDS, both task drafts, both under ids of their own…
+    expect(seen.map((r) => r.body?.title))
+      .toEqual(["the first thing", "the second thing"]);
+    for (const r of seen) {
+      expect(r.method).toBe("PUT");
+      expect(r.url.startsWith("/api/drafts/task/")).toBe(true);
+      expect(r.body?.target).toBe("/p/twice.py");
+    }
+    expect(seen[0]!.url).not.toBe(seen[1]!.url);
+    // …and `new:<file>` was never written at all.
+    expect(seen.some((r) => r.url.includes("new%3A"))).toBe(false);
   } finally {
     pushes.restore();
     delete doc.body;
@@ -1175,7 +1241,10 @@ test("a reload cannot be asked, so it is warned about and then SAVED", async () 
     expect(seen).toHaveLength(1);
     expect(seen[0]!.method).toBe("PUT");
     expect(seen[0]!.keepalive).toBe(true);
-    expect(seen[0]!.body?.text).toBe("the last sentence");
+    // The same record the dialog's Save would have made — a door slammed on a
+    // never-sent chat leaves the Upcoming row a pressed button would.
+    expect(seen[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+    expect(seen[0]!.body?.title).toBe("the last sentence");
     // …AND IT GOES THROUGH THE SYNCER LIKE EVERY OTHER WRITE ON THIS KEY.
     expect(typeof (seen[0]!.body as { client?: unknown }).client).toBe("string");
   } finally {
@@ -1212,7 +1281,7 @@ test("a door-slam saves the WORDS and drops the tray, on purpose", async () => {
       await tick();
     });
     expect(seen).toHaveLength(1);
-    expect(seen[0]!.body?.text).toBe("words and a picture");
+    expect(seen[0]!.body?.title).toBe("words and a picture");
     expect(seen[0]!.body?.attachments).toEqual([]);
   } finally {
     win.addEventListener = real.add;
@@ -1344,13 +1413,19 @@ test("Continue CREATES the draft, then leaves, and the box is empty behind it", 
     await tick();
   });
   // THE HOP IS THE WRITER. Nothing saved these words before it — the composer
-  // writes nothing — so Continue is what makes the record exist.
+  // writes nothing — so Continue is what makes the record exist, and what it
+  // makes is a TASK draft of its own rather than this folder's one chat record.
   const puts = seen.filter((r) => r.method === "PUT");
   expect(puts).toHaveLength(1);
-  expect(puts[0]!.body?.text).toBe("make this a task");
-  // …then the card, on the key it just wrote, with the way back and the folder.
+  expect(puts[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+  expect(puts[0]!.body?.title).toBe("make this a task");
+  expect(puts[0]!.body?.target).toBe("/p/hop.py");
+  // …then the card, on the draft it just minted, with the way back on it.
   expect(hops).toHaveLength(1);
-  expect(hops[0]).toContain("draft=new%3A%2Fp%2Fhop.py");
+  expect(hops[0]).not.toContain("new%3A");
+  expect(hops[0]).toContain(
+    "draft=" + encodeURIComponent(puts[0]!.url.slice("/api/drafts/task/".length)),
+  );
   // …and the composer is clean: one copy, edited on the card from here on.
   expect(c.box().props.value).toBe("");
   expect(discarded).toHaveLength(1);

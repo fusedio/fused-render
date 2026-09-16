@@ -2069,6 +2069,23 @@ describe("the card edits one record, and says which", () => {
       expect(page).not.toContain(gone);
     }
   });
+
+  test("a TASK draft's own arm takes a route back too (Akshil, 2026-09-16)", () => {
+    // `?draft=<id>` is how a draft ROW opens the card, and a row has nowhere to
+    // walk back to. The chat composer's Schedule presses the same arm now — a
+    // never-sent chat mints a `draft:<id>` per press instead of writing one
+    // `new:<file>` per folder — and that press DID come out of a conversation,
+    // so it names the way home and the card draws "Back to chat" for it. The
+    // hop carries no key: this card is editing a task draft, not a chat record.
+    const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+    expect(page).toContain('const hopTo: ChatHop = from ? { key: "", from } : NO_HOP;');
+    expect(page).toContain(
+      "openForm(null, null, hopTo, { id, form: stored ? { ...stored } : null });",
+    );
+    expect(page).toContain("openForm(null, null, hopTo, { id, form: null });");
+    // …and the param is SPENT, like every other one this page reads off a link.
+    expect(page).toContain('q.delete("draft");\n    q.delete("from");');
+  });
 });
 
 // ---- the record this card is editing changed somewhere else ------------------
@@ -2430,8 +2447,13 @@ describe("a Schedule hop out of a chat that already has a form", () => {
     // fields and never a second draft.
     expect(s).toContain("openForm(lead, null, hopTo);");
     // …and a `?new=1` with no key at all is the app page's own link: nothing to
-    // read, so it opens in this tick.
-    expect(s).toContain("if (!key) {\n      openForm(at, null, NO_HOP);");
+    // read, so it opens in this tick — on whatever folder and route back the
+    // link happened to name, which is how an EMPTY never-sent composer's
+    // Schedule travels now that it mints no record to hand over (Akshil,
+    // 2026-09-16).
+    expect(s).toContain("if (!key) {\n      // …THOUGH IT MAY STILL SAY WHERE IT CAME FROM.");
+    expect(s).toContain("from ? { key: \"\", from } : NO_HOP,");
+    expect(s).toContain("at0 ? { id: \"\", form: { target: at0 } } : null,");
   });
 });
 

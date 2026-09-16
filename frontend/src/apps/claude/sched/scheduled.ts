@@ -122,6 +122,33 @@ export function schedulerUrl(draftKey: string, from: string, target = ""): strin
     + (from ? `&from=${encodeURIComponent(from)}` : "")
   );
 }
+
+/**
+ * THE OTHER DOOR ONTO THE SAME CARD — a TASK draft, by id (Akshil, 2026-09-16).
+ *
+ * A Schedule pressed in a chat that has never been sent does not hand the card
+ * a chat record any more; it mints a `draft:<id>` of its own, one per press, so
+ * the second thing the reader schedules out of a folder is a second Upcoming
+ * row rather than a silent overwrite of the first (`composerTaskDraft`). That
+ * record is opened by `?draft=<id>`, which is the URL a draft ROW has always
+ * pressed (`ui/list-rows.draftHref`) — one arm, not a third.
+ *
+ * `from` is the one thing the row does not send: a reader who hopped out of a
+ * chat can walk back to it, and a reader who pressed a row on the Tasks page
+ * has nowhere to walk back to. The card shows the button only when it is given
+ * one (`Scheduled`'s `chatBack`).
+ *
+ * NO `target` PARAM. The folder is written onto the draft itself, so the card
+ * reads it off the record it opens on — which is also what makes it survive a
+ * reload, where a URL param would not.
+ */
+export function taskDraftUrl(draftId: string, from = ""): string {
+  return (
+    `${SCHEDULE_URL}?draft=${encodeURIComponent(draftId)}`
+    + (from ? `&from=${encodeURIComponent(from)}` : "")
+  );
+}
+
 /** T:17222 — short, because this box is 300px wide in the side pane and a
  *  longer line is simply clipped. The banner carries the explanation; this only
  *  has to say the box is not broken. */

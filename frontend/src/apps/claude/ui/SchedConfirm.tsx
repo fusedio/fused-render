@@ -20,18 +20,6 @@ export interface SchedConfirmProps {
   /** Cancel: focus goes back where the reader was — the draft is the thing they
    *  were in the middle of (T:12122). */
   onCancel(): void;
-  /**
-   * THERE IS ALREADY A SAVED DRAFT ON THIS CHAT'S KEY, and Continue will write
-   * the box over it (Akshil, 2026-09-16).
-   *
-   * Continue states the WHOLE record — these words, these files — so a draft
-   * saved earlier under the same key is replaced rather than merged. The time,
-   * repeat and model a card put on that record survive, because the hop sends no
-   * `form` and the contract makes `form` a patch. That is a fine rule, but it is
-   * not one the reader can guess from a calendar glyph, so it is said out loud
-   * — and ONLY when there is something to be replaced.
-   */
-  replaces?: boolean;
 }
 
 /**
@@ -41,7 +29,7 @@ export interface SchedConfirmProps {
  * empty tree and the focus contract below could not be tested at all. The body
  * is the whole of what this overlay IS; the wrapper is only where it hangs.
  */
-export function SchedConfirmBody({ onGo, onCancel, replaces }: SchedConfirmProps) {
+export function SchedConfirmBody({ onGo, onCancel }: SchedConfirmProps) {
   /**
    * ENTER CONTINUES (T:12072). The DOM order is Cancel-then-Continue because
    * that is T's READING order — the cheap way out is named first — but the
@@ -65,11 +53,6 @@ export function SchedConfirmBody({ onGo, onCancel, replaces }: SchedConfirmProps
       <div className="c-schedpop-sub">
         This task will be scheduled to run at a specific time.
       </div>
-      {replaces ? (
-        <div className="c-schedpop-sub">
-          This replaces the saved draft for this chat.
-        </div>
-      ) : null}
       <div className="c-schedpop-row">
         <button type="button" className="c-schedpop-btn" onClick={onCancel}>
           Cancel
@@ -87,7 +70,7 @@ export function SchedConfirmBody({ onGo, onCancel, replaces }: SchedConfirmProps
   );
 }
 
-export function SchedConfirm({ onGo, onCancel, replaces }: SchedConfirmProps) {
+export function SchedConfirm({ onGo, onCancel }: SchedConfirmProps) {
   return (
     <PopoverContent
       side="top"
@@ -96,7 +79,7 @@ export function SchedConfirm({ onGo, onCancel, replaces }: SchedConfirmProps) {
       aria-label="Schedule this as a task?"
       className="c-overlay c-schedpop w-[260px] min-w-0 flex-col gap-0 rounded-[10px] bg-[var(--c-panel)] p-3 text-[var(--c-fg)] shadow-none ring-0"
     >
-      <SchedConfirmBody onGo={onGo} onCancel={onCancel} {...(replaces ? { replaces } : {})} />
+      <SchedConfirmBody onGo={onGo} onCancel={onCancel} />
     </PopoverContent>
   );
 }

@@ -39,14 +39,21 @@ import {
   draftSyncer,
   draftVersion,
   forgetDraftVersion,
+  joinDraft,
   newChatFile,
   NEW_CHAT_PREFIX,
   newTaskDraftId,
+  splitDraft,
   taskDraftKey,
   useAutosave,
   type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+
+// THE PROSE CONVENTION, RE-EXPORTED FROM WHERE IT USED TO LIVE. It moved to
+// `platform/lib/drafts` so the chat composer can use the same cut (an app may
+// not import the shell); every reader who learnt it here still finds it here.
+export { joinDraft, splitDraft } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
 import {
   TASK_EFFORTS,
@@ -1528,42 +1535,6 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
-// -- The chat handoff fills BOTH fields ---------------------------------------
-// A draft arriving from the chat composer's Schedule button
-// (`?new=1&message=…`) is one block of prose written for Claude, and the form
-// now has two places to put it. It is SPLIT rather than dropped whole into the
-// description (Akshil, 2026-08-18): the first line is what the draft is about,
-// which is exactly what a title is, and the rest is the body.
-//
-// This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
-// `firstLine(ask)` while the SAME text also filled the description — the message
-// arrived duplicated into both fields, and the task ended up named after its own
-// body. Here the two fields PARTITION the draft: what goes in the first field is
-// removed from the second, and composeTaskMessage puts it back together on Save,
-// so nothing is said twice and nothing is lost.
-//
-// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
-// whole rather than clamped to a name: the field asks "What should Claude do?",
-// and a clamp answers that question with two thirds of a sentence. The clamp
-// that was here also had to keep the draft ENTIRE in the description to avoid
-// losing the tail, so a long draft arrived with its opening said twice — worse
-// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
-// from a session's first message (shortTitle), which is a different job: that is
-// the app naming a thread nobody named, where a clamp is all there is. Here the
-// user wrote the line, and the field is theirs to shorten.
-export function splitDraft(draft?: string | null): {
-  title: string;
-  description: string;
-} {
-  const text = (draft ?? "").trim();
-  if (!text) return { title: "", description: "" };
-  const brk = text.indexOf("\n");
-  return {
-    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
-    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
-  };
-}
-
 /**
  * WHERE "BACK TO CHAT" LANDS A REOPENED DRAFT, out of the chat key the hop
  * stored on it (design.md, Round 2: "A draft moves, never duplicates").
@@ -1594,29 +1565,6 @@ export function backChatHref(key: string, target: string): string {
     return file ? chatPaneUrl(file) : "";
   }
   return target ? explorerUrl(target, key) : "";
-}
-
-/**
- * `splitDraft` RUN BACKWARDS — the card's two fields put back into the one
- * block of prose the composer was holding (design.md, Round 2: "'Back to chat'
- * reverses it").
- *
- * The hop split a sentence across Title and the description; going back has to
- * hand the composer one string again. Title line, blank line, body — the same
- * shape the composer's own text had when it left, so `splitDraft` on the way
- * out again lands on the same two fields.
- *
- * EITHER HALF ALONE IS JUST THAT HALF, with no separator to show for the one
- * that is missing: a card whose title was cleared must not come back as a
- * message opening on two blank lines, and one with nothing but a title must not
- * come back with a trailing gap (Akshil, 2026-09-11).
- */
-export function joinDraft(title?: string | null, description?: string | null): string {
-  const head = (title ?? "").trim();
-  const body = (description ?? "").trim();
-  if (!head) return body;
-  if (!body) return head;
-  return `${head}\n\n${body}`;
 }
 
 // A prefill this field must refuse, whichever source produced it: a transcript

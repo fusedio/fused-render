@@ -240,6 +240,117 @@ export function newTaskDraftId(): string {
   return `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// -- ONE STRING, TWO FIELDS: the prose convention both editors share ---------
+//
+// MOVED DOWN HERE FROM `shell/NewJobModal` (2026-09-16) and re-exported from it,
+// because the chat composer needs the same rule and an app may not import the
+// shell (`scripts/check-boundaries.mjs`). A composer's box is one block of
+// prose; the New task card has a Title and a description; a task draft born in
+// the composer has to be filed as the card's two fields. Two copies of that cut
+// would be two answers to "what is this task called", so there is one.
+// A draft arriving from the chat composer's Schedule button
+// (`?new=1&message=…`) is one block of prose written for Claude, and the form
+// now has two places to put it. It is SPLIT rather than dropped whole into the
+// description (Akshil, 2026-08-18): the first line is what the draft is about,
+// which is exactly what a title is, and the rest is the body.
+//
+// This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
+// `firstLine(ask)` while the SAME text also filled the description — the message
+// arrived duplicated into both fields, and the task ended up named after its own
+// body. Here the two fields PARTITION the draft: what goes in the first field is
+// removed from the second, and composeTaskMessage puts it back together on Save,
+// so nothing is said twice and nothing is lost.
+//
+// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
+// whole rather than clamped to a name: the field asks "What should Claude do?",
+// and a clamp answers that question with two thirds of a sentence. The clamp
+// that was here also had to keep the draft ENTIRE in the description to avoid
+// losing the tail, so a long draft arrived with its opening said twice — worse
+// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
+// from a session's first message (shortTitle), which is a different job: that is
+// the app naming a thread nobody named, where a clamp is all there is. Here the
+// user wrote the line, and the field is theirs to shorten.
+export function splitDraft(draft?: string | null): {
+  title: string;
+  description: string;
+} {
+  const text = (draft ?? "").trim();
+  if (!text) return { title: "", description: "" };
+  const brk = text.indexOf("\n");
+  return {
+    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
+    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
+  };
+}
+
+/**
+ * `splitDraft` RUN BACKWARDS — the card's two fields put back into the one
+ * block of prose the composer was holding (design.md, Round 2: "'Back to chat'
+ * reverses it").
+ *
+ * The hop split a sentence across Title and the description; going back has to
+ * hand the composer one string again. Title line, blank line, body — the same
+ * shape the composer's own text had when it left, so `splitDraft` on the way
+ * out again lands on the same two fields.
+ *
+ * EITHER HALF ALONE IS JUST THAT HALF, with no separator to show for the one
+ * that is missing: a card whose title was cleared must not come back as a
+ * message opening on two blank lines, and one with nothing but a title must not
+ * come back with a trailing gap (Akshil, 2026-09-11).
+ */
+export function joinDraft(title?: string | null, description?: string | null): string {
+  const head = (title ?? "").trim();
+  const body = (description ?? "").trim();
+  if (!head) return body;
+  if (!body) return head;
+  return `${head}\n\n${body}`;
+}
+
+/**
+ * A SESSION-LESS COMPOSER'S BOX, AS AN UPCOMING TASK DRAFT (Akshil, 2026-09-16).
+ *
+ * A chat that has never been sent is not a conversation with an unsent message
+ * in it — it is a thing the reader has not started yet. So "Save as draft" and
+ * the Schedule hop out of such a box mint a TASK draft, `draft:<id>`, exactly
+ * the record the "+ New task" card mints: a new one every time, listed in
+ * Upcoming under its own TASK number, opened in the card from every surface.
+ *
+ * The shape that used to be written instead was `new:<file>` — ONE record per
+ * folder — so the second draft out of the same folder silently replaced the
+ * first (Akshil, 2026-09-16: not intended). `new:<file>` is still READ
+ * everywhere it was; nothing writes one any more.
+ *
+ * WHAT IS AND IS NOT STATED. The words (cut into the card's two fields by
+ * `splitDraft`), the files (already copied into the task-shots dir by the
+ * caller — a chat attachment's own path is a tempdir on a 12 h TTL) and the
+ * folder. Every setting is left UNANSWERED — `when`/`repeat`/`new_task_each_run`
+ * null, the three pills "" — because a composer has no opinion about a time, a
+ * model or a permission mode, and null is the card's own word for "nobody has
+ * said" (`TaskDraftForm`). `session_id` is "" for the same reason it is on a
+ * card-born draft: there is no thread to send this into.
+ */
+export function composerTaskDraft(
+  text: string,
+  target: string,
+  attachments: DraftAttachment[] = [],
+): TaskDraftForm {
+  const split = splitDraft(text);
+  return {
+    title: split.title,
+    description: split.description,
+    target,
+    when: null,
+    repeat: null,
+    model: "",
+    effort: "",
+    permission: "",
+    attachments,
+    new_task_each_run: null,
+    session_id: "",
+    custom_rule: null,
+  };
+}
+
 /** Extra request options a FLUSH needs and an ordinary autosave does not. */
 export interface DraftWriteOptions {
   /** Let the request outlive the document — the only way a write started from

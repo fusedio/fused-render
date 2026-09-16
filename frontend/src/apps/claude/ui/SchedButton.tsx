@@ -26,9 +26,15 @@ import { rawUrl, uploadTaskShot } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
-import { chatDraftKey, draftSyncer, fetchChatDraft } from "@platform/lib/drafts";
+import {
+  chatDraftKey,
+  composerTaskDraft,
+  draftSyncer,
+  newTaskDraftId,
+  taskDraftKey,
+} from "@platform/lib/drafts";
 import type { DraftAttachment } from "@platform/lib/drafts";
-import { schedulerUrl } from "../sched/scheduled";
+import { schedulerUrl, taskDraftUrl } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface SchedButtonProps {
@@ -138,8 +144,9 @@ export function basenameOf(path: string): string {
 
 /** The hop's URL, built where the rows can reach it too — see
  *  `sched/scheduled.schedulerUrl`. Re-exported here because this button is
- *  where the hop is spelt in every reader's head, and in the tests. */
-export { schedulerUrl };
+ *  where the hop is spelt in every reader's head, and in the tests.
+ *  `taskDraftUrl` is its twin for the draft this button MINTS. */
+export { schedulerUrl, taskDraftUrl };
 
 export async function copyToTaskShots(
   items: readonly Attachment[],
@@ -178,29 +185,6 @@ export function SchedButton({
   const why = disabled && disabledReason ? SCHED_LABEL + " — " + disabledReason : SCHED_LABEL;
 
   /**
-   * IS THERE ALREADY A DRAFT ON THIS KEY — asked when the question OPENS, so the
-   * answer is about the record as it stands at the moment the reader is being
-   * asked about it (Akshil, 2026-09-16: Continue replaces the saved draft).
-   *
-   * One GET, and only on open: the popover is the one place the answer is shown,
-   * and asking on every render of a button that is on screen the whole time
-   * would be a poll. A failed read answers `false` — a line that says something
-   * will be replaced had better be sure it will be.
-   */
-  const [replaces, setReplaces] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    setReplaces(false);
-    void fetchChatDraft(chatDraftKey(sessionId, file)).then((saved) => {
-      if (alive && saved) setReplaces(!!saved.text || !!saved.attachments?.length);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [open, sessionId, file]);
-
-  /**
    * T:17253 — A CONFIRM CAN ALREADY BE UP WHEN THE BLOCK LANDS. "Schedule this
    * as a task?" is then a question about a button that has just died, and its
    * Continue would hit the guard in `go` and do nothing visible. Take it down
@@ -232,6 +216,66 @@ export function SchedButton({
     const text = draft().trim();
     const tray = attachments?.() ?? [];
     setOpen(false);
+    // The chips whose bytes actually exist — `take()`'s rule, and the only
+    // ones either road below can carry (a pending upload names no file yet).
+    const carry = tray.filter((a) => !a.pending && !!a.view);
+    /**
+     * A CHAT THAT HAS NEVER BEEN SENT MINTS A NEW DRAFT, EVERY PRESS (Akshil,
+     * 2026-09-16).
+     *
+     * This used to write `new:<file>` — one record per FOLDER — and hop to it,
+     * so a reader who scheduled one thing, walked back, and scheduled a second
+     * thing out of the same folder replaced the first without being told. There
+     * is no conversation here for a single record to be the unsent message of;
+     * there is an Upcoming task, and there can be as many of those as the
+     * reader writes. So the press mints `draft:<id>` (`composerTaskDraft`,
+     * exactly the record the "+ New task" card makes) and opens the card on it
+     * through the arm every draft row already presses (`taskDraftUrl`).
+     *
+     * NOTHING TO RE-STATE AFTERWARDS, which is why this road is shorter than
+     * the session one below: the id is brand new, nobody else holds it, and the
+     * composer behind this popover writes nothing of its own — so the record
+     * cannot be overtaken between the write and the hop.
+     */
+    if (!sessionId) {
+      const id = newTaskDraftId();
+      // AN EMPTY BOX MINTS NOTHING. A draft with no words and no files is a row
+      // in Upcoming saying nothing, so the press opens a blank card on this
+      // folder instead and the reader fills it in there.
+      if (!text && !carry.length) {
+        leaving.current = false;
+        onNavigate?.(schedulerUrl("", back, file ?? ""));
+        return;
+      }
+      const mint = (carried: DraftAttachment[]): void => {
+        const sync = draftSyncer(taskDraftKey(id));
+        sync.setTask(composerTaskDraft(text, file ?? "", carried));
+        void sync.handoff().then((out) => {
+          if (!out.ok) {
+            leaving.current = false;
+            notify({
+              title: "Could not save that draft — you are still in the chat",
+              tone: "error",
+            });
+            return;
+          }
+          // The record is the card's now: this page stops wanting anything for
+          // it, and the box it came out of is emptied (one copy, one place).
+          sync.forget();
+          onHandedOff?.();
+          leaving.current = false;
+          onNavigate?.(taskDraftUrl(id, back));
+        });
+      };
+      if (!carry.length) {
+        mint([]);
+        return;
+      }
+      void copyToTaskShots(tray)
+        .catch((): DraftAttachment[] => [])
+        .then(mint);
+      return;
+    }
     // THE KEY, NOT THE WORDS (design §1). Nothing has been written under it yet
     // — the composer autosaves nothing any more — so this press is what CREATES
     // the record, and it is the record the task form is about to go on editing.
@@ -250,7 +294,6 @@ export function SchedButton({
     // form's time, repeat and model away on the way to a card that was about to
     // show them. So an empty hop simply leaves, in this tick, and the card opens
     // on whatever the record already holds.
-    const carry = tray.filter((a) => !a.pending && !!a.view);
     if (!text && !carry.length) {
       leave();
       return;
@@ -380,7 +423,7 @@ export function SchedButton({
           </button>
         }
       />
-      <SchedConfirm onGo={go} onCancel={cancel} {...(replaces ? { replaces } : {})} />
+      <SchedConfirm onGo={go} onCancel={cancel} />
     </Popover>
   );
 }
