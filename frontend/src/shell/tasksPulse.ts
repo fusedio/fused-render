@@ -713,10 +713,21 @@ function startFeed(env: ListingEnv) {
         void load();
         continue;
       }
-      const merged = mergeTaskChanges(held, rows.filter((t) => !!t && !!t.key), gone);
-      rememberListing(merged);
-      publishTasks(merged);
-      emitListing({ rows: merged, failed: false, delta: { rows, gone } });
+      // THE FOLD IS GUARDED LIKE THE FETCH. Since `syncFeedLane` this loop is
+      // the sidebar's only heartbeat too (`fedElsewhere` stands the pulse timer
+      // down while the lane is open), so a subscriber that throws, or a row
+      // shape the merge cannot take, must not end the loop: it would leave the
+      // lane "open" with nobody polling behind it, and the timer would never
+      // come back either (regression review, 2026-09-16). One bad answer costs
+      // one backoff; the next long-poll and the floor refresh carry on.
+      try {
+        const merged = mergeTaskChanges(held, rows.filter((t) => !!t && !!t.key), gone);
+        rememberListing(merged);
+        publishTasks(merged);
+        emitListing({ rows: merged, failed: false, delta: { rows, gone } });
+      } catch {
+        await env.sleep(CHANGES_BACKOFF_MS);
+      }
     }
   };
 

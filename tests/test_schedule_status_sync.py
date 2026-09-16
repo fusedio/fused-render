@@ -36,6 +36,14 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
+@pytest.fixture(autouse=True)
+def no_timer_left_behind():
+    """Holds on a live session arm a real `threading.Timer`; leave none behind
+    for a later test to be rung by."""
+    yield
+    schedule._cancel_rearm()
+
+
 @pytest.fixture()
 def sid():
     """A session id of this test's own: `session_liveness` remembers where a
