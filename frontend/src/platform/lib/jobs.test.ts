@@ -1337,3 +1337,58 @@ test("groupPopupTick: single-member groups are ignored entirely — never a cand
   expect(t0.popped).toBeNull();
   expect(t1.popped).toBeNull();
 });
+
+// -------------------------------------------------- finding 8: shrink-to-1
+// A group shrinking to one member (a sibling dismissed/swept) must not
+// re-pop an already-popped failure via popupTick's singleton path.
+
+test("groupPopupTick: a failed member's key survives in failedSeen after its sibling disappears and the group shrinks to one", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const t0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const t1 = groupPopupTick(oneFailed, t0.state, false);
+  expect(t1.popped?.id).toBe("sys:g:a");
+
+  // "b" is dismissed/swept — the group now has just one member, "a".
+  const shrunk: Job[] = [job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 })];
+  const t2 = groupPopupTick(shrunk, t1.state, false);
+  expect(t2.popped).toBeNull();
+  // The key must still be carried forward for popupTick to consult.
+  expect(t2.state.failedSeen.has("sys:g:a:900")).toBe(true);
+});
+
+test("popupTick: a group failure already popped by groupPopupTick does not re-pop once its group shrinks to one member", () => {
+  const running: Job[] = [
+    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const oneFailed: Job[] = [
+    job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 }),
+    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+  ];
+  const g0 = groupPopupTick(running, EMPTY_GROUP_POPUP_STATE, true);
+  const g1 = groupPopupTick(oneFailed, g0.state, false);
+  expect(g1.popped?.id).toBe("sys:g:a");
+  // While the group still has two members, popupJobs excludes "a" entirely
+  // — popupTick has never seen its key.
+  const p0 = popupTick(oneFailed, new Set(), false, undefined, g1.state.failedSeen);
+  expect(p0.popped).toBeNull();
+  expect(p0.seen.has("sys:g:a:900")).toBe(false);
+
+  // "b" is dismissed/swept — "a" is now a group of one, and is for the
+  // FIRST time ever a `popupJobs` candidate for popupTick. Without the
+  // fix, popupTick would treat this as a brand-new terminal event (its
+  // key is absent from `seen`) and pop it again.
+  const shrunk: Job[] = [job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 })];
+  const g2 = groupPopupTick(shrunk, g1.state, false);
+  const p1 = popupTick(shrunk, p0.seen, false, undefined, g2.state.failedSeen);
+  expect(p1.popped).toBeNull();
+  // It is now recorded, so any later tick behaves normally too.
+  expect(p1.seen.has("sys:g:a:900")).toBe(true);
+});

@@ -289,11 +289,17 @@ export default function ActivityDock({
     // it, not the panel's already-tier-filtered subset (see `popupJobs`'s
     // own doc for why: a `transient` job here has to pop even though
     // `terminalNotifications` never counts it terminal-for-the-panel).
+    // Finding 8: pass the PRIOR tick's group-failure keys so a group that
+    // just shrank to one member (a sibling dismissed/swept) doesn't have its
+    // already-popped failure treated as a brand-new candidate the instant it
+    // becomes a `popupJobs` singleton — see `popupTick`'s own doc on
+    // `alreadyPoppedByGroup`.
     const { seen, popped } = popupTick(
       next,
       popupJobsSeenRef.current,
       popupFirstTickRef.current,
       isOpenAnywhere,
+      groupPopupStateRef.current.failedSeen,
     );
     popupJobsSeenRef.current = seen;
     // D-C (§3): a MULTI-member group's own start/failure pop, computed off

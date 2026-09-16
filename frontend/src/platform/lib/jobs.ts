@@ -649,6 +649,21 @@ export function popupTick(
   seen: ReadonlySet<string>,
   isFirstTick: boolean,
   isOpenAnywhere?: (source: string) => boolean,
+  // Finding 8 (code review 2026-09-16): keys `groupPopupTick` has ALREADY
+  // popped as a multi-member group's failure. A group's members are excluded
+  // from `popupJobs` entirely while the group has more than one member (see
+  // that function's own doc), so this path has never seen their key before --
+  // if a sibling is later dismissed/swept and the group shrinks to one
+  // member, that lone survivor becomes a `popupJobs` candidate for the FIRST
+  // time here, with no entry in `seen` yet, and would otherwise look like a
+  // brand-new terminal event and pop again for the exact same failure
+  // `groupPopupTick` already showed a card for. Passing the prior tick's
+  // `GroupPopupState.failedSeen` in lets this loop recognize "I didn't pop
+  // this before only because it wasn't my candidate yet, not because it's
+  // new" and seed it into `seen` silently instead. Only needed for that one
+  // transition tick — once the key lands in `next`/`seen` below, ordinary
+  // `seen.has(key)` handles every tick after.
+  alreadyPoppedByGroup?: ReadonlySet<string>,
 ): { seen: Set<string>; popped: Job | null } {
   const next = new Set<string>();
   let popped: Job | null = null;
@@ -667,6 +682,7 @@ export function popupTick(
   for (const j of popupJobs(jobs)) {
     const key = popupKey(j);
     next.add(key);
+    if (alreadyPoppedByGroup && alreadyPoppedByGroup.has(key)) continue;
     if (isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)) continue;
     if (isFirstTick || seen.has(key)) continue;
     if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
@@ -736,7 +752,8 @@ export function groupPopupTick(
   state: GroupPopupState,
   isFirstTick: boolean,
 ): { state: GroupPopupState; popped: Job | null } {
-  const groups = groupJobs(jobs).filter((g) => g.jobs.length > 1);
+  const allGroups = groupJobs(jobs);
+  const groups = allGroups.filter((g) => g.jobs.length > 1);
   const nextRunning = new Set<string>();
   const nextFailedSeen = new Set<string>();
   let popped: Job | null = null;
@@ -769,6 +786,24 @@ export function groupPopupTick(
         popped = member;
         poppedAt = at;
       }
+    }
+  }
+
+  // Finding 8 (code review 2026-09-16): once a member's failure has been
+  // recorded here, keep it recorded even after its group shrinks to one
+  // member (a sibling dismissed/swept) — otherwise `nextFailedSeen` would
+  // silently drop that key the instant the group falls below two members
+  // (this loop only ever visits `groups`, the >1-member subset), and the
+  // lone survivor would look brand new to `popupTick`'s own singleton path
+  // (see that function's `alreadyPoppedByGroup` param). This does NOT create
+  // any new entries for a genuinely single-member group's own first
+  // failure — that keeps popping via `popupTick`/`popupJobs` exactly as it
+  // always has — it only carries an EXISTING entry forward.
+  for (const g of allGroups) {
+    if (g.jobs.length > 1) continue;
+    for (const member of g.jobs) {
+      const mkey = popupKey(member);
+      if (state.failedSeen.has(mkey)) nextFailedSeen.add(mkey);
     }
   }
 
