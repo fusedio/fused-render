@@ -2376,3 +2376,17 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-row.is-selected > .tasks-acts > .tasks-acts-inner {
   background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
 }
+
+/* -- Two seams keep the old room (Akshil, 2026-09-16) -----------------------
+   The row gap went 10px → 4px for id → folder → title. Two seams read too tight
+   at 4px and get 6px back on top of the gap: the ring → id seam, and the seams
+   before the message count and the time at the row's right end. The margins
+   ride the elements' own edges, so the hit zones (`padding-inline: 5px` above)
+   and the thread indent derived from the rail are untouched. */
+.tasks-row > .tasks-rowmark {
+  margin-right: 6px;
+}
+.tasks-row > .tasks-row-msgs,
+.tasks-row > .tasks-row-time {
+  margin-left: 1px; /* -5px hit-zone margin + 6px */
+}
