@@ -98,6 +98,33 @@ DRAFTS_FILE = "drafts.json"
 CHAT = "chat"
 TASK = "task"
 
+#: …and a third section that is not a kind of draft: the LAST WRITE EACH PAGE
+#: MADE to each key, `{key: {"client": …, "seq": …, "at": …}}`.
+#:
+#: A version orders two DIFFERENT writers against each other; it cannot order
+#: one writer against itself, because both of its requests state the version
+#: they read and the network decides which arrives first. One page's own saves
+#: for one key are a SEQUENCE — the syncer client-side mints a monotonic `seq`
+#: per key and sends the whole desired state each time (`platform/lib/drafts.ts`,
+#: `draftSyncer`) — so a request whose `seq` is not newer than the one already
+#: applied from that same page is a STRAGGLER, and the only correct thing to do
+#: with it is nothing.
+#:
+#: IN ITS OWN SECTION AND NOT ON THE RECORD, because the case that matters most
+#: is the one where there IS no record: a send DELETEs and a keepalive PUT from
+#: a tenth of a second earlier arrives afterwards. A seq kept on the record would
+#: have gone with it, and the sent sentence would come back as a live draft —
+#: the resurrection this whole round exists to make impossible. So the note
+#: outlives the record, briefly (`_SEQ_TTL_SEC`).
+SEQ = "seq"
+
+#: How long one of those notes is worth keeping. A straggler is a request that
+#: is already on the wire; a minute is an eternity for one, and a quarter of an
+#: hour means a suspended laptop's queued write is still judged against the page
+#: that queued it. After that the note is noise and `_prune` drops it, so the
+#: section cannot grow without bound on a machine that opens a thousand folders.
+_SEQ_TTL_SEC = 15 * 60
+
 #: A chat with no session yet (the composer's first message has not been sent)
 #: keys on the file it opened on instead — the same key `takeDraft(file)` uses
 #: in the client.
@@ -363,11 +390,85 @@ def load() -> dict:
         data = None
     if not isinstance(data, dict):
         data = {}
-    for section in (CHAT, TASK):
+    for section in (CHAT, TASK, SEQ):
         if not isinstance(data.get(section), dict):
             data[section] = {}
     _prune(data)
     return data
+
+
+class StaleWrite(Exception):
+    """This request is a straggler from a page that has already said something
+    newer about this key, so it was DROPPED.
+
+    Not an error and not a conflict: nobody lost anything and there is nothing
+    for the client to resolve — the write it is being refused is one it has
+    itself superseded. The routes answer 200 `{"ok": true, "dropped": true}`
+    with the record as it stands, so a caller that is not looking sees a write
+    that succeeded, which for its purposes it did: the state it wanted IS what
+    the newer request put there.
+
+    Carries the current record for the same reason `VersionConflict` does — the
+    version on it is the one the client should be writing against next."""
+
+    def __init__(self, key: str, record=None):
+        super().__init__("stale draft write on %r" % (key,))
+        self.key = key
+        self.record = record
+
+
+def _seq_of(value) -> int | None:
+    """One request's `seq`, or None for "this client is not counting".
+
+    None is the answer for every client written before this round, and it means
+    the write is judged on its version alone — which is exactly how it behaved
+    then. A bool is not an int here (it is in Python), and a negative number is
+    no sequence at all."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _client_of(value) -> str:
+    """The random id one PAGE mints for itself, or `""`.
+
+    Bounded and stripped, because it becomes a json key's value in a file this
+    process writes; nothing is inferred from its shape."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:64]
+
+
+def _seq_fresh(data: dict, key: str, client: str, seq: int | None) -> bool:
+    """Is this write NEWER than the last one this page made to this key?
+
+    True for a client that sends no `seq` (nothing to compare), true the first
+    time a page writes a key, and true for a DIFFERENT page's write however old
+    its own counter is — one note per key, so the last page to write is the one
+    being sequenced. That is the whole of the rule: a sequence orders a page
+    against itself, and versions go on ordering pages against each other."""
+    if not client or seq is None:
+        return True
+    row = (data.get(SEQ) or {}).get(key)
+    if not isinstance(row, dict) or row.get("client") != client:
+        return True
+    try:
+        seen = int(row.get("seq"))
+    except (TypeError, ValueError):
+        return True
+    return seq > seen
+
+
+def _seq_note(data: dict, key: str, client: str, seq: int | None) -> None:
+    """Remember this write as the newest one that page made to this key.
+
+    Only ever the LATEST `{client, seq}` — a page's whole history under a key is
+    of no interest, and keeping ids for ever would make this file a record of
+    every tab that ever opened a draft."""
+    if not client or seq is None:
+        return
+    data.setdefault(SEQ, {})[key] = {"client": client, "seq": int(seq),
+                                     "at": time.time()}
 
 
 def _prune(data: dict) -> None:
@@ -400,6 +501,17 @@ def _prune(data: dict) -> None:
         stamp = _epoch(record.get("updated_at")) if isinstance(record, dict) else 0.0
         if 0.0 < stamp < cutoff:
             chat.pop(key, None)
+    # …AND THE SEQUENCE NOTES NOBODY CAN STILL BE RACING (`SEQ`). A note exists
+    # to drop a request that is on the wire right now; a quarter of an hour
+    # later there is no such request, and keeping it would make this section
+    # grow for ever. Unlike a draft, losing one of these costs nothing anybody
+    # typed, so an unreadable stamp is dropped here rather than kept.
+    seq_cutoff = time.time() - _SEQ_TTL_SEC
+    notes = data.setdefault(SEQ, {})
+    for key in list(notes):
+        row = notes.get(key)
+        if not isinstance(row, dict) or _epoch(row.get("at")) < seq_cutoff:
+            notes.pop(key, None)
 
 
 def _stamp(before: dict, data: dict) -> None:
@@ -890,7 +1002,7 @@ def _chat_current(data: dict, key: str, ident: str) -> dict | None:
 
 
 def put_chat(session_id, text=None, attachments=None, form=None,
-             if_version=None) -> dict | None:
+             if_version=None, client=None, seq=None) -> dict | None:
     """Upsert one chat draft — and DELETE it when it comes in empty.
 
     "Empty" is no text and no attachments, which is the state a composer is in
@@ -930,12 +1042,20 @@ def put_chat(session_id, text=None, attachments=None, form=None,
     the bound form's when there is one, since that is the record being written.
     A mismatch raises `VersionConflict` carrying the current state and writes
     nothing; `None` is an unconditional write, which is what every client that
-    predates versions sends."""
+    predates versions sends.
+
+    `client`/`seq` are the page's own sequence for this key (`SEQ`): a write
+    that is not newer than the last one THAT page made here raises `StaleWrite`
+    and changes nothing. Checked BEFORE the version, because a straggler is not
+    a conflict — nobody is losing an edit, the page has simply said something
+    newer already."""
     key = chat_key(session_id)
     if not key:
         return None
     body = _text(text)
     rows = _attachments(attachments)
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
         ident = ""
@@ -943,6 +1063,9 @@ def put_chat(session_id, text=None, attachments=None, form=None,
         if session:
             ident = bound_chats(_project_chat(data[CHAT]),
                                 _project_task(data[TASK])).get(session, "")
+        if not _seq_fresh(data, key, page, count):
+            raise StaleWrite(key, _chat_current(data, key, ident))
+        _seq_note(data, key, page, count)
         if if_version is not None:
             current = data[TASK].get(ident) if ident else data[CHAT].get(key)
             if version_of(current) != if_version:
@@ -985,7 +1108,7 @@ def put_chat(session_id, text=None, attachments=None, form=None,
     return _update(mutate)
 
 
-def delete_chat(session_id, if_version=None) -> bool:
+def delete_chat(session_id, if_version=None, client=None, seq=None) -> bool:
     """Drop one chat draft; True if there was one. Called on send, on an
     explicit clear, and by the two verbs that take the task away for good —
     delete and erase — because a draft for a conversation nobody can reach any
@@ -997,24 +1120,39 @@ def delete_chat(session_id, if_version=None) -> bool:
     the record this key READS as — the bound form's version on a session whose
     words live in one, exactly as `put_chat` compares — so the two doors agree
     about what the client is holding. Mismatch raises `VersionConflict` and
-    deletes nothing; `None` deletes unconditionally."""
+    deletes nothing; `None` deletes unconditionally.
+
+    A DELETE CARRIES A `seq` TOO, and it is the one that matters most: the send
+    deletes, and a keepalive PUT the page fired a moment earlier can arrive
+    afterwards. The note this leaves behind outlives the record it removed
+    (`SEQ`), which is what makes that straggler a no-op instead of a
+    resurrection."""
     key = chat_key(session_id)
     if not key:
         return False
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        ident = ""
+        session = bound_session(key)
+        if session:
+            ident = bound_chats(_project_chat(data[CHAT]),
+                                _project_task(data[TASK])).get(session, "")
+        if not _seq_fresh(data, key, page, count):
+            raise StaleWrite(key, _chat_current(data, key, ident))
+        _seq_note(data, key, page, count)
         if if_version is not None:
-            ident = ""
-            session = bound_session(key)
-            if session:
-                ident = bound_chats(_project_chat(data[CHAT]),
-                                    _project_task(data[TASK])).get(session, "")
             current = data[TASK].get(ident) if ident else data[CHAT].get(key)
             if version_of(current) != if_version:
                 raise VersionConflict(key, version_of(current),
                                       _chat_current(data, key, ident))
         if key not in data[CHAT]:
-            return False, False
+            # NOTHING TO REMOVE, AND THE NOTE IS STILL WORTH WRITING: a send on
+            # a chat whose first save never landed deletes nothing, and the PUT
+            # that was in flight while it did is precisely the request this note
+            # exists to drop.
+            return False, bool(page and count is not None)
         data[CHAT].pop(key, None)
         return True, True
 
@@ -1179,7 +1317,8 @@ def _fold_into_bound(existing: dict, incoming: dict) -> dict:
     return out
 
 
-def put_task(ident, fields, if_version=None) -> tuple[dict | None, str]:
+def put_task(ident, fields, if_version=None, client=None,
+             seq=None) -> tuple[dict | None, str]:
     """Upsert one task draft — and DELETE it when every field comes in empty.
 
     Fields the client did not send keep the value the stored draft had, so the
@@ -1220,13 +1359,23 @@ def put_task(ident, fields, if_version=None) -> tuple[dict | None, str]:
     `if_version` is the caller's `If-Match`, compared inside the lock against
     the record under THIS id (the one the caller named and is holding a version
     of). Mismatch raises `VersionConflict` and writes nothing; `None` writes
-    unconditionally, which is what every client that predates versions does."""
+    unconditionally, which is what every client that predates versions does.
+
+    `client`/`seq` are the page's own sequence for `draft:<id>` — the listing's
+    key for this record, and the same one the client's syncer counts under
+    (`SEQ`). A write that is not newer than the last one that page made here
+    raises `StaleWrite` and changes nothing."""
     key = draft_id(ident)
     if not key:
         return None, ""
     patch = fields if isinstance(fields, dict) else {}
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        if not _seq_fresh(data, task_key(key), page, count):
+            raise StaleWrite(task_key(key), _task_record(data[TASK].get(key)))
+        _seq_note(data, task_key(key), page, count)
         if if_version is not None and version_of(data[TASK].get(key)) != if_version:
             raise VersionConflict(task_key(key), version_of(data[TASK].get(key)),
                                   _task_record(data[TASK].get(key)))
@@ -1323,7 +1472,7 @@ def delete_bound(session_id) -> list[str]:
     return _update(mutate)
 
 
-def delete_task(ident, if_version=None) -> bool:
+def delete_task(ident, if_version=None, client=None, seq=None) -> bool:
     """Discard one task draft; True if there was one. Called by the modal's
     Discard button and by `POST /api/schedule` once the draft has become a real
     scheduled entry — the draft's whole purpose is over at that moment, and a
@@ -1332,17 +1481,26 @@ def delete_task(ident, if_version=None) -> bool:
     `if_version` is the caller's `If-Match`: the trash on a row is a destructive
     gesture aimed at words somebody may have kept typing since the row was
     drawn, so it is allowed to be conditional. Mismatch raises
-    `VersionConflict`; `None` deletes unconditionally."""
+    `VersionConflict`; `None` deletes unconditionally.
+
+    …and `client`/`seq` are the page's own sequence for `draft:<id>`, kept past
+    the delete so a PUT that was already on the wire cannot put the record
+    back (`SEQ`, `delete_chat`)."""
     key = draft_id(ident)
     if not key:
         return False
+    page = _client_of(client)
+    count = _seq_of(seq)
 
     def mutate(data: dict):
+        if not _seq_fresh(data, task_key(key), page, count):
+            raise StaleWrite(task_key(key), _task_record(data[TASK].get(key)))
+        _seq_note(data, task_key(key), page, count)
         if if_version is not None and version_of(data[TASK].get(key)) != if_version:
             raise VersionConflict(task_key(key), version_of(data[TASK].get(key)),
                                   _task_record(data[TASK].get(key)))
         if key not in data[TASK]:
-            return False, False
+            return False, bool(page and count is not None)
         data[TASK].pop(key, None)
         return True, True
 

@@ -524,6 +524,175 @@ def test_a_task_draft_is_still_spent_by_its_id(client, tmp_path):
     assert len(booked) == 1 and booked[0]["task_id"] == before
 
 
+# --------------------------------------------------------------- the sequence
+#
+# One page's writes to one key are a SEQUENCE (`client`+`seq`, minted by the
+# syncer, `drafts-seq-contract.md`): a request that is not newer than the last
+# one THAT page made here is a straggler, dropped rather than applied or
+# conflicted — nobody lost an edit, the page has simply said something newer
+# already.
+
+
+def test_a_stale_seq_write_is_dropped_not_applied(client):
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "one", "client": "page-1", "seq": 5})
+    version = r.json()["draft"]["version"]
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "a straggler", "client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["dropped"] is True
+    assert body["key"] == "sess-a"
+    assert body["draft"]["text"] == "one"
+    assert body["draft"]["version"] == version
+    assert drafts.get_chat("sess-a")["text"] == "one"
+    assert drafts.get_chat("sess-a")["version"] == version, "no version bump"
+
+
+def test_a_newer_seq_is_applied(client):
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 5})
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "two", "client": "page-1", "seq": 6})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    assert r.json()["draft"]["text"] == "two"
+    assert drafts.get_chat("sess-a")["text"] == "two"
+
+
+def test_a_different_client_s_same_seq_is_not_a_straggler(client):
+    """`seq` only orders a page against ITSELF — a second document's write
+    carrying the same counter is a different writer, and versions (not seq)
+    arbitrate between those."""
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 5})
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "from the other tab", "client": "page-2",
+                         "seq": 5})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    assert drafts.get_chat("sess-a")["text"] == "from the other tab"
+
+
+def test_no_client_or_seq_behaves_as_before(client):
+    """A write carrying neither is judged on its version alone — exactly what
+    every route did before this round, and what every client that predates it
+    keeps sending."""
+    client.put(_chat_url("sess-a"), json={"text": "one"})
+    r = client.put(_chat_url("sess-a"), json={"text": "two"})
+    assert r.status_code == 200, r.text
+    assert "dropped" not in r.json()
+    assert drafts.get_chat("sess-a")["text"] == "two"
+
+
+def test_a_stale_seq_delete_is_dropped(client):
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 5})
+    r = client.request("DELETE", _chat_url("sess-a"),
+                       json={"client": "page-1", "seq": 4})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dropped"] is True and body["removed"] is False
+    assert drafts.get_chat("sess-a") is not None
+    assert drafts.get_chat("sess-a")["text"] == "one"
+
+
+def test_a_stale_seq_delete_against_a_record_already_gone_is_dropped_too(client):
+    """The record being gone already is not an exemption — a straggler DELETE
+    against nothing still answers `dropped: true` rather than a plain
+    `removed: false` that reads as an ordinary miss."""
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 5})
+    client.request("DELETE", _chat_url("sess-a"),
+                   json={"client": "page-1", "seq": 6})
+    assert drafts.get_chat("sess-a") is None
+    r = client.request("DELETE", _chat_url("sess-a"),
+                       json={"client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert r.json()["removed"] is False
+
+
+def test_a_stale_keepalive_put_cannot_resurrect_a_sent_draft(client):
+    """THE race this round exists to prevent: send DELETEs, and a keepalive PUT
+    fired a moment earlier arrives after it. The note the DELETE left behind
+    outlives the record it removed, so the late PUT is dropped instead of
+    bringing the sentence back as a live draft."""
+    client.put(_chat_url("sess-a"),
+               json={"text": "typing...", "client": "page-1", "seq": 5})
+    client.request("DELETE", _chat_url("sess-a"),
+                   json={"client": "page-1", "seq": 6})
+    assert drafts.get_chat("sess-a") is None
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "typing...", "client": "page-1", "seq": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_chat("sess-a") is None, "not resurrected"
+
+
+def test_if_match_mismatch_still_409s_even_with_a_newer_seq(client):
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 1})
+    client.put(_chat_url("sess-a"),
+               json={"text": "two", "client": "page-1", "seq": 2})
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "mine", "client": "page-1", "seq": 3},
+                   headers={"If-Match": "1"})
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == "version"
+
+
+def test_a_stale_seq_wins_over_a_stale_if_match_from_the_same_client(client):
+    """The overlap case, and the one `drafts-seq-contract.md` names explicitly
+    ("dropped … whatever its `If-Match` says"): this page's own request is
+    behind both its own later `seq` AND the version its own later write already
+    moved past. One race, not two — a 409 here would send this page into
+    conflict resolution over an edit it has itself already superseded, so `seq`
+    is checked first and wins."""
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "one", "client": "page-1", "seq": 1})
+    v1 = r.json()["draft"]["version"]
+    client.put(_chat_url("sess-a"),
+               json={"text": "two", "client": "page-1", "seq": 2})
+    r = client.put(_chat_url("sess-a"),
+                   json={"text": "a straggler", "client": "page-1", "seq": 1},
+                   headers={"If-Match": str(v1)})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_chat("sess-a")["text"] == "two"
+
+
+def test_task_draft_routes_take_the_same_sequence(client):
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "one", "client": "page-1", "seq": 1})
+    r = client.put("/api/drafts/task/draft-0001",
+                   json={"title": "a straggler", "client": "page-1", "seq": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_task("draft-0001")["title"] == "one"
+
+    r = client.request("DELETE", "/api/drafts/task/draft-0001",
+                       json={"client": "page-1", "seq": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["dropped"] is True
+    assert drafts.get_task("draft-0001") is not None
+
+
+def test_get_drafts_does_not_leak_client_or_seq(client):
+    """`client`/`seq` live in their own section of the store (`drafts.SEQ`), off
+    the record entirely — so there is no field to strip here, only one to keep
+    proving absent as the shape evolves."""
+    client.put(_chat_url("sess-a"),
+               json={"text": "one", "client": "page-1", "seq": 1})
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "one", "client": "page-1", "seq": 1})
+    body = client.get("/api/drafts").json()
+    assert "client" not in body["chat"]["sess-a"]
+    assert "seq" not in body["chat"]["sess-a"]
+    assert "client" not in body["task"]["draft-0001"]
+    assert "seq" not in body["task"]["draft-0001"]
+
+
 # --------------------------------------------------- the changes endpoint
 
 

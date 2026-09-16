@@ -122,6 +122,42 @@ def _conflict(exc: drafts.VersionConflict, **extra) -> JSONResponse:
                                       "version": exc.version}, **extra))
 
 
+def _sequence(body: dict | None) -> dict:
+    """The page id and counter this write carries, as keyword arguments for the
+    store — `{}` for a client that sends neither.
+
+    ONE PAGE'S WRITES TO ONE KEY ARE A SEQUENCE, and the store drops any that
+    arrive out of order (`drafts.SEQ`). A version cannot do that job: both
+    requests state the version they read, so the network decides which lands
+    second, and the second one wins. The client mints `client` once per document
+    and counts `seq` up per key (`platform/lib/drafts.ts`, `draftSyncer`).
+
+    Absent, and the write is judged on its version alone — which is exactly how
+    every client written before this round behaves."""
+    if not isinstance(body, dict):
+        return {}
+    client = body.get("client")
+    seq = body.get("seq")
+    if not isinstance(client, str) or not client.strip():
+        return {}
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        return {}
+    return {"client": client, "seq": seq}
+
+
+def _dropped(exc: drafts.StaleWrite, record_key: str, **extra) -> dict:
+    """200 for a write the store dropped as a straggler (`drafts.StaleWrite`).
+
+    NOT AN ERROR, and deliberately not a 409: the client that sent this has
+    already sent something newer for the same key, so nothing was lost and
+    there is nothing to resolve. A status the client has to branch on would put
+    the ordering back in the caller, which is the whole thing this round takes
+    out of it. `dropped` is there for the tests and for anybody reading a
+    network log; the record rides along so the answer has the same shape a write
+    that landed does, version included."""
+    return dict({"ok": True, "dropped": True, record_key: exc.record}, **extra)
+
+
 def _chat_key(raw: str) -> str:
     key = drafts.chat_key(raw)
     if not key:
@@ -199,9 +235,15 @@ def api_draft_chat_put(key: str, request: Request, body: dict = Body(default={})
     bound = drafts.bound_chat_draft(chat)
     try:
         record = drafts.put_chat(chat, body.get("text"), body.get("attachments"),
-                                 form=body.get("form"), if_version=want)
+                                 form=body.get("form"), if_version=want,
+                                 **_sequence(body))
     except drafts.VersionConflict as exc:
         return _conflict(exc, key=chat)
+    except drafts.StaleWrite as exc:
+        # NOTHING CHANGED, SO NOTHING IS ANNOUNCED: this request is one the
+        # page that sent it has already superseded, and a row that repainted
+        # for it would repaint to exactly what it already shows.
+        return _dropped(exc, "draft", key=chat)
     bound = bound or str((record or {}).get("bound_draft") or "")
     _announce(chat, drafts.task_key(bound) if bound else "")
     return {"ok": True, "key": chat, "draft": record}
@@ -231,9 +273,12 @@ def api_draft_chat_delete(key: str, request: Request, body: dict = Body(default=
     chat = _chat_key(key)
     bound = drafts.bound_chat_draft(chat)
     try:
-        removed = drafts.delete_chat(chat, if_version=_if_version(request, body))
+        removed = drafts.delete_chat(chat, if_version=_if_version(request, body),
+                                     **_sequence(body))
     except drafts.VersionConflict as exc:
         return _conflict(exc, key=chat)
+    except drafts.StaleWrite as exc:
+        return _dropped(exc, "draft", key=chat, removed=False)
     if bound:
         removed = drafts.delete_task(bound) or removed
     _announce(chat, drafts.task_key(bound) if bound else "")
@@ -275,9 +320,12 @@ def api_draft_task_put(draft_id: str, request: Request, body: dict = Body(defaul
     # stale words until the 20-second listing.
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
     try:
-        record, canonical = drafts.put_task(ident, body, if_version=want)
+        record, canonical = drafts.put_task(ident, body, if_version=want,
+                                            **_sequence(body))
     except drafts.VersionConflict as exc:
         return _conflict(exc, draft_id=ident)
+    except drafts.StaleWrite as exc:
+        return _dropped(exc, "draft", draft_id=ident)
     bound = bound or str((record or {}).get("session_id") or "")
     # A DRAFT MOVES, IT NEVER DUPLICATES — and after this round it does not even
     # move (design-drafts-one-record.md, §1). The composer → New task hop used to
@@ -316,8 +364,11 @@ def api_draft_task_delete(draft_id: str, request: Request,
     # draft's own key goes out on (Akshil, 2026-09-12).
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
     try:
-        removed = drafts.delete_task(ident, if_version=_if_version(request, body))
+        removed = drafts.delete_task(ident, if_version=_if_version(request, body),
+                                     **_sequence(body))
     except drafts.VersionConflict as exc:
         return _conflict(exc, draft_id=ident)
+    except drafts.StaleWrite as exc:
+        return _dropped(exc, "draft", draft_id=ident, removed=False)
     _announce(drafts.task_key(ident), bound)
     return {"ok": True, "draft_id": ident, "removed": removed}
