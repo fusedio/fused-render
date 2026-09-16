@@ -41,6 +41,15 @@ def test_the_chats_own_run_is_never_refused(gate):
     assert run_router._folder_busy(AGENT, _params(action="send", run_id="r-a")) == ""
 
 
+def test_an_announced_send_refuses_too(gate):
+    # #1177's sent mark, or a scheduler claim: no process yet, but one is about
+    # to be there. Another conversation's send is refused; the same session's
+    # passes (a follow-up into the turn that was just announced).
+    gate["holder"] = {"kind": "sending", "session_id": "sess-a", "run_id": "", "task_key": "sess-a"}
+    assert run_router._folder_busy(AGENT, _params(session_id="sess-b"))
+    assert run_router._folder_busy(AGENT, _params(session_id="sess-a")) == ""
+
+
 def test_a_reservation_is_the_chats_own_admission_and_passes(gate):
     # An anonymous first send reserved a moment ago and now starts: no live
     # process, nothing to refuse.

@@ -30,6 +30,8 @@ from fused_render.server import create_app
 from fused_render import claude_spawn, schedule
 from fused_render.server.routers import apps as apps_mod
 
+from _claude_stub_cli import reap_host
+
 
 @pytest.fixture()
 def workspace(tmp_path, monkeypatch):
@@ -854,7 +856,7 @@ def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
 
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
 def test_spawn_really_delivers_the_prompt_to_the_claude_process(
-        tmp_path, workspace, monkeypatch):
+        tmp_path, workspace, monkeypatch, request):
     """The regression the mocked tests could never catch.
 
     Everything below _create_app_task is real here — the helper subprocess,
@@ -874,8 +876,12 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 
-    run_id, err = apps_mod._create_app_task(str(entry), "hello from the test")
-    assert err is None and run_id, err
+    task, err = apps_mod._create_app_task(str(entry), "hello from the test")
+    assert err is None and task, err
+    # The host is detached and the stub blocks on `cat` until its stdin
+    # closes, which the host never does: reap both or they outlive pytest.
+    request.addfinalizer(lambda: reap_host(
+        os.path.join(claude_spawn.load_agent().RUNS, task["run_id"])))
 
     # the spawn is detached, so wait for the stub to finish writing
     deadline = time.monotonic() + 30

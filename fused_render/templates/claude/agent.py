@@ -79,6 +79,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -2162,7 +2163,8 @@ _DETACH = (
 
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
-                 extra_read_dirs: list | None, file: str) -> list:
+                 extra_read_dirs: list | None, file: str,
+                 new_session_id: str = "") -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -2258,6 +2260,21 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         cmd += ["--permission-mode", cli_mode]
     if session_id:
         cmd += ["--resume", session_id]
+    elif new_session_id:
+        # A FRESH SESSION, WITH AN ID WE ALREADY KNOW. Without this the CLI
+        # mints one and announces it in its first `system` row — two to four
+        # seconds in — so the app could not name the conversation it had just
+        # started until the CLI got round to telling it, and everything keyed on
+        # that name (the Tasks row, the send's own mark, `_live_run`'s
+        # re-attach) waited with it. `_start` mints it instead and hands it to
+        # both sides at once.
+        #
+        # Mutually exclusive with `--resume` by construction, not by promise:
+        # `_start` only mints one when there is no session to resume, and the
+        # `elif` means an argv can never carry both even if a caller passes
+        # both. The CLI rejects that pair, and a run that will not spawn is a
+        # far worse failure than the lag this closes.
+        cmd += ["--session-id", new_session_id]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -2501,8 +2518,30 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    # poll() records the session id with the run once claude reports it;
-    # it needs the file + first message, so keep them with the run.
+    # THE SESSION THIS TURN RUNS IN, KNOWN BEFORE THE CLI IS EVEN SPAWNED.
+    #
+    # A resume already names it — the caller said which conversation to
+    # continue. A FRESH chat did not, and until now nobody knew: the CLI minted
+    # an id and announced it in its first `system` row, two to four seconds in
+    # (`_session_from_out`). Everything that identifies a conversation waited on
+    # that — the Tasks row a send should appear in, the mark that says the turn
+    # started, a page re-attaching to its own run — so the first seconds of
+    # every new chat were seconds in which the app could not say what it had
+    # just started.
+    #
+    # So mint it HERE and tell the CLI (`--session-id`, see `_claude_argv`).
+    # uuid4 because that is the shape Claude Code's own ids are and the shape
+    # its transcript filenames take; a collision with an existing session would
+    # be the CLI's to refuse, and 122 random bits is not the risk in this
+    # sentence.
+    #
+    # `session_id` STAYS "" for a fresh chat, and nothing else in this file
+    # changes meaning: it is the INPUT — "resume this one" — and writing the
+    # minted id into it would make every new chat look like a continuation to
+    # `meta["resumed_from"]`, to `_live_run`, and to the Tasks listing's
+    # `_entry_session`. The minted id rides beside it, under its own name.
+    new_session_id = "" if session_id else str(uuid.uuid4())
+
     # `mode` is the mode this process was SPAWNED with, and it is recorded
     # because nothing else can reconstruct it: the picker's URL param is what
     # the *next* turn will use, so reading that back mid-turn describes a
@@ -2513,8 +2552,19 @@ def _start(file: str, message: str, session_id: str, model: str,
     # re-attaching page compares against the bubble on screen (which shows the
     # typed text only, so an unstripped copy silently stopped matching). Stripped
     # here, once, rather than at each of those three readers.
+    #
+    # poll() records the session id with the run once claude reports it;
+    # it needs the file + first message, so keep them with the run.
     meta = {"file": file, "message": _strip_app_state(message),
             "resumed_from": session_id, "mode": mode}
+    if new_session_id:
+        # `session_id` on meta is the ANSWER — the conversation this run's turn
+        # happens in — next to `resumed_from`, the question. Written before the
+        # spawn, which is the point: `_run_sessions` and `_live_run` can name
+        # this run's session from the instant the run dir exists, rather than
+        # from whenever the CLI first speaks, and `_poll` seeds its own answer
+        # from it so the very first poll already carries the id.
+        meta["session_id"] = new_session_id
     # `draft_key` is the composer's RECEIPT for this send, carried verbatim and
     # read by nothing in this template (fused_render/server/routers/tasks.py
     # `_settle_new_chats` is its one reader). A chat with no session yet keeps
@@ -2552,7 +2602,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
            "file": file, "cwd": _workdir(file), "pane": pane,
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
-           "effort": effort, "extra_read_dirs": list(extra_read_dirs or [])}
+           "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
+           # The id minted above, "" for a resume. Its own key beside
+           # `session_id` rather than folded into it: the host builds the CLI's
+           # argv from this dict (`_claude_argv`), and the two produce
+           # DIFFERENT flags — `--resume` continues a conversation, and
+           # `--session-id` names a new one.
+           "new_session_id": new_session_id}
     proc = subprocess.Popen(
         [sys.executable, _SESSION_HOST],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -2585,7 +2641,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     else:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(proc.pid))
-    return {"run_id": run_id}
+    # THE ID THE TURN RUNS IN, handed straight back to whoever asked for the
+    # send. A resume gets the session it named; a fresh chat gets the one this
+    # function just minted. Either way the caller can name the conversation in
+    # the same breath it started it — which is what lets the page say "a turn
+    # just started HERE" (`POST /api/tasks/running`) before anything the CLI
+    # writes exists, and what lets the Tasks listing carry a row for a chat with
+    # no transcript yet.
+    return {"run_id": run_id, "session_id": new_session_id or session_id}
 
 
 def _app_dir_for(path: str) -> str:
@@ -2751,6 +2814,39 @@ def _turn_state(run_dir: str) -> tuple:
                 tasks = {str(x.get("task_id")): True
                          for x in arr if isinstance(x, dict) and x.get("task_id")}
     return not idle, bool(tasks)
+
+
+def _run_own_session(run_dir: str, meta: dict) -> str:
+    """The session this run's OWN turn is in — not the one it resumed.
+
+    THREE SOURCES, newest knowledge first, and each is the fallback for the one
+    before it going missing:
+
+    * the `session` file — written by the first `_poll` that saw an id, which
+      is the CLI's own answer and therefore the most authoritative;
+    * the head of `out.jsonl` (`_session_from_out`) — the same answer, straight
+      out of the CLI's first `system` row, for a run nobody has polled yet;
+    * `meta["session_id"]` — the id `_start` MINTED and passed to the CLI as
+      `--session-id`. Written before the spawn, so it is the only one of the
+      three that exists during the seconds this whole path is about: a fresh
+      chat used to be nameless until the CLI spoke, and every lookup keyed on
+      the session answered "" for it (a page re-attaching to its own run, a
+      folder's live-session set, the history read).
+
+    "" when the run has none of them, which is a resume (its id is
+    `resumed_from`, the QUESTION, and lives beside this everywhere this is
+    asked) or a run dir too broken to read.
+    """
+    try:
+        with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+            own = fh.read().strip()
+    except OSError:
+        own = ""
+    if not own:
+        own = _session_from_out(run_dir)
+    if not own and isinstance(meta, dict):
+        own = str(meta.get("session_id") or "")
+    return own
 
 
 def _session_from_out(run_dir: str) -> str:
@@ -2948,24 +3044,15 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 session_id and _folder_and_member(target, file)):
             continue
         if session_id:
-            own = ""
-            try:
-                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                    own = fh.read().strip()
-            except OSError:
-                pass
-            if not own:
-                # The `session` file is written by the FIRST POLL that sees the
-                # id (see _poll) — so a run nobody ever polled has none. That is
-                # not an exotic state: it is exactly what leaving mid-start
-                # leaves behind (Akshil, 2026-08-19 — the reopened chat "does
-                # not show me the streaming thing"): the page left before its
-                # first poll, a NEW chat has no `resumed_from` either, and this
-                # lookup answered "" for a run that was alive the whole time.
-                # The CLI announces the id in its first system row, so read it
-                # from the head of out.jsonl ourselves — a few lines, never the
-                # transcript.
-                own = _session_from_out(run_dir)
+            # See `_run_own_session` for the three places this answer can come
+            # from and why the last of them matters most here.
+            own = _run_own_session(run_dir, meta)
+            # (Leaving mid-start is the state this fallback chain exists for —
+            # Akshil, 2026-08-19, the reopened chat that "does not show me the
+            # streaming thing": the page left before its first poll, so there is
+            # no `session` file, and a NEW chat has no `resumed_from` either.
+            # The out.jsonl head answered that once the CLI had spoken; the
+            # minted id in meta answers it from the instant the run dir exists.)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         # Liveness LAST: the pid check alone used to be enough, because the
@@ -3023,15 +3110,8 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
         turn_open, _tasks_pending = _turn_state(run_dir)
         if not turn_open:
             continue
-        own = ""
-        try:
-            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                own = fh.read().strip()
-        except OSError:
-            pass
-        if not own:
-            own = _session_from_out(run_dir)
-        for sid in (meta.get("resumed_from", ""), own):
+        for sid in (meta.get("resumed_from", ""),
+                    _run_own_session(run_dir, meta)):
             if sid:
                 live.add(sid)
     return live
@@ -3091,14 +3171,7 @@ def _live_host(file: str, session_id: str = "",
         if os.path.abspath(meta.get("file", "")) != file:
             continue
         if session_id:
-            own = ""
-            try:
-                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                    own = fh.read().strip()
-            except OSError:
-                pass
-            if not own:
-                own = _session_from_out(run_dir)
+            own = _run_own_session(run_dir, meta)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         if _host_alive(run_dir):
@@ -5009,6 +5082,21 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     except (OSError, json.JSONDecodeError):
         meta = {}
 
+    # THE FIRST POLL ALREADY NAMES THE SESSION. `new_session` above is whatever
+    # the CLI has announced in `out.jsonl` so far, which for the first couple of
+    # seconds of a fresh run is nothing — so every early poll answered
+    # `session_id: ""` and the page could not say which conversation it was
+    # watching. `_start` minted the id and passed it to the CLI
+    # (`--session-id`), so meta has the answer from before the process existed.
+    #
+    # SEEDED, NEVER PREFERRED: only when the scan found nothing. The CLI's own
+    # word is the authority — if it ever disagrees (an old binary that ignores
+    # the flag and mints its own), the row it wrote wins and this never runs.
+    seeded_session = False
+    if not new_session:
+        new_session = str(meta.get("session_id") or "")
+        seeded_session = bool(new_session)
+
     # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
     # session record below). This is a FALLBACK: the app's CLAUDE.md tells
@@ -5052,7 +5140,16 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
             # would be holding an id meta.json has never heard of.
             with _private_open(os.path.join(run_dir, "session")) as fh:
                 fh.write(new_session)
-            open(marker, "w", encoding="utf-8").close()
+            if not seeded_session:
+                # The MARKER is what makes this one-shot, and a SEEDED id has
+                # not earned it: it is `_start`'s intention, not the CLI's
+                # report. Writing the file without the marker means the next
+                # poll rewrites it — one tiny write per poll, for the two or
+                # three polls before the CLI speaks — and the moment it does,
+                # its own answer lands here and latches. Latching the seed
+                # instead would leave a `session` file naming an id the CLI
+                # never used, for any run where the flag did not take.
+                open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass  # session bookkeeping must never break the chat itself
 
@@ -5723,14 +5820,7 @@ def _stopped_last(file: str, session_id: str) -> bool:
             continue
         if os.path.abspath(meta.get("file", "")) != file:
             continue
-        own = ""
-        try:
-            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
-                own = fh.read().strip()
-        except OSError:
-            pass
-        if not own:
-            own = _session_from_out(run_dir)
+        own = _run_own_session(run_dir, meta)
         if own != session_id and str(meta.get("resumed_from") or "") != session_id:
             continue
         # The newest run of this conversation — whatever it says, it is the

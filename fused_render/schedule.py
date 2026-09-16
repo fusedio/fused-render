@@ -302,27 +302,190 @@ _thread_lock = threading.Lock()
 _wake = threading.Event()
 
 
+def _soon_pending(entries: list[dict], now: datetime) -> list[float]:
+    """Seconds-from-now for every PENDING entry due inside the poll window but
+    not yet due — `_claim_due`'s job stops at `<= now`. Shared by `_ring`
+    (arms a timer without waiting on `tick` to run at all) and by `tick`
+    itself, which folds this into its own end-of-pass `_rearm` call: `_rearm`
+    owns one timer for the whole module, and without this a soon-due entry
+    `_ring` armed a timer for could be silently cancelled by `tick`'s own
+    end-of-pass rearm (for holds that end on a clock), which replaces
+    whatever `_ring` set, knowing nothing about it (Bugbot, 2026-09-16)."""
+    soon: list[float] = []
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            ahead = (parse_due(entry.get("due")) - now).total_seconds()
+        except ValueError:
+            continue
+        if 0 < ahead < POLL_INTERVAL_S:
+            soon.append(ahead)
+    return soon
+
+
 def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> bool:
     """Wake the loop if anything in `entries` is pending and already due.
 
     Reads the store when handed nothing. The test is deliberately the cheap
     half of `_claim_due`'s — pending, and due — because a spurious ring costs
     one early tick that finds nothing to do, while a missed one costs the user
-    the whole poll interval."""
+    the whole poll interval.
+
+    Scans every entry rather than returning on the first due one: an
+    already-due entry and a soon-due one can both be pending at once, and the
+    soon-due one still needs its timer armed even though this call is about
+    to wake the loop for the other one (Bugbot, 2026-09-16 — the earlier
+    version returned before it got there, so the soon-due entry waited out
+    the whole 30-second poll whenever anything else was also due)."""
     now = now or _now()
     if entries is None:
         with _lock:
             entries = _read()
+    due_now = False
     for entry in entries:
         if entry.get("state") != PENDING:
             continue
         try:
             if parse_due(entry.get("due")) <= now:
-                _wake.set()
-                return True
+                due_now = True
+                break
         except ValueError:
             continue
-    return False
+    if due_now:
+        _wake.set()
+    # DUE INSIDE THE POLL WINDOW: arm the timer for that moment. A message the
+    # page sends as "now" is stamped a few hundred milliseconds ahead of this
+    # read (`delay_seconds`, a client clock), so it was never `<= now` here and
+    # sat in Upcoming until the 30-second loop came round — one to seven
+    # seconds of a new task reading as not started (Akshil, 2026-09-16), the
+    # exact wait `_ring` exists to remove. Same single timer the tick's holds
+    # use; the tick re-arms it for whatever is left when it fires.
+    soon = _soon_pending(entries, now)
+    if soon:
+        _rearm(soon)
+    return due_now
+
+
+def wake() -> None:
+    """Ring the loop's doorbell unconditionally — "look again, now".
+
+    A HINT, exactly like `_ring`, and never a mechanism: every rule about what
+    fires stays in `tick`, so a ring that lands at the wrong moment costs one
+    early pass that finds nothing. `_ring` asks the store whether anything is
+    due before ringing; this is for callers that already know something changed
+    OUTSIDE the store and cannot answer that question — the watcher seeing a
+    holder's process exit, a turn ending in this process. Their news is "a
+    folder just freed", which no entry's due time records.
+    """
+    _wake.set()
+
+
+# ------------------------------------------------------------- the second ring
+#
+# `_turn_ended` rings the loop the moment a verdict lands, which is what makes
+# "the next task starts in about a second" true for every hold that ends on an
+# EVENT. Two of them do not: a transcript that reads live until its 45-second
+# window runs out, and a folder holder that is `starting` or `reserved` — a
+# grace period with a clock on it. Nothing rings when those lapse, so a tick
+# that held something for one of them would wait out the whole 30-second poll.
+#
+# THE TIMER IS SET FOR WHEN THE CLOCK ACTUALLY RUNS OUT (round-3 review,
+# 2026-09-12). It used to ring two seconds later and then — keyed on the set of
+# entries held, which does not change while the hold stands — never again, so
+# for the 20-second reservation, the two-minute starting grace and the
+# 45-second transcript window it exists for it rang once, far too early, and
+# left the 30-second poll to do the work anyway. The pass that holds knows how
+# long each hold has left (`project_queue.holder_expires_in`, `_live_expires_in`),
+# and the earliest of those is the moment worth waking for.
+_REARM_FLOOR_S = 0.5     # never ring busier than this
+_rearm_lock = threading.Lock()
+_rearm_timer: threading.Timer | None = None
+
+
+def _cancel_rearm() -> None:
+    """Drop any pending re-ring. One timer at a time is the whole invariant —
+    `_rearm` calls this before arming, and a shutdown (or a test) calls it to
+    leave nothing behind. The timer is a daemon, so nothing here keeps the
+    process alive either way."""
+    global _rearm_timer
+    with _rearm_lock:
+        timer, _rearm_timer = _rearm_timer, None
+    if timer is not None:
+        timer.cancel()
+
+
+def _rearm(delays: list[float]) -> None:
+    """Ring the loop again when the earliest hold this pass made expires.
+
+    `delays` is seconds-from-now, one per hold that ends on a clock rather than
+    on an event; an empty list means every hold this pass made has a bell of its
+    own and no timer is needed. Bounded on both ends: never sooner than
+    `_REARM_FLOOR_S` (a hold whose clock has already run out re-ticks once, it
+    does not spin) and never later than `POLL_INTERVAL_S`, which is the floor
+    under all of this and the reason a missed ring costs latency and nothing
+    else.
+
+    **Idempotent per pass, not per episode.** Called on every tick, and every
+    call replaces the one timer this module owns — a hold that stands for ten
+    minutes therefore costs one timer at a time, re-armed to the remaining time
+    as the clock runs down, rather than one timer per tick piling up or (the bug
+    this replaces) one timer for the whole episode fired two seconds in.
+
+    A hint like `wake` itself: the timer only sets an Event, every rule about
+    what fires stays in `tick`, and a ring that lands on a state that has not
+    moved costs one early pass that finds nothing. Best-effort — a timer that
+    cannot start leaves the ordinary poll interval doing what it always has."""
+    global _rearm_timer
+    _cancel_rearm()
+    if not delays:
+        return
+    delay = min(max(min(delays), _REARM_FLOOR_S), float(POLL_INTERVAL_S))
+    try:
+        timer = threading.Timer(delay, wake)
+        timer.daemon = True
+        timer.start()
+    except Exception:  # noqa: BLE001 — the 30s poll is the floor under this
+        logger.debug("could not re-arm the schedule loop", exc_info=True)
+        return
+    with _rearm_lock:
+        _rearm_timer = timer
+
+
+def _live_expires_in(session_id: str, now: datetime) -> float:
+    """Seconds until the per-session transcript hold on `session_id` lapses by
+    itself — 0.0 when nothing can be read, which asks for no timer at all.
+
+    `_session_live` is true while the tail's last real activity is inside
+    `RUNNING_WINDOW_SEC`, so that moment is when this hold ends if nothing else
+    ends it first. The echo window (`VERDICT_ECHO_SEC`) is not a second
+    candidate: it can only ever silence a hold that the 45-second window is
+    already holding, so the window is always the later of the two and always
+    the one that actually frees the entry."""
+    try:
+        from fused_render import session_liveness
+
+        active = session_liveness.session_activity(session_id, now.timestamp())
+    except Exception:  # noqa: BLE001 — an unreadable tail asks for no bell
+        logger.debug("could not read the tail for %s", session_id, exc_info=True)
+        return 0.0
+    if not active:
+        return 0.0
+    return max(0.0, active + session_liveness.RUNNING_WINDOW_SEC - now.timestamp())
+
+
+def _notify(keys: set[str]) -> None:
+    """Tell the Tasks long-poll which rows moved. Best-effort: a watcher that
+    cannot be rung costs one poll interval, never the write that got here."""
+    keys = {k for k in keys if k}
+    if not keys:
+        return
+    try:
+        from fused_render import tasks_watch
+
+        tasks_watch.notify(keys)
+    except Exception:  # noqa: BLE001 — a missed ring is latency, not an error
+        logger.debug("could not notify the tasks watcher", exc_info=True)
 
 
 def wake() -> None:
@@ -2028,6 +2191,8 @@ def _fail(entry: dict, reason: str) -> None:
     _report(entry["id"], title=_job_title(entry), kind="task", detail=entry["target"],
             state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
+    # `in_progress` -> `blocked` is a status change like a verdict is.
+    _notify(_entry_keys(entry))
 
 
 def _outgoing(entry: dict) -> str:
@@ -2340,6 +2505,29 @@ def _send(entry: dict) -> None:
     if res.get("error") or not run_id:
         _fail(entry, str(res.get("error") or "failed to start session"))
         return
+    # NO `tasks_watch.mark_running` HERE, and the reason is worth writing down
+    # because the absence looks like an omission.
+    #
+    # The mark exists for a send this server cannot otherwise SEE for two to
+    # four seconds — a chat typed into the app, whose turn begins in another
+    # process with no entry in any store. A scheduled send is not that. The
+    # claim above already wrote `sending`/`sent` into the store, which the
+    # listing reads as a message in flight (`tasks._message_running`), and the
+    # claim already rang `_entry_keys` — so this row is In Progress in the page
+    # within one long-poll, off a fact on disk, with no fuse to burn.
+    #
+    # Marking anyway would make it WORSE, not redundant: until the first
+    # reporting tick stamps `claude_session_id`, the listing files this entry
+    # under `pending:<id>` — so a mark on the session `res` names would build a
+    # SECOND, placeholder row beside it (`tasks._collect`) for the same message,
+    # and the reader would watch two rows collapse into one.
+    #
+    # (`_start` cannot mark on its own behalf either, whoever calls it: it runs
+    # in `claude_spawn.SESSION_HELPER`'s bare python, or in the executor's
+    # worker for a page send — never in this process, and a template may not
+    # import `fused_render` at all. The mark is always made by the server-side
+    # caller that knows it wants one, which for a page send is the page, through
+    # `POST /api/tasks/running`.)
     # Registered BEFORE the store says `sent`, and that order is the point: the
     # sweep treats a `sent` entry with nothing watching it as abandoned, so a
     # window where this one is already `sent` but not yet registered is a window in
@@ -2391,15 +2579,35 @@ def _turn_ended(entry: dict) -> None:
 
     The 30-second poll is the right interval for "did anything come due", and
     the wrong one for "the thing that was in the way has stopped". Whatever was
-    waiting on this conversation — or, with the project queue on, on the folder
-    it was editing — should go in about a second, not on the next timer.
+    waiting on this conversation should go in about a second, not on the next
+    timer.
 
-    Flag-agnostic and deliberately so. With the queue off the ring costs one
-    early pass that finds the same nothing it would have found later, and the
-    notify is simply true: this row changed, and the page drawing it has been
-    long-polling for exactly that news."""
+    The ring costs one early pass that finds the same nothing it would have
+    found later, and the notify is simply true: this row changed, and the page
+    drawing it has been long-polling for exactly that news."""
     wake()
-    _notify({_task_key(entry)})
+    _notify(_entry_keys(entry))
+
+
+def _entry_keys(entry: dict) -> set[str]:
+    """Every Tasks key this entry could be listed under, so the ring reaches
+    the row whichever one the listing chose.
+
+    The listing (`tasks.py`'s `_entry_session`) files an entry under the run's
+    ANSWER (`claude_session_id`) when it has one, else the INPUT (`session_id`),
+    else `pending:<id>`. A turn that ends before the watcher captured its session
+    is still a `pending:` row; a resume that forked lives under the answer while
+    its input names the old thread. Ringing one guessed key misses those, and the
+    page waits out the poll floor for news it was told about. Ringing all three
+    costs a watcher one listing it would have redrawn anyway."""
+    from fused_render import tasks_store
+
+    keys = {str(entry.get("claude_session_id") or ""),
+            str(entry.get("session_id") or "")}
+    entry_id = str(entry.get("id") or "")
+    if entry_id:
+        keys.add(tasks_store.pending_key(entry_id))
+    return {k for k in keys if k}
 
 
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
@@ -2422,6 +2630,11 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     if ran and ran != entry.get("claude_session_id"):
         entry["claude_session_id"] = ran
         _update(entry_id, claude_session_id=ran)
+        # The row just moved keys: it was `pending:<id>` (or the INPUT session)
+        # and is now filed under the answer. Ring both, so the page swaps the
+        # rows in one long-poll answer (`api_tasks_changes` names the pending
+        # key `gone`) instead of showing two until the full listing.
+        _notify(_entry_keys(entry))
         # …and if this was a chaining template's run, the answer becomes the
         # INPUT of the next one. Without this the default never happens: a
         # template created from the Tasks page has no session id, every
@@ -2451,12 +2664,14 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             # below emits none: a stop needs no toast to tell the person who
             # pressed it.
             _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
+            _turn_ended(entry)
             _report(entry_id, state="cancelled")
             _turn_ended(entry)
             return False
         if reason:
             _update(entry_id, turn="failed", error=reason,
                     turn_at=_now().isoformat())
+            _turn_ended(entry)
             _report(entry_id, state="error", message=reason)
             _emit(EVENT_FAILED, entry, reason)
         else:
@@ -2466,6 +2681,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             # is new work, and only the verdict's own closing echo may be set
             # aside (`tasks._verdict_outvotes_live`).
             _update(entry_id, turn="ok", turn_at=_now().isoformat())
+            _turn_ended(entry)
             _report(entry_id, state="done", detail="finished")
             _emit(EVENT_DONE, entry)
         _turn_ended(entry)
@@ -2505,6 +2721,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
                 logger.debug("could not cancel scheduled run %s", run_id,
                              exc_info=True)
         _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
+        _turn_ended(entry)
         _report(entry_id, state="cancelled")
         return False
     return True
@@ -2643,6 +2860,7 @@ def _close_unwatched(entry: dict, reason: str) -> None:
             return  # already resolved, or never got far enough to need this
     _update(entry_id, turn="unknown", error=reason,
             turn_at=_now().isoformat())
+    _turn_ended(entry)
     _report(entry_id, state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
     # A turn nobody could follow to the end still ENDED — whatever was waiting
@@ -3715,16 +3933,22 @@ def tick(now: datetime | None = None) -> list[dict]:
     folders = _pq().holders(now.timestamp()) if _pq().enabled() else None
     if folders is not None:
         _deliver_held_answers(folders)
-    if not due:
-        return sent
     with _lock:
         entries = _read()
+    if not due:
+        # Nothing to send, but a message due in a moment still needs its
+        # timer — this pass is the last word on the one timer `_rearm` owns.
+        _rearm(_soon_pending(entries, now))
+        return sent
     busy = _busy_sessions(entries)
     live_seen: dict[str, bool] = {}
+    # Memo for `_verdict_echo`, like `live_seen` for `_session_live`: one
+    # verdict lookup and at most one tail read per session per pass.
     echo_seen: dict[str, bool] = {}
-    # How long each hold made for a reason that expires on ITS OWN CLOCK —
-    # rather than on an event anything rings — has left to run. The earliest is
-    # what this pass asks to be woken for; see `_rearm`.
+    # Holds that end on a CLOCK rather than an event — a transcript that reads
+    # live until its window lapses — each say how long they have left, and the
+    # pass arms one timer for the earliest of them (`_rearm`) instead of leaving
+    # the work to the 30-second poll.
     held_soon: list[float] = []
     sessions = {str(e["id"]): str(e.get("session_id") or "") for e in entries}
     targets = {str(e["id"]): str(e.get("target") or "") for e in entries}
@@ -3773,6 +3997,10 @@ def tick(now: datetime | None = None) -> list[dict]:
             logger.debug("holding %s: session %s already has a send in flight",
                          entry_id, session)
             continue
+        # …unless what the transcript is showing is the closing rows of a turn
+        # we have ALREADY filed a verdict for, which is the one case where the
+        # 45-second window holds a message against the very turn it is waiting
+        # for (`_verdict_echo`).
         if (session and _session_live(session, now, live_seen)
                 and not _verdict_echo(session, entries, now, echo_seen)):
             # A turn is open in that conversation and it is not one of ours —
@@ -3785,10 +4013,6 @@ def tick(now: datetime | None = None) -> list[dict]:
             # it is waiting for (`_verdict_echo`).
             logger.debug("holding %s: session %s has a live turn", entry_id,
                          session)
-            # The early wake: a message goes within seconds of the turn in
-            # front of it ending, flag or no flag (Akshil, 2026-09-16 — sync
-            # improvements are not the queue rule), so the pass says how long
-            # this hold has left and a timer rings when it runs out.
             left = _live_expires_in(session, now)
             if left:
                 held_soon.append(left)
@@ -3806,7 +4030,23 @@ def tick(now: datetime | None = None) -> list[dict]:
             # case the whole gate is for.
             folders[key] = _claimed_holder(session, entry_id)
         sent.append(entry)
+        # The row is IN PROGRESS from this line (`sending`, then `sent` with no
+        # verdict — `_message_running`), and the page drawing it has been
+        # long-polling for exactly that news. Rung here, before the spawn: the
+        # CLI's own registry row lands two to four seconds after the process
+        # starts, and that file was the only thing telling the page until now —
+        # under the session's key, while the row still sat at `pending:<id>`
+        # (Akshil, 2026-09-16: "a new task takes 3-4 seconds to show up as in
+        # progress"). Same bell `_turn_ended` rings when the turn closes.
+        _notify(_entry_keys(entry))
         _send(entry)
+    # `_rearm` owns one timer for the whole module, and this call is the last
+    # word for this pass — so it must know about every reason to wake again,
+    # not just clock-based holds. A pending entry that was not yet due when
+    # `_claim_due` looked (the exact case `_ring` arms a timer for) is folded
+    # in here too, or this call would silently cancel that timer without
+    # replacing it (Bugbot, 2026-09-16).
+    held_soon.extend(_soon_pending(entries, now))
     _rearm(held_soon)
     if folders is not None and sent:
         # The runs tree has just gained a process this pass authorised, and the
@@ -4041,6 +4281,7 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         return {"ok": False, "found": True, "entry": None,
                 "reason": ("already claimed for sending — the scheduler got to "
                            "it first")}
+    _notify(_entry_keys(claimed))  # in progress from the claim, as in `tick`
     _send(claimed)
     with _lock:
         stored = next((e for e in _read()

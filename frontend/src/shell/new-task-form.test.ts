@@ -2704,7 +2704,7 @@ describe("the source-task chip", () => {
     expect(page()).toContain("onOpen: peekable ? () => openSourceTask(sourceTask) : null,");
     // …and the card draws a span for it.
     expect(card()).toContain(
-      '<span className="new-task-source">from {sourceTask.taskId}</span>');
+      '<span className="new-task-source">from {shortTaskId(sourceTask.taskId)}</span>');
   });
 
   test("it is beside the heading, never inside it", () => {

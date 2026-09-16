@@ -3530,7 +3530,9 @@ describe("the server hears that a turn started (Akshil, 2026-09-15)", () => {
       // ONCE, and only for the turn's START. `noteChatActivity` fires at both
       // boundaries; this must not, or a finished row would spin out the mark's
       // whole TTL. `turn` is the fixture's fixed `wallClock`.
-      expect(marks(posts)).toEqual([{ session_id: "s1", turn: 1_000 }]);
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
     } finally {
       restore();
     }
@@ -3552,7 +3554,171 @@ describe("the server hears that a turn started (Akshil, 2026-09-15)", () => {
       await controller.sendMessage("hi");
       // The first poll has not answered yet when this goes out — that is the
       // whole point: it is the earliest anything can say the turn is open.
-      expect(marks(posts)).toEqual([{ session_id: "s1", turn: 1_000 }]);
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("the words are the user's own — the `<live-app-state>` block never rides along", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      params.set({ session_id: "s1" });
+      const { controller } = makeController(
+        {
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1" }),
+          poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+        },
+        params,
+        { appStateBlock: () => Promise.resolve("<live-app-state>a=1</live-app-state>") },
+      );
+      await controller.sendMessage("what is a?");
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "what is a?", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a mark with no send behind it carries the file and no words", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const { controller } = makeController({
+        live_run: () => ({ run_id: "" }),
+        poll: (_f, n) => poll({ done: n > 0, text: "ok", segments: [text("ok")] }),
+      });
+      // A re-attach: nothing was typed here, so there are no words to report —
+      // and the server keeps whatever prompt it already knew for the row.
+      await controller.resumeRun("r-old");
+      for (const body of marks(posts)) {
+        expect(body).toEqual({ session_id: "s1", turn: 1_000, file: "/proj/app.py" });
+      }
+      expect(marks(posts).length).toBeGreaterThan(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("the start response names the session (task status in under a second)", () => {
+  function captureFetch() {
+    const posts: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async (
+      input: unknown,
+      init?: { body?: string },
+    ): Promise<Response> => {
+      posts.push({
+        url: String(typeof input === "string" ? input : (input as { url: string }).url),
+        body: init?.body ? JSON.parse(init.body) : null,
+      });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+    };
+    return {
+      posts,
+      restore: () => {
+        globalThis.fetch = real;
+      },
+    };
+  }
+  const marks = (posts: { url: string; body: unknown }[]) =>
+    posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
+
+  test("a session named after the reader left is not adopted", async () => {
+    // The reader pressed Back while `start` was in flight (`newChat` bumps
+    // the generation). The minted id must not land in the url or the state of
+    // the landing they are now on, and nothing marks a turn they left.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      let controller!: ChatController;
+      const made = makeController(
+        {
+          start: async () => {
+            controller.newChat();
+            return { run_id: "r1", session_id: "s-minted" };
+          },
+          poll: () => poll({ done: true, session_id: "s-minted", text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      controller = made.controller;
+      await controller.sendMessage("hi");
+      expect(params.get("session_id") || "").toBe("");
+      expect(controller.getState().sessionId ?? null).toBe(null);
+      expect(marks(posts).some((m) => (m as { session_id: string }).session_id === "s-minted")).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("`start` answering a session_id sets the param BEFORE the first poll", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      /** What the url said each time the fake agent was polled. */
+      const atPoll: string[] = [];
+      const seen: string[] = [];
+      const { controller } = makeController(
+        {
+          // Brand-new chat: the server mints the id and answers it at spawn.
+          start: () => ({ run_id: "r1", session_id: "s-minted" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            return poll({
+              done: n > 0,
+              session_id: "s-minted",
+              text: "ok",
+              segments: [text("ok")],
+            });
+          },
+        },
+        params,
+      );
+      controller.subscribe(() => seen.push(controller.getState().sessionId || ""));
+      await controller.sendMessage("hi");
+      // The very FIRST poll already found it — that is the second this change
+      // buys back.
+      expect(atPoll[0]).toBe("s-minted");
+      expect(params.get("session_id")).toBe("s-minted");
+      expect(seen).toContain("s-minted");
+      // And the poll's own `noteSessionId` for the SAME id is a no-op, so the
+      // turn is still marked exactly once.
+      expect(marks(posts)).toEqual([
+        { session_id: "s-minted", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("an older server that omits it still gets there on the first poll", async () => {
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      const atPoll: string[] = [];
+      const { controller } = makeController(
+        {
+          start: () => ({ run_id: "r1" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            return poll({ done: n > 0, text: "ok", segments: [text("ok")] });
+          },
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      // Nothing named it before the poll did — the old road, intact.
+      expect(atPoll[0]).toBe("");
+      expect(params.get("session_id")).toBe("s1");
+      expect(marks(posts)).toEqual([
+        { session_id: "s1", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
     } finally {
       restore();
     }

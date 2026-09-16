@@ -63,7 +63,7 @@ import {
   type Config,
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
@@ -543,7 +543,14 @@ export default function AppPage({
             }}
           >
             {iconSrc ? (
-              <img src={iconSrc} alt="" draggable={false} />
+              // An icon.png is clipped to the button's own rounded square
+              // (`is-raster`, app-page.css); an svg keeps its own plate.
+              <img
+                className={isRasterIconUrl(iconHref) ? "is-raster" : undefined}
+                src={iconSrc}
+                alt=""
+                draggable={false}
+              />
             ) : (
               <AppStar />
             )}

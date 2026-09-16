@@ -52,6 +52,7 @@ import { EraseTaskModal } from "./EraseTaskModal";
 import {
   CARD_PAGE,
   basename,
+  shortTaskId,
   cardKey,
   cardsForTasks,
   draftTag,
@@ -611,7 +612,7 @@ function TaskCard({
       // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
       // when the feature is off.
       {...(peekOn ? peekItemProps(cardKey(task), peekOpenable(task)) : {})}
-      aria-label={`${task.task_id} ${title}`}
+      aria-label={`${shortTaskId(task.task_id)} ${title}`}
       // THE WHOLE CARD IS THE DOOR (Akshil, 2026-09-10, E2E R1 F3): the body
       // used to be the live chat with its own scroll and its own clicks —
       // collapsible chips, thumbnails, links — and a wall of tiles each
@@ -632,7 +633,7 @@ function TaskCard({
         className="task-card-head"
         role="button"
         tabIndex={0}
-        aria-label={`Preview ${task.task_id}`}
+        aria-label={`Preview ${shortTaskId(task.task_id)}`}
         onClick={(e) => {
           e.stopPropagation();
           onPeek(task);
@@ -672,7 +673,7 @@ function TaskCard({
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -765,7 +766,7 @@ function TaskCard({
             className="task-card-door task-card-door--danger"
             disabled={blocked || acting}
             data-hint={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
-            aria-label={`Delete ${task.task_id} forever`}
+            aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
             onClick={(e) => {
               e.stopPropagation();
               if (blocked || acting) return;
@@ -837,7 +838,7 @@ function TaskCard({
           <ChatMount
             legacySrc={src}
             className="task-card-frame"
-            title={`${task.task_id} ${title}`}
+            title={`${shortTaskId(task.task_id)} ${title}`}
             file={task.target || task.project}
             sessionId={task.session_id}
             chatOnly
@@ -875,7 +876,7 @@ function TaskCard({
             // clean delete now only pops (tone: "info" default) rather than
             // staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -1006,7 +1007,7 @@ function TaskPeek({
       title={
         <span className="task-peek-title">
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
           <span className="task-peek-name" data-hint={task.last_message?.text || task.title}>
@@ -1125,7 +1126,7 @@ function TaskPeek({
           legacySrc={src}
           legacyFrameRef={frameRef}
           className="task-peek-frame"
-          title={`${task.task_id} ${title}`}
+          title={`${shortTaskId(task.task_id)} ${title}`}
           file={task.target || task.project}
           sessionId={task.session_id}
           chatOnly
@@ -1156,7 +1157,7 @@ function TaskPeek({
             // A clean delete now only pops (tone: "info" default) rather
             // than staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
             onClose();
           }}

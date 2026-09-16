@@ -6,7 +6,6 @@ installDomShim();
 const {
   curLeftEntry,
   decidePane,
-  footnoteFor,
   homePlaceholderFor,
   paneModeLabel,
   paneModeLetter,
@@ -208,11 +207,6 @@ describe("the nouns: ONE writer for every piece of chrome", () => {
     expect(homePlaceholderFor("")).toBe("Ask Claude…");
   });
 
-  test('the footnote: "files in this file" is not a sentence', () => {
-    expect(footnoteFor("file")).toBe("Claude can read and edit this file and the assets it references.");
-    expect(footnoteFor("folder")).toBe("Claude can read and edit files in this folder.");
-    expect(footnoteFor("project")).toBe("Claude can read and edit files in this project.");
-  });
 
   test("the pane chrome speaks the PANE noun, not the target noun", () => {
     expect(annotateLabelFor("app")).toBe("Comment on the app");

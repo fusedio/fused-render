@@ -644,7 +644,7 @@ describe("admission, in the send window", () => {
     // frame otherwise left the id unwritten and the next admit anonymous.
     expect(CONTROLLER).toContain("emit({ lastRunId: runId });");
     expect(CONTROLLER.indexOf("emit({ lastRunId: runId });")).toBeLessThan(
-      CONTROLLER.indexOf("await pollLoop(runId, gen, { ownTurn: true });"),
+      CONTROLLER.indexOf("await pollLoop(runId, gen, { ownTurn: true, prompt: spoken });"),
     );
   });
 

@@ -2617,7 +2617,7 @@ describe("the unread mark", () => {
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
     expect(SCHEDULE_CSS).not.toMatch(/\.schedule-ring\s*\{[^}]*margin/);
     // ...and the row's own trailing time carries none either, for the same reason.
-    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin/);
+    expect(TASKS_CSS).not.toMatch(/\.tasks-row-time\s*\{[^}]*margin[^;]*auto/);
   });
 
   it("leaves a MESSAGE row opening on its ring and then saying its id", () => {
@@ -2704,7 +2704,7 @@ describe("the unread mark", () => {
     // page pasted under a looser one.
     expect(TASKS_CSS).toMatch(/--tasks-row-pad-y: 10px/);
     expect(TASKS_CSS).toMatch(/--tasks-msg-pad-y: 8px/);
-    expect(TASKS_CSS).toMatch(/--tasks-row-gap: 10px/);
+    expect(TASKS_CSS).toMatch(/--tasks-row-gap: 4px/);
     expect(TASKS_CSS).toMatch(/--tasks-row-pad: 14px/);
     expect(block(TASKS_CSS, ".tasks-row")).toContain(
       "padding: var(--tasks-row-pad-y) var(--tasks-row-pad)",
@@ -4472,7 +4472,7 @@ describe("the delete affordance", () => {
     expect(ROW.indexOf("{ICON_TRASH}")).toBeLessThan(ROW.indexOf('className="tasks-row-missing"'));
     // Both are the same row's answer to the same fact.
     expect((ROW.match(/\{folderMissing && \(/g) ?? []).length).toBe(2);
-    expect(ROW).toContain("aria-label={`Delete ${task.task_id} forever`}");
+    expect(ROW).toContain("aria-label={`Delete ${shortTaskId(task.task_id)} forever`}");
     expect(ROW).toContain('data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}');
     expect(ROW).toContain("disabled={eraseBlocked(task)}");
     // Without this the row's own activate raises the missing-folder toast over
@@ -4549,7 +4549,7 @@ describe("the delete affordance", () => {
     }
     // The words: the target in the title, the consequence in the body, the
     // permanence in bold, the verb on the button.
-    expect(MODAL).toContain("title={`Delete ${task.task_id}?`}");
+    expect(MODAL).toContain("title={`Delete ${shortTaskId(task.task_id)}?`}");
     // Two sentences, no path, no id (Akshil, 2026-09-07).
     expect(MODAL).toContain(
       "This deletes the Claude session transcript behind this task.",
@@ -4569,7 +4569,7 @@ describe("the delete affordance", () => {
     // default is transient) rather than staying in the panel, per the
     // retention-narrowing reversal (DECISIONS-toasts-become-notifications.md).
     for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
-      expect(src).toContain('notify({ title: `Deleted ${task.task_id}`, tone: "info" });');
+      expect(src).toContain('notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });');
       expect(src).not.toContain('tier: "trail"');
     }
   });
@@ -7446,7 +7446,9 @@ describe("which board lanes are rolled up", () => {
       (r) => r.selectors.includes(".schedule-tv-lane-body::-webkit-scrollbar-thumb"),
     );
     expect(shared?.selectors).toContain(".schedule-cal-thread::-webkit-scrollbar-thumb");
-    expect(shared?.selectors).toContain(".tasks-list::-webkit-scrollbar-thumb");
+    // The List and the Cards wall left this rule for an overlay bar (Akshil,
+    // 2026-09-16) — see "the List's bordered box" and the Cards wall's own test.
+    expect(shared?.selectors).not.toContain(".tasks-list::-webkit-scrollbar-thumb");
     // The week grid is the exception and keeps hiding its bar outright — the
     // hour lines already say where you are.
     expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
@@ -7733,6 +7735,81 @@ describe("what the List remembers between visits", () => {
     // by a ref that it clears itself, so a user scroll is not undone by the next
     // poll landing.
     expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
+  });
+});
+
+describe("the List's bordered box", () => {
+  // Akshil, 2026-09-16: the bar used to run down a column of bare page BESIDE
+  // the box, because the border sat on the frame INSIDE the scroller. The
+  // scroller wears the border now, so the bar is inside it the way a scrolling
+  // table's is.
+  const LIST_BOX = block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list");
+
+  it("puts the border on the thing that scrolls", () => {
+    expect(LIST_BOX).toContain("overflow-y: auto");
+    expect(LIST_BOX).toContain("border: 1px solid var(--border)");
+    expect(LIST_BOX).toContain("border-radius: 8px");
+    // ...and the frame inside stands down rather than drawing a second hairline
+    // one pixel in. It still owns the border for the Explorer's Claude side
+    // panel, which renders `.tasks-list-frame` with no `.tasks-list` around it.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).toContain("border: 1px solid var(--border)");
+    expect(
+      block(TASKS_CSS, ".schedule-page .schedule-main > .tasks-list > .tasks-list-frame"),
+    ).toContain("border: 0");
+    const LISTS = readFileSync(join(SHELL, "../apps/claude/ui/Lists.tsx"), "utf8");
+    expect(LISTS).toContain('<div className="tasks-list-frame">');
+  });
+
+  it("shrinks to the pane instead of growing to it, so a short list still hugs", () => {
+    // `flex: 1 1 auto` is what a borderless scroller could afford: the box was
+    // invisible, so nobody saw it reach the fold under three rows. With the
+    // border on it that empty run is the box itself.
+    expect(LIST_BOX).toContain("flex: 0 1 auto");
+    expect(LIST_BOX).toContain("min-height: 0");
+  });
+
+  it("keeps the wheel and the bounce, and lets the bar float over the rows", () => {
+    // The scroller did not move, so the margin wheel still forwards to this
+    // element and the end of the list still stops the delta. The bar is an
+    // OVERLAY now (Akshil, 2026-09-16: "let content take full width and we show
+    // scroll bar on top of content"): `scrollbar-color` opts the element back
+    // into overlay bars, fed the same hover-only ink as every other scroller,
+    // and no gutter is reserved for it.
+    expect(LIST).toContain("useMarginWheel(listRef);");
+    expect(LIST_BOX).toContain("overscroll-behavior: contain");
+    const overlay = block(SCHEDULE_CSS, ".task-cards-scroll");
+    expect(overlay).toContain("scrollbar-color: var(--sb-thumb) transparent");
+    expect(overlay).not.toContain("scrollbar-gutter");
+    expect(SCHEDULE_CSS).not.toContain(".tasks-list::-webkit-scrollbar");
+    expect(SCHEDULE_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
+  });
+
+  it("flips the last row's count tooltip up so the box cannot clip it", () => {
+    // `[data-tip]` opens `100% + 6px` BELOW its ring (schedule.css), and the
+    // scroller's floor is now the last row's — the same cut `overflow: hidden`
+    // on the frame once made (Bugbot, 2026-08-27). Only a CLOSED last node has a
+    // ring at that edge; an open one has its thread underneath.
+    const flipped = block(
+      TASKS_CSS,
+      '.tasks-list-frame > .tasks-node:last-child:not(:only-child) > .tasks-row:last-child\n  [data-tip]:not([data-tip=""]):hover::before',
+    );
+    expect(flipped).toContain("top: auto");
+    expect(flipped).toContain("bottom: calc(100% + 6px)");
+    // A ONE-ROW LIST does not flip — first and last at once, there is no room
+    // above either (Bugbot, PR #1174). It has nothing to scroll, so the box
+    // stops clipping instead and the panel drops below the ring as usual.
+    expect(
+      block(
+        TASKS_CSS,
+        ".schedule-page .schedule-main > .tasks-list:has(> .tasks-list-frame > .tasks-node:only-child)",
+      ),
+    ).toContain("overflow: visible");
+    // The frame is NOT padded out to make room instead: that would be dead page
+    // inside the border at every width, for something only hover shows.
+    expect(block(TASKS_CSS, ".tasks-list-frame")).not.toContain("padding-bottom");
+    // ...and the panel holds its flipped seat through the fade-out, like every
+    // other one: `bottom` is in the primitive's transition list beside `top`.
+    expect(block(SCHEDULE_CSS, '[data-tip]:not([data-tip=""])::before')).toContain("bottom 0s 0.1s");
   });
 });
 
@@ -8688,11 +8765,14 @@ describe("the Cards view's frame", () => {
     );
     expect(CARDS_CSS).not.toContain("max-width: none");
     expect(CARDS_CSS).not.toContain("padding-inline");
-    // ...and it wears the same 10px non-overlay bar as the List and the Board
-    // (schedule.css, "The scrollbar the Tasks page's ... scrollers wear").
+    // ...and it wears the same OVERLAY bar as the List (Akshil, 2026-09-16): the
+    // cards take the full width and the bar floats over them, inked only under
+    // the pointer, with no column reserved for it.
     const SCHED_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
-    expect(SCHED_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
-    expect(SCHED_CSS).toContain(".tasks-list::-webkit-scrollbar,\n.task-cards-scroll::-webkit-scrollbar {\n  width: 10px;");
+    expect(block(SCHED_CSS, ".task-cards-scroll")).toContain(
+      "scrollbar-color: var(--sb-thumb) transparent",
+    );
+    expect(SCHED_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
     expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
     // ...and a wheel in the margins reaches it, by the List's own rule — ONE
     // hook for both views (useMarginWheel), not a second forwarding rule.
@@ -8723,7 +8803,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).not.toContain("task-card-open");
     expect(CARDS_CSS).not.toContain("task-card-open");
     // The id keeps the List's own muted skin, whatever the title row shows.
-    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>');
     const head = CARDS.slice(CARDS.indexOf('<header\n        className="task-card-head"'), CARDS.indexOf("</header>"));
     expect(head.length).toBeGreaterThan(0);
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
@@ -10030,7 +10110,7 @@ describe("the schedule mark on a List row", () => {
     expect(scheduledMark(again, NOW)?.title).toBe(`Repeats · next run ${messageStamp(AHEAD)}`);
     // Never both: the row picks by the flag.
     expect(ROW).toContain("{sched.repeats ? ICON_REPEAT : ICON_CLOCK}");
-    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(1);
+    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(2); // inline mark + its copy in the hover strip
     expect(VIEWS).not.toContain("SHOW_SCHEDULE_MARK");
   });
 

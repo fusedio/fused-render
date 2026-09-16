@@ -77,6 +77,14 @@
   object-fit: contain;
 }
 
+/* The icon.png fallback: fitted to the button's own rounded square (same 7px
+   radius), cover so it fills the slot — an svg owns its plate, a raster gets
+   one from the shell. */
+.app-page-icon img.is-raster {
+  object-fit: cover;
+  border-radius: 7px;
+}
+
 /* The generic star (AppStar) is a bare sparkle where an authored icon is a
    whole tile of artwork — inset, so it does not shout louder than the name. */
 .app-page-icon svg {

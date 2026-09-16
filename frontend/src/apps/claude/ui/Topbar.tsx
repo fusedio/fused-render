@@ -32,6 +32,7 @@ import type { Task } from "@platform/lib/api";
 // which the shell loads for every page through `shell.css` — the chat draws
 // inside that document, so there is nothing to import here.
 import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
+import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
 // The skeleton below wears the landing list's own placeholder bar
 // (`.c-skel-bar`, `home.css`), which is the one shimmer this app draws. Imported
@@ -150,8 +151,7 @@ export function Topbar({
   // slow listing is the old label, never a gap). Computed HERE and not above the
   // branch: only this line prints it.
   const label =
-    taskId ||
-    knownTaskId(sessionId) ||
+    shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
 
   return (

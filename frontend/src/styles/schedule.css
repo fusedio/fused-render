@@ -2846,6 +2846,12 @@ input.schedule-when-field {
     opacity 0.1s ease,
     visibility 0.1s ease,
     top 0s 0.1s,
+    /* `bottom` is in the list for the List's LAST row, which opens its panel
+       upward instead (styles/tasks.css — the scroller is the bordered box now
+       and its floor is that row's). Without it that panel alone snapped home
+       the instant the pointer left, mid-fade, while every other one held its
+       seat. Costs the rules that never set `bottom` nothing. */
+    bottom 0s 0.1s,
     left 0s 0.1s,
     transform 0s 0.1s;
   pointer-events: none;
@@ -3412,45 +3418,50 @@ input.schedule-when-field {
    the lane's fill in both themes. The track itself paints nothing: a groove
    would be a second column drawn beside the cards.
 
-   ONE rule for all four of the page's content scrollers, though `.tasks-list`'s
-   box belongs to tasks.css and the Cards wall's to task-cards.css. Scrollbar
-   chrome is one decision about one kind of furniture, and two copies of it is
-   how the List and the Board end up wearing different bars — which is exactly
-   what happened when the Cards wall shipped without this rule: an overlay bar
-   on one view and a 10px column on the next (Akshil, 2026-09-05).
-
-   The four are the Board's lane, the List, the Cards wall, and the CALENDAR's
-   popover thread — the one calendar scroller that has a bar at all, since the
-   week grid hides its own (`.schedule-cal-scroll`, above: the hour lines say
-   where you are).
+   ONE rule for the two scrollers that keep the classic bar: the Board's lane and
+   the CALENDAR's popover thread — the one calendar scroller that has a bar at
+   all, since the week grid hides its own (`.schedule-cal-scroll`, above: the
+   hour lines say where you are). The List and the Cards wall used to be in this
+   list and now wear an overlay bar (below): their content is the thing the
+   reader is here for, and a 10px column reserved for a bar that is invisible
+   at rest was 10px off every row and every card (Akshil, 2026-09-16).
    The page's remaining scrollers are dropdown menus and pickers, which are
    floating surfaces a few rows tall rather than columns of content, and are
    deliberately left alone. */
 .schedule-tv-lane-body,
-.schedule-cal-thread,
-.tasks-list,
-.task-cards-scroll {
+.schedule-cal-thread {
   scrollbar-gutter: stable;
 }
 
+/* THE LIST AND THE CARDS WALL WEAR AN OVERLAY BAR INSTEAD (Akshil, 2026-09-16:
+   "let content take full width and we show scroll bar on top of content,
+   because scrollbar hides away when not in hover as well"). Their bar was the
+   10px column above, which is a column the rows and cards could not use; with
+   the ink already painted out at rest (styles/scrollbars.css), a reserved
+   column for an invisible bar is only a gutter. `scrollbar-color` is what opts
+   an element BACK INTO overlay bars in Chromium — a standard scrollbar property
+   makes it drop the `::-webkit-scrollbar` rules for that element, and on macOS
+   an unstyled bar floats over the content — and it is fed the same `--sb-thumb`
+   the fade flips, so the thumb still appears only under the pointer. No gutter:
+   an overlay bar has none by definition. */
+.tasks-list,
+.task-cards-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+
 .schedule-tv-lane-body::-webkit-scrollbar,
-.schedule-cal-thread::-webkit-scrollbar,
-.tasks-list::-webkit-scrollbar,
-.task-cards-scroll::-webkit-scrollbar {
+.schedule-cal-thread::-webkit-scrollbar {
   width: 10px;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-track,
-.schedule-cal-thread::-webkit-scrollbar-track,
-.tasks-list::-webkit-scrollbar-track,
-.task-cards-scroll::-webkit-scrollbar-track {
+.schedule-cal-thread::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-thumb,
-.schedule-cal-thread::-webkit-scrollbar-thumb,
-.tasks-list::-webkit-scrollbar-thumb,
-.task-cards-scroll::-webkit-scrollbar-thumb {
+.schedule-cal-thread::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
   background-clip: padding-box;
   border: 3px solid transparent;

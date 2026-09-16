@@ -837,7 +837,9 @@ def test_a_turn_ending_rings_the_loop_and_the_page(folders, rung):
                         {"done": True})
 
     assert schedule._wake.is_set()
-    assert rung[-1] == {SID}
+    # Every key the row could be listed under (#1177 `_entry_keys`): the
+    # session, and the `pending:` key it wore before the session was known.
+    assert SID in rung[-1] and rung[-1] <= {SID, tasks_store.pending_key(entry["id"])}
 
 
 def test_an_unwatched_turn_closing_rings_too(folders, rung):
@@ -850,7 +852,7 @@ def test_an_unwatched_turn_closing_rings_too(folders, rung):
     schedule._close_unwatched(dict(entry), "stopped reporting")
 
     assert schedule._wake.is_set()
-    assert rung[-1] == {SID}
+    assert SID in rung[-1] and rung[-1] <= {SID, tasks_store.pending_key(entry["id"])}
 
 
 def test_wake_is_a_hint_anyone_may_ring():

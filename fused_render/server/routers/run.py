@@ -40,7 +40,11 @@ def _folder_busy(resolved: str, params: dict) -> str:
         run_id = str(params.get("run_id") or "")
         logger.debug("queue gate: %s %s key=%s session=%r run=%r holder=%r",
                     action, target, key, session_id, run_id, holder)
-        if not holder or holder.get("kind") not in ("run", "starting"):
+        # A live process refuses, and so does a send THIS PAGE-OR-ANOTHER has
+        # announced in the last seconds (a `sending` holder off the sent mark or
+        # a scheduler claim): the process is about to be there. What does not
+        # refuse is a bare reservation — the chat's own admission a moment ago.
+        if not holder or holder.get("kind") not in ("run", "starting", "sending"):
             return ""
         if session_id and holder.get("session_id") == session_id:
             return ""

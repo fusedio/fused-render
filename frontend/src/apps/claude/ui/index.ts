@@ -5,8 +5,6 @@ export {
   ComposerCard,
   CHAT_PLACEHOLDER,
   HOME_PLACEHOLDER,
-  FOOTNOTE_LEAD,
-  FOOTNOTE_TAIL,
 } from "./Composer";
 export type {
   ComposerProps,
@@ -100,7 +98,6 @@ export {
   rowNeed,
   pickRowFit,
   fitFlags,
-  footnoteTight,
   pickHomeTitleStep,
   HOME_TITLE_STEPS,
   fitSelect,

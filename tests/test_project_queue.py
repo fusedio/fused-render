@@ -1606,3 +1606,24 @@ def test_with_the_flag_off_a_run_is_still_named_through_the_registry(home, agent
     assert pq.enabled() is False
     run = pq.scan_runs(agent)[0]
     assert SID in pq.run_sessions(agent, run["run_dir"], run.get("meta") or {})
+
+
+def test_a_send_the_page_announced_holds_its_folder(home, agent, monkeypatch):
+    """#1177's sent mark is a folder about to be busy. For the seconds before
+    the process exists, the run dir names a session or the registry has a row,
+    nothing else says the tree is taken — and a second send from a tab whose
+    flag was stale walked in (Akshil's QA, 2026-09-16)."""
+    from fused_render import schedule
+    work = home / "work"
+    work.mkdir()
+    monkeypatch.setattr(schedule, "list_entries", lambda: [])
+    tasks_watch.reset()
+    tasks_watch.mark_running(SID, text="go", file=str(work / "page.html"))
+    try:
+        held = pq.holders()[folder_key(work)]
+        assert held["kind"] == "sending" and held["session_id"] == SID
+        assert pq.is_free(folder_key(work), SID2) is False
+        # The announcing session itself is not behind its own send.
+        assert pq.is_free(folder_key(work), SID) is True
+    finally:
+        tasks_watch.reset()

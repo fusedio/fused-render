@@ -776,10 +776,13 @@ body.tasks-peek-dragging {
    around it grows a scrollbar. */
 .task-side-peek-preview {
   position: relative;
+  /* A flex box so the card's `margin: auto` centres it on both axes — the
+     card is the frame's size, and this box is what has the spare room. */
+  display: flex;
   flex: 0 0 auto;
   width: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   /* THE CHAT'S GROUND, not the page's (`--peek-chat-bg` at the top of this
      file): the gutters are a margin cut out of the panel's body, and the
      panel's body under them is the conversation. */
@@ -821,7 +824,10 @@ body.tasks-peek-dragging .task-side-peek-preview {
    horizontal scrollbar under every preview. */
 .task-side-peek-preview-card {
   position: relative;
-  height: 100%;
+  /* CONTAIN (Akshil, 2026-09-16): the card is sized inline to the scaled 16:9
+     frame (`shell/TaskPeek.tsx`), so its border hugs the app. The box centres
+     it and the spare axis is MARGIN around the card, not padding inside it. */
+  margin: auto;
   overflow: hidden;
   border-radius: 12px;
   background: var(--bg);

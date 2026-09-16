@@ -10,7 +10,8 @@
 // typer, and arrives as `tail` (protocol/segments.ts `streamingTailOf`). This
 // component only paints it — the typer's slice plus the caret — because the
 // alternative is two renderers with their own opinion of the same string.
-import { Fragment, memo, useMemo, useRef } from "react";
+import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "@platform/lib/utils";
 
@@ -221,14 +222,14 @@ export const SegmentView = memo(function SegmentView({
             key,
             <MarkdownView className="seg-text" text={split.lead} enhance={false} />,
             trigger,
-            true,
+            null,
             "is-lead",
           ),
           segBlock(
             key + ":rest",
             <MarkdownView className="seg-text" text={split.rest} enhance={false} />,
+            null,
             tail.cursor ? <Caret /> : null,
-            false,
             "is-rest",
           ),
         );
@@ -238,13 +239,8 @@ export const SegmentView = memo(function SegmentView({
         segBlock(
           key,
           <MarkdownView className="seg-text" text={tail.text} enhance={false} />,
-          trigger || tail.cursor ? (
-            <>
-              {trigger}
-              {tail.cursor ? <Caret /> : null}
-            </>
-          ) : null,
-          !!seated,
+          trigger,
+          tail.cursor ? <Caret /> : null,
         ),
       );
       return;
@@ -254,7 +250,7 @@ export const SegmentView = memo(function SegmentView({
         key + ":rest",
         <MarkdownView className="seg-text" text={split.rest} enhance />,
         null,
-        false,
+        null,
         "is-rest",
       );
       nodes.push(
@@ -262,7 +258,7 @@ export const SegmentView = memo(function SegmentView({
           key,
           <MarkdownView className="seg-text" text={split.lead} enhance />,
           trigger,
-          true,
+          null,
           "is-lead",
         ),
         filed ? withFiled(rest, key + ":rest") : rest,
@@ -273,7 +269,7 @@ export const SegmentView = memo(function SegmentView({
       key,
       <MarkdownView className="seg-text" text={segText(seg)} enhance />,
       trigger,
-      !!seated,
+      null,
     );
     nodes.push(filed ? withFiled(block) : block);
   });
@@ -286,23 +282,73 @@ export const SegmentView = memo(function SegmentView({
 });
 
 /** ONE SHAPE FOR BOTH STATES (review #4): the same keyed `div`, the prose in
- *  slot 0, and slot 1 holding the trigger, the caret, or nothing. Written as
- *  one function so the two call sites cannot drift apart — a difference between
- *  them IS the remount this exists to prevent. */
+ *  slot 0, then the trigger, then the caret or nothing. Written as one function
+ *  so the call sites cannot drift apart — a difference between them IS the
+ *  remount this exists to prevent. */
 function segBlock(
   key: string,
   prose: React.ReactNode,
+  /** The `show more` word, or null. Seated INSIDE the prose when it can be. */
+  trigger: React.ReactNode,
+  /** The streaming caret, or null — always a sibling, never seated. */
   after: React.ReactNode,
-  /** `after` is the TRIGGER, not the caret: only then does the last line owe it
-   *  room (`styles/transcript.css`, `.has-trigger`). */
-  trigger = false,
   /** `is-lead` / `is-rest` — the two halves a leading run splits a prose
    *  segment into (`leadSplit`); the sheet spaces the pair. */
   extra?: string,
 ): React.ReactElement {
+  return <SegBlock key={key} prose={prose} trigger={trigger} after={after} extra={extra} />;
+}
+
+/** Where the trigger seats INSIDE the prose (Akshil, 2026-09-16: "next to the
+ *  end of the sentence"): the last paragraph, heading or list item, so `show
+ *  more` trails the final words on their own line — a `<li>` included, which
+ *  no CSS on the block could reach without losing the bullet. `null` when the
+ *  last block is code, a table or a quote: the word then takes the line below,
+ *  as a sibling, rather than sitting inside a box that scrolls or is ruled. */
+function triggerSeat(block: HTMLElement | null): HTMLElement | null {
+  const prose = block?.querySelector<HTMLElement>(":scope > .seg-text");
+  const last = prose?.lastElementChild as HTMLElement | null | undefined;
+  if (!last) return null;
+  const tag = last.tagName;
+  if (tag === "UL" || tag === "OL") {
+    const li = last.lastElementChild as HTMLElement | null;
+    return li && li.tagName === "LI" ? li : null;
+  }
+  if (tag === "P" || /^H[1-6]$/.test(tag)) return last;
+  return null;
+}
+
+function SegBlock({
+  prose,
+  trigger,
+  after,
+  extra,
+}: {
+  prose: React.ReactNode;
+  trigger: React.ReactNode;
+  after: React.ReactNode;
+  extra?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [seat, setSeat] = useState<HTMLElement | null>(null);
+  // Every commit, not on a dep list: the prose is set as raw html (MarkdownView), so
+  // a text change swaps the whole subtree under `.seg-text` and the seat held
+  // from the last commit is a detached node. Re-reading is one querySelector;
+  // the state write only happens when the answer moved.
+  useLayoutEffect(() => {
+    const next = trigger ? triggerSeat(ref.current) : null;
+    if (next !== seat) setSeat(next);
+  });
+  // A seat that fell out of the document (the text changed under it) is not a
+  // seat; the word falls back to the sibling slot until the effect re-seats it.
+  const inline = !!trigger && !!seat && seat.isConnected;
   return (
-    <div key={key} className={cn("seg-block", trigger && "has-trigger", extra)}>
+    <div
+      ref={ref}
+      className={cn("seg-block", !!trigger && "has-trigger", inline && "has-inline-trigger", extra)}
+    >
       {prose}
+      {inline ? createPortal(trigger, seat) : trigger}
       {after}
     </div>
   );

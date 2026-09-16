@@ -81,47 +81,45 @@ describe("previewBox", () => {
     expect(narrow.height).toBeCloseTo(inner(564) * (9 / 16) + 2 * PREVIEW_PAD_Y, 4);
   });
 
-  it("caps at half the body and gives the app a shorter window, never a crop", () => {
-    // A 564 peek is 508 inside its gutters and wants 285 of height; a 400px
-    // body allows 200. The frame is sized to the 176px card that is left —
-    // the app lays out into it and scrolls itself. Nothing outside the frame
-    // has anything to scroll (Akshil, 2026-09-15: the crop drew a second pair
-    // of scrollbars around a frame that already had its own).
-    const box = previewBox(564, 400, null);
-    expect(box.height).toBe(400 * PREVIEW_CAP_FRACTION);
+  it("caps at 35% of the body and CONTAINS the 16:9 frame in the shorter card", () => {
+    // A 564 peek is 508 inside its gutters and wants 285 of height; a 600px
+    // body allows 210. The frame stays 16:9 and shrinks to the 186px card that
+    // is left — the height fit wins, and the spare width is padding either side
+    // (Akshil, 2026-09-16: contain, not crop).
+    expect(PREVIEW_CAP_FRACTION).toBe(0.35);
+    const box = previewBox(564, 600, null);
+    expect(box.height).toBe(600 * PREVIEW_CAP_FRACTION);
     const card = box.height - 2 * PREVIEW_PAD_Y;
+    expect(box.frameHeight).toBe(PREVIEW_VH);
     expect(box.frameHeight * box.scale).toBeCloseTo(card, 6);
-    expect(box.frameHeight).toBeLessThan(PREVIEW_VH);
+    expect(PREVIEW_VW * box.scale).toBeLessThan(564 - 2 * PREVIEW_INSET);
   });
 
-  it("gives the APP a taller window when the box is dragged past 16:9", () => {
-    // Akshil, 2026-09-14 (design.md, Polish batch 3). The scale is the panel's
-    // and does not move — dragging the horizontal seam is the only thing that
-    // changes how big the app's text is. What a taller box buys is MORE APP:
-    // the virtual viewport grows to `height / scale`, the app lays out into it,
-    // and the box is filled at the same scale instead of showing a band of the
-    // app's background under a scrollbar with nothing to scroll.
+  it("a box dragged past 16:9 keeps the width fit and shows air above and below", () => {
+    // Akshil, 2026-09-16: the aspect is locked on both axes. Past the natural
+    // height the width is the tighter fit, so the scale stays the panel's and
+    // the extra height is padding — the frame never grows past 1280×720.
     // 716 wide is 640 inside its 38px gutters, so the scale is a round 0.5.
     const natural = previewBox(716, 2000, null);
-    expect(natural.frameHeight).toBeCloseTo(PREVIEW_VH, 6);
-    // 12px of air above and below the card (`--peek-preview-pad-y`), so a
-    // 624px box is a 600px card.
+    expect(natural.frameHeight).toBe(PREVIEW_VH);
+    expect(natural.scale).toBeCloseTo(0.5, 6);
     expect(PREVIEW_PAD_Y).toBe(12);
     const taller = previewBox(716, 2000, 600 + 2 * PREVIEW_PAD_Y);
     expect(taller.scale).toBe(natural.scale);
     expect(taller.height).toBe(624);
-    // 640 / 1280 = 0.5, so a 600px card is a 1200px window.
-    expect(taller.frameHeight).toBe(1200);
-    // …and the drawn frame is exactly the card.
-    expect(taller.frameHeight * taller.scale).toBeCloseTo(600, 6);
+    expect(taller.frameHeight).toBe(PREVIEW_VH);
+    // 360 drawn in a 600px card — 240px of air, split by the CSS.
+    expect(taller.frameHeight * taller.scale).toBeCloseTo(360, 6);
   });
 
-  it("a box dragged short hands the app a short window, drawn exactly to the card", () => {
+  it("a box dragged short shrinks the whole 16:9 frame to the card's height", () => {
     // 696 wide is 620 inside its gutters; a 200px box is a 176px card, and the
-    // frame is that card at the panel's scale — no crop, no scrollbar.
+    // frame is 16:9 at 176 tall — narrower than the card, padded either side.
     const short = previewBox(696, 2000, 200);
     expect(short.height).toBe(200);
+    expect(short.frameHeight).toBe(PREVIEW_VH);
     expect(short.frameHeight * short.scale).toBeCloseTo(200 - 2 * PREVIEW_PAD_Y, 6);
+    expect(PREVIEW_VW * short.scale).toBeLessThan(696 - 2 * PREVIEW_INSET);
   });
 
   it("never takes the composer's room, however hard the seam is dragged", () => {

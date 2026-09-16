@@ -22,7 +22,7 @@ import type { Task } from "@platform/lib/api";
 import { columnLabel } from "./schedule-lib";
 import { StatusIcon } from "./ScheduleTaskViews";
 import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
-import { basename, firstLine, ringFailed, taskColumn, tildePath } from "./tasks-lib";
+import { basename, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
  *  surface uses for a task that has none. Exported because the peek's menu and
@@ -87,7 +87,7 @@ export function TaskPeekWho({ task, running = false }: {
       >
         <StatusIcon status={status} failed={running ? false : ringFailed(task)} />
       </span>
-      <span className="task-side-peek-id">{task.task_id}</span>
+      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
       <span className="task-side-peek-title" title={title}>
         {title}
       </span>

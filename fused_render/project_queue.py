@@ -414,6 +414,12 @@ def run_sessions(agent, run_dir: str, meta: dict) -> set:
         except Exception:  # noqa: BLE001 — a head we cannot read is not an id
             own = ""
     if not own:
+        # …and the id `_start` MINTED (#1177): `--session-id` is chosen before
+        # the spawn and written to meta.json, so it is the one of these that
+        # exists from the run's first instant. Read off `meta`, which this
+        # function already has open.
+        own = str(meta.get("session_id") or "")
+    if not own:
         # The live registry names a run by its pid within seconds of the CLI
         # coming up, long before the run dir's own `session` file is written.
         # Flag-agnostic (Akshil, 2026-09-16): knowing which session a run is
@@ -1104,6 +1110,26 @@ def _derived_holders(now: float | None = None) -> dict[str, dict]:
                 # in a working tree is that the tree is taken.
                 out[key] = {"session_id": "", "run_id": run["run_id"],
                             "task_key": "", "kind": "starting"}
+    # A SEND THE PAGE HAS ANNOUNCED IS A FOLDER ABOUT TO BE BUSY (#1177's sent
+    # mark, `tasks_watch.sent_marks`). The page tells the server it sent —
+    # with the words and the FILE — before the process exists, before the run
+    # dir names a session, before any registry row: for those seconds nothing
+    # above sees the folder as taken, and a second send from a tab whose flag
+    # was stale walked straight in (Akshil's QA, 2026-09-16). The mark carries
+    # the target, so it is a holder of the `sending` kind for its 15 s fuse —
+    # the same rank a scheduler claim has, and for the same reason: a process
+    # is about to be in that folder. `run` and `starting` outrank it below.
+    try:
+        marks = tasks_watch.sent_marks()
+    except Exception:  # noqa: BLE001 — no marks is no holders, as before
+        marks = {}
+    for session_id, mark in marks.items():
+        file = str((mark or {}).get("file") or "")
+        key = queue_key(file) if file else ""
+        if not key or key in out or not session_id:
+            continue
+        out[key] = {"session_id": session_id, "run_id": "",
+                    "task_key": session_id, "kind": "sending"}
     for entry in _sending_entries():
         key = queue_key(str(entry.get("target") or ""))
         # NEVER DOWNGRADE A LIVE PROCESS (round-3 review, 2026-09-12). A claim
