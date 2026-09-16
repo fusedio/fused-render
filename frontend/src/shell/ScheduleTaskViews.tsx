@@ -103,6 +103,7 @@ import {
   parseListMemory,
   projectOptions,
   relativeWhen,
+  shortTaskId,
   settleMarkAllRead,
   spansProjects,
   ringFailed,
@@ -199,6 +200,11 @@ export type { TaskFilters };
  * change rather than a value change.
  */
 const SHOW_ROW_ACTIONS: boolean = false;
+
+/** How far left of the first button the hover strip's wash begins — the
+ *  `padding-left` of `.tasks-acts-inner` (tasks.css). The strip repeats a
+ *  suffix mark only when the mark's inline copy sits inside this. */
+const STRIP_FADE_PX = 28;
 
 
 // ---- icons -------------------------------------------------------------------
@@ -692,7 +698,7 @@ function IdChip({ id, kind }: {
   // where every other row says its name.
   if (!id) return null;
   return (
-    <span className={`tasks-id tasks-id--${kind}`}>{id}</span>
+    <span className={`tasks-id tasks-id--${kind}`}>{kind === "task" ? shortTaskId(id) : id}</span>
   );
 }
 
@@ -2489,6 +2495,29 @@ function TaskNode({
   // holds that task, and lifting the state to the List would hand every row a
   // prop it spends once.
   const [erasing, setErasing] = useState(false);
+  // WHETHER THE STRIP HIDES THE SUFFIX MARKS (Akshil, 2026-09-16: "show the
+  // icon only when the overlay hides it"). Measured, never guessed from a
+  // width (see responsive-collision rule): on pointer-enter, the inline
+  // marks' right edge against where the strip's fade begins — Open's left
+  // edge less the fade — so the answer does not depend on whether the copies
+  // themselves are drawn, and cannot oscillate.
+  const [marksUnderStrip, setMarksUnderStrip] = useState(false);
+  const measureStrip = (row: HTMLElement) => {
+    const marks = row.querySelectorAll<HTMLElement>(
+      ":scope > .tasks-row-file, :scope > .tasks-row-sched",
+    );
+    const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act--page");
+    if (!marks.length || !door) {
+      if (marksUnderStrip) setMarksUnderStrip(false);
+      return;
+    }
+    const fadeLeft = door.getBoundingClientRect().left - STRIP_FADE_PX;
+    let under = false;
+    marks.forEach((m) => {
+      if (m.getBoundingClientRect().right > fadeLeft) under = true;
+    });
+    if (under !== marksUnderStrip) setMarksUnderStrip(under);
+  };
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -2876,6 +2905,8 @@ function TaskNode({
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
           + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
           + (refiled ? " is-refiled" : "")}
+        onPointerEnter={(e) => measureStrip(e.currentTarget)}
+        onFocus={(e) => measureStrip(e.currentTarget)}
         // The side peek's two hooks: the halo's selector, and — in DOM order —
         // the prev/next walk, which on the List is simply the list's order
         // (shell/task-peek-store.ts). Absent entirely when the feature is off.
@@ -3257,6 +3288,32 @@ function TaskNode({
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
+        {/* THE HOVER STRIP FLOATS OVER THE TITLE'S TAIL (Akshil, 2026-09-16):
+            a zero-width seat in the flex row, with the buttons positioned off
+            its right edge, so the title takes every px the row has and the
+            actions fade in over it (tasks.css `.tasks-acts`). */}
+        <span className="tasks-acts">
+        <span className="tasks-acts-inner">
+          {/* THE MARKS AGAIN, inside the strip (Akshil, 2026-09-16): a long
+              title puts its file/clock mark under the fade the strip draws,
+              so the strip repeats the mark — same glyph, same tooltip —
+              right before Open. Captions only, no press: the inline mark
+              already carries the row's press, and a second target for it
+              here would sit where the reader is aiming at Open. */}
+          {marksUnderStrip && taskFile_ ? (
+            <span
+              className="tasks-row-file"
+              data-hint={tildePath(taskFile_, home)}
+              aria-hidden
+            >
+              {ICON_FILE}
+            </span>
+          ) : null}
+          {marksUnderStrip && sched ? (
+            <span className="tasks-row-sched" data-hint={sched.title} aria-hidden>
+              {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
+            </span>
+          ) : null}
 
         {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS, all of it. Archive is the one
             row action that is live, and it is no longer part of this strip at all
@@ -3340,8 +3397,8 @@ function TaskNode({
           <a
             className="tasks-act tasks-act--page"
             href={page}
-            aria-label={`Open ${task.task_id} in Explorer`}
-            data-hint="Open in Explorer · ⌘↩"
+            aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
+            data-hint="Open in Explorer"
             onClick={(e) => {
               // A modified press is the browser's (the row's own link rule).
               if (opensElsewhere(e)) return;
@@ -3373,6 +3430,8 @@ function TaskNode({
             {peeked ? ICON_CLOSE : ICON_OPEN}
           </button>
         )}
+        </span>
+        </span>
         {/* When this task runs next, or when it last ran — on EVERY row, because
             until now a time only appeared inside an expanded thread and a
             one-message task has no thread to expand (Akshil, 2026-08-17).
@@ -3418,7 +3477,7 @@ function TaskNode({
           <button
             type="button"
             className="tasks-act tasks-act--delete"
-            aria-label={`Delete ${task.task_id} forever`}
+            aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
             // The same guard the card door wears: a live run cannot be erased
             // (409), so the trash greys out and says why (review, PR #1049).
             disabled={eraseBlocked(task)}
@@ -3893,7 +3952,7 @@ function TaskNode({
             // pops (tone: "info" default) rather than staying in the panel —
             // see DECISIONS-toasts-become-notifications.md's retention-
             // narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -4962,7 +5021,7 @@ function TaskCard({
             // A clean delete now only pops (tone: "info" default) rather
             // than staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onErased();
           }}
         />
@@ -5001,7 +5060,7 @@ function TaskCard({
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"
-              aria-label={`Delete ${task.task_id} forever`}
+              aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
               data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}
               disabled={busy || eraseBlocked(task)}
               onClick={() => setErasing(true)}
@@ -5017,8 +5076,8 @@ function TaskCard({
             <a
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}
-              aria-label={`Open ${task.task_id} in Explorer`}
-              data-hint="Open in Explorer · ⌘↩"
+              aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
+              data-hint="Open in Explorer"
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
                 e.preventDefault();
@@ -5034,7 +5093,7 @@ function TaskCard({
               type="button"
               className="tasks-act tasks-card-act tasks-act--run"
               title={run.title}
-              aria-label={`${run.label} ${task.task_id}`}
+              aria-label={`${run.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void runNow(run)}
             >
@@ -5046,7 +5105,7 @@ function TaskCard({
               type="button"
               className={"tasks-act tasks-card-act tasks-act--" + file.kind}
               title={file.title}
-              aria-label={`${file.label} ${task.task_id}`}
+              aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void refile(file)}
             >

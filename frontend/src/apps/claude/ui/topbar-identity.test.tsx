@@ -65,7 +65,7 @@ test("a session with a task row wears the peek's identity block", () => {
   expect(v.has("task-side-peek-id").length).toBe(1);
   expect(v.has("task-side-peek-title").length).toBe(1);
   expect(v.has("task-side-peek-project").length).toBe(1);
-  expect(v.text()).toContain("TASK-042");
+  expect(v.text()).toContain("T042");
   expect(v.text()).toContain("Rename the pane noun");
   // The project is the folder's NAME, not its path — the chip's tooltip carries
   // the whole of it.
@@ -96,7 +96,7 @@ test("no row yet — the line the chat has always printed", () => {
   expect(v.has("task-side-peek-who").length).toBe(0);
   expect(v.has("c-tb-title").length).toBe(1);
   expect(v.has("c-session").length).toBe(1);
-  expect(v.text()).toContain("TASK-042");
+  expect(v.text()).toContain("T042");
 });
 
 // ---- AND THE THIRD STATE: NOBODY HAS ANSWERED YET (Akshil, 2026-09-14) ------
@@ -155,7 +155,7 @@ test("a row pressed in the Recent list names the header AT ONCE — no listing r
   const feed = stubSubscribe();
   const v = mountHeader("sess-9", feed.subscribe);
   expect(v.has("task-side-peek-who").length).toBe(1);
-  expect(v.text()).toContain("TASK-009");
+  expect(v.text()).toContain("T009");
   // …and never the skeleton or the wordmark on the way there.
   expect(v.has("c-tb-skel").length).toBe(0);
   expect(v.has("c-tb-title").length).toBe(0);

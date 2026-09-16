@@ -76,6 +76,8 @@ export function tildePath(path: string, home: string): string {
 }
 
 /** The last segment of a path — what the folder chip prints. "/" stays "/". */
+export { shortTaskId } from "@platform/lib/task-id";
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;

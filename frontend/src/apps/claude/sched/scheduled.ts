@@ -23,6 +23,8 @@
 // pollution the lock prevents, and the schedule is the only thing that could
 // ever have explained it (T:17383-17390).
 
+import { shortTaskId } from "@platform/lib/task-id";
+
 /** The `/api/schedule` entry, narrowed to what these rules read (T:16892-16899,
  *  17061-17070, 17395). Structurally satisfied by `platform/lib/api`'s
  *  `ScheduledMessage`; declared locally so the rules stay pure. */
@@ -438,7 +440,7 @@ export function schedStopTitle(repeat: boolean): string {
 /** T:17136-17137 — the ONE title in this card, and it describes the HOP rather
  *  than repeating text already on screen. */
 export function schedRowTitle(rec: SchedTask | null | undefined): string {
-  return "Open " + ((rec && rec.task_id) || "this task") + " on the Tasks calendar";
+  return "Open " + (shortTaskId(rec && rec.task_id) || "this task") + " on the Tasks calendar";
 }
 
 // ---- the poller (T:17379-17447) --------------------------------------------

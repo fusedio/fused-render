@@ -18,6 +18,7 @@
 // folder because you are already in that folder, you are not showing the session
 // ID because you are already there" (Akshil, 2026-08-17).
 import { useCallback, useEffect, useRef } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
 import "../styles/sched.css";
 import {
   schedIsRepeat,
@@ -147,7 +148,7 @@ export function SchedBlock({
           {/* An EMPTY id is "/api/tasks could not be read", not "this task has
               no number": the cell disappears (`:empty`) rather than holding a
               gap open. */}
-          <span className="sb-id">{(rec && rec.task_id) || ""}</span>
+          <span className="sb-id">{shortTaskId(rec && rec.task_id)}</span>
           <span className="sb-name" ref={nameRef}>
             {name}
           </span>

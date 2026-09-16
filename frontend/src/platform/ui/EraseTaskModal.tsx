@@ -24,6 +24,7 @@
 // body, the path in mono, and a `btn-danger` whose word is the verb rather than
 // "OK".
 import { useState } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
 import { eraseTask } from "@platform/lib/api";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import type { Task } from "@platform/lib/api";
@@ -93,7 +94,7 @@ export function EraseTaskModal({
 
   return (
     <Modal
-      title={`Delete ${task.task_id}?`}
+      title={`Delete ${shortTaskId(task.task_id)}?`}
       busy={busy}
       onClose={onClose}
       {...(dialogClassName ? { dialogClassName } : {})}

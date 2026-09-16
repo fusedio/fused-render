@@ -110,7 +110,7 @@ describe("the card adds nothing when the experiment is off", () => {
   it("leaves the id in the List's muted skin whatever the line is", () => {
     // Akshil, 2026-09-14: the bold + full-fg lift the message line used to
     // bring with it is gone — one weight for the id everywhere.
-    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>');
     expect(CARDS).not.toContain("task-card-id--lead");
     expect(CARDS_CSS).not.toContain("task-card-id--lead");
     expect(CARDS).toContain("data-hint={line.said ? task.last_message?.text : task.title}");

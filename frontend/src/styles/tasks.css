@@ -113,7 +113,7 @@
   --tasks-row-pad-y: 10px;
   --tasks-msg-pad-y: 8px;
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
-  --tasks-row-gap: 10px; /* the flex gap every row here uses */
+  --tasks-row-gap: 4px; /* the flex gap every row here uses (10px until 2026-09-16: "consistent, 4px, no more") */
   --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
   --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
@@ -2307,4 +2307,95 @@ button.tasks-draft-pill.is-on:focus-visible {
   white-space: nowrap;
   text-decoration: none;
   border-color: var(--border);
+}
+
+/* -- The hover strip floats over the title's tail (Akshil, 2026-09-16) -------
+   The row actions used to be flex items at rest (opacity 0, but 22px+ of
+   layout each), so the title ellipsised early to leave room for buttons nobody
+   could see. Now they sit in a ZERO-WIDTH seat after the spacer, positioned off
+   its right edge and drawn over whatever the title's tail put there, on a wash
+   that fades in from the left so the words run under the buttons rather than
+   stopping dead against them. The message count and the time after the seat
+   are untouched — the strip grows leftwards, over the title only.
+
+   The suffix marks (`.tasks-row-file`, `.tasks-row-sched`) stay above the wash
+   (z-index 3 < the buttons' 4) so their tooltips keep answering when a long
+   title parks them under the fade. */
+/* THE SUFFIX MARKS RIDE THE STRIP TOO (Akshil, 2026-09-16, second pass: "no
+   spacer min-width; before the Open button, if there is an icon, show the
+   icon"). A long title parks its file/clock mark under the fade, so the strip
+   repeats it — same glyph, same tooltip — immediately before Open. The inline
+   marks stay for the unhovered read; the strip's copies are what the hover
+   shows. Plain-flow, hover-revealed with the buttons around them; the row's
+   own `.tasks-row-file` skin (colour, opacity, glyph nudge) is reused. */
+.tasks-row > .tasks-acts .tasks-row-file,
+.tasks-row > .tasks-acts .tasks-row-sched {
+  position: static;
+  margin: 0 2px 0 0;
+  padding-inline: 2px;
+  align-self: center;
+  padding-block: 0;
+  margin-block: 0;
+  pointer-events: auto;
+  cursor: default;
+}
+.tasks-row > .tasks-acts {
+  position: relative;
+  flex: 0 0 0px;
+  width: 0;
+  align-self: stretch;
+  /* Cancels the flex gap on both sides — the seat must not cost the row a px. */
+  margin-left: calc(var(--tasks-row-gap) * -1);
+}
+.tasks-row > .tasks-acts > .tasks-acts-inner {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 28px;
+  padding-right: calc(var(--tasks-row-gap) / 2);
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+  z-index: 3;
+}
+.tasks-row:hover > .tasks-acts > .tasks-acts-inner,
+.tasks-row:has(.tasks-act:focus-visible) > .tasks-acts > .tasks-acts-inner {
+  opacity: 1;
+}
+.tasks-row > .tasks-acts .tasks-act {
+  z-index: 4;
+}
+.tasks-row > .tasks-row-file,
+.tasks-row > .tasks-row-sched {
+  z-index: 3;
+}
+/* A peeked row is filled with its own colour (task-peek.css); the wash follows.
+   Peeked (task-peek.css: `--row-bg-selected`, the deeper of the two neutrals)
+   is its own rule so it does not inherit the plain-selected wash below — the
+   two rows are filled a whole step apart and a shared value would leave one
+   of them with a visibly mismatched patch over the title. */
+.tasks-peek-host .tasks-row.is-peeked > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-selected) 28px);
+}
+.tasks-row.is-selected > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+}
+
+/* -- Two seams keep the old room (Akshil, 2026-09-16) -----------------------
+   The row gap went 10px → 4px for id → folder → title. Two seams read too tight
+   at 4px and get 6px back on top of the gap: the ring → id seam, and the seams
+   before the message count and the time at the row's right end. The margins
+   ride the elements' own edges, so the hit zones (`padding-inline: 5px` above)
+   and the thread indent derived from the rail are untouched. */
+.tasks-row > .tasks-rowmark {
+  margin-right: 6px;
+}
+.tasks-row > .tasks-row-msgs,
+.tasks-row > .tasks-row-time {
+  margin-left: 1px; /* -5px hit-zone margin + 6px */
 }

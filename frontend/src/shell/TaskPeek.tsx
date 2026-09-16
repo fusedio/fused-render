@@ -30,6 +30,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Task } from "@platform/lib/api";
+import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
@@ -1077,7 +1078,7 @@ export function TaskPeek({
         style={{ width: layout.open ? layout.width : heldWidth.current }}
         aria-hidden={layout.open ? undefined : true}
         role="complementary"
-        aria-label={task ? `${task.task_id} ${title}` : "Task"}
+        aria-label={task ? `${shortTaskId(task.task_id)} ${title}` : "Task"}
       >
         {/* The seam: a 1px line in a 12px hit area, straddling the panel's
             leading edge exactly as the sidebar's handle straddles its border
@@ -1331,7 +1332,7 @@ export function TaskPeek({
                 legacySrc={src}
                 legacyFrameRef={frameRef}
                 className="task-peek-frame"
-                title={`${task.task_id} ${title}`}
+                title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
                 // ONE TURN TO LAND ON, when the press that opened this was a
@@ -1381,7 +1382,7 @@ export function TaskPeek({
           onDone={() => {
             const erased = erasing;
             setErasing(null);
-            notify({ title: `Deleted ${erased.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(erased.task_id)}`, tone: "info" });
             onReload?.();
             // SAME ADVANCE AS AN ARCHIVE (design.md, Header + list state v2):
             // the task is gone, the panel is not — it moves on to the next one

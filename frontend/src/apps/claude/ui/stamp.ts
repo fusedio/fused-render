@@ -37,8 +37,13 @@ function millis(ts: number): number {
 
 const pad = (n: number): string => (n < 10 ? "0" + n : String(n));
 
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
 /**
- * `HH:MM` for a message sent today, `Mon D, HH:MM` for an older one.
+ * Under a day old: one relative unit — `just now`, `5m ago`, `3h ago`
+ * (Akshil, 2026-09-16). Older: `14 Sep, 14:34`, day first.
  *
  * `null` for anything that is not a usable instant — a missing field, a zero, a
  * NaN — so the caller's test is "is there a stamp" rather than "is there a `ts`,
@@ -46,23 +51,28 @@ const pad = (n: number): string => (n < 10 ? "0" + n : String(n));
  */
 export function formatStamp(ts: number | null | undefined, now: number = Date.now()): string | null {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
-  const d = new Date(millis(ts));
+  const at = millis(ts);
+  const d = new Date(at);
   if (Number.isNaN(d.getTime())) return null;
+  const age = now - at;
+  if (age < DAY) {
+    if (age < MIN) return "just now";
+    if (age < HOUR) return Math.floor(age / MIN) + "m ago";
+    return Math.floor(age / HOUR) + "h ago";
+  }
   const clock = pad(d.getHours()) + ":" + pad(d.getMinutes());
-  const today = new Date(now);
-  const sameDay =
-    d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate();
-  if (sameDay) return clock;
-  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + clock;
+  return d.getDate() + " " + MONTHS[d.getMonth()] + ", " + clock;
 }
 
-/** The tooltip: the full instant, unabbreviated and unambiguous. `null` on the
- *  same inputs `formatStamp` refuses. */
+/** The tooltip: the full instant, readable — `14 Sep 2026, 14:34:05`, local
+ *  time (Akshil, 2026-09-16: the ISO string was not). `null` on the same
+ *  inputs `formatStamp` refuses. */
 export function stampTitle(ts: number | null | undefined): string | null {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
   const d = new Date(millis(ts));
   if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  return (
+    d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() + ", " +
+    pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds())
+  );
 }
