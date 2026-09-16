@@ -5,8 +5,17 @@ import { installDomShim } from "@platform/lib/testDomShim";
 
 installDomShim();
 
-const { matchesSource, isOpenAnywhere, snapshotIsOpenAnywhere, isNarrator, computeTopLevel, PRESENCE_STALE_MS } =
-  await import("@platform/lib/presence");
+const {
+  matchesSource,
+  isOpenAnywhere,
+  snapshotIsOpenAnywhere,
+  isNarrator,
+  computeTopLevel,
+  PRESENCE_STALE_MS,
+  _writePresenceForTest,
+  _removePresenceForTest,
+  _presenceWindowIdForTest,
+} = await import("@platform/lib/presence");
 
 // ---- source matching -------------------------------------------------
 
@@ -187,6 +196,77 @@ test("snapshotIsOpenAnywhere: reads the registry exactly once no matter how many
   isOpenAnywhere("/preferences", { storage: countingStorage, now: () => 1000 });
   isOpenAnywhere("/ai-models/local", { storage: countingStorage, now: () => 1000 });
   expect(reads).toBe(4);
+});
+
+// ---- writeSelf/removeSelf race (finding 10) -----------------------------
+
+/** A storage stub whose `getItem` walks through `sequence` one call at a
+ *  time (holding on the last entry once exhausted) — lets a test simulate
+ *  "the registry changed between my check-read and my verify-read" without
+ *  needing real concurrency, since `mutateRegistry` always calls `getItem`
+ *  at least twice per attempt (once to read, once to verify before commit). */
+function racingStorage(sequence: string[]) {
+  let calls = 0;
+  const setCalls: string[] = [];
+  return {
+    getItem: (_k: string) => {
+      const raw = sequence[Math.min(calls, sequence.length - 1)];
+      calls += 1;
+      return raw;
+    },
+    setItem: (_k: string, v: string) => {
+      setCalls.push(v);
+    },
+    removeItem: () => {},
+    setCalls,
+  };
+}
+
+test("removeSelf (finding 10): a peer joining between the check-read and the verify-read is not lost", () => {
+  const self = _presenceWindowIdForTest();
+  const selfOnly = JSON.stringify({
+    [self]: { page: "/a", focused: true, ts: 1000, topLevel: true },
+  });
+  const selfAndPeer = JSON.stringify({
+    [self]: { page: "/a", focused: true, ts: 1000, topLevel: true },
+    peer: { page: "/b", focused: true, ts: 1000, topLevel: true },
+  });
+  // Attempt 0: initial read sees `selfOnly`, transform drops self -> {}.
+  // Verify-read sees `selfAndPeer` (peer joined in between) -> mismatch,
+  // retry. Attempt 1: initial read sees `selfAndPeer`, transform drops self
+  // -> {peer}. Verify-read sees `selfAndPeer` again (stable) -> commit.
+  const storage = racingStorage([selfOnly, selfAndPeer, selfAndPeer, selfAndPeer]);
+  _removePresenceForTest({ storage, now: () => 1000 });
+  expect(storage.setCalls.length).toBe(1);
+  const committed = JSON.parse(storage.setCalls[0]);
+  expect(self in committed).toBe(false);
+  expect("peer" in committed).toBe(true); // never clobbered by the stale read
+});
+
+test("writeSelf (finding 10): a peer's concurrent removal is not resurrected by a stale read", () => {
+  const self = _presenceWindowIdForTest();
+  const selfAndPeer = JSON.stringify({
+    [self]: { page: "/a", focused: true, ts: 500, topLevel: true },
+    peer: { page: "/b", focused: true, ts: 500, topLevel: true },
+  });
+  const peerLeft = JSON.stringify({
+    [self]: { page: "/a", focused: true, ts: 500, topLevel: true },
+  });
+  // Attempt 0: initial read still sees the peer, transform refreshes self's
+  // own entry (peer untouched). Verify-read sees `peerLeft` (peer removed
+  // itself in between) -> mismatch, retry against the fresher snapshot.
+  const storage = racingStorage([selfAndPeer, peerLeft, peerLeft, peerLeft]);
+  _writePresenceForTest({ storage, now: () => 2000 });
+  expect(storage.setCalls.length).toBe(1);
+  const committed = JSON.parse(storage.setCalls[0]);
+  expect("peer" in committed).toBe(false); // never resurrected
+  expect(committed[self].ts).toBe(2000); // this document's own refresh still lands
+});
+
+test("removeSelf (finding 10): a no-op removal (never registered) never attempts a write", () => {
+  const storage = racingStorage([JSON.stringify({ someoneElse: { page: "/x", focused: true, ts: 1000, topLevel: true } })]);
+  _removePresenceForTest({ storage, now: () => 1000 });
+  expect(storage.setCalls.length).toBe(0);
 });
 
 // ---- narrator election --------------------------------------------------

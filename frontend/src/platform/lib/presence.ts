@@ -69,20 +69,33 @@ function nowOf(env: PresenceEnv): number {
   return (env.now ?? Date.now)();
 }
 
-function readAll(env: PresenceEnv): Record<string, PresenceEntry> {
-  const storage = storageOf(env);
-  if (!storage) return {};
+function parseRegistry(raw: string | null): Record<string, PresenceEntry> {
+  if (!raw) return {};
   try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return {};
     return parsed as Record<string, PresenceEntry>;
   } catch {
-    // A throwing read (blocked storage) or a corrupt value either one reads
-    // as "nobody has anything open" — never as "everybody does".
+    // A corrupt value reads as "nobody has anything open" — never as
+    // "everybody does".
     return {};
   }
+}
+
+function safeGetItem(storage: Pick<Storage, "getItem" | "setItem" | "removeItem">): string | null {
+  try {
+    return storage.getItem(STORAGE_KEY);
+  } catch {
+    // A throwing read (blocked storage) degrades the same way a corrupt
+    // value does — see `parseRegistry`.
+    return null;
+  }
+}
+
+function readAll(env: PresenceEnv): Record<string, PresenceEntry> {
+  const storage = storageOf(env);
+  if (!storage) return {};
+  return parseRegistry(safeGetItem(storage));
 }
 
 function writeAll(map: Record<string, PresenceEntry>, env: PresenceEnv): void {
@@ -95,6 +108,77 @@ function writeAll(map: Record<string, PresenceEntry>, env: PresenceEnv): void {
     // (or absent) entry for this one, which — same direction as every other
     // failure here — degrades to "notify", not to a crash.
   }
+}
+
+/** How many times `mutateRegistry` retries a mutation whose commit lost the
+ *  race to a concurrent write from another document — see that function's
+ *  own doc for what "the race" means. A handful of attempts is plenty:
+ *  contention this tight, repeated this many times in a row, is vanishingly
+ *  unlikely outside of a test deliberately engineering it. */
+const MAX_MUTATE_ATTEMPTS = 5;
+
+/** Finding 10 (code review 2026-09-16): `writeSelf`/`removeSelf` used to do a
+ *  plain read-modify-write against the WHOLE registry — read the map, change
+ *  only this document's own entry, write the whole map back — with nothing
+ *  guarding against another document doing the exact same thing to a
+ *  DIFFERENT entry in between. Concretely: window A's `pagehide` reads
+ *  `{A, B}`, deletes its own entry, and is about to write `{B}` back.
+ *  Meanwhile window B's periodic heartbeat reads `{A, B}` — still, if this
+ *  happens before A's write actually lands — updates its own entry's
+ *  timestamp, and writes `{A(stale), B(refreshed)}` back. If B's write lands
+ *  after A's, A's already-closed entry is resurrected in the registry, and
+ *  stays there — wrongly counted as "open" — until it eventually ages out
+ *  via `PRESENCE_STALE_MS`.
+ *
+ *  Plain `localStorage` has no compare-and-swap, so this can only be
+ *  narrowed, not eliminated outright: read the raw string once, compute the
+ *  mutated map from it, then re-read the raw string immediately before
+ *  writing. If it still matches what the mutation started from, nothing else
+ *  touched the registry in between and it is safe to commit. If it doesn't,
+ *  someone else's write landed in that window — retry the whole mutation
+ *  against THAT fresher snapshot instead of blindly overwriting it. This
+ *  shrinks the vulnerable window from "the entire read-then-write" down to
+ *  "the single instant between the verification read and the `setItem`
+ *  call" — the same order-of-magnitude reduction a plain optimistic-lock
+ *  retry buys anywhere else two writers share one resource with no native
+ *  locking primitive.
+ *
+ *  `transform` receives the freshest known map and returns the map to
+ *  commit — `writeSelf` prunes and upserts its own entry; `removeSelf`
+ *  deletes its own entry (or returns the map unchanged if it was never
+ *  there, so a no-op removal never even attempts a write). */
+function mutateRegistry(
+  transform: (current: Record<string, PresenceEntry>) => Record<string, PresenceEntry>,
+  env: PresenceEnv,
+): void {
+  const storage = storageOf(env);
+  if (!storage) return;
+  let before = safeGetItem(storage);
+  let current = parseRegistry(before);
+  let next = transform(current);
+  // `transform` returning the SAME reference it was handed (see
+  // `removeSelf`'s own no-op path) means there is nothing to commit at all —
+  // never even attempt a write, exactly like the pre-fix code's early
+  // `return` for "I was never in the map".
+  if (next === current) return;
+  for (let attempt = 0; attempt < MAX_MUTATE_ATTEMPTS; attempt++) {
+    const check = safeGetItem(storage);
+    if (check === before) {
+      writeAll(next, env);
+      return;
+    }
+    // Someone else's write landed between our read and our verification —
+    // retry the mutation against the fresher snapshot rather than
+    // clobbering it.
+    before = check;
+    current = parseRegistry(before);
+    next = transform(current);
+    if (next === current) return;
+  }
+  // Contention this persistent (every single attempt raced) is not worth
+  // spinning on forever: commit against the last snapshot seen rather than
+  // silently dropping this document's own update.
+  writeAll(next, env);
 }
 
 function isStale(entry: PresenceEntry, now: number): boolean {
@@ -252,21 +336,25 @@ export function computeTopLevel(isEmbed: boolean, win: Window | undefined): bool
 
 function writeSelf(env: PresenceEnv = {}): void {
   const now = nowOf(env);
-  const map = pruneStale(readAll(env), now);
-  map[windowId] = {
-    page: currentPresencePage(),
-    focused: isFocusedAndVisible(),
-    ts: now,
-    topLevel: computeTopLevel(IS_EMBED, typeof window === "undefined" ? undefined : window),
-  };
-  writeAll(map, env);
+  mutateRegistry((current) => {
+    const map = pruneStale(current, now);
+    map[windowId] = {
+      page: currentPresencePage(),
+      focused: isFocusedAndVisible(),
+      ts: now,
+      topLevel: computeTopLevel(IS_EMBED, typeof window === "undefined" ? undefined : window),
+    };
+    return map;
+  }, env);
 }
 
 function removeSelf(env: PresenceEnv = {}): void {
-  const map = readAll(env);
-  if (!(windowId in map)) return;
-  delete map[windowId];
-  writeAll(map, env);
+  mutateRegistry((current) => {
+    if (!(windowId in current)) return current;
+    const map = { ...current };
+    delete map[windowId];
+    return map;
+  }, env);
 }
 
 /** Test-only — lets a suite drive the heartbeat without waiting on real
