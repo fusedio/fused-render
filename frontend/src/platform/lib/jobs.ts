@@ -290,6 +290,32 @@ export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolea
   });
 }
 
+/** §4 (SPEC-quiet-notifications.md): the exact complement of `jobRows`'s own
+ *  presence-based exclusion — every job `jobRows` drops BECAUSE
+ *  `isRecentOnly` said so, and nothing else. A schedule job (D661) or a
+ *  transient/silent terminal job is excluded from `jobRows` for reasons that
+ *  have nothing to do with presence, so this function excludes them too,
+ *  rather than letting them leak into Recent the moment their page happens
+ *  to be open. Together, `jobRows(jobs, isOpenAnywhere)` and
+ *  `recentJobs(jobs, isOpenAnywhere)` partition every terminal job that
+ *  isn't schedule/transient/silent into exactly one of "still shown" or
+ *  "folded into Recent" — never both, never neither (pinned by
+ *  `jobs.test.ts`'s partition test).
+ *
+ *  A row landing here is not gone: `isRecentOnly` fires client-side, at read
+ *  time, from a live fact about where the user currently is — the very next
+ *  read (a page navigation away, the presence entry going stale) moves the
+ *  SAME job straight into `jobRows`'s output instead, with nothing
+ *  server-side to reconcile. */
+export function recentJobs(jobs: Job[], isOpenAnywhere: (source: string) => boolean): Job[] {
+  return jobs.filter((j) => {
+    if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
+    if (!isTerminal(j)) return false;
+    if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
+    return isRecentOnly(j, isOpenAnywhere);
+  });
+}
+
 export function mergedRows(jobs: Job[]): Job[] {
   const hidden = new Set(
     jobs.filter((j) => j.waiting_for && isRunning(j)).map((j) => j.waiting_for),
@@ -316,6 +342,19 @@ export function terminalNotifications(
   isOpenAnywhere?: (source: string) => boolean,
 ): Job[] {
   return terminalJobs(jobRows(mergedRows(jobs), isOpenAnywhere));
+}
+
+/** §4's own `terminalNotifications` — same `mergedRows`-first composition,
+ *  for the same reason (a load/waiter pair must agree on terminal-ness
+ *  before either is judged), but feeding `recentJobs` instead of `jobRows`:
+ *  this is what `ActivityDock.tsx` hands `RepoUpdatesDock` as its Recent
+ *  section, the complement of what `terminalNotifications` hands it as
+ *  "Needs you"/"Worth keeping". */
+export function recentNotifications(
+  jobs: Job[],
+  isOpenAnywhere: (source: string) => boolean,
+): Job[] {
+  return recentJobs(mergedRows(jobs), isOpenAnywhere);
 }
 
 // ------------------------------------------------------------------ popups

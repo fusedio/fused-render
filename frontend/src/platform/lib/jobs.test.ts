@@ -23,6 +23,8 @@ import {
   POLL_IDLE_MS,
   popupJobs,
   popupTick,
+  recentJobs,
+  recentNotifications,
   terminalNotifications,
   trackSeenIds,
   type Job,
@@ -432,6 +434,29 @@ test("terminalNotifications leaves an ordinary terminal job alone", () => {
   expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
 });
 
+// `recentNotifications` is `terminalNotifications`'s own complement — same
+// `mergedRows`-first composition (ActivityDock.tsx feeds both from the same
+// full snapshot), but selecting exactly what `terminalNotifications`
+// excludes for presence reasons rather than what it keeps.
+
+test("recentNotifications withholds a load's completion while its merged waiter is still running, same as terminalNotifications", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", state: "done", page: "/ai-models/local" }),
+  ];
+  expect(recentNotifications(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+test("recentNotifications surfaces a merged pair as Recent once both are terminal and the page is open", () => {
+  const jobs = [
+    job({ id: "waiter", state: "done", waiting_for: "load", page: "/ai-models/local" }),
+    job({ id: "load", state: "done", page: "/ai-models/local" }),
+  ];
+  expect(
+    recentNotifications(jobs, openHere("/ai-models/local")).map((j) => j.id).sort(),
+  ).toEqual(["load", "waiter"]);
+});
+
 // An index scan's own job (fused_render/server/routers/index.py's
 // mirror_index_jobs_once, "sys:index:<run_id>") stays a live Activity row
 // while running (default "trail" tier) — unlike a scheduled run's job
@@ -796,6 +821,61 @@ test("isRecentOnly: a running job is never recent-only regardless of presence", 
 test("jobRows: a suppressed success drops out when isOpenAnywhere is supplied", () => {
   const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
   expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+// ------------------------------------------------------------- recentJobs
+// SPEC-quiet-notifications.md §4: a job `jobRows` drops for being
+// recent-only does not vanish — it goes to the folded "Recent" section
+// instead. `recentJobs` is the complement of `jobRows`'s own suppression
+// check: exactly the rows `jobRows` excludes BECAUSE `isRecentOnly` said so,
+// nothing more (a schedule job, or a transient/silent terminal job, is still
+// never shown anywhere — those are unrelated exclusions, not presence-based).
+
+test("recentJobs: a suppressed success is exactly what Recent holds", () => {
+  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(recentJobs(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(["dl"]);
+});
+
+test("recentJobs: empty when nothing has the job's page open", () => {
+  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(recentJobs(jobs, openNowhere)).toEqual([]);
+});
+
+test("recentJobs: an error is never recent, even with its page open (goes to Needs you, not Recent)", () => {
+  const jobs = [job({ id: "dl", state: "error", tier: "trail", page: "/ai-models/local" })];
+  expect(recentJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+test("recentJobs: a running job never appears in Recent regardless of presence", () => {
+  const jobs = [job({ id: "dl", state: "running", tier: "trail", page: "/ai-models/local" })];
+  expect(recentJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
+});
+
+test("recentJobs: a scheduled run's own job never appears in Recent (D661 still applies)", () => {
+  const jobs = [
+    job({ id: "sys:schedule:e1", state: "done", tier: "transient", page: "/tasks" }),
+  ];
+  expect(recentJobs(jobs, openHere("/tasks"))).toEqual([]);
+});
+
+test("recentJobs: an ordinary job whose page is NOT open stays out of Recent (it's in Worth keeping instead)", () => {
+  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
+  expect(jobRows(jobs, openNowhere).map((j) => j.id)).toEqual(["dl"]);
+  expect(recentJobs(jobs, openNowhere)).toEqual([]);
+});
+
+test("recentJobs: jobRows and recentJobs partition a mixed snapshot with no overlap and no loss", () => {
+  const jobs = [
+    job({ id: "seen", state: "done", tier: "trail", page: "/ai-models/local" }),
+    job({ id: "unseen", state: "done", tier: "trail", page: "/claude-config" }),
+    job({ id: "failed", state: "error", tier: "trail", page: "/ai-models/local" }),
+    job({ id: "running", state: "running", tier: "trail", page: "/ai-models/local" }),
+  ];
+  const open = openHere("/ai-models/local");
+  const rows = jobRows(jobs, open);
+  const recent = recentJobs(jobs, open);
+  expect(rows.map((j) => j.id).sort()).toEqual(["failed", "running", "unseen"]);
+  expect(recent.map((j) => j.id)).toEqual(["seen"]);
 });
 
 test("jobRows: the same job still shows when nothing has its page open", () => {
