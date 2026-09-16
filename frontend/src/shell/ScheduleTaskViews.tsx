@@ -3347,7 +3347,7 @@ function TaskNode({
           <a
             className="tasks-act tasks-act--page"
             href={page}
-            aria-label={`Open ${task.task_id} in Explorer`}
+            aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
             data-hint="Open in Explorer"
             onClick={(e) => {
               // A modified press is the browser's (the row's own link rule).
@@ -3427,7 +3427,7 @@ function TaskNode({
           <button
             type="button"
             className="tasks-act tasks-act--delete"
-            aria-label={`Delete ${task.task_id} forever`}
+            aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
             // The same guard the card door wears: a live run cannot be erased
             // (409), so the trash greys out and says why (review, PR #1049).
             disabled={eraseBlocked(task)}
@@ -3902,7 +3902,7 @@ function TaskNode({
             // pops (tone: "info" default) rather than staying in the panel —
             // see DECISIONS-toasts-become-notifications.md's retention-
             // narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onReload?.();
           }}
         />
@@ -4971,7 +4971,7 @@ function TaskCard({
             // A clean delete now only pops (tone: "info" default) rather
             // than staying in the panel — see DECISIONS-toasts-become-
             // notifications.md's retention-narrowing reversal.
-            notify({ title: `Deleted ${task.task_id}`, tone: "info" });
+            notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
             onErased();
           }}
         />
@@ -5010,7 +5010,7 @@ function TaskCard({
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"
-              aria-label={`Delete ${task.task_id} forever`}
+              aria-label={`Delete ${shortTaskId(task.task_id)} forever`}
               data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}
               disabled={busy || eraseBlocked(task)}
               onClick={() => setErasing(true)}
@@ -5026,7 +5026,7 @@ function TaskCard({
             <a
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}
-              aria-label={`Open ${task.task_id} in Explorer`}
+              aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
               data-hint="Open in Explorer"
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
@@ -5043,7 +5043,7 @@ function TaskCard({
               type="button"
               className="tasks-act tasks-card-act tasks-act--run"
               title={run.title}
-              aria-label={`${run.label} ${task.task_id}`}
+              aria-label={`${run.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void runNow(run)}
             >
@@ -5055,7 +5055,7 @@ function TaskCard({
               type="button"
               className={"tasks-act tasks-card-act tasks-act--" + file.kind}
               title={file.title}
-              aria-label={`${file.label} ${task.task_id}`}
+              aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
               disabled={busy}
               onClick={() => void refile(file)}
             >

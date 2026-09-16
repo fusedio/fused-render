@@ -448,10 +448,9 @@ describe("the trigger's column", () => {
     // INLINE, AT THE END OF THE LAST SENTENCE (Akshil, 2026-09-16): the prose
     // box gives up its box so the trigger flows in the same line as the last
     // paragraph, which is made inline for it. No grid, no positioning.
-    expect(ruleFor(".chat-root .seg-block.has-trigger > .seg-text")).toContain("display: contents");
-    expect(ruleFor(".chat-root .seg-block.has-trigger > .seg-text > p:last-child")).toContain(
-      "display: inline",
-    );
+    // …by DOM, not by sheet: SegmentView portals the word into the last
+    // paragraph / list item, so the sheet positions nothing.
+    expect(sheet).not.toContain("display: contents");
     expect(sheet).not.toContain("grid-row: 1");
     expect(sheet).not.toContain("--c-run-trigger-w");
   });

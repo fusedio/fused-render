@@ -510,7 +510,7 @@ describe("the peek header", () => {
     // …and every later mention of the deleted task is the SNAPSHOT — the prop,
     // the toast and the advance alike.
     expect(HEAD).toContain("const erased = erasing;");
-    expect(HEAD).toContain("notify({ title: `Deleted ${erased.task_id}`, tone: \"info\" });");
+    expect(HEAD).toContain("notify({ title: `Deleted ${shortTaskId(erased.task_id)}`, tone: \"info\" });");
     expect(HEAD).toContain("advancePast(erased.key, eraseOrder.current);");
     expect(HEAD).not.toContain("setErasing(true)");
     // …and the arrows cannot reach the panel from inside the dialog in the

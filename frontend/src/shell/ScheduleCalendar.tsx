@@ -174,6 +174,7 @@ import {
   taskRunIntent,
 } from "./tasks-lib";
 import type { TaskRunIntent } from "./tasks-lib";
+import { shortTaskId } from "@platform/lib/task-id";
 // The Board's own status ring, reused rather than re-drawn: one vocabulary means
 // one glyph too, so a Done row in the popover is the same mark as a Done card on
 // the board — red on Blocked, and dashed (below) when it is only projected.
@@ -760,7 +761,7 @@ function ChipPopover({
           style={{ ["--chip" as string]: `var(--task-c${chip.colour})` }}
           aria-hidden="true"
         />
-        <span className="schedule-cal-pop-id">{task.task_id}</span>
+        <span className="schedule-cal-pop-id">{shortTaskId(task.task_id)}</span>
         {/* No ↻ glyph beside the id any more (Akshil, 2026-08-19). It was
             decorative by its own admission — the recurrence is spelled out in
             words two lines down — and a glyph whose label is already printed

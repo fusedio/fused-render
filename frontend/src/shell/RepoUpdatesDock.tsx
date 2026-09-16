@@ -43,6 +43,7 @@
 // STAGED-PROMPT store this row writes into is explorer/lib territory, which
 // only shell-side code reaches.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
@@ -285,10 +286,10 @@ function AttentionRowView({
   row: AttentionRow;
   onDismiss: () => void;
 }) {
-  const title = `${row.taskId} needs your input`;
+  const title = `${shortTaskId(row.taskId)} needs your input`;
   const dismiss: NotificationCardDismiss = {
     onClick: onDismiss,
-    ariaLabel: `Dismiss ${row.taskId} needs your input`,
+    ariaLabel: `Dismiss ${shortTaskId(row.taskId)} needs your input`,
   };
   const href = row.href;
   return (
@@ -303,7 +304,7 @@ function AttentionRowView({
       // query string, or the plain "/tasks" fallback when the task names no
       // folder at all — both are URLs, never an fs path, so `navigate` (which
       // takes an fs path and builds its own url) is the wrong call here.
-      rowClick={{ onClick: () => navigateUrl(href), title: `Open ${row.taskId}` }}
+      rowClick={{ onClick: () => navigateUrl(href), title: `Open ${shortTaskId(row.taskId)}` }}
     />
   );
 }

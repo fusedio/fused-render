@@ -311,19 +311,12 @@
 }
 /* INLINE, AT THE END OF THE LAST SENTENCE (Akshil, 2026-09-16). The word used
    to sit in the block's bottom-right corner, on a reserved gap in the last
-   line — a corner affordance, level across the log. Now it reads as part of the
-   response: `.seg-text` gives up its box (`display: contents`) so the trigger
-   is a sibling of the paragraphs in the same flow, and the LAST paragraph is
-   inline, so the word follows its final character on the same line. A last
-   child that is not prose (a list, code, a table, a quote) keeps its block and
-   the word starts the line below it, at the left, where the next sentence
-   would have. */
-.chat-root .seg-block.has-trigger > .seg-text {
-  display: contents;
-}
-.chat-root .seg-block.has-trigger > .seg-text > p:last-child {
-  display: inline;
-}
+   line — a corner affordance, level across the log. Now it reads as part of
+   the response: SegmentView portals the button INTO the last paragraph or list
+   item (`SegBlock`, `triggerSeat`), so it follows the final character on the
+   same line with no layout rule at all. A last child that is not prose (code,
+   a table, a quote) keeps the word as a sibling on the line below, at the
+   left, where the next sentence would have started. */
 /* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
    word on the FIRST SENTENCE of the prose that follows, not the paragraph's
    last line: `SegmentView` draws that prose as two blocks (`leadSplit`), the

@@ -113,7 +113,7 @@
   --tasks-row-pad-y: 10px;
   --tasks-msg-pad-y: 8px;
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
-  --tasks-row-gap: 10px; /* the flex gap every row here uses */
+  --tasks-row-gap: 4px; /* the flex gap every row here uses (10px until 2026-09-16: "consistent, 4px, no more") */
   --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
   --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
@@ -2309,17 +2309,6 @@ button.tasks-draft-pill.is-on:focus-visible {
   border-color: var(--border);
 }
 
-/* -- The id, the folder and the title sit closer (Akshil, 2026-09-16) -------
-   The row's flex gap is 10px between every pair of children, and the folder tag
-   adds 5px of its own padding on each side, so id→folder→title read as 15px
-   visual gaps — "quite some padding". Pulling 4px back on each of the two seams
-   makes them 6px of gap (11px visual), and touches nothing else on the row: the
-   ring→id seam and everything after the title keep the 10px. */
-.tasks-row > .tasks-id--task,
-.tasks-row > .schedule-tv-id--tag {
-  margin-right: calc(var(--tasks-row-gap) * -0.4);
-}
-
 /* -- The hover strip floats over the title's tail (Akshil, 2026-09-16) -------
    The row actions used to be flex items at rest (opacity 0, but 22px+ of
    layout each), so the title ellipsised early to leave room for buttons nobody
@@ -2332,6 +2321,15 @@ button.tasks-draft-pill.is-on:focus-visible {
    The suffix marks (`.tasks-row-file`, `.tasks-row-sched`) stay above the wash
    (z-index 3 < the buttons' 4) so their tooltips keep answering when a long
    title parks them under the fade. */
+/* THE SUFFIX MARKS STAY OUT FROM UNDER THE BUTTONS (Akshil, 2026-09-16: "when
+   I hover I don't see the suffix icon"). A long title parks its file/clock
+   mark right before the seat, exactly where the strip lands. So the spacer
+   between them is never narrower than the strip: the marks sit at least this
+   far left of the buttons and the fade, and only a title long enough to
+   overflow gives the room up — a short title's spacer is wider anyway. */
+.tasks-row > .tasks-grow {
+  min-width: 76px;
+}
 .tasks-row > .tasks-acts {
   position: relative;
   flex: 0 0 0px;
