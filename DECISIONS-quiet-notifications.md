@@ -1328,3 +1328,186 @@ same branch before this fix's edits:
 run as part of this fix's targeted set); `bun --cwd frontend test` → 6224
 pass, 0 fail; `bunx tsc --noEmit -p frontend` clean; `node
 frontend/scripts/check-boundaries.mjs` → OK (812 files).
+
+## Fix 17: CHANGE 1 — every notification names its emitting page
+
+**User's exact words** (from a screenshot): "every notification imo should
+have a top row/section for the 'emitting page' context." Motivating bug: a
+toast reading only "Public link token flash finished" with nothing saying
+which project/app/page it came from.
+
+**Read-only enumeration performed first** (per the dispatch's own
+requirement), of every surface that renders a notification:
+- The popup card: `frontend/src/platform/ui/MessagePopupCard.tsx` (client
+  messages), `frontend/src/platform/ui/JobPopupCard.tsx` (jobs, untouched —
+  already wired, see below).
+- The panel: `frontend/src/shell/RepoUpdatesDock.tsx` — job rows (`JobRow`,
+  already wired), grouped job rows (`GroupJobRow`, NOT wired), waiting-task
+  attention rows (`AttentionRowView`, NOT wired), client-message rows
+  (`MessageRowView`, NOT wired).
+
+**The reused labeller**: `fused_render/jobs.py`'s `origin_for_page(page, *,
+default="")` is the existing, already-established "who raised this"
+labeller — a closed shell-route table, else a project display name, else a
+bare filename stem. `Job.origin` (computed from it) was already wired onto
+`JobRow` via `caption={job.origin || undefined}` in PR #1104
+(commit c90e0ecfb), predating this branch — CHANGE 1 was already half-built
+for plain job rows before this fix started. The true gap was: (1) grouped
+job rows lacked the caption entirely, (2) client-raised messages had no
+`origin` concept at all — `NotificationInput.source`/`StoredNotification`
+never stored or exposed a rendered label, only used `source` at
+suppression time, and (3) waiting-task attention rows had no origin either.
+
+Server-side `origin_for_page` cannot be reached synchronously from a
+client-raised `notify()` call or from a waiting task's own row (no request
+round trip happens at either site) — so a client-side counterpart,
+`labelForSource(source)`, was added, mirroring exactly `origin_for_page`'s
+own bare-path fallback branch (basename, extension stripped) since every
+`source` these call sites set is already a bare fs path. This is the
+reused-not-reinvented precedent line: one labelling *rule*, one
+server-side implementation reading it from routes/projects, one
+client-side implementation reading the same rule off a bare path with no
+round trip available.
+
+**Where `labelForSource` lives, and why it moved mid-fix**: it was first
+written inline in `frontend/src/platform/lib/notifications.ts`, then moved
+to `frontend/src/platform/lib/format.ts` (zero imports, zero side effects)
+after `shell/tasks-lib.ts` needed it too and importing it via
+`notifications.ts` dragged in `platform/lib/router.ts`'s module-scope
+`location` read, breaking `tasks-lib.test.ts` (which has never needed a DOM
+shim) with `ReferenceError: location is not defined`. `notifications.ts`
+now imports it from `format.ts` directly and re-exports it for existing
+callers.
+
+**What changed**:
+- `frontend/src/platform/lib/format.ts`: new `labelForSource(source)`.
+- `frontend/src/platform/lib/notifications.ts`: `StoredNotification` gains
+  `origin?: string`, computed in `toStored()` via `labelForSource(input.source)`
+  (`|| undefined`, so "" never stores — same "no line at all" rule
+  `Job.origin`/`caption` already follow, never a placeholder).
+- `frontend/src/platform/ui/MessagePopupCard.tsx`: passes
+  `caption={notification.origin || undefined}` to its `NotificationCard` —
+  the popup half of the fix.
+- `frontend/src/shell/RepoUpdatesDock.tsx`: `MessageRowView` and
+  `AttentionRowView` both gain `caption={... .origin || undefined}`;
+  `GroupJobRow` gains `caption={members[0]?.origin || undefined}`, mirroring
+  the existing "oldest member represents the row" convention already used
+  for `title`/`openPage`.
+- `frontend/src/shell/tasks-lib.ts`: `AttentionRow` gains `origin: string`,
+  computed in `attentionRows()` via `labelForSource(task.target || task.project)`
+  — the same value `taskSource()` (task-status-notify.ts) already uses for
+  suppression, now also rendered.
+
+**Rendering itself already satisfied every rule in the brief** because it
+reuses `NotificationCard`'s pre-existing `caption` prop (PR #1104) and its
+`.dl-origin` CSS (`frontend/src/styles/notifications.css`): no source (or
+one resolving to "") draws no element at all (never a placeholder);
+`.dl-origin` is `font-size: 11px; color: var(--fg-muted)` (secondary,
+theme-aware via the CSS variable, does not clip the title, which sits on
+its own line above); it renders on its own line, never as a second click
+target (the row's own `rowClick`/`onClick` destination is unchanged);
+right-ellipsis is acceptable because every value here is a short basename
+or route label, never a raw long path.
+
+**Tests**: `frontend/src/platform/lib/notifications.test.ts` (labelForSource
+basename/passthrough/empty; `origin` stored with/without `source`);
+`frontend/src/shell/tasks-lib.test.ts` (`origin` from target, from project
+when target is empty, "" when neither); `frontend/src/shell/RepoUpdatesDock.test.tsx`
+(caption present/absent on job rows, grouped rows using the oldest member,
+message rows, waiting-task rows).
+
+## Fix 18: CHANGE 2 — a finished task is now retained and clickable (reversal)
+
+**This reverses this branch's own earlier position.** Until this fix,
+`task-status-notify.ts`'s header comment argued that a plain "it's over"
+confirmation "is not something to hunt for again," and `in_progress -> done`
+returned `{ title, tone: "info", source }` with no `page` — which
+`lib/notifications.ts`'s `isRetained` (`Boolean(input.action || input.page)`)
+resolves to a transient popup, shown once and never kept.
+
+**The user reversed this, from the same screenshot**: "the user does want
+to open the app along with claude template to go back." A finished run is
+exactly the moment someone wants to jump back into it — losing the row the
+instant the popup's ~2.5s expire was the bug this fix closes, not a
+feature working as designed.
+
+**What changed** (`frontend/src/shell/task-status-notify.ts`): the
+`in_progress -> done` branch now returns `page: taskDestination(task)` —
+the same destination `in_progress -> blocked` already carries, which alone
+makes `isRetained` keep the row — plus a new `recent: true`. `source`
+(`taskSource(task)`) is unchanged, so suppression when the run's own
+chat/project is already on screen still applies exactly as before; being
+retained once shown is not the same as always showing it.
+
+**Where it actually lands — verified, not assumed**: adding only `page`
+would have landed the row UNFOLDED at the top of RepoUpdatesDock.tsx's
+"Worth keeping" section, because `messagesTrail` (all retained,
+non-attention messages) renders unconditionally with no cap or fold. That
+contradicts the brief's requirement that a finished success land in the
+FOLDED §4 "Recent" section, not shout at the top of the list. Fixed by
+adding a new opt-in `recent?: boolean` to `NotificationInput`/
+`StoredNotification`, threaded into `RepoUpdatesDock.tsx`'s existing
+job-only §4 "Recent" fold (previously `recent`/`boundedRecent`/
+`boundedRecentGroups`, job rows only) — now extended to messages via
+`messagesRecent`/`boundedMessagesRecent`, following the exact same
+cap/fold/heading-count/total-exclusion pattern jobs already used:
+`messagesTrail` now excludes `recent` messages, `total` excludes
+`messagesRecent` (a settled call — a success persisting is fine, a success
+shouting is not), and the "Recent (N)" heading count includes both bounded
+job groups and bounded recent messages.
+
+**The stale block comment was rewritten**, not left in place, to document
+both the new behaviour and the reversal with the user's own stated reason
+(see the file itself for the full text) — it explicitly calls out that
+this reverses the file's own prior position rather than presenting the new
+behaviour as if it had always been the plan.
+
+**Tests**:
+- `frontend/src/shell/task-status-notify.test.ts`: the done-branch test now
+  asserts `page`, `recent: true`, and that `source`/`tone`/`title` are
+  unchanged.
+- `frontend/src/shell/useTaskStatusNotify.test.ts`: the integration-level
+  done test now asserts the notification is retained (`getRetainedNotifications().length === 1`)
+  with `page` defined and `recent: true`, replacing the old assertion that
+  retention was empty.
+- `frontend/src/shell/RepoUpdatesDock.test.tsx`: a `recent` message lands
+  in the folded "Recent" section (not drawn until the toggle opens it, not
+  counted in the chip total, heading shows "Recent (1)"); opening the
+  toggle reveals a clickable row (`dl-row-open` class + a real `onClick`
+  wired to its `page` — NOT `role="button"`, since `MessageRowView` sets an
+  explicit ARIA `role` of "status"/"alert" for its content, which
+  `NotificationCard` deliberately lets win over `rowClick`'s own implicit
+  `role="button"`); a non-`recent` retained message still lands in "Worth
+  keeping" unfolded (regression pin for existing behaviour).
+
+## Fix 17/18 verification
+
+Commands run from the worktree root:
+- `bun --cwd frontend test` → 6239 pass, 0 fail, across 297 files (two runs
+  confirmed stable; a `tasksPulse.test.ts` "N subscribers" failure seen once
+  mid-fix, before `useTaskStatusNotify.test.ts` was updated, did not
+  reproduce on a clean checkout of the pre-fix commit or on a second run
+  after the fix — a pre-existing flake, not a regression from this fix).
+- `bunx tsc --noEmit -p frontend` → clean, no output.
+- `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (812 files)`.
+- No Python/server files were touched by either fix (both are frontend-only
+  — `origin_for_page` itself was read but not modified), so no targeted
+  pytest run was required. `tests/` was grepped for every frontend symbol
+  touched (`labelForSource`, `AttentionRow`, `StoredNotification`,
+  `NotificationInput`, `dl-origin`, `messagesRecent`/`messagesTrail`,
+  `origin_for_page`); the only hits are pre-existing comments/assertions
+  about the server-side `origin_for_page`, which was not changed.
+
+**Not verified — no browser/visual tooling available in this session**:
+- That `.dl-origin`'s caption actually reads legibly, doesn't clip, and
+  looks correct in both light and dark theme on a real popup/panel render.
+- That the folded "Recent" section's toggle interaction feels right and the
+  caption doesn't crowd the row visually at real notification-panel width.
+- That truncation of a genuinely long origin label (this branch's values
+  are all short basenames/route labels in practice, per `labelForSource`'s
+  own fallback) doesn't produce an awkward wrap given `.dl-origin`'s
+  existing `white-space: nowrap; text-overflow: ellipsis` (right-ellipsis,
+  pre-existing, not changed by this fix).
+- A human should open the app, trigger a real "Task finished" transition,
+  and a real client-raised message with a `source` set, and visually
+  confirm both the popup and panel rows in light and dark mode.
