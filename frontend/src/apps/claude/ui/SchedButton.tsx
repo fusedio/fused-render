@@ -45,6 +45,27 @@ export interface SchedButtonProps {
   attachments?(): readonly Attachment[];
   /** Where "Back to chat" has to land — the host's own path. */
   back: string;
+  /**
+   * THE COMPOSER'S OWN AUTOSAVE, STOOD DOWN BEFORE THE HOP WRITES (Bugbot,
+   * PR #1180).
+   *
+   * This button and the box beside it write the SAME record, and the box's
+   * write is debounced: a keystroke 300 ms before Continue is a PUT that has
+   * not left yet, and a keystroke 700 ms before it is a PUT already on the
+   * wire. Either can land AFTER the hop's own PUT — with older words, and with
+   * the chat tempdir's attachment paths that `POST /api/schedule` refuses — and
+   * the hop's single 409 retry never fires, because a write that states no
+   * version is not refused by anything.
+   *
+   * So the hop asks the composer to finish first. `flush` sends what is pending,
+   * `settle` waits for what is out, and the version it answers with is the one
+   * the hop then states: after that, the straggler is the write that gets
+   * refused rather than the one that wins.
+   *
+   * Optional because the landing card renders this button through the same
+   * component; a host with no autosave to settle simply writes as before.
+   */
+  settleDraft?(): Promise<number | undefined>;
   /** A pending scheduled message shuts this door as well as the composer's
    *  (`schedBlocked`, PR4). Never true for the landing card (T:16851). */
   disabled?: boolean;
@@ -156,6 +177,7 @@ export function SchedButton({
   draft,
   attachments,
   back,
+  settleDraft,
   disabled,
   disabledReason,
   onCancel,
@@ -234,14 +256,21 @@ export function SchedButton({
      * saved is the same empty card by another road, and this side still has the
      * words: staying put with a toast is the only answer that loses nothing.
      *
+     * AND THE COMPOSER FINISHES BEFORE IT STARTS (`settleDraft`). Waiting here
+     * rather than at the press because the attachment copies above are the slow
+     * half: a debounced keystroke can fire during them, and what has to be
+     * settled is whatever is outstanding at the moment this write leaves.
+     *
      * ONE RETRY ON A CONFLICT, the same single retry `useAutosave` makes and for
-     * the same reason: the composer's own debounced PUT can be on the wire with
-     * the same `If-Match`, and one of the two is refused. `saveChatDraft` has
-     * already taken the server's version by the time it answers, so the second
-     * attempt states one that exists.
+     * the same reason: another writer — the other tab, a row's trash — can have
+     * taken the version this states. `saveChatDraft` has already taken the
+     * server's version by the time it answers, so the second attempt states one
+     * that exists, and it states it from the map rather than from `seen`.
      */
     const hand = (carried: DraftAttachment[]): void => {
-      void saveChatDraft(key, text, carried)
+      void Promise.resolve(settleDraft?.())
+        .then((seen) =>
+          saveChatDraft(key, text, carried, seen === undefined ? undefined : { ifMatch: seen }))
         .then((out) => (out.ok || !("conflict" in out) ? out : saveChatDraft(key, text, carried)))
         .then((out) => {
           if (out.ok) {
@@ -274,7 +303,7 @@ export function SchedButton({
     void copyToTaskShots(tray)
       .catch((): DraftAttachment[] => [])
       .then(hand);
-  }, [disabled, draft, attachments, file, sessionId, back, onNavigate]);
+  }, [disabled, draft, attachments, file, sessionId, back, onNavigate, settleDraft]);
 
   const cancel = useCallback(() => {
     setOpen(false);

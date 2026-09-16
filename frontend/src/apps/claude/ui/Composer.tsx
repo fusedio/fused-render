@@ -585,6 +585,24 @@ export function ComposerCard({
   autosaveRef.current = autosave;
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  /**
+   * THE HOP'S HANDLE ON THIS BOX'S AUTOSAVE (Bugbot, PR #1180).
+   *
+   * The Schedule button writes the record this composer is writing, and until
+   * now the two simply raced: a keystroke a moment before Continue is a PUT
+   * still on its debounce, or already on the wire, and either could land after
+   * the hop's — putting the older words and the chat's own tempdir attachment
+   * paths back on the record the task card was about to open.
+   *
+   * `flush` then `settle` is the whole of the fix: send what is pending, wait
+   * for what is out, and answer with the version that write made so the hop can
+   * state it. Stable identity (the ref, as everything else here does), so
+   * handing it to the button does not rebuild that button's callbacks.
+   */
+  const settleDraft = useCallback((): Promise<number | undefined> => {
+    autosaveRef.current.flush();
+    return autosaveRef.current.settle();
+  }, []);
   const discardAttachments = useRef(onDiscardAttachments);
   discardAttachments.current = onDiscardAttachments;
   /**
@@ -642,6 +660,19 @@ export function ComposerCard({
         const seen = draftVersion(key);
         if (gone.includes(key) && (certain || seen !== undefined)) {
           forgetDraftVersion(key);
+          // …UNLESS THE READER IS MID-SENTENCE IN THIS BOX (Bugbot, PR #1180).
+          // `gone` is news about a RECORD, and a reader typing a follow-up holds
+          // words that are newer than whatever was deleted — the send's own
+          // DELETE is the everyday way this arrives. Emptying the box on it
+          // takes a sentence nobody asked to spend, which is the one thing no
+          // rule here may do; the record is gone, so the version is forgotten
+          // above and the next save simply creates it again.
+          //
+          // A DISCARD MADE ON THIS PAGE IS STILL OBEYED (`certain`): trashing
+          // this draft's own row is the reader saying so in the first person,
+          // and answering that with "no, you were typing" would be the button
+          // not working.
+          if (!certain && focusedRef.current && textRef.current.trim()) return;
           adoptRef.current(null);
           return;
         }
@@ -875,9 +906,24 @@ export function ComposerCard({
     // instead: the PUT lands, this client takes the version it made, and the
     // DELETE states that one. Un-awaited by `submit` itself, because a send must
     // still be one tick for the caller.
+    //
+    // …AND IT DELETES THE VERSION THE SENT WORDS MADE, NOT "whatever is there
+    // when it fires" (Bugbot again, second round). Waiting is not enough on its
+    // own: the reader can be typing a FOLLOW-UP through that wait, and a
+    // follow-up that saves first is then the record a version-less — or
+    // freshly-read — DELETE removes. So the version is the one `settle` answers
+    // with (the version this composer's own write earned), or, when nothing was
+    // on the wire, the one this client held before the send. A newer record than
+    // that is somebody's unsent words, and the server refuses the DELETE (409)
+    // rather than spending them.
     const key = draftKeyRef.current;
+    const held = draftVersion(key);
+    const pending = autosaveRef.current.settle();
     autosaveRef.current.reset({ text: "", attachments: [] });
-    void autosaveRef.current.settle().then(() => deleteChatDraft(key));
+    void pending.then((made) => {
+      const spent = made ?? held;
+      return deleteChatDraft(key, spent === undefined ? undefined : { ifMatch: spent });
+    });
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);
@@ -1051,6 +1097,8 @@ export function ComposerCard({
             draft={draft}
             {...(attachments ? { attachments } : {})}
             back={back}
+            // The box finishes writing before the hop does — see `settleDraft`.
+            settleDraft={settleDraft}
             // TWO GUARDS WITH DIFFERENT SCOPES, which is what T:12075/12099 read
             // off `schedBlocked() || annNavLocked()` for every `.schedbtn`:
             //

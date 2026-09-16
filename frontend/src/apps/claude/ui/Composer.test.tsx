@@ -696,6 +696,17 @@ test("a newer version is re-read and adopted, unless the reader is typing", asyn
   // that never existed. `certain` is what lets a discard made on THIS page
   // through the same door — see the test above.
   expect(body).toContain("if (gone.includes(key) && (certain || seen !== undefined)) {");
+  // …AND EVEN A TRUSTED `gone` DOES NOT EMPTY A BOX SOMEBODY IS TYPING IN
+  // (Bugbot, PR #1180). The send's own DELETE is the everyday way this arrives,
+  // and the reader can be a sentence into a FOLLOW-UP by the time it lands: the
+  // record is gone either way (the version is forgotten first, so the next save
+  // creates it again), but the words in front of them are theirs. A discard
+  // made on this page (`certain`) is still obeyed — that one is the reader
+  // saying so in the first person.
+  expect(body).toContain(
+    "if (!certain && focusedRef.current && textRef.current.trim()) return;");
+  expect(body.indexOf("forgetDraftVersion(key);")).toBeLessThan(
+    body.indexOf("if (!certain && focusedRef.current"));
   expect(body).toContain("if (seen === undefined) return;");
   expect(body).toContain("if (!row || row.version <= seen) return;");
   expect(body).toContain("if (focusedRef.current && textRef.current.trim()) return;");

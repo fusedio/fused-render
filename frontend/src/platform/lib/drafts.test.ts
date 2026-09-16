@@ -510,6 +510,145 @@ describe("settle", () => {
     forgetDraftVersion(key);
   });
 
+  /**
+   * A FAKE SERVER THAT ACTUALLY KEEPS A VERSION, and answers each request only
+   * when this test says so — which is the only way to write down an
+   * INTERLEAVING (a PUT out, a second PUT out, then a DELETE) rather than a
+   * sequence.
+   */
+  const versioned = (key: string) => {
+    const state = { version: 0, text: "", gone: true };
+    const calls: { method: string; ifMatch: string | null; text?: string }[] = [];
+    const queued: (() => void)[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const method = init?.method ?? "GET";
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as { text?: string })
+        : undefined;
+      calls.push({ method, ifMatch: headers["If-Match"] ?? null, ...(body ? { text: body.text } : {}) });
+      return new Promise<Response>((resolve) => {
+        queued.push(() => {
+          const now = state.gone ? 0 : state.version;
+          const want = headers["If-Match"];
+          const answer = (status: number, json: unknown) =>
+            resolve({ ok: status < 300, status, json: () => Promise.resolve(json) } as unknown as Response);
+          if (want !== undefined && Number(want) !== now) {
+            answer(409, {
+              error: "version",
+              key,
+              record: state.gone ? null : chatRecord(state.text, state.version),
+              version: now,
+            });
+            return;
+          }
+          if (method === "DELETE") {
+            state.gone = true;
+            answer(200, { ok: true, key, removed: true });
+            return;
+          }
+          state.gone = false;
+          state.version = now + 1;
+          state.text = body?.text ?? "";
+          answer(200, { ok: true, key, draft: chatRecord(state.text, state.version) });
+        });
+      });
+    }) as typeof fetch;
+    return {
+      calls,
+      state,
+      release: async (at: number) => {
+        queued[at]!();
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      },
+      restore: () => { globalThis.fetch = real; },
+    };
+  };
+
+  test("a follow-up typed through the wait is not what the send deletes", async () => {
+    // THE SECOND ROUND OF THE SAME BUG (Bugbot, PR #1180). Waiting is not
+    // enough on its own: the reader can type a FOLLOW-UP while the send's PUT
+    // is still out, and a DELETE that reads its version at fire time then
+    // states the FOLLOW-UP's and spends words nobody sent.
+    const key = "new:/Users/me/follow-up";
+    forgetDraftVersion(key);
+    const f = versioned(key);
+    let local = "";
+    const box = renderAutosave(
+      { text: "" },
+      (value: { text: string }, opts) => saveChatDraft(key, value.text, [], opts),
+      {
+        conflict: {
+          // The reader IS in this box — they are typing the follow-up — so a
+          // refusal keeps their words and retries once against the version it
+          // has just learnt.
+          focused: () => true,
+          localText: () => local,
+          adopt: () => {},
+        },
+      },
+    );
+    // A draft already on the server, so every write below is conditional.
+    local = "the sent line";
+    box.rerender({ text: local });
+    act(() => box.current().flush());
+    await f.release(0);
+    expect(draftVersion(key)).toBe(1);
+
+    // …and now the send, with that same line still in the box: a second write
+    // goes out (the tray changed, say) and is still on the wire.
+    local = "the sent line, and a comma";
+    box.rerender({ text: local });
+    act(() => box.current().flush());
+    const handle = box.current();
+    const held = draftVersion(key);
+    const pending = handle.settle();
+    handle.reset({ text: "" });
+
+    // THE FOLLOW-UP, typed while that PUT is out. It states the version this
+    // client knows (1), which the sent write is about to move past.
+    local = "one more thing";
+    box.rerender({ text: local });
+    act(() => box.current().flush());
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT", "PUT"]);
+    expect(f.calls[2]!.ifMatch).toBe("1");
+
+    // …and the reader keeps typing while that PUT is out, which is what makes
+    // the refusal below a KEPT sentence rather than an adopted one.
+    local = "one more thing —";
+
+    let spent: { ok: boolean } | null = null;
+    const send = pending.then(async (made) => {
+      const at = made ?? held;
+      spent = await deleteChatDraft(key, at === undefined ? undefined : { ifMatch: at });
+    });
+    // The sent write lands: version 2, and that is the number the send states.
+    await f.release(1);
+    expect(f.calls[3]!.method).toBe("DELETE");
+    expect(f.calls[3]!.ifMatch).toBe("2");
+    // The follow-up's own write is refused (it stated 1) and retries once
+    // against the version it has just learnt…
+    await f.release(2);
+    expect(f.calls[4]).toEqual({ method: "PUT", ifMatch: "2", text: "one more thing" });
+    // …which lands: the record now holds the follow-up, at version 3.
+    await f.release(4);
+    // AND THE DELETE IS REFUSED, because the record is no longer the one the
+    // send was about. The follow-up survives on the server, and nothing told
+    // this composer its key was gone.
+    await f.release(3);
+    await send;
+    expect(spent!.ok).toBe(false);
+    expect(f.state.gone).toBe(false);
+    expect(f.state.text).toBe("one more thing");
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
   test("a write reset out from under speaks for nobody when it answers", async () => {
     // The other half of the send: `reset` disowns what is already out. Without
     // it the held PUT's 409 would resolve into `adopt` and put the sent sentence
@@ -583,9 +722,16 @@ describe("the chat does not rekey its own draft", () => {
     // it put the sent message back as a live draft.
     const src = composer();
     expect(src).toContain("const key = draftKeyRef.current;");
+    // The handle is taken BEFORE the reset — `settle` answers for what is on
+    // the wire as of the call — and the DELETE names the version that write
+    // made rather than reading one at fire time (Bugbot, second round: a
+    // follow-up typed through the wait is the record a late read would spend).
+    expect(src).toContain("const pending = autosaveRef.current.settle();");
+    expect(src).toContain("const spent = made ?? held;");
     expect(src).toContain(
-      "void autosaveRef.current.settle().then(() => deleteChatDraft(key));");
+      "return deleteChatDraft(key, spent === undefined ? undefined : { ifMatch: spent });");
     expect(src).not.toContain("void deleteChatDraft(draftKeyRef.current);");
+    expect(src).not.toContain("settle().then(() => deleteChatDraft(key))");
   });
 });
 

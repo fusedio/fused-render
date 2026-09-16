@@ -227,9 +227,11 @@ export function Lists({
    * New task card on its own record, through the host — `onFillDraft` is handed
    * the ROW and `list-rows.draftHref` decides the URL, so the press is the same
    * one the Tasks page makes and there is exactly one of it to learn. A
-   * SCHEDULED-LATER row — not a draft, one message, nothing to open a
-   * transcript on — opens the Edit task card on the message that is waiting,
-   * which is the same card the Tasks page opens for it.
+   * SCHEDULED-LATER row — not a draft, one message waiting — opens the Edit task
+   * card on that message, which is the same card the Tasks page opens for it,
+   * SESSION OR NO SESSION: a scheduled follow-up on a thread is still a message
+   * that has not gone out, and its row's press is still the card (Bugbot,
+   * PR #1180).
    *
    * The two intervening rounds are worth naming so neither comes back. Round 1
    * made a draft a door out of the app; round 2 made it no door at all ("fill
@@ -248,15 +250,25 @@ export function Lists({
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
     }
-    if (!task.session_id) {
-      // A message waiting to go out, and no thread behind it yet: the card that
-      // can change or stop it is the only thing a press here could mean. The
-      // row carries the entry, so nothing has to be looked up.
-      const entry = upcomingEditEntry(task);
-      if (!entry || !onNavigate) return { href: null };
+    // A MESSAGE WAITING TO GO OUT — WHETHER OR NOT IT HAS A THREAD BEHIND IT
+    // (Bugbot, PR #1180). The interesting content of such a row is the
+    // instruction that has NOT run, and the card that can change or stop it is
+    // the only thing its press could mean; a transcript answers a different
+    // question. `upcomingEditEntry` owns all three conditions — the lane,
+    // exactly one message, which entry — and it has never asked about a
+    // session, which is why the Tasks List and Board open the card for a
+    // scheduled follow-up on an existing thread. Asking here as well is what
+    // keeps Recent chats from being the one list that disagrees.
+    //
+    // NULL FALLS THROUGH, and on a row with a session that means the
+    // transcript: a repeating task with past runs, or a row the schedule names
+    // no pending entry for, is a thread to read rather than a message to edit.
+    const entry = onNavigate ? upcomingEditEntry(task) : null;
+    if (entry) {
       const href = `${SCHEDULE_URL}?edit=${encodeURIComponent(entry)}`;
-      return { href, onPress: () => onNavigate(href) };
+      return { href, onPress: () => onNavigate?.(href) };
     }
+    if (!task.session_id) return { href: null };
     const pane = taskPane(task, file);
     if (!pane) {
       return {

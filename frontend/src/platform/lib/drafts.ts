@@ -245,6 +245,23 @@ export interface DraftWriteOptions {
   /** Let the request outlive the document — the only way a write started from
    *  `pagehide` or an unmount actually leaves the browser. */
   keepalive?: boolean;
+  /**
+   * THE VERSION THIS WRITE IS ABOUT, stated by the caller instead of read out
+   * of the map at fire time (Bugbot, PR #1180).
+   *
+   * The map answers "the newest version this client has heard of", and for an
+   * ordinary keystroke save that is the right question. For a write that is
+   * ABOUT A PARTICULAR RECORD it is the wrong one: the send's DELETE is about
+   * the record holding the sentence that was just sent, and between deciding to
+   * delete it and the request leaving, a follow-up the reader typed can have
+   * saved over that key. Fired against the map, the DELETE then states the
+   * FOLLOW-UP's version and deletes the follow-up.
+   *
+   * So the send names the version its own write produced. A newer record is
+   * then refused (409) instead of removed, which is exactly what the reader
+   * wants: their unsent words are not what they asked to spend.
+   */
+  ifMatch?: number;
 }
 
 /**
@@ -320,6 +337,19 @@ export function forgetDraftVersion(key: string): void {
 export interface DraftWrite<R> {
   ok: boolean;
   conflict?: R | null;
+  /**
+   * THE VERSION THIS WRITE MADE — the number the server stamped on the record
+   * this request wrote, and absent for a write that failed, was refused, or
+   * removed the record.
+   *
+   * It is not the same fact as `draftVersion(key)`: that one moves with every
+   * answer this client takes, including somebody else's write landing a
+   * millisecond later. This is the version OF THIS WRITE, which is what a
+   * caller that has to act on what it just saved — the send's DELETE, the
+   * Schedule hop's PUT — must state so a straggler is refused rather than
+   * obeyed.
+   */
+  version?: number;
 }
 
 /** A task write also answers WHICH ID IT LANDED ON — see `saveTaskDraft`. */
@@ -372,7 +402,8 @@ async function write<R>(
    *  waiting for the next GET to tell it. */
   landed: (answer: unknown) => { record: R | null; version: unknown } | null,
 ): Promise<DraftWrite<R>> {
-  const seen = versions.get(key);
+  // THE CALLER'S VERSION OUTRANKS THE MAP'S (see `DraftWriteOptions.ifMatch`).
+  const seen = opts?.ifMatch ?? versions.get(key);
   try {
     const res = await fetch(url, {
       method,
@@ -397,11 +428,17 @@ async function write<R>(
     if (!res.ok) return { ok: false };
     const answer = await res.json().catch(() => null);
     const got = landed(answer);
+    let made: number | undefined;
     if (got) {
       if (got.record === null) versions.delete(key);
-      else rememberDraftVersion(key, got.version);
+      else {
+        rememberDraftVersion(key, got.version);
+        if (typeof got.version === "number" && Number.isFinite(got.version)) {
+          made = got.version;
+        }
+      }
     }
-    return { ok: true };
+    return made === undefined ? { ok: true } : { ok: true, version: made };
   } catch {
     // Offline, server restarting, the document unloading mid-flight. The draft
     // just isn't saved; nothing on screen changes and nothing is said.
@@ -618,7 +655,8 @@ export interface Autosave<T> {
    */
   reset(next: T): void;
   /**
-   * RESOLVE WHEN NOTHING THIS HOOK STARTED IS STILL ON THE WIRE.
+   * RESOLVE WHEN NOTHING THIS HOOK STARTED IS STILL ON THE WIRE — WITH THE
+   * VERSION THAT WRITE MADE.
    *
    * The one thing a version cannot order: a PUT already dispatched and a DELETE
    * about to be, both stating the same `If-Match`. The server takes them in
@@ -626,9 +664,18 @@ export interface Autosave<T> {
    * its own autosave recreate the message it just sent. `await settle()` first
    * and the two are ordered by this client instead.
    *
+   * AND THE ANSWER IS THE VERSION, not merely "done" (Bugbot, PR #1180).
+   * Reading the version out of the map afterwards asks "what is the newest
+   * number anybody has seen", and a follow-up typed during the round trip makes
+   * that somebody else's record. The number this call answers with is the one
+   * THE AWAITED WRITE earned, so a caller can state it and have a newer record
+   * refuse them. `undefined` when nothing was written, when the write failed,
+   * and when it was refused — all three mean "this client made no version", and
+   * the caller falls back to what it knew before.
+   *
    * Resolves immediately when nothing is in flight, and never rejects.
    */
-  settle(): Promise<void>;
+  settle(): Promise<number | undefined>;
 }
 
 export interface AutosaveOptions {
@@ -740,7 +787,11 @@ export function useAutosave<T>(
   // WHAT IS ON THE WIRE, and which editing life it belongs to. `settle` awaits
   // the first; `reset` bumps the second, so a write started before a send can
   // no longer adopt, retry, or otherwise speak for a box that has moved on.
-  const inflight = useRef<Promise<void>>(Promise.resolve());
+  //
+  // The promise carries the VERSION that write made, because that is the one
+  // thing about a disowned write that still matters: the record it left behind
+  // is the record the send is about to delete.
+  const inflight = useRef<Promise<number | undefined>>(Promise.resolve(undefined));
   const era = useRef(0);
 
   const clear = () => {
@@ -755,26 +806,35 @@ export function useAutosave<T>(
    * covers both attempts, and a caller that took the handle before the send can
    * never be left waiting on a write that started after it.
    */
-  const writeNow = useCallback((opts: DraftWriteOptions, retry = false): Promise<void> => {
+  const writeNow = useCallback((
+    opts: DraftWriteOptions,
+    retry = false,
+  ): Promise<number | undefined> => {
     clear();
     const next = JSON.stringify(valueRef.current) ?? "";
-    if (next === written.current) return Promise.resolve();
+    if (next === written.current) return Promise.resolve(undefined);
     written.current = next;
     const rule = conflictRef.current;
     if (rule) savedText.current = rule.localText();
     const mine = era.current;
     const out = saveRef.current(valueRef.current, opts);
-    if (!out || typeof (out as Promise<unknown>).then !== "function") return Promise.resolve();
+    if (!out || typeof (out as Promise<unknown>).then !== "function") {
+      return Promise.resolve(undefined);
+    }
     const chain = (out as Promise<unknown>)
-      .then((res): void | Promise<void> => {
+      .then((res): number | undefined | Promise<number | undefined> => {
+        const clash = res as DraftWrite<unknown> | undefined;
+        // THE VERSION IS A FACT ABOUT THE SERVER, not about this editor's life,
+        // so it survives the era check below: the send that disowned this write
+        // is precisely the caller that has to know which record it left.
+        const made = clash && clash.ok ? clash.version : undefined;
         // A `reset` since this went out means the box is no longer holding what
         // this write was about — the send already cleared it — so this answer
         // has nobody to speak for.
-        if (era.current !== mine) return;
-        const clash = res as DraftWrite<unknown> | undefined;
-        if (!clash || clash.ok || !("conflict" in clash)) return;
+        if (era.current !== mine) return made;
+        if (!clash || clash.ok || !("conflict" in clash)) return made;
         const rule2 = conflictRef.current;
-        if (!rule2) return;
+        if (!rule2) return undefined;
         // NOT FOCUSED, OR NOTHING TYPED SINCE THE LAST SAVE — the other
         // writer's record is simply the newer one, and taking it is how two
         // tabs on one folder agree within a second.
@@ -785,19 +845,20 @@ export function useAutosave<T>(
           // client winning a conflict it just conceded.
           written.current = JSON.stringify(valueRef.current) ?? "";
           savedText.current = rule2.localText();
-          return;
+          return undefined;
         }
         // MID-SENTENCE: the local words win, once. `write` has already taken
         // the server's version, so this second attempt states a version that
         // exists — and re-arming `written` is what lets it go out at all.
-        if (retry) return;
+        if (retry) return undefined;
         rule2.onKept?.();
         written.current = UNWRITTEN;
         return writeNow(opts, true);
       })
-      .catch(() => {
+      .catch((): number | undefined => {
         // `save`'s own wrapper never rejects; this only guarantees that a
         // future caller's cannot become an unhandled rejection mid-keystroke.
+        return undefined;
       });
     inflight.current = chain;
     return chain;

@@ -409,7 +409,15 @@ describe("the chat handoff's attachments", () => {
     const BUTTON = readFileSync(
       join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
     expect(BUTTON).toContain(".then(hand);");
-    expect(BUTTON).toContain("void saveChatDraft(key, text, carried)");
+    // …AND THE COMPOSER'S OWN AUTOSAVE FINISHES FIRST (Bugbot, PR #1180, second
+    // round): the box beside this button writes the SAME record on a debounce,
+    // and a straggler landing after the hop's PUT would put the chat tempdir's
+    // paths back — the ones `POST /api/schedule` refuses. The version that
+    // settle answers with is what the hop then states, so the straggler is the
+    // write that gets refused.
+    expect(BUTTON).toContain("void Promise.resolve(settleDraft?.())");
+    expect(BUTTON).toContain(
+      "saveChatDraft(key, text, carried, seen === undefined ? undefined : { ifMatch: seen })");
     // …AND THE NAVIGATION IS THE SAVE'S ANSWER, not a thing that happens beside
     // it (Bugbot, PR #1180): the card seeds from `GET /api/drafts`, so a hop
     // that left in the same tick as its own PUT raced it and could open empty.

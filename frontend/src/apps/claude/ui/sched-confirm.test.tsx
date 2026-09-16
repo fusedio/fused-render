@@ -223,7 +223,10 @@ const HOP_KEY = "new:/w/app/page.html";
 
 /** Mount the real button and hand back the confirm's own `onGo` — the Continue
  *  press, without asking a portal to render in a DOM-less runtime. */
-function pressContinue(onNavigate: (url: string) => void) {
+function pressContinue(
+  onNavigate: (url: string) => void,
+  settleDraft?: () => Promise<number | undefined>,
+) {
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
@@ -233,6 +236,7 @@ function pressContinue(onNavigate: (url: string) => void) {
         draft: () => "a scheduled line",
         back: "/w/app/page.html",
         onNavigate,
+        ...(settleDraft ? { settleDraft } : {}),
       }),
       { createNodeMock: () => ({ focus: () => {} }) },
     );
@@ -306,6 +310,57 @@ test("a refused save keeps the reader in the chat, and says so", async () => {
   expect(went).toEqual([]);
   expect(getPopupNotification()?.title).toContain("Could not save that draft");
   _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("the hop writes only after the composer's own autosave has finished", async () => {
+  // Bugbot, PR #1180 (second round): waiting for THIS button's PUT is not
+  // enough, because the box beside it writes the same record on a debounce. A
+  // keystroke a moment before Continue is a PUT that lands AFTER the hop's —
+  // with the older words, and with the chat tempdir paths `POST /api/schedule`
+  // refuses. So the composer is settled first, and the version it answers with
+  // is what the hop states: a straggler is then the write that gets refused.
+  forgetDraftVersion(HOP_KEY);
+  let finishAutosave!: () => void;
+  const autosaved = new Promise<number | undefined>((r) => {
+    finishAutosave = () => r(9);
+  });
+  const seen: (string | null)[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    seen.push(headers["If-Match"] ?? null);
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          key: HOP_KEY,
+          draft: { text: "a scheduled line", attachments: [], updated_at: 1,
+                   version: 10, form: {} },
+        }),
+    } as unknown as Response);
+  }) as typeof fetch;
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url), () => autosaved);
+  await act(async () => {
+    go();
+  });
+  // NOTHING HAS LEFT. The composer's write is still out, so the hop's has not
+  // been dispatched at all — there is no order to get wrong.
+  expect(seen).toEqual([]);
+  expect(went).toEqual([]);
+  await act(async () => {
+    finishAutosave();
+    await autosaved;
+  });
+  // …and it carries the version that write earned, not "whatever this client
+  // last heard of".
+  expect(seen).toEqual(["9"]);
+  expect(went.length).toBe(1);
   globalThis.fetch = real;
   forgetDraftVersion(HOP_KEY);
 });

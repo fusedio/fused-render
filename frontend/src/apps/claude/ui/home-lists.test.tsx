@@ -1046,6 +1046,33 @@ test("A SCHEDULED-LATER ROW OPENS ITS CARD, and it is a real link", () => {
   expect(hops).toEqual(["/tasks?edit=e-4"]);
 });
 
+test("…AND A SCHEDULED FOLLOW-UP ON AN EXISTING THREAD OPENS THE SAME CARD", () => {
+  // Bugbot, PR #1180: Edit was wired only for upcoming rows with NO session, so
+  // a message scheduled into a conversation that already exists fell through to
+  // the transcript — and Recent chats became the one list where an Upcoming
+  // press means something different. `upcomingEditEntry` has never asked about
+  // a session (the Tasks List and Board both open the card for this row), so
+  // neither does this.
+  const later = chatDraft({
+    key: "sess-7",
+    kind: "task",
+    state: "upcoming",
+    status: "upcoming",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "sess-7",
+    messages: [{ entry_id: "e-8", state: "pending", at: 1, message_id: "m-8" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([later]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-8");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  // The card, not the thread: `onOpen` is what a transcript press would call.
+  expect(hops).toEqual(["/tasks?edit=e-8"]);
+});
+
 test("the move's machinery is gone from the row module, not merely unused", () => {
   const src = readFileSync(new URL("./list-rows.ts", import.meta.url), "utf8");
   for (const gone of ["draftContentOf", "draftMovesOut", "joinIntoBox", "readChatDraft"]) {
