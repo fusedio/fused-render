@@ -482,6 +482,10 @@ describe("settle", () => {
     );
     box.rerender({ text: "half a line" });
     act(() => box.current().flush());
+    // `flush` QUEUES the write; it reaches the wire one microtask later, now
+    // that every write is serialized through this hook's own `inflight` chain
+    // (Bugbot, PR #1180) rather than dispatched the instant `flush` returns.
+    await Promise.resolve();
     // The PUT is on the wire and nothing has answered it. This is the moment the
     // send happens.
     expect(f.calls).toEqual([{ method: "PUT", ifMatch: null }]);
@@ -569,11 +573,20 @@ describe("settle", () => {
     };
   };
 
-  test("a follow-up typed through the wait is not what the send deletes", async () => {
-    // THE SECOND ROUND OF THE SAME BUG (Bugbot, PR #1180). Waiting is not
-    // enough on its own: the reader can type a FOLLOW-UP while the send's PUT
-    // is still out, and a DELETE that reads its version at fire time then
-    // states the FOLLOW-UP's and spends words nobody sent.
+  /** Drain `n` microtasks — generous is fine, a drained queue just sits idle. */
+  const tick = async (n = 1) => {
+    for (let i = 0; i < n; i += 1) await Promise.resolve();
+  };
+
+  test("a follow-up typed through the wait is queued behind it, not raced", async () => {
+    // THE SECOND ROUND OF THE SAME BUG (Bugbot, PR #1180): the reader can type
+    // a FOLLOW-UP while the send's PUT is still out, and the two used to RACE
+    // on the wire — whichever the server took second decided whose words the
+    // record was left holding. Serializing every write through this hook's own
+    // `inflight` chain (Bugbot, PR #1180, this round) removes the race instead
+    // of refereeing it: the follow-up's PUT does not leave until the write
+    // ahead of it has answered, so it always states the version THAT write
+    // made and never goes stale sitting on the wire.
     const key = "new:/Users/me/follow-up";
     forgetDraftVersion(key);
     const f = versioned(key);
@@ -583,9 +596,6 @@ describe("settle", () => {
       (value: { text: string }, opts) => saveChatDraft(key, value.text, [], opts),
       {
         conflict: {
-          // The reader IS in this box — they are typing the follow-up — so a
-          // refusal keeps their words and retries once against the version it
-          // has just learnt.
           focused: () => true,
           localText: () => local,
           adopt: () => {},
@@ -596,46 +606,52 @@ describe("settle", () => {
     local = "the sent line";
     box.rerender({ text: local });
     act(() => box.current().flush());
+    await tick();
     await f.release(0);
     expect(draftVersion(key)).toBe(1);
 
-    // …and now the send, with that same line still in the box: a second write
-    // goes out (the tray changed, say) and is still on the wire.
+    // …and now the send, with a fresh line: a second write goes out and is
+    // still on the wire when the send happens.
     local = "the sent line, and a comma";
     box.rerender({ text: local });
     act(() => box.current().flush());
+    await tick();
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
     const handle = box.current();
     const held = draftVersion(key);
     const pending = handle.settle();
     handle.reset({ text: "" });
 
-    // THE FOLLOW-UP, typed while that PUT is out. It states the version this
-    // client knows (1), which the sent write is about to move past.
+    // THE FOLLOW-UP, typed right after the send. QUEUED, not out: this box has
+    // one `inflight` chain, and the write ahead of this one has not answered.
     local = "one more thing";
     box.rerender({ text: local });
     act(() => box.current().flush());
-    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT", "PUT"]);
-    expect(f.calls[2]!.ifMatch).toBe("1");
-
-    // …and the reader keeps typing while that PUT is out, which is what makes
-    // the refusal below a KEPT sentence rather than an adopted one.
-    local = "one more thing —";
+    await tick(3);
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
 
     let spent: { ok: boolean } | null = null;
     const send = pending.then(async (made) => {
       const at = made ?? held;
       spent = await deleteChatDraft(key, at === undefined ? undefined : { ifMatch: at });
     });
-    // The sent write lands: version 2, and that is the number the send states.
+
+    // The send's write lands — version 2 — which is what frees the follow-up's
+    // queued write to go out at last.
     await f.release(1);
-    expect(f.calls[3]!.method).toBe("DELETE");
+    await tick(4);
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT", "PUT", "DELETE"]);
+    // AND IT CARRIES THAT VERSION — no conflict, no retry: it never had the
+    // chance to go stale behind an older write the way the old, racing code let
+    // it.
+    expect(f.calls[2]).toEqual({ method: "PUT", ifMatch: "2", text: "one more thing" });
+    // The send's own DELETE, stated against the same version.
     expect(f.calls[3]!.ifMatch).toBe("2");
-    // The follow-up's own write is refused (it stated 1) and retries once
-    // against the version it has just learnt…
+
+    // Let the follow-up's write land — version 3 — before the DELETE is asked
+    // to answer.
     await f.release(2);
-    expect(f.calls[4]).toEqual({ method: "PUT", ifMatch: "2", text: "one more thing" });
-    // …which lands: the record now holds the follow-up, at version 3.
-    await f.release(4);
+    await tick(2);
     // AND THE DELETE IS REFUSED, because the record is no longer the one the
     // send was about. The follow-up survives on the server, and nothing told
     // this composer its key was gone.
@@ -644,6 +660,56 @@ describe("settle", () => {
     expect(spent!.ok).toBe(false);
     expect(f.state.gone).toBe(false);
     expect(f.state.text).toBe("one more thing");
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("flush while an earlier write is still out queues behind it, not beside it", async () => {
+    // THE BUG ITSELF (Bugbot, PR #1180). `settleDraft` (Composer.tsx) is
+    // `flush()` then `settle()` — the Schedule hop's way of waiting for
+    // whatever this box has pending. But `flush` used to dispatch a brand-new
+    // PUT the instant it was called, even while an earlier autosave's PUT was
+    // still on the wire: two requests racing, and `settle` only ever awaited
+    // the newer one. Whichever the server took second decided what the record
+    // was left holding, and on a first save both were unconditional, so the
+    // abandoned one could land AFTER the hop's and put stale text back on the
+    // record the card was about to open.
+    const key = "new:/Users/me/queued-flush";
+    forgetDraftVersion(key);
+    const f = versioned(key);
+    const box = renderAutosave({ text: "" }, (value: { text: string }, opts) =>
+      saveChatDraft(key, value.text, [], opts),
+    );
+
+    box.rerender({ text: "first" });
+    act(() => box.current().flush());
+    await tick();
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
+
+    // A further keystroke, then `flush` again while that PUT is still out —
+    // exactly what the hop's `settleDraft` does right after the debounce
+    // fired on its own.
+    box.rerender({ text: "first and second" });
+    act(() => box.current().flush());
+    await tick(3);
+    // THE SECOND PUT HAS NOT STARTED: queued behind the first, not raced.
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
+
+    const settled = box.current().settle();
+
+    // The first write lands: version 1.
+    await f.release(0);
+    await tick(2);
+    // NOW the second goes out — carrying the version the first one produced,
+    // not a stale or unconditional header.
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "PUT"]);
+    expect(f.calls[1]).toEqual({ method: "PUT", ifMatch: "1", text: "first and second" });
+
+    await f.release(1);
+    // `settle` resolves only once BOTH have landed, with the version the
+    // second one made.
+    expect(await settled).toBe(2);
     box.unmount();
     f.restore();
     forgetDraftVersion(key);

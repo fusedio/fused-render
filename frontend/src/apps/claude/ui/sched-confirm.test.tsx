@@ -10,10 +10,12 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { SchedButton } = await import("./SchedButton");
 const { SchedConfirm, SchedConfirmBody } = await import("./SchedConfirm");
-const { forgetDraftVersion } = await import("@platform/lib/drafts");
+const { forgetDraftVersion, saveChatDraft, useAutosave } =
+  await import("@platform/lib/drafts");
 const { getPopupNotification, _resetNotificationsForTest } =
   await import("@platform/lib/notifications");
 const { useDismissOnWindow } = await import("./useDismissOnWindow");
+type Autosave<T> = ReturnType<typeof useAutosave<T>>;
 
 /** A REAL LISTENER REGISTRY on the shim's `window`, which otherwise no-ops. The
  *  gestures under test ARE window-level bindings, so a test that cannot fire
@@ -361,6 +363,123 @@ test("the hop writes only after the composer's own autosave has finished", async
   // last heard of".
   expect(seen).toEqual(["9"]);
   expect(went.length).toBe(1);
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a real autosave PUT held open queues the flush behind it, and the hop's own PUT goes third", async () => {
+  // THE SAME BUG, through the REAL `useAutosave` this time rather than a
+  // stand-in `settleDraft` (Bugbot, PR #1180, this round): `settleDraft` is
+  // `flush()` then `settle()` (Composer.tsx), and `flush` used to dispatch a
+  // brand-new PUT the instant it was called even while an earlier autosave
+  // was still on the wire — the abandoned one could land AFTER the hop's and
+  // put stale text back on the record the task card was about to open. Now
+  // every write from this box queues behind whatever it already has out
+  // (`useAutosave`, drafts.ts), so the debounced edit's flush waits its turn
+  // and the hop's own PUT — asked for only once `settleDraft` resolves — is
+  // never racing either one.
+  forgetDraftVersion(HOP_KEY);
+  const calls: { ifMatch: string | null; text?: string }[] = [];
+  let releaseFirst!: () => void;
+  const heldFirst = new Promise<void>((r) => { releaseFirst = r; });
+  let version = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as { text?: string })
+      : undefined;
+    const at = calls.length;
+    calls.push({ ifMatch: headers["If-Match"] ?? null, text: body?.text });
+    const answer = (): Response => {
+      version += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          ok: true,
+          key: HOP_KEY,
+          draft: { text: body?.text ?? "", attachments: [], updated_at: 1,
+                   version, form: {} },
+        }),
+      } as unknown as Response;
+    };
+    // Only the FIRST request — the autosave already out when the test begins
+    // — is held; everything after answers as soon as it is asked to, so the
+    // test controls order by CALLING, not by releasing.
+    return at === 0 ? heldFirst.then(answer) : Promise.resolve(answer());
+  }) as typeof fetch;
+
+  let latest!: Autosave<{ text: string }>;
+  const went: string[] = [];
+  let renderer!: ReactTestRenderer;
+  function Host({ value }: { value: { text: string } }) {
+    latest = useAutosave(value, (v: { text: string }, opts) =>
+      saveChatDraft(HOP_KEY, v.text, [], opts));
+    const settleDraft = useCallback((): Promise<number | undefined> => {
+      latest.flush();
+      return latest.settle();
+    }, []);
+    return createElement(SchedButton, {
+      file: "/w/app/page.html",
+      sessionId: "",
+      draft: () => value.text,
+      back: "/w/app/page.html",
+      onNavigate: (url: string) => went.push(url),
+      settleDraft,
+    });
+  }
+  // A mount alone mints nothing (design §4: `written` seeds with the opening
+  // value), so the box opens empty and the first keystroke is what the held
+  // write below is about.
+  await act(async () => {
+    renderer = create(createElement(Host, { value: { text: "" } }), {
+      createNodeMock: () => ({ focus: () => {} }),
+    });
+  });
+  mounted.push(renderer);
+  await act(async () => {
+    renderer.update(createElement(Host, { value: { text: "first" } }));
+  });
+
+  // The autosave's own write — held open, per the mock above.
+  act(() => latest.flush());
+  await Promise.resolve();
+  expect(calls.length).toBe(1);
+  expect(calls[0]!.ifMatch).toBe(null);
+
+  // A further keystroke, then Continue — exactly the moment the bug fired:
+  // the debounced edit's flush and the hop's settle both want this box's
+  // pending write answered.
+  await act(async () => {
+    renderer.update(createElement(Host, { value: { text: "first and second" } }));
+  });
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  await act(async () => {
+    go();
+  });
+  // NOTHING NEW HAS LEFT: the edit's own flush is queued behind the held
+  // autosave, and the hop asked `settleDraft` to wait rather than firing
+  // beside it.
+  expect(calls.length).toBe(1);
+  expect(went).toEqual([]);
+
+  releaseFirst();
+  await act(async () => {
+    await heldFirst;
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  // THE QUEUED FLUSH GOES OUT SECOND — carrying the version the held write
+  // just made, and the newer text — and only once IT lands does the hop's own
+  // PUT follow: THIRD, carrying THAT write's version in turn. Never two on the
+  // wire at once, and never out of order.
+  expect(calls.length).toBe(3);
+  expect(calls[1]).toEqual({ ifMatch: "1", text: "first and second" });
+  expect(calls[2]!.ifMatch).toBe("2");
+  expect(went.length).toBe(1);
+
   globalThis.fetch = real;
   forgetDraftVersion(HOP_KEY);
 });

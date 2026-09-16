@@ -800,17 +800,19 @@ export function useAutosave<T>(
   };
 
   /**
-   * ANSWERS THE WHOLE WRITE, retry included — which is what `settle` awaits. The
-   * conflict retry starts a second request from inside the first one's `then`,
-   * so it is RETURNED into that chain rather than left beside it: one promise
-   * covers both attempts, and a caller that took the handle before the send can
-   * never be left waiting on a write that started after it.
+   * ONE ATTEMPT, retry included — which is what `writeNow` queues and `settle`
+   * ultimately awaits. The conflict retry starts a second request from inside
+   * the first one's `then`, so it is RETURNED into that chain rather than left
+   * beside it: one promise covers both attempts.
+   *
+   * Called only once whatever this hook already has on the wire has cleared
+   * (see `writeNow`), so every read here — `valueRef`, `written`, `era` — is
+   * taken AT DISPATCH TIME, not at the moment the caller asked for a write.
    */
-  const writeNow = useCallback((
+  const attempt = useCallback((
     opts: DraftWriteOptions,
-    retry = false,
+    retry: boolean,
   ): Promise<number | undefined> => {
-    clear();
     const next = JSON.stringify(valueRef.current) ?? "";
     if (next === written.current) return Promise.resolve(undefined);
     written.current = next;
@@ -821,7 +823,7 @@ export function useAutosave<T>(
     if (!out || typeof (out as Promise<unknown>).then !== "function") {
       return Promise.resolve(undefined);
     }
-    const chain = (out as Promise<unknown>)
+    return (out as Promise<unknown>)
       .then((res): number | undefined | Promise<number | undefined> => {
         const clash = res as DraftWrite<unknown> | undefined;
         // THE VERSION IS A FACT ABOUT THE SERVER, not about this editor's life,
@@ -853,16 +855,44 @@ export function useAutosave<T>(
         if (retry) return undefined;
         rule2.onKept?.();
         written.current = UNWRITTEN;
-        return writeNow(opts, true);
+        // Straight to `attempt`, NOT `writeNow`: `inflight.current` is this
+        // very call's own not-yet-settled chain link, so queuing the retry
+        // behind it would wait on itself forever.
+        return attempt(opts, true);
       })
       .catch((): number | undefined => {
         // `save`'s own wrapper never rejects; this only guarantees that a
         // future caller's cannot become an unhandled rejection mid-keystroke.
         return undefined;
       });
+  }, []);
+
+  /**
+   * QUEUES a write behind whatever this hook already has out, so there is
+   * never more than one PUT on the wire for this key at a time (Bugbot, PR
+   * #1180): `flush` fired right after the debounce, or the Schedule hop's
+   * flush-then-settle, used to dispatch a second request while an earlier
+   * autosave was still in flight, and network order — not send order — then
+   * decided which one the record was left holding. A slower first write could
+   * land AFTER a faster second and put stale text, or the chat's own tempdir
+   * attachment paths, back on the record.
+   *
+   * `made ?? prevMade` folds forward: a link that finds nothing new to write
+   * (`attempt`'s own check, re-run at dispatch time against the freshest
+   * `valueRef`) still carries the version the chain already earned, so a
+   * redundant `flush` can never make `settle` forget a real write that came
+   * before it.
+   */
+  const writeNow = useCallback((
+    opts: DraftWriteOptions,
+  ): Promise<number | undefined> => {
+    clear();
+    const chain = inflight.current.then((prevMade) =>
+      attempt(opts, false).then((made) => made ?? prevMade),
+    );
     inflight.current = chain;
     return chain;
-  }, []);
+  }, [attempt]);
 
   const flush = useCallback(() => {
     void writeNow({ keepalive: true });
