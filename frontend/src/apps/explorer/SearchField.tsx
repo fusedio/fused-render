@@ -95,6 +95,7 @@ function SearchGlyph(): JSX.Element {
 
 const SEARCH_GRAMMAR_HINT =
   "report — names containing it, at any depth below\n" +
+  "hello world — names with both, in order\n" +
   "*.pdf — a pattern, at any depth below\n" +
   "/*.pdf — a pattern, in this folder only\n" +
   "~/Work/*.md — start from another folder";
