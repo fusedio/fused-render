@@ -74,12 +74,23 @@ export interface BroadenOffer {
   label: string;
 }
 
+// Whitespace, in the caller's OWN query text — no `*` typed at all — is
+// also a glob query since SPEC-search-space-wildcard.md §1: the server
+// expands it into wildcards before deciding `mode`, and every caller of
+// this function has already checked `mode === "glob"` before calling. A
+// query gets here for one of two reasons, and either alone is enough to
+// widen: it carries a literal `*`, or it carries whitespace the server
+// turned into one.
+function looksLikeGlob(query: string): boolean {
+  return query.includes("*") || /\s/.test(query);
+}
+
 // Walks the ladder in order and returns the first rung that actually
 // widens the query — never one that would rerun a semantically identical,
 // still-zero-hit search. Null when no rung applies, meaning there is
 // nothing left to offer.
 export function broadenGlobOffer(query: string): BroadenOffer | null {
-  if (!query.includes("*")) return null;
+  if (!looksLikeGlob(query)) return null;
   if (alreadyMaximallyBroadOnDepth(query)) return null;
   for (const rung of RUNGS) {
     const pattern = rung.widen(query);

@@ -63,6 +63,17 @@ describe("broadenGlobOffer", () => {
     expect(broadenGlobOffer("")).toBeNull();
   });
 
+  // -- SPEC-search-space-wildcard.md: whitespace is an implied wildcard, so
+  // a query with no literal "*" at all can still be running in glob mode
+  // server-side, and the ladder must not treat it as "not a glob" just
+  // because it never typed the character.
+  test("a whitespace query with no literal * still widens by name", () => {
+    expect(broadenGlobOffer("hello world")).toEqual({
+      pattern: "hello world*",
+      label: "Widen the name",
+    });
+  });
+
   // -- the finding-3 shapes: a pattern already maximally broad on the
   // subfolder dimension, whose LAST segment (rather than the one before it)
   // is what says so -----------------------------------------------------
