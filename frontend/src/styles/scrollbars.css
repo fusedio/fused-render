@@ -67,8 +67,6 @@
    that does it without inventing a class. */
 body .schedule-tv-lane-body::-webkit-scrollbar-thumb,
 body .schedule-cal-thread::-webkit-scrollbar-thumb,
-body .tasks-list::-webkit-scrollbar-thumb,
-body .task-cards-scroll::-webkit-scrollbar-thumb,
 body .chat-root .chat-logwrap::-webkit-scrollbar-thumb {
   background: var(--sb-thumb);
   background-clip: padding-box;

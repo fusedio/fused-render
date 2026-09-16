@@ -2008,14 +2008,15 @@ export function TaskList({
         style={peekOn ? ({ "--tasks-row-need": `${fit.need}px` } as React.CSSProperties) : undefined}
         onScroll={onScroll}
       >
-      {/* THE FRAME IS INSIDE THE SCROLLER, not the scroller itself. When the
-          bordered box was the thing that scrolled, its bar stood INSIDE the
-          border: a 10px column between the last row's edge and the frame, so
-          every hairline stopped short of the box it was meant to reach and the
-          rows read as cut off (Akshil, screenshot, 2026-08-27: "the scroll cuts
-          the item ... move the scroll UI outside"). Now the bar stands beside
-          the frame, and the frame scrolls with its rows like any other
-          content. */}
+      {/* THE SCROLLER ABOVE IS THE BORDERED BOX, and this frame is the plain
+          wrapper inside it (styles/tasks.css): the bar runs down the inside of
+          the border, the way a scrolling table's does (Akshil, 2026-09-16).
+
+          The frame stays as an element because it is the one the rows are
+          addressed through — the end rows' corner radii, the hairlines between
+          nodes, the floored pane's horizontal-bar clearance — and because the
+          Explorer's Claude side panel renders it on its own, where it still
+          draws the border itself (apps/claude/ui/Lists.tsx). */}
       <div className="tasks-list-frame">
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortForList): Upcoming,
           In Progress, Needs attention, Blocked, Done, Archive — the Board's own
