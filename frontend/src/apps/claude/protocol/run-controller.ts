@@ -487,10 +487,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * stood the session down (`tasks_watch.mark_running`'s stale-turn check):
    * belt-and-suspenders for the same race, for the ping this function cannot
    * itself await (the one `noteSessionId` fires from `resumeAttach`, seat `0`).
+   *
+   * `prompt` is THE WORDS JUST SENT — what the user typed, with the
+   * `<live-app-state>` block already off it (`sendMessage`'s `spoken`) — and
+   * the chat's FILE rides along with it. Both are facts only the sender holds
+   * this early, and the listing wants them for the same reason it wants the
+   * ring: the row should read "running, on these words" at the send, not once
+   * the transcript on disk has caught up. Absent on a mark that has no send
+   * behind it (`resumeAttach`'s ping, a re-attached run), and the server keeps
+   * whatever it already knew in that case. THE SERVER REMAINS THE SOURCE OF
+   * TRUTH: this only tells it sooner, and it hands the row back as it always
+   * did.
    */
-  const noteTurnRunning = (id: string, seat: number) => {
+  const noteTurnRunning = (id: string, seat: number, prompt?: string) => {
     if (!id) return;
-    const p = markTaskRunning(id, wallClock()).then(
+    const p = markTaskRunning(id, wallClock(), {
+      ...(prompt ? { text: prompt } : {}),
+      ...(FILE ? { file: FILE } : {}),
+    }).then(
       () => {},
       () => {
         // The 20-30 s polls, and the registry behind them, remain the fallback.
@@ -540,14 +554,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  own yet — `resumeAttach`'s own probe, ahead of the `pollLoop` it hands off
    *  to, which re-marks running (with its own real seat) the moment it starts
    *  regardless (see `noteTurnRunning`). */
-  const noteSessionId = (id: string, seat = 0) => {
+  const noteSessionId = (id: string, seat = 0, prompt?: string) => {
     if (!id || state.sessionId === id) return;
     setParam({ session_id: id });
     emit({ sessionId: id });
     // A NEW CHAT LEARNS ITS OWN NAME MID-TURN, and this is the first moment the
     // mark above can name it. Guarded on a live run, so re-opening a finished
     // conversation does not announce a turn that is not happening.
-    if (activeRun) noteTurnRunning(id, seat);
+    if (activeRun) noteTurnRunning(id, seat, prompt);
   };
 
   /** T:16333 / T:17793 / T:13036 — `run` is in-flight bookkeeping and is
@@ -1056,7 +1070,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function pollLoop(
     runId: string,
     gen: number,
-    opts: { ownTurn?: boolean } = {},
+    opts: { ownTurn?: boolean; prompt?: string } = {},
   ): Promise<void> {
     const seat = ++loopSeq;
     // This run is now the one the stop button aims at. Set here, the one place a
@@ -1079,7 +1093,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // inside `noteChatActivity`, which fires at BOTH turn boundaries: this one
     // means "a turn is open", and saying it again in the `finally` would mark a
     // row running for fifteen seconds after it finished.
-    noteTurnRunning(state.sessionId ?? "", seat);
+    noteTurnRunning(state.sessionId ?? "", seat, opts.prompt);
 
     /**
      * ONE BUBBLE PER REPLY IN THE PAYLOAD, keyed by SLOT.
@@ -1235,7 +1249,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
 
         const poll = data as PollResponse;
-        if (poll.session_id) noteSessionId(String(poll.session_id), seat);
+        if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // usage arrives only at message end; estimate from streamed text meanwhile
@@ -1747,13 +1761,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(
-      text || stripBlocks(outgoing),
-      outgoing,
-      opts.attachments,
-      !!live,
-      opts.optimisticKey,
-    );
+    // THE WORDS, without the `<live-app-state>` block — the bubble's text, and
+    // the same string the tasks listing wants for its "last prompt" line, which
+    // is why it is named here rather than spelled twice (see `noteTurnRunning`).
+    const spoken = text || stripBlocks(outgoing);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
     let started = false;
     try {
       let runId = "";
@@ -1832,11 +1844,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
           },
           { key: null },
         )) as StartResponse;
-        // `StartResponse` is `{run_id}` | `{error}`; agent.py answers exactly one
-        // (agent.py:2452, plus main()'s own guards 5188-5191).
+        // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
+        // answers exactly one (agent.py:2452, plus main()'s own guards
+        // 5188-5191).
         const failed = (res as { error?: string }).error;
         if (failed) throw new Error(failed);
         runId = (res as { run_id: string }).run_id;
+        // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
+        // the running mark all land HERE — at the send — instead of on the first
+        // poll two to four seconds later, which is the whole "status in under a
+        // second" of this change. The poll still reports the same id and
+        // `noteSessionId` is a no-op the second time, so an older server that
+        // omits this simply takes the old road.
+        const named = (res as { session_id?: string }).session_id;
+        if (named) noteSessionId(String(named), 0, spoken);
       }
       started = true;
       // A run id is in-flight bookkeeping — never a place the reader navigated
@@ -1846,8 +1867,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         setRunParam(runId);
         // `ownTurn`: this loop was started by THIS send, so anything the first
         // payload has already closed off is a turn that ended before it — see
-        // `adoptFirstSeam`.
-        await pollLoop(runId, gen, { ownTurn: true });
+        // `adoptFirstSeam`. `prompt` is what the running mark carries.
+        await pollLoop(runId, gen, { ownTurn: true, prompt: spoken });
       }
       // else: the reader left during start — the run continues server-side and
       // resumeRun can re-attach; the landing gains no run param.
@@ -1904,13 +1925,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(
-      text || stripBlocks(outgoing),
-      outgoing,
-      opts.attachments,
-      !!live,
-      opts.optimisticKey,
-    );
+    const spoken = text || stripBlocks(outgoing);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -2015,6 +2031,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const failed = (startedRes as { error?: string }).error;
         if (failed) throw new Error(failed);
         const fresh = (startedRes as { run_id: string }).run_id;
+        // Same `start`, same response, same reason as `sendMessage`'s road: a
+        // respawn re-spawns the session, and its id is answered here.
+        const named = (startedRes as { session_id?: string }).session_id;
+        if (named) noteSessionId(String(named), 0, spoken);
         // A respawn re-sent this text as the OPENING message of a fresh run, so
         // it is not a follow-up waiting behind anything any more — it is the
         // turn now in flight. Drop the entry (the bubble stays: it is that
@@ -2022,7 +2042,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         drop();
         if (logGen === gen) {
           setRunParam(fresh);
-          void pollLoop(fresh, gen);
+          void pollLoop(fresh, gen, { prompt: spoken });
         }
         return;
       }
