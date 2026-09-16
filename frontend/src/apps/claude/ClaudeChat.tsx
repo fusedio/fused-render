@@ -2333,8 +2333,10 @@ function ChatBody(props: ChatBodyProps) {
           // THE FLAG IS AWAITED, NOT ASSUMED (Akshil's QA, 2026-09-16): a send
           // inside the first prefs read's window used to read "off", skip the
           // door and start a second run in a busy folder. See `queueFlagReady`.
-          await queueFlagReady();
+          // The epoch is read BEFORE the flag wait (Bugbot): a Back or Open
+          // session during that await must count as leaving this send's chat.
           const epochAtSend = paneEpoch.current;
+          await queueFlagReady();
           if (queueEnabled()) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
