@@ -1917,7 +1917,13 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     log("index rank: %r under %s answered in %.1fms (lane_wait=%.1fms "
         "worker=%.1fms reason=%r)", q, root, total_ms, lane_wait_ms, worker_ms,
         out["reason"])
-    return {"ok": True, **out}
+    # Surfaced on the wire so a customer's browser console (verbose enabled)
+    # can show the same breakdown the DEBUG/WARNING log line above computes,
+    # without asking them to find `$TMPDIR/fused-render-<pid>.log`. Same three
+    # locals as the log line — not re-measured.
+    timing = {"total_ms": round(total_ms, 1), "lane_wait_ms": round(lane_wait_ms, 1),
+              "worker_ms": round(worker_ms, 1)}
+    return {"ok": True, **out, "timing": timing}
 
 
 def _columnar(out: dict) -> dict:
