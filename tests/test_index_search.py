@@ -317,6 +317,24 @@ def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
     assert body["pattern"] == "**/*hello*world*"
 
 
+def test_rank_route_answers_a_timing_breakdown(home, tmp_path):
+    """The server already measures `total_ms`/`lane_wait_ms`/`worker_ms` for
+    the log line at ~750ms WARNING threshold (see `api_index_rank`) — the
+    frontend needs the same numbers on the wire to tell "slow server" from
+    "slow somewhere outside the handler" (queueing/transit) when a customer's
+    own console shows a multi-second round trip."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme"}).json()
+    assert body["ok"] is True
+    timing = body["timing"]
+    assert set(timing) == {"total_ms", "lane_wait_ms", "worker_ms"}
+    for key in ("total_ms", "lane_wait_ms", "worker_ms"):
+        assert isinstance(timing[key], (int, float))
+        assert timing[key] >= 0
+
+
 def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):
     """The next slow report should be attributable server-side instead of
     inferred: this is the total the per-phase DEBUG lines add up against."""

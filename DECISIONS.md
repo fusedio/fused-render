@@ -1857,3 +1857,59 @@ spinners) — all green, no flakes observed in either condition.
 | D-new | **Investigated, resolved as a non-issue: `ranked-hits.ts`'s `hitsFromRank` initially appeared to have no production call site** — an earlier grep during this feature's build suggested it, which would have meant the glob-highlighting wiring for the in-folder listing was dead code | A full read of `frontend/src/apps/explorer/listing/useListingSearch.ts` showed it DOES import and call `hitsFromRank` (inside its debounced `indexRank` fetch effect, building each `RankAnswer`) — the earlier grep was faulty, or matched against stale file state. No code change was needed; this is recorded only so a future session doesn't re-open the same dead end. |
 | D-new | **REVERSED** (code review, finding #1): `glob-broaden.ts`'s `looksLikeGlob` gate is back to `query.includes("*")` only — the "also admit a query containing whitespace" widening from the D-new row above this one is undone | That widening was itself broken: `expand_whitespace_query` implies a leading+trailing `*` on a whitespace-derived final segment ONLY when that segment has no user-typed `*` of its own. Rung 1 ("widen the name") appends a trailing `*` to the raw query TEXT, which — run back through the same expansion on the next search — gives that segment a user-typed `*` and SUPPRESSES the implied leading `*` the original zero-hit search already had. The "widened" pattern was therefore a strict SUBSET of the original, guaranteed to also return zero hits: offering it was actively misleading, not a broadening. Root cause: `looksLikeGlob`'s whitespace admission conflated "this query resolves to `mode: glob` server-side" with "this ladder has something safe to offer it" — true for a query with a literal `*`, false for a pure-whitespace one, because the ladder's own rungs are defined in terms of literal `*` placement. Fix: pure-whitespace queries (no literal `*`) now get `null` from `broadenGlobOffer` — they are already at their broadest expressible form, and there is no rung on this ladder that can safely widen them further without first-classing whitespace-as-glob into each rung's own logic, which was out of scope for this fix. |
 | D-new | **REVERSED** (code review, finding #7): the "Known, accepted edge case" note on `expand_whitespace_query`'s `report *.pdf` -> `report**.pdf` collision (D-new row, `expand_whitespace_query` is one shared transform...) is undone — this is now a bug fix, not an accepted corner of the grammar | The "accepted" framing assumed the collision was rare and harmless; it is neither. `**` is a load-bearing, DIFFERENT token in this grammar (cross-directory, unbounded depth) from a single-segment `*` — SPEC-search-space-wildcard.md is explicit that whitespace must never produce it. `report *.pdf` silently crossing a folder boundary the user never typed (no `/` anywhere in the query) violates that constraint outright, and "the user typed an explicit `*` right beside a space" is not actually rare: it is exactly what happens with any pre-existing extension glob typed as a second word (`report *.pdf`, `notes *.md`, `draft *.docx` — the common case of "narrow to a name, keep the extension pattern"). Fixed in `expand_whitespace_query` (`fused_render/index/query.py`) by having the whitespace-run substitution check its own neighbors: when a run already borders a literal `*` (before or after), the run is dropped instead of replaced, since the existing star already does the job the inserted one would have. The identical fix was ported to the TS mirror (`expandWhitespaceQuery`, `frontend/src/apps/explorer/lib/home-search.ts`) added for finding #5 below, so the two stay in agreement by construction the same way `expand_whitespace_query`/`search_under` already do server-side. Pytest (`test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star`) and a `bun test` counterpart pin `report *.pdf` -> `report*.pdf`. |
+
+---
+
+## Rank timing on the wire + browser slow-search warning (2026-09-16, worktree-rank-timing-warn)
+
+- **Test placement**: put the Python test in `tests/test_index_search.py`,
+  not `tests/test_index_api.py`. The brief said "put it with the existing
+  index API tests" — but the actual HTTP-level `/api/index/rank` happy-path
+  tests (`test_rank_route_answers_ranked_hits`,
+  `test_rank_route_logs_the_request_total_at_debug`, etc.) all live in
+  `test_index_search.py`; `test_index_api.py` mostly covers lane/pool/
+  concurrency machinery via lower-level fixtures. Added the new test right
+  next to `test_rank_route_answers_ranked_hits`, which builds a real index
+  and hits the route the same way.
+
+- **`.then()` aborted-guard position**: confirmed before editing — the guard
+  is `if (ctl.signal.aborted) return;` as the very first line of the success
+  callback in `FilesHome.tsx`. Placed the elapsed-time computation and
+  `warnSlowSearch` call immediately after it, so an aborted/superseded
+  request never warns and this required no restructuring.
+
+- **Memo-hit path never warns**: confirmed by reading the effect — a memoized
+  answer (`memo.current.get(q)`) returns early via a separate branch (abort
+  inflight, `setAnswer(remembered)`, return) and never reaches
+  `indexRank(...).then(...)` at all, so it structurally cannot call
+  `warnSlowSearch`. No extra guard was needed.
+
+- **Message shape**: one `console.warn` call with a single formatted string
+  (not multiple args) so a screenshot of it is self-contained and grep/read
+  order isn't ambiguous. Labeled the gap "unaccounted/outside-handler"
+  deliberately, per the brief, rather than "network" or "queueing" — none of
+  that is actually measured.
+
+- **`timing` rounding**: rounded server-side to 1 decimal place as specified.
+  Frontend does no further rounding/formatting of the server numbers — they
+  are echoed as received (e.g. `total=1800.0ms`), since the brief did not
+  ask for client-side reformatting and doing so would risk hiding precision
+  a support engineer might want.
+
+No other deviations from the brief.
+
+### rank-timing-warn — code review fixes (2026-09-16)
+
+Code review of the build above found 4 issues; fixed 1-3, left 4 as
+informational per the brief.
+
+| D-new | Finding 1 (float noise): added `r1()` (round to 1 decimal) in `FilesHome.tsx` and applied it to `unaccountedMs` AND to the echoed `timing.total_ms`/`lane_wait_ms`/`worker_ms` | Confirmed directly: `2100 - 1600.1 === 499.9000000000001` in JS. The server already rounds its own three numbers to 1 decimal, so `r1()` is a no-op on those today — but the subtraction is a fresh float op the server's rounding cannot protect, and wrapping all four numbers means the printed line can never regress into a long float run even if a future server change stops pre-rounding one of the echoed fields. The old fixture (`total_ms: 1800`, an integer) could never have produced this bug; rewrote it to `total_ms: 1600.1, lane_wait_ms: 50.3, worker_ms: 1549.8` (1-decimal, as the real server emits) and added `expect(msg).not.toMatch(/\d\.\d{2,}/)` so the test fails without the fix. |
+| D-new | Finding 2 (silent reject branch): added `warnSlowSearchFailed(query, elapsedMs, error)`, called from the `.then()` reject handler in the same effect, guarded by the pre-existing `if (ctl.signal.aborted \|\| err.name === "AbortError") return;` check which was verified to already sit as the first line of that handler (no restructuring needed) | This is the scenario the whole feature exists for: `_bounded_index_read` (fused_render/server/routers/index.py) answers a wedged index read with 503 after `ABANDON_S`, which makes `indexRank()`'s fetch throw — previously that path warned nothing. The new line is prefixed `FAILED` and carries `error.message`, deliberately distinguishable from the success line at a glance rather than requiring a reader to notice the absence of a `server:` clause. |
+| D-new | Finding 2 tests: added "a rejected request past the threshold warns with the error text" and "an aborted rejection never warns even past the threshold"; extended the test harness's `RankCall` with a `reject(message)` that settles the mocked fetch with a 503 + `{error: message}` body (mirrors the existing `StatCall.reject` pattern and matches what the real route sends, so `indexRank()` throws a real `HttpError` rather than a network-level rejection) | The abort case does not depend on the rejected error's identity: `ctl.signal.aborted` is already true from the superseding keystroke by the time `reject()` lands, so the existing guard short-circuits before ever inspecting `err.name` — matching how the pre-existing success-path abort test also relies on the signal check rather than a particular resolve/reject payload. |
+| D-new | Finding 3 (bare `clock.advance` calls): wrapped the three `clock.advance(2100)`/`advance(2500)` calls at (old) lines 545/564/577 in `flush()`, matching every other multi-hundred-ms advance in the file | These three cross `PENDING_INDICATOR_MS` (`setSlow(true)`, outside `act()` if bare) and the 300ms warm-up fallback (`indexRank(WARM_QUERY)`, left unstripped in `rankCalls` if bare — the tests passed before only because the warm call appends at index 1 and `rankCalls[0]` happened to still be the real query). Confirmed no `act()` warnings remain: `bun test src/apps/explorer/FilesHome.render.test.tsx` output has zero "not wrapped in act" lines, before this fix it had 3. |
+| — | Finding 4 (informational, NOT fixed) | `elapsedMs` derives from `Date.now()`, so an NTP step or a sleep/resume during the request window can fabricate or hide a multi-second warning. Pre-existing behavior for the latency readout this diff reuses (`answerFrom`'s elapsed-time field) — this diff makes the same wall-clock exposure support-facing via `console.warn`, but switching to `performance.now()` (monotonic, but NOT wall-clock-comparable across the fetch boundary in the same way, and a larger change to the existing readout) is out of scope for this PR per the brief. Left as a known limitation. |
+
+Verified: `bun test src/apps/explorer/FilesHome.render.test.tsx` → 48 pass, 0
+fail, no act() warnings. `bunx tsc --noEmit` over `frontend/` → clean. No
+Python files touched in this round, so `test_index_search.py` was not
+re-run (nothing in it could have changed).
