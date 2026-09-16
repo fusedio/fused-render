@@ -802,11 +802,23 @@ def _read_permission_cards() -> set[str]:
     for name in names:
         run_dir = os.path.join(runs, name)
         seen.add(run_dir)
+        # The stamp is THE FILES, not the directory: a directory's mtime is not
+        # a portable signal (NTFS leaves it alone for a rewrite, and two writes
+        # inside its granularity read as one), and a perm/ dir holds a handful
+        # of small files at most — a card and its answer per prompt.
+        perm_dir = perm_dir_of(run_dir)
         try:
-            st = os.stat(perm_dir_of(run_dir))
+            names_in = os.listdir(perm_dir)
         except OSError:
             continue  # no card directory: this run has never been carded
-        stamp = (st.st_mtime_ns, st.st_size)
+        files = []
+        for entry in names_in:
+            try:
+                st = os.stat(os.path.join(perm_dir, entry))
+            except OSError:
+                continue
+            files.append((entry, st.st_mtime_ns, st.st_size))
+        stamp = tuple(sorted(files))
         last = _perm_stamps.get(run_dir)
         _perm_stamps[run_dir] = stamp
         if last is None or last == stamp:
