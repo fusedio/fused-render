@@ -31,6 +31,7 @@ import { useSyncExternalStore } from "react";
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { isFocusedHere } from "@platform/lib/presence";
 import type { NotificationCardAction } from "@platform/ui/NotificationCard";
 
 // "trail" is deliberately UNREPRESENTABLE on client input — see
@@ -63,6 +64,14 @@ export interface NotificationInput {
    *  actionable-notifications' "every row goes somewhere"). Unused by the
    *  popup card. */
   page?: string;
+  /** OPT-IN ONLY (SPEC-quiet-notifications.md §2a) — the page/route this
+   *  message is ABOUT, for the "you're already looking at this" suppression
+   *  check. Deliberately never defaulted to the raising document's own
+   *  current page: that would suppress "Path copied" and every other
+   *  gesture confirmation whose only feedback IS the card. Set this only
+   *  where the page already shows the same result on screen (the app
+   *  install/run lifecycle messages this branch wires it for). */
+  source?: string;
 }
 
 export interface StoredNotification {
@@ -194,6 +203,20 @@ function isRetained(input: NotificationInput, tier: JobTier): boolean {
   if (tier === "silent") return false;
   if (tier === "attention") return true;
   return Boolean(input.action || input.page);
+}
+
+// SUPPRESSION (SPEC-quiet-notifications.md §2a, D-A's "as far as each store
+// honestly can" for a client-raised message: it lives only in the document
+// that raised it, so it is suppressed only when THAT document is focused and
+// its source is on screen). Deliberately mirrors `isRetained`'s own
+// "attention, or carries a destination" shape rather than inventing a second,
+// subtly different actionability test — an error or an actionable message is
+// never suppressed, exactly as it is never left un-retained.
+function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
+  if (!input.source) return false;
+  if (tier === "attention") return false;
+  if (input.action || input.page) return false;
+  return isFocusedHere(input.source);
 }
 
 function toStored(input: NotificationInput, id: number): StoredNotification {
@@ -332,6 +355,20 @@ function refreshSnapshot(): void {
  *  updated in place and the same id comes back; otherwise a fresh id is
  *  minted exactly as if no id had been given. */
 export function notify(input: NotificationInput, replaceId?: number): number {
+  // Checked before anything pops or is retained, and before the replaceId
+  // branch: a suppressed repeat must not resurrect (or keep alive) whatever
+  // its earlier, unsuppressed call already popped.
+  if (isSuppressed(input, resolveTier(input))) {
+    if (replaceId !== undefined) {
+      // The thing being "still going" is now suppressed too (its source came
+      // into focus) — the same clear-not-leave-stale rule the popup's own
+      // exit path follows elsewhere in this function.
+      if (popup && popup.id === replaceId) dismissPopup(replaceId);
+      retained = retained.filter((n) => n.id !== replaceId);
+      refreshSnapshot();
+    }
+    return replaceId ?? -1;
+  }
   if (replaceId !== undefined) {
     if (popup && popup.id === replaceId && !popup.leaving) {
       const updated = toStored(input, replaceId);

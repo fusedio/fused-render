@@ -424,3 +424,61 @@ test("dismissNotification in a pane forwards to the shell's own (independently-m
   // id, which names only the pane's own invisible copy.
   expect(dismissCalls).toEqual([999]);
 });
+
+// ---- source suppression (SPEC-quiet-notifications.md §2a) -----------------
+//
+// `presence.ts`'s `currentPresencePage()` reads off the shared, module-cached
+// `location` global — shared with every OTHER `bun test` file in this run
+// (`testDomShim.ts`'s own header comment) — so this suite pins `pathname`
+// explicitly rather than trusting whatever the shim's default or another
+// file's own navigation left it at.
+const savedLocation = { pathname: location.pathname, search: location.search };
+beforeEach(() => {
+  (location as unknown as { pathname: string }).pathname = "/";
+  (location as unknown as { search: string }).search = "";
+});
+afterEach(() => {
+  (location as unknown as { pathname: string }).pathname = savedLocation.pathname;
+  (location as unknown as { search: string }).search = savedLocation.search;
+});
+
+test("a plain success with source matching the current page is suppressed entirely", () => {
+  const id = notify({ title: "Installed", tone: "info", source: "/" });
+  expect(getPopupNotification()).toBeNull();
+  expect(getRetainedNotifications()).toEqual([]);
+  expect(id).toBe(-1);
+});
+
+test("the same message with a source that does NOT match the current page still pops", () => {
+  notify({ title: "Installed", tone: "info", source: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Installed");
+});
+
+test("an error with a matching source is never suppressed", () => {
+  notify({ title: "Install failed", tone: "error", source: "/" });
+  expect(popupSnapshot()?.title).toBe("Install failed");
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Install failed"]);
+});
+
+test("an actionable message (carries a page) with a matching source is never suppressed", () => {
+  notify({ title: "Ready", tone: "info", source: "/", page: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Ready");
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Ready"]);
+});
+
+test("no source at all is never suppressed (opt-in only, never defaulted)", () => {
+  notify({ title: "Path copied", tone: "info" });
+  expect(popupSnapshot()?.title).toBe("Path copied");
+});
+
+test("a suppressed replaceId call clears whatever that id was still showing", () => {
+  const id = notify({ title: "Installing…", tone: "info", source: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Installing…");
+  // The source comes into focus mid-flight (a repeat call updating the same
+  // popup) — the still-showing card must not be left stale.
+  const result = notify({ title: "Installing…", tone: "info", source: "/" }, id);
+  expect(result).toBe(id);
+  // Started its exit animation (same "leaving", not an instant vanish, every
+  // other dismiss in this store uses) rather than being left to sit forever.
+  expect(getPopupNotification()?.leaving).toBe(true);
+});

@@ -241,20 +241,44 @@ export function _presenceWindowIdForTest(): string {
 // `notifications.ts`'s `installIngest()` uses — there is no other call site
 // that would reliably run once per document, and every document that can
 // `import` this module is a document worth registering.
+//
+// TIMER THROUGH `globalThis`, not `window` — `notifications.ts`'s own rule
+// (see its header comment), for the same reason: this module is imported
+// transitively by plenty of test files that never test presence itself and
+// stub only a minimal `window` (no `setInterval`, sometimes no
+// `addEventListener` at all — `RepoUpdatesDock.test.tsx` is exactly this
+// case). Every listener registration below is individually guarded rather
+// than gated on one up-front feature check, so a shim missing ONE member
+// (say, `addEventListener` but not `dispatchEvent`) still gets every other
+// listener it can support.
+function safeListen(
+  target: { addEventListener?: (type: string, fn: () => void) => void } | undefined | null,
+  type: string,
+  fn: () => void,
+): void {
+  try {
+    target?.addEventListener?.(type, fn);
+  } catch {
+    // A shim whose addEventListener itself throws (none currently do, but
+    // nothing here may assume otherwise) degrades to "this document just
+    // never updates that entry" — never to a crash at import time, which
+    // would take down every OTHER file in the same `bun test` process.
+  }
+}
+
 function installHeartbeat(): void {
   if (typeof window === "undefined") return;
-  writeSelf();
-  const interval = window.setInterval(() => writeSelf(), PRESENCE_REFRESH_MS);
-  window.addEventListener("focus", () => writeSelf());
-  window.addEventListener("blur", () => writeSelf());
-  window.addEventListener(NAV_EVENT, () => writeSelf());
-  window.addEventListener("pagehide", () => removeSelf());
-  window.addEventListener("beforeunload", () => removeSelf());
   try {
-    document.addEventListener("visibilitychange", () => writeSelf());
+    writeSelf();
   } catch {
-    // No document (a non-DOM test import) — nothing to listen on.
+    // Same degrade-don't-crash rule as every read/write above.
   }
-  void interval;
+  globalThis.setInterval(() => writeSelf(), PRESENCE_REFRESH_MS);
+  safeListen(window, "focus", () => writeSelf());
+  safeListen(window, "blur", () => writeSelf());
+  safeListen(window, NAV_EVENT, () => writeSelf());
+  safeListen(window, "pagehide", () => removeSelf());
+  safeListen(window, "beforeunload", () => removeSelf());
+  safeListen(typeof document === "undefined" ? null : document, "visibilitychange", () => writeSelf());
 }
 installHeartbeat();
