@@ -313,15 +313,28 @@ def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> boo
     if entries is None:
         with _lock:
             entries = _read()
+    soon: list[float] = []
     for entry in entries:
         if entry.get("state") != PENDING:
             continue
         try:
-            if parse_due(entry.get("due")) <= now:
-                _wake.set()
-                return True
+            ahead = (parse_due(entry.get("due")) - now).total_seconds()
         except ValueError:
             continue
+        if ahead <= 0:
+            _wake.set()
+            return True
+        if ahead < POLL_INTERVAL_S:
+            soon.append(ahead)
+    # DUE INSIDE THE POLL WINDOW: arm the timer for that moment. A message the
+    # page sends as "now" is stamped a few hundred milliseconds ahead of this
+    # read (`delay_seconds`, a client clock), so it was never `<= now` here and
+    # sat in Upcoming until the 30-second loop came round — one to seven
+    # seconds of a new task reading as not started (Akshil, 2026-09-16), the
+    # exact wait `_ring` exists to remove. Same single timer the tick's holds
+    # use; the tick re-arms it for whatever is left when it fires.
+    if soon:
+        _rearm(soon)
     return False
 
 
@@ -3068,6 +3081,7 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         return {"ok": False, "found": True, "entry": None,
                 "reason": ("already claimed for sending — the scheduler got to "
                            "it first")}
+    _notify(_entry_keys(claimed))  # in progress from the claim, as in `tick`
     _send(claimed)
     with _lock:
         stored = next((e for e in _read()

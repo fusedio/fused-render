@@ -290,3 +290,24 @@ def test_the_session_id_stamp_rings_the_old_and_new_keys(folder, monkeypatch):
 
     schedule._turn_tick(entry, "r-1", Agent(), {"session_id": SID})
     assert {SID, "pending:" + entry["id"]} in rung
+
+
+# ---- a message due in a moment arms the loop for that moment ---------------------
+
+
+def test_a_message_due_in_a_moment_arms_the_loop_for_then(folder, monkeypatch):
+    """"Now" from the page arrives a few hundred ms ahead of the server's read,
+    so it is not due yet — and used to wait for the 30 s loop."""
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
+    schedule._wake.clear()
+    schedule.create(str(folder), "now-ish", _ago(-1.0))
+    assert not schedule._wake.is_set()
+    assert len(armed) == 1 and 0 < armed[0][0] <= 1.0
+
+
+def test_a_message_due_later_arms_nothing(folder, monkeypatch):
+    armed = []
+    monkeypatch.setattr(schedule, "_rearm", lambda delays: armed.append(list(delays)))
+    schedule.create(str(folder), "tomorrow", _ago(-3600))
+    assert armed == []
