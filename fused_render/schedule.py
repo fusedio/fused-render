@@ -221,8 +221,10 @@ _JOB_PREFIX = "sys:schedule:"
 # toast, not history. The store holds every entry's outcome durably.
 _EVENTS_MAX = 100
 
-# What the shell narrates. `done` is an info toast (your message ran), the other
-# two are errors that need a person — which is the gap this log exists to close.
+# What the shell narrates. `started`/`done` are suppressible info notifications
+# (SPEC-quiet-notifications.md §5) — seen once already if the run's own target
+# was open when it happened, never lost if it wasn't. `failed`/`missed` are
+# errors that always notify and always stay in the panel.
 #
 # THERE IS NO EVENT FOR A RUN PARKED ON A CARD (Akshil, 2026-09-03). One was
 # added on this branch and taken straight back out: a toast for it interrupted
@@ -230,10 +232,17 @@ _EVENTS_MAX = 100
 # wears the Needs attention ring and sorts to the top of the list, which is
 # where somebody goes to act on it anyway. This log is for what happened while
 # nobody was looking, and a run that is still going has not happened yet.
+#
+# `started` is not "parked on a card" — it is the moment a scheduled run leaves
+# the queue and actually spawns, which the Akshil note never addressed (that
+# note is about a run sitting IN NEEDS-ATTENTION, not one just beginning).
+# §5 wants it: an unattended run's "your message went out" is only reachable
+# through this log, since a live tail is the only other place it shows.
+EVENT_STARTED = "started"
 EVENT_DONE = "done"
 EVENT_FAILED = "failed"
 EVENT_MISSED = "missed"
-EVENT_KINDS = (EVENT_DONE, EVENT_FAILED, EVENT_MISSED)
+EVENT_KINDS = (EVENT_STARTED, EVENT_DONE, EVENT_FAILED, EVENT_MISSED)
 
 _events: list[dict] = []
 _event_seq = 0
@@ -1874,6 +1883,12 @@ def _send(entry: dict) -> None:
     # perfectly well.
     _watching(entry["id"], True)
     _update(entry["id"], state=SENT, run_id=str(run_id), error="")
+    # §5's "scheduled run started" moment — emitted right after the spawn is
+    # confirmed to have actually taken, same place `_fail` below emits for the
+    # spawn that didn't. The narrating window suppresses this by presence on
+    # `entry["target"]` (the chat/project this run belongs to) on its own; this
+    # log does not know or care who is looking.
+    _emit(EVENT_STARTED, entry)
     # The row opens `running` and stays that way for the whole TURN, not just the
     # spawn — the spawn takes a moment and the turn can take minutes, and the
     # minutes are the part worth being able to see. `cancellable` is honest here
