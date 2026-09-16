@@ -77,6 +77,11 @@ export interface NotificationCardRowClick {
 }
 
 export interface NotificationCardProps {
+  /** Extra class name(s) appended to the row's own `.dl-row` — §3's group
+   *  row uses this for `.dl-row-group-attention`, the one caller so far that
+   *  needs a class beyond what this component already derives from its own
+   *  props (`is-stalled`, `dl-row-open`). */
+  className?: string;
   /** `.dl-title`. The only required part. */
   title: ReactNode;
   /** `'wrap'` (default): two-line clamp, wraps anywhere — a prompt. `'id'`
@@ -130,6 +135,7 @@ export interface NotificationCardProps {
 }
 
 export default function NotificationCard({
+  className,
   title,
   titleMode = "wrap",
   titleTooltip,
@@ -155,6 +161,7 @@ export default function NotificationCard({
     "dl-row",
     stalled ? "is-stalled" : "",
     rowClick ? "dl-row-open" : "",
+    className ?? "",
   ]
     .filter(Boolean)
     .join(" ");

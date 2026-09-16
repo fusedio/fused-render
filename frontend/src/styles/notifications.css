@@ -796,6 +796,19 @@
   opacity: 0.62;
 }
 
+/* §3 (SPEC-quiet-notifications.md): a multi-member group row with at least
+   one failing/cancelled member — the group-level twin of the per-job
+   TerminalGlyph's error coloring, but on the row itself (a group row's own
+   "N of M done" subline has no per-row glyph slot to carry it otherwise, and
+   a failing member elsewhere in the group must never be findable only by
+   reading every member's own status). Left border only, `--error` token
+   (never a literal hex — see `tests/test_theme.py`), so it composes with
+   `.dl-row-open`'s existing hover/focus treatment rather than fighting it. */
+.dl-row.dl-row-group-attention {
+  border-left: 3px solid var(--error);
+  padding-left: 7px;
+}
+
 .dl-row-head {
   display: flex;
   align-items: baseline;

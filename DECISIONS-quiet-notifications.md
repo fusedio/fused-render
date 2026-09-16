@@ -502,6 +502,90 @@ scripts/check-boundaries.mjs` → OK (806 files).
 Still pending: the multi-member group row UI in `RepoUpdatesDock.tsx`
 ("N of M done" subline, attention stripe) — next unit — then §5 in full.
 
+## §3 client: the multi-member group row UI in `RepoUpdatesDock.tsx`
+
+Completes §3's client-side work. Added `GroupJobRow` (built directly on
+`NotificationCard`, mirroring `JobRow`'s own busy/failure/dismiss shape) and
+a shared `renderJobRows(jobs, onChanged, onPatch)` helper used by all three
+job-row render sites (terminal-attention, terminal-trail/`shownTerminal`,
+Recent/`boundedRecent`) — one place turns a flat `Job[]` into rows, grouping
+via `groupJobs` first and rendering a `GroupJobRow` for any `(page, group)`
+with more than one member, `JobRow` unchanged for a lone member.
+
+**Title**: the group's oldest-arrival member's own title
+(`group.jobs[0].title`) — a judgment call, not spec text; `groupJobs`
+preserves the snapshot's own oldest-first order, and the oldest member is
+least likely to still be mid-rename the way a just-finished sibling
+sometimes is.
+
+**Subline**: `"${doneCount} of ${members.length} done"` via
+`NotificationCard`'s `secondary` prop, where `doneCount` excludes any
+member whose `effectiveTier` reads "attention" (so a cancelled member counts
+as not-done, same as a failed one).
+
+**Attention stripe**: `NotificationCard`'s new `className` prop (added this
+unit — the one caller so far needing a class beyond what the component
+already derives) carries `.dl-row-group-attention` (new rule in
+`notifications.css`, `--error` token, left border, mirrors `.dl-row.is-
+stalled`'s own placement) whenever any member is attention-effective.
+
+**Section placement is "group first, then classify the group", not
+per-job** — the same composition rule already applied for suppression
+(`isGroupRecentOnly`) in the prior unit, now applied to the "Needs
+you"/"Worth keeping" split too: `terminalAttention`/`terminalTrail` are now
+built by grouping `terminal` via `groupJobs`, classifying each WHOLE group
+by `groupEffectiveTier`, then flat-mapping the winning groups back into a
+`Job[]` (kept as `Job[]`, not `JobGroup[]`, to leave every other consumer of
+those two names — `attentionCount`, `hasTrailSection`, `shownTerminal`'s
+fold — untouched). The pre-existing code filtered `terminal` by each job's
+OWN `effectiveTier`, which would tear a mixed group's members across both
+sections — exactly the split D-C's "one failing member keeps the whole
+group visible" rule exists to prevent, now proven by a dedicated test
+(a two-member group with one failure renders as ONE row, under one count).
+
+**Counts stay raw-job, not group-based** — resolved the open question from
+the interrupted-work notes ("whether `total`/`attentionCount`/the fold cap
+count raw jobs or rows/groups") in favor of raw job counts, the
+lower-risk/least-surprising choice: `attentionCount` for a two-member group
+with one failure is 2, not 1 — both members "need a look" in the sense that
+neither is filed under "Worth keeping" while the group shows unresolved,
+matching what the badge already means for `visibleAttention`/
+`messagesAttention` (a count of things, not a count of rows). Pinned by a
+test asserting `"2 needs you"` for exactly that fixture.
+
+**Blast-radius fix in the test fixtures, found by running the tests, not
+suspected up front**: `RepoUpdatesDock.test.tsx`'s `failedJob()`/`doneJob()`
+helpers defaulted `group: over.id ?? "sys:ai-image:boom"` — correct for
+`failedJob()` alone, but `doneJob()` spread `failedJob(over)` using the
+OUTER `over` (which lacks an `id` override in most tests), so a bare
+`doneJob()` silently inherited `failedJob`'s own hardcoded default group.
+Two unrelated, differently-`id`'d bare fixtures (`failedJob()`, `doneJob()`)
+were accidentally landing in the SAME `(page, group)` group the moment
+grouping-aware code actually looked at `group` for classification —
+surfaced immediately by the pre-existing "counts a waiting task and an
+attention-tier job together" test flipping from `"2 needs you"` to
+`"3 needs you"`. Fixed by threading each fixture's own resolved `id` into
+its own `group` default (`doneJob` now explicitly passes
+`id: over.id ?? "sys:ai-image:done"` into the `failedJob` call it builds
+on), so the two helpers' defaults are independent again.
+
+Tests added (`RepoUpdatesDock.test.tsx`, 4 new): a two-member group renders
+one row with the right title and "2 of 2 done"; a two-member group with one
+failure gets the attention-stripe class, stays one row, and counts 2 toward
+the badge; a single-member group renders exactly as `JobRow` always has (no
+subline, no stripe) — the single-member regression trap named by number in
+the task brief; dismissing a group's row calls dismiss on every member and
+removes all of them from state on success.
+
+Commands: `bunx tsc --noEmit -p .` → clean. `bun test` across the same
+12-file baseline set as the prior two units → 411 pass, 0 fail.
+`bun test src/platform/ui/NotificationCard.test.tsx` → 15 pass (the new
+`className` prop, regression-checked directly). `node
+scripts/check-boundaries.mjs` → OK (806 files).
+
+This completes §3's client-side work in full. Next: §5 (Claude task
+notifications), not yet started.
+
 ## State after this branch's commits
 
 - `bun test src/platform src/shell` → 2546 pass, 0 fail.

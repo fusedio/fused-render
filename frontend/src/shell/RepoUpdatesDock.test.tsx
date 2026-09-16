@@ -116,40 +116,50 @@ function text(node: ReactTestRendererJSON | null): string {
 
 // A FAILED job, for the D586 rows this section now also draws. Only
 // `state: "error"` is re-routed here; running/done/cancelled stay in Jobs.
-const failedJob = (over: Partial<Job> = {}): Job => ({
-  id: "sys:ai-image:boom",
-  title: "Pyramid build",
-  detail: "",
-  model: "",
-  kind: "task",
-  state: "error",
-  done: null,
-  total: null,
-  total_scope: "phase",
-  total_estimated: false,
-  unit: "",
-  message: "GDAL ran out of memory",
-  page: "",
-  origin: "",
-  owner: "server",
-  cancellable: false,
-  cancel_requested: false,
-  started_at: 0,
-  updated_at: 0,
-  finished_at: 0,
-  stalled: false,
-  waiting_for: "",
-  tier: "trail",
-  group: over.id ?? "sys:ai-image:boom",
-  ...over,
-});
+//
+// `group` defaults to THIS job's own id (via the local `id`, not
+// `over.id` alone) so two bare calls to `failedJob()`/`doneJob()` — which
+// have DIFFERENT default ids — never accidentally land in the same
+// `(page, group)` group and get folded into one `GroupJobRow` by §3's
+// grouping. `doneJob` below takes care to thread its OWN default id into
+// this function for the same reason, rather than letting this function's
+// own default id leak through.
+const failedJob = (over: Partial<Job> = {}): Job => {
+  const id = over.id ?? "sys:ai-image:boom";
+  return {
+    id,
+    title: "Pyramid build",
+    detail: "",
+    model: "",
+    kind: "task",
+    state: "error",
+    done: null,
+    total: null,
+    total_scope: "phase",
+    total_estimated: false,
+    unit: "",
+    message: "GDAL ran out of memory",
+    page: "",
+    origin: "",
+    owner: "server",
+    cancellable: false,
+    cancel_requested: false,
+    started_at: 0,
+    updated_at: 0,
+    finished_at: 0,
+    stalled: false,
+    waiting_for: "",
+    tier: "trail",
+    group: id,
+    ...over,
+  };
+};
 
 // A DONE job — the routing D662 broadened past `error` alone. Every terminal
 // state reaches this section now (jobs.ts `isTerminal`/`terminalJobs`), not
 // only a failure.
 const doneJob = (over: Partial<Job> = {}): Job => ({
-  ...failedJob(over),
-  id: "sys:ai-image:done",
+  ...failedJob({ ...over, id: over.id ?? "sys:ai-image:done" }),
   state: "done",
   message: "",
   detail: "Saved to Downloads/pyramid.png",
@@ -1421,5 +1431,74 @@ test("Clear all also reaches Recent — the same server-side clear, patched into
     await Promise.resolve();
   });
   expect(patchedRecent.length).toBeGreaterThan(0);
+  globalThis.fetch = realFetch;
+});
+
+// §3 (SPEC-quiet-notifications.md): the multi-member group row UI.
+
+test("a two-member group renders as ONE row, with an 'N of M done' subline", () => {
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  // One row for the whole group, not two.
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  // The oldest (first-arrival) member's own title represents the group.
+  expect(text(findAll(tree, "dl-title")[0])).toBe(g1.title);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("2 of 2 done");
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(0);
+});
+
+test("a two-member group with one failing member gets the attention stripe and counts both members toward 'needs you'", () => {
+  const ok = doneJob({ id: "sys:g:a", group: "g" });
+  const bad = failedJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [ok, bad] });
+  // One row, not split across "Needs you"/"Worth keeping" — D-C's "one
+  // failing member keeps the whole group visible" rule, at the row level.
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("1 of 2 done");
+  // Raw job counts (the documented, lower-risk choice) — the whole group's
+  // two members both count toward the badge, not just the failing one.
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("a single-member group renders unchanged via JobRow — the regression trap this task named by number", () => {
+  const tree = renderView({ rows: [], terminal: [failedJob()] });
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(0);
+  // No group subline — JobRow's own status line, not `GroupJobRow`'s
+  // "N of M done" one.
+  expect(text(findAll(tree, "dl-model")[0] ?? "")).not.toContain("of");
+  expect(findAll(tree, "dl-x")).toHaveLength(1);
+});
+
+test("dismissing a group's row dismisses every member at once, and removes all of them from state", async () => {
+  const dismissed: string[] = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch?: unknown }).fetch = mock((url: string) => {
+    const match = /\/api\/jobs\/([^/]+)\/dismiss/.exec(url);
+    const id = match ? decodeURIComponent(match[1]) : "";
+    dismissed.push(id);
+    return Promise.resolve(new Response(JSON.stringify({ dismissed: id })));
+  });
+  const patchedTerminal: Array<(jobs: Job[]) => Job[]> = [];
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const instance = renderInstance({
+    rows: [],
+    terminal: [g1, g2],
+    onTerminalPatch: (fn) => patchedTerminal.push(fn),
+  });
+  const dismissBtn = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-x")[0];
+  await act(async () => {
+    (dismissBtn.props as { onClick: () => void }).onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(patchedTerminal.length).toBeGreaterThan(0);
+  const remaining = patchedTerminal.reduce((jobs, fn) => fn(jobs), [g1, g2] as Job[]);
+  expect(remaining).toHaveLength(0);
   globalThis.fetch = realFetch;
 });
