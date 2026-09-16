@@ -177,6 +177,37 @@ function escapeLiteral(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// The regex `d` flag (`hasIndices`, ES2022) is unsupported on WebKit before
+// 16.4 — NOT a feature `exec` silently degrades on, but one `new RegExp`
+// itself THROWS a `SyntaxError` for, at construction time. Every glob-mode
+// hit on an affected browser would have thrown before it ever got the
+// chance to render, breaking the whole listing rather than just this one
+// highlight (code review finding). Probed once, lazily, and memoized: the
+// probe itself is exactly the failure mode being guarded against, so it
+// only ever needs to run once per page load, not once per query/hit.
+let supportsIndicesFlagCache: boolean | undefined;
+function supportsIndicesFlag(): boolean {
+  if (supportsIndicesFlagCache === undefined) {
+    try {
+      new RegExp("", "d");
+      supportsIndicesFlagCache = true;
+    } catch {
+      supportsIndicesFlagCache = false;
+    }
+  }
+  return supportsIndicesFlagCache;
+}
+
+// Test-only: every real engine this repo runs against supports the "d"
+// flag, so the WebKit < 16.4 fallback branch in `globMatch` has no other
+// way to be exercised — this lets fuzzy.test.ts force the cache to either
+// value (and clear it back to `undefined` afterward) without reaching for
+// a global `RegExp` monkeypatch, which would also break every OTHER regex
+// construction in this module, not just the probe.
+export function __setSupportsIndicesFlagForTest(value: boolean | undefined): void {
+  supportsIndicesFlagCache = value;
+}
+
 function globToHighlightRegex(pattern: string): RegExp {
   let out = "";
   let i = 0;
@@ -212,7 +243,11 @@ function globToHighlightRegex(pattern: string): RegExp {
       out += escapeLiteral(trailingSlash);
     }
   }
-  return new RegExp("^" + out + "$", "d");
+  // The "d" flag is add-on metadata (`m.indices`), never a change to WHAT
+  // matches — omitting it on an unsupporting engine still produces the same
+  // capture groups, just without their positions attached; `globMatch`
+  // below reconstructs those positions itself in that case.
+  return new RegExp("^" + out + "$", supportsIndicesFlag() ? "d" : "");
 }
 
 // `RegExpExecArray` in this repo's ES2020 lib target has no `indices`
@@ -239,15 +274,39 @@ type IndicesArray = Array<[number, number] | undefined>;
  */
 export function globMatch(pattern: string, text: string): FuzzyResult | null {
   const regex = globToHighlightRegex(pattern.toLowerCase());
-  const m = regex.exec(text.toLowerCase()) as
+  const lowerText = text.toLowerCase();
+  const m = regex.exec(lowerText) as
     | (RegExpExecArray & { indices?: IndicesArray })
     | null;
-  if (!m || !m.indices) return null;
+  if (!m) return null;
+  if (m.indices) {
+    const positions: number[] = [];
+    for (let g = 1; g < m.indices.length; g++) {
+      const range = m.indices[g];
+      if (!range) continue;
+      for (let p = range[0]; p < range[1]; p++) positions.push(p);
+    }
+    return { score: 0, positions, longestRun: 0 };
+  }
+  // No "d" flag support (WebKit < 16.4) — `m.indices` doesn't exist, but the
+  // captured substrings themselves (`m[1]`, `m[2]`, …) still do; `exec`
+  // never needed the flag for those. Each capture is a LITERAL run of the
+  // pattern, and the regex is a full match (`^...$`) against `lowerText`,
+  // so the captures occur in the same left-to-right order they matched in —
+  // a sequential `indexOf`, each search starting where the previous capture
+  // left off, finds the same runs the "d" flag's own indices would have
+  // pointed at (only ambiguous when a literal could itself recur inside a
+  // wildcard's own span right before it, an existing edge case the "d" path
+  // is equally exposed to via the regex engine's own backtracking choice).
   const positions: number[] = [];
-  for (let g = 1; g < m.indices.length; g++) {
-    const range = m.indices[g];
-    if (!range) continue;
-    for (let p = range[0]; p < range[1]; p++) positions.push(p);
+  let cursor = 0;
+  for (let g = 1; g < m.length; g++) {
+    const lit = m[g];
+    if (!lit) continue;
+    const start = lowerText.indexOf(lit, cursor);
+    if (start === -1) continue;
+    for (let p = start; p < start + lit.length; p++) positions.push(p);
+    cursor = start + lit.length;
   }
   return { score: 0, positions, longestRun: 0 };
 }
