@@ -2307,6 +2307,9 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0] & {
  * there is a card that will not open at all.
  */
 export interface DraftSeed {
+  /** The task draft this card is reopening, or `""` for a seed that carries no
+   *  draft at all — a chat hop's record, or a folder to open a blank card on.
+   *  `""` is NOT a minted form: see `draftId` (Bugbot 4028344040). */
   id: string;
   form?: Record<string, unknown> | null;
 }
@@ -3167,7 +3170,16 @@ export default function NewJobModal({
   // abandoning one is a cancel rather than a draft (design.md, Not in scope) —
   // so `editing` writes nothing here and keeps the close-twice guard it has
   // always had.
-  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id ?? null);
+  //
+  // `""` IS NOT AN ID (Bugbot 4028344040). Two doors seed this card with a
+  // DraftSeed that carries no id at all and only exists to state a folder or a
+  // stored form — the chat hop (`chatHopSeed`, whose record is a chat key, not
+  // a task draft) and the empty never-sent hop, which opens a blank card on the
+  // folder its chat was mounted on. An empty string is not null, so the card
+  // read both as "already minted" and autosaved a settings-only change — a time,
+  // a model, a folder — into the Untitled draft it refuses to mint everywhere
+  // else. A seed says "no draft yet" by saying nothing, however it spells it.
+  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id || null);
   const draftIdRef = useRef(draftId);
   draftIdRef.current = draftId;
   // The form as the store holds it. `when` / `repeat` / `new_task_each_run` are

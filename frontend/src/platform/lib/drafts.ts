@@ -951,6 +951,17 @@ export interface DraftSyncer {
    * attachments is still the latest one this page has made.
    */
   wants(): { text: string; attachments: DraftAttachment[] } | undefined;
+  /**
+   * DOES THIS PAGE BELIEVE THERE IS NO RECORD UNDER THIS KEY — its own delete
+   * has landed, or one is on its way out (a Send, a Discard, the trash).
+   *
+   * Read by an editor holding an answer that PREDATES that delete: a draft GET
+   * dispatched before the Send and answering after it names a record this page
+   * has since spent, and painting those words back is a sentence arriving out of
+   * nowhere (Bugbot 4027549698). The syncer is the one thing that can say so,
+   * because it is the one thing that said it.
+   */
+  isGone(): boolean;
   /** Register the editor's conflict rule; the answer detaches it. Several
    *  editors may be open on one key (the composer and the New task card), so
    *  these stack: the NEWEST one decides, and detaching one restores the one
@@ -1494,6 +1505,13 @@ function makeSyncer(key: string): InnerSyncer {
     wants() {
       if (desired?.kind !== "chat") return undefined;
       return { text: desired.text, attachments: desired.attachments.slice() };
+    },
+    isGone() {
+      // Both halves, because they are two moments of one fact: `removed` is a
+      // DELETE this page has already had an answer to, and a `gone` desired
+      // state is one it has decided on and not yet heard back about. An editor
+      // asking has words in its hand either way.
+      return removed || desired?.kind === "gone";
     },
     watch(next) {
       rules.add(next);

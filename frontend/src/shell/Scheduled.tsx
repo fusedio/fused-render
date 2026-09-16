@@ -563,6 +563,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       // (Akshil, 2026-09-16).
       const from = q.get("from") ?? "";
       const at0 = q.get("target") ?? "";
+      // `id: ""` IS "NO DRAFT", NOT A DRAFT CALLED "" (Bugbot 4028344040). The
+      // seed is here to carry the FOLDER and nothing else, and the card reads an
+      // empty id as a form nobody has minted — so a settings-only change on this
+      // blank card still writes no Untitled row. See `NewJobModal`'s `draftId`.
       openForm(
         at,
         null,
@@ -611,7 +615,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * IT IS `openDraft`'S OWN ARM, reached by a param rather than by a row — same
    * id, same stored form, same `NO_HOP` and the same "no time" rule
    * (`reopenTime`: a reopened draft reads its `when` out of the form it stored,
-   * and an immediate task must stay one). The form comes off `GET /api/drafts`
+   * and an immediate task must stay one) — EXCEPT when the press came out of a
+   * composer, which says so with `&hop=1` and opens on the lead date like every
+   * other hop (see below). The form comes off `GET /api/drafts`
    * rather than off a row, because the listing has not answered on first render
    * and this opening must not wait for 800 rows to decide which card to be.
    *
@@ -639,6 +645,23 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // task draft, not a chat record.
     const from = q.get("from") ?? "";
     const hopTo: ChatHop = from ? { key: "", from } : NO_HOP;
+    // `&hop=1` — A PRESS OUT OF A COMPOSER, NOT A ROW (Bugbot 4028344051).
+    //
+    // A draft row is a REOPEN and takes the time the draft stored, which for an
+    // immediate draft is none (`reopenTime`). A Schedule press is the same
+    // gesture the session hop's `?new=1` makes and must land the same way: on
+    // now+2m, with the card planning, so the when-row is open and the Schedule
+    // button is labelled for a scheduled run. Without it the card opened with no
+    // lead time and folded, and its confirm named a time the task would not
+    // wait for — it ran at once.
+    //
+    // A RECORD THAT ALREADY CARRIES A TIME STILL OUTRANKS THE LEAD, exactly as
+    // `openChatRecord` has it: a hop the reader made, went back from and made
+    // again opens on the time they picked.
+    const hopped = q.get("hop") === "1";
+    const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);
+    const openAt = (seed: DraftSeed | null): Date | null =>
+      hopped ? reopenTime(seed) ?? lead : null;
     const gen = ++chatDraftGen.current;
     void fetchDrafts().then(
       (all) => {
@@ -647,14 +670,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // `DraftSeed.form` is an index-signature bag, and only a fresh object
         // literal crosses that gap.
         const stored = all?.task[id];
-        openForm(null, null, hopTo, { id, form: stored ? { ...stored } : null });
+        const seed: DraftSeed = { id, form: stored ? { ...stored } : null };
+        openForm(openAt(seed), null, hopTo, seed);
       },
       () => {
         if (gen !== chatDraftGen.current) return;
-        openForm(null, null, hopTo, { id, form: null });
+        openForm(openAt(null), null, hopTo, { id, form: null });
       },
     );
     q.delete("draft");
+    q.delete("hop");
     q.delete("from");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));

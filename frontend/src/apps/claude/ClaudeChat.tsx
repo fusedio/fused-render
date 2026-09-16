@@ -2651,7 +2651,13 @@ function ChatBody(props: ChatBodyProps) {
       // is an Upcoming row, "Back to chat" from that card lands on a CLEAN box,
       // and a tray re-filled from a row nobody opened would be the same
       // disagreement in files.
-      onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
+      //
+      // AND THE PROMISE IS HANDED BACK, not swallowed (Bugbot 4027549715).
+      // `addPaths` commits the chips PAST AN AWAIT, so the render that paints
+      // the restored words still has an empty tray — and the composer's
+      // autosave, told the record already held these files, pushed that empty
+      // tray over them. It holds its writes until this resolves.
+      onRestoreAttachments: (paths: string[]) => attach.addPaths(paths),
       // Emptying the tray is the other half: an adopted record, an answered
       // unsent-message question, and the Schedule hop once the files are on the
       // card (`useAttachments.discard`).

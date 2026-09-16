@@ -264,7 +264,10 @@ export function SchedButton({
           sync.forget();
           onHandedOff?.();
           leaving.current = false;
-          onNavigate?.(taskDraftUrl(id, back));
+          // `hop`: this is a Schedule PRESS, not a draft row — the card opens
+          // on now+2m and planning, exactly as the session hop's `?new=1` does
+          // (Bugbot 4028344051).
+          onNavigate?.(taskDraftUrl(id, back, true));
         });
       };
       if (!carry.length) {

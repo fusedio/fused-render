@@ -141,10 +141,19 @@ export function schedulerUrl(draftKey: string, from: string, target = ""): strin
  * NO `target` PARAM. The folder is written onto the draft itself, so the card
  * reads it off the record it opens on — which is also what makes it survive a
  * reload, where a URL param would not.
+ *
+ * `&hop=1` — THIS OPENING CAME OUT OF A COMPOSER (Bugbot 4028344051). A draft
+ * ROW is a reopen: the card takes the time the draft stored, and an immediate
+ * draft stays immediate. A SCHEDULE PRESS is not — it is the same gesture the
+ * `?new=1` hop makes, and that one lands on now+2m with the card planning.
+ * Without the flag this road opened with no lead time and the when-row folded,
+ * so the card said "scheduled" in the confirm and ran the task at once. The row
+ * sends no flag and keeps the reopen rule it has always had.
  */
-export function taskDraftUrl(draftId: string, from = ""): string {
+export function taskDraftUrl(draftId: string, from = "", hop = false): string {
   return (
     `${SCHEDULE_URL}?draft=${encodeURIComponent(draftId)}`
+    + (hop ? "&hop=1" : "")
     + (from ? `&from=${encodeURIComponent(from)}` : "")
   );
 }

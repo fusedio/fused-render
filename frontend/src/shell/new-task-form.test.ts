@@ -2080,11 +2080,30 @@ describe("the card edits one record, and says which", () => {
     const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
     expect(page).toContain('const hopTo: ChatHop = from ? { key: "", from } : NO_HOP;');
     expect(page).toContain(
-      "openForm(null, null, hopTo, { id, form: stored ? { ...stored } : null });",
+      "const seed: DraftSeed = { id, form: stored ? { ...stored } : null };",
     );
-    expect(page).toContain("openForm(null, null, hopTo, { id, form: null });");
+    expect(page).toContain("openForm(openAt(seed), null, hopTo, seed);");
+    expect(page).toContain("openForm(openAt(null), null, hopTo, { id, form: null });");
     // …and the param is SPENT, like every other one this page reads off a link.
-    expect(page).toContain('q.delete("draft");\n    q.delete("from");');
+    expect(page).toContain(
+      'q.delete("draft");\n    q.delete("hop");\n    q.delete("from");',
+    );
+  });
+
+  test("a hop out of a composer opens on the lead date, a row does not", () => {
+    // Bugbot 4028344051. `?draft=<id>` serves two presses that are not the same
+    // gesture. A draft ROW is a REOPEN: it takes the time the draft stored, and
+    // an immediate draft must stay immediate (`reopenTime`). A Schedule press
+    // out of a never-sent chat is a HOP, the same gesture `?new=1` makes, and it
+    // has to land the same way — now+2m, card planning, when-row open — or the
+    // confirm names a time the task never waits for and it runs at once.
+    const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+    expect(page).toContain('const hopped = q.get("hop") === "1";');
+    expect(page).toContain("const lead = new Date(Date.now() + NEW_LINK_LEAD_MS);");
+    // …and a hop whose record already names a time still opens on THAT time:
+    // one made, walked back from and made again is a reopen of the reader's own
+    // answer.
+    expect(page).toContain("hopped ? reopenTime(seed) ?? lead : null;");
   });
 });
 

@@ -574,8 +574,11 @@ test("Continue from a never-sent chat writes a TASK draft, not `new:<file>`", as
   // …and the card opens through the arm every draft row presses, with the way
   // back on it.
   const id = wrote[0]!.url.slice("/api/drafts/task/".length);
+  // `hop=1`: this opening is a Schedule PRESS, so the card lands on now+2m and
+  // planning like the session hop's `?new=1` does — a draft ROW presses the same
+  // arm without it and keeps the reopen rule (Bugbot 4028344051).
   expect(went).toEqual([
-    `/tasks?draft=${encodeURIComponent(id)}`
+    `/tasks?draft=${encodeURIComponent(id)}&hop=1`
       + "&from=" + encodeURIComponent("/explorer/view/w/app?_side=claude"),
   ]);
   globalThis.fetch = real;
