@@ -30,7 +30,6 @@ import {
   applyLead2,
   fitFlags,
   fitSelect,
-  footnoteTight,
   measureRowNeed,
   pickRowFit,
   type RowFit,
@@ -52,10 +51,11 @@ export const HOME_PLACEHOLDER = "Ask Claude…";
  *  is the floor, so a dead control is never a dead control with nothing to say. */
 export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
 
-/** The footnote's two sentences. The text lives HERE and nowhere else, and the
- *  second one is the half a narrow column drops (T:4213, 12382-12392). */
-export const FOOTNOTE_LEAD = "Claude can read and edit files here.";
-export const FOOTNOTE_TAIL = " Approvals control what runs without asking.";
+/** Where the composer's own controls open: shadcn/Base UI popovers and menus
+ *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
+ *  landing in one of these is still "in the composer" for the idle fold. */
+const POPUP_SURFACE =
+  '[data-slot="popover-content"], [data-slot^="dropdown-menu"], [role="menu"], [role="listbox"], [role="dialog"]';
 
 /** Everything the three pills need, from `useComposerDefaults`. */
 export interface ComposerControls {
@@ -164,38 +164,6 @@ export function useRowFit(
   }, [rowRef, columnRef, revision]);
 
   return fit;
-}
-
-/** Two lines is the footnote's budget; measured in LINES rather than at a
- *  width, because the sentence's own length is the other variable (T:12369). */
-function useFootnoteFit(
-  ref: React.RefObject<HTMLElement | null>,
-  revision: unknown,
-): void {
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      el.classList.remove("is-tight");
-      if (!el.offsetWidth) return; // hidden — the landing page has no footnote
-      const cs = getComputedStyle(el);
-      if (
-        footnoteTight(
-          el.clientHeight,
-          parseFloat(cs.paddingTop) || 0,
-          parseFloat(cs.paddingBottom) || 0,
-          parseFloat(cs.lineHeight) || 0,
-        )
-      ) {
-        el.classList.add("is-tight");
-      }
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el.parentElement ?? el);
-    return () => observer.disconnect();
-  }, [ref, revision]);
 }
 
 // ---- the card both composers are ------------------------------------------
@@ -415,6 +383,90 @@ export function ComposerCard({
     if (back.length) restoreAttachments.current?.(back.map((a) => a.path));
   }, [file]);
   const { ref: boxRef, grow } = useAutoGrow(text);
+
+  /**
+   * IDLE UNLESS THE READER IS IN IT (Akshil, 2026-09-16: "on load when not
+   * active, single line with only the placeholder and send; when we click it
+   * becomes active and smooths into the current layout; when I click outside
+   * it is not active, even if there is text inside").
+   *
+   * The chat's composer is ONE LINE — the box and Send — whenever the reader's
+   * attention is elsewhere, and the full card only while they are in it. Two
+   * facts make "in it": focus is inside the form (`within`, from the form's own
+   * focus/blur), AND the reader put it there (`gestured` — a pointer on the
+   * form or a key in its box). The second guard is for `autoFocus` and the
+   * caret-taking effects, which focus the box on arrival: a card that opened
+   * on its own the moment the page loaded would not be an idle line. A blur
+   * that leaves the form clears both, so a click on the transcript folds the
+   * card back — with the draft still in the box, one line of it showing.
+   *
+   * `active` is DERIVED and the card's furniture is never hidden while it is
+   * needed: a run in progress keeps Stop reachable (Send and Stop are one
+   * button, which the folded line keeps), and a block banner over the box
+   * keeps the card open so the disabled controls it explains are in view. The
+   * landing card (`variant === "home"`) never folds.
+   */
+  const [within, setWithin] = useState(false);
+  const [gestured, setGestured] = useState(false);
+  const engage = useCallback(() => setGestured(true), []);
+  // A PRESS ON SEND IS NOT A GESTURE AT THE CARD (Akshil, 2026-09-16: "send
+  // button should work without making the whole chat active"): it sends — or
+  // stops — from the idle line and leaves it idle. Everything else in the form
+  // is the reader reaching for the card.
+  const onFormPointerDown = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
+    if ((ev.target as Element | null)?.closest?.(".c-send")) return;
+    setGestured(true);
+  }, []);
+  useEffect(() => {
+    if (focusRequest) setGestured(true);
+  }, [focusRequest]);
+  const onFormFocus = useCallback(() => setWithin(true), []);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  /**
+   * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
+   * 2026-09-16: in the Explorer's side panel "it becomes active, doesn't
+   * become inactive when I click outside"). The Explorer's listing keeps the
+   * keyboard where it is on a press — its rows are not focusable and it does
+   * not take focus itself — so the textarea never blurs and `onFormBlur` never
+   * runs. Focus is one read of "the reader left"; the pointer is the other.
+   * Listened on the document only WHILE the card is open, and a press inside
+   * the form or inside a surface the form opened does not count.
+   */
+  const active = variant === "chat" && within && gestured;
+  useEffect(() => {
+    if (!active) return;
+    const form = formRef.current;
+    if (!form) return;
+    const doc = form.ownerDocument;
+    const onDocPointerDown = (ev: PointerEvent) => {
+      const t = ev.target as Element | null;
+      if (!t) return;
+      if (form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
+      setWithin(false);
+      setGestured(false);
+    };
+    doc.addEventListener("pointerdown", onDocPointerDown, true);
+    return () => doc.removeEventListener("pointerdown", onDocPointerDown, true);
+  }, [active]);
+  const onFormBlur = useCallback((ev: React.FocusEvent<HTMLFormElement>) => {
+    // Focus moving BETWEEN the form's own controls is a blur too; only one
+    // that leaves the form is a leave.
+    const next = ev.relatedTarget as Element | null;
+    if (next && ev.currentTarget.contains(next)) return;
+    // …AND A SURFACE THE FORM OPENED IS STILL THE FORM (Akshil, 2026-09-16:
+    // "when I click inside the active composer, like a dropdown or Schedule
+    // task, it should stay active"). The pill selects and the Schedule confirm
+    // are Base UI popovers, PORTALED to the body, so focus moving into one of
+    // them is a blur that leaves the form's subtree while the reader is still
+    // in the composer. Two reads say so: the focus went into a popup or
+    // dialog, or it went nowhere (a press on the popup's own padding) while a
+    // popup is up. The popup hands focus back to its trigger when it closes,
+    // which is inside the form again, so nothing here has to un-fold later.
+    if (next && next.closest(POPUP_SURFACE)) return;
+    if (!next && ev.currentTarget.ownerDocument.querySelector(POPUP_SURFACE)) return;
+    setWithin(false);
+    setGestured(false);
+  }, []);
 
   // ---- THE SERVER-SIDE DRAFT (design.md, "Client behavior / Chat composer") --
   //
@@ -803,6 +855,7 @@ export function ComposerCard({
   );
 
   const count = queued?.length ?? 0;
+  const collapsed = variant === "chat" && !active && !blocked;
 
   return (
     <>
@@ -816,7 +869,15 @@ export function ComposerCard({
           border the chip is on. */}
       {chips}
       <form
-        className="c-composer"
+        ref={formRef}
+        className={collapsed ? "c-composer is-idle" : "c-composer"}
+        // THE READER'S HAND opens the card — the pointer anywhere in it, or a
+        // key in its box (`onKeyDown` below) — and focus leaving it folds the
+        // card back (`onFormBlur`). Focus arriving is NOT enough on its own:
+        // `autoFocus` and the caret-taking effects focus this box on arrival.
+        onPointerDown={variant === "chat" ? onFormPointerDown : undefined}
+        onFocus={variant === "chat" ? onFormFocus : undefined}
+        onBlur={variant === "chat" ? onFormBlur : undefined}
         onSubmit={(ev) => {
           ev.preventDefault();
           // The submit event is the send BUTTON's path (Enter in the box never
@@ -858,7 +919,10 @@ export function ComposerCard({
             setText(ev.currentTarget.value);
             grow();
           }}
-          onKeyDown={onKeyDown}
+          onKeyDown={(ev) => {
+            if (variant === "chat") engage();
+            onKeyDown(ev);
+          }}
           {...(onPaste ? { onPaste } : {})}
         />
         {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no
@@ -876,6 +940,12 @@ export function ComposerCard({
               : `${count} follow-ups are queued for this turn.`}
           </div>
         ) : null}
+        {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
+            composer is idle (styles/composer.css `.c-composer-tools`). A grid
+            track is the one height that animates from "whatever the row needs"
+            to nothing without a guessed `max-height`; the row itself is
+            untouched, so the fit ladder still measures it. */}
+        <div className="c-composer-tools">
         <div className="c-composer-row" ref={rowRef}>
           <ModelSelect value={controls.model} onChange={controls.setModel} />
           <EffortSelect value={controls.effort} onChange={controls.setEffort} />
@@ -1024,6 +1094,7 @@ export function ComposerCard({
             )}
           </button>
         </div>
+        </div>
       </form>
     </>
   );
@@ -1032,33 +1103,25 @@ export function ComposerCard({
 // ---- the chat composer ----------------------------------------------------
 
 export type ComposerProps = Omit<ComposerCardProps, "variant"> & {
-  /** The target's kind, as `setTargetNoun` writes it — "files here" by
-   *  default, which is the kind-FREE wording the markup ships (T:4205-4213). */
-  footnote?: string;
   /**
    * The live artifact strip's seat, and it is HERE because T puts it here: below
-   * the composer and above the footnote (T:4203), so a page appearing never
-   * moves the box the user is typing into.
+   * the composer (T:4203), so a page appearing never moves the box the user is
+   * typing into.
    */
   artStrip?: ReactNode;
 };
 
-/** The chat view's composer: the card, plus the footnote whose second sentence
- *  a narrow column drops. */
-export function Composer({ footnote, artStrip, ...card }: ComposerProps) {
-  const footRef = useRef<HTMLDivElement | null>(null);
-  const lead = footnote ?? FOOTNOTE_LEAD;
-  useFootnoteFit(footRef, lead);
+/** The chat view's composer: the card and the strip under it. The footnote
+ *  that used to close the column ("Claude can read and edit files here…") is
+ *  gone (Akshil, 2026-09-16) — with the composer opening as a pill, a line of
+ *  small print under it was the tallest thing in the block. */
+export function Composer({ artStrip, ...card }: ComposerProps) {
   return (
     <>
       <div className="c-composer-chat">
         <ComposerCard {...card} variant="chat" />
       </div>
       {artStrip}
-      <div className="c-footnote" ref={footRef}>
-        {lead}
-        <span className="c-fn-more">{FOOTNOTE_TAIL}</span>
-      </div>
     </>
   );
 }
