@@ -130,6 +130,51 @@ def test_inventory_names_the_shell_rendered_templates_separately(ctx):
     assert "claude" not in {t["name"] for t in body["templates"]}
 
 
+def test_a_users_stale_shell_rendered_folder_is_still_not_a_template(ctx):
+    """A `~/.fused-render/templates/claude/template.html` a user actually has —
+    left behind by an older release that shipped the chat as a template, or
+    copied there on purpose — must not become an editable Library row (bugbot
+    on #1149).
+
+    The exclusion used to be incidental: the inventory listed any folder with a
+    template.html, and `claude` was absent only because OUR folder ships none.
+    A user's does, so `claude` came back as source=user/editable=true AND stayed
+    in `shellRendered` — the same mode offered twice in the binding picker, and
+    a row whose Edit / Export / Preview all act on bytes the app never loads,
+    because `server.templates` resolves a shell-rendered name to the shell's own
+    React surface before any folder is consulted."""
+    folder = ctx.udir / "claude"
+    folder.mkdir(parents=True)
+    (folder / "template.html").write_text("<html>stale</html>", encoding="utf-8")
+    # …with the trimmings that would have made it look like a real template.
+    (folder / "icon.svg").write_text("<svg/>", encoding="utf-8")
+    (folder / "condition.py").write_text("def show(**kw):\n    return True\n", encoding="utf-8")
+    # Bound to a key as well, so `usedBy` has something to say about it.
+    ctx.registry({".claudetest": ["claude"]})
+
+    body = ctx.client.get("/api/templates/inventory").json()
+    rows = {t["name"]: t for t in body["templates"]}
+    assert "claude" not in rows
+    # NOT as a user row in particular — the source the folder would have given it.
+    assert not [t for t in body["templates"] if t["name"] == "claude" and t["source"] == "user"]
+    # It is still the bindable mode it always was, named exactly once.
+    assert body["shellRendered"] == sorted(_server_templates.SHELL_RENDERED)
+    assert "claude" in body["shellRendered"]
+    # And the helper itself says so for BOTH sources, not just the user one, so
+    # a core checkout that still has the deleted folder lying around (a stale
+    # working tree, a half-applied update) reads the same way.
+    assert "claude" not in templates_api._folders_with_template(str(ctx.udir))
+    assert "claude" not in templates_api._folders_with_template(
+        _server_templates.TEMPLATES_DIR
+    )
+    # Nothing else about the inventory moved: a real user template beside it is
+    # listed as it always was.
+    ctx.make_template("brandcard")
+    rows = {t["name"]: t for t in ctx.client.get("/api/templates/inventory").json()["templates"]}
+    assert rows["brandcard"]["source"] == "user"
+    assert "claude" not in rows
+
+
 def test_inventory_user_template_and_used_by(ctx):
     ctx.make_template("brandcard", icon=True)
     ctx.registry({".brand": ["brandcard"]})

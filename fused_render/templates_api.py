@@ -283,21 +283,30 @@ def _folders_with_template(base: str) -> dict:
     """name -> {hasIcon, hasCondition} for every immediate subdir of `base` that
     contains a template.html (a template folder; SPEC §0 — folder name =
     identity). Dirs without template.html (vendor/, shared/) are naturally
-    excluded, and that is ALSO — incidentally, not by any rule of this
-    function's — why a shell-rendered folder (`server.templates.SHELL_RENDERED`,
-    e.g. `claude`) is absent: it ships no template.html because its UI is the
-    shell's own React surface, so there is nothing here for the management UI to
-    preview or export. It is still a bindable mode, though, which is why
-    `_inventory_payload` reports those names separately (`shellRendered`)
-    instead of leaving the picker with no way to name one. hasCondition reports
-    the optional condition.py gate (SPEC CT-12) so the management UI can flag
-    templates that only show for some files."""
+    excluded. hasCondition reports the optional condition.py gate (SPEC CT-12)
+    so the management UI can flag templates that only show for some files.
+
+    A SHELL-RENDERED NAME IS SKIPPED BY RULE, whatever the folder contains
+    (bugbot on #1149). Relying on the template.html predicate to exclude it was
+    only ever true of the dirs WE ship: `~/.fused-render/templates/claude/` is
+    a folder a user can have — left behind by an older release that shipped the
+    chat as a template, or copied there deliberately — and its template.html
+    made `claude` an editable user row in the inventory while `shellRendered`
+    named it too. That is the same mode offered twice in the binding picker,
+    and a Library row whose Edit / Export / Preview all act on bytes the app
+    will never load, since `server.templates` resolves a shell-rendered name to
+    its own React surface before any folder is consulted. A shell-rendered name
+    is never loaded FROM a folder, so its folder is not an editable template,
+    whatever is in it — it reaches the UI only through `_inventory_payload`'s
+    separate `shellRendered` list, which is what the picker names it from."""
     out = {}
     try:
         names = os.listdir(base)
     except OSError:
         return out
     for name in names:
+        if name in _server_templates.SHELL_RENDERED:
+            continue
         folder = os.path.join(base, name)
         if not os.path.isdir(folder):
             continue
