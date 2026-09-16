@@ -103,6 +103,7 @@ import {
   parseListMemory,
   projectOptions,
   relativeWhen,
+  shortTaskId,
   settleMarkAllRead,
   spansProjects,
   ringFailed,
@@ -692,7 +693,7 @@ function IdChip({ id, kind }: {
   // where every other row says its name.
   if (!id) return null;
   return (
-    <span className={`tasks-id tasks-id--${kind}`}>{id}</span>
+    <span className={`tasks-id tasks-id--${kind}`}>{kind === "task" ? shortTaskId(id) : id}</span>
   );
 }
 
@@ -3257,6 +3258,12 @@ function TaskNode({
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
+        {/* THE HOVER STRIP FLOATS OVER THE TITLE'S TAIL (Akshil, 2026-09-16):
+            a zero-width seat in the flex row, with the buttons positioned off
+            its right edge, so the title takes every px the row has and the
+            actions fade in over it (tasks.css `.tasks-acts`). */}
+        <span className="tasks-acts">
+        <span className="tasks-acts-inner">
 
         {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS, all of it. Archive is the one
             row action that is live, and it is no longer part of this strip at all
@@ -3341,7 +3348,7 @@ function TaskNode({
             className="tasks-act tasks-act--page"
             href={page}
             aria-label={`Open ${task.task_id} in Explorer`}
-            data-hint="Open in Explorer · ⌘↩"
+            data-hint="Open in Explorer"
             onClick={(e) => {
               // A modified press is the browser's (the row's own link rule).
               if (opensElsewhere(e)) return;
@@ -3373,6 +3380,8 @@ function TaskNode({
             {peeked ? ICON_CLOSE : ICON_OPEN}
           </button>
         )}
+        </span>
+        </span>
         {/* When this task runs next, or when it last ran — on EVERY row, because
             until now a time only appeared inside an expanded thread and a
             one-message task has no thread to expand (Akshil, 2026-08-17).
@@ -5018,7 +5027,7 @@ function TaskCard({
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}
               aria-label={`Open ${task.task_id} in Explorer`}
-              data-hint="Open in Explorer · ⌘↩"
+              data-hint="Open in Explorer"
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
                 e.preventDefault();

@@ -2308,3 +2308,67 @@ button.tasks-draft-pill.is-on:focus-visible {
   text-decoration: none;
   border-color: var(--border);
 }
+
+/* -- The id, the folder and the title sit closer (Akshil, 2026-09-16) -------
+   The row's flex gap is 10px between every pair of children, and the folder tag
+   adds 5px of its own padding on each side, so id→folder→title read as 15px
+   visual gaps — "quite some padding". Pulling 4px back on each of the two seams
+   makes them 6px of gap (11px visual), and touches nothing else on the row: the
+   ring→id seam and everything after the title keep the 10px. */
+.tasks-row > .tasks-id--task,
+.tasks-row > .schedule-tv-id--tag {
+  margin-right: calc(var(--tasks-row-gap) * -0.4);
+}
+
+/* -- The hover strip floats over the title's tail (Akshil, 2026-09-16) -------
+   The row actions used to be flex items at rest (opacity 0, but 22px+ of
+   layout each), so the title ellipsised early to leave room for buttons nobody
+   could see. Now they sit in a ZERO-WIDTH seat after the spacer, positioned off
+   its right edge and drawn over whatever the title's tail put there, on a wash
+   that fades in from the left so the words run under the buttons rather than
+   stopping dead against them. The message count and the time after the seat
+   are untouched — the strip grows leftwards, over the title only.
+
+   The suffix marks (`.tasks-row-file`, `.tasks-row-sched`) stay above the wash
+   (z-index 3 < the buttons' 4) so their tooltips keep answering when a long
+   title parks them under the fade. */
+.tasks-row > .tasks-acts {
+  position: relative;
+  flex: 0 0 0px;
+  width: 0;
+  align-self: stretch;
+  /* Cancels the flex gap on both sides — the seat must not cost the row a px. */
+  margin-left: calc(var(--tasks-row-gap) * -1);
+}
+.tasks-row > .tasks-acts > .tasks-acts-inner {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 28px;
+  padding-right: calc(var(--tasks-row-gap) / 2);
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+  z-index: 3;
+}
+.tasks-row:hover > .tasks-acts > .tasks-acts-inner,
+.tasks-row:has(.tasks-act:focus-visible) > .tasks-acts > .tasks-acts-inner {
+  opacity: 1;
+}
+.tasks-row > .tasks-acts .tasks-act {
+  z-index: 4;
+}
+.tasks-row > .tasks-row-file,
+.tasks-row > .tasks-row-sched {
+  z-index: 3;
+}
+/* A peeked row is filled with its own colour (task-peek.css); the wash follows. */
+.tasks-peek-host .tasks-row.is-peeked > .tasks-acts > .tasks-acts-inner,
+.tasks-row.is-selected > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
+}

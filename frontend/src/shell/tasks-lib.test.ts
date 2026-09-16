@@ -8570,7 +8570,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).not.toContain("task-card-open");
     expect(CARDS_CSS).not.toContain("task-card-open");
     // The id keeps the List's own muted skin, whatever the title row shows.
-    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
+    expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>');
     const head = CARDS.slice(CARDS.indexOf('<header\n        className="task-card-head"'), CARDS.indexOf("</header>"));
     expect(head.length).toBeGreaterThan(0);
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));

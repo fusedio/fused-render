@@ -294,132 +294,35 @@
 }
 
 /* ── the run trigger (design.md §A) ──────────────────────────────────────────
-   `show more` in the bottom-right corner of the paragraph the run follows. The
-   transcript's left rail stays prose from top to bottom: a settled turn shows
-   NO machinery row at all until the reader asks for one.
+   `show more` at the end of the sentence the run follows. The transcript's
+   left rail stays prose from top to bottom: a settled turn shows NO machinery
+   row at all until the reader asks for one.
 
-   Room is reserved for the word on the LAST LINE ONLY (PR4 review #5). The
-   padding used to sit on the whole `.seg-text`, which narrowed every paragraph
-   of the block by 46px — a measure change for the entire reply, to make room in
-   one corner of it — and now that every prose segment is wrapped in a block
-   (`SegmentView`, review #4) that would have been every paragraph in the log.
-   One variable, used by all of these rules, because it is the same number. */
-/* FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `right: 0` below is only
-   "the right edge of the transcript" if the box it is positioned in reaches
-   that edge — and it did not. `.turn.assistant` is a flex row and `.body` was
-   a flex item with no `flex` of its own, so it SHRINK-WRAPPED to its content:
-   a turn ending in a short line put its `show more` a few hundred px in from the
-   column, level with nothing, while the next turn's sat at the margin. One x
-   for every trigger in the log is the whole point of a corner affordance, so
-   the body takes the column (`flex: 1` on `.body` below) and every block in it
-   takes the body. `display: block` is stated rather than assumed because a
-   `<span>` ancestor is one rule away from making these inline. */
+   FULL COLUMN WIDTH, ALWAYS (Akshil, 2026-09-15). `.turn.assistant` is a flex
+   row and `.body` was a flex item with no `flex` of its own, so it
+   SHRINK-WRAPPED to its content; the body takes the column (`flex: 1` on
+   `.body` below) and every block in it takes the body. `display: block` is
+   stated rather than assumed because a `<span>` ancestor is one rule away from
+   making these inline. */
 .chat-root .seg-block {
   position: relative;
   display: block;
   width: 100%;
-  /* ROOM ON THE LAST LINE for the whole word at PROSE size — `show more` at
-     14px is ~70px of glyphs plus the 8px it stands off the sentence. It was
-     96px while the word still carried a chevron; dropping the glyph gives the
-     paragraph's last line 18px of its measure back. The compact wall restates
-     it under its own 10px reading token below. */
-  --c-run-trigger-w: 78px;
-  /* AND THE ROW a non-prose last child drops the word into (below). One LINE of
-     the reading type, because the trigger is set in the reading type
-     (`.run-trigger`, `font: inherit`) — the literal 18px this replaces was the
-     height of the old 11px `more` and left the 14px word overhanging. */
-  --c-run-trigger-h: calc(var(--c-fs-read) * var(--c-lh-read));
 }
-.chat-root.chat-compact .seg-block {
-  /* 64px, not 56. The glyphs scale with the reading size (10px → ~50px of
-     them) but the 8px the word stands off the sentence does NOT, so a straight
-     ratio of the 78px lands under a px clear of the label — a reservation one
-     font metric away from clipping the `e`. */
-  --c-run-trigger-w: 64px;
-}
-/* RESERVED ON THE LAST LINE, INLINE (PR5 review #2). This was `padding-right`
-   on the last block, which narrows EVERY line of that paragraph: 96px is ~27%
-   of the measure at 430px, so a six-line answer gave up a quarter of its width
-   to make room for a word that is only ever on one line of it. A zero-height
-   inline-block at the END of the last child takes the room out of the LAST LINE
-   instead — the lines above keep the full column, and the final line wraps
-   short around the gap the positioned word sits in. */
-.chat-root .seg-block.has-trigger > .seg-text > :last-child::after {
-  content: "";
-  display: inline-block;
-  width: var(--c-run-trigger-w);
-  height: 0;
-}
-/* …EXCEPT where the last block is not prose. A spacer inside a code block, a
-   table or a quote is inside THEIR box: it scrolls with the code, sits inside
-   the quote's rule, and reserves nothing where the word actually lands. Those
-   keep their full width and the block reserves a ROW under them instead — the
-   trigger, still bottom-right, drops into it. `.md-tablewrap` is named beside
-   `table` because the enhance pass wraps a settled table in it (`markdown.ts`
-   `wrapTables`), so after that pass the bare `table` selector matches nothing.
-
-   A LIST gets its spacer INSIDE THE LAST ITEM (Akshil, 2026-09-15). After the
-   `ul` itself the inline-block opens a line of its own under the list, and the
-   trigger — end-aligned to the prose box — dropped onto that empty line, a
-   row under a one-line bullet with the whole column free beside it. In the
-   last `li` the room comes out of the item's own last line, so the word sits
-   level with the sentence the way it does in a paragraph. */
-.chat-root .seg-block.has-trigger > .seg-text > ul:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > ol:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > pre:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > table:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > .md-tablewrap:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > blockquote:last-child::after {
-  content: none;
-}
-.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child::after,
-.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child::after {
-  content: "";
-  display: inline-block;
-  width: var(--c-run-trigger-w);
-  height: 0;
-}
-/* …AND LEVEL WITH IT. `li` carries `margin: 2px 0` (below), and the trigger is
-   end-aligned to the prose box, so with the margin the word sat 2px under the
-   bullet's line. The seat's last item gives that margin up; the list's own
-   bottom margin is already 0 as the prose's `:last-child`. */
-.chat-root .seg-block.has-trigger > .seg-text > ul:last-child > li:last-child,
-.chat-root .seg-block.has-trigger > .seg-text > ol:last-child > li:last-child {
-  margin-bottom: 0;
-}
-.chat-root .seg-block.has-trigger:has(> .seg-text > pre:last-child),
-.chat-root .seg-block.has-trigger:has(> .seg-text > table:last-child),
-.chat-root .seg-block.has-trigger:has(> .seg-text > .md-tablewrap:last-child),
-.chat-root .seg-block.has-trigger:has(> .seg-text > blockquote:last-child) {
-  padding-bottom: var(--c-run-trigger-h);
-}
-/* THE TRIGGER IS ANCHORED TO THE PROSE BOX, NOT TO THE BLOCK (Bugbot on
-   c20a913). While a turn streams the block also holds the caret, which sits
-   AFTER the block-level `.seg-text` and so opens a line box of its own below
-   it; `bottom: 0` against the block then parked the word on the caret's row
-   and let it jump up a line when the caret unmounted. A one-column grid puts
-   `.seg-text` and the trigger in the SAME cell — end-aligned both ways — and
-   the caret in the row under, so the word sits on the prose's last line from
-   the first frame and never moves. Same DOM, same element identity. */
-.chat-root .seg-block.has-trigger {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-}
+/* INLINE, AT THE END OF THE LAST SENTENCE (Akshil, 2026-09-16). The word used
+   to sit in the block's bottom-right corner, on a reserved gap in the last
+   line — a corner affordance, level across the log. Now it reads as part of the
+   response: `.seg-text` gives up its box (`display: contents`) so the trigger
+   is a sibling of the paragraphs in the same flow, and the LAST paragraph is
+   inline, so the word follows its final character on the same line. A last
+   child that is not prose (a list, code, a table, a quote) keeps its block and
+   the word starts the line below it, at the left, where the next sentence
+   would have. */
 .chat-root .seg-block.has-trigger > .seg-text {
-  grid-row: 1;
-  grid-column: 1;
-  min-width: 0;
+  display: contents;
 }
-.chat-root .seg-block > .run-trigger {
-  grid-row: 1;
-  grid-column: 1;
-  align-self: end;
-  justify-self: end;
-}
-.chat-root .seg-block.has-trigger > .cursor {
-  grid-row: 2;
-  grid-column: 1;
-  justify-self: start;
+.chat-root .seg-block.has-trigger > .seg-text > p:last-child {
+  display: inline;
 }
 /* THE LEAD SENTENCE (Akshil, 2026-09-15). A run the turn OPENS on seats its
    word on the FIRST SENTENCE of the prose that follows, not the paragraph's
@@ -452,11 +355,21 @@
   border: 0;
   padding: 0 0 0 8px;
   font: inherit;
+  font-style: italic;
   line-height: inherit;
   color: var(--c-faint);
   cursor: pointer;
   white-space: nowrap;
   transition: color 90ms ease-out;
+}
+/* OPEN, the word wears a pill (Akshil, 2026-09-16): `show less` closes what is
+   now a run of machinery below it, and an outline is what separates it from the
+   prose it no longer trails. `show more` keeps the bare word. */
+.chat-root .run-trigger[aria-expanded="true"] {
+  padding: 0 8px;
+  margin-left: 8px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
 }
 .chat-root .run-trigger:hover {
   color: var(--c-fg);

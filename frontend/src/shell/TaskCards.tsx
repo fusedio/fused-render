@@ -52,6 +52,7 @@ import { EraseTaskModal } from "./EraseTaskModal";
 import {
   CARD_PAGE,
   basename,
+  shortTaskId,
   cardKey,
   cardsForTasks,
   draftTag,
@@ -668,7 +669,7 @@ function TaskCard({
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -994,7 +995,7 @@ function TaskPeek({
       title={
         <span className="task-peek-title">
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
-          <span className="tasks-id tasks-id--task">{task.task_id}</span>
+          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
           <span className="task-peek-name" data-hint={task.last_message?.text || task.title}>

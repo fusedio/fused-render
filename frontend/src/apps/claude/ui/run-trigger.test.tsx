@@ -441,34 +441,34 @@ describe("the trigger's column", () => {
     expect(body).toContain("min-width: 0");
   });
 
-  test("every block in it is full width, so `right: 0` is the column's edge", () => {
+  test("every block in it is full width, and the word trails the last sentence INLINE", () => {
     const block = ruleFor(".chat-root .seg-block");
     expect(block).toContain("width: 100%");
     expect(block).toContain("display: block");
-    // The trigger is ANCHORED TO THE PROSE BOX, not to the block (Bugbot on
-    // c20a913): the block also holds the streaming caret, which opens a row
-    // of its own under `.seg-text`, and a `bottom: 0` against the block sat
-    // the word on the caret's row. Grid: prose and trigger share cell (1,1),
-    // end-aligned both ways; the caret takes row 2.
-    expect(ruleFor(".chat-root .seg-block.has-trigger")).toContain("display: grid");
-    const trigger = ruleFor(".chat-root .seg-block > .run-trigger");
-    expect(trigger).toContain("grid-row: 1");
-    expect(trigger).toContain("align-self: end");
-    expect(trigger).toContain("justify-self: end");
-    expect(trigger).not.toContain("position: absolute");
-    expect(ruleFor(".chat-root .seg-block.has-trigger > .cursor")).toContain("grid-row: 2");
+    // INLINE, AT THE END OF THE LAST SENTENCE (Akshil, 2026-09-16): the prose
+    // box gives up its box so the trigger flows in the same line as the last
+    // paragraph, which is made inline for it. No grid, no positioning.
+    expect(ruleFor(".chat-root .seg-block.has-trigger > .seg-text")).toContain("display: contents");
+    expect(ruleFor(".chat-root .seg-block.has-trigger > .seg-text > p:last-child")).toContain(
+      "display: inline",
+    );
+    expect(sheet).not.toContain("grid-row: 1");
+    expect(sheet).not.toContain("--c-run-trigger-w");
   });
 
-  test("the word is set in the PROSE's type, and the last line reserves room for it", () => {
+  test("the word is set in the PROSE's type, italic", () => {
     const trigger = ruleFor(".chat-root .run-trigger");
-    // Same size AND same line-height as `.seg-text`, both inherited from the
-    // block — that is what puts the word on the last line's baseline.
     expect(trigger).toContain("font: inherit");
     expect(trigger).toContain("line-height: inherit");
+    expect(trigger).toContain("font-style: italic");
     expect(trigger).not.toContain("font-size:");
-    // …and the reservation matches the label (`show more` at 14px, ~70px of
-    // glyphs plus the 8px standoff).
-    expect(ruleFor(".chat-root .seg-block")).toContain("--c-run-trigger-w: 78px");
+  });
+
+  test("OPEN, the word wears a pill; shut, it is the bare word (Akshil 2026-09-16)", () => {
+    const open = ruleFor('.chat-root .run-trigger[aria-expanded="true"]');
+    expect(open).toContain("border: 1px solid var(--c-border)");
+    expect(open).toContain("border-radius: 999px");
+    expect(ruleFor(".chat-root .run-trigger")).toContain("border: 0");
   });
 
   test("THE WORDS ARE THE WHOLE CONTROL — no chevron (Akshil 2026-09-15)", () => {
@@ -487,42 +487,10 @@ describe("the trigger's column", () => {
     expect(sheet).not.toContain("run-chev");
   });
 
-  test("THE ROOM COMES OUT OF THE LAST LINE, not every line of the paragraph (review #2)", () => {
-    // `padding-right` on the last block was a measure change for the WHOLE
-    // paragraph — 96px is ~27% of the column at 430px — to make room for a word
-    // that only ever sits on one line of it. A zero-height inline-block at the
-    // end takes it out of that line alone.
-    const spacer = ruleFor(".chat-root .seg-block.has-trigger > .seg-text > :last-child::after");
-    expect(spacer).toContain("display: inline-block");
-    expect(spacer).toContain("width: var(--c-run-trigger-w)");
-    expect(spacer).toContain("height: 0");
-    expect(sheet).not.toContain("padding-right: var(--c-run-trigger-w)");
-  });
-
-  test("the row a code block drops the word into is ONE LINE OF THE READING TYPE", () => {
-    // 18px was the height of the old 11px `more`; the word is prose type now
-    // (14px × 1.65 ≈ 23px), so the literal left it overhanging the block.
-    expect(ruleFor(".chat-root .seg-block")).toContain(
-      "--c-run-trigger-h: calc(var(--c-fs-read) * var(--c-lh-read))",
-    );
-    expect(sheet).toContain("padding-bottom: var(--c-run-trigger-h)");
-    expect(sheet).not.toContain("padding-bottom: 18px");
-  });
-
-  test("the compact wall's reservation is derived, not shaved to the glyph", () => {
-    // A straight ratio of the 78px clears `show more` at 10px by under a px:
-    // the glyphs scale with the reading size but the 8px standoff does not, so
-    // the ratio alone is a reservation one font metric away from clipping.
-    expect(ruleFor(".chat-root.chat-compact .seg-block")).toContain("--c-run-trigger-w: 64px");
-  });
-
   test("the BARE case lands on the same edge, by the same box", () => {
     // A run with no prose in front of it takes its own line — `text-align:
     // right` inside a block that now reaches the column, so the word ends up
     // exactly where the positioned one does.
     expect(ruleFor(".chat-root .seg-block.is-bare")).toContain("text-align: right");
-    expect(ruleFor(".chat-root .seg-block.is-bare > .run-trigger")).toContain(
-      "justify-self: end",
-    );
   });
 });

@@ -76,6 +76,13 @@ export function tildePath(path: string, home: string): string {
 }
 
 /** The last segment of a path — what the folder chip prints. "/" stays "/". */
+/** "TASK-004" printed as "T004" — the short form every surface prints
+ * (Akshil, 2026-09-16). Display only: the stored id, the API field, URLs and
+ * aria-labels keep the long form, so nothing on disk or on the wire changes. */
+export function shortTaskId(id: string): string {
+  return id.replace(/^TASK-/, "T");
+}
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
