@@ -300,22 +300,77 @@ export function isRecentOnly(job: Job, isOpenAnywhere: (source: string) => boole
 // special-case group size 1, and a regression test pins that it doesn't need
 // to.
 
-/** One group of jobs sharing the same `(page, group)` key — the unit a group
- *  row is judged and rendered as. `jobs` preserves the snapshot's own
- *  arrival order. */
+/** Finding 3 (code review, quiet-notifications): the server's `group` field
+ *  is a FAMILY key (`sys:ai-image:<id>` -> `sys:ai-image`), and terminal rows
+ *  are kept until dismissed (D663) - so grouping purely by `(page, group)`
+ *  folds a page's ENTIRE history for that family into one group. Once a
+ *  second model download has ever existed on a page, every future download
+ *  in that family joins the same permanent group: it never pops on its own
+ *  completion again (`popupJobs` excludes any multi-member group), an old
+ *  failure pins the group in "Needs you" forever, and the subline counts
+ *  jobs from hours ago ("17 of 18 done").
+ *
+ *  THE FIX: a group must mean one BURST of work, not one family of work.
+ *  Within a `(page, group)` family, jobs are further split into CLUSTERS by
+ *  activity gap - sort the family by `started_at`, walk in order, and start
+ *  a new cluster whenever a job's `started_at` is more than `GROUP_GAP_MS`
+ *  past the latest `finished_at ?? started_at` seen so far in the CURRENT
+ *  cluster. The final grouping key is `(page, family, cluster)`, not just
+ *  `(page, family)` - so a burst from hours ago can never absorb a job that
+ *  starts today, no matter how many bursts came before it in the same
+ *  family. See `clusterFamily` below for the walk itself.
+ *
+ *  DO NOT "simplify" this back to `(page, group)` - that is precisely the
+ *  bug this fix exists to close (findings 3/3a/3b/3c, code review
+ *  2026-09-16). See DECISIONS-quiet-notifications.md for the full writeup. */
+export const GROUP_GAP_MS = 2 * 60 * 1000;
+
+/** One group of jobs sharing the same `(page, group)` FAMILY *and* burst
+ *  cluster - the unit a group row is judged and rendered as. `jobs`
+ *  preserves the snapshot's own arrival order. `key` is the full
+ *  cluster-scoped identity (family plus which burst) - use it, not
+ *  `${page} ${group}` alone, anywhere a stable per-burst identity is needed
+ *  (React list keys, `groupPopupTick`'s own tracked-group keys): two
+ *  different bursts of the same family share `page`/`group` but must never
+ *  be treated as the same group. */
 export interface JobGroup {
   page: string;
   group: string;
+  key: string;
   jobs: Job[];
 }
 
-function groupKey(job: Job): string {
-  return `${job.page} ${job.group}`;
+function familyKey(job: Job): string {
+  return `${job.page} ${job.group}`;
 }
 
-/** Group a job snapshot by `(page, group)`, preserving first-seen order.
+/** Split one `(page, group)` family into burst clusters - see `GROUP_GAP_MS`
+ *  above for the rule. Returns each member's cluster index, computed off a
+ *  copy sorted by `started_at` (the family's own arrival order, preserved by
+ *  the caller, is not necessarily start order - a shorter job can be
+ *  reported after a longer one that started first). */
+function clusterFamily(members: readonly Job[]): Map<string, number> {
+  const sorted = [...members].sort((a, b) => a.started_at - b.started_at);
+  const clusterOf = new Map<string, number>();
+  let clusterIdx = -1;
+  let latestActivity = -Infinity; // latest finished_at ?? started_at seen so far, THIS cluster only
+  for (const j of sorted) {
+    if (clusterIdx === -1 || j.started_at - latestActivity > GROUP_GAP_MS) {
+      clusterIdx += 1;
+      latestActivity = -Infinity;
+    }
+    clusterOf.set(j.id, clusterIdx);
+    const activity = j.finished_at ?? j.started_at;
+    if (activity > latestActivity) latestActivity = activity;
+  }
+  return clusterOf;
+}
+
+/** Group a job snapshot by `(page, group, cluster)`, preserving first-seen
+ *  order - see `GROUP_GAP_MS`'s doc comment above for why a family alone is
+ *  not the unit.
  *
- *  THIS RUNS BEFORE CLASSIFICATION, ON PURPOSE — the resolved design
+ *  THIS RUNS BEFORE CLASSIFICATION, ON PURPOSE - the resolved design
  *  question this branch inherited from an earlier handoff. `jobRows`/
  *  `recentJobs` judge a GROUP's fate as a whole (every member must satisfy
  *  the suppression condition, or the whole group stays visible), not each
@@ -326,13 +381,32 @@ function groupKey(job: Job): string {
  *  alive). Grouping first and then asking "does this whole group satisfy the
  *  condition" is the only order that keeps a group in exactly one place. */
 export function groupJobs(jobs: readonly Job[]): JobGroup[] {
+  const families = new Map<string, Job[]>();
+  for (const j of jobs) {
+    const fk = familyKey(j);
+    let arr = families.get(fk);
+    if (!arr) {
+      arr = [];
+      families.set(fk, arr);
+    }
+    arr.push(j);
+  }
+  const clustersByFamily = new Map<string, Map<string, number>>();
+
   const byKey = new Map<string, JobGroup>();
   const order: JobGroup[] = [];
   for (const j of jobs) {
-    const key = groupKey(j);
+    const fk = familyKey(j);
+    let clusterOf = clustersByFamily.get(fk);
+    if (!clusterOf) {
+      clusterOf = clusterFamily(families.get(fk) ?? []);
+      clustersByFamily.set(fk, clusterOf);
+    }
+    const cluster = clusterOf.get(j.id) ?? 0;
+    const key = `${fk}#${cluster}`;
     let g = byKey.get(key);
     if (!g) {
-      g = { page: j.page, group: j.group, jobs: [] };
+      g = { page: j.page, group: j.group, key, jobs: [] };
       byKey.set(key, g);
       order.push(g);
     }
@@ -609,7 +683,9 @@ export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
 };
 
 function groupKeyOf(g: JobGroup): string {
-  return `${g.page} ${g.group}`;
+  // Finding 3's own cluster-scoped identity, not the bare family -- two
+  // different bursts of the same family must never share a tracked-group key.
+  return g.key;
 }
 
 /** D-C's own pop rule (SPEC-quiet-notifications.md §3), for MULTI-member

@@ -563,7 +563,9 @@ function renderJobRows(
   onPatch: (fn: (jobs: Job[]) => Job[]) => void,
 ): ReactNode[] {
   return groupJobs(jobs).map((g) => {
-    const key = `${g.page} ${g.group}`;
+    // The cluster-scoped identity (finding 3), not the bare family -- two
+    // different bursts of the same family must not collide as React keys.
+    const key = g.key;
     return g.jobs.length > 1 ? (
       <GroupJobRow key={key} group={g} onChanged={onChanged} onPatch={onPatch} />
     ) : (

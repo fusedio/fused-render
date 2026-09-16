@@ -11,6 +11,7 @@ import {
   EMPTY_GROUP_POPUP_STATE,
   effectiveTier,
   GRACE_MS,
+  GROUP_GAP_MS,
   groupEffectiveTier,
   groupJobs,
   groupPopupTick,
@@ -958,6 +959,102 @@ test("groupJobs: the same group id on two different pages is two groups, not one
     job({ id: "b", page: "/two", group: "shared" }),
   ];
   expect(groupJobs(jobs)).toHaveLength(2);
+});
+
+// Finding 3 (code review 2026-09-16): grouping by `(page, group)` alone
+// folds a family's ENTIRE history into one group, since terminal rows are
+// kept until dismissed (D663). A group must mean one BURST of work — see
+// `GROUP_GAP_MS`'s own doc comment in jobs.ts for the fix (cluster a family
+// by activity gap before grouping). Both sides of the gap boundary, pinned:
+test("groupJobs: two family members just inside GROUP_GAP_MS of each other's last activity are one burst", () => {
+  const jobs = [
+    job({
+      id: "sys:ai-model:a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 1000,
+    }),
+    job({
+      id: "sys:ai-model:b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 1000 + GROUP_GAP_MS - 1,
+      finished_at: 1000 + GROUP_GAP_MS - 1 + 500,
+    }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].jobs.map((j) => j.id)).toEqual(["sys:ai-model:a", "sys:ai-model:b"]);
+});
+
+test("groupJobs: a family member starting more than GROUP_GAP_MS after the burst's last activity starts its own group", () => {
+  const jobs = [
+    job({
+      id: "sys:ai-model:a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 1000,
+    }),
+    job({
+      id: "sys:ai-model:b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 1000 + GROUP_GAP_MS + 1,
+      finished_at: 1000 + GROUP_GAP_MS + 1 + 500,
+    }),
+  ];
+  const groups = groupJobs(jobs);
+  expect(groups).toHaveLength(2);
+  expect(groups.map((g) => g.jobs.map((j) => j.id))).toEqual([
+    ["sys:ai-model:a"],
+    ["sys:ai-model:b"],
+  ]);
+});
+
+test("groupJobs: an old finished burst never absorbs a job that starts long after, keeping the new job popping/attention behavior independent", () => {
+  // The concrete regression named by the finding: a page that has ever had
+  // two model downloads used to fold every FUTURE download in that family
+  // into the same permanent group — so a lone new download stopped popping
+  // on completion (multi-member groups are excluded from `popupJobs`) the
+  // moment it joined that group. Clustering by activity gap means the old,
+  // long-finished burst and today's new download are different groups, so
+  // today's download is a group of ONE and pops exactly like a fresh job.
+  const oldBurst = [
+    job({
+      id: "sys:ai-model:old-a",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 0,
+      finished_at: 100,
+    }),
+    job({
+      id: "sys:ai-model:old-b",
+      page: "/ai-models/local",
+      group: "sys:ai-model",
+      state: "done",
+      started_at: 200,
+      finished_at: 300,
+    }),
+  ];
+  const today = job({
+    id: "sys:ai-model:today",
+    page: "/ai-models/local",
+    group: "sys:ai-model",
+    state: "done",
+    started_at: 300 + GROUP_GAP_MS + 1,
+    finished_at: 300 + GROUP_GAP_MS + 1 + 50,
+  });
+  const groups = groupJobs([...oldBurst, today]);
+  expect(groups).toHaveLength(2);
+  const todaysGroup = groups.find((g) => g.jobs.some((j) => j.id === "sys:ai-model:today"));
+  expect(todaysGroup?.jobs).toHaveLength(1);
 });
 
 test("isGroupTerminal: false while any member is still running, however many siblings finished", () => {
