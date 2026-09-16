@@ -27,7 +27,7 @@ because they need the runtime's own knowledge:
 * the declared fused API version against the one the runtime speaks
   (`fused_api_version`),
 * generated state loose in the tree instead of under `.fused/`,
-* `pyproject.toml` and `icon.svg` parsing, when either is there at all,
+* `pyproject.toml` and `icon.svg` / `icon.png` parsing, when either is there at all,
 * whether the folder's own git repo has everything committed, and
 * whether the current branch has commits its upstream does not.
 
@@ -423,6 +423,11 @@ def _parses(path: str, kind: str) -> tuple[bool, str]:
             import tomllib
 
             tomllib.loads(raw.decode("utf-8"))
+        elif kind == "png":
+            # The 8-byte PNG signature — a renamed jpeg or an empty file is the
+            # finding; decoding the whole image is not this check's business.
+            if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("not a PNG file (bad signature)")
         else:
             from xml.etree import ElementTree
 
@@ -560,8 +565,14 @@ def _pyproject_check(app_dir: str) -> dict:
 
 
 def _icon_check(app_dir: str) -> dict:
-    return _optional_file_check(app_dir, "icon", app_listing.ICON_NAME, "xml",
-                                "icon.svg is valid SVG")
+    # The same precedence the shell draws by (app_listing.ICON_NAMES): the svg
+    # is the icon when both are there, so it is the one that has to parse.
+    label = "icon.svg / icon.png is a valid image"
+    for name in app_listing.ICON_NAMES:
+        if os.path.isfile(os.path.join(app_dir, name)):
+            kind = "png" if name.endswith(".png") else "xml"
+            return _optional_file_check(app_dir, "icon", name, kind, label)
+    return _check("icon", label, SKIP, "no icon.svg or icon.png in this folder")
 
 
 def _git_check(app_dir: str) -> dict:

@@ -1,11 +1,19 @@
 ---
 name: fused-render-app-icon
-description: Use when adding/changing/fixing app's icon.svg — sidebar glyph, browser-tab favicon.
+description: Use when adding/changing/fixing app's icon.svg or icon.png — sidebar glyph, app card mark, browser-tab favicon.
 ---
 
-# icon.svg
+# icon.svg / icon.png
 
-`icon.svg` (exact lowercase name) beside entry page. Nothing registers it — found by name; edits show next navigation. Used tiny: sidebar Projects glyph + favicon (favicon also for plain files opened in explorer). Skip → generic mark.
+`icon.svg` (exact lowercase name) beside entry page; `icon.png` (exact lowercase) accepted as a lower-priority fallback — svg wins when both exist. Nothing registers either — found by name; edits show next navigation. Used tiny: sidebar Projects glyph + app card mark + favicon (favicon also for plain files opened in explorer). Skip both → generic mark.
+
+## icon.png
+
+- **Shell fits it to a rounded square** (`object-fit: cover` + corner radius) — ship a plain square image, edge to edge; do NOT bake your own rounding or padding (double-rounded corners, shrunken glyph).
+- Square, ≥ 256×256 px, opaque background (transparent corners show the host surface through the clip). Same 16 px legibility rules as svg below.
+- Prefer svg: the icon picker writes `icon.svg`, and a picker-written svg hides the png; "Remove" in the picker deletes BOTH files.
+
+## icon.svg
 
 Rules:
 

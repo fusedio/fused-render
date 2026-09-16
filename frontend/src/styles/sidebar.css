@@ -1312,6 +1312,14 @@ a.bookmark-name::after {
   object-fit: contain;
 }
 
+/* The icon.png fallback (app_listing.ICON_NAMES): a raster has no plate of its
+   own, so the shell fits it to the rounded square — cover, not contain, so a
+   photo-like file fills the slot with no letterbox. Svg keeps the rule above. */
+.current-app-icon.is-raster {
+  object-fit: cover;
+  border-radius: 3px;
+}
+
 /* The running dot sits after the name, in flow: the name gives up its
    stretch so the dot hugs the text instead of drifting to the row's end
    (under the hover-only actions). */

@@ -35,7 +35,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
-import { useThemedIconSrc } from "@platform/lib/app-icon-src";
+import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFile } from "@platform/lib/appShot";
 import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
@@ -88,9 +88,8 @@ export function AppPreviewCard({
 }) {
   // The icon.svg recoloured for the live theme when it names a colour
   // (picker-written), the raw file otherwise.
-  const iconSrc = useThemedIconSrc(
-    app.icon ? appIconUrl(app.icon, app.icon_mtime) : null,
-  );
+  const iconUrl = app.icon ? appIconUrl(app.icon, app.icon_mtime) : null;
+  const iconSrc = useThemedIconSrc(iconUrl);
   const title = app.title || app.name;
   // The same timestamp the grid SORTS by (last opened, modified standing in) —
   // a card ranked first for being opened just now must not label itself with a
@@ -244,8 +243,10 @@ export function AppPreviewCard({
             <img> carries the browser's native drag-the-image gesture, which
             starts a drag instead of the click that opens the card. */}
         {iconSrc ? (
+          // An icon.png — the raster fallback — is clipped to the slot's
+          // rounded square (`is-raster`, apps.css); an svg is drawn as is.
           <img
-            className="app-pcard-icon"
+            className={"app-pcard-icon" + (isRasterIconUrl(iconUrl) ? " is-raster" : "")}
             src={iconSrc}
             alt=""
             draggable={false}
