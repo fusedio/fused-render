@@ -2367,8 +2367,14 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-row > .tasks-row-sched {
   z-index: 3;
 }
-/* A peeked row is filled with its own colour (task-peek.css); the wash follows. */
-.tasks-peek-host .tasks-row.is-peeked > .tasks-acts > .tasks-acts-inner,
+/* A peeked row is filled with its own colour (task-peek.css); the wash follows.
+   Peeked (task-peek.css: `--row-bg-selected`, the deeper of the two neutrals)
+   is its own rule so it does not inherit the plain-selected wash below — the
+   two rows are filled a whole step apart and a shared value would leave one
+   of them with a visibly mismatched patch over the title. */
+.tasks-peek-host .tasks-row.is-peeked > .tasks-acts > .tasks-acts-inner {
+  background: linear-gradient(to right, transparent, var(--row-bg-selected) 28px);
+}
 .tasks-row.is-selected > .tasks-acts > .tasks-acts-inner {
   background: linear-gradient(to right, transparent, var(--row-bg-hover) 28px);
 }
