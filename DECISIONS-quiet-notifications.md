@@ -686,3 +686,187 @@ the wider schedule suite (441 tests) run during this build, all passing.
 Full suite (frontend `apps/`, backend beyond the files touched here) not
 run — scoped-tests-only per the build instructions; that is the
 orchestrator's job at the end.
+
+## Code review fixes (2026-09-16)
+
+A round of code review against the branch above found ten defects, all
+fixed on top of the green baseline (full frontend suite 6188 pass, Python
+failure set byte-identical to `main`, `tsc`/`check-boundaries.mjs` clean).
+Each fix has its own test that fails before and passes after (verified via
+a `git stash`/patch-revert-and-reapply round for every one, not just a
+read of the diff). Recorded here, in review order, so none of the
+reasoning below gets "simplified" back by a future reader who only sees
+the final code.
+
+**1. `presence.ts` — narrator election let an embed win but never
+narrate.** The old `topLevel` computation was
+`IS_TOP_EMBED || window === window.top` — a no-op, since `IS_TOP_EMBED`
+(embed AND top-level) already implies `window === window.top`. Any
+top-level window, embed or not, registered `topLevel: true`, so an embed
+opened standalone in its own tab could win the narrator election even
+though nothing ever narrates from an embed (`useScheduleEvents` bails out
+on `IS_EMBED` before calling `isNarrator()`; `useTaskStatusNotify` only
+mounts inside the shell's `App`). Extracted `computeTopLevel(isEmbed, win)`
+as a pure, exported function — `!isEmbed && (win undefined or win===top)`
+— so `isEmbed` is excluded outright rather than folded into an `||` that
+never mattered. Pulled out as its own function (not inlined in
+`writeSelf`) specifically because `IS_EMBED` is a module-load-time
+constant computed once from `location.pathname` and cannot be varied
+per-test-file within one `bun test` process (`testDomShim.ts`'s own
+header). Pinned by 5 new cases in `presence.test.ts`.
+
+**2. `jobs.ts` `popupTick` — a presence-suppressed popup's key never
+entered `seen`.** The old code called `popupJobs(jobs, isOpenAnywhere)`
+directly, so a suppressed job never even reached the loop that builds
+`seen`. The instant the user navigated away and `isOpenAnywhere` flipped
+false for that page, the same already-finished job looked brand new (its
+key still absent from `seen`) and popped a stale card. Fixed by gathering
+candidates via the UNFILTERED `popupJobs(jobs)` so every candidate's key
+lands in `next`/`seen` regardless of suppression, and applying the
+presence check only as a per-candidate gate on the POP decision itself.
+Pinned by 2 new tests in `jobs.test.ts`.
+
+**3. `fused_render/jobs.py` `_default_group` — group key meant "one
+family of work," not "one burst."** This was a spec error the orchestrator
+made themselves, not a code defect — fixed client-only per an explicit,
+pre-made decision handed down before this round of fixes started: a new
+`GROUP_GAP_MS` constant (2 minutes) and `clusterFamily()` helper in
+`jobs.ts` split each `(page, group)` family into separate clusters
+whenever a job's `started_at` is more than `GROUP_GAP_MS` after the
+cluster's latest activity. `groupKeyOf(g)` now reads the cluster-scoped
+`g.key`, not the bare family, so two different bursts of the same family
+(e.g. two unrelated sessions of "render 20 tiles") never share one tracked
+popup/fold identity. Server-side grouping (`fused_render/jobs.py`) is
+untouched — the burst distinction is purely a client-side clustering
+layer over the same stored `group` field.
+
+**4. `RepoUpdatesDock.tsx` `TERMINAL_VISIBLE_CAP` — capped raw jobs, not
+groups.** `renderJobRows()` re-derives `groupJobs()` from whatever job list
+it's handed. Slicing the flat, job-level `terminalTrail` at the cap could
+land the cut in the middle of a group's contiguous member run, so the
+re-derived `groupJobs()` call on that slice produced a wrong PARTIAL group
+(fewer members shown than actually exist, with no way to tell from the
+row itself). Fixed by capping `terminalTrailGroups` (the row/group list)
+instead and flat-mapping the kept groups' jobs back out — a group either
+shows complete or not at all. Pinned by a new test asserting a 6-member
+group straddling the cap boundary renders as one complete "6 of 6 done"
+row, never a partial one.
+
+**5. `fused_render/jobs.py` `_default_group` — a blank posted `group` was
+stored literally.** `group` is a clustering key, not a display value,
+but `upsert()`'s `"group" in body` handling stored an explicitly-blank
+`""` verbatim instead of falling back to the id-derived default —
+`job.group = group` regardless of whether `group` was truthy. Two
+unrelated jobs that both posted `group: ""` would collide into one
+nonsense group. This DELIBERATELY REVERSES a decision recorded both
+inline in `jobs.py` and earlier in this file's own §3 section (the
+"default is applied once, at creation, and never reapplied — a later tick
+that explicitly sends `group: ""` really clears it" rule, pinned by
+`test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick`):
+that rule matched every other field's "only the keys present are applied"
+contract, but treating `group` as just another such field is exactly the
+bug this finding names — `group` is not display data a producer might
+legitimately want to blank out, it is the identity two otherwise-unrelated
+jobs are clustered by, and a blank one is never a meaningful clustering
+key. Fixed at both the `upsert()` body-group-assignment path AND a
+previously-overlooked second one: the synthetic stand-in `Job` built for a
+late tick on an already-dismissed id, which constructed its `group` as the
+implicit `""` default with no fallback at all. The pinning test's
+docstring and assertions were updated to describe the deliberate reversal
+(both `res["group"]` and `res2["group"]` now assert the id-derived
+default, not `""`), and two new regression tests were added:
+`test_an_explicit_blank_group_never_lets_two_unrelated_jobs_collide` and
+`test_a_late_tick_on_a_dismissed_job_never_returns_a_blank_group`.
+
+**6. `ActivityDock.tsx` `isOpenAnywhere` — O(N)-ish synchronous storage
+reads every poll tick.** `isOpenAnywhere` does a `localStorage.getItem` +
+`JSON.parse` on every single call; one poll tick called it once per
+terminal job, once per recent job, once per popup candidate, and once per
+member of every multi-member group, all against the identical underlying
+snapshot. Added `snapshotIsOpenAnywhere(env)` to `presence.ts`, which
+reads and prunes the registry exactly ONCE and returns a same-shaped
+`(source: string) => boolean` predicate closed over that one snapshot.
+`ActivityDock.tsx`'s `onJobsReported` now calls it once at the top of each
+tick and passes the resulting predicate to every call site that used to
+take the raw `isOpenAnywhere` import. Pinned by a new test in
+`presence.test.ts` using a storage spy that counts `getItem` calls: one
+read for four `predicate()` calls, versus four reads for four raw
+`isOpenAnywhere()` calls on the same inputs.
+
+**7. `RepoUpdatesDock.tsx` `GroupJobRow` — a folded group row had no
+`rowClick`.** Unlike `JobRow`, a folded multi-member group's row was not
+clickable at all. Gave it a `rowClick` that opens the oldest member's page
+(`navigateToJobPage(members[0]?.page)`) — the same "oldest member
+represents the row" convention its `title` already used. Deliberately does
+NOT reuse `JobRow`'s "opening dismisses" convention: dismissing on a
+look-only click into a multi-member group would destroy every sibling
+member's own state for a click that was never a request to clear the
+group. Pinned by a new test asserting the folded row opens
+`/ai-models/local` (a `JOB_PAGE_ROUTES` member) via `history.pushState`.
+
+**8. `jobs.ts` `popupJobs`/`groupPopupTick` — a group shrinking to one
+member re-popped its own already-popped failure.** A multi-member group's
+members are excluded from `popupJobs` entirely (their popping is
+`groupPopupTick`'s job). If a sibling was later dismissed/swept and the
+group shrank to one member, the survivor became a `popupJobs` candidate
+for the FIRST time — its key had never touched `popupTick`'s own `seen`
+set — and looked brand new, popping the same failure `groupPopupTick`
+already showed a card for. Fixed two ways: `groupPopupTick`'s
+`failedSeen` now carries a key forward even after its group drops below
+two members (never creates a NEW entry for a genuine singleton's own first
+failure, only preserves an existing one), and `popupTick` takes an
+optional `alreadyPoppedByGroup` set — the prior tick's `failedSeen` —
+seeding any matching key into its own `seen` silently instead of popping
+it. `ActivityDock.tsx` wires `groupPopupStateRef.current.failedSeen`
+through on every tick. Pinned by 2 new tests simulating the exact
+shrink-to-one transition for both `groupPopupTick` and `popupTick`.
+
+**9. `useTaskStatusNotify.ts` — the narrator check short-circuited before
+the `previous` map was seeded.** The effect returned before touching
+`previous` at all whenever `!isNarrator()`, so a non-narrator window's
+per-task column bookkeeping never advanced while it wasn't the narrator.
+The instant that window became the narrator (the old one's tab closed),
+its first tick as narrator could find `previous` stale or empty and
+misread a genuine transition landing on that very tick as a first
+sighting — silently dropping its notification instead of raising it. The
+book-keeping (`prev.set` + pruning) now runs on every tick regardless of
+narrator status; only the `notify()` call itself stays gated on
+`isNarrator()`. Pinned by a new test: a task transitions to `blocked`
+while non-narrator (silently tracked, no popup), the foreign narrator's
+entry is removed (this window is elected), and the very next transition
+(`blocked -> needs_attention`) still notifies correctly.
+
+**10. `presence.ts` `writeSelf`/`removeSelf` — unsynchronized
+read-modify-write let a closed window's entry get resurrected.** Both
+functions read the whole registry, changed only their own entry, and
+wrote the whole map back, with nothing guarding against a different
+document doing the same to a different entry in between. Concretely:
+window A's `pagehide` reads `{A, B}`, deletes its own entry, and is about
+to write `{B}` back; if window B's own heartbeat reads `{A, B}` before A's
+write lands and then writes `{A(stale), B(refreshed)}` back after A's
+write lands, A's already-closed entry is resurrected and stays "open"
+until it eventually ages out via `PRESENCE_STALE_MS`. Plain `localStorage`
+has no compare-and-swap, so this can only be narrowed, not eliminated
+outright: added `mutateRegistry`, which reads the raw string once,
+computes the mutated map, then re-reads the raw string immediately before
+committing — a mismatch means someone else wrote in between, and the
+whole mutation is retried against that fresher snapshot rather than
+overwritten (up to `MAX_MUTATE_ATTEMPTS`, falling back to a last-write-wins
+commit only if every retry keeps racing). `writeSelf`/`removeSelf` are now
+thin transforms passed through it. Pinned by 3 new tests in
+`presence.test.ts` using a storage stub whose `getItem` returns a
+different snapshot on the verification read than on the initial read,
+simulating the exact interleaving above without needing real concurrency.
+
+**Test state (code review fixes)**: `bun test
+frontend/src/platform/lib/presence.test.ts
+frontend/src/platform/lib/jobs.test.ts
+frontend/src/shell/RepoUpdatesDock.test.tsx
+frontend/src/shell/useTaskStatusNotify.test.ts
+frontend/src/platform/lib/scheduleEvents.test.ts` → all pass, 0 fail.
+`.venv/bin/python -m pytest tests/test_jobs_api.py tests/test_index_jobs.py
+-q` → all pass. `bunx tsc --noEmit -p frontend` clean.
+`node frontend/scripts/check-boundaries.mjs` → OK (811 files). Each of the
+ten fixes above landed as its own commit
+(`5f9580d62`, `72ac1b54d`, `c277eb00e`, `ea034e4bc`, `4bf76d98b`,
+`69f294e05`, `f4dc38ff8`, `41816f083`, `bd74ca789`), pushed immediately.
