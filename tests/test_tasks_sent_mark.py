@@ -567,3 +567,22 @@ def test_the_full_thread_holds_the_in_flight_send(client, tmp_path):
     assert r.status_code == 200
     bodies = [m["body"] for m in r.json()["messages"]]
     assert bodies == ["pull today's news"]
+    assert r.json()["messages"][0]["message_id"] == "MSG-001"
+
+
+def test_the_in_flight_send_takes_the_next_message_id_in_the_thread(
+        client, projects_dir):
+    """Listing and thread must agree on the id, or marking it read names the
+    wrong message (bugbot)."""
+    _write_transcript(projects_dir, SID, "/home/me/proj", [
+        _user("first thing", _near_now(-600), uuid="u1"),
+    ])
+    tasks_watch.mark_running(SID, text="second thing", file="/home/me/proj")
+    row = _by_key(client)[SID]
+    listed = {m["body"]: m["message_id"] for m in row["messages"]}
+    thread = {m["body"]: m["message_id"]
+              for m in client.get(f"/api/tasks/{SID}/messages").json()["messages"]}
+    assert listed["second thing"] == thread["second thing"] == "MSG-002"
+    assert thread["first thing"] == "MSG-001"
+    r = client.post("/api/tasks/read", json={"key": SID, "message_id": "MSG-002"})
+    assert r.status_code == 200, r.text

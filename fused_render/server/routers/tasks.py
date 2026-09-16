@@ -3470,8 +3470,12 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
     # of the listing row: "Show more" on a row that reads "running, on these
     # words" must show those words, not an empty thread until the transcript
     # lands (bugbot). Same fold, same dedupe.
-    if task.get("sent"):
-        _fold_sent_mark(messages, task["sent"])
+    if task.get("sent") and _fold_sent_mark(messages, task["sent"]):
+        # Numbered like the listing numbers it — the next id after everything
+        # on disk — so "mark this one read" and the unread recount can name it
+        # (bugbot). It is the newest by construction: `_merge` sorted the rest
+        # ascending and the mark's `at` is the moment of the send.
+        messages[-1]["message_id"] = tasks_store.format_message_id(len(messages))
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages
