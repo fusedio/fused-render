@@ -1,14 +1,15 @@
 // WHAT THE MOUNT ACTUALLY RENDERS. The chat itself has its own suites; this
 // pins the box around it — the native mount and nothing else in it, the host
 // classes that may and may not ride it, the ids a host hands over late, and the
-// screen a `lazy` chunk that will not load falls back to.
+// two screens a failure inside it falls back to.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { lazy, Suspense } from "react";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
-const { ChatMount, ChatChunkBoundary, ChatLoadFailed, useHostIds } = await import("./ChatMount");
+const { ChatMount, ChatChunkBoundary, ChatLoadFailed, isChunkLoadError, useHostIds } =
+  await import("./ChatMount");
 const { createMemoryParamsStore } = await import("./params/store");
 // The chat is a `lazy` chunk, so an `act` that does not AWAIT pins the Suspense
 // fallback and nothing else. Resolving the module once, here, makes every mount
@@ -91,43 +92,194 @@ test("the chunk's cover never wears a host's FRAME geometry class", async () => 
   expect(src).toMatch(/<Suspense fallback=\{placeholderFor\(\)\}>/);
 });
 
-test("a chunk that fails to load leaves an error card with a way out, not a blank shell", async () => {
-  // The deploy case `__BUILD_VERSION__` exists for: a tab open across a deploy
-  // asks for a hashed chunk that is gone. Without a boundary that throw unmounts
-  // React to the root and the reader loses the whole shell — and with nothing to
-  // degrade to, what is owed instead is the fact and the one press that fixes it.
-  const Gone = lazy(() => Promise.reject(new Error("chunk 404")));
-  let ready = 0;
+/** The boundary as the mount wires it, with the card as its fallback — so what
+ *  these cases drive is the real pairing and not a hand-built screen. */
+function boundary(children: React.ReactNode, onReady?: () => void) {
+  return (
+    <ChatChunkBoundary
+      fallback={(failure) => (
+        <ChatLoadFailed
+          kind={failure.kind}
+          error={failure.error}
+          onRetry={failure.reset}
+          {...(onReady ? { onReady } : {})}
+        />
+      )}
+    >
+      {children}
+    </ChatChunkBoundary>
+  );
+}
+
+/** Mount with `console.error` muted: the boundary logs every catch in full, on
+ *  purpose, and a suite that printed it would be unreadable. */
+async function mountQuiet(el: React.ReactElement) {
   const quiet = console.error;
-  console.error = () => {};
+  const logged: unknown[][] = [];
+  console.error = (...args: unknown[]) => void logged.push(args);
   let r!: ReturnType<typeof create>;
   try {
     await act(async () => {
-      r = create(
-        <ChatChunkBoundary fallback={<ChatLoadFailed onReady={() => ready++} />}>
-          <Suspense fallback={<div className="chat-frame-placeholder" />}>
-            <Gone />
-          </Suspense>
-        </ChatChunkBoundary>,
-      );
+      r = create(el);
     });
   } finally {
     console.error = quiet;
   }
   mounted.push(r);
+  return { r, logged };
+}
+
+/** The boundary's OWN log line, apart from React's own "The above error
+ *  occurred in" that every caught throw also prints. */
+const ours = (logged: unknown[][]) =>
+  logged.filter((args) => args[0] === "chat failed to render");
+
+const buttonLabels = (r: ReturnType<typeof create>) =>
+  nodes(r)
+    .filter((n) => n.type === "button")
+    .map((n) => JSON.stringify(n.children));
+
+test("a chunk that fails to load leaves an error card with a way out, not a blank shell", async () => {
+  // The deploy case `__BUILD_VERSION__` exists for: a tab open across a deploy
+  // asks for a hashed chunk that is gone. Without a boundary that throw unmounts
+  // React to the root and the reader loses the whole shell — and with nothing to
+  // degrade to, what is owed instead is the fact and the one press that fixes it.
+  //
+  // The message is a REAL one (Chromium's), not "chunk 404": the two screens are
+  // told apart by matching it, so a test that invents its own wording would pass
+  // while every real deploy failure took the crash branch.
+  const Gone = lazy(() =>
+    Promise.reject(
+      new TypeError(
+        "Failed to fetch dynamically imported module: http://localhost/assets/ClaudeChat-a1b2c3d4.js",
+      ),
+    ),
+  );
+  let ready = 0;
+  const { r, logged } = await mountQuiet(
+    boundary(
+      <Suspense fallback={<div className="chat-frame-placeholder" />}>
+        <Gone />
+      </Suspense>,
+      () => ready++,
+    ),
+  );
   expect(nodes(r).filter((n) => n.type === "iframe")).toEqual([]);
   // The app's own error card, not a look of its own.
   expect(classes(r).some((c) => c.split(" ").includes("trouble-card"))).toBe(true);
   expect(text(r)).toContain("This chat could not load.");
   expect(text(r)).toContain("The app was updated. Reload to continue.");
+  // NOT the crash screen's copy, and no verbatim line: the cause is known
+  // exactly, and the URL of a chunk means nothing to a reader.
+  expect(text(r)).not.toContain("This chat hit an error.");
+  expect(classes(r).some((c) => c.split(" ").includes("trouble-error"))).toBe(false);
   // And the ACTION: a button, not a sentence telling the reader to go and do it.
-  const buttons = nodes(r).filter((n) => n.type === "button");
-  expect(buttons.length).toBe(1);
-  expect(JSON.stringify(buttons[0].children)).toContain("Reload");
+  // ONE of them — `lazy` caches its rejected promise, so a "Try again" here
+  // would re-throw the same rejection and be a button that does nothing.
+  expect(buttonLabels(r)).toEqual([JSON.stringify(["Reload"])]);
   // And it completes the host's swap (Bugbot on #1149): a content pane that
   // holds the previous frame until `onReady` would otherwise keep this card
   // at opacity 0 — Reload hidden — until its own timeout gave up.
   expect(ready).toBe(1);
+  // The whole thing reaches a console ONCE, whatever the card chose to show
+  // (React logs its own "The above error occurred in" beside it; that is React's).
+  expect(ours(logged).length).toBe(1);
+});
+
+test("a chat that THROWS gets the crash screen, with what happened and a retry", async () => {
+  // Bugbot on #1149: this boundary is above the whole chat, so every render
+  // throw inside it lands here too — and one screen said "The app was updated.
+  // Reload to continue." to all of them. A reader who reloads on that advice
+  // gets the same crash from the same build.
+  function Boom(): React.ReactElement {
+    throw new Error("Cannot read properties of undefined (reading 'turns')");
+  }
+  let ready = 0;
+  const { r, logged } = await mountQuiet(boundary(<Boom />, () => ready++));
+  expect(text(r)).toContain("This chat hit an error.");
+  expect(text(r)).not.toContain("The app was updated. Reload to continue.");
+  // The error VERBATIM, in the app's own `.trouble-error` pre — the reader is
+  // owed what actually happened rather than a shrug.
+  expect(classes(r).some((c) => c.split(" ").includes("trouble-error"))).toBe(true);
+  expect(text(r)).toContain("Cannot read properties of undefined (reading 'turns')");
+  // TWO actions, retry first: a render throw is usually about one conversation's
+  // state, and the cheap press should be the one in front.
+  expect(buttonLabels(r)).toEqual([JSON.stringify(["Try again"]), JSON.stringify(["Reload"])]);
+  expect(ready).toBe(1);
+  expect(ours(logged).length).toBe(1);
+});
+
+test("a very long throw is trimmed to one line so the actions stay in the box", async () => {
+  // The card sits in a box that can be a 300px task card; a folded stack trace
+  // would push Try again and Reload below the fold. The full object went to the
+  // console — that is where a stack belongs.
+  const long = "wide\n   ".repeat(200);
+  function Boom(): React.ReactElement {
+    throw new Error(long);
+  }
+  const { r } = await mountQuiet(boundary(<Boom />));
+  const pre = nodes(r).find((n) =>
+    String((n.props as Record<string, unknown>)?.className ?? "")
+      .split(" ")
+      .includes("trouble-error"),
+  );
+  const shown = String((pre?.children ?? [])[0]);
+  expect(shown.length).toBeLessThanOrEqual(200);
+  expect(shown).not.toContain("\n");
+  expect(shown.endsWith("\u2026")).toBe(true);
+});
+
+test("Try again REMOUNTS the tree — a throw that was about one render is over", async () => {
+  // The claim is a remount and not a re-render: the boundary keys its children
+  // on the attempt, so the subtree that threw is thrown away with its state.
+  // A child that throws only the FIRST time is exactly that shape.
+  let renders = 0;
+  function OnceBad() {
+    renders += 1;
+    if (renders === 1) throw new Error("the first paint only");
+    return <div className="chat-root" />;
+  }
+  const { r } = await mountQuiet(boundary(<OnceBad />));
+  expect(text(r)).toContain("This chat hit an error.");
+  const retry = nodes(r).find(
+    (n) => n.type === "button" && JSON.stringify(n.children).includes("Try again"),
+  );
+  await act(async () => {
+    (retry?.props as { onClick: () => void }).onClick();
+  });
+  // The chat is back, and the card is gone with it.
+  expect(classes(r).some((c) => c.split(" ").includes("chat-root"))).toBe(true);
+  expect(text(r)).not.toContain("This chat hit an error.");
+});
+
+test("the two kinds are told apart by what a failed import ACTUALLY says", async () => {
+  // Every engine's own wording for a dynamic import that did not arrive, plus
+  // Vite's own for a stylesheet dep (vite 6.4.3's preload helper). These are
+  // the strings the classification rests on; inventing one would make the chunk
+  // screen unreachable in the browser the message came from.
+  for (const message of [
+    "Failed to fetch dynamically imported module: http://x/assets/a.js", // Chromium
+    "error loading dynamically imported module: http://x/assets/a.js", // Firefox
+    "Importing a module script failed.", // WebKit
+    "Unable to preload CSS for /assets/chat-9f8e.css", // Vite itself
+    "Loading chunk 42 failed.", // webpack's, matched for breadth
+    "Loading CSS chunk 7 failed.",
+  ]) {
+    expect(isChunkLoadError(new TypeError(message))).toBe(true);
+  }
+  // …and everything else is a CRASH, because the crash screen's advice is safe
+  // for a chunk failure while the deploy screen's is a lie about a chat that
+  // threw. A value that is not an Error at all included.
+  for (const other of [
+    new Error("Cannot read properties of undefined (reading 'turns')"),
+    new Error(""),
+    "a thrown string",
+    null,
+    undefined,
+    { message: "Failed to fetch dynamically imported module: /a.js" },
+  ]) {
+    expect(isChunkLoadError(other)).toBe(false);
+  }
 });
 
 test("a host id that arrives later pushes only its own key", async () => {

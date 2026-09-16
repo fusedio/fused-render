@@ -19,12 +19,16 @@ pane, and both are apps. Read the script's own comment for why it is not lifted
 into `platform/` instead.
 
 - `chat-prefs.ts` — the chat's prefs, off ONE shared `/api/prefs` GET: `project_queue_enabled`
-  (`prefs.queue.enabled`), `useProjectQueueEnabled()`. The "While you were away" session-recap
-  fold used to be a second switch here (`chat_recap_enabled`, `prefs.chat.recap`); the
-  Preferences toggle that gated it left on 2026-09-21 — recap is simply on now.
+  (`prefs.queue.enabled`), `useProjectQueueEnabled()`. One retry and one 8s budget around both
+  attempts, so a read the server accepts and never answers cannot pin `reading` and leave the
+  page unable to ask again. The "While you were away" session-recap fold used to be a second
+  switch here (`chat_recap_enabled`, `prefs.chat.recap`); the Preferences toggle that gated it
+  left on 2026-09-21 — recap is simply on now.
 - `ChatMount.tsx` — the one mount every host uses: the per-mount param store, the host ids
-  that arrive late, the `lazy` code-split boundary and the error card a chunk that will not
-  load falls back to. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its
+  that arrive late, the `lazy` code-split boundary and the error card a failure inside it
+  falls back to — in TWO kinds, since that boundary is above the whole chat: a chunk that
+  never arrived (`isChunkLoadError`) keeps the deploy copy and Reload, and anything else is
+  a render crash, shown with its own message and a Try again that remounts. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its
   popup (`shell/TaskCards.tsx`), the task side peek (`shell/TaskPeek.tsx`), the explorer file
   sidebar (`apps/explorer/Preview.tsx` → `PreviewSidebar`'s `chat` slot), the folder listing
   pane (`ListingPreviewPane.tsx`), the canvases workspace (`apps/canvases/CanvasWorkspace.tsx`)

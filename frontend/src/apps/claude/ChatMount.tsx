@@ -10,6 +10,7 @@
 // between them are gone, so every site here renders the same chat.
 import {
   Component,
+  Fragment,
   lazy,
   Suspense,
   useEffect,
@@ -48,6 +49,49 @@ const ClaudeChat = lazy(() => import("./ClaudeChat"));
 const placeholderFor = () => <ChatFramePlaceholder />;
 
 /**
+ * WHAT A FAILED DYNAMIC IMPORT ACTUALLY SAYS, so the boundary below can tell a
+ * chunk that never arrived from a chat that threw while rendering. Two screens
+ * hang off this answer, and they have opposite advice, so guessing is worse
+ * than either.
+ *
+ * Vite 6 produces exactly two kinds of message here (checked against this
+ * repo's own `node_modules/vite@6.4.3`, the preload helper that
+ * `buildImportAnalysisPlugin` emits into every chunk —
+ * `dist/node/chunks/dep-Dm0c1Wj2.js`):
+ *
+ *   1. its OWN, for a stylesheet dependency that 404s:
+ *        `Unable to preload CSS for ${dep}`        (that file, ~:45475)
+ *   2. the BROWSER'S, rethrown verbatim — the helper ends in
+ *      `baseModule().catch(handlePreloadError)` (~:45495) and `handlePreloadError`
+ *      re-`throw`s whatever `import()` rejected with. That is a `TypeError`
+ *      whose text is engine-specific:
+ *        Chromium  `Failed to fetch dynamically imported module: <url>`
+ *        Firefox   `error loading dynamically imported module: <url>`
+ *        WebKit    `Importing a module script failed.`
+ *
+ * `Loading chunk N failed` / `Loading CSS chunk N failed` are WEBPACK's wording,
+ * not Vite's, and this app is built by Vite — they are matched anyway because
+ * the cost is a few characters and the alternative is this check silently
+ * degrading to "crash" the day the bundler changes under it.
+ *
+ * MESSAGE-MATCHING IS THE ONLY HANDLE THERE IS: every one of these arrives as a
+ * plain `TypeError`/`Error` with no code, no name and no cause to key on. So
+ * the rule is deliberately one-way — a message that matches is a chunk failure;
+ * ANYTHING ELSE, including something that fails to stringify, is treated as a
+ * crash, because the crash screen's advice ("try again, then reload") is safe
+ * for a chunk failure while the deploy screen's ("reload, you are out of date")
+ * is a lie about a chat that threw.
+ */
+const CHUNK_LOAD_MESSAGE =
+  /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|unable to preload css for|loading chunk .* failed|loading css chunk/i;
+
+export function isChunkLoadError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return CHUNK_LOAD_MESSAGE.test(message);
+}
+
+/**
  * THE CHUNK'S OWN FAILURE, which `Suspense` has no opinion about: a `lazy`
  * import that REJECTS throws from render, and with no boundary above it React
  * unmounts to the root — the reader loses the whole shell (explorer, tasks,
@@ -55,28 +99,66 @@ const placeholderFor = () => <ChatFramePlaceholder />;
  * across a deploy asks for a hashed chunk that is no longer on disk, which is
  * exactly the case `__BUILD_VERSION__` exists for.
  *
- * So: two screens, and the second one is an APOLOGY WITH AN ACTION
- * (`ChatLoadFailed` below). There is no second implementation to degrade to any
- * more — the legacy template is gone — and the honest thing left to say is what
- * happened and the one press that fixes it: a reload fetches the manifest this
- * tab has never seen, and the conversation itself is on disk and untouched.
+ * BUT IT CATCHES MORE THAN THAT, and used to admit to none of it: a boundary
+ * here is above the WHOLE chat, so every render throw inside `ClaudeChat` — a
+ * transcript that hit a bad shape, a controller that read an undefined field —
+ * lands in it too, and the one screen it had said "The app was updated. Reload
+ * to continue." A reader who reloads on that advice gets the same crash from
+ * the same build, and has been told the wrong thing about their own app.
+ *
+ * So the error is KEPT (`isChunkLoadError` above sorts it) and the fallback is
+ * a function of it — two screens with different copy and different actions
+ * (`ChatLoadFailed` below). `reset` is what the crash screen's "Try again"
+ * calls: it clears the error AND bumps `attempt`, which is the child subtree's
+ * `key`, so React builds a genuinely fresh tree rather than re-rendering the
+ * one that just threw. (The chunk case is not offered a retry: `lazy` caches
+ * its rejected promise, so re-rendering it throws the same rejection straight
+ * back and the only real fix is the reload.)
  */
+export interface ChatFailure {
+  /** Which screen to show — see `isChunkLoadError`. */
+  kind: "chunk" | "crash";
+  /** The thrown value, for the crash screen's own line. */
+  error: unknown;
+  /** Drop the error and rebuild the subtree from scratch. */
+  reset: () => void;
+}
+
 export class ChatChunkBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
+  { fallback: (failure: ChatFailure) => ReactNode; children: ReactNode },
+  { error: unknown; failed: boolean; attempt: number }
 > {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+  state = { error: null as unknown, failed: false, attempt: 0 };
+  static getDerivedStateFromError(error: unknown) {
+    return { error, failed: true };
   }
   componentDidCatch(error: unknown) {
     // Not a toast: the fallback already says this to the reader, in the box
-    // where the chat was — but a 404'd chunk is a deploy fact worth having in a
-    // console too.
-    console.error("chat chunk failed to load", error);
+    // where the chat was — but a chat that died is worth having in a console
+    // too, ONCE and in full, whichever kind it turned out to be. (`error` in
+    // state is only ever read for its message; this is the whole object.)
+    console.error("chat failed to render", error);
   }
+  reset = () => {
+    this.setState((s) => ({ error: null, failed: false, attempt: s.attempt + 1 }));
+  };
   render() {
-    return <>{this.state.failed ? this.props.fallback : this.props.children}</>;
+    if (this.state.failed) {
+      return (
+        <>
+          {this.props.fallback({
+            kind: isChunkLoadError(this.state.error) ? "chunk" : "crash",
+            error: this.state.error,
+            reset: this.reset,
+          })}
+        </>
+      );
+    }
+    // KEYED ON THE ATTEMPT, so "Try again" is a remount and not a re-render:
+    // the subtree that threw is thrown away with its state, and the chat boots
+    // the way it does on arrival. Nothing of the conversation rides on it — the
+    // transcript is the server's, and the mount re-reads it.
+    return <Fragment key={this.state.attempt}>{this.props.children}</Fragment>;
   }
 }
 
@@ -115,32 +197,75 @@ export function useHostIds(
   }, [memory, msgAnchor]);
 }
 
+/** The crash screen's one line of evidence. ONE LINE and capped: this sits in a
+ *  box that can be a 300px card, and a stack trace folded into it would push the
+ *  actions the reader came for below the fold. The full object went to the
+ *  console in `componentDidCatch` — that is where a stack belongs. */
+const DETAIL_MAX = 200;
+export function failureDetail(error: unknown): string {
+  const raw =
+    error instanceof Error ? error.message : error == null ? "" : String(error);
+  // Newlines and runs of space collapse first, so the cap counts CONTENT rather
+  // than the indentation of a wrapped traceback.
+  const line = raw.replace(/\s+/g, " ").trim();
+  return line.length > DETAIL_MAX ? line.slice(0, DETAIL_MAX - 1) + "\u2026" : line;
+}
+
 /**
- * THE CHUNK FAILURE'S OWN SCREEN — the boundary's fallback, in the app's own
+ * THE FAILURE'S OWN SCREEN — the boundary's fallback, in the app's own
  * error-card shapes (`.trouble-card`, styles/dialogs.css) rather than a look of
  * its own. Everything a reader needs is three things: that this box is a chat
- * that did not arrive, WHY it is a fact about the app rather than about their
- * conversation, and the press that ends it.
+ * that is not there, WHY, and the press that ends it.
  *
- * No copy-the-details buttons and no troubleshooting link, unlike `TroubleCard`:
- * there is nothing verbatim to hand anybody, and the cause is known exactly —
- * this tab is asking for a build that is no longer on disk.
+ * TWO KINDS, because the boundary above catches two things and they want
+ * opposite advice (see `ChatChunkBoundary`):
+ *
+ *   `chunk` — the JS never arrived. This tab is asking for a hashed file that a
+ *     deploy took off disk, so the app it is running is the stale thing: there
+ *     is nothing to retry (a second render asks `lazy` for the same cached
+ *     rejection), and a reload is the whole fix. One action, and the copy names
+ *     the cause rather than the symptom.
+ *
+ *   `crash` — the chat loaded and threw while rendering. Reloading fetches the
+ *     same build and, most likely, the same crash; saying "the app was updated"
+ *     here is simply false. So: what actually happened, verbatim, and TWO
+ *     actions — Try again first, because a render throw is often about one
+ *     conversation's state rather than the code, and the boundary's reset
+ *     rebuilds the subtree from nothing (the conversation is the server's; a
+ *     remount re-reads it and loses none of it). Reload stays as the harder
+ *     press behind it.
+ *
+ * No copy-the-details button and no troubleshooting link, unlike `TroubleCard`:
+ * this is a box beside the reader's work, not a boot failure, and the verbatim
+ * text is already on the card and in the console.
  *
  * ITS LOOK IS EAGER (`.chat-mount-failed`, frontend/src/styles/chat-frame.css,
  * imported by the shell barrel) and not in `apps/claude/styles/chat.css`, which
  * would be a stylesheet inside the very chunk that just failed to arrive: this
  * card would then be shown unstyled in exactly the one case it is ever shown.
+ * `.trouble-error` is eager for the same reason (styles/dialogs.css).
  *
  * IT REPORTS READY. A host that holds the previous pane on screen until the
  * chat says `onReady` (the explorer content pane's held-frame swap) would
- * otherwise keep this card at opacity 0 until its swap timeout — Reload hidden
- * for exactly the wait it exists to shorten. The card IS the chat's final
- * state for this mount, so it completes the swap the way a loaded chat would.
+ * otherwise keep this card at opacity 0 until its swap timeout — the actions
+ * hidden for exactly the wait they exist to shorten. The card IS the chat's
+ * final state for this mount, so it completes the swap the way a loaded chat
+ * would.
  *
  * Exported for its own test: the boundary is only reachable from a chunk that
  * fails to load, which no host can stage.
  */
-export function ChatLoadFailed({ onReady }: { onReady?: () => void }) {
+export function ChatLoadFailed({
+  kind = "chunk",
+  error,
+  onRetry,
+  onReady,
+}: {
+  kind?: "chunk" | "crash";
+  error?: unknown;
+  onRetry?: () => void;
+  onReady?: () => void;
+}) {
   // Once per mount, through a ref: the card never changes after it appears,
   // and a host's `onReady` is a swap trigger, not a subscription — a host that
   // hands a fresh closure every render must not re-trigger the swap.
@@ -149,12 +274,28 @@ export function ChatLoadFailed({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     readyRef.current?.();
   }, []);
+  const detail = kind === "crash" ? failureDetail(error) : "";
   return (
     <div className="chat-mount-failed">
       <div className="trouble-card" role="alert">
-        <div className="trouble-title">This chat could not load.</div>
-        <p className="trouble-explain">The app was updated. Reload to continue.</p>
+        <div className="trouble-title">
+          {kind === "crash" ? "This chat hit an error." : "This chat could not load."}
+        </div>
+        <p className="trouble-explain">
+          {kind === "crash"
+            ? "Something in the conversation could not be drawn. Trying again rebuilds it; nothing of the conversation is lost."
+            : "The app was updated. Reload to continue."}
+        </p>
+        {/* Only when there is something to show: an error that stringifies to
+            nothing would otherwise draw an empty framed box under the sentence
+            that promised an explanation. */}
+        {detail && <pre className="trouble-error">{detail}</pre>}
         <div className="trouble-actions">
+          {kind === "crash" && onRetry && (
+            <button type="button" className="version-panel-link" onClick={onRetry}>
+              Try again
+            </button>
+          )}
           <button
             type="button"
             className="version-panel-link"
@@ -292,7 +433,16 @@ export function ChatMount(props: ChatMountProps) {
   // it away.
   return (
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
-     <ChatChunkBoundary fallback={<ChatLoadFailed {...(props.onReady ? { onReady: props.onReady } : {})} />}>
+     <ChatChunkBoundary
+       fallback={(failure) => (
+         <ChatLoadFailed
+           kind={failure.kind}
+           error={failure.error}
+           onRetry={failure.reset}
+           {...(props.onReady ? { onReady: props.onReady } : {})}
+         />
+       )}
+     >
       <Suspense fallback={placeholderFor()}>
         <ClaudeChat
           file={props.file}
