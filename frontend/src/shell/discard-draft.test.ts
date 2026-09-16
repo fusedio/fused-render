@@ -29,10 +29,12 @@ const {
   subscribeListing,
 } = await import("./tasksPulse");
 const {
+  draftSyncer,
   draftVersion,
   fetchChatDraft,
   forgetDraftVersion,
   rememberDraftVersion,
+  resetDraftSyncers,
 } = await import("@platform/lib/drafts");
 type ListingEnv = import("./tasksPulse").ListingEnv;
 
@@ -138,6 +140,8 @@ afterEach(() => {
   for (const key of ["new:/repo/x.py", "new:/repo/other.py", "draft:d-7", "sess-4"]) {
     forgetDraftVersion(key);
   }
+  // …and so are any syncers a test minted to keep a key's writer alive.
+  resetDraftSyncers();
 });
 
 describe("discardDraft", () => {
@@ -235,6 +239,44 @@ describe("discardDraft", () => {
     expect(await discardDraft(row)).toBe(false);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]);
     expect(readListing()?.map((t) => t.key)).toEqual(["draft:d-7"]);
+    off();
+  });
+
+  test("a second trash press on an already-gone draft does not restore the row (Bugbot 4027177439)", async () => {
+    // The record this page itself already deleted a moment ago — a lingering
+    // Recent chats row after Send, or a fast double click on the same trash
+    // icon. The syncer's `wanted()` used to clear `removed` on every new
+    // "gone" statement, even one asking for exactly what it already knew —
+    // so the handoff answered `removed: false` for a record that plainly was
+    // gone, and `discardDraft` read that as a refusal and put the row back.
+    stubFetch();
+    store = { "new:/repo/x.py": record("ship the thing") };
+    const off = seedListing([chatRow(), chatRow("new:/repo/other.py")]);
+    await settle();
+
+    // An editor — the composer behind this row — stays open on the key, which
+    // is what keeps its syncer alive once the first delete lands: `sweep()`
+    // only drops a syncer nobody is watching.
+    const sync = draftSyncer("new:/repo/x.py");
+    const offRule = sync.watch({
+      focused: () => false,
+      localText: () => "",
+      adopt: () => {},
+    });
+
+    expect(await discardDraft(chatRow())).toBe(true);
+    await settle();
+    expect(readListing()?.map((t) => t.key)).toEqual(["new:/repo/other.py"]);
+    const deletes = calls.filter((c) => c.method === "DELETE").length;
+
+    // The second press, on a record already known gone.
+    expect(await discardDraft(chatRow())).toBe(true);
+    await settle();
+    expect(readListing()?.map((t) => t.key)).toEqual(["new:/repo/other.py"]);
+    // …and nothing new went out for it.
+    expect(calls.filter((c) => c.method === "DELETE").length).toBe(deletes);
+
+    offRule();
     off();
   });
 });

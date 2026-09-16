@@ -1065,8 +1065,15 @@ function makeSyncer(key: string): InnerSyncer {
     stalled = false;
     retried = false;
     // A NEW STATEMENT UNSAYS THE LAST DELETE, whether it is another delete (the
-    // answer is about to be made again) or the words a keystroke put back.
-    removed = false;
+    // answer is about to be made again) or the words a keystroke put back —
+    // UNLESS THE RECORD IS ALREADY KNOWN GONE (Bugbot 4027177439). A second
+    // trash press, or one on a chat this page already deleted (a Send that
+    // just cleared it, a lingering Recent chats row), asks for exactly the
+    // state `known` already names. "Already absent" IS the outcome the trash
+    // wanted, so the handoff says `removed: true` without another DELETE
+    // going out — `dirty()` below is false for the same reason, so nothing
+    // is dispatched.
+    removed = next.kind === "gone" && known === serial;
     // A KEYSTROKE ENDS AN URGENCY. A blur that could not send (something was in
     // flight) asked for "as soon as the wire clears"; the reader typing again
     // is the reader still writing, and the answer to that is the debounce.

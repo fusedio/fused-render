@@ -886,6 +886,38 @@ describe("the syncer's table of interleavings", () => {
     it.restore();
   });
 
+  test("a second trash press on an already-gone record settles removed, not another DELETE", async () => {
+    // Bugbot 4027177439, the other half. `wanted()` cleared `removed`
+    // unconditionally on every new statement, including a SECOND "gone" hard
+    // on the heels of one this page had already landed — a lingering Recent
+    // chats row after Send, or two clicks on the same trash icon. `known`
+    // already named the gone state the second press asked for, so nothing
+    // was dirty and nothing was ever dispatched, but the handoff still
+    // answered `removed: false` and `dropDraft` put the row back.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("a row in the list");
+    sync.flushNow();
+    await it.settle();
+    sync.markDeleted();
+    const first = sync.handoff();
+    await it.settle();
+    const out1 = await first;
+    expect(out1.ok).toBe(true);
+    expect(out1.removed).toBe(true);
+    expect(it.held.length).toBe(2); // the PUT, then the one DELETE
+    // The second press: `known` already says "gone".
+    sync.markDeleted();
+    const second = sync.handoff();
+    const out2 = await second;
+    expect(out2.ok).toBe(true);
+    expect(out2.removed).toBe(true);
+    // …and nothing new went out for it.
+    expect(it.held.length).toBe(2);
+    it.restore();
+  });
+
   test("the three moments the document may be going away are listened for once", () => {
     // Not per editor: the debounce belongs to the KEY, so the unload listeners
     // do too. Read off the source because an event nobody can dispatch in this
