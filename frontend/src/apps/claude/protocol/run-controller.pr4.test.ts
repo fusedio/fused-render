@@ -3,9 +3,10 @@
 // postures `resumeRun` adopts a turn nobody on this page started with.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 const { ARTIFACTS_EVERY_TICKS, createChatController } = await import("./run-controller");
+const { publishProjectQueueEnabled } = await import("../feature-flag");
 const { createMemoryParamsStore } = await import("../params/store");
 
 import type { runAgent } from "./agent";
@@ -206,6 +207,12 @@ describe("the run-clock hooks", () => {
 // ---- resumeRun's three postures --------------------------------------------
 
 describe("resumeRun reconciles against what is already on screen", () => {
+  // The moved-window road is the queue's (a follow-up that queued behind a live
+  // turn); flag off, re-attach is main's strip+append. These cases are about
+  // the road, so the flag is on for them — and OFF again after, because the
+  // flag is process-global and the suites beside this one assume main.
+  beforeEach(() => publishProjectQueueEnabled(true));
+  afterEach(() => publishProjectQueueEnabled(false));
   /** A transcript with one user turn, restored the way history restores one. */
   async function withHistory(handlers: Record<string, Handler>) {
     const rig = makeController({

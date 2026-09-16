@@ -262,7 +262,14 @@ describe("start → poll → done", () => {
     });
     // The poll rides `file` so the agent can refuse another target's run.
     // `native: "1"`: app-state reads come back as in-stream notices (agent.py `app_reads`).
-    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py", native: "1" });
+    // `queue: "0"`: the page says whether the agent should answer `inbox` rows
+    // (the project queue's picture of a mid-turn follow-up); off, main's payload.
+    expect(agent.of("poll")[0].fields).toEqual({
+      run_id: "r1",
+      file: "/proj/app.py",
+      native: "1",
+      queue: "0",
+    });
 
     const s = controller.getState();
     expect(users(controller).map((t) => t.text)).toEqual(["hi"]);

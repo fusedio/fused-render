@@ -935,7 +935,9 @@ describe("a follow-up the live run is still holding", () => {
     // seconds: a line saying so would be this feature narrating the app's normal
     // behaviour back at the reader (design.md, UI). So no `.c-waiting-line`, no
     // dashed edge, no delete — the transcript's own user turn, full strength.
-    const at = CHAT.indexOf("{inboxRows.map((row) => (");
+    // Drawn only under the flag (review, 2026-09-16): flag off, a mid-turn
+    // reload paints exactly what main paints.
+    const at = CHAT.indexOf("{queueOn &&\n              inboxRows.map((row) => (");
     expect(at).toBeGreaterThan(-1);
     const block = CHAT.slice(at, CHAT.indexOf("))}", at));
     expect(block).toContain('<div className="c-inbox" key={row.id}>');

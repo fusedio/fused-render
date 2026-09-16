@@ -313,7 +313,11 @@ describe("the session the leader's run opened", () => {
     // Wiring, which no unit test of the rule can see: the map is published, the
     // rule is asked with the live session id, and the answer opens the
     // conversation — bringing the real transcript with it.
-    expect(USE_SCHEDULE).toContain("onSessions: absorbSessions,");
+    // Wired only under the flag (review, 2026-09-16): each feed is a fresh
+    // Set/Map per lap and a re-render, which an idle flag-off chat must not pay.
+    expect(USE_SCHEDULE).toContain(
+      "? { onPending: absorbPending, onAllRows: absorbAllRows, onSessions: absorbSessions }",
+    );
     expect(USE_SCHEDULE).toContain("ranSessions: ReadonlyMap<string, string> | null;");
     expect(CHAT).toContain(
       'const adoptSession = leaderSession(sched.ranSessions, leader.peek(), state.sessionId ?? "");',
