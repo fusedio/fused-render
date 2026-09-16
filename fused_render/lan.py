@@ -822,6 +822,7 @@ def lan_apps() -> list[dict]:
     then name). Exported ``.fused`` files are not here: they are archives, not
     folders a page can render from. Same source and same rule as the hub so the
     two grids cannot drift. Read each time — a phone opens the grid rarely."""
+    from fused_render import app_listing
     from fused_render.server.routers.apps import _workspace_apps
 
     rows = []
@@ -858,10 +859,12 @@ def lan_apps() -> list[dict]:
             # tile; falls back to icon.svg, then to the monogram, on the page.
             "preview": ("/api/fs/raw?" + urlencode({"path": app["preview_image"]})
                         if app.get("preview_image") else None),
-            # The SVG bytes themselves via /api/fs/raw (an <img> subresource,
-            # so the route's document-load downgrade does not apply).
-            "icon": ("/api/fs/raw?" + urlencode({"path": os.path.join(folder, "icon.svg")})
-                     if os.path.isfile(os.path.join(folder, "icon.svg")) else None),
+            # The icon bytes themselves via /api/fs/raw (an <img> subresource,
+            # so the route's document-load downgrade does not apply). Same
+            # precedence as every other surface (app_listing.ICON_NAMES): svg,
+            # else png — the page clips a png to a rounded square.
+            "icon": ("/api/fs/raw?" + urlencode({"path": icon["icon"]})
+                     if (icon := app_listing.app_icon(folder)) else None),
         })
     rows.sort(key=lambda r: (-r["recency"], (r["title"] or r["name"]).lower(), r["name"].lower()))
     return rows

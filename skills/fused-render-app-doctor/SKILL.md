@@ -55,9 +55,9 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 **Fix.** Write one. A sentence or two on what the app does, for whoever receives the folder.
 
-## `icon` — icon.svg is valid SVG
+## `icon` — icon.svg / icon.png is a valid image
 
-**fact** — skip means no `icon.svg`, which is fine. Fail means one exists and won't parse.
+**fact** — skip means neither `icon.svg` nor `icon.png`, which is fine. Checks the svg when both exist (it wins); png = signature check. Fail means the icon exists and won't parse.
 
 **Fix.** Route to **`fused-render-app-icon`**; it owns icon authoring.
 
@@ -113,7 +113,7 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 | `fused.capture` | `fused-render-capture` |
 | `fused.daemon`, `[tool.fused-render.app]` (Python alive after the page closes) | `fused-render-background-apps` |
 | stale or missing `fused-api-version` | `fused-render-api-migration` |
-| an `icon.svg` that exists and fails to parse | `fused-render-app-icon` |
+| an `icon.svg` / `icon.png` that exists and fails to parse | `fused-render-app-icon` |
 
 Each row comes from that skill's own `description:` line — re-check there rather than guessing from a name.
 

@@ -2394,7 +2394,8 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
-  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // The app's optional icon at the folder's root (absolute path) — `icon.svg`,
+  // else `icon.png`, the shell's precedence (app_listing.ICON_NAMES) — and its
   // mtime — the mark a card draws to the left of its name, the same file the
   // sidebar's Projects row and the app's tab favicon draw. Null for an app
   // without one (and for an exported `.fused`, which has no folder root),
@@ -2716,8 +2717,9 @@ export function getAppIcon(fsPath: string): Promise<AppIconResult> {
   return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
 }
 
-/** The URL to draw an app icon from: the raw file, with its mtime as a cache
- *  key so an edited icon.svg shows up without a hard reload. */
+/** The URL to draw an app icon from: the raw file (`icon.svg` or `icon.png`),
+ *  with its mtime as a cache key so an edited icon shows up without a hard
+ *  reload. */
 export function appIconUrl(icon: string, mtime?: number | null): string {
   // Full float mtime, not the floored second — a same-second replacement of
   // icon.svg must still change the URL (current-apps-lib.iconUrlFor agrees).
