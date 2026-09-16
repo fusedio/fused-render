@@ -7,12 +7,14 @@ import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
+import { SEARCH_GLOB_RANK_LIMIT, SEARCH_RANK_LIMIT } from "@apps/explorer/listing/types";
 
 // --- the module boundary ------------------------------------------------------
 const rankCalls: {
   root: string;
   q: string;
   ranked: boolean | undefined;
+  limit: number | undefined;
   reply: Deferred<IndexRankResult>;
 }[] = [];
 const scanCalls: string[] = [];
@@ -25,9 +27,9 @@ let scanReply: { started: boolean; why: string } = { started: true, why: "starte
 let prefsRanked = true;
 
 mock.module("@platform/lib/api", () => ({
-  indexRank: (root: string, q: string, opts?: { ranked?: boolean }) => {
+  indexRank: (root: string, q: string, opts?: { ranked?: boolean; limit?: number }) => {
     const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, ranked: opts?.ranked, reply });
+    rankCalls.push({ root, q, ranked: opts?.ranked, limit: opts?.limit, reply });
     return reply.promise;
   },
   requestFolderScan: (path: string) => {
@@ -125,6 +127,31 @@ describe("the MIN_QUERY_CHARS gate", () => {
     expect(rankCalls).toHaveLength(1);
     expect(rankCalls[0].q).toBe("wi");
     expect(box.current().searching).toBe(true);
+    box.unmount();
+  });
+});
+
+describe("the request limit mirrors willResolveToGlobMode, not a bare '*' check", () => {
+  // Code review finding: the limit predicate used to be `q.includes("*")`,
+  // a strict subset of `resolve_query`'s actual mode rule — a whitespace-
+  // only query (no literal `*` typed at all) still settles in `mode:
+  // "glob"` server-side (SPEC-search-space-wildcard.md), so it needs the
+  // wider glob row budget too, not the substring one.
+  test("a whitespace-only query (no literal *) asks for the wider glob limit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("hello world"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].limit).toBe(SEARCH_GLOB_RANK_LIMIT);
+    box.unmount();
+  });
+
+  test("a plain single-word query still asks for the narrower substring limit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("hello"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].limit).toBe(SEARCH_RANK_LIMIT);
     box.unmount();
   });
 });

@@ -50,7 +50,7 @@ import { escapesFsPath } from "@apps/explorer/listing/query-base";
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
-import { MIN_QUERY_CHARS } from "@apps/explorer/lib/home-search";
+import { MIN_QUERY_CHARS, willResolveToGlobMode } from "@apps/explorer/lib/home-search";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
@@ -486,9 +486,15 @@ export function useListingSearch(
       // The previous failure is not this request's verdict.
       setFailure("");
       // Same disambiguation the server uses (resolve_query: mode is `"*" in
-      // raw`, unconditionally) — asked here only to pick how many rows are
-      // worth fetching before the answer says which mode actually ran.
-      const limit = q.includes("*") ? SEARCH_GLOB_RANK_LIMIT : SEARCH_RANK_LIMIT;
+      // raw` AFTER `expand_whitespace_query` runs, not `"*" in raw` on the
+      // typed text itself — a whitespace-only query with no literal `*` at
+      // all still settles in glob mode) — asked here only to pick how many
+      // rows are worth fetching before the answer says which mode actually
+      // ran. `willResolveToGlobMode` is the same predicate `expandWhitespace
+      // Query`'s own callers use, so this can't drift from the expansion
+      // rule the way a bare `q.includes("*")` check already had (code
+      // review finding).
+      const limit = willResolveToGlobMode(q) ? SEARCH_GLOB_RANK_LIMIT : SEARCH_RANK_LIMIT;
       // Decision 10: measured at issue, applied at the response — the same
       // two endpoints home-search.ts's `elapsedMs` uses, so the two boxes
       // report the same kind of number.
