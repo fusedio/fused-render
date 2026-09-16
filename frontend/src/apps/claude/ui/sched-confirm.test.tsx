@@ -9,7 +9,10 @@ import { createElement, useCallback } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { SchedButton } = await import("./SchedButton");
-const { SchedConfirmBody } = await import("./SchedConfirm");
+const { SchedConfirm, SchedConfirmBody } = await import("./SchedConfirm");
+const { forgetDraftVersion } = await import("@platform/lib/drafts");
+const { getPopupNotification, _resetNotificationsForTest } =
+  await import("@platform/lib/notifications");
 const { useDismissOnWindow } = await import("./useDismissOnWindow");
 
 /** A REAL LISTENER REGISTRY on the shim's `window`, which otherwise no-ops. The
@@ -206,6 +209,105 @@ test("the Schedule button binds blur/resize only while its confirm is open", asy
   await fireWindow("blur");
   expect(bound("blur")).toBe(0);
   expect(bound("resize")).toBe(0);
+});
+
+// ── the hop waits for its own save ──────────────────────────────────────────
+//
+// Bugbot, PR #1180: Continue used to fire the PUT and navigate in the same tick.
+// The card on the other side seeds from `GET /api/drafts`, so the two raced —
+// and when the GET won, the reader arrived at a card holding the words as they
+// were 600 ms ago, or nothing at all on a first hop. The words are the whole
+// point of the handoff, so the navigation is now the save's ANSWER.
+
+const HOP_KEY = "new:/w/app/page.html";
+
+/** Mount the real button and hand back the confirm's own `onGo` — the Continue
+ *  press, without asking a portal to render in a DOM-less runtime. */
+function pressContinue(onNavigate: (url: string) => void) {
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app/page.html",
+        sessionId: "",
+        draft: () => "a scheduled line",
+        back: "/w/app/page.html",
+        onNavigate,
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  return (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+}
+
+test("Continue navigates only once the draft's own PUT has answered", async () => {
+  forgetDraftVersion(HOP_KEY);
+  let release!: () => void;
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  const methods: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    methods.push(init?.method ?? "GET");
+    return held.then(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              ok: true,
+              key: HOP_KEY,
+              draft: { text: "a scheduled line", attachments: [], updated_at: 1,
+                       version: 2, form: {} },
+            }),
+        }) as unknown as Response,
+    );
+  }) as typeof fetch;
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url));
+  await act(async () => {
+    go();
+  });
+  // The write is out; the reader is still in the chat.
+  expect(methods).toEqual(["PUT"]);
+  expect(went).toEqual([]);
+  await act(async () => {
+    release();
+    await held;
+  });
+  expect(went.length).toBe(1);
+  expect(went[0]).toContain("draft=" + encodeURIComponent(HOP_KEY));
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a refused save keeps the reader in the chat, and says so", async () => {
+  // Navigating with nothing saved is the same empty card by another road — and
+  // this side is the only one still holding the words.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({}),
+    } as unknown as Response)) as unknown as typeof fetch;
+
+  const went: string[] = [];
+  const go = pressContinue((url) => went.push(url));
+  await act(async () => {
+    go();
+  });
+  expect(went).toEqual([]);
+  expect(getPopupNotification()?.title).toContain("Could not save that draft");
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
 });
 
 // The patch comes off with the file (see the registry note above).

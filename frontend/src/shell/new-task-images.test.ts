@@ -408,7 +408,13 @@ describe("the chat handoff's attachments", () => {
     expect(SCHEDULED).toContain("attachments: record.attachments ?? [],");
     const BUTTON = readFileSync(
       join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
-    expect(BUTTON).toContain(".then((carried) => saveChatDraft(key, text, carried))");
+    expect(BUTTON).toContain(".then(hand);");
+    expect(BUTTON).toContain("void saveChatDraft(key, text, carried)");
+    // …AND THE NAVIGATION IS THE SAVE'S ANSWER, not a thing that happens beside
+    // it (Bugbot, PR #1180): the card seeds from `GET /api/drafts`, so a hop
+    // that left in the same tick as its own PUT raced it and could open empty.
+    expect(BUTTON).toContain("if (out.ok) {");
+    expect(BUTTON).not.toContain(".then(leave);");
     // …and the URL it builds is the key, the folder and the way back — three
     // facts, no words. It is built where a draft ROW can press the same one
     // (`sched/scheduled`), so the hop and the row cannot drift apart.

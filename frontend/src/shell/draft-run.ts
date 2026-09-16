@@ -364,7 +364,7 @@ async function boundFormBody(draftId: string): Promise<SchedulePayload> {
   // `fetchDrafts`) — and the two must not be reported as one thing here, where
   // the second sentence would tell the reader their draft is gone when the
   // server merely did not answer.
-  if (!all) throw new Error("Could not read that draft just now — try again.");
+  if (!all) throw new Error(UNREADABLE);
   const form = all.task[draftId] as unknown as Record<string, unknown> | undefined;
   if (!form) throw new Error(GONE);
   // STILL BOUND? The row offered this drop because the listing said this form is
@@ -382,6 +382,12 @@ async function boundFormBody(draftId: string): Promise<SchedulePayload> {
 /** The composer's unsent words, read back by session and translated. */
 async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload> {
   const draft = await fetchChatDraft(sessionId);
+  // THE SAME THREE ANSWERS `fetchDrafts` GIVES, because this one is built on it
+  // (Bugbot, PR #1180): `undefined` is a GET that failed and `null` is a key
+  // with nothing under it. Told apart here for `boundFormBody`'s reason — the
+  // GONE sentence says the reader's words are already sent or discarded, which
+  // is a hard thing to be told because the server blinked.
+  if (draft === undefined) throw new Error(UNREADABLE);
   if (!draft) throw new Error(GONE);
   const body = chatDraftPayload({
     sessionId,
@@ -405,3 +411,6 @@ async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload>
  *  the likelihood rather than as an error, because it usually IS what happened,
  *  and the board re-reads itself straight afterwards either way. */
 const GONE = "Nothing unsent left in that conversation — it may already have gone.";
+
+/** …and the other thing a read can answer: nothing at all. */
+const UNREADABLE = "Could not read that draft just now — try again.";

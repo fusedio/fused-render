@@ -551,25 +551,50 @@ export async function fetchDrafts(): Promise<DraftsSnapshot | null> {
   }
 }
 
-/** One chat draft, or null. A convenience over `fetchDrafts` — there is no
- *  per-key GET in the contract, and the store is small enough that the whole of
- *  it is cheaper than a second endpoint would be. A failed read and an empty key
- *  read the same here, which is right for this call's callers: seeding an editor
- *  from nothing is the state it is already in. */
-export async function fetchChatDraft(key: string): Promise<ChatDraft | null> {
+/**
+ * One chat draft — and it answers in THREE states, not two (Bugbot, PR #1180).
+ *
+ *   * a RECORD — the draft, as the server holds it;
+ *   * `null` — THERE IS NO RECORD under that key, which the contract makes an
+ *     instruction: a reader adopting this empties its box;
+ *   * `undefined` — COULD NOT FIND OUT. The GET failed — offline, the server
+ *     restarting, a blip — so nothing is known and nothing may be done.
+ *
+ * The last two used to collapse into `null`, and it cost words: the change
+ * feed's adopt path read a failed GET as "the draft was deleted" and cleared a
+ * box that still had a sentence in it. `undefined` for "unknown" is the same
+ * third answer `draftVersion` already gives for a key nobody has seen, and the
+ * same distinction `fetchDrafts` has made since PR #1126.
+ *
+ * A convenience over `fetchDrafts` — there is no per-key GET in the contract,
+ * and the store is small enough that the whole of it is cheaper than a second
+ * endpoint would be.
+ */
+export async function fetchChatDraft(
+  key: string,
+): Promise<ChatDraft | null | undefined> {
   const all = await fetchDrafts();
-  return all?.chat[key] ?? null;
+  if (!all) return undefined;
+  return all.chat[key] ?? null;
 }
 
 /**
- * What `useAutosave` hands back — TWO CALLS, where there used to be five.
+ * What `useAutosave` hands back — THREE CALLS, where there used to be five.
  *
- * `stop` / `resume` / `settle` were an ordering protocol between one mount's
- * pending write and somebody else's DELETE, and a version does that job for
- * every document at once: a write that arrives after the record it edits has
- * been deleted or rewritten is refused by the server (409) instead of landing.
- * So a discard, a send and a schedule no longer stand this hook down and wait
- * for it; they simply write, and this hook's late PUT bounces.
+ * `stop` / `resume` were an ordering protocol between one mount's pending write
+ * and somebody else's DELETE, and a version does that job for every document at
+ * once: a write that arrives after the record it edits has been REWRITTEN is
+ * refused by the server (409) instead of landing. A discard and a schedule no
+ * longer stand this hook down and wait for it; they simply write, and this
+ * hook's late PUT bounces.
+ *
+ * `settle` came back, and only for the one case a version cannot order (Bugbot,
+ * PR #1180): TWO REQUESTS ALREADY ON THE WIRE CARRYING THE SAME `If-Match`. A
+ * version refuses a LATER write that states a STALE number; it says nothing
+ * about a PUT and a DELETE that were both dispatched against version 7. The
+ * send's DELETE can land first, and the autosave's PUT then recreates the
+ * sentence that was just sent as a live draft. So the send waits for the write
+ * that is already out before deleting — see `settle`.
  */
 export interface Autosave<T> {
   /** Write NOW if anything has changed since the last write — what send, submit
@@ -586,8 +611,24 @@ export interface Autosave<T> {
    *
    * `next` becomes BOTH what counts as written and what a later write would
    * send, so a flush after a reset is a flush with nothing to say.
+   *
+   * It also DISOWNS whatever write is still on the wire: its answer — an
+   * adoption, a conflict retry — is about a value this editor has just stopped
+   * holding, and acting on it would put the sent sentence back in the box.
    */
   reset(next: T): void;
+  /**
+   * RESOLVE WHEN NOTHING THIS HOOK STARTED IS STILL ON THE WIRE.
+   *
+   * The one thing a version cannot order: a PUT already dispatched and a DELETE
+   * about to be, both stating the same `If-Match`. The server takes them in
+   * whatever order they arrive, so a send that deletes without waiting can have
+   * its own autosave recreate the message it just sent. `await settle()` first
+   * and the two are ordered by this client instead.
+   *
+   * Resolves immediately when nothing is in flight, and never rejects.
+   */
+  settle(): Promise<void>;
 }
 
 export interface AutosaveOptions {
@@ -696,23 +737,40 @@ export function useAutosave<T>(
   // is at risk.
   const savedText = useRef<string>(conflict ? conflict.localText() : "");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // WHAT IS ON THE WIRE, and which editing life it belongs to. `settle` awaits
+  // the first; `reset` bumps the second, so a write started before a send can
+  // no longer adopt, retry, or otherwise speak for a box that has moved on.
+  const inflight = useRef<Promise<void>>(Promise.resolve());
+  const era = useRef(0);
 
   const clear = () => {
     if (timer.current !== undefined) clearTimeout(timer.current);
     timer.current = undefined;
   };
 
-  const writeNow = useCallback((opts: DraftWriteOptions, retry = false) => {
+  /**
+   * ANSWERS THE WHOLE WRITE, retry included — which is what `settle` awaits. The
+   * conflict retry starts a second request from inside the first one's `then`,
+   * so it is RETURNED into that chain rather than left beside it: one promise
+   * covers both attempts, and a caller that took the handle before the send can
+   * never be left waiting on a write that started after it.
+   */
+  const writeNow = useCallback((opts: DraftWriteOptions, retry = false): Promise<void> => {
     clear();
     const next = JSON.stringify(valueRef.current) ?? "";
-    if (next === written.current) return;
+    if (next === written.current) return Promise.resolve();
     written.current = next;
     const rule = conflictRef.current;
     if (rule) savedText.current = rule.localText();
+    const mine = era.current;
     const out = saveRef.current(valueRef.current, opts);
-    if (!out || typeof (out as Promise<unknown>).then !== "function") return;
-    void (out as Promise<unknown>)
-      .then((res) => {
+    if (!out || typeof (out as Promise<unknown>).then !== "function") return Promise.resolve();
+    const chain = (out as Promise<unknown>)
+      .then((res): void | Promise<void> => {
+        // A `reset` since this went out means the box is no longer holding what
+        // this write was about — the send already cleared it — so this answer
+        // has nobody to speak for.
+        if (era.current !== mine) return;
         const clash = res as DraftWrite<unknown> | undefined;
         if (!clash || clash.ok || !("conflict" in clash)) return;
         const rule2 = conflictRef.current;
@@ -735,17 +793,26 @@ export function useAutosave<T>(
         if (retry) return;
         rule2.onKept?.();
         written.current = UNWRITTEN;
-        writeNow(opts, true);
+        return writeNow(opts, true);
       })
       .catch(() => {
         // `save`'s own wrapper never rejects; this only guarantees that a
         // future caller's cannot become an unhandled rejection mid-keystroke.
       });
+    inflight.current = chain;
+    return chain;
   }, []);
 
-  const flush = useCallback(() => writeNow({ keepalive: true }), [writeNow]);
+  const flush = useCallback(() => {
+    void writeNow({ keepalive: true });
+  }, [writeNow]);
+  /** Whatever is on the wire AS OF THIS CALL — a write started after it is a
+   *  write about words the caller has not seen, and waiting on those is how a
+   *  send would come to delete a draft typed after it. */
+  const settle = useCallback(() => inflight.current, []);
   const reset = useCallback((next: T) => {
     clear();
+    era.current += 1;
     // The VALUE as well as the bookkeeping — see `Autosave.reset`. Until the
     // render that empties the box arrives, `valueRef` still holds the sentence
     // that was just sent, and the unmount flush would write it back.
@@ -761,7 +828,9 @@ export function useAutosave<T>(
   useEffect(() => {
     if (serial === written.current) return;
     clear();
-    timer.current = setTimeout(() => writeNow({}), delay);
+    timer.current = setTimeout(() => {
+      void writeNow({});
+    }, delay);
     return clear;
   }, [serial, delay, writeNow]);
 
@@ -787,5 +856,5 @@ export function useAutosave<T>(
     };
   }, [flush]);
 
-  return { flush, reset };
+  return { flush, reset, settle };
 }

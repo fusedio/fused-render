@@ -701,6 +701,19 @@ test("a newer version is re-read and adopted, unless the reader is typing", asyn
   expect(body).toContain("if (focusedRef.current && textRef.current.trim()) return;");
   expect(body).toContain("void fetchChatDraft(key).then((saved) => {");
   expect(body).toContain("adoptRef.current(saved);");
+  // A FAILED GET IS NOT A DELETED RECORD (Bugbot, PR #1180). `fetchChatDraft`
+  // answers `undefined` when the read itself failed and `null` when the key
+  // holds nothing, and only the second is an instruction to empty the box —
+  // collapsed into one, a network blip took the reader's words.
+  expect(body).toContain("if (saved === undefined) return;");
+  // …AND THE TYPING GUARD IS ASKED AGAIN AFTER THE ROUND TRIP, which is where
+  // the typing happens: the check before the GET went out cannot see a sentence
+  // started while it was in the air.
+  const guard = "if (focusedRef.current && textRef.current.trim()) return;";
+  expect(body.split(guard).length - 1).toBe(2);
+  expect(body.indexOf("if (saved === undefined) return;")).toBeLessThan(
+    body.lastIndexOf(guard));
+  expect(body.lastIndexOf(guard)).toBeLessThan(body.indexOf("adoptRef.current(saved);"));
   // …and the key can change under the read (`new:<file>` → `<session>`), so the
   // answer is dropped rather than painted into a box that has moved on.
   expect(body).toContain("if (draftKeyRef.current !== key) return;");

@@ -651,6 +651,17 @@ export function ComposerCard({
         if (focusedRef.current && textRef.current.trim()) return;
         void fetchChatDraft(key).then((saved) => {
           if (draftKeyRef.current !== key) return;
+          // COULD NOT FIND OUT IS NOT "IT IS GONE" (Bugbot, PR #1180). A failed
+          // GET — offline, the server restarting — used to read as `null` here,
+          // and `null` is the instruction to empty the box: a blip took the
+          // reader's words. `undefined` says the read failed, and the answer to
+          // that is to do nothing at all; the next announcement asks again.
+          if (saved === undefined) return;
+          // AND THE GUARD IS ASKED AGAIN, because the round trip is where the
+          // typing happens. The check above was made before the GET went out,
+          // so a reader who started a sentence while it was in the air had it
+          // overwritten by an answer that predated their first keystroke.
+          if (focusedRef.current && textRef.current.trim()) return;
           adoptRef.current(saved);
         });
       }),
@@ -852,13 +863,21 @@ export function ComposerCard({
     if (!message && !hasAttachments) return false;
     setText("");
     // THE DRAFT IS SPENT. `reset` first and with the value the box is ABOUT to
-    // have, so a write debounced a keystroke ago has nothing left to say. A PUT
-    // already on the wire is no longer a hazard worth waiting out: it states the
-    // version it read, and the DELETE below bumps past it — so if it lands late
-    // the server refuses it (409) instead of resurrecting the sent message. That
-    // is what versioning bought, and it is why this is one line and not three.
+    // have, so a write debounced a keystroke ago has nothing left to say, and so
+    // an answer to a write already out speaks for nobody.
+    //
+    // …AND THE DELETE WAITS FOR WHAT IS ALREADY ON THE WIRE (Bugbot, PR #1180).
+    // A version refuses a LATER write stating a STALE number; it has no opinion
+    // about a PUT and a DELETE dispatched against the SAME one, which is exactly
+    // this pair — the autosave read version 7, the DELETE would too, and the
+    // server takes whichever arrives second. When that was the PUT, the sent
+    // message came back as a live draft. `settle()` puts them in order here
+    // instead: the PUT lands, this client takes the version it made, and the
+    // DELETE states that one. Un-awaited by `submit` itself, because a send must
+    // still be one tick for the caller.
+    const key = draftKeyRef.current;
     autosaveRef.current.reset({ text: "", attachments: [] });
-    void deleteChatDraft(draftKeyRef.current);
+    void autosaveRef.current.settle().then(() => deleteChatDraft(key));
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);

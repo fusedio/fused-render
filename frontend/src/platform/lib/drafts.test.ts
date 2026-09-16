@@ -426,10 +426,134 @@ describe("nothing is minted by merely opening an editor", () => {
     ]) {
       expect(Object.keys(mod)).not.toContain(gone);
     }
-    // …and the hook's handle is two calls, not five.
+    // …and the hook's handle is three calls, not five: `settle` came back for
+    // the one thing a version cannot order — two requests already on the wire
+    // stating the same `If-Match` (Bugbot, PR #1180).
     const box = renderAutosave({ n: 0 }, () => true);
-    expect(Object.keys(box.current()).sort()).toEqual(["flush", "reset"]);
+    expect(Object.keys(box.current()).sort()).toEqual(["flush", "reset", "settle"]);
     box.unmount();
+  });
+});
+
+// ---- settle: the one ordering a version cannot do -----------------------------
+
+describe("settle", () => {
+  // THE HOLE A VERSION DOES NOT FILL (Bugbot, PR #1180). Versioning refuses a
+  // LATER write that states a STALE number. It says nothing about two requests
+  // that were BOTH dispatched against version 7 — the autosave's PUT and the
+  // send's DELETE — because neither is late when it leaves; whichever the
+  // server takes second simply wins. Taken second, the PUT recreated the message
+  // the user had just sent as a live draft. So the send waits for what is
+  // already on the wire and lets its own answer supply the version.
+  const holdable = (key: string, version: number) => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const calls: { method: string; ifMatch: string | null }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const method = init?.method ?? "GET";
+      calls.push({ method, ifMatch: headers["If-Match"] ?? null });
+      const answer = {
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve(
+            method === "DELETE"
+              ? { ok: true, key, removed: true }
+              : { ok: true, key, draft: chatRecord("half a line", version) },
+          ),
+      } as unknown as Response;
+      // Only the PUT is held: the DELETE has to be free to answer, or the test
+      // could not tell "waited" from "never sent".
+      return method === "PUT" ? held.then(() => answer) : Promise.resolve(answer);
+    }) as typeof fetch;
+    return { calls, release, restore: () => { globalThis.fetch = real; } };
+  };
+
+  test("a send's DELETE waits for the PUT already out, and states the version it made", async () => {
+    const key = "new:/Users/me/settle";
+    forgetDraftVersion(key);
+    const f = holdable(key, 8);
+    const box = renderAutosave({ text: "" }, (value: { text: string }, opts) =>
+      saveChatDraft(key, value.text, [], opts),
+    );
+    box.rerender({ text: "half a line" });
+    act(() => box.current().flush());
+    // The PUT is on the wire and nothing has answered it. This is the moment the
+    // send happens.
+    expect(f.calls).toEqual([{ method: "PUT", ifMatch: null }]);
+    const handle = box.current();
+    handle.reset({ text: "" });
+    let deleted = false;
+    const spent = handle.settle().then(async () => {
+      await deleteChatDraft(key);
+      deleted = true;
+    });
+    // …and it has NOT gone out: the old code deleted here, against the same
+    // (absent) version the PUT was carrying.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT"]);
+    expect(deleted).toBe(false);
+    f.release();
+    await spent;
+    // Now — and stating 8, the version this client learnt FROM the PUT it waited
+    // for, so the record that is deleted is the one the PUT had just written.
+    expect(f.calls.map((c) => c.method)).toEqual(["PUT", "DELETE"]);
+    expect(f.calls[1]!.ifMatch).toBe("8");
+    expect(deleted).toBe(true);
+    box.unmount();
+    f.restore();
+    forgetDraftVersion(key);
+  });
+
+  test("a write reset out from under speaks for nobody when it answers", async () => {
+    // The other half of the send: `reset` disowns what is already out. Without
+    // it the held PUT's 409 would resolve into `adopt` and put the sent sentence
+    // back on screen — the same resurrection by the other road.
+    const key = "new:/Users/me/disowned";
+    forgetDraftVersion(key);
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const real = globalThis.fetch;
+    globalThis.fetch = (() =>
+      held.then(() => ({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({
+          error: "version",
+          record: chatRecord("somebody else's line", 5),
+          version: 5,
+          key,
+        }),
+      } as unknown as Response))) as unknown as typeof fetch;
+    const adopted: unknown[] = [];
+    const box = renderAutosave(
+      { text: "" },
+      (value: { text: string }, opts) => saveChatDraft(key, value.text, [], opts),
+      {
+        conflict: {
+          focused: () => false,
+          localText: () => "",
+          adopt: (record) => adopted.push(record),
+        },
+      },
+    );
+    box.rerender({ text: "mine" });
+    act(() => box.current().flush());
+    const handle = box.current();
+    handle.reset({ text: "" });
+    release();
+    await act(async () => {
+      await handle.settle();
+    });
+    expect(adopted).toEqual([]);
+    box.unmount();
+    globalThis.fetch = real;
+    forgetDraftVersion(key);
   });
 });
 
@@ -453,7 +577,15 @@ describe("the chat does not rekey its own draft", () => {
   });
 
   test("the send still spends its own key, which is all it ever owed", () => {
-    expect(composer()).toContain("deleteChatDraft(draftKeyRef.current)");
+    // …and it spends it AFTER the write already on the wire has answered
+    // (Bugbot, PR #1180): a PUT and a DELETE dispatched against the same
+    // version are ordered by whoever answers first, and when that was the PUT
+    // it put the sent message back as a live draft.
+    const src = composer();
+    expect(src).toContain("const key = draftKeyRef.current;");
+    expect(src).toContain(
+      "void autosaveRef.current.settle().then(() => deleteChatDraft(key));");
+    expect(src).not.toContain("void deleteChatDraft(draftKeyRef.current);");
   });
 });
 
@@ -501,15 +633,21 @@ describe("fetchChatDraft", () => {
     const f = serve(() => ({ json: { chat: { [key]: chatRecord("words", 6) }, task: {} } }));
     expect((await fetchChatDraft(key))?.text).toBe("words");
     expect(draftVersion(key)).toBe(6);
+    // A KEY WITH NOTHING UNDER IT IS `null` — the contract's "no record", and
+    // the instruction a reader adopts by emptying its box.
     expect(await fetchChatDraft("new:/Users/me/nothing")).toBeNull();
     f.restore();
     forgetDraftVersion(key);
   });
 
-  test("and a read that never answered is null rather than a throw", async () => {
+  test("and a read that never answered is UNDEFINED, not null", async () => {
+    // The third answer (Bugbot, PR #1180). Collapsed into `null` it read as
+    // "the draft was deleted", and the change feed's adopt path cleared a
+    // composer on a network blip. Still not a throw: this is awaited inside a
+    // mount effect, where a rejection costs the mount.
     const real = globalThis.fetch;
     globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
-    expect(await fetchChatDraft("new:/Users/me/offline")).toBeNull();
+    expect(await fetchChatDraft("new:/Users/me/offline")).toBeUndefined();
     expect(await fetchDrafts()).toBeNull();
     globalThis.fetch = real;
   });

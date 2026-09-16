@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Popover, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { rawUrl, uploadTaskShot } from "@platform/lib/api";
+import { notify } from "@platform/lib/notifications";
 import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
 import { chatDraftKey, saveChatDraft } from "@platform/lib/drafts";
@@ -218,20 +219,46 @@ export function SchedButton({
       leave();
       return;
     }
-    // AN EMPTY TRAY STILL LEAVES IN THIS TICK. The copy below is a round trip
-    // per file and there is nothing to round-trip here, so the overwhelmingly
-    // common handoff keeps the immediacy T:12019 built it for — a Continue that
-    // waits a microtask for an answer it already knows is a control that feels
-    // slower for no reason.
-    //
-    // …but the WRITE still goes out, un-awaited: the composer's own debounce may
-    // be holding the last 600 ms of typing, and the card on the other side seeds
-    // from the record. One PUT of exactly what is on screen closes that window,
-    // and this is the same value the composer's unmount flush is about to send
-    // anyway, so the two cannot disagree.
+    /**
+     * THE SAVE IS AWAITED, AND THE NAVIGATION IS ITS ANSWER (Bugbot, PR #1180).
+     *
+     * The hop used to fire the PUT and navigate in the same tick, on the theory
+     * that a round trip the reader cannot see is a round trip not worth waiting
+     * for. It is, because the card on the other side SEEDS FROM `GET
+     * /api/drafts`: the two requests race, and when the GET won, the reader
+     * arrived at a card holding the words as they were 600 ms ago — or holding
+     * nothing at all on a first hop. Waiting costs one round trip on a
+     * navigation; losing costs the sentence the hop was for.
+     *
+     * A REFUSED WRITE KEEPS THE READER IN THE CHAT. Navigating with nothing
+     * saved is the same empty card by another road, and this side still has the
+     * words: staying put with a toast is the only answer that loses nothing.
+     *
+     * ONE RETRY ON A CONFLICT, the same single retry `useAutosave` makes and for
+     * the same reason: the composer's own debounced PUT can be on the wire with
+     * the same `If-Match`, and one of the two is refused. `saveChatDraft` has
+     * already taken the server's version by the time it answers, so the second
+     * attempt states one that exists.
+     */
+    const hand = (carried: DraftAttachment[]): void => {
+      void saveChatDraft(key, text, carried)
+        .then((out) => (out.ok || !("conflict" in out) ? out : saveChatDraft(key, text, carried)))
+        .then((out) => {
+          if (out.ok) {
+            leave();
+            return;
+          }
+          leaving.current = false;
+          notify({
+            title: "Could not save that draft — you are still in the chat",
+            tone: "error",
+          });
+        });
+    };
+    // AN EMPTY TRAY HAS NOTHING TO COPY. The round trip per file below is the
+    // slow half; this hop is one PUT, which is the overwhelmingly common one.
     if (!carry.length) {
-      void saveChatDraft(key, text);
-      leave();
+      hand([]);
       return;
     }
     // THE TRAY IS NOT EMPTIED. `take()` is the send's gesture; this one is a
@@ -246,9 +273,7 @@ export function SchedButton({
     // walks back.
     void copyToTaskShots(tray)
       .catch((): DraftAttachment[] => [])
-      .then((carried) => saveChatDraft(key, text, carried))
-      .catch(() => undefined)
-      .then(leave);
+      .then(hand);
   }, [disabled, draft, attachments, file, sessionId, back, onNavigate]);
 
   const cancel = useCallback(() => {
