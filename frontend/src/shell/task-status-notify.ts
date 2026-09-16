@@ -33,10 +33,30 @@
 // (pop + retain, with a `page` so the row is clickable, per
 // SPEC-actionable-notifications.md's "every row goes somewhere").
 //
-// `in_progress -> done` ("Task finished") mirrors schedule-toast.ts's own
-// `done` reversal: suppressible via `source` (the run's own chat/project)
-// when that's already on screen, never retained — a plain "it's over"
-// confirmation is not something to hunt for again.
+// `in_progress -> done` ("Task finished") IS RETAINED AND CLICKABLE — a
+// REVERSAL of this file's own earlier position (until 2026-09-16 this
+// comment argued a plain "it's over" confirmation "is not something to hunt
+// for again" and the branch below returned no `page` at all, which
+// `lib/notifications.ts`'s `isRetained` resolves to a transient popup that
+// is never kept). The user, from a screenshot: "the user does want to open
+// the app along with claude template to go back" — a finished run is
+// exactly the moment someone wants to jump back into it, so losing the row
+// the instant the popup's ~2.5s expire was the bug, not a feature. `page:
+// taskDestination(task)` gives it the same destination
+// `in_progress -> blocked` already carries, which alone makes
+// `isRetained` keep it (`Boolean(input.action || input.page)`).
+//
+// STILL SUPPRESSIBLE via `source` (the run's own chat/project) when that's
+// already on screen — being retained once shown is not the same as always
+// showing it; D-A's "as far as each store honestly can" is untouched.
+//
+// `recent: true` is the other half of this reversal: a bare "done" carries
+// no failure to act on, so it goes straight into the Notifications panel's
+// folded §4 "Recent" section rather than sitting, unfolded, at the top of
+// "Worth keeping" — a settled call (a success persisting is fine, a success
+// shouting is not). Without this flag `RepoUpdatesDock.tsx`'s `messagesTrail`
+// would draw it in full every time, which is the "shouting" this flag
+// exists to avoid.
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { taskColumn } from "@shell/tasks-lib";
@@ -90,6 +110,8 @@ export function notificationForTransition(
       title: `${task.title || "A task"} finished`,
       tone: "info",
       source: taskSource(task),
+      page: taskDestination(task),
+      recent: true,
     };
   }
   return null;

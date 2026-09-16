@@ -30,11 +30,19 @@ describe("notificationForTransition", () => {
     expect(notificationForTransition("in_progress", task({ status: "in_progress" }))).toBeNull();
   });
 
-  test("in_progress -> done is a suppressible, non-retained info notice", () => {
-    const n = notificationForTransition("in_progress", task({ status: "done", target: "/somewhere" }));
+  // REVERSED 2026-09-16 (user: "the user does want to open the app along
+  // with claude template to go back") — a finished task is now retained AND
+  // clickable, not a plain "it's over" popup that vanishes. `isRetained`
+  // (notifications.ts) keys retention on `Boolean(action || page)`, so `page`
+  // being set is what actually keeps it — this is asserted directly rather
+  // than assumed.
+  test("in_progress -> done is suppressible, retained, clickable, and lands in Recent", () => {
+    const t = task({ status: "done", target: "/somewhere" });
+    const n = notificationForTransition("in_progress", t);
     expect(n?.tone).toBe("info");
     expect(n?.source).toBe("/somewhere");
-    expect(n?.page).toBeUndefined();
+    expect(n?.page).toBe(taskDestination(t));
+    expect(n?.recent).toBe(true);
     expect(n?.title).toContain("finished");
   });
 
