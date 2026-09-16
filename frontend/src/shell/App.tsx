@@ -63,6 +63,7 @@ import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -580,6 +581,14 @@ export default function App({ config }: { config: Config }) {
   // tick — handed in from here because that store is shell's and platform may
   // not import up.
   useScheduleEvents(pokeTasks);
+
+  // §5's OTHER half: interactive turns and needs-input, diffed off the same
+  // task-status poll rather than a second server channel (SPEC-quiet-
+  // notifications.md §5's "Sources" — /api/tasks already computes
+  // needs_attention/in_progress/blocked/done, this only watches the poll for
+  // the transitions between them). Narrator-gated internally, same as
+  // useScheduleEvents above.
+  useTaskStatusNotify();
 
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above
