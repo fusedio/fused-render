@@ -624,6 +624,48 @@ def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
     return base, "/".join(segs[i:]), i > 0, blocked
 
 
+_WS_RUN = re.compile(r"\s+")
+
+
+def expand_whitespace_query(raw: str) -> str:
+    """SPEC-search-space-wildcard.md §1: the shared transform both
+    `resolve_query` and `search_under` run the raw typed string through
+    before anything else — this is what makes a multi-word search find
+    `hello-world.txt`/`hello_world.py`/etc for `hello world` without a naive
+    `" " -> "*"` substitution regressing the motivating case (see the
+    spec's "Anti-goal" section: a plain substitution anchors BOTH ends of
+    the filename and loses `hello world.txt` itself).
+
+    Pure string manipulation — no filesystem access — so both callers can
+    run it before doing anything path-shaped with the result, and it is one
+    place, not two, that has to agree with the spec's grammar.
+
+    1. Trim leading/trailing whitespace first: a trailing space mid-typing
+       must not produce a stray wildcard.
+    2. A no-op when the trimmed string has no whitespace at all — this is
+       what leaves `*.pdf`, `src/**/*.ts`, and any other whitespace-free
+       query byte-for-byte unchanged, glob or not.
+    3. Otherwise, collapse every run of whitespace to a single `*` — `**`
+       is a DIFFERENT, cross-directory wildcard in this grammar, so
+       `hello  world` (two spaces) must resolve identically to `hello
+       world`, not silently widen.
+    4. Imply a leading/trailing wildcard on the FINAL `/`-separated segment
+       only, and only when that segment has no user-typed `*` of its own —
+       this is what delivers "contains, in order" instead of an anchored
+       full match. Earlier segments get the whitespace collapse but no
+       added wrap of their own (`~/My Documents/report` ->
+       `~/My*Documents/*report*`, not `~/*My*Documents*/...`)."""
+    trimmed = (raw or "").strip()
+    if not trimmed or not _WS_RUN.search(trimmed):
+        return trimmed
+    segments = trimmed.split("/")
+    wrap_last = "*" not in segments[-1]
+    segments = [_WS_RUN.sub("*", s) for s in segments]
+    if wrap_last:
+        segments[-1] = "*" + segments[-1] + "*"
+    return "/".join(segments)
+
+
 def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
                    blocked_out: "list | None" = None,
                    token: "CancelToken | None" = None) -> dict:
@@ -659,10 +701,18 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     is still a plain string, known without any further syscall, so a caller
     can decide "mount" from it directly.
 
-    `mode` is "glob" the moment `raw` contains a `*` anywhere, else
-    "substring" — `?` and `[`/`]` are left as literal characters on purpose
-    (spec: people put them in filenames far more often than they mean them as
-    patterns), so their presence never flips the mode.
+    `raw` is run through `expand_whitespace_query` FIRST, before any of the
+    base-splitting below even sees it (SPEC-search-space-wildcard.md) — a
+    query with whitespace in it (`hello world`) comes out the other side
+    with wildcards already inserted (`*hello*world*`), so everything past
+    this point treats it exactly like a query the user typed with `*` in it
+    directly. A whitespace-free query is untouched.
+
+    `mode` is "glob" the moment `raw` (after that expansion) contains a `*`
+    anywhere, else "substring" — `?` and `[`/`]` are left as literal
+    characters on purpose (spec: people put them in filenames far more often
+    than they mean them as patterns), so their presence never flips the
+    mode.
 
     Base resolution: a query starting with `~` or `/` can escape the box's
     own root entirely; a bare relative query with a `..` segment anywhere in
@@ -703,7 +753,7 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         if blocked is not None and blocked_out is not None:
             blocked_out.append(blocked)
 
-    raw = raw or ""
+    raw = expand_whitespace_query(raw or "")
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):
         home = norm(os.path.expanduser("~"))

@@ -17,7 +17,13 @@ from fused_render.index import query as index_query
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
-from fused_render.index.query import _glob_to_regex, prune, resolve_query, stats
+from fused_render.index.query import (
+    _glob_to_regex,
+    expand_whitespace_query,
+    prune,
+    resolve_query,
+    stats,
+)
 from fused_render.index.store import Sink, compact
 
 
@@ -109,6 +115,87 @@ def test_glob_to_regex_full_match_semantics(pattern, rel, expected):
     assert bool(_re.fullmatch(regex[1:-1], rel.lower())) is expected
 
 
+# -- whitespace as wildcard (SPEC-search-space-wildcard.md) --------------------
+#
+# `expand_whitespace_query` is the one shared transform both `resolve_query`
+# and `search_under` run the raw typed string through, before either does
+# anything else with it. It is pure string manipulation — no filesystem
+# access — so it is testable directly, without a `root`/`_home` fixture.
+
+def test_expand_whitespace_query_is_a_no_op_without_whitespace():
+    assert expand_whitespace_query("report") == "report"
+    assert expand_whitespace_query("*.pdf") == "*.pdf"
+    assert expand_whitespace_query("src/**/*.ts") == "src/**/*.ts"
+    assert expand_whitespace_query("") == ""
+
+
+def test_expand_whitespace_query_wraps_the_final_segment():
+    assert expand_whitespace_query("hello world") == "*hello*world*"
+    assert expand_whitespace_query("hello world.pdf") == "*hello*world.pdf*"
+
+
+def test_expand_whitespace_query_collapses_a_run_of_whitespace_to_one_star():
+    """Two spaces must behave identically to one — `**` is a different,
+    cross-directory wildcard in this grammar (spec §1.2), so a stray extra
+    space must not silently widen the match."""
+    assert expand_whitespace_query("hello  world") == expand_whitespace_query("hello world")
+    assert expand_whitespace_query("hello   world") == "*hello*world*"
+
+
+def test_expand_whitespace_query_trims_before_wildcarding():
+    """A trailing space mid-typing must not produce a stray wildcard."""
+    assert expand_whitespace_query("hello world ") == "*hello*world*"
+    assert expand_whitespace_query(" hello world") == "*hello*world*"
+
+
+def test_expand_whitespace_query_converts_earlier_segments_without_wrapping():
+    """Segments before the last get the space->`*` conversion but no added
+    leading/trailing wrap of their own."""
+    assert expand_whitespace_query("~/My Documents/report") == "~/My*Documents/*report*"
+
+
+def test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star():
+    """When the final segment already has a user-typed `*`, rule 3's implied
+    wrap does not apply to it — but whitespace elsewhere in the query still
+    collapses (an accepted, documented edge case: adjacent whitespace and an
+    explicit `*` can still produce a `**`; see DECISIONS.md)."""
+    assert expand_whitespace_query("*.pdf") == "*.pdf"
+
+
+@pytest.mark.parametrize("filename,expected", [
+    ("hello-world.txt", True),
+    ("hello world.txt", True),
+    ("hello_world.py", True),
+    ("my_hello_big_world.py", True),
+    ("sub/hello world.txt", True),
+    ("HELLO World.txt", True),
+    ("hello world extra.txt", True),
+    ("world-hello.txt", False),
+    ("hello.world", True),
+])
+def test_hello_world_behavior_table(filename, expected):
+    """The spec's required-behavior table (§1), proven directly against
+    `_glob_to_regex` the same way `test_glob_to_regex_full_match_semantics`
+    already does, independent of any filesystem-backed base resolution."""
+    import re as _re
+
+    pattern = "**/" + expand_whitespace_query("hello world")
+    regex = _glob_to_regex(pattern.lower())
+    assert bool(_re.fullmatch(regex[1:-1], filename.lower())) is expected
+
+
+def test_hello_world_two_spaces_matches_the_same_set_as_one_space():
+    import re as _re
+
+    one = _re.fullmatch(
+        _glob_to_regex(("**/" + expand_whitespace_query("hello world")).lower())[1:-1],
+        "hello-world.txt")
+    two = _re.fullmatch(
+        _glob_to_regex(("**/" + expand_whitespace_query("hello  world")).lower())[1:-1],
+        "hello-world.txt")
+    assert bool(one) == bool(two) is True
+
+
 # -- query resolution ------------------------------------------------------------
 #
 # The behaviour table from the spec, turned into tests: every row names a
@@ -159,6 +246,20 @@ def test_resolve_explicit_any_depth_form_is_unchanged():
     assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
 
 
+def test_resolve_multi_word_query_becomes_an_ordered_glob():
+    out = resolve_query("/box", "hello world")
+    assert out == {"base": "/box", "pattern": "**/*hello*world*", "mode": "glob"}
+
+
+def test_resolve_two_spaces_resolves_identically_to_one():
+    assert resolve_query("/box", "hello world") == resolve_query("/box", "hello  world")
+
+
+def test_resolve_single_word_query_is_unaffected_by_the_whitespace_rule():
+    out = resolve_query("/box", "report")
+    assert out == {"base": "/box", "pattern": "report", "mode": "substring"}
+
+
 def test_resolve_tilde_star_escapes_to_home_at_depth_one(_home):
     out = resolve_query("/box", "~/*.csv")
     assert out == {"base": _home, "pattern": "*.csv", "mode": "glob"}
@@ -172,6 +273,16 @@ def test_resolve_tilde_path_walks_to_the_deepest_real_directory(_home):
 def test_resolve_tilde_path_stops_at_the_first_glob_segment(_home):
     out = resolve_query("/box", "~/a/*/b.csv")
     assert out == {"base": _home + "/a", "pattern": "*/b.csv", "mode": "glob"}
+
+
+def test_resolve_a_space_in_a_folder_segment_stops_the_walk_there(_home):
+    """Spec §2: the rule applies inside leading folder paths too. `My
+    Documents` becomes `My*Documents`, a glob segment, so `_walk_from` never
+    walks into it as a literal directory (even though `~/a/b` on disk here
+    has no such folder to walk into either way) — base stops at home,
+    exactly as it would for any other glob segment."""
+    out = resolve_query("/box", "~/My Documents/report")
+    assert out == {"base": _home, "pattern": "My*Documents/*report*", "mode": "glob"}
 
 
 def test_resolve_a_missing_named_folder_widens_instead_of_failing(_home):
