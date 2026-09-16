@@ -516,6 +516,75 @@ describe("the latency readout", () => {
   });
 });
 
+describe("the slow-search console warning", () => {
+  let warnCalls: unknown[][] = [];
+  const realWarn = console.warn;
+
+  beforeEach(() => {
+    warnCalls = [];
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+  });
+
+  test("a fast response does not warn", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(87);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a >=2s response warns with the client/server timing breakdown", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(2100);
+    await flush(() => rankCalls[0].resolve(answer({
+      hits: [hit("readme.md")], total: 1,
+      timing: { total_ms: 1800, lane_wait_ms: 50, worker_ms: 1750 },
+    })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).toContain("readme");
+    expect(msg).toContain("2100"); // client-measured elapsed
+    expect(msg).toContain("1800"); // server total_ms
+    expect(msg).toContain("50"); // lane_wait_ms
+    expect(msg).toContain("1750"); // worker_ms
+    expect(msg).toContain("300"); // unaccounted gap: 2100 - 1800
+    box.unmount();
+  });
+
+  test("a >=2s response with timing absent warns without NaN", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(2500);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(1);
+    const msg = String(warnCalls[0][0]);
+    expect(msg).not.toContain("NaN");
+    expect(msg).toContain("2500");
+    expect(msg.toLowerCase()).toContain("unavailable");
+    box.unmount();
+  });
+
+  test("an aborted request never warns even past the threshold", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(2500);
+    // Supersede with a new keystroke: the next debounce's `run()` aborts the
+    // first controller before this resolve() lands on it.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(warnCalls).toHaveLength(0);
+    box.unmount();
+  });
+});
+
 describe("a query that is really an address (section 7)", () => {
   test("a resolving absolute path issues an indexRank alongside the stat, and offers no AI row", async () => {
     const box = mount();

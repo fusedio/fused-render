@@ -7,7 +7,13 @@ import { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
+import type {
+  Config,
+  ClaudeSessionFolder,
+  GitRepos,
+  IndexRankResult,
+  IndexStatus,
+} from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import {
@@ -77,6 +83,41 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // the grid happens to lay out at the current width.
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
+
+// The server's own DEBUG/WARNING log line (api_index_rank) promotes at
+// 750ms — but that only covers time INSIDE the handler. The client measures
+// the full round trip (`issuedAt.current` to the response landing), so a
+// customer stuck at 6-7s with a healthy server would never see anything past
+// that 750ms threshold. 2s is well clear of it — comfortably past normal
+// variance — and picks out only the episodes a user would actually notice
+// and complain about, not every request that nudges past the server's own
+// much tighter bar.
+const SLOW_SEARCH_WARN_MS = 2000;
+
+/** A single, self-explanatory console line for a support engineer reading a
+ * screenshot: the query, what the browser measured end to end, and — when
+ * the server sent it — its own breakdown of where that time went inside the
+ * handler. The gap between the two (`elapsedMs` minus the server's own
+ * `total_ms`) is real time this request spent somewhere the server never
+ * saw it: connection queueing, ASGI accept backlog, transit, etc. It is
+ * labeled "unaccounted / outside handler" rather than named as any one of
+ * those, because nothing here actually measures which. */
+function warnSlowSearch(query: string, elapsedMs: number,
+                        timing: IndexRankResult["timing"]): void {
+  if (!timing) {
+    console.warn(
+      `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+      `elapsed=${elapsedMs}ms — server timing unavailable (older server, ` +
+      `or the response omitted it)`);
+    return;
+  }
+  const unaccountedMs = Math.max(0, elapsedMs - timing.total_ms);
+  console.warn(
+    `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms | server: total=${timing.total_ms}ms ` +
+    `lane_wait=${timing.lane_wait_ms}ms worker=${timing.worker_ms}ms | ` +
+    `unaccounted/outside-handler=${unaccountedMs}ms`);
+}
 
 type LaunchTab = "recents" | "sessions" | "repos";
 
@@ -594,7 +635,9 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, Date.now() - issuedAt.current);
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearch(q, elapsedMs, res.timing);
+          const next = answerFrom(res, q, elapsedMs);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
