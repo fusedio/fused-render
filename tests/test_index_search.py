@@ -188,6 +188,49 @@ def test_search_under_optional_query_filters_server_side(tmp_path):
     assert [e["rel"] for e in out["entries"]] == ["beta.md"]
 
 
+# -- whitespace as wildcard (SPEC-search-space-wildcard.md §3) -----------------
+#
+# `fused.fileIndex.search` (the public JS bridge, backed by this function)
+# gets the same space-as-wildcard semantics as `resolve_query` — a breaking
+# change to an API user pages already call, accepted and intended. Unlike
+# `resolve_query`, `search_under` never walks the filesystem for a base: `q`
+# is purely a filter over the already-fixed `root`, so a whitespace-derived
+# pattern searches any depth under it (the same "**/ " prefix an unadorned
+# `resolve_query` glob with no "/" gets).
+
+def test_search_under_multi_word_query_finds_separator_variants(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        "/r/hello-world.txt", "/r/hello world.txt", "/r/hello_world.py",
+        "/r/my_hello_big_world.py", "/r/sub/hello world.txt",
+        "/r/HELLO World.txt", "/r/hello world extra.txt",
+        "/r/world-hello.txt",
+    ])
+    rels = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    assert rels == sorted([
+        "hello-world.txt", "hello world.txt", "hello_world.py",
+        "my_hello_big_world.py", "sub/hello world.txt",
+        "HELLO World.txt", "hello world extra.txt",
+    ])
+    assert "world-hello.txt" not in rels
+
+
+def test_search_under_two_spaces_matches_the_same_set_as_one(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/hello-world.txt", "/r/world-hello.txt"])
+    one = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    two = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello  world")["entries"])
+    assert one == two == ["hello-world.txt"]
+
+
+def test_search_under_single_word_query_is_unaffected(tmp_path):
+    """No whitespace, no transform: an explicit `*` stays a literal character
+    for `search_under` exactly as it does today (this function does not gain
+    full glob-mode support — only the whitespace-as-wildcard rule; see
+    DECISIONS.md)."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
+    out = search_under(cfg, "/r", q="beta")
+    assert [e["rel"] for e in out["entries"]] == ["beta.md"]
+
+
 def test_search_under_caps_the_corpus_and_flags_truncation(tmp_path):
     cfg = _index(tmp_path, "/r", [f"/r/f{i}.txt" for i in range(10)])
     out = search_under(cfg, "/r", limit=3)

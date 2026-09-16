@@ -409,7 +409,25 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     `q` is an OPTIONAL server-side substring filter. The explorer does not use
     it — it wants the whole corpus, so client-side fuzzy matching stays
     subsequence-based rather than being pre-narrowed to substrings — but it
-    keeps the endpoint useful for a caller that only wants the hits.
+    keeps the endpoint useful for a caller that only wants the hits, and it
+    is what `fused.fileIndex.search` (the public JS bridge, runtime.js) is
+    backed by.
+
+    `q` is run through `expand_whitespace_query` (SPEC-search-space-
+    wildcard.md §3) exactly like `resolve_query`'s `raw` — one shared
+    transform, not two copies of the whitespace rule. A whitespace-free `q`
+    (the common case, and every existing caller before this) is a no-op:
+    the filter stays the plain `ILIKE '%q%'` it always was, `*` included,
+    still a literal character. Whitespace flips the filter to the same
+    glob-to-regex matching `resolve_query`'s glob mode uses (`_glob_to_regex`),
+    confined to any depth under `root` — this function never walks a base
+    off `q` the way `resolve_query` does, so there is no "/"-in-`raw`
+    distinction to make here; the whole expanded pattern always searches any
+    depth, the same as an unadorned glob with no "/" gets `resolve_query`'s
+    own implicit `**/` prefix. This does NOT make `search_under` a general
+    glob engine — an explicit `*` with no whitespace anywhere in `q` is left
+    exactly as it always was, a literal character under ILIKE (see
+    DECISIONS.md).
 
     `token`, when given, follows `search_ranked`'s contract exactly: bound to
     the connection as soon as it exists, checked before the one real query,
@@ -452,7 +470,20 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_CORPUS))
         hit = prune(m["partitions"], prefix)
-        qlit = like_literal(q.strip()) if q and q.strip() else ""
+        q_trimmed = q.strip() if q else ""
+        expanded = expand_whitespace_query(q) if q else ""
+        wildcard_regex = None
+        if expanded and expanded != q_trimmed:
+            # Whitespace triggered the transform: match via the same
+            # glob-to-regex translation `resolve_query`'s glob mode uses,
+            # confined to the REL portion of the path (post-`prefix`) so a
+            # `/`-containing expansion lines up with the same relative
+            # structure `rel` already reflects, not the absolute path on
+            # disk. Always any-depth (see docstring) — mirrors the implicit
+            # `**/` prefix an unadorned `resolve_query` glob with no "/"
+            # gets.
+            wildcard_regex = _q(_glob_to_regex(("**/" + expanded).lower()))
+        qlit = like_literal(q_trimmed) if q_trimmed and wildcard_regex is None else ""
         # Files and directories compete in ONE depth-ordered query, not two.
         #
         # Two queries meant the files branch was served first and directories got
@@ -469,17 +500,26 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         # The trade: directories now spend part of the budget files used to have,
         # so a very large tree carries slightly fewer files. A corpus with no
         # folders in it at all is strictly worse.
+        prefix_chars = len(prefix)
         branches = []
         if hit:
             fsrc = files_src(cfg, hit)
-            like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            if wildcard_regex is not None:
+                like = (f" AND regexp_matches(lower(substr(path, {prefix_chars + 1})), "
+                        f"'{wildcard_regex}')")
+            else:
+                like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
                 f"{_depth_col(_cached_src_cols(con, fsrc, (cfg.dir, m.get('generation'), 'files')), 'path')} AS depth FROM {fsrc} "
                 f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
-            dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            if wildcard_regex is not None:
+                dlike = (f" AND regexp_matches(lower(substr(dir, {prefix_chars + 1})), "
+                         f"'{wildcard_regex}')")
+            else:
+                dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
