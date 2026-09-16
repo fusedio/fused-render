@@ -3565,6 +3565,34 @@ describe("the start response names the session (task status in under a second)",
   const marks = (posts: { url: string; body: unknown }[]) =>
     posts.filter((p) => p.url === "/api/tasks/running").map((p) => p.body);
 
+  test("a session named after the reader left is not adopted", async () => {
+    // The reader pressed Back while `start` was in flight (`newChat` bumps
+    // the generation). The minted id must not land in the url or the state of
+    // the landing they are now on, and nothing marks a turn they left.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      let controller!: ChatController;
+      const made = makeController(
+        {
+          start: async () => {
+            controller.newChat();
+            return { run_id: "r1", session_id: "s-minted" };
+          },
+          poll: () => poll({ done: true, session_id: "s-minted", text: "ok", segments: [text("ok")] }),
+        },
+        params,
+      );
+      controller = made.controller;
+      await controller.sendMessage("hi");
+      expect(params.get("session_id") || "").toBe("");
+      expect(controller.getState().sessionId ?? null).toBe(null);
+      expect(marks(posts).some((m) => (m as { session_id: string }).session_id === "s-minted")).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
   test("`start` answering a session_id sets the param BEFORE the first poll", async () => {
     const { posts, restore } = captureFetch();
     try {

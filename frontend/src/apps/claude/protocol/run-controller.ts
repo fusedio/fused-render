@@ -1856,8 +1856,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // second" of this change. The poll still reports the same id and
         // `noteSessionId` is a no-op the second time, so an older server that
         // omits this simply takes the old road.
+        //
+        // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
+        // conversation THIS send started, and if the reader left for another
+        // chat while `start` was in flight, writing it to the url and the
+        // state would drag them back into a session they navigated away from
+        // (Bugbot). The run continues server-side and `resumeRun` can
+        // re-attach; the landing simply gains nothing.
         const named = (res as { session_id?: string }).session_id;
-        if (named) noteSessionId(String(named), 0, spoken);
+        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
       }
       started = true;
       // A run id is in-flight bookkeeping — never a place the reader navigated
@@ -2034,7 +2041,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // Same `start`, same response, same reason as `sendMessage`'s road: a
         // respawn re-spawns the session, and its id is answered here.
         const named = (startedRes as { session_id?: string }).session_id;
-        if (named) noteSessionId(String(named), 0, spoken);
+        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
         // A respawn re-sent this text as the OPENING message of a fresh run, so
         // it is not a follow-up waiting behind anything any more — it is the
         // turn now in flight. Drop the entry (the bubble stays: it is that
