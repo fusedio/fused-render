@@ -16,7 +16,7 @@ View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in ifram
 
 - `fused-app` = ONLY thing making folder an app. No marker → never in /apps, never registered.
 - `fused-api-version`: copy N from `fused_render/app_starter/index.html`. Missing tag = version 0. Migration → `fused-render-api-migration`.
-- Optional `icon.svg` beside entry page = sidebar glyph + favicon → `fused-render-app-icon`.
+- Optional `icon.svg` (or `icon.png`, lower priority, clipped to rounded square) beside entry page = sidebar glyph + card mark + favicon → `fused-render-app-icon`.
 
 ## Python side: `main()`
 
