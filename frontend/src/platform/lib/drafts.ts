@@ -263,6 +263,20 @@ export interface DraftWriteOptions {
    */
   ifMatch?: number;
   /**
+   * STATE NO VERSION AT ALL — an unconditional write, which the contract reads
+   * as "whatever is there, this is what it should hold" (contract §2).
+   *
+   * The ONE caller is the keepalive flush that bypasses the one-in-flight rule
+   * (see the syncer's header). Its `If-Match` would be a number read BEFORE the
+   * request it just overtook landed, so the ordinary PUT landing first turns the
+   * document's last word into a 409 — and a 409's retry is an ordinary request
+   * that dies with the document. This page already orders itself with `seq`, so
+   * the keepalive has a way to say "the newest one wins" that does not depend on
+   * a number it cannot have. Every other write still states its version, so
+   * `If-Match` goes on arbitrating between DOCUMENTS exactly as before.
+   */
+  unconditional?: boolean;
+  /**
    * WHERE THIS REQUEST SITS IN ITS PAGE'S OWN QUEUE FOR THIS KEY — the other
    * half of the ordering story, and the half a version cannot tell (contract
    * `drafts-seq-contract.md`).
@@ -445,8 +459,9 @@ async function write<R>(
    *  waiting for the next GET to tell it. */
   landed: (answer: unknown) => { record: R | null; version: unknown } | null,
 ): Promise<DraftWrite<R>> {
-  // THE CALLER'S VERSION OUTRANKS THE MAP'S (see `DraftWriteOptions.ifMatch`).
-  const seen = opts?.ifMatch ?? versions.get(key);
+  // THE CALLER'S VERSION OUTRANKS THE MAP'S (see `DraftWriteOptions.ifMatch`),
+  // and a caller saying it holds no useful version outranks both.
+  const seen = opts?.unconditional ? undefined : opts?.ifMatch ?? versions.get(key);
   // THE SEQUENCE RIDES IN THE BODY, on a DELETE as much as on a PUT — a delete
   // that a straggling PUT can outlive is precisely the resurrection this pair
   // exists to stop, so a bodiless DELETE grows one here.
@@ -713,9 +728,6 @@ export async function fetchChatDraft(
 // the older one is harmless whichever order they arrive in — the server drops
 // it, because its sequence is not the newest this page has sent.
 
-/** What a syncer is doing, for anything that wants to draw it. */
-export type DraftSyncState = "idle" | "saving" | "saved" | "conflict";
-
 /**
  * THE EDITOR'S ANSWER TO "SOMEBODY ELSE WROTE THIS RECORD FIRST" (design §2).
  *
@@ -755,6 +767,16 @@ export interface DraftConflictRule {
 export interface DraftHandoff {
   ok: boolean;
   version?: number;
+  /**
+   * THE DELETE'S OWN OUTCOME, which is not the same question as `ok`.
+   *
+   * `ok` is about the DESIRED state — "does the server hold what this page last
+   * asked for" — and a keystroke arriving behind the List while the trash's
+   * DELETE is on the wire moves that state on to a PUT. The row's answer is
+   * about the RECORD the reader pressed the trash on: it was removed, or it was
+   * not. Asking `ok` put the row back although the delete had landed.
+   */
+  removed: boolean;
 }
 
 interface ChatDesired {
@@ -808,13 +830,21 @@ export interface DraftSyncer {
    *  creating the entry, so a pending write would put it straight back). Unlike
    *  `markDeleted` this asks for nothing; it forgets. */
   forget(): void;
-  /** Watch what it is doing. */
-  subscribe(cb: (state: DraftSyncState) => void): () => void;
-  /** Register the editor's conflict rule; the answer detaches it. */
+  /**
+   * WHAT THIS PAGE IS ASKING THE RECORD TO HOLD, or `undefined` when it is
+   * asking for nothing — or for something that is not a chat's words (a task
+   * form, a delete).
+   *
+   * Read by the one caller that cannot get its answer from the server: the
+   * Schedule hop, which has to know whether its own statement about the
+   * attachments is still the latest one this page has made.
+   */
+  wants(): { text: string; attachments: DraftAttachment[] } | undefined;
+  /** Register the editor's conflict rule; the answer detaches it. Several
+   *  editors may be open on one key (the composer and the New task card), so
+   *  these stack: the NEWEST one decides, and detaching one restores the one
+   *  under it. */
   watch(rule: DraftConflictRule): () => void;
-  /** The editor is going away: it stops speaking for this record. Whatever is
-   *  pending still goes — the syncer is not the editor's, it is the key's. */
-  dispose(): void;
 }
 
 /**
@@ -829,13 +859,34 @@ export interface DraftSyncer {
  */
 const syncers = new Map<string, InnerSyncer>();
 
-/** The syncer for this key, made on first ask. */
+/**
+ * …AND THE SEQUENCE OUTLIVES THE SYNCER, because it is a fact about this
+ * DOCUMENT and this KEY, not about the object that happens to be writing them
+ * (contract `drafts-seq-contract.md`: "one `seq` counter per KEY per document").
+ *
+ * A syncer with nothing left to say drops out of the registry (`sweep`), and
+ * the next ask mints a fresh one. If the counter went with it, that fresh one
+ * would start at 1 again under the SAME client id — and the server drops a
+ * write whose `seq` is not newer than the last it applied from that client, so
+ * every write after the first sweep would be silently discarded as a straggler.
+ */
+const seqs = new Map<string, number>();
+
+/** The syncer for this key, made on first ask.
+ *
+ *  AND THE PLACE THE UNLOAD LISTENERS ARE ARMED. They used to be armed by
+ *  `useAutosave`'s mount, which is one editor's effect: a document whose only
+ *  writer is something else — the List's trash reaching for `peekDraftSyncer`,
+ *  a card that never mounted a composer — had no `pagehide` flush at all. A
+ *  syncer existing is exactly the condition under which the three moments
+ *  matter, so that is when they are listened for. */
 export function draftSyncer(key: string): DraftSyncer {
   let found = syncers.get(key);
   if (!found) {
     found = makeSyncer(key);
     syncers.set(key, found);
   }
+  listen();
   return found;
 }
 
@@ -851,6 +902,7 @@ export function peekDraftSyncer(key: string): DraftSyncer | undefined {
 export function resetDraftSyncers(): void {
   for (const sync of syncers.values()) sync.cancel();
   syncers.clear();
+  seqs.clear();
 }
 
 /** design.md: 600 ms after the last keystroke. Long enough that a sentence is
@@ -873,7 +925,11 @@ function taskIdOf(key: string): string {
  *  field rather than handed to `JSON.stringify` whole, so a form the caller
  *  spelled in another order is not a change. */
 function serialOf(state: Desired): string {
-  if (state.kind === "gone") return " gone";
+  // `gone:` and not a raw NUL: the sentinel only has to be a string no chat
+  // and no form can spell, and a literal control byte in the source made every
+  // `grep` over this file answer "Binary file drafts.ts matches" instead of the
+  // line it was asked for.
+  if (state.kind === "gone") return "gone:";
   if (state.kind === "task") return "task:" + stable(state.form as unknown);
   return "chat:" + stable({
     text: state.text,
@@ -901,7 +957,6 @@ function makeSyncer(key: string): InnerSyncer {
   // flush, which is allowed to pass (see the header).
   let out = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let seq = 0;
   /** The highest `seq` whose answer has been taken. A slower earlier request
    *  answering after a faster later one must not teach this page anything. */
   let applied = 0;
@@ -921,29 +976,65 @@ function makeSyncer(key: string): InnerSyncer {
   let stalled = false;
   /** What the editor was showing when the request in flight was dispatched. */
   let dispatchedText = "";
-  let rule: DraftConflictRule | undefined;
-  let state: DraftSyncState = "idle";
-  const listeners = new Set<(s: DraftSyncState) => void>();
+  /**
+   * EVERY EDITOR OPEN ON THIS KEY, newest last.
+   *
+   * One slot was wrong because two editors really are open at once: the New
+   * task card hops out of a composer that stays mounted behind it, on the same
+   * chat key. The card's `watch` replaced the box's rule and its unwatch left
+   * the slot EMPTY, so from then on a 409 in that chat retried instead of
+   * adopting and the box never heard that its record had changed elsewhere.
+   * Newest wins — the card is what the reader is looking at — and detaching one
+   * restores the one under it.
+   */
+  const rules = new Set<DraftConflictRule>();
+  /**
+   * THE RECORD IS BELIEVED GONE — the answer the trash waits for, kept apart
+   * from `landedOk` because a keystroke behind the List moves the desired state
+   * on to a PUT while the DELETE is still out (`DraftHandoff.removed`).
+   */
+  let removed = false;
+  /**
+   * HOW MANY DELIBERATE HANDOFFS ARE WAITING — Continue, a Discard, the trash.
+   *
+   * While one is outstanding a 409 MAY NOT ADOPT. `handoff` is a gesture the
+   * reader made about THESE words, and Continue blurs the box on its way out,
+   * so the ordinary "nobody is focused here, take the newer record" rule would
+   * quietly replace the sentence being scheduled with the other tab's draft and
+   * then report failure (Bugbot 4026812608). A gesture states itself once more
+   * against the version just learned, exactly as a mid-sentence reader does.
+   */
+  let handing = 0;
   const waiting: Array<(answer: DraftHandoff) => void> = [];
 
   const dirty = () => desired !== undefined && serialOf(desired) !== known;
-
-  const say = (next: DraftSyncState) => {
-    if (state === next) return;
-    state = next;
-    for (const cb of listeners) {
-      try {
-        cb(next);
-      } catch {
-        // A subscriber that throws is a subscriber's problem; a draft is not
-        // lost over somebody's re-render.
-      }
-    }
+  /** The editor that decides, or nothing. */
+  const editorOf = (): DraftConflictRule | undefined => {
+    let last: DraftConflictRule | undefined;
+    for (const one of rules) last = one;
+    return last;
   };
 
   const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
+  };
+
+  /**
+   * DROP THIS SYNCER FROM THE REGISTRY when it has nothing left to say and
+   * nobody left to say it to.
+   *
+   * The map is module scope and used to grow for ever: one entry per chat key
+   * this document ever touched, each holding a desired state and a conflict
+   * rule, for the life of the page. A syncer with no pending write, no request
+   * out, no editor watching and nobody waiting is a syncer that is exactly as
+   * useful as the one `draftSyncer` would mint on the next ask — and the
+   * versions it needs to state live in their own map, which outlives it.
+   */
+  const sweep = () => {
+    if (dirty() || out > 0 || timer !== undefined) return;
+    if (rules.size || waiting.length) return;
+    if (syncers.get(key) === api) syncers.delete(key);
   };
 
   /** Resolve the hop's waiters — only once the server holds what is wanted and
@@ -954,11 +1045,14 @@ function makeSyncer(key: string): InnerSyncer {
     if (dirty() && !stalled) return;
     const answer: DraftHandoff = {
       ok: landedOk && !dirty(),
+      removed,
       ...(() => {
         const version = made ?? draftVersion(key);
         return version === undefined ? {} : { version };
       })(),
     };
+    handing -= waiting.length;
+    if (handing < 0) handing = 0;
     for (const resolve of waiting.splice(0)) resolve(answer);
   };
 
@@ -970,6 +1064,9 @@ function makeSyncer(key: string): InnerSyncer {
     desired = next;
     stalled = false;
     retried = false;
+    // A NEW STATEMENT UNSAYS THE LAST DELETE, whether it is another delete (the
+    // answer is about to be made again) or the words a keystroke put back.
+    removed = false;
     // A KEYSTROKE ENDS AN URGENCY. A blur that could not send (something was in
     // flight) asked for "as soon as the wire clears"; the reader typing again
     // is the reader still writing, and the answer to that is the debounce.
@@ -987,12 +1084,20 @@ function makeSyncer(key: string): InnerSyncer {
     timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
   };
 
-  function dispatch(sending: Desired, mine: number, keepalive: boolean) {
+  function dispatch(sending: Desired, mine: number, keepalive: boolean, bypass: boolean) {
     const opts: DraftWriteOptions = {
       seq: mine,
       ...(keepalive ? { keepalive: true } : {}),
+      // THE ONE REQUEST THAT STATES NO VERSION (`DraftWriteOptions.unconditional`).
+      // A keepalive flush that overtook a request still on the wire holds a
+      // number read BEFORE that request landed, so the ordinary PUT arriving
+      // first would turn the document's last word into a 409 whose retry is an
+      // ordinary request — and an ordinary request dies with the document. Both
+      // orders are safe without it: the older one is dropped for its `seq` when
+      // this one wins the race, and this one is applied when it loses.
+      ...(bypass ? { unconditional: true } : {}),
     };
-    const seen = draftVersion(key);
+    const seen = bypass ? undefined : draftVersion(key);
     const ident = taskIdOf(key);
     if (sending.kind === "gone") {
       // NO `If-Match: 0` ON A DELETE. Zero means "I expect no record", and a
@@ -1007,7 +1112,7 @@ function makeSyncer(key: string): InnerSyncer {
     // failed to read the store — offline for a second at mount — silently
     // overwriting a draft it never saw. Zero says what it believes: there is
     // nothing here. A 409 then hands it the record, and the rule below decides.
-    const put = { ...opts, ifMatch: seen ?? 0 };
+    const put = bypass ? opts : { ...opts, ifMatch: seen ?? 0 };
     if (sending.kind === "task") return saveTaskDraft(ident, sending.form, put);
     return saveChatDraft(key, sending.text, sending.attachments, put, sending.form);
   }
@@ -1021,13 +1126,21 @@ function makeSyncer(key: string): InnerSyncer {
     // ONE AT A TIME — except a keepalive flush, which is the document's last
     // word and may not wait for anything (see the header).
     if (out > 0 && !opts.keepalive) return;
+    // …AND THE FLUSH THAT DID PASS ONE IS THE FLUSH THAT MAY NOT STATE A
+    // VERSION (`dispatch`). Only this case: a keepalive flush with the wire
+    // clear holds a number nothing can have moved past yet.
+    const bypass = !!opts.keepalive && out > 0;
     const sending = desired as Desired;
     const serial = serialOf(sending);
-    const mine = (seq += 1);
-    dispatchedText = rule ? rule.localText() : "";
+    // …and it comes out of the DOCUMENT's counter for this key, not this
+    // object's, so a syncer that was swept and re-made goes on counting up
+    // (see `seqs`).
+    const mine = (seqs.get(key) ?? 0) + 1;
+    seqs.set(key, mine);
+    const editor = editorOf();
+    dispatchedText = editor ? editor.localText() : "";
     out += 1;
-    say("saving");
-    void Promise.resolve(dispatch(sending, mine, !!opts.keepalive))
+    void Promise.resolve(dispatch(sending, mine, !!opts.keepalive, bypass))
       .then((answer) => {
         const res = answer as DraftWrite<unknown> | undefined;
         out -= 1;
@@ -1043,6 +1156,10 @@ function makeSyncer(key: string): InnerSyncer {
             applied = mine;
             known = serial;
             made = sending.kind === "gone" ? undefined : res.version;
+            // THE TRASH'S OWN ANSWER (`DraftHandoff.removed`): this delete is
+            // the newest thing this page has heard about, and the record it
+            // named is not there any more.
+            if (sending.kind === "gone") removed = true;
           }
           // A TASK WRITE MAY HAVE LANDED ON ANOTHER ID (`saveTaskDraft`). The
           // version this page now holds belongs to THAT key, and the card has to
@@ -1053,11 +1170,20 @@ function makeSyncer(key: string): InnerSyncer {
             : "";
           if (landedOn && landedOn !== taskIdOf(key)) {
             rememberDraftVersion(taskDraftKey(landedOn), res.version);
-            rule?.onTaskId?.(landedOn);
+            editorOf()?.onTaskId?.(landedOn);
           }
         } else if ("conflict" in res) {
-          landedOk = false;
-          resolve(res.conflict ?? null, sending);
+          // THE SAME `mine > applied` GUARD THE SUCCESS ABOVE HAS, and for the
+          // same reason. A 409 can answer after a LATER request of this page's
+          // already landed — the keepalive pair puts two on the wire on purpose
+          // — and the record in that refusal predates the one this page has
+          // since written. Resolving on it rolls the box back to a state
+          // nobody is in any more.
+          if (mine > applied) {
+            applied = mine;
+            landedOk = false;
+            resolve(res.conflict ?? null, sending);
+          }
         } else {
           // Offline, a 500, the document unloading mid-flight. Nothing is said
           // and nothing is lost: the state is still WANTED, so the next change,
@@ -1085,8 +1211,8 @@ function makeSyncer(key: string): InnerSyncer {
   function after() {
     if (!dirty() || stalled) {
       urgent = false;
-      say(landedOk ? "saved" : "idle");
       settleWaiters();
+      sweep();
       return;
     }
     if (out > 0) return; // the other request in flight will call this again
@@ -1098,7 +1224,6 @@ function makeSyncer(key: string): InnerSyncer {
     // one request per round trip.
     clearTimer();
     timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
-    say("idle");
   }
 
   /**
@@ -1106,7 +1231,6 @@ function makeSyncer(key: string): InnerSyncer {
    * whatever is decided here, the next request states a number that exists.
    */
   function resolve(record: unknown, sent: Desired) {
-    say("conflict");
     const rec = record as ChatDraft | null;
     // IS THERE ANYTHING ON THE OTHER SIDE TO LOSE? A record that is gone, or the
     // WORDLESS one a chat keeps while its Schedule form lives on (contract §2),
@@ -1117,7 +1241,7 @@ function makeSyncer(key: string): InnerSyncer {
     const theirs = sent.kind === "task"
       ? !!record
       : !!rec && (!!`${rec.text ?? ""}`.trim() || !!rec.attachments?.length);
-    const editor = rule;
+    const editor = editorOf();
     const again = (): void => {
       // State it once more against the version just learned — `write` has
       // already taken it — and stop after that, because two tabs both retrying
@@ -1132,6 +1256,16 @@ function makeSyncer(key: string): InnerSyncer {
     // NOTHING TO LOSE, or nothing in this document holding the record (the
     // List's trash, the hop): the gesture stands, once.
     if (!theirs || !editor) {
+      again();
+      return;
+    }
+    // A DELIBERATE GESTURE IS NEVER ADOPTED OVER (Bugbot 4026812608). Continue,
+    // a Discard and the trash all wait on `handoff`, and Continue BLURS the box
+    // on its way out — so the "nobody is focused here, their record is simply
+    // newer" rule below would take the other tab's draft over the very words
+    // the reader asked to schedule, and then report the hop as failed. A
+    // gesture states itself once more, exactly as a mid-sentence reader does.
+    if (handing > 0) {
       again();
       return;
     }
@@ -1180,6 +1314,20 @@ function makeSyncer(key: string): InnerSyncer {
       wanted({ kind: "task", form }, false);
     },
     seedText(text, attachments = []) {
+      // A SEED IS NEWS ABOUT THE SERVER, AND STALE NEWS LOSES TO WHAT THIS PAGE
+      // IS STILL WRITING (Bugbot 4026812625).
+      //
+      // It says "the record holds this" — and it was believed even while a PUT
+      // of newer words was on the wire, or a keystroke was sitting in the
+      // debounce. Both ways round it cost the last sentence: the in-flight PUT
+      // landing wrote `known` back to the serial it had DISPATCHED, which made
+      // the seeded state look dirty and sent it over the newer record; and an
+      // editor reopening inside the 600 ms seeded from a GET that predated the
+      // keystrokes and threw them away. Nothing here is a statement of intent,
+      // so there is nothing to lose by declining: the pending write is still
+      // wanted, still goes, and its own answer is what teaches this page what
+      // the record holds.
+      if (dirty() || out > 0) return;
       clearTimer();
       desired = { kind: "chat", text, attachments: attachments.slice() };
       known = serialOf(desired);
@@ -1198,6 +1346,7 @@ function makeSyncer(key: string): InnerSyncer {
       retried = false;
       urgent = false;
       settleWaiters();
+      sweep();
     },
     flushNow(opts = {}) {
       urgent = true;
@@ -1208,30 +1357,29 @@ function makeSyncer(key: string): InnerSyncer {
       urgent = true;
       stalled = false;
       retried = false;
+      handing += 1;
       return new Promise<DraftHandoff>((resolveWith) => {
         waiting.push(resolveWith);
         pump({});
         settleWaiters();
       });
     },
-    subscribe(cb) {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
+    wants() {
+      if (desired?.kind !== "chat") return undefined;
+      return { text: desired.text, attachments: desired.attachments.slice() };
     },
     watch(next) {
-      rule = next;
+      rules.add(next);
       return () => {
-        if (rule === next) rule = undefined;
+        rules.delete(next);
+        sweep();
       };
-    },
-    dispose() {
-      rule = undefined;
     },
     cancel() {
       clearTimer();
-      rule = undefined;
+      rules.clear();
       waiting.splice(0);
-      listeners.clear();
+      handing = 0;
     },
   };
   return api;
@@ -1327,10 +1475,9 @@ export function useAutosave<T>(
   const valueRef = useRef(value);
   valueRef.current = value;
 
-  useEffect(() => {
-    listen();
-  }, []);
-
+  // The unload listeners are armed by `draftSyncer` and not from here: they are
+  // a fact about a KEY having a writer, and this hook is only one of the things
+  // that can be that writer's mouth.
   useEffect(() => {
     if (serial === written.current) return;
     written.current = serial;

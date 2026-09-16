@@ -414,8 +414,13 @@ describe("the chat handoff's attachments", () => {
     // after the hop's PUT would put the chat tempdir's paths back — the ones
     // `POST /api/schedule` refuses. The two are ONE writer now, so the hop
     // states the desired state and waits for the server to hold it.
-    expect(BUTTON).toContain("sync.setText(text, carried);");
+    expect(BUTTON).toContain("sync.setText(words, carried);");
     expect(BUTTON).toContain("void sync.handoff().then((out) => {");
+    // …AND IT SAYS IT TWICE WHEN A KEYSTROKE GOT IN BETWEEN. The copies are a
+    // round trip per file and the box behind the popover is live, so the
+    // composer's own save can be the newer statement — with the CHAT's tempdir
+    // paths on it, which is exactly what the card may not open on.
+    expect(BUTTON).toContain("hand(carried, now?.text ?? words, true);");
     expect(BUTTON).not.toContain("saveChatDraft(");
     // …AND THE NAVIGATION IS THE SAVE'S ANSWER, not a thing that happens beside
     // it (Bugbot, PR #1180): the card seeds from `GET /api/drafts`, so a hop

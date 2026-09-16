@@ -63,6 +63,18 @@ export interface SchedButtonProps {
   disabledReason?: string;
   /** Cancel puts the focus back in the box the draft is in. */
   onCancel?(): void;
+  /**
+   * THE RECORD IS WRITTEN AND THE COMPOSER IS DONE WITH IT — called once, on a
+   * Continue whose write landed, immediately before the hop.
+   *
+   * The composer does not autosave any more (Composer's own header: nothing is
+   * written while the reader is in the box), so this press is what CREATES the
+   * record and these words existed only in that box until it did. They are the
+   * card's now, so the box is emptied: one copy, one place to edit it — and a
+   * cleared composer cannot meet its own unsent-message guard on the way out
+   * with a question the reader has already answered by pressing Continue.
+   */
+  onHandedOff?(): void;
   onNavigate?(url: string): void;
 }
 
@@ -159,6 +171,7 @@ export function SchedButton({
   disabled,
   disabledReason,
   onCancel,
+  onHandedOff,
   onNavigate,
 }: SchedButtonProps) {
   const [open, setOpen] = useState(false);
@@ -196,9 +209,9 @@ export function SchedButton({
     const text = draft().trim();
     const tray = attachments?.() ?? [];
     setOpen(false);
-    // THE KEY, NOT THE WORDS (design §1). This is the record the composer's own
-    // autosave has been writing under, and it is the record the task form is
-    // about to go on editing.
+    // THE KEY, NOT THE WORDS (design §1). Nothing has been written under it yet
+    // — the composer autosaves nothing any more — so this press is what CREATES
+    // the record, and it is the record the task form is about to go on editing.
     const key = chatDraftKey(sessionId, file);
     const leave = (): void => {
       leaving.current = false;
@@ -241,11 +254,45 @@ export function SchedButton({
      * saved is the same empty card by another road, and this side still has the
      * words: staying put with a toast is the only answer that loses nothing.
      */
-    const hand = (carried: DraftAttachment[]): void => {
+    /**
+     * …AND THE HOP HAS TO BE THE LAST WRITER OF THE ATTACHMENTS, which stating
+     * them once does not make it.
+     *
+     * The copies below are a round trip per file, and the box behind this
+     * popover is still live: a keystroke landing while they run makes the
+     * composer's own autosave the newer statement, and its attachments are the
+     * CHAT's tray paths — a tempdir on a 12 h TTL that `POST /api/schedule`
+     * refuses outright. The card would then open on paths it cannot schedule.
+     *
+     * So when the record the handoff settled on is not holding the carried
+     * files, the hop says it again — with the words as they now stand, because
+     * the newest keystrokes are the reader's and only the files are this
+     * gesture's to insist on. Once, and then it leaves either way: a reader
+     * still typing into the box they are hopping out of is a race nothing can
+     * win, and the words are safe on the record whichever round ends it.
+     */
+    const hand = (
+      carried: DraftAttachment[],
+      words: string = text,
+      again = false,
+    ): void => {
       const sync = draftSyncer(key);
-      sync.setText(text, carried);
+      sync.setText(words, carried);
       void sync.handoff().then((out) => {
         if (out.ok) {
+          const now = sync.wants();
+          const kept = now?.attachments ?? [];
+          const same = kept.length === carried.length
+            && carried.every((one, i) => kept[i]?.path === one.path);
+          if (!again && !same) {
+            hand(carried, now?.text ?? words, true);
+            return;
+          }
+          // THE BOX IS EMPTIED IN THIS TICK, before the hop — and only on the
+          // road that actually wrote something. The empty-composer branch above
+          // leaves without a write, so there is nothing there to hand off and
+          // nothing of the reader's to throw away.
+          onHandedOff?.();
           leave();
           return;
         }
@@ -275,7 +322,7 @@ export function SchedButton({
     void copyToTaskShots(tray)
       .catch((): DraftAttachment[] => [])
       .then(hand);
-  }, [disabled, draft, attachments, file, sessionId, back, onNavigate]);
+  }, [disabled, draft, attachments, file, sessionId, back, onHandedOff, onNavigate]);
 
   const cancel = useCallback(() => {
     setOpen(false);

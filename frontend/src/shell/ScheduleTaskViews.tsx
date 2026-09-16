@@ -1505,7 +1505,13 @@ async function dropDraft(chatKey: string, taskId: string): Promise<boolean> {
   const sync = peekDraftSyncer(key);
   if (sync) {
     sync.markDeleted();
-    return (await sync.handoff()).ok;
+    // …AND THE ANSWER IS THE DELETE'S, NOT THE DESIRED STATE'S (`removed`).
+    // `ok` asks "does the server hold what this page last asked for", and a
+    // keystroke arriving in the editor behind this list while the DELETE is on
+    // the wire moves that state on to a PUT — so `ok` could say the trash had
+    // failed although the record the reader pressed it on was gone, and the row
+    // came back.
+    return (await sync.handoff()).removed;
   }
   const out = chatKey
     ? await deleteChatDraft(chatKey)

@@ -35,6 +35,7 @@ import {
   forgetDraftVersion,
   isChatDraftKey,
   newChatFile,
+  peekDraftSyncer,
   resetDraftSyncers,
   saveChatDraft,
   saveTaskDraft,
@@ -472,6 +473,85 @@ describe("the syncer's table of interleavings", () => {
     expect(it.held.length).toBe(2);
     expect((it.held[1]!.seen.body as { text: string }).text)
       .toBe("first, then the last thing typed");
+    // …AND IT STATES NO VERSION AT ALL (Bugbot, PR #1180, third round). Its
+    // `If-Match` could only be the number read BEFORE the request it just
+    // overtook landed, so the ordinary PUT arriving first would refuse the
+    // document's last word with a 409 — and a 409's retry is an ordinary
+    // request, which dies with the document. The last sentence of every second
+    // tab-close was lost that way. `seq` is what orders this page against
+    // itself, and it is enough.
+    expect(it.held[0]!.seen.ifMatch).toBe("0");
+    expect(it.held[1]!.seen.ifMatch).toBe(null);
+    await it.settle();
+    // Landed in the order they were sent: the older one is dropped for its
+    // sequence, and the newest words are what the server is left holding.
+    expect(it.text(KEY)).toBe("first, then the last thing typed");
+    it.restore();
+  });
+
+  test("(d2) …and the same pair landing the OTHER way round ends the same way", async () => {
+    // The whole point of two requests on the wire at once is that NEITHER order
+    // may cost the reader their last sentence. This is the one that used to:
+    // the ordinary PUT landing first moved the version past what the keepalive
+    // had stated, and the keepalive — the newest words, the tab already gone —
+    // came back 409 with nobody left to retry it.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("first");
+    sync.flushNow();
+    sync.setText("first, then the last thing typed");
+    sync.flushNow({ keepalive: true });
+    expect(it.held.length).toBe(2);
+    await it.landOne(1); // the keepalive wins the race…
+    await it.landOne(0); // …and the straggler is dropped, not applied
+    expect(it.text(KEY)).toBe("first, then the last thing typed");
+    it.restore();
+  });
+
+  test("(d3) a late 409 for an older request does not roll the record back", async () => {
+    // The ok branch has always had the `mine > applied` guard; the conflict
+    // branch did not. With two requests deliberately on the wire, a refusal can
+    // answer AFTER a newer request of this page's has landed — and the record
+    // in that refusal is older than the one this page has since written.
+    // Resolving on it adopted a state nobody was in any more.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    const adopted: string[] = [];
+    sync.watch({
+      focused: () => false,
+      localText: () => "",
+      adopt: (record) => {
+        adopted.push(((record as { text?: string } | null)?.text) ?? "");
+      },
+    });
+    sync.setText("one");
+    sync.flushNow();
+    sync.setText("one, and the rest");
+    sync.flushNow({ keepalive: true });
+    await it.landOne(1);
+    expect(it.text(KEY)).toBe("one, and the rest");
+    // …and NOW the first request answers, with a record from before all of it.
+    it.held[0]!.landed = true;
+    it.held[0]!.settle({
+      status: 409,
+      json: {
+        error: "version",
+        record: {
+          text: "a record nobody is in any more",
+          attachments: [],
+          updated_at: 1,
+          version: 9,
+          form: {},
+        },
+        version: 9,
+        key: KEY,
+      },
+    });
+    await flushMicrotasks();
+    expect(adopted).toEqual([]);
+    expect(it.text(KEY)).toBe("one, and the rest");
     it.restore();
   });
 
@@ -627,6 +707,154 @@ describe("the syncer's table of interleavings", () => {
     it.restore();
   });
 
+  test("two editors on one key: the newest rule decides, and closing it restores the one under it", async () => {
+    // The composer and the New task card really are open on ONE chat key at
+    // once — the card hops out of a box that stays mounted behind it. One slot
+    // meant the card REPLACED the box's rule and its close left the slot empty,
+    // so from then on every 409 in that chat retried instead of adopting and
+    // the box never heard that its record had changed elsewhere (Bugbot
+    // 4026812593).
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    const box: string[] = [];
+    const card: string[] = [];
+    const idle = (into: string[]) => ({
+      focused: () => false,
+      localText: () => "",
+      adopt: (record: unknown) => {
+        into.push(((record as { text?: string } | null)?.text) ?? "");
+      },
+    });
+    const offBox = sync.watch(idle(box));
+    const offCard = sync.watch(idle(card));
+    it.elsewhere(KEY, "their words");
+    sync.setText("mine");
+    sync.flushNow();
+    await it.settle();
+    // THE CARD IS WHAT THE READER IS LOOKING AT, so the card adopts.
+    expect(card).toEqual(["their words"]);
+    expect(box).toEqual([]);
+    // …and closing it hands the record back to the box behind it.
+    offCard();
+    it.elsewhere(KEY, "their second thought");
+    sync.setText("mine again");
+    sync.flushNow();
+    await it.settle();
+    expect(box).toEqual(["their second thought"]);
+    expect(card).toEqual(["their words"]);
+    offBox();
+    it.restore();
+  });
+
+  test("a deliberate handoff is never adopted over — it states itself again", async () => {
+    // Continue BLURS the box on its way out, so "nobody is focused here, their
+    // record is simply newer" would take the other tab's draft over the very
+    // words the reader asked to schedule — and then report the hop as failed,
+    // which keeps them in a chat whose box now holds somebody else's sentence
+    // (Bugbot 4026812608).
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    const adopted: string[] = [];
+    sync.watch({
+      focused: () => false,
+      localText: () => "",
+      adopt: (record) => {
+        adopted.push(((record as { text?: string } | null)?.text) ?? "");
+      },
+    });
+    it.elsewhere(KEY, "the other tab's draft");
+    sync.setText("the words being scheduled");
+    const handed = sync.handoff();
+    await it.settle();
+    expect(adopted).toEqual([]);
+    expect(it.text(KEY)).toBe("the words being scheduled");
+    expect((await handed).ok).toBe(true);
+    it.restore();
+  });
+
+  test("a seed that arrives while a PUT is on the wire is not sent back over it", async () => {
+    // `seedText` is news about the SERVER, and it was believed even over words
+    // this page had not finished writing. The in-flight PUT landing wrote
+    // `known` back to the serial it had DISPATCHED, which made the seeded
+    // snapshot look dirty — so the syncer sent the older record over the newer
+    // one it had just written (Bugbot 4026812625).
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("the newest sentence");
+    sync.flushNow();
+    expect(it.held.length).toBe(1);
+    sync.seedText("an older record, pushed by the feed", []);
+    await it.settle();
+    expect(it.held.length).toBe(1);
+    expect(it.text(KEY)).toBe("the newest sentence");
+    it.restore();
+  });
+
+  test("a syncer with nothing left to say is dropped — and its sequence is not", async () => {
+    // The registry used to grow one entry per key this document ever touched,
+    // each holding a desired state and a rule for the life of the page. What it
+    // may NOT drop with them is the `seq` counter: it names this DOCUMENT's
+    // place in the queue for this key, and a re-made syncer starting again at 1
+    // under the same client id would have every write after it dropped
+    // server-side as a straggler.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("one");
+    sync.flushNow();
+    await it.settle();
+    expect(peekDraftSyncer(KEY)).toBeUndefined();
+    draftSyncer(KEY).setText("two");
+    draftSyncer(KEY).flushNow();
+    expect((it.held[1]!.seen.body as { seq: number }).seq).toBe(2);
+    await it.settle();
+    // …and an editor watching the key keeps its writer alive, because a rule
+    // nobody can reach is a 409 nobody adopts.
+    const off = draftSyncer(KEY).watch({
+      focused: () => false,
+      localText: () => "",
+      adopt: () => {},
+    });
+    expect(peekDraftSyncer(KEY)).toBeDefined();
+    off();
+    expect(peekDraftSyncer(KEY)).toBeUndefined();
+    it.restore();
+  });
+
+  test("the trash's answer is the DELETE's own, not the box's behind it", async () => {
+    // `handoff().ok` asks "does the server hold what this page last asked for",
+    // and a keystroke landing in the editor behind the List moves that on to a
+    // PUT while the DELETE is still out. The row then came back although the
+    // record the reader pressed the trash on was gone.
+    const it = lab();
+    forgetDraftVersion(KEY);
+    const sync = draftSyncer(KEY);
+    sync.setText("a row in the list");
+    sync.flushNow();
+    await it.settle();
+    sync.markDeleted();
+    const handed = sync.handoff();
+    // The reader is still typing in the box behind the list; its own save is
+    // asked for but cannot leave while the DELETE is on the wire.
+    sync.setText("still typing behind the list");
+    sync.flushNow();
+    expect(it.held.length).toBe(2);
+    await it.landOne(1); // the DELETE lands: the record IS gone
+    expect(it.held.length).toBe(3);
+    // …and the keystroke's own PUT then fails, which is what used to be read as
+    // "the trash did not work".
+    it.held[2]!.landed = true;
+    it.held[2]!.settle({ status: 500, json: {} });
+    await flushMicrotasks();
+    const out = await handed;
+    expect(out.removed).toBe(true);
+    expect(out.ok).toBe(false);
+    it.restore();
+  });
+
   test("the three moments the document may be going away are listened for once", () => {
     // Not per editor: the debounce belongs to the KEY, so the unload listeners
     // do too. Read off the source because an event nobody can dispatch in this
@@ -637,6 +865,14 @@ describe("the syncer's table of interleavings", () => {
     expect(src).toContain('window.addEventListener("blur"');
     // …and the one that leaves carries keepalive, which is what makes it leave.
     expect(src).toContain("sync.flushNow({ keepalive: true })");
+    // …AND THEY ARE ARMED BY THE WRITER, not by one editor's mount. Hung off
+    // `useAutosave`'s first effect, a document whose only writer was something
+    // else — the List's trash reaching for `peekDraftSyncer`, a card that never
+    // mounted a composer — had no pagehide flush at all.
+    expect(src).toContain("  listen();\n  return found;");
+    // …and what nobody was ever going to draw is gone with it.
+    expect(src).not.toContain("DraftSyncState");
+    expect(src).not.toContain("subscribe(cb");
   });
 });
 
