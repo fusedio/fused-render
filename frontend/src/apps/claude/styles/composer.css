@@ -289,12 +289,118 @@
 
 /* ---- composer (T:2701-2790, 3000-3010) --------------------------------- */
 .c-composer {
+  position: relative;
   background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: 20px;
   padding: 12px 14px 10px;
   box-shadow: 0 6px 24px var(--c-shadow);
-  transition: border-color 0.15s;
+  transition:
+    border-color 0.15s,
+    padding 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ---- IDLE: ONE LINE (Akshil, 2026-09-16) ----------------------------------
+   The chat composer is one line — the box and Send — whenever focus is not in
+   it, and the full card only while the reader is (`ui/Composer.tsx`, `is-idle`).
+   Same surface, same border, same 20px radius on both sides: what moves is the
+   padding and the tools' shelf, together over 240ms on one ease, and the caret
+   never leaves the box.
+
+   THE SHELF (`.c-composer-tools`) is a one-track grid around the tool row, and
+   its track is what folds: `1fr → 0fr`. A track animates from exactly the
+   row's height to nothing — a `max-height` guess either snaps (too low) or
+   spends most of the ride shrinking empty air (too high), which is what read as
+   abrupt. NO `overflow: hidden` anywhere on the way down, and no `opacity` on
+   the row: both took Send with them (cmux pass, 2026-09-16). The row's other
+   children fade and go `visibility: hidden` instead, and Send is lifted OUT of
+   the shelf while idle — absolutely placed at the SAME 14px from the card's
+   right edge that the open row's padding gives it, so it does not slide
+   sideways when the card opens.
+
+   THE BOX IS BLOCK AND 32px WHILE IDLE — the button's height — with its 21px
+   line centred by padding: the inline-block line box the open card keeps for
+   its 6px of descender room (see the note above `.c-composer textarea`) is
+   exactly the "extra padding at the bottom" under an idle placeholder. */
+.c-composer.is-idle {
+  padding: 6px 14px;
+}
+.c-composer textarea {
+  transition:
+    padding 0.24s cubic-bezier(0.2, 0, 0, 1),
+    min-height 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+.c-composer.is-idle textarea {
+  display: block;
+  padding: 5.5px 40px 5.5px 2px;
+  /* The auto-grow hook writes `height` inline; min/max are what override it.
+     One line of whatever is in the box, whatever the window did to it while it
+     was open. */
+  min-height: 32px;
+  max-height: 32px;
+  overflow: hidden;
+}
+.c-composer-tools {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+.c-composer-tools > .c-composer-row {
+  min-height: 0;
+}
+/* THE TOOLS ARE NEVER SEEN MOVING (Akshil, 2026-09-16: "I can see the icon
+   shifting at weird places"). The shelf's track slides them while it folds, so
+   the fade is not the slide's: on the way OUT they are gone in 80ms, before the
+   track has moved far; on the way IN they hold back 100ms and arrive over the
+   last 140ms, once the shelf is most of the way open. */
+.c-composer-row > * {
+  transition:
+    opacity 0.14s ease-out 0.1s,
+    visibility 0s;
+}
+.c-composer.is-idle .c-composer-tools {
+  grid-template-rows: 0fr;
+}
+.c-composer.is-idle .c-composer-row > :not(.c-send) {
+  opacity: 0;
+  visibility: hidden;
+  /* Hidden or not, a folded row must not be able to catch a press. */
+  pointer-events: none;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s 0.08s;
+}
+/* SEND DOES NOT MOVE (Akshil, 2026-09-16: "the button location doesn't
+   change, don't move it"). In the chat it is pinned to the card's bottom-right
+   corner in BOTH states — out of the row's flow for good, so opening and
+   folding never re-seat it; the only thing that changes is the card's bottom
+   padding under it, 10px open and 6px idle, and `bottom` glides between the
+   two with the rest. The row keeps its right end clear for it. The landing
+   card is untouched: its Send is still the last item in its row. */
+.c-composer-chat .c-composer-row {
+  padding-right: 38px;
+}
+.c-composer-chat .c-composer .c-send {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  margin-left: 0;
+  transition:
+    bottom 0.24s cubic-bezier(0.2, 0, 0, 1),
+    filter 0.12s,
+    transform 0.12s,
+    opacity 0.12s;
+}
+.c-composer-chat .c-composer.is-idle .c-send {
+  bottom: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-composer,
+  .c-composer textarea,
+  .c-composer-tools,
+  .c-composer-row > * {
+    transition: none;
+  }
 }
 .c-composer:focus-within {
   border-color: var(--c-border-strong);
@@ -610,22 +716,6 @@ select.c-pill {
   width: 100%;
   margin: 0 auto;
   padding: 8px 20px 6px;
-}
-.c-footnote {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 0 24px 10px;
-  text-align: center;
-  color: var(--c-faint);
-  font-size: 11px;
-  /* An explicit value, because fitFootnote measures this box in LINES and has
-     to divide by something it knows (T:3060-3064). */
-  line-height: 1.5;
-}
-/* The SECOND sentence goes rather than the first being ellipsised: half a
-   sentence with a "…" says the app ran out of room (T:3066-3076). */
-.c-footnote.is-tight .c-fn-more {
-  display: none;
 }
 
 /* ---- "what was sent" (T:1145-1185) -------------------------------------
