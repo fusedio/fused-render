@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { fuzzyMatch, highlightSegments, maxSpan } from "./fuzzy";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  __setSupportsIndicesFlagForTest,
+  fuzzyMatch,
+  globMatch,
+  highlightSegments,
+  maxSpan,
+} from "./fuzzy";
 
 // The reported case: greedy-earliest alignment bound `i` to `iamsdas`, `n` to
 // `render` and so on, smearing an 8-char query across the whole path while a
@@ -158,6 +164,95 @@ describe("the substring fast path is untouched", () => {
 
   test("a whole-text match still works", () => {
     expect(fuzzyMatch("abc", "abc")!.positions).toEqual([0, 1, 2]);
+  });
+});
+
+describe("glob highlighting (SPEC-search-space-wildcard.md §4)", () => {
+  test("marks each literal piece separately, wildcard gaps unmarked", () => {
+    const positions = globMatch("**/*hello*world*", "my_hello_big_world.py")!.positions;
+    const segs = highlightSegments("my_hello_big_world.py", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["hello", "world"]);
+  });
+
+  test("an explicitly typed glob highlights its literal pieces the same way", () => {
+    const positions = globMatch("**/*.pdf", "Q3 report.pdf")!.positions;
+    const segs = highlightSegments("Q3 report.pdf", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual([".pdf"]);
+  });
+
+  test("a directory-crossing glob marks literal pieces on both sides of **", () => {
+    const positions = globMatch("src/**/*.ts", "src/lib/util.ts")!.positions;
+    const segs = highlightSegments("src/lib/util.ts", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["src", ".ts"]);
+  });
+
+  test("null when the pattern does not actually match the text", () => {
+    expect(globMatch("**/*.pdf", "report.csv")).toBeNull();
+  });
+
+  test("case-insensitive, like every other matcher here", () => {
+    const positions = globMatch("**/*hello*", "HELLO.txt")!.positions;
+    const segs = highlightSegments("HELLO.txt", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["HELLO"]);
+  });
+
+  test("score and longestRun are 0 — glob mode has no scoring", () => {
+    const m = globMatch("**/*.pdf", "report.pdf")!;
+    expect(m.score).toBe(0);
+    expect(m.longestRun).toBe(0);
+  });
+});
+
+describe("globMatch without the regex 'd' flag (code review finding: WebKit < 16.4)", () => {
+  // The "d" flag (`hasIndices`) is unsupported on WebKit < 16.4 — not a
+  // feature `exec` degrades gracefully on, but one `new RegExp` itself
+  // THROWS a `SyntaxError` for, at construction time. Forcing the cached
+  // probe to `false` (rather than actually breaking `new RegExp` globally)
+  // exercises `globMatch`'s fallback branch exactly as an affected browser
+  // would hit it, on every real engine this suite runs against.
+  afterEach(() => {
+    __setSupportsIndicesFlagForTest(undefined);
+  });
+
+  test("does not throw, and still finds each literal piece", () => {
+    __setSupportsIndicesFlagForTest(false);
+    expect(() => globMatch("**/*hello*world*", "my_hello_big_world.py")).not.toThrow();
+    const positions = globMatch("**/*hello*world*", "my_hello_big_world.py")!.positions;
+    const segs = highlightSegments("my_hello_big_world.py", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["hello", "world"]);
+  });
+
+  test("a directory-crossing glob still marks both sides without indices", () => {
+    __setSupportsIndicesFlagForTest(false);
+    const positions = globMatch("src/**/*.ts", "src/lib/util.ts")!.positions;
+    const segs = highlightSegments("src/lib/util.ts", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["src", ".ts"]);
+  });
+
+  test("still null when the pattern does not actually match the text", () => {
+    __setSupportsIndicesFlagForTest(false);
+    expect(globMatch("**/*.pdf", "report.csv")).toBeNull();
+  });
+
+  test("still case-insensitive without the flag", () => {
+    __setSupportsIndicesFlagForTest(false);
+    const positions = globMatch("**/*hello*", "HELLO.txt")!.positions;
+    const segs = highlightSegments("HELLO.txt", positions)
+      .filter((s) => s.match)
+      .map((s) => s.text);
+    expect(segs).toEqual(["HELLO"]);
   });
 });
 

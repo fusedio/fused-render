@@ -74,12 +74,31 @@ export interface BroadenOffer {
   label: string;
 }
 
+// A whitespace-only query (no literal `*` typed at all) DOES settle in
+// `mode: "glob"` server-side (SPEC-search-space-wildcard.md §1), but this
+// ladder's rungs have nothing genuinely broader to offer it: expand_whitespace_query
+// already wraps the final segment in a leading AND trailing `*` (`hello
+// world` -> `*hello*world*`) whenever that segment has no user-typed `*` of
+// its own. Rung 1 ("widen the name") only appends a TRAILING `*` to the raw
+// query text; run back through expand_whitespace_query, that text now
+// contains a user-typed `*` on its last segment, so the implied leading `*`
+// is suppressed — the "widened" pattern drops the leading wildcard the
+// original search already had. That is not broader, it is a strict subset,
+// which is exactly how this ladder previously offered a widened query that
+// was guaranteed to also return zero hits (findings review). So a query is
+// only treated as glob-like here when it carries a literal `*` the ladder
+// can safely extend — pure whitespace queries are already at their
+// broadest expressible form and get no offer.
+function looksLikeGlob(query: string): boolean {
+  return query.includes("*");
+}
+
 // Walks the ladder in order and returns the first rung that actually
 // widens the query — never one that would rerun a semantically identical,
 // still-zero-hit search. Null when no rung applies, meaning there is
 // nothing left to offer.
 export function broadenGlobOffer(query: string): BroadenOffer | null {
-  if (!query.includes("*")) return null;
+  if (!looksLikeGlob(query)) return null;
   if (alreadyMaximallyBroadOnDepth(query)) return null;
   for (const rung of RUNGS) {
     const pattern = rung.widen(query);

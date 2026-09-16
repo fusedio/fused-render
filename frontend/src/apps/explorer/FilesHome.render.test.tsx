@@ -314,6 +314,7 @@ function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
     total: 0,
     base: HOME,
     mode: "substring",
+    pattern: "",
     ...over,
   };
 }
