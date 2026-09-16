@@ -41,7 +41,13 @@
 // this component is the shell's one place that fetches for it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
-import { isRunning, popupTick, terminalNotifications, type Job } from "@platform/lib/jobs";
+import {
+  isRunning,
+  popupTick,
+  recentNotifications,
+  terminalNotifications,
+  type Job,
+} from "@platform/lib/jobs";
 import { notify } from "@platform/lib/notifications";
 import { isOpenAnywhere } from "@platform/lib/presence";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
@@ -171,9 +177,17 @@ function useRunningEngines(): {
 
 export default function ActivityDock({
   onTerminalJobs,
+  onRecentJobs,
   onJobPopup,
 }: {
   onTerminalJobs?: (jobs: Job[]) => void;
+  /** §4 (SPEC-quiet-notifications.md): the complementary set —
+   *  `terminalNotifications`'s own presence-suppressed jobs, folded into
+   *  Notifications' "Recent" section instead of dropped (D-B). Same
+   *  id-set change-detection discipline as `onTerminalJobs` below, via its
+   *  own ref (`recentIdsRef`), so a poll that moves neither set re-renders
+   *  neither consumer. */
+  onRecentJobs?: (jobs: Job[]) => void;
   /** A job just crossed into terminal and should pop its card (SPEC
    *  actionable-notifications) — "latest wins" is already enforced by
    *  `popupTick` below, so this fires at most once per poll. */
@@ -204,6 +218,11 @@ export default function ActivityDock({
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");
+  // §4's own mirror of the two refs above, for `recentNotifications` instead
+  // of `terminalNotifications`.
+  const onRecentRef = useRef(onRecentJobs);
+  onRecentRef.current = onRecentJobs;
+  const recentIdsRef = useRef("");
   // THE POP-UP'S OWN SEEN-SET (SPEC actionable-notifications) — separate
   // from `terminalIdsRef` above, which tracks the Notifications PANEL's own
   // id set (already `effectiveTier`-filtered, `jobRows`) and is not the set
@@ -234,6 +253,19 @@ export default function ActivityDock({
     if (key !== terminalIdsRef.current) {
       terminalIdsRef.current = key;
       onTerminalRef.current?.(terminal);
+      moved = true;
+    }
+    // §4: the complementary array — every job `terminalNotifications` just
+    // excluded purely because `isRecentOnly` fired (never schedule/transient/
+    // silent jobs, which `recentNotifications` excludes for the same reasons
+    // `terminalNotifications` does). Read off the SAME `next` snapshot, not
+    // `terminal` above, for the identical `mergedRows`-first reason
+    // `terminalNotifications` itself documents.
+    const recent = recentNotifications(next, isOpenAnywhere);
+    const recentKey = recent.map((j) => j.id).join(" ");
+    if (recentKey !== recentIdsRef.current) {
+      recentIdsRef.current = recentKey;
+      onRecentRef.current?.(recent);
       moved = true;
     }
     // THE POP-UP, computed off the FULL `next` snapshot rather than

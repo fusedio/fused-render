@@ -193,12 +193,14 @@ function renderInstance(
       attentionDismissed={props.attentionDismissed ?? {}}
       onAttentionDismiss={props.onAttentionDismiss}
       messages={props.messages ?? []}
+      recent={props.recent ?? []}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
       onTerminalPatch={props.onTerminalPatch}
+      onRecentPatch={props.onRecentPatch}
       onPairingGone={props.onPairingGone}
     />,
   );
@@ -1295,4 +1297,128 @@ test("Clear all's threshold and count include messages alongside repo rows and t
     messages: [message({ tier: "trail" })],
   });
   expect(findAll(two, "dl-clear")).toHaveLength(1);
+});
+
+// ---- Recent (SPEC-quiet-notifications.md §4) --------------------------------
+//
+// D-B: a job `jobRows`/`terminalNotifications` drops for presence reasons
+// (`jobs.ts`'s `isRecentOnly`) does not vanish — it folds into its OWN third
+// section, "Recent", below "Needs you"/"Worth keeping". Fed here through a
+// dedicated `recent` prop (mirroring `terminal`), the way `ActivityDock.tsx`
+// hands `RepoUpdatesDock` the complementary `recentNotifications(...)` array
+// alongside `terminalNotifications(...)`. Collapsed by default (its own local
+// toggle, nothing persisted — same D603 rule as everything else in this
+// panel), with a count in its own heading, and excluded from both `total`
+// (the chip's numeral) and `attentionCount` ("N needs you") — a suppressed
+// success is not news, so it must not make the chip look busier than "Needs
+// you"/"Worth keeping" alone would.
+test("a Recent row draws only when its section is expanded, and starts collapsed", () => {
+  const tree = renderView({ rows: [], recent: [doneJob({ id: "r1" })] });
+  // Collapsed: the section heading (with its count) shows, but no row yet.
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+  const toggle = findAll(tree, "dl-recent-toggle");
+  expect(toggle).toHaveLength(1);
+  expect(text(toggle[0])).toBe("Recent (1)");
+});
+
+test("clicking the Recent toggle reveals its rows; clicking again re-collapses", () => {
+  const instance = renderInstance({ rows: [], recent: [doneJob({ id: "r1" })] });
+  const toggle = () => findAll(instance.toJSON() as ReactTestRendererJSON, "dl-recent-toggle")[0];
+  act(() => {
+    (toggle().props as { onClick: () => void }).onClick();
+  });
+  expect(findAll(instance.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(1);
+  act(() => {
+    (toggle().props as { onClick: () => void }).onClick();
+  });
+  expect(findAll(instance.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(0);
+});
+
+test("Recent is excluded from the chip's total and from the needs-you count", () => {
+  const tree = renderView({ rows: [], recent: [doneJob({ id: "r1" }), doneJob({ id: "r2" })] });
+  // No other source at all — the chip must still read idle/"Notifications",
+  // not "2", and the panel must not draw the empty sentence either (Recent
+  // itself is a real section, just not counted the same way as the other two).
+  expect(numeral(tree)).toBeNull();
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+  expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
+});
+
+test("Recent never turns the chip loud, even with a would-be-attention job in it", () => {
+  // isRecentOnly (jobs.ts) never lets an attention-tier job through in the
+  // first place, but this pins the DOCK side of that guarantee too: even if
+  // a caller handed one in, Recent must never feed `attentionCount`.
+  const tree = renderView({ rows: [], recent: [failedJob({ id: "r1" })] });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(tree)).not.toContain("is-failure");
+});
+
+test("a lone Recent section still needs no disambiguating heading — 'Needs you'/'Worth keeping' rules are untouched", () => {
+  const tree = renderView({ rows: [], recent: [doneJob({ id: "r1" })] });
+  expect(findAll(tree, "dl-section-head")).toHaveLength(0);
+});
+
+test("Recent sits below 'Needs you' and 'Worth keeping' when both are present", () => {
+  const tree = renderView({
+    rows: repoRows([status({ root: "/a/one" })]),
+    terminal: [failedJob()],
+    recent: [doneJob({ id: "r1" })],
+  });
+  const heads = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(heads).toEqual(["Needs you", "Worth keeping"]);
+  const toggle = findAll(tree, "dl-recent-toggle");
+  expect(toggle).toHaveLength(1);
+});
+
+test("dismissing a Recent row patches the recent list, not the terminal one", async () => {
+  const patchedRecent: Array<(jobs: Job[]) => Job[]> = [];
+  const patchedTerminal: Array<(jobs: Job[]) => Job[]> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch?: unknown }).fetch = mock(() =>
+    Promise.resolve(new Response(JSON.stringify({ dismissed: "r1" }))),
+  );
+  const instance = renderInstance({
+    rows: [],
+    recent: [doneJob({ id: "r1" })],
+    onRecentPatch: (fn) => patchedRecent.push(fn),
+    onTerminalPatch: (fn) => patchedTerminal.push(fn),
+  });
+  act(() => {
+    const toggle = findAll(
+      instance.toJSON() as ReactTestRendererJSON,
+      "dl-recent-toggle",
+    )[0];
+    (toggle.props as { onClick: () => void }).onClick();
+  });
+  const dismissBtn = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-x")[0];
+  await act(async () => {
+    (dismissBtn.props as { onClick: () => void }).onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(patchedRecent.length).toBeGreaterThan(0);
+  expect(patchedTerminal).toHaveLength(0);
+  globalThis.fetch = realFetch;
+});
+
+test("Clear all also reaches Recent — the same server-side clear, patched into both lists", async () => {
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch?: unknown }).fetch = mock(() =>
+    Promise.resolve(new Response(JSON.stringify({ cleared: 1 }))),
+  );
+  const patchedRecent: Array<(jobs: Job[]) => Job[]> = [];
+  const instance = renderInstance({
+    rows: [],
+    terminal: [doneJob({ id: "t1" })],
+    recent: [doneJob({ id: "r1" }), doneJob({ id: "r2" })],
+    onRecentPatch: (fn) => patchedRecent.push(fn),
+  });
+  const clearBtn = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-clear")[0];
+  await act(async () => {
+    (clearBtn.props as { onClick: () => void }).onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(patchedRecent.length).toBeGreaterThan(0);
+  globalThis.fetch = realFetch;
 });
