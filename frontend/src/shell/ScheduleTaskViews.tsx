@@ -3264,6 +3264,26 @@ function TaskNode({
             actions fade in over it (tasks.css `.tasks-acts`). */}
         <span className="tasks-acts">
         <span className="tasks-acts-inner">
+          {/* THE MARKS AGAIN, inside the strip (Akshil, 2026-09-16): a long
+              title puts its file/clock mark under the fade the strip draws,
+              so the strip repeats the mark — same glyph, same tooltip —
+              right before Open. Captions only, no press: the inline mark
+              already carries the row's press, and a second target for it
+              here would sit where the reader is aiming at Open. */}
+          {taskFile_ ? (
+            <span
+              className="tasks-row-file"
+              data-hint={tildePath(taskFile_, home)}
+              aria-hidden
+            >
+              {ICON_FILE}
+            </span>
+          ) : null}
+          {sched ? (
+            <span className="tasks-row-sched" data-hint={sched.title} aria-hidden>
+              {sched.repeats ? ICON_REPEAT : ICON_CLOCK}
+            </span>
+          ) : null}
 
         {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS, all of it. Archive is the one
             row action that is live, and it is no longer part of this strip at all

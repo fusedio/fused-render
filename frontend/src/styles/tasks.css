@@ -2321,14 +2321,23 @@ button.tasks-draft-pill.is-on:focus-visible {
    The suffix marks (`.tasks-row-file`, `.tasks-row-sched`) stay above the wash
    (z-index 3 < the buttons' 4) so their tooltips keep answering when a long
    title parks them under the fade. */
-/* THE SUFFIX MARKS STAY OUT FROM UNDER THE BUTTONS (Akshil, 2026-09-16: "when
-   I hover I don't see the suffix icon"). A long title parks its file/clock
-   mark right before the seat, exactly where the strip lands. So the spacer
-   between them is never narrower than the strip: the marks sit at least this
-   far left of the buttons and the fade, and only a title long enough to
-   overflow gives the room up — a short title's spacer is wider anyway. */
-.tasks-row > .tasks-grow {
-  min-width: 76px;
+/* THE SUFFIX MARKS RIDE THE STRIP TOO (Akshil, 2026-09-16, second pass: "no
+   spacer min-width; before the Open button, if there is an icon, show the
+   icon"). A long title parks its file/clock mark under the fade, so the strip
+   repeats it — same glyph, same tooltip — immediately before Open. The inline
+   marks stay for the unhovered read; the strip's copies are what the hover
+   shows. Plain-flow, hover-revealed with the buttons around them; the row's
+   own `.tasks-row-file` skin (colour, opacity, glyph nudge) is reused. */
+.tasks-row > .tasks-acts .tasks-row-file,
+.tasks-row > .tasks-acts .tasks-row-sched {
+  position: static;
+  margin: 0 2px 0 0;
+  padding-inline: 2px;
+  align-self: center;
+  padding-block: 0;
+  margin-block: 0;
+  pointer-events: auto;
+  cursor: default;
 }
 .tasks-row > .tasks-acts {
   position: relative;

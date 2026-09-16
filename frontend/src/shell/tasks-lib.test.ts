@@ -9877,7 +9877,7 @@ describe("the schedule mark on a List row", () => {
     expect(scheduledMark(again, NOW)?.title).toBe(`Repeats · next run ${messageStamp(AHEAD)}`);
     // Never both: the row picks by the flag.
     expect(ROW).toContain("{sched.repeats ? ICON_REPEAT : ICON_CLOCK}");
-    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(1);
+    expect((ROW.match(/ICON_CLOCK/g) ?? []).length).toBe(2); // inline mark + its copy in the hover strip
     expect(VIEWS).not.toContain("SHOW_SCHEDULE_MARK");
   });
 

@@ -460,6 +460,8 @@ describe("the trigger's column", () => {
     expect(trigger).toContain("font: inherit");
     expect(trigger).toContain("line-height: inherit");
     expect(trigger).toContain("font-style: italic");
+    // Seated inside the prose, so it must not travel with a copy of it.
+    expect(trigger).toContain("user-select: none");
     expect(trigger).not.toContain("font-size:");
   });
 
