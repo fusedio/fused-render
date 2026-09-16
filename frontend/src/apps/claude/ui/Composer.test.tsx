@@ -1,5 +1,6 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -645,48 +646,60 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
   expect(box.props["data-enable-grammarly"]).toBe("false");
 });
 
-// ---- a spent key must not be a permanent block on typing ------------------
+// ---- somebody else changed this record ------------------------------------
 //
-// bugbot / live repro, 2026-09-15: a server bug kept re-announcing one
-// `new:<file>` key as `gone` on every long-poll, so App.tsx's onGone handler
-// called `markChatDraftSpent` on it roughly fifty times a second. Every call
-// runs this composer's `onChatDraftSpent` listener, which empties the box —
-// so as fast as the reader typed, the next call wiped it, and the box read as
-// permanently inert. The server loop is fixed at the source, but the client
-// must not depend on that alone: typing into a spent key has to reopen it.
+// design "one record", §3. The box used to hear a `spent` announcement and empty
+// itself — a client-side belief no second tab could see, and one that a server
+// re-announcing a key as `gone` fifty times a second turned into a box the
+// reader could not type in at all (bugbot / live repro, 2026-09-15). What the
+// server pushes now is the KEY and the VERSION, and the box acts on it only for
+// a record it has actually read.
 
-test("typing after a spend un-spends the key, rather than staying blocked forever", async () => {
-  const { markChatDraftSpent, readChatDraft } = await import("@platform/lib/drafts");
-  const file = "/p/spent-test.py";
+test("a record deleted elsewhere empties the box, once the box knows the record", async () => {
+  const { announceDraftsGone } = await import("@shell/tasksPulse");
+  const { rememberDraftVersion, forgetDraftVersion } = await import("@platform/lib/drafts");
+  const file = "/p/gone-elsewhere.py";
   const key = `new:${file}`;
+  forgetDraftVersion(key);
   const c = mount({ file, sessionId: "" });
-
   c.type("first message");
   expect(c.box().props.value).toBe("first message");
 
+  // NOTHING YET. `gone` is noisy by construction (contract §3) — the announced
+  // key set covers ordinary task activity — so a key this client holds no
+  // version for is ignored, or unsaved words would be thrown away on a record
+  // that never existed.
   await act(async () => {
-    await markChatDraftSpent(key);
+    announceDraftsGone([key]);
   });
-  // The spend cleared the box, exactly like the composer's own send does.
+  expect(c.box().props.value).toBe("first message");
+
+  // …and now the record is one this client has read.
+  rememberDraftVersion(key, 3);
+  await act(async () => {
+    announceDraftsGone([key]);
+  });
   expect(c.box().props.value).toBe("");
+  forgetDraftVersion(key);
+});
 
-  // Resuming to type must reopen the key at once — proven by `readChatDraft`
-  // actually reaching the network instead of short-circuiting on `spent`
-  // (`readChatDraft` answers `{draft: null, read: true}` from memory alone,
-  // with no fetch at all, for as long as the key stays spent).
-  let fetchCalls = 0;
-  (globalThis as { fetch: unknown }).fetch = (() => {
-    fetchCalls += 1;
-    return Promise.resolve(
-      new Response(JSON.stringify({ chat: {}, task: {} }), { status: 200 }),
-    );
-  }) as unknown as typeof fetch;
-
-  c.type("second message");
-  expect(c.box().props.value).toBe("second message");
-
-  await readChatDraft(key);
-  expect(fetchCalls).toBe(1);
+test("a newer version is re-read and adopted, unless the reader is typing", async () => {
+  // TWO TABS ON ONE FOLDER (design §3): last save wins and the other tab adopts
+  // within a second, rather than finding out on its next reload. The re-read is
+  // what makes it the record and not the row's clipped preview; the focus guard
+  // is what stops it landing on top of somebody mid-sentence, where the next
+  // save's own 409 settles it instead (with the toast).
+  const src = readFileSync(new URL("./Composer.tsx", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("onDraftChange((changed, gone) => {"),
+                         src.indexOf("const rowRef = useRef<HTMLDivElement"));
+  expect(body).toContain("if (seen === undefined) return;");
+  expect(body).toContain("if (!row || row.version <= seen) return;");
+  expect(body).toContain("if (focusedRef.current && textRef.current.trim()) return;");
+  expect(body).toContain("void fetchChatDraft(key).then((saved) => {");
+  expect(body).toContain("adoptRef.current(saved);");
+  // …and the key can change under the read (`new:<file>` → `<session>`), so the
+  // answer is dropped rather than painted into a box that has moved on.
+  expect(body).toContain("if (draftKeyRef.current !== key) return;");
 });
 
 // ---- a restored draft takes the keyboard (Akshil QA, 2026-09-14) -----------

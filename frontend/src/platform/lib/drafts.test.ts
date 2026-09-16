@@ -508,7 +508,7 @@ describe("fetchChatDraft", () => {
 
   test("and a read that never answered is null rather than a throw", async () => {
     const real = globalThis.fetch;
-    globalThis.fetch = (() => Promise.reject(new Error("offline"))) as typeof fetch;
+    globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
     expect(await fetchChatDraft("new:/Users/me/offline")).toBeNull();
     expect(await fetchDrafts()).toBeNull();
     globalThis.fetch = real;

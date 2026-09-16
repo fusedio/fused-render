@@ -1896,111 +1896,77 @@ describe("where the when-row lives", () => {
   });
 });
 
-// ---- the draft MOVES with the reader (design.md, Round 2) --------------------
-// "A draft moves, never duplicates." The composer's Schedule button carries the
-// sentence here; until it is scheduled there must be exactly one copy of it, and
-// exactly one row on the List wearing exactly one TASK number. Source reads,
-// because what these pin down is the ORDER of three calls — and a rendered form
-// with a stubbed fetch would only show that they all happened.
+// ---- the card EDITS the composer's record; it never copies it ---------------
+//
+// design "one record", §1. The Schedule hop used to carry the sentence here in a
+// URL param and a sessionStorage stash, and the card's first autosave minted a
+// `draft:<id>` over it carrying a `from_chat_key` that told the server to delete
+// the chat's copy. For the length of that round trip the same words were in two
+// stores; "Back to chat" had to reverse the whole thing in four ordered steps;
+// and pressing Schedule inside the 600 ms debounce meant the move never happened
+// at all. The card now opens ON the chat record and autosaves back onto it, so
+// there is nothing to move, nothing to reverse, and nothing to race.
+//
+// Source reads, because what these pin down is which record a call names.
 
-describe("a draft moves with the reader, never duplicating", () => {
+describe("the card edits one record, and says which", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
-  test("the hop's words are a draft the moment they land, without a keystroke", () => {
+  test("a chat hop autosaves onto the chat key, words joined back into one string", () => {
     const s = src();
-    // The ✕ guard's question ("has the user changed anything") and the draft's
-    // ("are there words here that would be lost") are asked APART: the prefill
-    // still moves the dirty baseline, so a close is still one click.
-    expect(s).toContain("const hopSeeded = !editing");
-    expect(s).toContain("(!!(initialMessage ?? \"\").trim() || !!initialAttachments?.length)");
-    expect(s).toContain("!editing && (dirty || hopSeeded)");
-    // …and the hook is told the opening value counts as unwritten, which is what
-    // makes the first debounce actually write it.
-    expect(s).toContain("{ writeInitial: hopSeeded }");
+    expect(s).toContain('const recordKey = (chatKey ?? "") || (editing?.session_id ?? "");');
+    const save = s.slice(s.indexOf("const autosave = useAutosave(draftBody,"),
+                         s.indexOf("const autosaveRef = useRef(autosave);"));
+    expect(save).toContain("if (recordKey) {");
+    expect(save).toContain("joinDraft(value.title, value.description),");
+    // THE SETTINGS RIDE AS A `form` PATCH and the words do NOT: `text` is the
+    // composer's own box, which is what makes the round trip lossless
+    // (contract §1).
+    expect(save).toContain("new_task_each_run: value.new_task_each_run,");
+    expect(save.slice(save.indexOf("if (recordKey) {"), save.indexOf("let id = draftIdRef")))
+      .not.toContain("description:");
   });
 
-  test("an ordinary new card still mints nothing until something changes", () => {
-    const s = src();
-    // `hopSeeded` is false without a chat handoff — no words, no files — so the
-    // body is null and the hook keeps its own default: the mount value is
-    // already written.
-    expect(s).toContain("const hopSeeded = !editing\n    && (!!(initialMessage");
-    // An Edit writes nothing here at all, whatever else is true.
-    expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
+  test("…and a card with no chat behind it still mints a task draft", () => {
+    const save = src().slice(src().indexOf("const autosave = useAutosave(draftBody,"));
+    expect(save).toContain("id = newTaskDraftId();");
+    expect(save).toContain("return saveTaskDraft(id, value, opts).then((out) => {");
   });
 
-  test("the first save names the chat draft it supersedes, and only the first", () => {
+  test("the move's machinery is gone from the card", () => {
     const s = src();
-    expect(s).toContain("const moving = chatKeySpent.current ? \"\" : (fromChatKey ?? \"\");");
-    expect(s).toContain("chatKeySpent.current = true;");
-    expect(s).toContain(
-      "return saveTaskDraft(id, value, opts, moving || undefined).then((landed) => {");
-  });
-
-  test("the card adopts whatever id the write actually landed on", () => {
-    // A hop whose `GET /api/drafts` failed cannot see the form already bound to
-    // this conversation, so it mints a new id and saves under it; the server
-    // folds that write into the bound draft and answers the id it landed on
-    // (drafts.py `put_task`, Bugbot PR #1126). Keeping the minted id would aim
-    // the next autosave, the Discard and Schedule's `draft_id` at a record that
-    // does not exist.
-    const s = src();
-    expect(s).toContain("if (landed && landed !== draftIdRef.current) {");
-    expect(s).toContain("draftIdRef.current = landed;");
-    expect(s).toContain("setDraftId(landed);");
-  });
-
-  test("…and every disposal reads that id AFTER settling, never before", () => {
-    // The write `settle` waits out is the same write that can RENAME the draft
-    // (the adoption above runs inside the promise it waits on). Read first, the
-    // id is the one this card minted — and on a fold the server has already
-    // dropped it, so the DELETE hits nothing, the bound draft survives holding
-    // the merged words, and Schedule tells the server to drop a draft that does
-    // not exist (Bugbot, PR #1126, 2026-09-12).
-    const s = src();
-    const discard = s.slice(s.indexOf("const discard = async () => {"),
-                            s.indexOf("const picked = useMemo("));
-    expect(discard.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(discard.indexOf("const id = draftIdRef.current;"));
-    expect(discard.indexOf("const id = draftIdRef.current;"))
-      .toBeLessThan(discard.indexOf("deleteTaskDraft(id)"));
-
-    const back = s.slice(
-      s.indexOf("const backToChat = async () => {"),
-      s.indexOf("// The replacement was created but the original could not be withdrawn"),
-    );
-    expect(back.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(back.indexOf("const id = draftIdRef.current;"));
-
-    // Schedule reads it inside the payload it builds, which is built after its
-    // own `await settle()` — so it is the same rule, kept by ordering rather
-    // than by a local.
-    const submit = s.slice(s.indexOf("// THE DRAFT STOPS HERE."));
-    expect(submit.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(submit.indexOf('draftId: draftIdRef.current ?? "",'));
-    // …and none of the three latches it on the way in, which is the shape the
-    // bug actually had: a read sitting above the await.
-    for (const body of [discard, back, submit.slice(0, submit.indexOf("await scheduleMessage("))]) {
-      expect(body.slice(0, body.indexOf("await autosaveRef.current.settle()")))
-        .not.toContain("draftIdRef.current");
+    for (const gone of ["fromChatKey", "from_chat_key", "originChatKey",
+                        "chatKeySpent", "hopSeeded", "writeInitial"]) {
+      expect(s).not.toContain(gone);
     }
   });
 
-  test("Back to chat flushes the debounce before it stops, so the last keystrokes reach the form", () => {
-    // The bound arm hands off to a composer that seeds from the FORM; `stop`
-    // alone would silence both the pending timer and the unmount flush, and the
-    // last 600 ms of typing would never land (Bugbot, PR #1126, 2026-09-12).
+  test("the card adopts whatever id the write actually landed on", () => {
+    // The server can still fold a write into a draft that already holds this
+    // conversation and answer the id it landed on (drafts.py `put_task`, Bugbot
+    // PR #1126). Keeping the minted id would aim the next autosave, the Discard
+    // and Schedule's `draft_id` at a record that does not exist.
     const s = src();
-    const back = s.slice(s.indexOf("const backToChat = async () => {"));
-    const flush = back.indexOf("autosaveRef.current.flush();");
-    const stop = back.indexOf("autosaveRef.current.stop();");
-    const settle = back.indexOf("await autosaveRef.current.settle();");
-    expect(flush).toBeGreaterThan(-1);
-    expect(flush).toBeLessThan(stop);
-    expect(stop).toBeLessThan(settle);
+    expect(s).toContain("if (out.id && out.id !== draftIdRef.current) {");
+    expect(s).toContain("draftIdRef.current = out.id;");
+    expect(s).toContain("setDraftId(out.id);");
   });
 
-  test("Back to chat reverses the move — and orders the delete after the last write", () => {
+  test("Discard deletes whichever record the card was writing into", () => {
+    const s = src();
+    const discard = s.slice(s.indexOf("const discard = async () => {"),
+                            s.indexOf("const picked = useMemo("));
+    // `reset(null)` is what stops the unmount flush from writing on the way out.
+    // The ordering the old code needed — stop, await settle, THEN delete — is
+    // the server's job now: the DELETE states the version it read, so a PUT
+    // still on the wire is refused rather than landing after it.
+    expect(discard).toContain("autosaveRef.current.reset(null);");
+    expect(discard).not.toContain("settle()");
+    expect(discard).toContain("if (key) await deleteChatDraft(key);");
+    expect(discard).toContain("if (id) await deleteTaskDraft(id);");
+  });
+
+  test("Back to chat flushes and walks — the record is untouched", () => {
     const s = src();
     const back = s.slice(
       s.indexOf("const backToChat = async () => {"),
@@ -2009,77 +1975,20 @@ describe("a draft moves with the reader, never duplicating", () => {
     // The two-step dirty guard still comes first: one click must not silently
     // abandon an adjusted form (Bugbot, PR #548).
     expect(back.indexOf("if (dirty && !backConfirm)"))
-      .toBeLessThan(back.indexOf("autosaveRef.current.stop()"));
-    // `stop` disarms the next write, `settle` waits out one already sent, and
-    // only then is the draft deleted — otherwise a PUT lands after the DELETE
-    // and puts the row back.
-    expect(back.indexOf("autosaveRef.current.stop()"))
-      .toBeLessThan(back.indexOf("await autosaveRef.current.settle()"));
-    // …on the UNBOUND arm, the only one that deletes (see the next test).
-    const unbound = back.slice(back.indexOf("if (backChatKey) {"));
-    expect(back.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(back.indexOf("if (backChatKey) {"));
-    expect(unbound.indexOf("deleteTaskDraft(id)"))
-      .toBeLessThan(unbound.indexOf("navigateUrl(chatBack || backChatHref("));
+      .toBeLessThan(back.indexOf("autosaveRef.current.flush();"));
+    // FLUSH, because the last 600 ms of typing belong in the box being walked
+    // back to — and then nothing else at all.
+    expect(back).toContain("navigateUrl(backHref);");
+    expect(back).not.toContain("saveChatDraft(");
+    expect(back).not.toContain("deleteTaskDraft(");
+    expect(back).not.toContain("settle()");
   });
 
-  test("a BOUND draft goes back through the other door — no re-seed, no delete", () => {
-    // `put_chat` writes the bound form when the key is that session, so the
-    // task draft and the chat draft are ONE record: saving the chat draft would
-    // update it and the delete that followed would remove it, and the composer
-    // seeded from nothing (Bugbot, PR #1126, 2026-09-12). The bound arm stops,
-    // settles and navigates; the record survives for the chat view to read.
+  test("…and it is offered on every card that has a record to go back to", () => {
     const s = src();
-    const back = s.slice(
-      s.indexOf("const backToChat = async () => {"),
-      s.indexOf("// The replacement was created but the original could not be withdrawn"),
-    );
-    const bound = back.slice(back.indexOf("if (boundSessionId) {"),
-                             back.indexOf("if (backChatKey) {"));
-    expect(bound.length).toBeGreaterThan(0);
-    expect(bound).not.toContain("saveChatDraft(");
-    expect(bound).not.toContain("deleteTaskDraft(");
-    expect(bound).toContain("navigateUrl(chatBack || backChatHref(");
-    expect(bound).toContain("return;");
-    expect(back.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(back.indexOf("if (boundSessionId) {"));
-    // …and the unbound arm keeps both, in order.
-    const unbound = back.slice(back.indexOf("if (backChatKey) {"));
-    expect(unbound.indexOf("await saveChatDraft(backChatKey"))
-      .toBeLessThan(unbound.indexOf("deleteTaskDraft(id)"));
-    expect(unbound.indexOf("deleteTaskDraft(id)"))
-      .toBeLessThan(unbound.indexOf("navigateUrl(chatBack || backChatHref("));
-  });
-
-  test("a REOPENED draft can go back too — the key is stored, not in the URL", () => {
-    const s = src();
-    // The bug: the hop's instance had `?back=` and a sessionStorage stash, and a
-    // draft opened from its row on the List has neither — so the way back
-    // vanished the moment the modal was closed. `form.from_chat_key` is what
-    // the server now stores, and it is what this card aims at.
-    expect(s).toContain('const backChatKey = chatBack ? "" : (saved.fromChatKey ?? "");');
-    expect(s).toContain("const canGoBack = !!chatBack || !!backChatKey;");
-    expect(s).toContain('fromChatKey: str("from_chat_key"),');
-    // …and the button is shown on BOTH, not only the hop's instance.
+    expect(s).toContain("const backHref = chatBack || backChatHref(recordKey, target);");
+    expect(s).toContain("const canGoBack = !!backHref;");
     expect(s).toContain("{canGoBack && (");
-    expect(s).not.toContain("{chatBack && (");
-  });
-
-  test("that card re-seeds the composer by hand, then deletes the task draft", () => {
-    const s = src();
-    const back = s.slice(
-      s.indexOf("const backToChat = async () => {"),
-      s.indexOf("// The replacement was created but the original could not be withdrawn"),
-    );
-    // No stash exists any more, so the chat draft is written explicitly — and
-    // BEFORE the task draft is deleted, so the sentence is never in no store at
-    // all. Both still come after `settle`, or a late PUT resurrects the row.
-    expect(back.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(back.indexOf("await saveChatDraft(backChatKey"));
-    expect(back.indexOf("await saveChatDraft(backChatKey"))
-      .toBeLessThan(back.indexOf("deleteTaskDraft(id)"));
-    // The two fields go back as the one block of prose they were split from.
-    expect(back).toContain("joinDraft(title, message)");
   });
 
   test("joinDraft is splitDraft run backwards, blank line and all", () => {
@@ -2097,14 +2006,12 @@ describe("a draft moves with the reader, never duplicating", () => {
   });
 
   test("where Back to chat lands, by the shape of the key", () => {
-    // A session id: the draft's own folder with that thread on the Claude pane.
+    // A session id: the record's own folder with that thread on the Claude pane.
     expect(backChatHref("sess-9", "/Users/me/proj"))
       .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=sess-9");
     // `new:<file>`: the folder's chat with no session named at all, built out
     // of the key's own file (schedule-lib.chatPaneUrl) — or the composer that
-    // opens seeds from a key nothing wrote. It is the same door a never-sent
-    // chat's ROW sends its words back through, that row now opening this very
-    // card (Akshil, 2026-09-12).
+    // opens seeds from a key nothing wrote.
     expect(backChatHref("new:/Users/me/news", "/Users/me/elsewhere"))
       .toBe("/explorer/view/Users/me/news?_side=claude");
     // Nothing to go back to.
@@ -2113,139 +2020,94 @@ describe("a draft moves with the reader, never duplicating", () => {
     expect(backChatHref("new:", "/Users/me/proj")).toBe("");
   });
 
-  test("Schedule leaves the delete to the server, as it always did", () => {
-    // `POST /api/schedule` is handed `draft_id` and drops the draft itself, so
-    // this path only has to make sure nothing queued can write it back.
+  test("Schedule leaves the delete to the server, and names the right key", () => {
+    // `POST /api/schedule` is handed `draft_id` OR `draft_key` and drops the
+    // record itself, so this path only has to make sure nothing queued can write
+    // it back — one `reset`, where it used to be flush/stop/settle.
     const s = src();
     const submit = s.slice(s.indexOf("// THE DRAFT STOPS HERE."));
-    expect(submit.indexOf("autosaveRef.current.stop();"))
+    expect(submit.indexOf("autosaveRef.current.reset(null);"))
       .toBeLessThan(submit.indexOf("await scheduleMessage("));
     expect(submit).not.toContain("deleteTaskDraft");
+    expect(submit).toContain('draftId: draftIdRef.current ?? "",');
+    expect(submit).toContain("draftKey: recordKey,");
+    // A card edits ONE record, so the payload's two keys are alternatives.
+    expect(buildSchedulePayload(form({ draftKey: "new:/Users/me/news" })).draft_key)
+      .toBe("new:/Users/me/news");
+    expect("draft_key" in buildSchedulePayload(form())).toBe(false);
+    expect("draft_key" in buildSchedulePayload(form({ draftKey: "" }))).toBe(false);
   });
 
-  test("the page hands the modal the key the hop came from", () => {
-    // `target` IS the chat's `file` (sched-draft.schedulerUrl writes `link.file`
-    // into it), which is why no new param was needed.
+  test("a second press on the same draft is the same card", () => {
+    // design §1: "double press → same modal/composer (guard by key)". The card's
+    // identity is the RECORD it is open on, so pressing the same row twice — or
+    // landing on the hop's URL twice — re-mounts nothing and opens no second
+    // draft. (`openSeq` still forces a fresh mount for a DIFFERENT opening: the
+    // fields are `useState` initialisers, so a card that stayed mounted would
+    // keep the previous record's answers.)
     const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
-    expect(page).toContain('chatDraftKey(q.get("session_id"), q.get("target"))');
-    expect(page).toContain("fromChatKey={hop.chatKey}");
-    // …and only for a hop that came FROM a chat: the app page's "+ New task"
-    // deep link carries no composer and has no draft of anybody's to supersede.
-    expect(page).toContain('q.get("message") === null');
-    // The key rides the same one-object seed as the rest of the hop, so it
-    // cannot outlive the opening it was read for — see new-task-images.test.ts,
-    // "the hop is ONE value" (Akshil, 2026-09-12).
-    expect(page).toContain("chatKey: q.get(\"message\") === null");
+    expect(page).toContain("hop.key\n              ? `chat:${hop.key}`");
+    expect(page).toContain("? `draft:${draftSeed.id}`");
+  });
+
+  test("the page hands the modal the key the hop named, and the route back", () => {
+    const page = readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
+    // The whole handoff: which record, and where to go back to.
+    expect(page).toContain('const key = q.get("draft") ?? "";');
+    expect(page).toContain('const hopTo: ChatHop = { key, from: q.get("from") ?? "" };');
+    expect(page).toContain("chatKey={hop.key}");
+    expect(page).toContain("chatBack={hop.from}");
+    // …and the params that used to carry the words are gone from the page.
+    for (const gone of ['q.get("message")', 'q.get("attachments")',
+                        'q.get("session_id")', 'q.get("back")']) {
+      expect(page).not.toContain(gone);
+    }
   });
 });
 
-// ---- `onGone` verifies before it stops the card's autosave -------------------
+// ---- the record this card is editing changed somewhere else ------------------
 //
-// THE BUG (Bugbot #1166). `onGone` fires the moment the LISTING reports
-// `draft:<id>` as a row that left — which is also the shape the very first
-// autosave from a Schedule hop takes, before the row it is about to become has
-// ever existed. Reading `gone` as "discarded" and stopping on it alone left a
-// session-bound card sitting open with a permanently disarmed autosave: no
-// later edit, and no unmount flush, ever wrote again.
+// design §3. It used to hear `onGone` — the LISTING reporting a row that left —
+// and stand its own autosave down, which needed a verifying `GET /api/drafts`
+// because `gone` means "this key is not a row", not "this draft was deleted": a
+// session-bound card's very first save announced `draft:<id>` gone while the
+// card was still open, and stopping on that alone silently disarmed every edit
+// after it (Bugbot #1166). The change feed now says which DRAFT keys moved, so
+// there is nothing to verify.
 
-describe("onGone verifies the draft is actually gone before it stops anything", () => {
+describe("the card closes when its record is discarded elsewhere", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
-  function onGoneBody(s: string): string {
-    const start = s.indexOf('useEffect(() => onGone((keys) => {');
-    const end = s.indexOf("// Discard: the draft goes, and so does the card.");
+  function goneBody(s: string): string {
+    const start = s.indexOf("useEffect(() => onDraftChange((_changed, gone) => {");
+    const end = s.indexOf("   * DISCARD — the draft goes, and so does the card.");
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     return s.slice(start, end);
   }
 
-  test("it reads GET /api/drafts back before it stops anything", () => {
-    // Same door `App.tsx`'s own chat-draft twin uses for the identical
-    // question ("is this key really not a row, or did I just not check").
-    const body = onGoneBody(src());
-    expect(body).toContain("fetchDrafts()");
-    // The stop is gated behind the read's own answer, not fired unconditionally
-    // the moment the key is seen in `keys` — the ordering the original bug had.
-    expect(body.indexOf("fetchDrafts()"))
-      .toBeLessThan(body.indexOf("autosaveRef.current.stop()"));
-  });
-
-  test("only an id the snapshot does NOT hold is stopped", () => {
-    // `!snapshot.task[id]` (or an equivalent falsy check on it) is what the
-    // stop is conditioned on — a snapshot that DOES carry the id must leave the
-    // autosave running, which is the whole of the fix.
-    const body = onGoneBody(src());
-    expect(body).toContain("snapshot.task[id]");
-    const stopLine = body.indexOf("autosaveRef.current.stop()");
-    const guardLine = body.lastIndexOf("if (", stopLine);
-    expect(body.slice(guardLine, stopLine)).toContain("snapshot.task[id]");
-  });
-
-  test("a read that fails stops nothing — 'could not find out' is not 'it is gone'", () => {
-    const body = onGoneBody(src());
-    // The promise's body bails on a null snapshot before it ever reaches the
-    // stop — `fetchDrafts` answers null for exactly a failed read.
-    const then = body.slice(body.indexOf(".then((snapshot) => {"));
-    expect(then.indexOf("if (!snapshot) return;"))
-      .toBeLessThan(then.indexOf("autosaveRef.current.stop()"));
-  });
-});
-
-// ---- the hop's chat draft does not outlive the task it became ----------------
-//
-// THE BUG (Bugbot, PR #1118). The composer's Schedule button carries what is in
-// the box into this card, and the card's FIRST autosave is what tells the server
-// to drop the chat's copy (`from_chat_key` on the task-draft PUT). Press
-// Schedule inside the 600 ms debounce — which is the ordinary way to use a hop,
-// since the card opens already filled in — and that write never happens: no
-// draft id is minted, none goes on the wire, and the chat draft survives beside
-// the task, row and TASK number and all. `session_id` does not cover it: a chat
-// that has never sent anything HAS no session, and its draft is keyed
-// `new:<file>`.
-
-describe("the chat draft a Schedule leaves behind", () => {
-  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
-
-  test("the payload names the chat the words came out of", () => {
-    const body = buildSchedulePayload(form({ fromChatKey: "new:/Users/me/news" }));
-    expect(body.from_chat_key).toBe("new:/Users/me/news");
-    // A session-keyed chat rides the same field — the server validates both
-    // shapes — and the two are independent of each other.
-    expect(buildSchedulePayload(form({ fromChatKey: "sess-9" })).from_chat_key)
-      .toBe("sess-9");
-  });
-
-  test("and leaves the key off the wire when there is no chat behind the card", () => {
-    // "+ New task" from the app page, the `?new=1` hop, every client that
-    // predates drafts. Omitted rather than sent as "", like every other
-    // optional here.
-    expect("from_chat_key" in buildSchedulePayload(form())).toBe(false);
-    expect("from_chat_key" in buildSchedulePayload(form({ fromChatKey: "" }))).toBe(false);
-  });
-
-  test("both openings answer the same question: which chat was this typed in", () => {
+  test("it subscribes to the draft channel, not to the listing's rows", () => {
     const s = src();
-    // The FRESH hop is handed the key as a prop; a card REOPENED from its draft
-    // row has only what the server stored on the draft — the same fact
-    // `backToChat` aims at.
-    expect(s).toContain(
-      'const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");',
-    );
-    expect(s).toContain("fromChatKey: originChatKey,");
+    expect(s).toContain('import { onDraftChange } from "./tasksPulse";');
+    expect(s).not.toContain("onGone(");
+    // …and it no longer has to read the store back to find out what `gone` meant.
+    expect(goneBody(s)).not.toContain("fetchDrafts()");
   });
 
-  test("submit flushes before it stops, so the hop's own write still goes out", () => {
-    // `writeInitial` only ARMS the debounce. A Schedule inside that window would
-    // otherwise reach `stop()` before any write left at all — no id, no
-    // `from_chat_key`, no draft. The flush is what makes the id exist; the
-    // payload's own key is what covers it when even that is too late.
-    const submit = src().slice(src().indexOf("// THE DRAFT STOPS HERE."));
-    expect(submit.indexOf("autosaveRef.current.flush();"))
-      .toBeLessThan(submit.indexOf("autosaveRef.current.stop();"));
-    expect(submit.indexOf("autosaveRef.current.stop();"))
-      .toBeLessThan(submit.indexOf("await autosaveRef.current.settle()"));
-    expect(submit.indexOf("await autosaveRef.current.settle()"))
-      .toBeLessThan(submit.indexOf("await scheduleMessage("));
+  test("only a key this client holds a version for is acted on", () => {
+    // The announced key set is noisy by construction (contract §3), and closing
+    // a card on a `gone` for a record that never existed would be the worst
+    // possible reading of it.
+    const body = goneBody(src());
+    expect(body).toContain("if (!mine || draftVersion(mine) === undefined) return;");
+    expect(body.indexOf("draftVersion(mine) === undefined"))
+      .toBeLessThan(body.indexOf("onClose();"));
+  });
+
+  test("and it asks about whichever record the card is writing into", () => {
+    const body = goneBody(src());
+    expect(body).toContain("const mine = key || (id ? taskDraftKey(id) : \"\");");
+    expect(body).toContain('notify({ title: "Discarded elsewhere", tone: "info" });');
   });
 });
 
@@ -2404,8 +2266,8 @@ describe("only words or files make a draft", () => {
   test("the FIRST write waits for content — a settings-only change mints nothing", () => {
     const s = src();
     expect(s).toContain(
-      "const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)\n"
-      + "    && (draftContent || draftId !== null)",
+      "const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty\n"
+      + "    && (draftContent || draftId !== null || !!recordKey)",
     );
     // The gate is on the BODY, which is what the autosave watches: null is not
     // a value it can write, so no id is minted and no PUT goes out.
@@ -2414,19 +2276,33 @@ describe("only words or files make a draft", () => {
   });
 
   test("…and once a draft exists, emptying it is a write, not a silence", () => {
-    // `draftId !== null` is the second half deliberately: the body keeps being
-    // produced after the words are gone, so the PUT goes out and the server
-    // turns it into a delete. Without it the card fell silent at exactly the
-    // moment it had something to say — the reported "clear the text, then lose
-    // the attachment, and the draft never clears".
-    expect(src()).toContain("(draftContent || draftId !== null)");
+    // The body keeps being produced after the words are gone, so the PUT goes
+    // out and the server turns it into a delete (or, for a chat record carrying
+    // a form, into "clear the words, keep the settings" — contract §2). Without
+    // it the card fell silent at exactly the moment it had something to say —
+    // the reported "clear the text, then lose the attachment, and the draft
+    // never clears".
+    expect(src()).toContain("(draftContent || draftId !== null || !!recordKey)");
   });
 
-  test("a hop that is only files is already a draft when it lands", () => {
-    // A picture dropped into an empty composer IS a chat draft, so it has to
-    // become a task draft the moment it hops — or the composer's copy sits
-    // beside this card as a second row.
-    expect(src()).toContain('!!(initialMessage ?? "").trim() || !!initialAttachments?.length');
+  test("and NOTHING is minted by merely opening a card (design §4)", () => {
+    // `dirty` is the whole gate: a hop no longer arrives holding words that
+    // exist nowhere else — they are already on the record the card is editing —
+    // so the `writeInitial` arm that used to force a write at mount is gone with
+    // the reason for it. Open the card, press ✕, and nothing at all happened.
+    const s = src();
+    expect(s).not.toContain("writeInitial");
+    expect(s).not.toContain("hopSeeded");
+    expect(s).toContain("&& dirty\n");
+  });
+
+  test("an EDIT writes too, when it has a record to write into (design §4)", () => {
+    // An Edit used to autosave nowhere at all, so ✕ on a card with ten minutes
+    // of changes in it dropped every one of them silently. A task that has run
+    // has a session, and that session has a chat record.
+    const s = src();
+    expect(s).toContain('const recordKey = (chatKey ?? "") || (editing?.session_id ?? "");');
+    expect(s).toContain("const draftBody: TaskDraftForm | null = (!editing || !!recordKey)");
   });
 });
 
@@ -2453,7 +2329,7 @@ describe("Delete and Discard share one seat and one skin", () => {
 
   test("…and Delete's glyph, with the label and the tooltip that are its own", () => {
     const s = src();
-    const discard = s.slice(s.indexOf("{draftId && ("));
+    const discard = s.slice(s.indexOf("{(draftId || (recordKey && !editing)) && ("));
     const button = discard.slice(0, discard.indexOf("</button>"));
     expect(button).toContain("{ICON_TRASH}");
     expect(button).toContain('title="Discard this draft"');
@@ -2464,141 +2340,89 @@ describe("Delete and Discard share one seat and one skin", () => {
 
   test("only one is ever drawn, because only one condition can hold", () => {
     const s = src();
-    // An Edit has no draft (`draftBody` is null on `editing`) and a new card has
-    // no entry to delete.
+    // An Edit has no draft to discard and a new card has no entry to delete —
+    // and the `!editing` is load-bearing since design §4 gave an Edit a record
+    // to autosave into (`recordKey`): without it, an Edit on a task that has run
+    // would draw both, which is the one thing this seat may not do.
     expect(s).toContain("const del = deleteActionFor(editing);");
-    expect(s).toContain("const draftBody: TaskDraftForm | null = !editing &&");
     expect(s).toContain("{del && (");
-    expect(s).toContain("{draftId && (");
+    expect(s).toContain("{(draftId || (recordKey && !editing)) && (");
   });
 });
 
-// ---- the hop comes back to the form it already made ---------------------------
+// ---- a Schedule hop out of a chat that already has a form --------------------
 //
-// THE RULE (Akshil, 2026-09-12). A task draft made out of a chat is bound to it
-// and has NO ROW of its own — the conversation's row wears the `Draft` chip
-// instead (routers/tasks.py `_bound_chips`) — so the composer's Schedule button
-// is the only way back into that form. Press it a second time and the card has
-// to reopen the SAME draft, or the store grows a second form bound to one
-// session and whichever saved last owns the chip.
+// design "one record", §1 + contract §1 ("one record, two doors"). A New task
+// card bound to a session IS that conversation's unsent message, so the server
+// serves the form ON the session's chat record. The hop opens that record; so
+// does the Draft chip's press on the thread line. There is no lookup by session
+// across task drafts any more, no merge of the composer's words over a stored
+// form, and no second draft for the two to disagree about — the words and the
+// settings were on one record the whole time.
 
 describe("a Schedule hop out of a chat that already has a form", () => {
   const page = () => readFileSync(join(import.meta.dir, "Scheduled.tsx"), "utf8");
-  let boundDraftSeed: typeof import("./Scheduled").boundDraftSeed;
+  let chatHopSeed: typeof import("./Scheduled").chatHopSeed;
   beforeAll(async () => {
-    ({ boundDraftSeed } = await import("./Scheduled"));
+    ({ chatHopSeed } = await import("./Scheduled"));
   });
 
-  const stored = (over: Record<string, unknown>) => ({
-    title: "Ship the changelog",
-    description: "then tag it",
-    target: "/Users/me/proj",
-    when: null,
-    repeat: null,
-    model: "",
-    effort: "",
-    permission: "",
+  const record = (over: Record<string, unknown> = {}) => ({
+    text: "Ship the changelog\n\nthen tag it",
     attachments: [],
-    new_task_each_run: null,
-    session_id: "sess-a",
-    custom_rule: null,
-    created_at: 1,
     updated_at: 2,
+    version: 3,
+    form: { target: "/Users/me/proj", when: null, repeat: null, model: "opus" },
     ...over,
-  }) as unknown as import("@platform/lib/drafts").TaskDraft;
+  }) as unknown as import("@platform/lib/drafts").ChatDraft;
 
-  test("it reopens the draft bound to that session, under its own id", () => {
-    const seed = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a", null);
-    expect(seed?.id).toBe("draft-0001");
-    // The whole stored form comes back, not a summary: the card seeds every
-    // field from it and goes on autosaving under the same id.
-    expect((seed?.form as Record<string, unknown>).title).toBe("Ship the changelog");
-    expect((seed?.form as Record<string, unknown>).description).toBe("then tag it");
-  });
-
-  test("a chat with no form of its own still mints one, exactly as before", () => {
-    expect(boundDraftSeed({}, "sess-a", null)).toBeNull();
-    // Bound to somebody else's conversation is bound to somebody else.
-    expect(boundDraftSeed({ "draft-0001": stored({ session_id: "sess-b" }) },
-                          "sess-a", null)).toBeNull();
-    // …and a draft bound to nobody is a row of its own; this door is not it.
-    expect(boundDraftSeed({ "draft-0001": stored({ session_id: "" }) },
-                          "sess-a", null)).toBeNull();
-  });
-
-  test("the composer's words outrank the stored ones — and only those two fields", () => {
-    // Whatever is in the box right now was typed a second ago, so it wins, and
-    // it is split across the card's two fields exactly as a fresh hop's is.
-    const seed = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a",
-                                "Cut the release\nand post the notes");
+  test("it opens on the record the key names, settings and all", () => {
+    const seed = chatHopSeed("sess-a", record());
     const form = seed?.form as Record<string, unknown>;
-    expect(seed?.id).toBe("draft-0001");
-    expect(form.title).toBe("Cut the release");
-    expect(form.description).toBe("and post the notes");
-    // Everything else the form remembers is untouched — this is the same draft,
-    // written a bit further.
+    // THE WORDS COME OUT OF `text`, SPLIT — the title is the first line, which
+    // is also what the listing row prints (contract §1).
+    expect(form.title).toBe("Ship the changelog");
+    expect(form.description).toBe("then tag it");
+    // …and the settings ride along untouched.
+    expect(form.model).toBe("opus");
     expect(form.target).toBe("/Users/me/proj");
-    expect(form.session_id).toBe("sess-a");
-    // An empty composer overrides nothing.
-    const quiet = boundDraftSeed({ "draft-0001": stored({}) }, "sess-a", "   ");
-    expect((quiet?.form as Record<string, unknown>).title).toBe("Ship the changelog");
   });
 
-  test("the tray MERGES rather than one side winning", () => {
-    // Words are a rewrite; a file is a thing. A composer holding two pictures is
-    // not a statement that the three already in the form are gone, and the form
-    // is not a statement that the two just dragged in are (Bugbot, PR #1126).
-    const file = (path: string, name: string) =>
-      ({ path, name, kind: "file" as const });
-    const seed = boundDraftSeed(
-      { "draft-0001": stored({ attachments: [file("/a.png", "a"), file("/b.png", "b")] }) },
-      "sess-a", null,
-      [file("/b.png", "b — renamed in the composer"), file("/c.png", "c")],
-    );
-    const files = (seed?.form as Record<string, unknown>)
-      .attachments as { path: string; name: string }[];
-    expect(files.map((f) => f.path)).toEqual(["/a.png", "/b.png", "/c.png"]);
-    // Deduped on `path`, and the HOP's copy of a file both sides name is the
-    // newer description of it.
-    expect(files[1].name).toBe("b — renamed in the composer");
+  test("a session key IS the thread this task is a message to", () => {
+    const seed = chatHopSeed("sess-a", record());
+    expect((seed?.form as Record<string, unknown>).session_id).toBe("sess-a");
+    // `new:<file>` has no thread to continue, and its `<file>` is the folder the
+    // card falls back to when the record names no target of its own.
+    const fresh = chatHopSeed("new:/Users/me/news", record({ form: {} }));
+    const form = fresh?.form as Record<string, unknown>;
+    expect(form.session_id).toBe("");
+    expect(form.target).toBe("/Users/me/news");
   });
 
-  test("a hop with no files of its own leaves the form's tray alone", () => {
-    const file = { path: "/a.png", name: "a", kind: "file" as const };
-    const seed = boundDraftSeed(
-      { "draft-0001": stored({ attachments: [file] }) }, "sess-a", null);
+  test("the tray comes off the record, where the composer left it", () => {
+    const file = { path: "/shots/a.png", name: "a", kind: "image" as const };
+    const seed = chatHopSeed("sess-a", record({ attachments: [file] }));
     expect((seed?.form as Record<string, unknown>).attachments).toEqual([file]);
   });
 
-  test("newest wins if a store somehow holds two", () => {
-    // The same tie-break the server's chip takes, so the card that opens is the
-    // draft the row is advertising.
-    const seed = boundDraftSeed({
-      "draft-0001": stored({ updated_at: 2, title: "older" }),
-      "draft-0002": stored({ updated_at: 9, title: "newer" }),
-    }, "sess-a", null);
-    expect(seed?.id).toBe("draft-0002");
+  test("no record is no seed — the card opens fresh on the key it was given", () => {
+    expect(chatHopSeed("sess-a", null)).toBeNull();
   });
 
-  test("only a hop that names a session pays for the lookup", () => {
+  test("the hop pays for ONE read, and a stale answer is dropped", () => {
     const s = page();
-    // One small request, and the answer can arrive late — so it takes the same
-    // generation `openChatDraft` does, and a stale one is dropped rather than
-    // painted over a newer press.
-    expect(s).toContain("const session = (q.get(\"session_id\") ?? \"\").trim();");
+    // The answer can arrive late, so it takes the page's own generation and a
+    // press through any other door owns the modal.
     expect(s).toContain("const gen = ++chatDraftGen.current;");
-    expect(s).toContain("all && boundDraftSeed(all.task, session, seed.message,");
-    expect(s).toContain("seed.attachments);");
-    // A LOOKUP THAT FAILED IS NOT "THERE IS NONE" (Bugbot, PR #1126).
-    // `fetchDrafts` answers null for a blip and this hop still opens on it —
-    // the composer's words must not wait on a GET — but it must not act on the
-    // guess either, which is why the seed is gated on `all` rather than read
-    // off an empty snapshot. The server's merge is what makes the guess
-    // harmless (drafts.py `put_task`).
-    // Every other door still opens synchronously, and a failed lookup falls
-    // through to the ordinary opening: a hop that cannot find its draft is a
-    // hop, not a dead button.
-    expect(s).toContain("} else {\n      openForm(at, null, seed);\n    }");
+    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null);");
+    // A LOOKUP THAT FAILED IS NOT "THERE IS NONE" (`fetchDrafts` answers null
+    // for a blip). The card opens anyway, on the key it was given — it is the
+    // SAME record either way, so an uninformed card costs a moment of empty
+    // fields and never a second draft.
+    expect(s).toContain("openForm(at, null, hopTo);");
+    // …and a `?new=1` with no key at all is the app page's own link: nothing to
+    // read, so it opens in this tick.
+    expect(s).toContain("if (!key) {\n      openForm(at, null, NO_HOP);");
   });
 });
 
@@ -2652,17 +2476,16 @@ describe("a reopened form opens on its own time, or on none", () => {
 
   test("both bound-draft doors take it, and only a lookup that found nothing keeps the lead", () => {
     const s = page();
-    // The thread line's press…
-    expect(s).toContain("const found = all && boundDraftSeed(all.task, session, null);");
-    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, seed, found);");
-    // …and the composer's own hop, which merges newer WORDS over the stored
-    // form but has nothing to say about its time.
-    expect(s).toContain("const found = all && boundDraftSeed(all.task, session, seed.message,");
-    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, seed, found);");
+    // The Draft chip's press on the thread line…
+    expect(s).toContain("const found = all && chatHopSeed(session, all.chat[session] ?? null);");
+    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, hopTo, found);");
+    // …and the composer's own hop, which is now literally the same read.
+    expect(s).toContain("const found = all && chatHopSeed(key, all.chat[key] ?? null);");
+    expect(s).toContain("openForm(found ? reopenTime(found) : at, null, hopTo, found);");
     // The lead date survives exactly where it means something: a card with no
-    // stored form behind it.
+    // stored record behind it.
     expect(s).toContain("const at = new Date(Date.now() + NEW_LINK_LEAD_MS);");
-    expect(s).toContain("} else {\n      openForm(at, null, seed);\n    }");
+    expect(s).toContain("openForm(at, null, hopTo);");
   });
 
   test("the ordinary draft row never had the bug — it passes no time and still does", () => {
@@ -2725,8 +2548,12 @@ describe("the source-task chip", () => {
     const src = page();
     // Both doors name the same conversation: the composer's hop, and the draft
     // that hop saved (which is what survives closing and reopening the card).
+    // The hop's KEY is the session when the chat has one (`new:<file>` is the
+    // shape that has none), and the seed restates it for a card reopened from a
+    // stored record.
     expect(src).toContain(
-      "const session = hop.session || seededDraftForm(draftSeed).sessionId || \"\";");
+      'const session = (hop.key.startsWith(NEW_CHAT_PREFIX) ? "" : hop.key)');
+    expect(src).toContain("|| seededDraftForm(draftSeed).sessionId || \"\";");
     expect(src).toContain("return tasks.find((t) => t.session_id === session) ?? null;");
     // No second fetch: `tasks` is the poll this page runs anyway.
     expect(src).not.toContain("getTaskBySession");
@@ -2746,9 +2573,10 @@ describe("the source-task chip", () => {
     // The peek slides in BESIDE a page that is currently behind a modal, so
     // opening one under the card would look like the press did nothing.
     expect(body.indexOf("closeCard();")).toBeLessThan(body.indexOf("openPeek(task.key)"));
-    // The peek is the ONLY door this page owns: it does not navigate, and
-    // tasks-lib.test.ts pins that it holds none of the tools for it.
-    expect(src).not.toContain("navigateUrl");
+    // The peek is the only door this CHIP has: pressing it must not leave the
+    // page. (The page does navigate elsewhere now — a draft row's press opens
+    // its chat, design §1 — so the claim is about this handler, not the file.)
+    expect(body).not.toContain("navigateUrl");
   });
 
   test("where there is no peek, the chip is a statement and not a dead button", () => {

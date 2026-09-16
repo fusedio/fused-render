@@ -397,12 +397,21 @@ describe("the chat handoff's attachments", () => {
     expect(MODAL).toContain(".map((i) => ({ path: i.path, name: i.name, kind: i.kind }))");
   });
 
-  it("the Tasks page parses the param through the chat's own parser and CONSUMES it", () => {
-    expect(SCHEDULED).toContain(
-      'attachments: parseAttachmentsParam(q.get("attachments")),');
-    // Deleted with the rest, or a reload reopens the modal forever.
-    expect(SCHEDULED).toContain('q.delete("attachments");');
-    expect(SCHEDULED).toContain("initialAttachments={hop.attachments}");
+  it("the hop's chips come off the RECORD, not off a URL param", () => {
+    // design "one record", §1: the Schedule hop carries a key and nothing else.
+    // The composer's tray is copied into the task-shots dir and saved ONTO that
+    // record before the navigation (`SchedButton.go`), so what the card seeds
+    // from is the record's own `attachments` — one place, which is the whole
+    // point.
+    expect(SCHEDULED).not.toContain("parseAttachmentsParam");
+    expect(SCHEDULED).not.toContain('q.get("attachments")');
+    expect(SCHEDULED).toContain("attachments: record.attachments ?? [],");
+    const BUTTON = readFileSync(
+      join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
+    expect(BUTTON).toContain(".then((carried) => saveChatDraft(key, text, carried))");
+    // …and the URL it builds is the key and the way back, nothing more.
+    expect(BUTTON).toContain(
+      "`${SCHEDULE_URL}?new=1&draft=${encodeURIComponent(draftKey)}`");
   });
 
   // ---- and they do not follow the reader to the NEXT card -------------------
@@ -418,13 +427,12 @@ describe("the chat handoff's attachments", () => {
   it("the hop is ONE value, seeded by the opening rather than cleared afterwards", () => {
     // The fix is structural: there is no second place that says what a hop is
     // made of, so no list can fall out of step with the fields again.
-    expect(SCHEDULED).toContain("const [hop, setHop] = useState<HopSeed>(NO_HOP);");
-    expect(SCHEDULED).toContain("seed: HopSeed = NO_HOP,");
+    expect(SCHEDULED).toContain("const [hop, setHop] = useState<ChatHop>(NO_HOP);");
+    expect(SCHEDULED).toContain("seed: ChatHop = NO_HOP,");
     expect(SCHEDULED).toContain("setHop(seed);");
-    // Every value the card reads comes off that one object.
-    for (const read of ["hop.target ?? scope?.entry ?? scope?.project ?? null", "initialMessage={hop.message}",
-                        "initialAttachments={hop.attachments}", "chatSessionId={hop.session}",
-                        "chatBack={hop.back}", "fromChatKey={hop.chatKey}"]) {
+    // Every value the card reads comes off that one object — and there are two
+    // of them now, because the hop is a key and a route (design §1).
+    for (const read of ["chatKey={hop.key}", "chatBack={hop.from}"]) {
       expect(SCHEDULED).toContain(read);
     }
   });
@@ -432,8 +440,7 @@ describe("the chat handoff's attachments", () => {
   it("a NON-hop opening carries no hop at all — the default, not a clean-up", () => {
     // "+ New task", a calendar slot, an Edit: all reach `openForm` without a
     // seed, so they get `NO_HOP`. A reopened draft says it in its own words.
-    expect(SCHEDULED).toContain("NO_HOP: HopSeed = {");
-    expect(SCHEDULED).toContain("attachments: [], chatKey: null,");
+    expect(SCHEDULED).toContain('const NO_HOP: ChatHop = { key: "", from: "" };');
     expect(SCHEDULED).toContain('openForm("blank", null)');
     expect(SCHEDULED).toContain("onCreateAt={(t) => openForm(t, null)}");
     expect(SCHEDULED).toContain("openForm(null, template ?? entry);");
@@ -444,7 +451,7 @@ describe("the chat handoff's attachments", () => {
       "openForm(null, null, NO_HOP, { id: task.draft_id, form: task.form ?? null });");
     // …and the ONLY opening that seeds one is the deep link.
     expect(SCHEDULED.match(/setHop\(seed\)/g) ?? []).toHaveLength(1);
-    expect(SCHEDULED).toContain("openForm(at, null, seed);");
+    expect(SCHEDULED).toContain("openForm(at, null, hopTo);");
   });
 
   it("and the close has nothing left to forget", () => {
@@ -455,6 +462,7 @@ describe("the chat handoff's attachments", () => {
     expect(body).not.toContain("setNewAttachments");
     expect(body).not.toContain("setNewTarget");
     expect(body).not.toContain("setNewChatKey");
+    expect(body).not.toContain("setHop");
     expect(SCHEDULED).not.toContain("newAttachments");
   });
 });
